@@ -221,7 +221,7 @@ jobs:
       # `import mlx.core` for "no-mlx" profiles, so the spoofs
       # faithfully simulate every supported hardware combo regardless
       # of whether mlx is installed for real.
-      - name: MLX dispatch tests (3 files, 36 tests)
+      - name: MLX dispatch tests (3 files, 37 tests)
         env:
           PYTHONPATH: ${{ github.workspace }}/studio
           UNSLOTH_COMPILE_DISABLE: '1'

@@ -217,16 +217,20 @@ export function ParamsSection(): ReactElement {
   const selectedOptimizer =
     isMac && isCudaAliasOptimizer ? "adamw" : store.optimizerType;
 
-  // LoftQ and DoRA are not supported on MLX (the backend rejects both), so
-  // clear a stale selection to lora on Apple Silicon -- whether persisted,
-  // applied from a model default, or imported -- so the backend never
-  // receives it.
+  // The backend refuses DoRA once vision layers are in the run. `isVisionModel`
+  // is fetched metadata and can be stale, so this only stops the combination
+  // being newly selected; the loaded model still settles the run.
+  const doraNeedsVisionOff =
+    isMac && showVisionLora && store.finetuneVisionLayers;
+
+  // LoftQ is unsupported on MLX, so clear a stale selection on Apple Silicon
+  // -- persisted, from a model default, or imported -- before it reaches the
+  // backend. A `dora` selection is deliberately NOT cleared: silently
+  // substituting plain LoRA is the failure this feature exists to remove, and
+  // this section is collapsed by default, so the swap would go unseen.
   const setLoraVariant = store.setLoraVariant;
   useEffect(() => {
-    if (
-      isMac &&
-      (store.loraVariant === "loftq" || store.loraVariant === "dora")
-    ) {
+    if (isMac && store.loraVariant === "loftq") {
       setLoraVariant("lora");
     }
   }, [isMac, store.loraVariant, setLoraVariant]);
@@ -747,8 +751,8 @@ export function ParamsSection(): ReactElement {
                         key={opt.value}
                         type="button"
                         disabled={
-                          isMac &&
-                          (opt.value === "loftq" || opt.value === "dora")
+                          (isMac && opt.value === "loftq") ||
+                          (opt.value === "dora" && doraNeedsVisionOff)
                         }
                         onClick={() => store.setLoraVariant(opt.value)}
                         className={`flex-1 corner-squircle rounded-xl border px-3 py-2 text-left transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${
@@ -759,9 +763,11 @@ export function ParamsSection(): ReactElement {
                       >
                         <p className="text-xs font-medium">{opt.label}</p>
                         <p className="text-ui-10 text-muted-foreground">
-                          {isMac && (opt.value === "loftq" || opt.value === "dora")
+                          {isMac && opt.value === "loftq"
                             ? "Not supported on Apple Silicon"
-                            : opt.desc}
+                            : opt.value === "dora" && doraNeedsVisionOff
+                              ? "Turn off vision layer training to use DoRA"
+                              : opt.desc}
                         </p>
                       </button>
                     ))}
