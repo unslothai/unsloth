@@ -19058,6 +19058,15 @@ async def load_diffusion_model(
         engine = await asyncio.to_thread(
             select_and_activate_engine, fam, hf_token = request.hf_token, model_kind = kind
         )
+        # predict_engine is the selection's read-only twin, not the selection: it never installs,
+        # so a host where the sd-cli install then fails lands on the OTHER engine. Ask the engine
+        # actually activated whenever the prediction missed, so neither the GPU handoff nor the
+        # load is made on an unread companion. Same call the (correct) prediction already made, so
+        # never paid twice. Runs on the CPU path too when a preflight was already owed there: the
+        # switch is what is at stake, and it happens whether or not a GPU is involved. Where none
+        # was owed, CPU still pays nothing.
+        if (needs_gpu or preflighted is not None) and engine is not preflighted:
+            await asyncio.to_thread(_preflight, engine)
 
         def _start_engine_load():
             # Kicks the slow load onto a background thread and returns at once (the client polls images/load-progress).
@@ -19086,13 +19095,6 @@ async def load_diffusion_model(
             return begin_load_on(engine, _start_engine_load)
 
         if needs_gpu:
-            # predict_engine is the selection's read-only twin, not the selection: it never installs,
-            # so a host where the sd-cli install then fails lands on the OTHER engine. Ask the engine
-            # actually activated whenever the prediction missed, so the GPU handoff is never made on
-            # an unread companion. Same call the (correct) prediction already made, so no cost twice.
-            if engine is not preflighted:
-                await asyncio.to_thread(_preflight, engine)
-
             # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts DIFFUSION before
             # the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps the same span.
             def _acquire_and_begin():

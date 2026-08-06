@@ -701,6 +701,66 @@ def test_cpu_load_skips_the_gated_preflight(client, monkeypatch):
     assert calls == []
 
 
+def test_a_cpu_mispredicted_engine_is_still_preflighted(monkeypatch):
+    """predict_engine never installs, so a host where the sd-cli install then fails lands on the
+    OTHER engine, and the preflight ran against the one that was never activated.
+
+    The GPU path always re-asked the engine it actually got. The CPU path did not, so a mispredict
+    there switched engines and started the load with the diffusers companions unread -- the bare
+    mid-download token error this preflight exists to replace."""
+    from types import SimpleNamespace
+
+    import core.inference.diffusion_device as devmod
+    import core.inference.diffusion_engine_router as engine_router
+    import core.inference.sd_cpp_backend as sd_backend
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
+
+    # Native is unavailable, so the selection lands on diffusers however the prediction went.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP", "0")
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_ENGINE", raising = False)
+    monkeypatch.setattr(engine_router, "_active_engine_name", ENGINE_DIFFUSERS)
+    monkeypatch.setattr(engine_router, "_fallback_reason", None)
+    # ...but the prediction says native, so a preflight is owed and it is owed on the wrong engine.
+    monkeypatch.setattr(engine_router, "predict_engine", lambda fam, **_: ENGINE_SD_CPP)
+
+    native = _FakeBackend()
+    monkeypatch.setattr(sd_backend, "get_sd_cpp_backend", lambda: native)
+
+    detail = (
+        "'black-forest-labs/FLUX.1-dev' is gated on Hugging Face and this model cannot be "
+        "downloaded without it."
+    )
+
+    def _refuse(model_path, fam, **kwargs):
+        raise ValueError(detail)
+
+    diffusers = _FakeBackend()
+    diffusers.preflight_base_access = _refuse
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: diffusers)
+    monkeypatch.setattr(
+        engine_router,
+        "resolve_diffusion_device_target",
+        lambda: SimpleNamespace(backend = "cpu", device = "cpu"),
+    )
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda: SimpleNamespace(device = "cpu")
+    )
+
+    app = FastAPI()
+    app.include_router(studio_router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    local = TestClient(app)
+
+    resp = local.post(
+        "/api/inference/images/load",
+        json = {"model_path": "unsloth/Z-Image-Turbo-GGUF", "gguf_filename": "q.gguf"},
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == detail
+    assert diffusers.loaded is False  # the refused load never started
+
+
 @pytest.mark.parametrize(
     "device, env",
     [("cuda", {}), ("cpu", {"UNSLOTH_DIFFUSION_SD_CPP": "0"})],
