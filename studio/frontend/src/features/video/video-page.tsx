@@ -1560,9 +1560,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           {/* Names the pane, as the Images column does. Same shape there, so
               the two pages stay level. */}
           <div className="mb-2 grid gap-1.5">
-            <h2 className="flex items-center gap-3 font-heading text-xl font-medium leading-none text-foreground">
+            <h2 className="flex items-center gap-2.5 font-heading text-xl font-medium leading-none text-foreground">
               {/* The app's Video icon, same as the sidebar row. */}
-              <HugeiconsIcon icon={FlimSlateIcon} className="size-5 shrink-0" />
+              <HugeiconsIcon icon={FlimSlateIcon} className="size-[18px] shrink-0" />
               Create videos
             </h2>
             <p className="text-xs leading-snug text-muted-foreground">

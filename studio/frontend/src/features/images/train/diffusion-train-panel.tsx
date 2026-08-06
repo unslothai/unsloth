@@ -1130,10 +1130,10 @@ export function DiffusionTrainPanel({
           {/* Icon rides the heading; the line below runs the full width. */}
           <div className="mb-1 grid gap-1.5">
             {/* Matches "Train settings" across the rule, so the two headings read as one row. */}
-            <h2 className="flex items-center gap-3 font-heading text-xl font-medium leading-none">
+            <h2 className="flex items-center gap-2.5 font-heading text-xl font-medium leading-none">
               <HugeiconsIcon
                 icon={TestTubeOutlineIcon}
-                className="size-5 shrink-0"
+                className="size-[18px] shrink-0"
               />
               Train a LoRA
             </h2>
@@ -1491,10 +1491,10 @@ export function DiffusionTrainPanel({
                   starts level with Model family. */}
               <div className="mb-2 flex items-center justify-between">
                 <div className="grid gap-1.5">
-                  <span className="flex items-center gap-3 font-heading text-xl font-medium leading-none">
+                  <span className="flex items-center gap-2.5 font-heading text-xl font-medium leading-none">
                     <HugeiconsIcon
                       icon={Settings02Icon}
-                      className="size-5 shrink-0"
+                      className="size-[18px] shrink-0"
                     />
                     Train settings
                   </span>
