@@ -19,7 +19,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const maxSeqLength = useChatRuntimeStore((s) => s.params.maxSeqLength);
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
-  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const mlxKvBits = useChatRuntimeStore((s) => s.mlxKvBits);
@@ -42,7 +42,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
 
   const isGguf =
     activeGgufVariant != null ||
-    ggufContextLength != null ||
+    loadedContextLength != null ||
     (checkpoint?.toLowerCase().endsWith(".gguf") ?? false);
 
   // Off-backend this stays null, or the model compares unequal to its own defaults

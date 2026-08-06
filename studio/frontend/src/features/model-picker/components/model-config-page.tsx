@@ -983,7 +983,7 @@ export function ModelConfigPage({
     (s) => s.defaultChatTemplate,
   );
   const loadedMaxContextLength = useChatRuntimeStore(
-    (s) => s.ggufMaxContextLength,
+    (s) => s.maxContextLength,
   );
   // What settings are stored under, which is not always what loads; the probes keep target.id.
   const configId = target.configId ?? target.id;

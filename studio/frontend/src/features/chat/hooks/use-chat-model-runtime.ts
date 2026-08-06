@@ -344,7 +344,7 @@ async function syncInferenceStatusToStore(options?: {
           !selectedCheckpoint &&
           hydrated.contextUsage == null &&
           hydrated.activeThreadId != null &&
-          hydrated.ggufContextLength != null &&
+          hydrated.loadedContextLength != null &&
           !isExternalModelId(checkpointId)
         ) {
           void refreshContextUsage({ threadId: hydrated.activeThreadId });
@@ -856,7 +856,7 @@ export function useChatModelRuntime() {
             stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
             stateBeforeUnload.loadedCustomContextLength,
             previousIsGguf
-              ? (stateBeforeUnload.ggufContextLength ?? 0)
+              ? (stateBeforeUnload.loadedContextLength ?? 0)
               : previousMaxSeqLength,
           );
           const hfToken = stateBeforeUnload.hfToken || null;
@@ -884,7 +884,7 @@ export function useChatModelRuntime() {
           let loadCustomContextLength =
             pendingLoadConfig?.customContextLength ??
             stateBeforeUnload.customContextLength;
-          const loadGgufContextLength = stateBeforeUnload.ggufContextLength;
+          const loadContextLength = stateBeforeUnload.loadedContextLength;
           const loadTensorParallel = targetIsDiffusion
             ? false
             : (pendingLoadConfig?.tensorParallel ??
@@ -984,7 +984,7 @@ export function useChatModelRuntime() {
                 ggufVariant,
                 isGguf,
                 customContextLength: validateCustomContextLength,
-                ggufContextLength: loadGgufContextLength,
+                loadedContextLength: loadContextLength,
                 currentCheckpoint,
                 activeGgufVariant: loadActiveGgufVariant,
                 maxSeqLength,
@@ -1160,7 +1160,7 @@ export function useChatModelRuntime() {
             // which the backend's --fit off branch treats as the NATIVE context --
             // far larger than the sheet shows when the load was fit-sized (Default
             // or Manual + Auto layers may auto-reduce context to fit VRAM), a
-            // likely OOM. ggufContextLength is that resolved value; a model already
+            // likely OOM. loadedContextLength is that resolved value; a model already
             // at native reloads unchanged, so this is safe for any prior mode.
             if (
               isGguf &&
@@ -1168,16 +1168,16 @@ export function useChatModelRuntime() {
               loadGpuMemoryMode === "manual" &&
               loadGpuLayers >= 0 &&
               loadCustomContextLength == null &&
-              (loadGgufContextLength ?? 0) > 0
+              (loadContextLength ?? 0) > 0
             ) {
-              loadCustomContextLength = loadGgufContextLength;
+              loadCustomContextLength = loadContextLength;
             }
             const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
               modelId,
               ggufVariant,
               isGguf,
               customContextLength: loadCustomContextLength,
-              ggufContextLength: loadGgufContextLength,
+              loadedContextLength: loadContextLength,
               currentCheckpoint,
               activeGgufVariant: loadActiveGgufVariant,
               maxSeqLength,
@@ -1340,7 +1340,7 @@ export function useChatModelRuntime() {
                     reasoningEffortLevels,
                   )
                 : clampLocalReasoningEffort(existingReasoningEffort);
-            const ggufMaxContextLength = reportedMaxCtx;
+            const maxContextLength = reportedMaxCtx;
             const nextReasoningEnabled = reasoningAlwaysOn
               ? true
               : reloadingSameModel && supportsReasoning
@@ -1350,9 +1350,9 @@ export function useChatModelRuntime() {
             // A later rollback reads the snapshot path, not the id this was stored under.
             rememberApprovedRemoteCode(loadPath, approvedRemoteCodeFingerprint);
             useChatRuntimeStore.setState({
-              ggufContextLength: nativeCtx,
-              ggufMaxContextLength,
-              ggufNativeContextLength: reportedNativeCtx,
+              loadedContextLength: nativeCtx,
+              maxContextLength,
+              nativeContextLength: reportedNativeCtx,
               modelRequiresTrustRemoteCode:
                 loadResponse.requires_trust_remote_code ?? false,
               supportsReasoning,

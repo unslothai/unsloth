@@ -1913,11 +1913,11 @@ export function ChatPage({
   const activeGgufVariant = useChatRuntimeStore(
     (state) => state.activeGgufVariant,
   );
-  const ggufContextLength = useChatRuntimeStore(
-    (state) => state.ggufContextLength,
+  const loadedContextLength = useChatRuntimeStore(
+    (state) => state.loadedContextLength,
   );
-  const ggufNativeContextLength = useChatRuntimeStore(
-    (state) => state.ggufNativeContextLength,
+  const nativeContextLength = useChatRuntimeStore(
+    (state) => state.nativeContextLength,
   );
   const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
   const modelsFromStore = useChatRuntimeStore((state) => state.models);
@@ -2721,9 +2721,9 @@ export function ChatPage({
           : false;
         useChatRuntimeStore.setState({
           activeGgufVariant: null,
-          ggufContextLength: null,
-          ggufMaxContextLength: null,
-          ggufNativeContextLength: null,
+          loadedContextLength: null,
+          maxContextLength: null,
+          nativeContextLength: null,
           activeNativePathToken: null,
           activeNativePathExpiresAtMs: null,
           // Clear previous-model counters, else the relaxed external-provider render gate shows
@@ -2950,7 +2950,7 @@ export function ChatPage({
           }
           // For local turns, also require the restored count to fit in
           // the active window. Skip when unknown (external provider).
-          const limit = store.ggufContextLength;
+          const limit = store.loadedContextLength;
           if (
             typeof limit === "number" &&
             limit > 0 &&
@@ -3303,7 +3303,7 @@ export function ChatPage({
                 value={inferenceParams.checkpoint}
                 activeGgufVariant={activeGgufVariant}
                 activeModelConfig={activeModelConfig}
-                activeGgufContextLength={ggufContextLength}
+                activeLoadedContextLength={loadedContextLength}
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
                 onFoldersChange={refreshLocalModels}
@@ -3391,7 +3391,7 @@ export function ChatPage({
               <ContextUsageBar
                 used={contextUsage.totalTokens}
                 // null on external providers; the bar handles that.
-                total={ggufContextLength}
+                total={loadedContextLength}
                 cached={contextUsage.cachedTokens}
                 cacheWrites={contextUsage.cacheWriteTokens}
                 promptTokens={contextUsage.promptTokens}
@@ -3557,8 +3557,8 @@ export function ChatPage({
               ggufVariant={activeGgufVariant ?? null}
               isGguf={activeModelIsGguf}
               isDiffusion={activeModelIsDiffusion}
-              nativeContextLength={ggufNativeContextLength}
-              loadedContextLength={ggufContextLength}
+              nativeContextLength={nativeContextLength}
+              loadedContextLength={loadedContextLength}
               loadedConfig={activeModelConfig}
               onReload={handleReloadActiveModel}
             />

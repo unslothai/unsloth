@@ -899,9 +899,9 @@ type ChatRuntimeStore = {
   activeGgufVariant: string | null;
   /** Whether the backend loaded the active model from a filesystem path. */
   activeModelIsLocal: boolean;
-  ggufContextLength: number | null;
-  ggufMaxContextLength: number | null;
-  ggufNativeContextLength: number | null;
+  loadedContextLength: number | null;
+  maxContextLength: number | null;
+  nativeContextLength: number | null;
   modelRequiresTrustRemoteCode: boolean;
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
@@ -1543,9 +1543,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   lastModelLoadError: null,
   activeGgufVariant: null,
   activeModelIsLocal: false,
-  ggufContextLength: null,
-  ggufMaxContextLength: null,
-  ggufNativeContextLength: null,
+  loadedContextLength: null,
+  maxContextLength: null,
+  nativeContextLength: null,
   modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
   reasoningAlwaysOn: false,
@@ -2040,9 +2040,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       activeLoadId: null,
       activeNativePathToken: null,
       activeNativePathExpiresAtMs: null,
-      ggufContextLength: null,
-      ggufMaxContextLength: null,
-      ggufNativeContextLength: null,
+      loadedContextLength: null,
+      maxContextLength: null,
+      nativeContextLength: null,
       modelRequiresTrustRemoteCode: false,
       contextUsage: null,
       contextUsageByThreadId: {},

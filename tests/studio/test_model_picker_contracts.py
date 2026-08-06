@@ -2124,7 +2124,7 @@ def test_the_hub_settings_page_matches_a_resident_path_loaded_model():
         in hub
     )
     assert "loadedConfig={settingsTargetIsResident ? activeModelConfig : null}" in hub
-    assert "settingsTargetIsResident ? activeGgufContextLength : null" in hub
+    assert "settingsTargetIsResident ? activeLoadedContextLength : null" in hub
     # The loadable identifier, as every other status reader records it.
     assert "checkpointId: resolveInferenceCheckpointId(status)," in hub
     assert "setCheckpoint(status.active_model" not in hub

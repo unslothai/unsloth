@@ -177,13 +177,13 @@ export function applyActiveModelStatusToStore(
   const supportsPreserveThinking = status.supports_preserve_thinking ?? false;
   const supportsTools = status.supports_tools ?? false;
   const storedReasoningEnabled = loadOptionalBool(CHAT_REASONING_ENABLED_KEY);
-  const currentGgufContextLength = status.is_gguf
+  const currentLoadedContextLength = status.is_gguf
     ? (status.context_length ?? null)
     : null;
-  const ggufMaxContextLength = status.is_gguf
+  const maxContextLength = status.is_gguf
     ? (status.max_context_length ?? null)
     : null;
-  const ggufNativeContextLength = status.is_gguf
+  const nativeContextLength = status.is_gguf
     ? (status.native_context_length ?? null)
     : null;
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
@@ -340,9 +340,9 @@ export function applyActiveModelStatusToStore(
         ? true
         : useChatRuntimeStore.getState().reasoningEnabled
       : true,
-    ggufContextLength: currentGgufContextLength,
-    ggufMaxContextLength,
-    ggufNativeContextLength,
+    loadedContextLength: currentLoadedContextLength,
+    maxContextLength,
+    nativeContextLength,
     ...(status.is_gguf
       ? {}
       : { activeNativePathToken: null, activeNativePathExpiresAtMs: null }),
