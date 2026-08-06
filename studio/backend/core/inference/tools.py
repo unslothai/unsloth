@@ -1618,9 +1618,7 @@ def _find_blocked_commands(command: str) -> set[str]:
             # is written: attached, `=`-joined, or in the following token.
             if prefix_pending and prefix_command == "env":
                 following = (
-                    _cmd_unquote(tokens[token_index + 1])
-                    if token_index + 1 < len(tokens)
-                    else ""
+                    _cmd_unquote(tokens[token_index + 1]) if token_index + 1 < len(tokens) else ""
                 )
                 payload = _env_split_string_payload(token, following)
                 if payload:
@@ -1789,9 +1787,7 @@ def _find_blocked_commands(command: str) -> set[str]:
                 while k < len(tokens):
                     word = _cmd_unquote(tokens[k])
                     if base == "env":
-                        following = (
-                            _cmd_unquote(tokens[k + 1]) if k + 1 < len(tokens) else ""
-                        )
+                        following = _cmd_unquote(tokens[k + 1]) if k + 1 < len(tokens) else ""
                         split = _env_split_string_payload(tokens[k], following)
                         if split:
                             blocked |= _find_blocked_commands(split)

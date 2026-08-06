@@ -986,6 +986,7 @@ def test_exec_children_do_not_make_screening_quadratic(monkeypatch):
     tools._find_blocked_commands(command)
     assert time.perf_counter() - began < 1.0
 
+
 @pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
 @pytest.mark.parametrize(
     "command",
