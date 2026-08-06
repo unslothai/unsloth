@@ -40,6 +40,7 @@ under test ever asks it.
 import ast
 import re
 import sys
+import textwrap
 import types
 from contextlib import nullcontext
 from pathlib import Path
@@ -290,6 +291,72 @@ def test_a_forced_float32_model_keeps_the_bfloat16_the_trainer_chose():
     trainer = _build_trainer(env, torch.bfloat16, bf16_supported = True)
     assert env["ACCELERATE_MIXED_PRECISION"] == "bf16"
     assert _generate(trainer, env, has_bf16 = True) == (True, torch.bfloat16)
+
+
+# ---- the same question again, inside native generation -------------------
+
+
+def _fast_generate_autocast_source() -> str:
+    """The autocast unsloth_base_fast_generate builds around _old_generate."""
+    src = (REPO_ROOT / "unsloth" / "models" / "vision.py").read_text(encoding = "utf-8")
+    start = src.index("    # Mixed precision autocast")
+    end = src.index("    # Prepare LoRA\n", start)
+    return textwrap.dedent(src[start:end])
+
+
+def _fast_generate(model, env, dtype):
+    """Build that autocast once and report what it would enter."""
+    scope = {
+        "torch": torch,
+        "os": types.SimpleNamespace(environ = env),
+        "self": model,
+        "dtype": dtype,
+        "DEVICE_TYPE_TORCH": "cuda",
+    }
+    exec(_fast_generate_autocast_source(), scope)
+    caster = scope["autocaster"]
+    return caster._enabled, (caster.fast_dtype if caster._enabled else None)
+
+
+def test_a_forced_load_cannot_pull_generation_into_float16():
+    """The trainer reads the stamp; native generation has to read it too.
+
+    An explicitly float32, unforced model whose process later loads Gemma3 or
+    gpt-oss gets UNSLOTH_FORCE_FLOAT32 = '1' written behind its back, and its
+    rollouts would then run in the float16 autocast the trainer kept it out of.
+    """
+    model = types.SimpleNamespace(_unsloth_forced_float32 = False)
+    env = {"UNSLOTH_FORCE_FLOAT32": "1"}
+    assert _fast_generate(model, env, torch.float32) == (False, None)
+
+
+def test_a_forced_model_still_autocasts_after_a_plain_load():
+    """The mirror: the stamp has to keep the float16 as well as refuse it."""
+    model = types.SimpleNamespace(_unsloth_forced_float32 = True)
+    env = {"UNSLOTH_FORCE_FLOAT32": "0"}
+    assert _fast_generate(model, env, torch.float32) == (True, torch.float16)
+
+
+def test_generation_falls_back_to_the_environment_without_a_stamp():
+    model = types.SimpleNamespace()
+    assert _fast_generate(model, {"UNSLOTH_FORCE_FLOAT32": "1"}, torch.float32) == (
+        True,
+        torch.float16,
+    )
+    assert _fast_generate(model, {"UNSLOTH_FORCE_FLOAT32": "0"}, torch.float32) == (False, None)
+
+
+@pytest.mark.parametrize(
+    "dtype, expected",
+    [
+        (torch.float16, (True, torch.float16)),
+        (torch.bfloat16, (True, torch.bfloat16)),
+        (torch.float32, (False, None)),
+    ],
+)
+def test_generation_without_a_forced_family_is_unchanged(dtype, expected):
+    model = types.SimpleNamespace(_unsloth_forced_float32 = False)
+    assert _fast_generate(model, {}, dtype) == expected
 
 
 def test_the_loaders_stamp_the_forced_float32_answer_on_the_model():

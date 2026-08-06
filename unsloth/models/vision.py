@@ -589,8 +589,13 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     except:
         pass
 
-    # Mixed precision autocast
-    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+    # Mixed precision autocast. from_pretrained stamps the forced float32 answer on
+    # the model it loaded; UNSLOTH_FORCE_FLOAT32 is process wide and every load
+    # rewrites it, so a later load would otherwise decide this model's rollouts.
+    forced_float32 = getattr(self, "_unsloth_forced_float32", None)
+    if forced_float32 is None:
+        forced_float32 = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+    if forced_float32:
         autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = torch.float16)
         dtype = torch.float16
     else:
