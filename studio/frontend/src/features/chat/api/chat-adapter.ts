@@ -1948,13 +1948,18 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     gguf_variant?: string | null;
     // GGUF-only: scopes the training guard to the same placement policy /load
     // will use. Manual mode must match because it makes placement user-owned.
-    // The layer/MoE/split/KV/spec knobs are deliberately not sent: Auto mode's
-    // guard sizes conservatively, while Manual mode bypasses that estimate.
+    // The layer/MoE/split knobs are deliberately not sent: Auto mode's guard
+    // sizes conservatively, while Manual mode bypasses that estimate.
     // The safetensors fallback omits both fields and uses HF auto-placement.
     gpu_ids?: number[];
     gpu_memory_mode?: "auto" | "manual";
     cache_type_kv?: string | null;
     tensor_parallel?: boolean | null;
+    // The estimate charges a drafter whose size differs by mode (a DSpark
+    // sidecar is ~11 GB, and Auto reaches it), so this preflight has to be told
+    // what the load will send or it sizes a different model.
+    speculative_type?: string | null;
+    spec_draft_n_max?: number | null;
   }): Promise<boolean> {
     options?.abortSignal?.throwIfAborted();
     const validation = await validateModel({
@@ -2115,6 +2120,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         gguf_variant: candidate.ggufVariant,
         cache_type_kv: config.kvCacheDtype,
         tensor_parallel: effectiveTensorParallel,
+        // The same values the load below sends.
+        speculative_type: effectiveSpeculativeType,
+        spec_draft_n_max: effectiveSpecDraftNMax,
         // The same remembered-derived GPU pick the load below sends.
         ...(candidate.kind === "gguf"
           ? {
@@ -2522,6 +2530,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           // model has no remembered settings to prefer).
           gpu_ids: defaultGpuIds ?? undefined,
           gpu_memory_mode: rt.gpuMemoryMode,
+          speculative_type: specSettings.speculativeType,
+          spec_draft_n_max: specSettings.specDraftNMax,
         }))
       ) {
         toast.dismiss(toastId);

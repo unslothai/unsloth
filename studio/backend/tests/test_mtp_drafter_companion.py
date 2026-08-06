@@ -922,6 +922,44 @@ def test_download_dspark_records_whether_the_repo_publishes_a_sidecar(monkeypatc
         assert b._dspark_sidecar_absent is expect_absent
 
 
+def test_an_unreachable_hub_is_not_recorded_as_a_missing_sidecar(monkeypatch, tmp_path):
+    """A listing that never completed says nothing about the repo. Recording it as
+    a definitive absence would suppress the reuse check's retry, so DSpark would
+    never be fetched once connectivity returned."""
+    import core.inference.llama_cpp as llama_cpp_module
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setattr(
+        llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: None
+    )
+    monkeypatch.setattr(llama_cpp_module, "_hub_download_in_flight", lambda repo: False)
+    monkeypatch.setattr(
+        llama_cpp_module, "_hub_cache_dir_for_snapshot_path", lambda p: str(tmp_path)
+    )
+
+    def _explode(repo, token = None):
+        raise ConnectionError("hub unreachable")
+
+    monkeypatch.setattr("huggingface_hub.list_repo_files", _explode)
+    monkeypatch.setattr("utils.models.model_config._iter_hf_cache_snapshots", lambda *a, **k: [])
+
+    outcome: dict = {}
+    b = LlamaCppBackend()
+    b._cancel_event.clear()
+    assert (
+        b._download_companion_gguf(
+            hf_repo = "org/repo",
+            hf_token = None,
+            pick = lambda names: None,
+            label = "DSpark drafter",
+            outcome = outcome,
+        )
+        is None
+    )
+    assert "listed" not in outcome
+
+
 def test_download_dspark_still_reports_a_cached_sidecar_it_cannot_run(monkeypatch):
     """Skipping the fetch must not hide a sidecar already on disk: the route
     rediscovers it on every Apply, so answering None would leave the reuse check
