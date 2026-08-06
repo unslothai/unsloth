@@ -320,7 +320,15 @@ class TestReloadRequired:
     emitted, so a user-supplied --mlock / --no-mmap counts too."""
 
     @staticmethod
-    def _required(keep, no_res, state, monkeypatch, *, is_loaded = True, is_active = True):
+    def _required(
+        keep,
+        no_res,
+        state,
+        monkeypatch,
+        *,
+        is_loaded = True,
+        is_active = True,
+    ):
         import routes.inference
         import routes.settings as rs
         import utils.model_memory_settings as mm
@@ -372,9 +380,7 @@ class TestReloadRequired:
         health check flips is_loaded; keying on that reported no reload while
         the process was already coming up on the pre-save placement."""
         assert (
-            self._required(
-                False, True, (True, False), monkeypatch, is_loaded = False, is_active = True
-            )
+            self._required(False, True, (True, False), monkeypatch, is_loaded = False, is_active = True)
             is True
         )
 
@@ -766,7 +772,6 @@ class TestFullOffloadDetection:
     @staticmethod
     def _backend(n_layers, n_cpu_moe = 0):
         from core.inference.llama_cpp import LlamaCppBackend
-
         return type(
             "_B",
             (),
@@ -777,7 +782,14 @@ class TestFullOffloadDetection:
             },
         )()
 
-    def _check(self, n_layers, mode, layers, extras = None, n_cpu_moe = 0):
+    def _check(
+        self,
+        n_layers,
+        mode,
+        layers,
+        extras = None,
+        n_cpu_moe = 0,
+    ):
         backend = self._backend(n_layers, n_cpu_moe)
         return backend._offloads_every_layer(
             gpu_memory_mode = mode, gpu_layers = layers, extra_args = extras
@@ -834,7 +846,7 @@ class TestFullOffloadDetection:
             node
             for node in ast.walk(tree)
             if isinstance(node, ast.If)
-            and "gpu_memory_mode == \"manual\" and gpu_layers >= 0"
+            and 'gpu_memory_mode == "manual" and gpu_layers >= 0'
             in ast.unparse(node.test).replace("'", '"')
         ]
         assert manual_branches, "the manual offload branch moved"
@@ -850,4 +862,3 @@ class TestFullOffloadDetection:
             if isinstance(target, ast.Name)
         }
         assert "fully_gpu_offloaded" not in assigned
-
