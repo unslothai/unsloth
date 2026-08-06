@@ -6,6 +6,7 @@ import {
   getHubPhase,
   getLastHubFailure,
   isDirectHubOffline,
+  shouldPreferLocalCache,
   isHubProxyServing,
   type HubFailure,
   type HubPhase,
@@ -83,6 +84,24 @@ export function useDirectHubOnline(origin?: string): boolean {
   return useSyncExternalStore(
     subscribeOnlineStatus,
     getSnapshot,
+    getServerOnlineSnapshot,
+  );
+}
+
+function getBackendOnlineSnapshot(): boolean {
+  return !shouldPreferLocalCache();
+}
+
+/**
+ * For actions the backend carries out: GGUF variant lookups and updates. What
+ * decides those is the server's reach, not this browser's, and a proxy serving
+ * discovery is proof it has one. Gating them on browser reachability hid the
+ * update action exactly when the server could have applied it.
+ */
+export function useBackendHubOnline(): boolean {
+  return useSyncExternalStore(
+    subscribeOnlineStatus,
+    getBackendOnlineSnapshot,
     getServerOnlineSnapshot,
   );
 }

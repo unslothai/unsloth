@@ -122,3 +122,26 @@ test("clients that only read ask whether the SERVER should go cache-only", async
     "a serving proxy has to veto the cache-only request",
   );
 });
+
+test("actions the backend performs are gated on the backend's reach", async () => {
+  // These trigger listGgufVariants and an update through our own API. Gating
+  // them on browser reachability hid the update action in exactly the case the
+  // server could have applied it: a proxy already serving discovery.
+  for (const path of [
+    "../src/features/hub/catalog/gguf-download-card.tsx",
+    "../src/features/hub/catalog/local-on-device-card.tsx",
+  ]) {
+    const src = await read(path);
+    assert.ok(src.includes("useBackendHubOnline"), path);
+    assert.ok(!/\buseOnlineStatus\b/.test(src), path);
+    assert.ok(!/\buseDirectHubOnline\b/.test(src), path);
+  }
+
+  const hook = await read("../src/features/hub/hooks/use-online-status.ts");
+  const at = hook.indexOf("function getBackendOnlineSnapshot");
+  assert.notEqual(at, -1);
+  assert.ok(
+    hook.slice(at, hook.indexOf("\n}", at)).includes("shouldPreferLocalCache"),
+    "it must ask the same question the request itself asks",
+  );
+});
