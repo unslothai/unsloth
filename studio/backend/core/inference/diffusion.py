@@ -965,10 +965,21 @@ class DiffusionBackend:
             # Strictly BELOW the winner: a higher rung was already rejected by the ladder.
             if not seen_chosen:
                 continue
-            if usable_prequant_source(
+            source = usable_prequant_source(
                 fam, candidate, path_override = path_override, base_repo = base_repo
+            )
+            if source is None:
+                continue
+            # Same cached-only rule _uncached_prequant_repo applies to the winner. That guard runs
+            # select_transformer_quant_scheme, which only ever sees the winner, so a retry that
+            # returned an UNCACHED repo would smuggle past it and download a second multi-GB
+            # denoiser for a pick that already has its GGUF. A local override is the operator's own
+            # file and costs no bytes.
+            if source.kind == "repo" and not prequant_checkpoint_cached(
+                source, cache_dir = hub_cache_dir()
             ):
-                return candidate
+                continue
+            return candidate
         return None
 
     def _prefetch_files(
@@ -2072,6 +2083,52 @@ class DiffusionBackend:
                                 # The GGUF plan declined resident; a prequant-sized replan says nothing about the dense build.
                                 if candidate.prequant:
                                     dense_fallback_allowed = False
+                        if quant_plan is None:
+                            # Nothing resident for auto's WINNER, either because it has no candidate
+                            # at all or because its replan still offloads. Without this the load
+                            # leaves quant_plan unset and the gate below skips the dense/prequant
+                            # path entirely, so a lower rung whose checkpoint is CACHED and would
+                            # fit never gets looked at. Same retry as the resident branch, just
+                            # reached from the side where the GGUF plan already wanted offload.
+                            retry = self._auto_prequant_retry_scheme(
+                                target,
+                                fam,
+                                transformer_quant,
+                                select_transformer_quant_scheme(
+                                    target,
+                                    transformer_quant,
+                                    family = getattr(fam, "name", None),
+                                ),
+                                base_repo = base,
+                                path_override = transformer_prequant_path,
+                                loras = loras,
+                            )
+                            retry_candidate = (
+                                resolve_dense_quant_candidate(
+                                    fam = fam,
+                                    target = target,
+                                    requested = retry,
+                                    base_repo = base,
+                                    prequant_path = transformer_prequant_path,
+                                    force_dense = _has_active_lora(loras),
+                                    logger = logger,
+                                )
+                                if retry is not None
+                                else None
+                            )
+                            if retry_candidate is not None:
+                                candidate = retry_candidate
+                                retry_plan = _replan_candidate()
+                                if retry_plan.offload_policy == OFFLOAD_NONE:
+                                    logger.info(
+                                        "diffusion.transformer_quant: auto's pick does not fit "
+                                        "resident; retrying at %s, whose checkpoint is cached",
+                                        retry,
+                                    )
+                                    transformer_quant = retry
+                                    quant_plan = retry_plan
+                                    if candidate.prequant:
+                                        dense_fallback_allowed = False
                     else:
                         # This materialises the dense bf16 transformer, so re-check the fit rather than OOMing after eviction (skipped for a prequant).
                         scheme = select_transformer_quant_scheme(
