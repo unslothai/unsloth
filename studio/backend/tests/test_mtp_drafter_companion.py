@@ -1045,6 +1045,35 @@ def test_root_mtp_ranking_spans_the_search_root(tmp_path):
     assert found is not None and Path(found).name == exact.name
 
 
+def test_a_more_specific_subdir_drafter_beats_a_base_family_root_one(tmp_path):
+    """Specificity has to be compared across layouts, not only within one: the
+    root file names a different family, so it is not this weight's drafter at all
+    and root preference must not save it."""
+    weight = tmp_path / "model_v2-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    (tmp_path / "mtp-model.gguf").write_bytes(b"base")
+    (tmp_path / "MTP").mkdir()
+    exact = tmp_path / "MTP" / "mtp-model_v2-Q8_0.gguf"
+    exact.write_bytes(b"exact")
+
+    found = detect_mtp_file(str(weight))
+    assert found is not None and Path(found).name == exact.name
+
+
+def test_root_still_wins_when_both_layouts_name_the_same_family(tmp_path):
+    """Negative control: equal specificity is every published layout, and there
+    the root copy keeps its long-standing preference."""
+    weight = tmp_path / "model-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    root = tmp_path / "mtp-model.gguf"
+    root.write_bytes(b"root")
+    (tmp_path / "MTP").mkdir()
+    (tmp_path / "MTP" / "model-Q8_0-MTP.gguf").write_bytes(b"sub")
+
+    found = detect_mtp_file(str(weight))
+    assert found is not None and Path(found).name == root.name
+
+
 def test_a_qat_weight_still_pairs_with_its_base_family_drafter(tmp_path):
     """Negative control for the ranking above: unsloth/gemma-4-12B-it-qat-GGUF
     ships mtp-gemma-4-12B-it.gguf, so the prefix rule has to keep working when no

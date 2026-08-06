@@ -1823,13 +1823,12 @@ def detect_mtp_file(
     dirs = [start_dir]
     if search_root is not None:
         dirs.append(Path(search_root))
+    # Both tiers are collected before either is emitted: two sidecars can
+    # prefix-match the same weight (mtp-model.gguf and mtp-model_v2-Q8_0.gguf
+    # beside model_v2-*.gguf), across layouts as well as within one, and only the
+    # one naming this family is really its drafter.
+    root_candidates: list[Path] = []
     if not skip_root:
-        # Collected before any is returned: two sidecars can both prefix-match
-        # (mtp-model.gguf and mtp-model_v2-Q8_0.gguf beside model_v2-*.gguf),
-        # and directory order would hand back whichever sorts first rather than
-        # the one that names this family. Ranking is stable, so files of equal
-        # specificity keep the scan order they had.
-        root_candidates: list[Path] = []
         for d in dirs:
             try:
                 entries = sorted(d.iterdir())
@@ -1842,16 +1841,6 @@ def detect_mtp_file(
                 if not _matches_weight(f):
                     continue
                 root_candidates.append(f)
-        for f in sorted(root_candidates, key = lambda c: _drafter_stem_rank(c.name, kind = "mtp")):
-            try:
-                if not (f.is_file() and _launchable(f)):
-                    continue
-                launch = _drafter_launch_path(f)
-            except OSError:
-                continue
-            if accept is not None and not accept(launch):
-                continue
-            return launch
 
     subdir_candidates: list[Path] = []
     for d in dirs:
@@ -1894,15 +1883,49 @@ def detect_mtp_file(
                 except OSError:
                     continue
 
-    for candidate in sorted(dict.fromkeys(subdir_candidates), key = _smallest_first):
-        try:
-            resolved = _drafter_launch_path(candidate)
-        except OSError:
-            continue
-        if accept is not None and not accept(resolved):
-            continue
-        logger.info(f"Detected MTP subdirectory drafter: {resolved}")
-        return resolved
+    def _emit_root() -> Optional[str]:
+        # Ranking is stable, so files of equal specificity keep the scan order.
+        for f in sorted(root_candidates, key = lambda c: _drafter_stem_rank(c.name, kind = "mtp")):
+            try:
+                if not (f.is_file() and _launchable(f)):
+                    continue
+                launch = _drafter_launch_path(f)
+            except OSError:
+                continue
+            if accept is not None and not accept(launch):
+                continue
+            return launch
+        return None
+
+    def _emit_subdir() -> Optional[str]:
+        for candidate in sorted(dict.fromkeys(subdir_candidates), key = _smallest_first):
+            try:
+                resolved = _drafter_launch_path(candidate)
+            except OSError:
+                continue
+            if accept is not None and not accept(resolved):
+                continue
+            logger.info(f"Detected MTP subdirectory drafter: {resolved}")
+            return resolved
+        return None
+
+    def _best_rank(candidates: list[Path]) -> int:
+        # Ranks are negative stem lengths, so 0 is the worst an empty tier can
+        # score and the other side wins by default.
+        return min((_drafter_stem_rank(c.name, kind = "mtp") for c in candidates), default = 0)
+
+    # Root keeps its preference at equal specificity, which is every published
+    # layout. It loses only to a strictly more specific companion copy, where
+    # the root file names a different family and is not this weight's drafter.
+    order = (
+        (_emit_subdir, _emit_root)
+        if _best_rank(subdir_candidates) < _best_rank(root_candidates)
+        else (_emit_root, _emit_subdir)
+    )
+    for emit in order:
+        found = emit()
+        if found is not None:
+            return found
     return None
 
 
