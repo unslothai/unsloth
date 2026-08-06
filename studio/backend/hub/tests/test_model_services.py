@@ -93,6 +93,74 @@ class TestExtractQuantToken:
         assert labels == {"Q4_K_M", "Q8_0"}
 
 
+@pytest.mark.parametrize(
+    ("config", "extra_file"),
+    [
+        ({"model_type": "bert", "architectures": ["BertModel"]}, None),
+        ({"model_type": "bert", "architectures": ["BertForMaskedLM"]}, None),
+        (
+            {"model_type": "llama", "architectures": ["LlamaForCausalLM"]},
+            "modules.json",
+        ),
+    ],
+)
+def test_local_safetensors_embedding_rows_are_not_chat_capable(tmp_path, config, extra_file):
+    model_dir = tmp_path / "embedding-model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    (model_dir / "model.safetensors").write_bytes(b"weights")
+    if extra_file:
+        (model_dir / extra_file).write_text("[]", encoding = "utf-8")
+
+    rows = model_common._classify_local_path(model_dir, "models_dir")
+
+    assert len(rows) == 1
+    assert rows[0].model_format == "safetensors"
+    assert rows[0].capabilities.can_train is True
+    assert rows[0].capabilities.can_chat is False
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"model_type": "llama", "architectures": ["LlamaForCausalLM"]},
+        {
+            "model_type": "custom",
+            "architectures": ["CustomModel"],
+            "auto_map": {"AutoModelForCausalLM": "modeling.CustomModel"},
+        },
+        {"model_type": "custom", "architectures": ["CustomChatModel"]},
+    ],
+)
+def test_local_safetensors_chat_or_unknown_rows_remain_chat_capable(tmp_path, config):
+    model_dir = tmp_path / "chat-model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    (model_dir / "model.safetensors").write_bytes(b"weights")
+
+    rows = model_common._classify_local_path(model_dir, "models_dir")
+
+    assert len(rows) == 1
+    assert rows[0].model_format == "safetensors"
+    assert rows[0].capabilities.can_chat is True
+
+
+def test_custom_source_promotion_preserves_non_chat_capability(tmp_path):
+    model_dir = tmp_path / "embedding-model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps({"model_type": "bert", "architectures": ["BertModel"]}),
+        encoding = "utf-8",
+    )
+    (model_dir / "model.safetensors").write_bytes(b"weights")
+    row = model_common._classify_local_path(model_dir, "models_dir")[0]
+
+    promoted = local_inventory._promote_to_custom_source(row)
+
+    assert promoted.source == "custom"
+    assert promoted.capabilities.can_chat is False
+
+
 def test_big_endian_detection_ignores_model_name_be_token():
     assert gguf.is_big_endian_gguf_path("model-Q4_K_M-be.gguf", "Q4_K_M")
     assert gguf.is_big_endian_gguf_path("model-Q4_K_M_be_infill.gguf", "Q4_K_M")

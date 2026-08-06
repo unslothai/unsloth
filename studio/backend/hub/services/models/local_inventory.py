@@ -609,6 +609,7 @@ def _promote_to_custom_source(model: LocalModelInfo) -> LocalModelInfo:
                 "custom",
                 partial = model.partial,
                 requires_variant = model.capabilities.requires_variant,
+                can_chat_override = model.capabilities.can_chat,
             ),
         }
     )
