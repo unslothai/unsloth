@@ -5085,7 +5085,10 @@ def _estimate_gguf_required_gb(
         for attr in ("gguf_mmproj_file", drafter_attr):
             f = getattr(config, attr, None)
             if f and Path(f).is_file():
-                total_bytes += Path(f).stat().st_size
+                # Split-aware, like the main weight above: discovery hands back shard 1,
+                # so stat() alone would size a split drafter at one shard and let the
+                # guard admit a load that evicts the training run it protects.
+                total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(f))
         if total_bytes > 0:
             return total_bytes / (1024**3) + _estimate_gguf_kv_gb(
                 main,

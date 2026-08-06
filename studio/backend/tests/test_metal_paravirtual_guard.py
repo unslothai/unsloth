@@ -2265,3 +2265,17 @@ def test_the_route_really_can_deliver_a_manual_cpu_request_carrying_an_override(
         )
         == extras
     )
+
+
+def test_dspark_fit_strip_covers_pass_through_spec_type():
+    """Extras owning --spec-type return from _build_speculative_flags before
+    _speculative_type is set, so keying the --fit strip only on that field lets a
+    user --fit on survive a pass-through DSpark launch, which cannot be reshaped."""
+    src = _load_model_source()
+    strip = src[src.index("_emit_extra_args = list(extra_args)") : src.index("strip_fit = True")]
+    compact = "".join(strip.split())
+    assert '_speculative_type=="draft-dspark"' in compact
+    assert "_extra_args_requests_dspark(" in compact
+    # The helper reads the accumulated types, so pass-through and env both count.
+    assert llama_cpp._extra_args_requests_dspark(["--spec-type", "draft-dspark"]) is True
+    assert llama_cpp._extra_args_requests_dspark(["--spec-type", "draft-mtp"]) is False

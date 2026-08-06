@@ -10598,7 +10598,13 @@ class LlamaCppBackend:
                 # below when the Studio picker owns the GPU selection.
                 if extra_args:
                     _emit_extra_args = list(extra_args)
-                    if self._speculative_type == "draft-dspark":
+                    # Extras owning --spec-type return from _build_speculative_flags
+                    # before _speculative_type is set, so pass-through DSpark needs
+                    # the accumulated types too or a user --fit on survives and the
+                    # layout llama.cpp cannot reshape aborts the load.
+                    if self._speculative_type == "draft-dspark" or _extra_args_requests_dspark(
+                        _emit_extra_args, env = _child_spec_env(_emit_extra_args)
+                    ):
                         _without_fit = strip_shadowing_flags(
                             _emit_extra_args,
                             strip_context = False,

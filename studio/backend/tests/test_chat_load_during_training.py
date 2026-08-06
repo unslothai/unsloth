@@ -1210,6 +1210,30 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(dspark_gb, 5000 / (1024**3), places = 9)
         self.assertAlmostEqual(extras_gb, 5000 / (1024**3), places = 9)
 
+    def test_split_dspark_sidecar_counts_every_shard(self):
+        """Discovery hands back shard 1, so sizing it with stat() alone would let the
+        guard admit a load that evicts the training run it exists to protect."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            target.write_bytes(b"x" * 2000)
+            shard1 = p / "dspark-model-Q8_0-00001-of-00002.gguf"
+            shard1.write_bytes(b"y" * 3000)
+            (p / "dspark-model-Q8_0-00002-of-00002.gguf").write_bytes(b"z" * 4000)
+            cfg = SimpleNamespace(
+                gguf_file = str(target),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = None,
+                gguf_dspark_file = str(shard1),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0):
+                gb = self.route._estimate_gguf_required_gb(cfg, speculative_type = "dspark")
+        self.assertAlmostEqual(gb, 9000 / (1024**3), places = 9)  # 2000 + 3000 + 4000
+
     def test_remote_threads_token_and_adds_companions(self):
         import utils.models.model_config as mc
 
