@@ -110,6 +110,7 @@ jobs:
           key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
       - name: Install Unsloth (--local, --no-torch)
+        id: install_unsloth
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
@@ -120,6 +121,7 @@ jobs:
           bash install.sh --local --no-torch 2>&1 | tee logs/install.log
 
       - name: Assert llama.cpp loads on this macOS
+        id: assert_llama
         run: bash .github/scripts/assert-llama-loads.sh
 
       - name: Install Playwright browsers
@@ -425,8 +427,18 @@ jobs:
       # is clean, which is the teardown for this whole job. Nothing may follow
       # it that needs Unsloth installed. Its server boots on 18891 and logs to
       # studio_update.log so it cannot clobber the UI or API phases above.
+      #
+      # Every step below carries an explicit condition because a step with no
+      # `if:` gets an implicit `success()`, so one flaky Playwright failure in a
+      # phase above would silently skip this whole phase. As its own workflow it
+      # ran regardless, and it is the only Mac coverage of `studio update` and
+      # scripts/uninstall.sh. `!cancelled()` overrides the implicit success()
+      # while the step-outcome checks still demand a working install to test
+      # against. `${{ }}` is required: a bare leading `!` is a YAML tag.
       # ---------------------------------------------------------------
       - name: First update should be a no-op (prebuilt already validated)
+        id: update_first
+        if: ${{ !cancelled() && steps.install_unsloth.outcome == 'success' && steps.assert_llama.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
@@ -446,7 +458,12 @@ jobs:
           fi
           echo "update path took the prebuilt fast path"
 
+      # Chained on the first update: "also a no-op" says nothing if the first
+      # one never produced a clean result. Success here implies the bootstrap
+      # gate above passed too, so it does not need repeating.
       - name: Second update must also be a no-op
+        id: update_second
+        if: ${{ !cancelled() && steps.update_first.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
@@ -461,6 +478,7 @@ jobs:
           echo "second update was clean"
 
       - name: Boot Unsloth briefly to confirm the install is still usable
+        if: ${{ !cancelled() && steps.update_second.outcome == 'success' }}
         run: |
           mkdir -p logs
           UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18891 \
@@ -486,6 +504,10 @@ jobs:
           echo "post-update Unsloth /api/health OK"
 
       - name: Uninstall and verify clean
+        # Gated on the install alone, not on the update steps: uninstall is a
+        # separate surface, and a broken `studio update` must not hide whether
+        # scripts/uninstall.sh still leaves the machine clean.
+        if: ${{ !cancelled() && steps.install_unsloth.outcome == 'success' }}
         # Round-trip through scripts/uninstall.sh on real macOS. As a side
         # effect this exercises the macOS-only .app bundle + Launch Services
         # removal path (~/Applications/Unsloth Studio.app, lsregister -u)
