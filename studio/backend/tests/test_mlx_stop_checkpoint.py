@@ -10,6 +10,10 @@ import types
 from pathlib import Path
 
 import numpy as np
+import pytest
+
+# Bare CI runners lack the optional training deps these fixtures write with.
+pytest.importorskip("safetensors")
 from safetensors.numpy import save_file
 
 
@@ -135,3 +139,58 @@ def test_write_mlx_stop_checkpoint_returns_false_when_save_fails(tmp_path, monke
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", fake_utils)
 
     assert worker._write_mlx_stop_checkpoint(_FakeTrainer(step = 5), object(), out) is False
+
+
+def test_worker_sigint_guard_survives_first_interrupt_only(monkeypatch):
+    # First Ctrl+C is the parent's stop-and-save window; the second force-quits.
+    import signal as signal_mod
+
+    installed = {}
+    monkeypatch.setattr(signal_mod, "signal", lambda s, h: installed.setdefault(s, h))
+    exits: list = []
+    monkeypatch.setattr(worker.os, "_exit", lambda code: exits.append(code))
+
+    worker._install_worker_sigint_guard()
+    handler = installed[signal_mod.SIGINT]
+
+    handler(signal_mod.SIGINT, None)
+    assert exits == []
+
+    handler(signal_mod.SIGINT, None)
+    assert exits == [130]
+
+
+def test_worker_guard_covers_sigbreak_when_present(monkeypatch):
+    # Windows terminals can deliver Ctrl+C/Ctrl+Break as SIGBREAK; the first
+    # one must leave the worker alive for the parent's stop-and-save.
+    import signal as signal_mod
+
+    installed = {}
+    monkeypatch.setattr(signal_mod, "signal", lambda s, h: installed.setdefault(s, h))
+    monkeypatch.setattr(signal_mod, "SIGBREAK", 21, raising = False)
+    monkeypatch.setattr(worker.os, "_exit", lambda code: (_ for _ in ()).throw(SystemExit(code)))
+
+    worker._install_worker_sigint_guard()
+    assert 21 in installed
+    assert installed[21] is installed[signal_mod.SIGINT]
+
+
+def test_stop_adopting_an_existing_checkpoint_refreshes_its_state(tmp_path, monkeypatch):
+    # A stop landing exactly on an abandoned sibling's step adopts it into the
+    # new timeline; without the mtime refresh a rewind cap would never lift.
+    import os
+    import time as _time
+
+    ckpt = tmp_path / "checkpoint-7"
+    ckpt.mkdir()
+    state = ckpt / "trainer_state.json"
+    state.write_text('{"global_step": 7}')
+    old = _time.time() - 3600
+    os.utime(state, (old, old))
+    monkeypatch.setattr(worker, "_mlx_has_checkpoint_at_step", lambda out, step: True)
+
+    class _Trainer:
+        _global_step = 7
+
+    assert worker._write_mlx_stop_checkpoint(_Trainer(), object(), str(tmp_path)) is True
+    assert state.stat().st_mtime > old + 1800

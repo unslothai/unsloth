@@ -1398,6 +1398,8 @@ export const de = {
       saveSteps: "Speicherintervall in Schritten",
       saveStepsTooltip:
         "Speichert alle N Schritte einen Checkpoint. 0 zum Deaktivieren.",
+      saveStepsNoResumeHint:
+        "Während dieses Laufs werden keine Checkpoints gespeichert; bei einer Unterbrechung kann er nicht fortgesetzt werden.",
       evalSteps: "Eval-Schritte",
       evalStepsTooltip:
         "Anteil der gesamten Trainingsschritte zwischen Auswertungen (0-1). Auf 0 setzen, um die Auswertung zu deaktivieren. Z. B. 0.01 = alle 1 % der Schritte auswerten.",

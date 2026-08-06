@@ -30,6 +30,31 @@ def _activate_mlx_transformers(model_name: str, hf_token: Optional[str]) -> None
         typer.echo(f"Warning: failed to activate Transformers sidecar: {exc}", err = True)
 
 
+def _external_resume_checkpoint(path: Path) -> "str | None":
+    from studio.backend.core.training.resume import is_resume_checkpoint_valid, resume_step_cap
+
+    if (
+        path.name.startswith("checkpoint-")
+        and path.is_dir()
+        and is_resume_checkpoint_valid(path, backend = "mlx")
+    ):
+        return str(path)
+    best_step, best = -1, None
+    if path.is_dir():
+        # Same rewind cap the outputs-root helper applies to its sibling scan.
+        step_cap = resume_step_cap(path, "mlx")
+        for child in path.glob("checkpoint-*"):
+            try:
+                step = int(child.name.rsplit("-", 1)[1])
+            except ValueError:
+                continue
+            if step_cap is not None and step > step_cap:
+                continue
+            if step > best_step and is_resume_checkpoint_valid(child, step, backend = "mlx"):
+                best_step, best = step, str(child)
+    return best
+
+
 def _create_cli_trainer(model_name: str, hf_token: Optional[str]):
     if _should_use_mlx_backend_for_cli():
         _activate_mlx_transformers(model_name, hf_token)
@@ -66,6 +91,16 @@ def train(
         "--dry-run",
         help = "Show resolved config and exit without training.",
     ),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        help = "Resume from the newest checkpoint in the run's output-dir.",
+    ),
+    resume_from_checkpoint: Optional[str] = typer.Option(
+        None,
+        "--resume-from-checkpoint",
+        help = "Resume from a specific checkpoint or output directory.",
+    ),
     config_overrides: dict = None,
 ):
     """Launch training using the existing Unsloth training backend."""
@@ -89,12 +124,79 @@ def train(
     hf_token = hf_token or cfg.logging.hf_token
     wandb_token = wandb_token or cfg.logging.wandb_token
 
+    # Resolve resume target to an on-disk checkpoint (same validators as Studio).
+    resume_checkpoint: Optional[str] = None
+    if resume and resume_from_checkpoint:
+        typer.echo("Error: use either --resume or --resume-from-checkpoint, not both.", err = True)
+        raise typer.Exit(code = 2)
+
+    resume_target = resume_from_checkpoint or (str(cfg.training.output_dir) if resume else None)
+    if resume_target is not None:
+        from studio.backend.core.training.resume import (
+            get_resume_checkpoint_path,
+            normalize_resume_output_dir,
+            current_training_backend,
+            record_resume_rewind,
+            resume_run_dir,
+        )
+        from utils.paths import outputs_root
+
+        resume_dir = None
+        root_error = None
+        try:
+            resume_dir = normalize_resume_output_dir(resume_target)
+        except ValueError as e:
+            root_error = e
+
+        # The shared discriminator consults hardware detection, so a host that cannot
+        # train rejects here instead of accepting a bundle the trainer will fail on.
+        cli_backend = current_training_backend()
+        if cli_backend is None:
+            typer.echo(
+                "Error: training is unavailable on this host, so the run cannot be resumed.",
+                err = True,
+            )
+            raise typer.Exit(code = 2)
+        resume_checkpoint = (
+            get_resume_checkpoint_path(resume_dir, backend = cli_backend) if resume_dir else None
+        )
+        if not resume_checkpoint:
+            # The MLX CLI adapter writes to a cwd-absolutized output_dir
+            # (allow_external_output_dir) the outputs-root helpers cannot see; accept
+            # such a dir when it holds a valid checkpoint. MLX only: the HF trainer
+            # rejects an external output_dir at training time.
+            if cli_backend == "mlx":
+                external = Path(resume_target).expanduser()
+                if not external.is_absolute():
+                    external = Path.cwd() / external
+                resume_checkpoint = _external_resume_checkpoint(external)
+        if not resume_checkpoint:
+            if root_error is not None:
+                typer.echo(
+                    f"Error: {root_error} Training runs write checkpoints under "
+                    f"'{outputs_root()}'; pass a directory beneath it, or a "
+                    f"directory that holds a resumable checkpoint.",
+                    err = True,
+                )
+            else:
+                typer.echo(
+                    f"Error: no resumable checkpoint (with trainer_state.json) found under "
+                    f"'{resume_dir}'.",
+                    err = True,
+                )
+            raise typer.Exit(code = 2)
+
+        # New checkpoints continue in the run dir, not inside checkpoint-N/.
+        cfg.training.output_dir = Path(resume_run_dir(resume_checkpoint))
+
     if dry_run:
         import yaml
 
         data = cfg.model_dump()
         data["training"]["output_dir"] = str(data["training"]["output_dir"])
         typer.echo(yaml.dump(data, default_flow_style = False, sort_keys = False))
+        if resume_checkpoint:
+            typer.echo(f"resume_from_checkpoint: {resume_checkpoint}")
         raise typer.Exit(code = 0)
 
     if not cfg.model:
@@ -119,6 +221,11 @@ def train(
             err = True,
         )
         raise typer.Exit(code = 2)
+
+    if resume_checkpoint:
+        # Rewinding onto an older checkpoint must outlive this run, or a later resume
+        # jumps to the timeline it abandoned. Recorded here, after every validation.
+        record_resume_rewind(resume_checkpoint, backend = cli_backend)
 
     trainer = _create_cli_trainer(cfg.model, hf_token)
 
@@ -151,6 +258,9 @@ def train(
 
     training_kwargs = cfg.training_kwargs()
     training_kwargs["wandb_token"] = wandb_token  # CLI/env takes precedence
+    training_kwargs["resume_from_checkpoint"] = resume_checkpoint
+    if resume_checkpoint:
+        typer.echo(f"Resuming from checkpoint: {resume_checkpoint}")
     started = trainer.start_training(dataset = ds, eval_dataset = eval_ds, **training_kwargs)
 
     if not started:

@@ -2370,6 +2370,31 @@ def _recorded_local_base(model_name) -> "tuple[str | None, bool]":
         return None, True
 
 
+def _install_worker_sigint_guard() -> None:
+    """Terminal Ctrl+C hits the whole process group. The first one is the parent's
+    stop-and-save window, so the worker must survive it; a second force-quits."""
+    import signal
+
+    seen = [False]
+
+    def _on_sigint(signum, frame):
+        if seen[0]:
+            os._exit(130)
+        seen[0] = True
+
+    try:
+        signal.signal(signal.SIGINT, _on_sigint)
+    except (ValueError, OSError):
+        pass
+    # Some Windows terminals deliver Ctrl+C/Ctrl+Break as SIGBREAK (run.py
+    # handles it in the parent); the worker must survive that first one too.
+    if hasattr(signal, "SIGBREAK"):
+        try:
+            signal.signal(signal.SIGBREAK, _on_sigint)
+        except (ValueError, OSError):
+            pass
+
+
 def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Subprocess entrypoint. Fresh Python — no stale module state.
 
@@ -2378,6 +2403,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         stop_queue: mp.Queue for stop commands from the parent.
         config: Training config dict with all parameters.
     """
+    _install_worker_sigint_guard()
     # Off on Linux (forked datasets map() workers deadlock otherwise); on spawn
     # platforms map() is in-process, so keep tokenizer threads on for faster prep.
     os.environ["TOKENIZERS_PARALLELISM"] = (
@@ -3459,6 +3485,12 @@ def _write_mlx_stop_checkpoint(trainer, optimizer, output_dir) -> bool:
     step = int(getattr(trainer, "_global_step", 0) or 0)
     # A periodic save or a resumed run may already cover the current step.
     if _mlx_has_checkpoint_at_step(output_dir, step):
+        # Adopting an existing same-step checkpoint makes it part of this
+        # timeline; refresh its state mtime so a rewind cap lifts to it.
+        try:
+            (Path(output_dir) / f"checkpoint-{step}" / "trainer_state.json").touch()
+        except OSError:
+            pass
         return True
     if step <= 0 or optimizer is None:
         return False

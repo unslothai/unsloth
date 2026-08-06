@@ -5,11 +5,15 @@
 
 import json
 import pickletools
+import time
 import zipfile
 from pathlib import Path
 from typing import Optional
 
 from utils.paths import outputs_root, resolve_output_dir
+
+# Records a resume that rewound past newer checkpoints; see record_resume_rewind.
+_REWIND_MARKER = "resume_rewind.json"
 
 
 def _is_under_outputs(path: Path) -> bool:
@@ -22,10 +26,40 @@ def _is_under_outputs(path: Path) -> bool:
         return False
 
 
+def current_training_backend() -> "str | None":
+    """Backend a new run trains with on this host, or None when it cannot train.
+
+    Mirrors worker.py's gate: Apple Silicon with a broken MLX stack is chat-only,
+    so nothing is resumable there and the platform alone must not report "mlx"."""
+    from core.training.training import (
+        is_apple_silicon_training_platform,
+        should_use_mlx_training_backend,
+    )
+
+    from utils.hardware import hardware as _hw
+
+    if _hw.DEVICE is None:
+        # Respects the background warm's lock, so a cold call never races it into a second probe.
+        try:
+            _hw.ensure_hardware_detected()
+        except Exception:
+            return None
+    if _hw.CHAT_ONLY:
+        # No usable training backend at all: nothing is resumable here.
+        return None
+    if not is_apple_silicon_training_platform():
+        return "pt"
+    return "mlx" if should_use_mlx_training_backend(device = _hw.DEVICE) else None
+
+
 def has_resume_state(path_value: Optional[str]) -> bool:
+    if current_training_backend() is None:
+        return False
     if not path_value:
         return False
-    return get_resume_checkpoint_path(path_value) is not None
+    # Backend-scoped: a bundle the other backend wrote cannot resume here, so it
+    # must not light up Resume in history either.
+    return get_resume_checkpoint_path(path_value, backend = current_training_backend()) is not None
 
 
 def _checkpoint_step(path: Path) -> int:
@@ -168,22 +202,94 @@ def is_resume_checkpoint_valid(
     return step_valid and valid_bundle
 
 
+def _checkpoint_written_at(path: Path) -> float:
+    # trainer_state.json is rewritten on every save, so it dates the checkpoint even
+    # when a resumed run rewrites a same-numbered directory.
+    try:
+        return (path / "trainer_state.json").stat().st_mtime
+    except OSError:
+        return -1.0
+
+
+def resume_step_cap(run_dir: Path, backend: Optional[str] = None) -> Optional[int]:
+    """Highest step a plain resume may select, from a recorded rewind (None: no cap)."""
+    try:
+        marker = json.loads((run_dir / _REWIND_MARKER).read_text(encoding = "utf-8"))
+        step, recorded_at = marker["step"], float(marker["recorded_at"])
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        TypeError,
+        KeyError,
+        ValueError,
+    ):
+        return None
+    if isinstance(step, bool) or not isinstance(step, int) or step < 0:
+        return None
+    # A valid checkpoint written after the rewind belongs to the new timeline and raises
+    # the cap to itself; abandoned siblings it did not reach stay out of selection. An
+    # interrupted post-rewind save that raised the cap would re-admit a sibling below it.
+    for checkpoint in run_dir.glob("checkpoint-*"):
+        checkpoint_step = _checkpoint_step(checkpoint)
+        if (
+            checkpoint_step > step
+            and _checkpoint_written_at(checkpoint) > recorded_at
+            and is_resume_checkpoint_valid(checkpoint, backend = backend)
+        ):
+            step = checkpoint_step
+    return step
+
+
+def record_resume_rewind(resume_checkpoint: str, backend: Optional[str] = None) -> None:
+    """Remember that a resume rewound past newer checkpoints, or drop the record.
+
+    Deleting the abandoned checkpoints would discard user data, so the rewind is
+    recorded instead: until the new timeline writes past that step, a later plain
+    resume must not jump forward onto the timeline this one abandoned.
+    """
+    path = Path(resume_checkpoint)
+    step = _checkpoint_step(path)
+    if step < 0:
+        return
+    run_dir = path.parent
+    rewound = any(
+        _checkpoint_step(sibling) > step and is_resume_checkpoint_valid(sibling, backend = backend)
+        for sibling in run_dir.glob("checkpoint-*")
+    )
+    try:
+        if rewound:
+            (run_dir / _REWIND_MARKER).write_text(
+                json.dumps({"step": step, "recorded_at": time.time()}), encoding = "utf-8"
+            )
+        else:
+            # Nothing newer to keep out of reach: this resume adopts the newest timeline.
+            (run_dir / _REWIND_MARKER).unlink(missing_ok = True)
+    except OSError:
+        pass
+
+
 def get_resume_checkpoint_path(
-    path_value: str, expected_step: Optional[int] = None
+    path_value: str,
+    expected_step: Optional[int] = None,
+    backend: Optional[str] = None,
 ) -> Optional[str]:
     path = resolve_output_dir(path_value)
     if not _is_under_outputs(path) or not path.is_dir():
         return None
-    if is_resume_checkpoint_valid(path, expected_step):
+    # An explicit target wins; only the sibling scan below is capped by a recorded rewind.
+    if is_resume_checkpoint_valid(path, expected_step, backend):
         return str(path)
 
+    step_cap = resume_step_cap(path, backend)
     checkpoints = sorted(path.glob("checkpoint-*"), key = _checkpoint_step, reverse = True)
     return next(
         (
             str(checkpoint)
             for checkpoint in checkpoints
             if _checkpoint_step(checkpoint) >= 0
-            and is_resume_checkpoint_valid(checkpoint, expected_step)
+            and (step_cap is None or _checkpoint_step(checkpoint) <= step_cap)
+            and is_resume_checkpoint_valid(checkpoint, expected_step, backend)
         ),
         None,
     )
@@ -194,6 +300,24 @@ def normalize_resume_output_dir(path_value: str) -> str:
     if not _is_under_outputs(path):
         raise ValueError("Resume checkpoint must be inside Unsloth outputs.")
     return str(path)
+
+
+def resume_run_dir(resume_checkpoint: str) -> str:
+    """Run directory a resumed run continues in; new checkpoints nest under it."""
+    path = Path(resume_checkpoint)
+    return str(path.parent) if path.name.startswith("checkpoint-") else str(path)
+
+
+def find_resumable_run(resume_dir: str) -> Optional[dict]:
+    """DB lookup for a resume target; a checkpoint-N path maps to its parent run dir."""
+    from storage.studio_db import get_resumable_run_by_output_dir
+
+    run = get_resumable_run_by_output_dir(resume_dir)
+    if run is None:
+        path = Path(resume_dir)
+        if path.name.startswith("checkpoint-"):
+            run = get_resumable_run_by_output_dir(str(path.parent))
+    return run
 
 
 def _run_config(run: dict) -> dict:
@@ -214,7 +338,9 @@ def _uses_s3_dataset(run: dict) -> bool:
     return config.get("dataset_source") == "s3" or "s3_dataset" in config
 
 
-def can_resume_run(run: dict) -> bool:
+def run_state_allows_resume(run: dict) -> bool:
+    """Run-record half of resumability: callers with their own validated checkpoint
+    use this alone, so the capped sibling scan cannot veto an explicit target."""
     if run.get("resumed_later"):
         return False
     # Set when a stop-and-save failed to write a current-step checkpoint.
@@ -226,7 +352,7 @@ def can_resume_run(run: dict) -> bool:
     status = run.get("status")
     if status == "error":
         # A save-time crash can report final_step == total_steps with no artifacts; checkpoint state alone decides resumability.
-        return has_resume_state(run.get("output_dir"))
+        return True
 
     final_step = run.get("final_step")
     total_steps = run.get("total_steps")
@@ -236,4 +362,8 @@ def can_resume_run(run: dict) -> bool:
         or total_steps <= 0
         or final_step < total_steps
     )
-    return status == "stopped" and has_remaining_steps and has_resume_state(run.get("output_dir"))
+    return status == "stopped" and has_remaining_steps
+
+
+def can_resume_run(run: dict) -> bool:
+    return run_state_allows_resume(run) and has_resume_state(run.get("output_dir"))

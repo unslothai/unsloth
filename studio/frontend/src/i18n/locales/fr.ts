@@ -1399,6 +1399,8 @@ export const fr = {
       saveSteps: "Étapes de sauvegarde",
       saveStepsTooltip:
         "Enregistrer un checkpoint toutes les N étapes. 0 pour désactiver.",
+      saveStepsNoResumeHint:
+        "Aucun checkpoint ne sera enregistré pendant cette exécution ; elle ne pourra pas reprendre en cas d'interruption.",
       evalSteps: "Étapes d'évaluation",
       evalStepsTooltip:
         "Fraction du nombre total d'étapes d'entraînement entre les évaluations (0-1). Définissez 0 pour désactiver l'évaluation. Ex. 0,01 = évaluer tous les 1 % d'étapes.",

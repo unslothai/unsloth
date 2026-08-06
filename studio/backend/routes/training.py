@@ -26,11 +26,14 @@ if str(backend_path) not in sys.path:
 try:
     from core.training import get_training_backend
     from core.training.resume import (
-        can_resume_run,
+        current_training_backend,
+        run_state_allows_resume,
+        find_resumable_run,
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
+        record_resume_rewind,
+        resume_run_dir,
     )
-    from storage.studio_db import get_resumable_run_by_output_dir
     from utils.models.model_config import load_model_defaults
     from utils.paths import resolve_dataset_path
 except ImportError:
@@ -40,11 +43,14 @@ except ImportError:
         sys.path.insert(0, str(parent_backend))
     from core.training import get_training_backend
     from core.training.resume import (
-        can_resume_run,
+        current_training_backend,
+        run_state_allows_resume,
+        find_resumable_run,
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
+        record_resume_rewind,
+        resume_run_dir,
     )
-    from storage.studio_db import get_resumable_run_by_output_dir
     from utils.models.model_config import load_model_defaults
     from utils.paths import resolve_dataset_path
 
@@ -279,19 +285,39 @@ async def start_training(
                 validation_message = str(e)
                 raise HTTPException(status_code = 400, detail = validation_message)
 
-            resume_run = get_resumable_run_by_output_dir(resume_output_dir)
-            if not resume_run or not can_resume_run(resume_run):
+            # Warm detection off the loop: the sync resolution must never cold-probe torch/MLX.
+            from utils.hardware.hardware import ensure_hardware_detected
+
+            await asyncio.to_thread(ensure_hardware_detected)
+            # Validate against the backend this host trains with: an MLX bundle cannot
+            # resume a PyTorch run (or the reverse); must fail here, not after model load.
+            resume_backend = current_training_backend()
+            if resume_backend is None:
+                # Chat-only host: rejecting here keeps the source run unclaimed
+                # instead of spawning a continuation the worker is sure to fail.
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Training is unavailable on this host, so the run cannot be resumed.",
+                )
+            # Resolve the requested target first: an explicit checkpoint-N wins over the
+            # capped sibling scan, re-adopting its timeline even when the capped one is gone.
+            resume_checkpoint = get_resume_checkpoint_path(
+                request.resume_from_checkpoint, backend = resume_backend
+            )
+            if not resume_checkpoint:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Resume checkpoint must include saved trainer state for this training backend.",
+                )
+            resume_run = find_resumable_run(resume_output_dir)
+            if not resume_run or not run_state_allows_resume(resume_run):
                 raise HTTPException(
                     status_code = 400,
                     detail = "Resume checkpoint must belong to a stopped or errored run with complete saved trainer state.",
                 )
-            resume_checkpoint = get_resume_checkpoint_path(resume_output_dir)
-            if not resume_checkpoint:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Resume checkpoint must include saved trainer state.",
-                )
             request.resume_from_checkpoint = resume_checkpoint
+            # New files continue in the run dir even when a checkpoint-N was targeted.
+            resume_output_dir = resume_run_dir(resume_checkpoint)
 
         # Validate streaming-mode compatibility before any expensive work.
         # Streaming is supported only for Hugging Face text datasets.
@@ -580,6 +606,10 @@ async def start_training(
             # 409 matching the route-entry guard, not an internal error.
             raise HTTPException(status_code = 409, detail = str(exc))
 
+        if success and request.resume_from_checkpoint:
+            # Rewinding onto an older checkpoint must outlive this run; recorded only after
+            # the backend accepted the start, so a refused start cannot cap future resumes.
+            record_resume_rewind(request.resume_from_checkpoint, backend = current_training_backend())
         if not success:
             progress_error = backend.trainer.training_progress.error
             return TrainingJobResponse(

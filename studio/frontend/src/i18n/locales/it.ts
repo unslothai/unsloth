@@ -1396,6 +1396,8 @@ export const it = {
         "Numero di passaggi completi sul dataset. Imposta 0 per procedere in base agli step massimi.",
       saveSteps: "Step fra i salvataggi",
       saveStepsTooltip: "Salva un checkpoint ogni N step. 0 per disattivare.",
+      saveStepsNoResumeHint:
+        "Durante questa esecuzione non verranno salvati checkpoint, quindi non potrà essere ripresa se interrotta.",
       evalSteps: "Step fra le valutazioni",
       evalStepsTooltip:
         "Frazione degli step totali fra due valutazioni (0-1). Imposta 0 per disattivare la valutazione. Per esempio 0,01 = valuta ogni 1% degli step.",

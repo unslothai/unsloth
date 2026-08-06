@@ -5,10 +5,16 @@
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 
+import numpy as np
 import pytest
-import torch
+
+# Bare CI runners lack the optional training deps these fixtures write with.
+torch = pytest.importorskip("torch")
+pytest.importorskip("safetensors")
+from safetensors.numpy import save_file
 
 
 _BACKEND = Path(__file__).resolve().parents[1]
@@ -26,6 +32,12 @@ def _load_resume_module():
 
 
 resume = _load_resume_module()
+
+
+@pytest.fixture(autouse = True)
+def _pytorch_backend(monkeypatch):
+    # Host-independent default: the MLX cases override explicitly.
+    monkeypatch.setattr(resume, "current_training_backend", lambda: "pt")
 
 
 def test_resume_request_accepts_sanitized_null_target_modules():
@@ -49,6 +61,29 @@ def _write_checkpoint(out: Path, step: int) -> Path:
     torch.save({"weight": torch.ones(1)}, checkpoint / "adapter_model.bin")
     torch.save({"state": {0: torch.ones(1)}}, checkpoint / "optimizer.pt")
     torch.save({"last_epoch": step}, checkpoint / "scheduler.pt")
+    return checkpoint
+
+
+def _write_mlx_checkpoint(out: Path, step: int) -> Path:
+    checkpoint = out / f"checkpoint-{step}"
+    checkpoint.mkdir(parents = True, exist_ok = True)
+    (checkpoint / "trainer_state.json").write_text(
+        json.dumps({"global_step": step}), encoding = "utf-8"
+    )
+    save_file({"weight": np.ones(1, dtype = np.float32)}, checkpoint / "adapters.safetensors")
+    save_file(
+        {"state": np.ones(1, dtype = np.float32)},
+        checkpoint / "optimizer_state.safetensors",
+    )
+    return checkpoint
+
+
+def _write_checkpoint_after_rewind(out: Path, step: int) -> Path:
+    """A checkpoint the resumed run wrote, i.e. dated after the recorded rewind."""
+    checkpoint = _write_checkpoint(out, step)
+    marker = json.loads((out / "resume_rewind.json").read_text(encoding = "utf-8"))
+    stamp = float(marker["recorded_at"]) + 1
+    os.utime(checkpoint / "trainer_state.json", (stamp, stamp))
     return checkpoint
 
 
@@ -327,6 +362,49 @@ def test_finish_run_preserves_output_dir_for_interrupted_stop_and_save(monkeypat
     assert studio_db.get_run("r")["output_dir"] == "/out/x"
 
 
+def test_resume_run_dir_maps_checkpoint_to_its_parent():
+    assert resume.resume_run_dir("/outputs/run_x/checkpoint-5") == "/outputs/run_x"
+    assert resume.resume_run_dir("/outputs/run_x") == "/outputs/run_x"
+
+
+def test_find_resumable_run_accepts_checkpoint_path(monkeypatch, tmp_path):
+    # The DB stores the parent run dir; a checkpoint-N target must still match.
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+
+    out = tmp_path / "outputs" / "run_x"
+    ckpt = out / "checkpoint-10"
+    ckpt.mkdir(parents = True)
+    (ckpt / "trainer_state.json").write_text("{}", encoding = "utf-8")
+
+    studio_db.create_run(
+        id = "run-ckpt",
+        model_name = "m",
+        dataset_name = "d",
+        config_json = "{}",
+        started_at = "2026-01-01T00:00:00Z",
+        total_steps = 20,
+    )
+    studio_db.update_run_output_dir("run-ckpt", str(out))
+    studio_db.finish_run(
+        id = "run-ckpt",
+        status = "stopped",
+        ended_at = "2026-01-01T00:05:00Z",
+        final_step = 10,
+        final_loss = None,
+        duration_seconds = 1,
+        loss_sparkline = "[]",
+        output_dir = str(out),
+        error_message = None,
+    )
+
+    assert resume.find_resumable_run(str(out))["id"] == "run-ckpt"
+    assert resume.find_resumable_run(str(ckpt))["id"] == "run-ckpt"
+    assert resume.find_resumable_run(str(out / "checkpoint-99"))["id"] == "run-ckpt"
+
+
 def test_resumed_errored_run_is_not_offered_again(monkeypatch, tmp_path):
     from storage import studio_db
 
@@ -589,3 +667,148 @@ def test_terminal_fallback_blocks_when_no_current_checkpoint(monkeypatch, tmp_pa
     kwargs = backend._terminal_finalize_kwargs()
     assert kwargs["status"] == "error"
     assert kwargs["resume_blocked"] is True
+
+
+def test_can_resume_run_rejects_a_bundle_from_the_other_backend(monkeypatch, tmp_path):
+    # History must not offer Resume for a run this host's backend cannot load.
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    out = tmp_path / "outputs" / "run_mlx"
+    _write_mlx_checkpoint(out, 5)
+    run = _stopped_run(output_dir = str(out))
+
+    assert resume.can_resume_run(run) is False
+
+    monkeypatch.setattr(resume, "current_training_backend", lambda: "mlx")
+    assert resume.can_resume_run(run) is True
+
+
+def test_start_validates_the_resume_checkpoint_against_the_studio_backend(monkeypatch, tmp_path):
+    # The mismatch has to be caught here, not after model and dataset loading.
+    from unittest.mock import MagicMock
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    import routes.training as training_routes
+    from auth.authentication import authenticated_via_api_key, get_current_subject
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    out = tmp_path / "outputs" / "run_mlx"
+    checkpoint = _write_mlx_checkpoint(out, 5)
+
+    backend = MagicMock()
+    backend.is_training_active.return_value = False
+    backend.current_job_id = ""
+    backend.start_training.return_value = True
+    monkeypatch.setattr(training_routes, "get_training_backend", lambda: backend)
+    monkeypatch.setattr(training_routes, "find_resumable_run", lambda _dir: {"id": "run-mlx"})
+    monkeypatch.setattr(training_routes, "run_state_allows_resume", lambda _run: True)
+    monkeypatch.setattr(training_routes, "current_training_backend", lambda: "pt")
+
+    app = FastAPI()
+    app.include_router(training_routes.router, prefix = "/training")
+    app.dependency_overrides[get_current_subject] = lambda: "tester"
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
+    client = TestClient(app, raise_server_exceptions = False)
+    payload = {
+        "model_name": "unsloth/Llama-3.2-1B-Instruct",
+        "training_type": "LoRA/QLoRA",
+        "format_type": "Alpaca",
+        "hf_dataset": "yahma/alpaca-cleaned",
+        "load_in_4bit": False,
+        "eval_steps": 0,
+        "resume_from_checkpoint": str(out),
+    }
+
+    response = client.post("/training/start", json = payload)
+
+    assert response.status_code == 400, response.text
+    assert "training backend" in response.json()["detail"]
+    backend.start_training.assert_not_called()
+
+    monkeypatch.setattr(training_routes, "current_training_backend", lambda: "mlx")
+    response = client.post("/training/start", json = payload)
+
+    assert response.status_code == 200, response.text
+    assert backend.start_training.call_args.kwargs["resume_from_checkpoint"] == str(checkpoint)
+
+
+def test_resume_after_a_rewind_stays_off_the_abandoned_checkpoint(monkeypatch, tmp_path):
+    # The rewound run stopped before passing checkpoint-10; a later plain resume
+    # must continue the rewound timeline instead of jumping to the abandoned one.
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    out = tmp_path / "outputs" / "run_x"
+    rewound = _write_checkpoint(out, 5)
+    _write_checkpoint(out, 10)
+
+    resume.record_resume_rewind(str(rewound), backend = "pt")
+
+    assert resume.get_resume_checkpoint_path(str(out)) == str(rewound)
+    assert resume.has_resume_state(str(out)) is True
+
+
+def test_checkpoint_written_after_a_rewind_lifts_the_cap_to_itself(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    out = tmp_path / "outputs" / "run_x"
+    rewound = _write_checkpoint(out, 5)
+    _write_checkpoint(out, 10)
+    resume.record_resume_rewind(str(rewound), backend = "pt")
+
+    # The new timeline reached step 8: still short of the abandoned checkpoint-10.
+    fresh = _write_checkpoint_after_rewind(out, 8)
+    assert resume.get_resume_checkpoint_path(str(out)) == str(fresh)
+
+    # Once it writes past checkpoint-10 the cap no longer constrains anything.
+    passed = _write_checkpoint_after_rewind(out, 12)
+    assert resume.get_resume_checkpoint_path(str(out)) == str(passed)
+
+
+def test_explicitly_resuming_the_newest_checkpoint_clears_the_rewind(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    out = tmp_path / "outputs" / "run_x"
+    rewound = _write_checkpoint(out, 5)
+    newest = _write_checkpoint(out, 10)
+    resume.record_resume_rewind(str(rewound), backend = "pt")
+
+    # Targeting checkpoint-10 explicitly re-adopts that timeline.
+    assert resume.get_resume_checkpoint_path(str(newest)) == str(newest)
+    resume.record_resume_rewind(str(newest), backend = "pt")
+
+    assert (out / "resume_rewind.json").exists() is False
+    assert resume.get_resume_checkpoint_path(str(out)) == str(newest)
+
+
+def test_invalid_post_rewind_checkpoint_does_not_lift_the_cap(monkeypatch, tmp_path):
+    # An interrupted save after a rewind writes trainer_state.json without model
+    # state; lifting the cap on it would re-admit the abandoned valid sibling.
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    run = tmp_path / "outputs" / "run"
+    _write_checkpoint(run, 5)
+    _write_checkpoint(run, 10)
+    resume.record_resume_rewind(str(run / "checkpoint-5"), backend = "pt")
+    partial = run / "checkpoint-8"
+    partial.mkdir()
+    (partial / "trainer_state.json").write_text(json.dumps({"global_step": 8}))
+    assert resume.resume_step_cap(run, "pt") == 5
+    assert resume.get_resume_checkpoint_path(str(run), backend = "pt") == str(run / "checkpoint-5")
+
+
+def test_has_resume_state_is_false_without_a_usable_backend(tmp_path, monkeypatch):
+    run = tmp_path / "run"
+    _write_checkpoint(run, 5)
+    monkeypatch.setattr(resume, "current_training_backend", lambda: None)
+    assert resume.has_resume_state(str(run)) is False
+
+
+def test_explicit_newer_checkpoint_bypasses_a_stale_rewind_cap(monkeypatch, tmp_path):
+    # The capped checkpoint is gone; an explicitly requested newer valid
+    # checkpoint must resolve instead of the parent scan vetoing the request.
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    out = tmp_path / "outputs" / "run_y"
+    rewound = _write_checkpoint(out, 5)
+    newer = _write_checkpoint(out, 10)
+    resume.record_resume_rewind(str(rewound), backend = "pt")
+    import shutil
+
+    shutil.rmtree(rewound)
+    assert resume.get_resume_checkpoint_path(str(newer), backend = "pt") == str(newer)

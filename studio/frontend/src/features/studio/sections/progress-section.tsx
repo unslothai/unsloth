@@ -84,12 +84,14 @@ function configRow(
 interface ProgressSectionProps {
   data: TrainingViewData;
   isHistorical?: boolean;
+  headerExtra?: ReactNode;
   configOverride?: RunConfigOverride;
 }
 
 export function ProgressSection({
   data,
   isHistorical = false,
+  headerExtra,
   configOverride,
 }: ProgressSectionProps): ReactElement {
   const t = useT();
@@ -239,6 +241,7 @@ export function ProgressSection({
       className="shadow-border border border-border/60 bg-card/90 ring-0 backdrop-blur-sm"
       headerAction={
         <div className="flex items-center gap-2">
+          {headerExtra}
           {canExportGguf && (
             <Button
               size="sm"

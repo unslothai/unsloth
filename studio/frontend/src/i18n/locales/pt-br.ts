@@ -1356,6 +1356,8 @@ export const ptBR = {
         "Número de passagens completas pelo dataset. Defina 0 para rodar por passos máximos.",
       saveSteps: "Passos para Salvar",
       saveStepsTooltip: "Salva um checkpoint a cada N passos. 0 para desativar.",
+      saveStepsNoResumeHint:
+        "Nenhum checkpoint será salvo durante esta execução, então ela não poderá ser retomada se for interrompida.",
       evalSteps: "Passos de Validação",
       evalStepsTooltip:
         "Fração dos passos totais de treino entre as validações (0-1). Defina como 0 para desativar. Ex: 0.01 = valida a cada 1% dos passos.",
