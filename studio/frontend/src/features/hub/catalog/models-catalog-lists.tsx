@@ -196,7 +196,11 @@ export function DiscoverList({
                 hasActiveFilters={hasActiveFilters}
                 isLoadingMore={isLoadingMore}
                 onFetchMore={onFetchMore}
-                failed={Boolean(searchError)}
+                // !online too: the footer is retained over an outage that
+                // the listing never saw (a failed avatar or card marks the same
+                // origin), and useHubInfiniteScroll is gated on it, so the
+                // button was visible and inert for the whole window.
+                failed={Boolean(searchError) || !online}
                 onRetry={onRetry}
               />
             )}

@@ -75,7 +75,7 @@ test("rows on screen do not hide that the feed failed", async () => {
   // went there was nothing on screen saying so and nothing left to click.
   assert.match(lists, /\{\(hasMore \|\| searchError\) && \(/);
   const footer = body(lists, "<DiscoverFetchMoreFooter", "/>");
-  assert.ok(footer.includes("failed={Boolean(searchError)}"));
+  assert.ok(footer.includes("failed={Boolean(searchError)"));
   assert.ok(footer.includes("onRetry={onRetry}"));
 
   const states = await read("../src/features/hub/catalog/catalog-states.tsx");
@@ -87,4 +87,44 @@ test("rows on screen do not hide that the feed failed", async () => {
   );
   assert.ok(fn.includes('failed && onRetry ? onRetry : onFetchMore'), "it must retry");
   assert.ok(fn.includes('failed ? "Try again" : "Load more"'), "and say so");
+});
+
+test("a live backoff is not bypassed by typing", async () => {
+  const search = await read("../src/features/hub/hooks/use-discover-search.ts");
+  // Ungating `enabled` is what let the error reach the panel, but it also let a
+  // changed query, sort or channel build a new iterator and fire immediately.
+  // Each attempt failed and re-armed the 30s window, so it never elapsed.
+  for (const m of search.matchAll(/enabled: ([^,\n]+),/g)) {
+    assert.ok(
+      m[1].includes("canProbe"),
+      `an automatic search must respect the live backoff: ${m[1]}`,
+    );
+  }
+  // Only "unavailable" holds it: gating on `online` would never let a lapsed
+  // window re-probe, since that requires a listing to have already succeeded.
+  assert.match(search, /const canProbe = phase !== "unavailable";/);
+});
+
+test("gating the search again does not re-hide the error", async () => {
+  // This is only safe because the disabled path stopped clearing it. Pin both
+  // halves together: restoring the null would silently undo the whole fix.
+  const paginated = await read(
+    "../src/features/hub/hooks/use-hub-paginated-search.ts",
+  );
+  const disabled = body(paginated, "if (!enabled) {", "\n    // Same query");
+  assert.ok(!/error: null/.test(disabled), "disabling must not erase the cause");
+  const search = await read("../src/features/hub/hooks/use-discover-search.ts");
+  assert.match(search, /const searchError = isDiscoverTab \? rawSearchError : null;/);
+});
+
+test("a footer retained over an outage can still act", async () => {
+  const lists = await read("../src/features/hub/catalog/models-catalog-lists.tsx");
+  const footer = body(lists, "<DiscoverFetchMoreFooter", "/>");
+  // An avatar or card failure marks the same origin, so the listing keeps its
+  // rows and no searchError, and useHubInfiniteScroll is gated on `online`:
+  // the button rendered enabled and did nothing for the whole window.
+  assert.ok(
+    footer.includes("failed={Boolean(searchError) || !online}"),
+    "unreachable is as good a reason to offer a re-probe as a failed page",
+  );
 });

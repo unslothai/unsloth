@@ -108,25 +108,31 @@ export function useDiscoverSearch({
   ownerScope: "unsloth" | "all";
 }): DiscoverSearch {
   const { phase, failure } = useHubAvailability();
+  // "probing" counts: a lapsed backoff is exactly when the next request should
+  // be allowed to test the network. Only a live backoff ("unavailable") holds it.
+  const canProbe = phase !== "unavailable";
   // Only a success promotes to "available". A lapsed backoff is "probing", so a
   // stale window can no longer announce "Back online" without a working request.
   const online = phase === "available";
 
-  // Not gated on availability: gating disabled the paginated hook, which
-  // discarded the error, so every cause rendered as the same generic panel.
+  // Gated on the live backoff only, never on "probing". Gating on availability
+  // is what discarded the error and made every cause render the same, and that
+  // is now safe because the disabled path preserves it; but leaving it ungated
+  // let a user typing through an outage issue a request per debounce tick, each
+  // one re-arming the window it was meant to be waiting out.
   const modelSearch = useHubModelSearch(debouncedQuery, {
     accessToken,
     sortBy,
     sortDirection: direction,
     pinUnslothFirst: true,
     ownerScope,
-    enabled: isDiscoverTab && !isDatasetMode,
+    enabled: canProbe && isDiscoverTab && !isDatasetMode,
     keepUnsupportedTags: true,
     channel,
   });
   const datasetSearch = useHubDatasetSearch(debouncedQuery, {
     accessToken,
-    enabled: isDiscoverTab && isDatasetMode,
+    enabled: canProbe && isDiscoverTab && isDatasetMode,
     sortBy,
     sortDirection: direction,
   });
@@ -152,9 +158,6 @@ export function useDiscoverSearch({
   // Surfaced regardless of availability: the failure IS the thing worth showing.
   const searchError = isDiscoverTab ? rawSearchError : null;
   const searchFailure = isDiscoverTab ? failure : null;
-  // "probing" counts: a lapsed backoff is exactly when the next page should be
-  // allowed to test the network. Only a live backoff ("unavailable") holds it.
-  const canProbe = phase !== "unavailable";
   const fetchMore = useCallback(() => {
     if (!canProbe || !hasMore) return false;
     // A page that failed took the iterator with it, so resuming would resolve
