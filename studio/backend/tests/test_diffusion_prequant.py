@@ -1295,3 +1295,38 @@ def test_the_config_follows_the_checkpoint_into_the_other_cache_root(monkeypatch
 
     assert isinstance(out, _Transformer)  # the prequant loaded instead of being dropped
     assert seen == [None]  # read straight through the root that supplied the checkpoint
+
+
+# ── fp8 activation scale floor ──────────────────────────────────────────────────
+
+
+class _FakeFp8Tensor:
+    """Stands in for a torchao Float8Tensor: only act_quant_kwargs.hp_value_lb is read."""
+
+    def __init__(self, hp_value_lb):
+        self.act_quant_kwargs = types.SimpleNamespace(hp_value_lb = hp_value_lb)
+
+
+def test_an_fp8_checkpoint_without_the_activation_floor_is_rejected():
+    # A checkpoint built before activation_value_lb bakes hp_value_lb=None into every quantised
+    # tensor, and stays broken however it is loaded: torchao's per-row activation quantiser divides
+    # by the row amax, so qwen's all-zero text rows give scale 0 and NaN. The metadata checks around
+    # this one all accept an absent field for back-compat, which is exactly wrong here, so the floor
+    # is read off the TENSORS instead. Measured: 412 of 512 rows non-finite without it, 0 with it.
+    floored = {"blocks.0.attn.to_q.weight": _FakeFp8Tensor(1e-12)}
+    unfloored = {"blocks.0.attn.to_q.weight": _FakeFp8Tensor(None)}
+    assert pq._fp8_activation_floor_present(floored, None) is True
+    assert pq._fp8_activation_floor_present(unfloored, None) is False
+    # Zero is not a floor either: it is what an unclamped amax divide produces.
+    assert pq._fp8_activation_floor_present(
+        {"w": _FakeFp8Tensor(0.0)}, None
+    ) is False
+
+
+def test_the_floor_check_ignores_dense_and_unreadable_state_dicts():
+    # A dense tensor carries no act_quant_kwargs, so it is not evidence of a missing floor; the
+    # scheme / granularity checks own that case. Same for a state dict this cannot walk at all:
+    # failing closed here would reject every int8 checkpoint too.
+    assert pq._fp8_activation_floor_present({"w": object()}, None) is True
+    assert pq._fp8_activation_floor_present(None, None) is True
+    assert pq._fp8_activation_floor_present({}, None) is True
