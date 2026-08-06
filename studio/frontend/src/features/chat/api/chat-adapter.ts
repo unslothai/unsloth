@@ -22,7 +22,10 @@ import {
   listLocalModels,
 } from "@/features/hub/inventory/api";
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
-import { resolveInitialConfig } from "@/features/model-picker";
+import {
+  loadedContextFields,
+  resolveInitialConfig,
+} from "@/features/model-picker";
 import { isMlxId } from "@/features/model-picker/components/model-selector/recommended-fit";
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
@@ -3344,9 +3347,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...(candidate.kind === "gguf"
             ? {}
             : { maxSeqLength: effectiveMaxSeqLength }),
+          // A window the response did not report leaves Max Tokens on the ceiling the
+          // settings sheet gives it, so the value and its slider agree. Not the load's
+          // own max_seq_length: for a GGUF that is the backend's auto-size sentinel 0,
+          // which is below the control's minimum and rejected as a generation limit.
           maxTokens:
             candidate.kind === "gguf"
-              ? (loadResp.context_length ?? 131072)
+              ? (loadResp.context_length ?? store.params.maxSeqLength)
               : effectiveMaxSeqLength,
         },
         {
@@ -3382,11 +3389,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         const committedNUbatch =
           (loadResp.is_diffusion ?? false) ? null : (config.nUbatch ?? null);
         useChatRuntimeStore.setState({
-          loadedContextLength: loadResp.context_length ?? 131072,
-          maxContextLength:
-            loadResp.max_context_length ?? loadResp.context_length ?? 131072,
-          nativeContextLength: loadResp.native_context_length ?? null,
-          loadedIsGguf: true,
+          ...loadedContextFields(loadResp),
           supportsReasoning: loadResp.supports_reasoning ?? false,
           reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
           reasoningEnabled: loadResp.supports_reasoning ?? false,
@@ -3479,20 +3482,17 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
           customContextLength: null,
-          // Replace the whole of the previous model's llama.cpp state, not just the
-          // flag: a retained window would price the context bar for a model that is
-          // no longer loaded, and a retained lease token still reads as a GGUF pick.
+          // Replace the whole of the previous model's serving state, not just the
+          // window: a retained lease token still reads as a GGUF pick, and a retained
+          // pin would be resent for a model that never had it.
           loadedCustomContextLength: null,
-          loadedContextLength: null,
-          maxContextLength: null,
-          nativeContextLength: null,
+          ...loadedContextFields(loadResp),
           activeNativePathToken: null,
           activeNativePathExpiresAtMs: null,
           ...resolveLoadedSpeculativeSettings(loadResp),
           loadedIsMultimodal: isMultimodalResponse(loadResp),
           mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
           loadedIsDiffusion: loadResp.is_diffusion ?? false,
-          loadedIsGguf: false,
           activeModelIsLocal: loadResp.is_local_model ?? false,
         });
       }
@@ -3758,7 +3758,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         store.setParams(
           {
             ...store.params,
-            maxTokens: loadResp.context_length ?? 131072,
+            maxTokens: loadResp.context_length ?? store.params.maxSeqLength,
           },
           {
             persist: !options?.preserveVisibleSettings,
@@ -3781,10 +3781,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           store.setModels([...store.models, defaultModel]);
         }
         useChatRuntimeStore.setState({
-          loadedContextLength: loadResp.context_length ?? 131072,
-          maxContextLength:
-            loadResp.max_context_length ?? loadResp.context_length ?? 131072,
-          loadedIsGguf: true,
+          ...loadedContextFields(loadResp),
           supportsReasoning: loadResp.supports_reasoning ?? false,
           reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
           reasoningEnabled: loadResp.supports_reasoning ?? false,
@@ -3903,9 +3900,7 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
             supportsPreserveThinking:
               status.supports_preserve_thinking ?? false,
             preserveThinking: resolvePreserveThinkingOnLoad(status),
-            loadedContextLength: status.is_gguf
-              ? (status.context_length ?? null)
-              : null,
+            loadedContextLength: loadedContextFields(status).loadedContextLength,
             loadedIsMultimodal: isMultimodalResponse(status),
             modelCapabilities: {
               isVision: status.is_vision ?? false,

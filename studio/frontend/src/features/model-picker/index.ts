@@ -57,6 +57,7 @@ export {
   isServedByLlamaCpp,
   listPerModelConfigs,
   isServedByMlx,
+  loadedContextFields,
   presetLoadSettingNames,
   resolveInitialConfig,
   resolveResidentInitialConfig,

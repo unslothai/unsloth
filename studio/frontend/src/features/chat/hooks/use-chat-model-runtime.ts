@@ -109,6 +109,7 @@ import {
   currentRuntimePerModelConfig,
   normalizeMaxSeqLength,
   type PerModelConfig,
+  loadedContextFields,
 } from "@/features/model-picker";
 import {
   invalidateLlamaFlagCatalog,
@@ -1817,7 +1818,6 @@ export function useChatModelRuntime() {
                     reasoningEffortLevels,
                   )
                 : clampLocalReasoningEffort(existingReasoningEffort);
-            const maxContextLength = reportedMaxCtx;
             const nextReasoningEnabled = reasoningAlwaysOn
               ? true
               : reloadingSameModel && supportsReasoning
@@ -1827,10 +1827,7 @@ export function useChatModelRuntime() {
             // A later rollback reads the snapshot path, not the id this was stored under.
             rememberApprovedRemoteCode(loadPath, approvedRemoteCodeFingerprint);
             useChatRuntimeStore.setState({
-              loadedContextLength: nativeCtx,
-              maxContextLength,
-              nativeContextLength: reportedNativeCtx,
-              loadedIsGguf: loadResponse.is_gguf ?? false,
+              ...loadedContextFields(loadResponse),
               modelRequiresTrustRemoteCode:
                 loadResponse.requires_trust_remote_code ?? false,
               supportsReasoning,

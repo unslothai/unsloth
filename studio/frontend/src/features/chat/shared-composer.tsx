@@ -113,6 +113,7 @@ import {
   normalizeMaxSeqLength,
   resolveInitialConfig,
   type PerModelConfig,
+  loadedContextFields,
 } from "@/features/model-picker";
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
@@ -1722,14 +1723,7 @@ export function SharedComposer({
           // active model the UI and later reload/save use the context it actually
           // loaded with, not the previous/default one.
           customContextLength: keepCustomCtx,
-          loadedContextLength: resp.is_gguf ? (resp.context_length ?? null) : null,
-          nativeContextLength: resp.is_gguf
-            ? (resp.native_context_length ?? null)
-            : null,
-          maxContextLength: resp.is_gguf
-            ? (resp.max_context_length ?? null)
-            : null,
-          loadedIsGguf: resp.is_gguf ?? false,
+          ...loadedContextFields(resp),
           // Compare selections load by repo/variant, never from the file picker,
           // so they carry no native lease. Clear any prior picked file's
           // token/expiry so the reload path never sends a stale lease.

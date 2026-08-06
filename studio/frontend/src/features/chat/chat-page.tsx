@@ -12,6 +12,7 @@ import {
   ModelSelector,
   type ModelSelectorChangeMeta,
   type PerModelConfig,
+  loadedContextFields,
   resolveInitialConfig,
   SidebarModelConfig,
   useActiveModelConfig,
@@ -3265,10 +3266,7 @@ export function ChatPage({
           : false;
         useChatRuntimeStore.setState({
           activeGgufVariant: null,
-          loadedContextLength: null,
-          maxContextLength: null,
-          nativeContextLength: null,
-          loadedIsGguf: null,
+          ...loadedContextFields(null),
           activeNativePathToken: null,
           activeNativePathExpiresAtMs: null,
           // Clear previous-model counters, else the relaxed external-provider render gate shows
