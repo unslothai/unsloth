@@ -3121,6 +3121,8 @@ def _monitor_openai_chunk(
             continue
         delta = choice.get("delta") or {}
         message = choice.get("message") or {}
+        if isinstance(delta, dict) and delta.get("reasoning_content"):
+            api_monitor.mark_first_token(monitor_id)
         content = delta.get("content") if isinstance(delta, dict) else None
         if content:
             api_monitor.append_reply(monitor_id, content)
@@ -3262,6 +3264,8 @@ def _monitor_anthropic_payload(
     if event_type == "content_block_delta":
         delta = data.get("delta") or {}
         text = delta.get("text") if isinstance(delta, dict) else None
+        if isinstance(delta, dict) and delta.get("type") == "thinking_delta":
+            api_monitor.mark_first_token(monitor_id)
         if isinstance(text, str) and text:
             api_monitor.append_reply(monitor_id, text)
         elif isinstance(delta, dict) and delta.get("type") == "input_json_delta":
@@ -3464,6 +3468,24 @@ def _close_load_event(
     api_monitor.finish(entry_id)
 
 
+# Requests proxied straight to llama-server without admission (/v1/completions)
+# still occupy decode slots; counted here so the monitor's readout includes them.
+_direct_llama_inflight = 0
+_direct_llama_inflight_lock = threading.Lock()
+
+
+def _direct_llama_request_started() -> None:
+    global _direct_llama_inflight
+    with _direct_llama_inflight_lock:
+        _direct_llama_inflight += 1
+
+
+def _direct_llama_request_finished() -> None:
+    global _direct_llama_inflight
+    with _direct_llama_inflight_lock:
+        _direct_llama_inflight = max(0, _direct_llama_inflight - 1)
+
+
 def _monitor_queue_state() -> Optional[dict]:
     """Live slot/queue occupancy of the loaded llama-server, for the API monitor."""
     # Disabled admission tracks nothing: its queues stay at the default capacity
@@ -3475,18 +3497,21 @@ def _monitor_queue_state() -> Optional[dict]:
         llama_backend, "is_diffusion", False
     ):
         return None
+    direct = _direct_llama_inflight
     snapshot = peek_llama_admission_snapshot(
         str(getattr(llama_backend, "base_url", "llama-server"))
     )
     if snapshot is not None:
+        active = min(snapshot.capacity, snapshot.active + direct)
         return {
             "capacity": snapshot.capacity,
-            "active": snapshot.active,
+            "active": active,
             "queued": snapshot.queued,
-            "free": snapshot.free,
+            "free": max(0, snapshot.capacity - active),
         }
     capacity = _positive_int_or_none(getattr(llama_backend, "effective_parallel_slots", None)) or 1
-    return {"capacity": capacity, "active": 0, "queued": 0, "free": capacity}
+    active = min(capacity, direct)
+    return {"capacity": capacity, "active": active, "queued": 0, "free": capacity - active}
 
 
 def _monitor_active_model() -> Optional[str]:
@@ -10578,6 +10603,7 @@ async def openai_chat_completions(
                             continue
                         reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
                         if reasoning_delta:
+                            api_monitor.mark_first_token(monitor_id)
                             yield _gguf_chat_delta_line(
                                 ChoiceDelta(reasoning_content = reasoning_delta)
                             )
@@ -11143,6 +11169,7 @@ async def openai_chat_completions(
                             continue
                         reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
                         if reasoning_delta:
+                            api_monitor.mark_first_token(monitor_id)
                             yield _gguf_chat_delta_line(
                                 ChoiceDelta(reasoning_content = reasoning_delta)
                             )
@@ -11966,6 +11993,7 @@ async def openai_chat_completions(
                     # Split reasoning vs visible; only visible reaches the monitor.
                     reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
                     if reasoning_delta:
+                        api_monitor.mark_first_token(monitor_id)
                         yield _chat_reasoning_chunk(
                             completion_id, created, model_name, reasoning_delta
                         )
@@ -12350,6 +12378,7 @@ async def openai_chat_completions(
                     # healer so tool markup inside a reasoning block is not promoted.
                     reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
                     if reasoning_delta:
+                        api_monitor.mark_first_token(monitor_id)
                         yield _chat_reasoning_chunk(
                             completion_id, created, model_name, reasoning_delta
                         )
@@ -13099,6 +13128,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             # honor stream_options.include_usage per event, while keeping SSE
             # framing and token bytes intact.
             _include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
+            _direct_llama_request_started()
             client = httpx.AsyncClient(
                 timeout = _llama_streaming_generation_timeout(),
                 trust_env = False,
@@ -13203,6 +13233,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                         client = client,
                     )
                 finally:
+                    _direct_llama_request_finished()
                     _tracker.__exit__(None, None, None)
 
         return _sse_streaming_response(_stream())
@@ -13215,6 +13246,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         _client = _cancelable_nonstreaming_client()
         _tracker = _TrackedCancel(_cancel_event, model = monitor_model, kind = "completions")
         _tracker.__enter__()
+        _direct_llama_request_started()
         _cancel_watcher = asyncio.create_task(
             _await_cancel_or_disconnect_then_close_client(
                 cancel_event = _cancel_event,
@@ -13251,6 +13283,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 except Exception:
                     pass
             finally:
+                _direct_llama_request_finished()
                 _tracker.__exit__(None, None, None)
 
         if resp.status_code != 200:

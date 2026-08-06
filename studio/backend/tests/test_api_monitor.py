@@ -780,3 +780,29 @@ def test_set_usage_rejects_malformed_token_counts():
     assert entry["completion_tokens"] is None
     assert entry["total_tokens"] == 12
     assert entry["tok_per_sec"] is None
+
+
+def test_mark_first_token_stamps_ttft_for_reasoning_only_streams():
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    monitor.mark_first_token(entry_id)
+    monitor.finish(entry_id)
+
+    [entry] = monitor.snapshot()
+    assert entry["ttft_ms"] is not None
+
+    entry_id2 = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    monitor.mark_first_token(entry_id2)
+    first = monitor._find_locked(entry_id2).first_token_monotonic
+    monitor.append_reply(entry_id2, "visible")
+    assert monitor._find_locked(entry_id2).first_token_monotonic == first

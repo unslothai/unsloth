@@ -319,6 +319,17 @@ class ApiMonitor:
             entry.reply = _trim(entry.reply + text, _MAX_REPLY_CHARS)
             entry.updated_at = time.time()
 
+    def mark_first_token(self, entry_id: Optional[str]) -> None:
+        """Stamp TTFT for a streaming delta the reply text does not capture
+        (e.g. reasoning tokens, which the monitor stores no text for)."""
+        if not entry_id:
+            return
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is None or entry.first_token_monotonic is not None:
+                return
+            entry.first_token_monotonic = time.monotonic()
+
     def set_reply(self, entry_id: Optional[str], text: str) -> None:
         if not entry_id:
             return
