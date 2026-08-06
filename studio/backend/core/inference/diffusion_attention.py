@@ -202,6 +202,7 @@ def _kernels_hub_compatible() -> bool:
     try:
         import re
         from importlib.metadata import version
+
         m = re.match(r"\s*(\d+)(?:\.(\d+))?", version("huggingface_hub"))
         if m is None:
             return True
