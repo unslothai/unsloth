@@ -1832,11 +1832,7 @@ def _find_blocked_commands(command: str) -> set[str]:
                     if word in _WRAPPER_VALUE_FLAGS_BY_CMD.get(base, frozenset()):
                         k += 2  # `env -u FOO prog`: the flag eats its value
                         continue
-                    if (
-                        word.startswith("-")
-                        or "=" in word
-                        or _WRAPPER_DURATION_RE.fullmatch(word)
-                    ):
+                    if word.startswith("-") or "=" in word or _WRAPPER_DURATION_RE.fullmatch(word):
                         k += 1  # its own flags, VAR=VALUE, `timeout 5 prog`
                         continue
                     break

@@ -1044,6 +1044,7 @@ def test_an_env_chdir_asks_in_every_spelling(monkeypatch, command):
     monkeypatch.setattr(sys, "platform", "linux")
     assert tools._terminal_is_high_risk(command)
 
+
 _WIN_PS = "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
 
 
