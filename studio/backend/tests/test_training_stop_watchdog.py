@@ -1185,10 +1185,11 @@ def test_is_run_finished_true_when_a_stall_is_unrecoverable():
 # ----------------------------------------------------------------------------
 
 
-def test_mlx_worker_flushes_tracking_before_every_terminal_send():
-    """The parent arms its exit watchdog on `complete`, so anything the worker still
-    does after that send races a force-terminate. The MLX path closes the TensorBoard
-    writer and calls wandb_run.finish() in a finally; both must be flushed first.
+def test_mlx_worker_never_withholds_a_terminal_send_behind_tracking_teardown():
+    """MLX teardown closes the TensorBoard writer and calls wandb_run.finish(), either of
+    which can block for many minutes. Putting that in front of `complete` would withhold
+    the event the UI waits on, which is the hang this whole change exists to end, so the
+    teardown stays in the finally and runs only after the send.
     """
     import ast
     from pathlib import Path as _P
@@ -1212,25 +1213,28 @@ def test_mlx_worker_flushes_tracking_before_every_terminal_send():
             and node.args[0].value == "complete"
         )
 
-    sends = sorted(n.lineno for n in ast.walk(fn) if _is_complete_send(n))
-    flushes = sorted(
-        n.lineno
+    def _teardown_lines(nodes):
+        return {
+            c.lineno
+            for n in nodes
+            for c in ast.walk(n)
+            if isinstance(c, ast.Call) and getattr(c.func, "id", "") == "_finish_tracking"
+        }
+
+    saves = [
+        n
         for n in ast.walk(fn)
-        if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "_finish_tracking"
+        if isinstance(n, ast.Try)
+        and any(_is_complete_send(c) for stmt in n.body for c in ast.walk(stmt))
+    ]
+    assert len(saves) == 1, "expected one save/finalize try block with the terminal sends"
+    everywhere = _teardown_lines([fn])
+    assert everywhere, "expected the tracking teardown to still run"
+    assert everywhere == _teardown_lines(saves[0].finalbody), (
+        f"_finish_tracking() is called at worker.py:{sorted(everywhere)} but only "
+        f"{sorted(_teardown_lines(saves[0].finalbody))} is in the finally; a blocking "
+        "wandb_run.finish() ahead of _send('complete') strands the UI at 100%"
     )
-    # Only the sends after _finish_tracking is defined can be guarded by it.
-    defined_at = next(
-        n.lineno
-        for n in ast.walk(fn)
-        if isinstance(n, ast.FunctionDef) and n.name == "_finish_tracking"
-    )
-    guarded = [s for s in sends if s > defined_at]
-    assert guarded, "expected terminal sends after the tracking helper is defined"
-    for send in guarded:
-        assert any(send - 4 <= f < send for f in flushes), (
-            f"_send('complete') at worker.py:{send} is not preceded by _finish_tracking(); "
-            "the watchdog could force-terminate a pending TB/W&B flush"
-        )
 
 
 def test_terminal_stall_arms_the_exit_watchdog(monkeypatch):
@@ -1292,6 +1296,34 @@ def test_terminal_error_releases_an_in_flight_stop_watchdog(monkeypatch):
     b._handle_event({"type": "error", "error": "checkpoint failed", "stack": ""})
 
     assert b._complete_seen.is_set(), "a terminal error must signal the in-flight watchdog"
+    assert b._stop_watchdog is first, "the existing watcher stays; arming again is a no-op"
+    assert _wait_until(
+        lambda: calls == ["force", "final"]
+    ), "the in-flight watchdog must escalate on the grace, not the save backstop"
+    first.join(timeout = 5)
+
+
+def test_terminal_stall_releases_an_in_flight_stop_watchdog(monkeypatch):
+    # Same shape as the error path: Stop and Save, then the download stalls with no
+    # fallback left. The stop's watchdog already watches this proc, so arming again
+    # no-ops, and only the terminal signal keeps it off the 600s save backstop.
+    monkeypatch.setitem(_G, "_STOP_GRACE_S", 0.05)
+    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
+    b = _running_backend()
+    b._start_stop_watchdog = TrainingBackend._start_stop_watchdog.__get__(b)
+    calls = _record_force_terminate(monkeypatch, b)
+    b._in_model_load = True
+    b._xet_fallback_used = True  # already on HTTP, so the stall is unrecoverable
+    b._proc.terminate = lambda: None  # worker ignores the terminate request
+
+    b._should_stop = True
+    b._start_stop_watchdog(cancel = False)  # the stop's own watchdog, now in flight
+    first = b._stop_watchdog
+    assert first is not None and first.is_alive()
+
+    b._handle_event({"type": "stall", "message": "no progress"})
+
+    assert b._complete_seen.is_set(), "a terminal stall must signal the in-flight watchdog"
     assert b._stop_watchdog is first, "the existing watcher stays; arming again is a no-op"
     assert _wait_until(
         lambda: calls == ["force", "final"]

@@ -1444,6 +1444,9 @@ class TrainingBackend:
             # Terminal, so is_run_finished() is already true and the UI has stopped
             # waiting. terminate() is only a request: arm the same backstop as the other
             # terminal paths so a worker that ignores it cannot hold the GPU for good.
+            # Signal first: a stop watchdog already watching this proc makes the arming
+            # call a no-op, and only this tells it to use its grace over the save backstop.
+            self._complete_seen.set()
             self._start_stop_watchdog(
                 cancel = False,
                 expected_job_id = run_id,
