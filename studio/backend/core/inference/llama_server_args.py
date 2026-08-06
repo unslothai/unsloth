@@ -749,18 +749,27 @@ def resolve_effective_memory_state(
     return mlock, reserves_ram
 
 
-def memory_state_satisfies_settings(state: tuple[bool, bool], managed: bool = False) -> bool:
+def memory_state_satisfies_settings(
+    state: Optional[tuple[bool, bool]], policy_active: bool = False
+) -> bool:
     """True when a launched ``(mlock, reserves_ram)`` matches the settings.
 
     Shared by the duplicate-load comparator (so toggling a setting forces a real
     relaunch instead of returning already-loaded) and the settings route (so the
     reload hint agrees with it).
 
-    ``managed`` says the live flag was emitted by this policy. With both toggles
-    off Unsloth no longer manages placement, so a flag of its own that is still
-    having an effect has to come off on the next launch, while a purely
-    user-supplied one is left alone.
+    ``state`` is None for a process this policy does not govern, such as the
+    diffusion runner, which has no load-mode of its own; nothing about it can
+    contradict the settings, so it always matches.
+
+    ``policy_active`` says the launch differed from an unmanaged one, because a
+    flag was emitted, a requested one suppressed, or an inherited env var
+    scrubbed. With both toggles off the policy no longer applies, so any of
+    those has to be undone on the next launch, while a launch it never touched
+    is left alone.
     """
+    if state is None:
+        return True
     try:
         from utils.model_memory_settings import get_keep_resident, get_no_ram_reserve
     except Exception:
@@ -770,4 +779,4 @@ def memory_state_satisfies_settings(state: tuple[bool, bool], managed: bool = Fa
         return not (mlock or reserves_ram)
     if get_keep_resident():
         return mlock
-    return not (managed and (mlock or reserves_ram))
+    return not policy_active

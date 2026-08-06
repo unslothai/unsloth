@@ -3081,11 +3081,12 @@ class LlamaCppBackend:
         self._prompt_cache_disabled: bool = False
         self._swa_full: bool = False
         self._kv_cache_unified: bool = False
-        # (mlock, reserves_ram) the running process was launched with, and
-        # whether this policy emitted the flag, so a settings read can tell
-        # whether the live placement still matches the saved policy.
-        self._memory_state: tuple[bool, bool] = (False, False)
-        self._memory_managed: bool = False
+        # (mlock, reserves_ram) the running process was launched with, or None
+        # when this policy does not govern it (the diffusion runner has no
+        # load-mode). _memory_policy_active records that the launch differed
+        # from an unmanaged one, so disabling the toggles can undo it.
+        self._memory_state: Optional[tuple[bool, bool]] = None
+        self._memory_policy_active: bool = False
         self._mlock_enabled: bool = False
         self._n_ubatch: int = self._DEFAULT_N_UBATCH
         self._flash_attn_enabled: bool = True
@@ -6802,8 +6803,8 @@ class LlamaCppBackend:
         self._swa_full = False
         self._kv_cache_unified = False
         self._mlock_enabled = False
-        self._memory_state = (False, False)
-        self._memory_managed = False
+        self._memory_state = None
+        self._memory_policy_active = False
         self._n_ubatch = self._DEFAULT_N_UBATCH
         self._flash_attn_enabled = True
         self._effective_cache_types = ("f16", "f16")
@@ -10487,9 +10488,15 @@ class LlamaCppBackend:
                 self._memory_state = resolve_effective_memory_state(
                     list(_mem_managed) + list(_mem_extras), env
                 )
-                # Whether the live flag is ours: turning both toggles off must
-                # relaunch to remove it, but must not fight a user's own flag.
-                self._memory_managed = bool(_mem_managed)
+                # Did the policy change this launch at all: emitted a flag,
+                # suppressed a requested one, or scrubbed an inherited env var.
+                # Turning both toggles off must relaunch to undo any of those,
+                # but must not fight a launch it never touched.
+                self._memory_policy_active = (
+                    bool(_mem_managed)
+                    or bool(_mem_scrubbed)
+                    or _mem_extras != list(extra_args or [])
+                )
                 self._mlock_enabled = self._memory_state[0]
                 # Omitting --threads relies on llama.cpp's physical-core default, so
                 # drop an inherited LLAMA_ARG_THREADS that would otherwise feed the
@@ -11566,7 +11573,7 @@ class LlamaCppBackend:
         # A Model Memory toggle changes only the launch flags, so the intent is
         # unchanged and this would otherwise report already-loaded and leave the
         # running process on the old placement.
-        if not memory_state_satisfies_settings(self._memory_state, self._memory_managed):
+        if not memory_state_satisfies_settings(self._memory_state, self._memory_policy_active):
             logger.info("Model Memory policy changed since launch; forcing a reload")
             return False
         if not self._runtime_matches_intent(intent, candidate_extra_args):
@@ -11719,8 +11726,8 @@ class LlamaCppBackend:
             self._swa_full = False
             self._kv_cache_unified = False
             self._mlock_enabled = False
-            self._memory_state = (False, False)
-            self._memory_managed = False
+            self._memory_state = None
+            self._memory_policy_active = False
             self._n_ubatch = self._DEFAULT_N_UBATCH
             self._flash_attn_enabled = True
             self._effective_cache_types = ("f16", "f16")

@@ -286,8 +286,8 @@ def _model_memory_reload_required() -> bool:
         backend = get_llama_cpp_backend()
         if not backend.is_loaded:
             return False
-        state = getattr(backend, "_memory_state", (False, False))
-        managed = bool(getattr(backend, "_memory_managed", False))
+        state = getattr(backend, "_memory_state", None)
+        policy_active = bool(getattr(backend, "_memory_policy_active", False))
     except Exception:
         return False
 
@@ -295,7 +295,7 @@ def _model_memory_reload_required() -> bool:
     # the reload path can never disagree.
     from core.inference.llama_server_args import memory_state_satisfies_settings
 
-    return not memory_state_satisfies_settings(state, managed)
+    return not memory_state_satisfies_settings(state, policy_active)
 
 
 def _model_memory_response() -> ModelMemoryResponse:

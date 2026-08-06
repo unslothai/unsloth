@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { invalidateOpenAIAutoSwitchSettings } from "./openai-auto-switch";
 
 const MODEL_MEMORY_EVENT = "unsloth-model-memory-change";
 
@@ -115,5 +116,8 @@ export async function updateModelMemorySettings(
       await readFastApiError(res, "Failed to update model memory settings"),
     );
   }
+  // Residency vetoes the idle-unload TTL, so the auto-switch endpoint's
+  // idleUnloadActive changed too and its own cache is now stale.
+  invalidateOpenAIAutoSwitchSettings();
   return publishModelMemory(fromApi(await res.json()));
 }

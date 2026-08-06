@@ -62,6 +62,15 @@ function cacheSettings(settings: OpenAIAutoSwitchSettings) {
   return settings;
 }
 
+/**
+ * Drop the cached response. `idleUnloadActive` depends on the Model Memory
+ * residency setting, which is saved through a different endpoint, so that
+ * endpoint invalidates this cache rather than letting it go stale.
+ */
+export function invalidateOpenAIAutoSwitchSettings() {
+  cachedSettings = null;
+}
+
 export async function loadOpenAIAutoSwitchSettings() {
   if (cachedSettings) {
     return cachedSettings;
