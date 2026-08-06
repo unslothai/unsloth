@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import { getAuthToken } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { resolveInitialConfig } from "@/features/model-picker";
@@ -2145,6 +2146,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       trust_remote_code: trustRemoteCode,
       chat_template_override: effectiveChatTemplateOverride,
       cache_type_kv: config.kvCacheDtype,
+      mlx_kv_bits: config.mlxKvBits ?? null,
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
       tensor_parallel: effectiveTensorParallel,
@@ -2248,6 +2250,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
           kvCacheDtype: loadResp.cache_type_kv ?? null,
           loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+          ...mlxRuntimeStateFrom(loadResp),
           // Click-time value, not the resolved backend echo (see performLoad).
           nParallel: committedSlots,
           loadedNParallel: committedSlots,
@@ -2278,6 +2281,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
           kvCacheDtype: loadResp.cache_type_kv ?? null,
           loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+          ...mlxRuntimeStateFrom(loadResp),
           // GGUF-only and never sent here: a staged override would be saved for
           // a model that cannot use it.
           nParallel: null,
@@ -2602,6 +2606,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+        ...mlxRuntimeStateFrom(loadResp),
         // The request above omits n_parallel: a staged override left from a
         // preset would read as applied and be re-sent by the next Apply.
         nParallel: null,

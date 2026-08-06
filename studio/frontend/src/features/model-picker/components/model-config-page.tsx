@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { usePlatformStore } from "@/config/env";
 import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
@@ -56,6 +57,7 @@ import {
   MAX_SEQ_LENGTH_MAX,
   MAX_SEQ_LENGTH_MIN,
   MAX_SEQ_LENGTH_STEP,
+  MLX_KV_BITS,
   MTP_SPECULATIVE_TYPES,
   N_PARALLEL_MAX,
   N_PARALLEL_MIN,
@@ -64,6 +66,7 @@ import {
   deletePerModelConfig,
   floorMaxSeqLength,
   isDefaultConfig,
+  isServedByMlx,
   normalizeMaxSeqLength,
   normalizePerModelConfig,
   readAdvancedSettingsOpen,
@@ -496,6 +499,65 @@ function GpuMemorySettings({
   );
 }
 
+const MLX_KV_BITS_OFF = "off";
+
+function MlxAdvancedSettings({
+  config,
+  update,
+  outcome,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  /** What the backend reported for this exact setting on the loaded model. */
+  outcome: string | null;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>KV Cache Quantization</span>
+          <InfoHint>
+            Store the KV cache at lower precision to save memory during long
+            conversations. 8-bit roughly halves it with little quality cost;
+            4-bit saves more but is likelier to affect output. Models whose
+            cache cannot be quantized report why instead of applying it. On
+            vision models this starts only once the cache grows past a token
+            threshold, and it can reduce prompt-cache reuse between turns.
+          </InfoHint>
+        </div>
+        <Select
+          value={config.mlxKvBits ? String(config.mlxKvBits) : MLX_KV_BITS_OFF}
+          onValueChange={(v) =>
+            update({ mlxKvBits: v === MLX_KV_BITS_OFF ? null : Number(v) })
+          }
+        >
+          <SelectTrigger
+            animateRadius={false}
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            className={`w-[92px] ${SELECT_TRIGGER_CLASS}`}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            <SelectItem value={MLX_KV_BITS_OFF}>off</SelectItem>
+            {MLX_KV_BITS.map((bits) => (
+              <SelectItem key={bits} value={String(bits)}>
+                {bits}-bit
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      {outcome ? (
+        <p className="text-[11px] leading-snug text-muted-foreground">
+          {outcome}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function GgufAdvancedSettings({
   config,
   update,
@@ -725,6 +787,13 @@ export function ModelConfigPage({
   showHeader = true,
 }: ModelConfigPageProps) {
   const rememberId = useId();
+  const platformDeviceType = usePlatformStore((s) => s.deviceType);
+  const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const mlxKvQuantReason = useChatRuntimeStore((s) => s.mlxKvQuantReason);
+  const mlxKvQuantNote = useChatRuntimeStore((s) => s.mlxKvQuantNote);
+  const loadedMlxKvBitsRequested = useChatRuntimeStore(
+    (s) => s.loadedMlxKvBitsRequested,
+  );
   const isActiveModel = loadedConfig != null;
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const activeNativePathToken = useChatRuntimeStore(
@@ -763,6 +832,24 @@ export function ModelConfigPage({
   const [savedRemember, setSavedRemember] = useState(() => initial.remembered);
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
   const [templateOpen, setTemplateOpen] = useState(false);
+  // MLX-only controls key on the backend that will serve the model, not on the
+  // repo name: on Apple Silicon a plain safetensors repo loads through MLX too.
+  // A reason explains a refusal or a partial application, so it outranks the
+  // caveat; both only describe the setting the loaded model actually ran with.
+  // Compare against the width the backend was REQUESTED to apply, not the one
+  // it applied and not the editable value: a refusal applies no width at all,
+  // and staging a different width must retire the old verdict rather than
+  // display it beside a request it never answered.
+  const mlxKvQuantOutcome =
+    isActiveModel &&
+    (config.mlxKvBits ?? null) === (loadedMlxKvBitsRequested ?? null)
+      ? mlxKvQuantReason || mlxKvQuantNote || null
+      : null;
+  const servedByMlx = isServedByMlx(
+    target.isGguf,
+    platformDeviceType,
+    platformChatOnlyReason,
+  );
   // Read live, not snapshotted at mount: the sidebar copy of Run Settings stays
   // mounted while collapsed, so it has to follow a toggle made in the picker.
   const advancedPreference = useSyncExternalStore(
@@ -1243,6 +1330,13 @@ export function ModelConfigPage({
         )}
         {!target.isGguf && (
           <>
+            {servedByMlx && (
+              <MlxAdvancedSettings
+                config={config}
+                update={update}
+                outcome={mlxKvQuantOutcome}
+              />
+            )}
             <MaxSeqLengthSetting
               value={maxSeqLengthValue}
               max={maxSeqLengthMax}

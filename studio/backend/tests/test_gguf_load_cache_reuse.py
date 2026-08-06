@@ -810,6 +810,42 @@ class TestLoadHubDownloadExclusion:
         with pytest.raises(AttributeError, match = "runtime response fields"):
             route._llama_runtime_fields(incomplete_backend)
 
+    def test_real_backend_resolves_every_runtime_response_field(self):
+        # Check the shipped class, not a fake: an unresolved field turns every
+        # GGUF load and status poll into a 500.
+        from core.inference.llama_cpp import LlamaCppBackend
+        from models.inference import _InferenceRuntimeFields
+
+        route = _load_route_module(
+            "inference_route_module_for_real_backend_projection_test",
+            "routes/inference.py",
+        )
+
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend.__init__()
+        supplied = {
+            "requires_trust_remote_code",
+            "speculative_type",
+            "requested_parallel_slots",
+            "parallel_slots",
+            "is_mlx",
+            "mlx_kv_bits",
+            "mlx_kv_bits_requested",
+            "mlx_kv_quant_eligibility",
+            "mlx_kv_quant_reason",
+            "mlx_kv_quant_note",
+        }
+        unresolved = sorted(
+            name
+            for name in _InferenceRuntimeFields.model_fields
+            if name not in supplied and not (hasattr(backend, name) or hasattr(backend, f"_{name}"))
+        )
+        assert unresolved == []
+
+        fields = route._llama_runtime_fields(backend)
+        assert fields["is_mlx"] is False
+        assert fields["mlx_kv_bits_requested"] is None
+
     def test_in_flight_marker_counts_and_normalizes_case(self):
         assert not hf_gguf_load_in_flight(REPO)
         with gguf_load_in_flight(REPO):

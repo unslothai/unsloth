@@ -528,8 +528,17 @@ class _InferenceRuntimeFields(BaseModel):
             "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32')"
         ),
     )
+    is_mlx: bool = Field(False, description = "Whether the active model is served by the MLX backend")
     mlx_kv_bits: Optional[int] = Field(
         None, description = "MLX KV quantization bit width actually applied, if any"
+    )
+    mlx_kv_bits_requested: Optional[int] = Field(
+        None,
+        description = (
+            "MLX KV quantization bit width the load asked for. Differs from "
+            "mlx_kv_bits when the model could not honor it, which is exactly "
+            "when the reason matters."
+        ),
     )
     mlx_kv_quant_eligibility: Optional[str] = Field(
         None,

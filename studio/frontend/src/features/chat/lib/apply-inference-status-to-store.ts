@@ -375,6 +375,39 @@ export function applyActiveModelStatusToStore(
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
       }),
+    // Hydration only, so a steady poll never rewrites settings the store owns.
+    // Width, verdict and the request it answers move together. Unfenced like
+    // every field here: a late reply can still overwrite a newer one.
+    ...(seedLoadParams &&
+      hydratingExistingModel &&
+      status.mlx_kv_bits !== undefined &&
+      (status.is_mlx === true
+        ? {
+            mlxKvBits: status.mlx_kv_bits_requested ?? null,
+            loadedMlxKvBitsRequested: status.mlx_kv_bits_requested ?? null,
+            mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
+            mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
+          }
+        : {
+            // The verdict retires; the editable width is dormant, not wrong.
+            loadedMlxKvBitsRequested: null,
+            mlxKvQuantReason: null,
+            mlxKvQuantNote: null,
+          })),
+    // Recovery for a hydration this tab never saw. Only when nothing is staged:
+    // re-seeding over an edit made before the load flag rose would discard it.
+    ...(seedLoadParams &&
+      !hydratingExistingModel &&
+      status.is_mlx === true &&
+      status.mlx_kv_bits !== undefined &&
+      prevState.mlxKvBits === null &&
+      prevState.loadedMlxKvBitsRequested === null &&
+      prevState.mlxKvQuantReason === null && {
+        mlxKvBits: status.mlx_kv_bits_requested ?? null,
+        loadedMlxKvBitsRequested: status.mlx_kv_bits_requested ?? null,
+        mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
+        mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
+      }),
     // Baseline only, never the control: the echo is the RESOLVED count and would
     // pin a blank "server default" control. The rollback re-sends the baseline,
     // so without this a rollback after a tab reload loses the override.

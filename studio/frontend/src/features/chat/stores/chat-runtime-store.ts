@@ -1032,6 +1032,11 @@ type ChatRuntimeStore = {
   maxToolCallsPerMessage: number;
   toolCallTimeout: number;
   kvCacheDtype: string | null;
+  mlxKvBits: number | null;
+  /** Width the backend was last asked for; the verdict belongs beside it. */
+  loadedMlxKvBitsRequested: number | null;
+  mlxKvQuantReason: string | null;
+  mlxKvQuantNote: string | null;
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
@@ -1587,6 +1592,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
   kvCacheDtype: null,
+  mlxKvBits: null,
+  loadedMlxKvBitsRequested: null,
+  mlxKvQuantReason: null,
+  mlxKvQuantNote: null,
   loadedKvCacheDtype: null,
   speculativeType: readPersistedSpeculativeType(),
   loadedSpeculativeType: null,
@@ -2037,6 +2046,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       toolFullOutput: {},
       activeDiffusionCanvasByThreadId: {},
       kvCacheDtype: null,
+      mlxKvBits: null,
+      loadedMlxKvBitsRequested: null,
+      mlxKvQuantReason: null,
+      mlxKvQuantNote: null,
       loadedKvCacheDtype: null,
       speculativeType: readPersistedSpeculativeType(),
       loadedSpeculativeType: null,

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import { createElement, useCallback, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
@@ -856,6 +857,8 @@ export function useChatModelRuntime() {
               : stateBeforeUnload.chatTemplateOverride;
           const loadKvCacheDtype =
             pendingLoadConfig?.kvCacheDtype ?? stateBeforeUnload.kvCacheDtype;
+          const loadMlxKvBits =
+            pendingLoadConfig?.mlxKvBits ?? stateBeforeUnload.mlxKvBits;
           // gpuMemoryMode is a standing preference (kept across a model switch);
           // the rest are per-model knobs the reset below clears, so they are
           // re-baselined there in lock-step with the store.
@@ -1156,6 +1159,7 @@ export function useChatModelRuntime() {
               approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
               chat_template_override: effectiveChatTemplateOverride,
               cache_type_kv: loadKvCacheDtype,
+              mlx_kv_bits: loadMlxKvBits ?? null,
               speculative_type: loadSpeculativeType,
               spec_draft_n_max: loadSpecDraftNMax,
               // GGUF-only: slots mean nothing for a transformers load.
@@ -1303,6 +1307,7 @@ export function useChatModelRuntime() {
                 : resolveToolsEnabledOnLoad(supportsTools)),
               kvCacheDtype: loadedKv,
               loadedKvCacheDtype: loadedKv,
+              ...mlxRuntimeStateFrom(loadResponse),
               tensorParallel: loadedTp,
               loadedTensorParallel: loadedTp,
               ...loadedGpuMemoryFields(loadResponse),
@@ -1419,6 +1424,7 @@ export function useChatModelRuntime() {
                   chat_template_override:
                     stateBeforeUnload.loadedChatTemplateOverride,
                   cache_type_kv: stateBeforeUnload.loadedKvCacheDtype,
+                  mlx_kv_bits: stateBeforeUnload.loadedMlxKvBitsRequested,
                   speculative_type:
                     stateBeforeUnload.loadedSpeculativeType,
                   spec_draft_n_max:
@@ -1459,6 +1465,7 @@ export function useChatModelRuntime() {
                   loadedSpecDraftNMax:
                     rollbackResponse.spec_draft_n_max ?? null,
                   loadedKvCacheDtype: rollbackResponse.cache_type_kv ?? null,
+                  ...mlxRuntimeStateFrom(rollbackResponse),
                   loadedChatTemplateOverride:
                     stateBeforeUnload.loadedChatTemplateOverride,
                   ...loadedGpuMemoryFields(rollbackResponse),

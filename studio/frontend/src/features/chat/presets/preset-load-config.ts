@@ -11,6 +11,7 @@ import {
   DEFAULT_PER_MODEL_CONFIG,
   DEFAULT_MAX_SEQ_LENGTH,
   KV_CACHE_DTYPES,
+  MLX_KV_BITS,
   MTP_SPECULATIVE_TYPES,
   N_PARALLEL_MAX,
   N_PARALLEL_MIN,
@@ -30,6 +31,7 @@ export type PresetLoadConfig = Pick<
   | "customContextLength"
   | "maxSeqLength"
   | "kvCacheDtype"
+  | "mlxKvBits"
   | "speculativeType"
   | "specDraftNMax"
   | "nParallel"
@@ -46,6 +48,7 @@ export const EMPTY_PRESET_LOAD_CONFIG: PresetLoadConfig = {
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
+  mlxKvBits: null,
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
@@ -101,6 +104,11 @@ export function normalizePresetLoadConfig(
         ? Math.max(CONTEXT_LENGTH_MIN, Math.floor(partial.customContextLength))
         : null,
     maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength as number | null),
+    mlxKvBits:
+      typeof partial.mlxKvBits === "number" &&
+      MLX_KV_BITS.includes(partial.mlxKvBits)
+        ? partial.mlxKvBits
+        : null,
     kvCacheDtype:
       typeof partial.kvCacheDtype === "string" &&
       VALID_KV_CACHE_DTYPES.has(partial.kvCacheDtype)
@@ -162,6 +170,7 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
     customContextLength: effectiveContextLength ?? null,
     maxSeqLength: normalizeMaxSeqLength(snapshot.maxSeqLength),
     kvCacheDtype: snapshot.kvCacheDtype ?? null,
+    mlxKvBits: snapshot.mlxKvBits ?? null,
     speculativeType: normalizeSpeculativeType(snapshot.speculativeType),
     specDraftNMax: snapshot.specDraftNMax ?? null,
     nParallel: snapshot.nParallel ?? null,
@@ -217,6 +226,7 @@ export function applyPresetLoadConfig(
     maxSeqLength: normalizeMaxSeqLength(config.maxSeqLength) ?? DEFAULT_MAX_SEQ_LENGTH,
     customContextLength: config.customContextLength ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
+    mlxKvBits: config.mlxKvBits ?? null,
     speculativeType: config.speculativeType ?? null,
     specDraftNMax: config.specDraftNMax ?? null,
     nParallel: config.nParallel ?? null,
@@ -242,6 +252,9 @@ export function formatPresetLoadConfigSummary(
   }
   if (config.kvCacheDtype) {
     parts.push(`KV ${config.kvCacheDtype}`);
+  }
+  if (config.mlxKvBits) {
+    parts.push(`MLX KV ${config.mlxKvBits}-bit`);
   }
   if (config.speculativeType && config.speculativeType !== "auto") {
     parts.push(`Spec ${config.speculativeType}`);

@@ -15,6 +15,8 @@ export interface PerModelConfig {
   customContextLength: number | null;
   maxSeqLength: number | null;
   kvCacheDtype: string | null;
+  /** MLX KV cache quantization width. Optional so older blobs still parse. */
+  mlxKvBits?: number | null;
   speculativeType: string | null;
   specDraftNMax: number | null;
   nParallel: number | null;
@@ -35,6 +37,7 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
+  mlxKvBits: null,
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
@@ -92,6 +95,10 @@ export const KV_CACHE_DTYPES = [
   "iq4_nl",
   "f32",
 ] as const;
+
+// MLX quantizes the KV cache by bit width. Kept separate from KV_CACHE_DTYPES:
+// the two backends take different quantities and neither can honor the other's.
+export const MLX_KV_BITS: readonly number[] = [8, 4];
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
 
 export const SPECULATIVE_TYPES = [
@@ -125,6 +132,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "customContextLength",
   "maxSeqLength",
   "kvCacheDtype",
+  "mlxKvBits",
   "speculativeType",
   "specDraftNMax",
   "nParallel",
@@ -600,6 +608,11 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
         ? Math.max(CONTEXT_LENGTH_MIN, Math.floor(partial.customContextLength))
         : null,
     maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength),
+    mlxKvBits:
+      typeof partial.mlxKvBits === "number" &&
+      MLX_KV_BITS.includes(partial.mlxKvBits)
+        ? partial.mlxKvBits
+        : null,
     kvCacheDtype:
       typeof partial.kvCacheDtype === "string" &&
       VALID_KV_CACHE_DTYPES.has(partial.kvCacheDtype)
@@ -755,6 +768,7 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.customContextLength == null &&
     config.maxSeqLength == null &&
     (config.kvCacheDtype ?? null) === DEFAULT_PER_MODEL_CONFIG.kvCacheDtype &&
+    (config.mlxKvBits ?? null) === DEFAULT_PER_MODEL_CONFIG.mlxKvBits &&
     config.speculativeType === DEFAULT_PER_MODEL_CONFIG.speculativeType &&
     config.specDraftNMax == null &&
     config.nParallel == null &&
