@@ -9,6 +9,7 @@ import {
   normalizeModelIdentity,
   publicModelId,
 } from "./model-identity";
+import { isExternalModelId } from "@/features/chat/external-providers";
 import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
 
@@ -102,6 +103,30 @@ export function presetLoadSettingNames(
   return isServedByMlx(isGguf, deviceType, chatOnlyReason)
     ? "max seq length, KV cache dtype"
     : "max seq length";
+}
+
+/** Whether llama.cpp serves the active model.
+ *
+ *  `loadedIsGguf` is the backend's own answer; the rest identify a GGUF that has not
+ *  reported one yet. A context length is deliberately not among them -- MLX reports one
+ *  too, so its presence says a model is loaded, not which backend loaded it.
+ *
+ *  An external provider serves its own model, so nothing local describes it: its id keeps
+ *  the model's `.gguf` suffix and the flag still holds whichever backend last loaded here.
+ */
+export function isServedByLlamaCpp(x: {
+  loadedIsGguf?: boolean | null;
+  activeGgufVariant?: string | null;
+  activeNativePathToken?: string | null;
+  checkpoint?: string | null;
+}): boolean {
+  if (isExternalModelId(x.checkpoint)) return false;
+  return (
+    x.loadedIsGguf === true ||
+    x.activeGgufVariant != null ||
+    x.activeNativePathToken != null ||
+    String(x.checkpoint ?? "").toLowerCase().endsWith(".gguf")
+  );
 }
 
 // Matches studio/backend/core/inference/llama_cpp.py _valid_cache_types (f16 is the UI default).

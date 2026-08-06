@@ -45,6 +45,7 @@ import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
 import {
   NumericValueInput,
+  isServedByLlamaCpp,
   presetLoadSettingNames,
   snapToStep,
 } from "@/features/model-picker";
@@ -477,20 +478,22 @@ export function ChatSettingsPanel({
   const showPresencePenalty =
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
   const isMobile = useIsMobile();
-  const isLoadedGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
+  const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
+  const activeNativePathToken = useChatRuntimeStore(
+    (s) => s.activeNativePathToken,
+  );
   const currentCheckpoint = params.checkpoint;
   const activeModelIsLocal = useChatRuntimeStore(
     (s) => s.activeModelIsLocal,
   );
   const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
-  // Direct-file / custom-folder GGUFs load without a variant label but still
-  // report a GGUF context, so detect them via the context and the checkpoint
-  // suffix too (mirrors the chat page's activeModelIsGguf). Otherwise Max Tokens
-  // would fall back to params.maxSeqLength instead of the loaded GGUF context.
-  const isGguf =
-    isLoadedGguf ||
-    loadedContextLength != null ||
-    (currentCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
+  const isGguf = isServedByLlamaCpp({
+    loadedIsGguf,
+    activeGgufVariant,
+    activeNativePathToken,
+    checkpoint: currentCheckpoint,
+  });
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
   const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const loadSettingNames = presetLoadSettingNames(

@@ -1353,6 +1353,7 @@ export function useChatModelRuntime() {
               loadedContextLength: nativeCtx,
               maxContextLength,
               nativeContextLength: reportedNativeCtx,
+              loadedIsGguf: loadResponse.is_gguf ?? false,
               modelRequiresTrustRemoteCode:
                 loadResponse.requires_trust_remote_code ?? false,
               supportsReasoning,

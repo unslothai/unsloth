@@ -46,6 +46,7 @@ export {
   normalizeMaxSeqLength,
   type PerModelConfig,
   adoptLegacyConfigKey,
+  isServedByLlamaCpp,
   isServedByMlx,
   presetLoadSettingNames,
   resolveInitialConfig,

@@ -1531,6 +1531,7 @@ export function SharedComposer({
           maxContextLength: resp.is_gguf
             ? (resp.max_context_length ?? null)
             : null,
+          loadedIsGguf: resp.is_gguf ?? false,
           // Compare selections load by repo/variant, never from the file picker,
           // so they carry no native lease. Clear any prior picked file's
           // token/expiry so the reload path never sends a stale lease.

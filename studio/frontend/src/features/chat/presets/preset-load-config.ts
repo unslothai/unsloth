@@ -16,6 +16,7 @@ import {
   N_BATCH_MIN,
   N_PARALLEL_MAX,
   N_PARALLEL_MIN,
+  isServedByLlamaCpp,
   normalizeMaxSeqLength,
   type PerModelConfig,
 } from "@/features/model-picker/model-config/per-model-config";
@@ -175,10 +176,12 @@ export function isSamePresetLoadConfig(
 export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
   const snapshot = currentRuntimePerModelConfig({ includeMaxSeqLength: true });
   const store = useChatRuntimeStore.getState();
-  const isGguf =
-    store.activeGgufVariant != null ||
-    store.loadedContextLength != null ||
-    (store.params.checkpoint?.toLowerCase().endsWith(".gguf") ?? false);
+  const isGguf = isServedByLlamaCpp({
+    loadedIsGguf: store.loadedIsGguf,
+    activeGgufVariant: store.activeGgufVariant,
+    activeNativePathToken: store.activeNativePathToken,
+    checkpoint: store.params.checkpoint,
+  });
   const effectiveContextLength =
     snapshot.customContextLength ??
     (isGguf ? store.loadedContextLength : null);

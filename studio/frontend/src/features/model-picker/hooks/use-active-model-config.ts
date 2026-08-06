@@ -4,8 +4,11 @@
 import { isExternalModelId, useChatRuntimeStore } from "@/features/chat";
 import { useMemo } from "react";
 import { usePlatformStore } from "@/config/env";
-import type { PerModelConfig } from "../model-config/per-model-config";
-import { isServedByMlx } from "../model-config/per-model-config";
+import {
+  type PerModelConfig,
+  isServedByLlamaCpp,
+  isServedByMlx,
+} from "../model-config/per-model-config";
 
 export interface ActiveModelConfigState {
   checkpoint: string | null;
@@ -19,7 +22,10 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const maxSeqLength = useChatRuntimeStore((s) => s.params.maxSeqLength);
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
-  const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
+  const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
+  const activeNativePathToken = useChatRuntimeStore(
+    (s) => s.activeNativePathToken,
+  );
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const mlxKvBits = useChatRuntimeStore((s) => s.mlxKvBits);
@@ -40,10 +46,12 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     (s) => s.selectedGpuIndexKind,
   );
 
-  const isGguf =
-    activeGgufVariant != null ||
-    loadedContextLength != null ||
-    (checkpoint?.toLowerCase().endsWith(".gguf") ?? false);
+  const isGguf = isServedByLlamaCpp({
+    loadedIsGguf,
+    activeGgufVariant,
+    activeNativePathToken,
+    checkpoint,
+  });
 
   // Off-backend this stays null, or the model compares unequal to its own defaults
   // over a field it cannot show.
