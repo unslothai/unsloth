@@ -1140,6 +1140,7 @@ export const de = {
   },
   studio: {
     imageTraining: "Bildtraining",
+    goToImageTraining: "Zum Bildtraining",
     routeTitle: "Trainieren",
     title: "Fine-Tuning-Studio",
     subtitles: {

@@ -1134,6 +1134,7 @@ export const es = {
   },
   studio: {
     imageTraining: "Entrenamiento de imágenes",
+    goToImageTraining: "Ir al entrenamiento de imágenes",
     routeTitle: "Entrenar",
     title: "Studio de fine-tuning",
     subtitles: {

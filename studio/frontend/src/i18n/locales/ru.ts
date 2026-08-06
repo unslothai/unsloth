@@ -1116,6 +1116,7 @@ export const ru = {
   },
   studio: {
     imageTraining: "Обучение изображений",
+    goToImageTraining: "Перейти к обучению изображений",
     routeTitle: "Обучение",
     title: "Студия дообучения",
     subtitles: {

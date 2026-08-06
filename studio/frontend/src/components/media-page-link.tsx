@@ -19,11 +19,14 @@ export function MediaPageLink({
   to,
   label,
   icon,
+  tooltip,
   onNavigate,
 }: {
   to: "/images" | "/video";
   label: string;
   icon: IconSvgElement;
+  /** Needed on a translated page: the default prefix below is English. */
+  tooltip?: string;
   /** Runs before the route change, for a destination whose mode lives in a store. */
   onNavigate?: () => void;
 }) {
@@ -54,7 +57,7 @@ export function MediaPageLink({
             />
           </button>
         </TooltipTrigger>
-        <TooltipContent>Go to {label}</TooltipContent>
+        <TooltipContent>{tooltip ?? `Go to ${label}`}</TooltipContent>
       </Tooltip>
     </>
   );

@@ -208,6 +208,7 @@ export function StudioPage(): ReactElement {
                 <MediaPageLink
                   to="/images"
                   label={t("studio.imageTraining")}
+                  tooltip={t("studio.goToImageTraining")}
                   icon={Image03Icon}
                   onNavigate={() =>
                     useImageWorkflowStore.getState().setPageMode("train")
