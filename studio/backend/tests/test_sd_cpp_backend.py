@@ -274,7 +274,8 @@ def test_download_plan_skips_a_local_transformer_but_still_stages_the_assets(mon
 def _no_cache(monkeypatch):
     """Report every upstream as uncached, so a local cache cannot mask the mirror decision."""
     monkeypatch.setattr(
-        "core.inference.diffusion_families._upstream_is_cached", lambda repo_id, files = None: False
+        "core.inference.diffusion_families._upstream_is_cached",
+        lambda repo_id, files = None, **kwargs: False,
     )
     monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
 
@@ -1220,6 +1221,37 @@ def test_a_cached_community_repack_is_reused_instead_of_re_downloading_the_mirro
     )
     # And a repo that mirrors nothing is returned unchanged.
     assert prefer_cached_legacy_source("unsloth/Qwen-Image", ["x"]) == "unsloth/Qwen-Image"
+
+
+def test_a_repack_left_in_the_pre_change_cache_root_still_wins_over_the_mirror(
+    monkeypatch, tmp_path
+):
+    """Changing Studio's cache folder must not cost the user the repack they already hold.
+
+    The fetch passes reuse_other_cache_root, so a file cached only under huggingface_hub's
+    import-time root resolves through that root -- but only under the repo id it was filed as.
+    Picking the mirror because the LIVE root looks empty makes those bytes unreachable: several GB
+    re-download online, and offline the load fails."""
+    from core.inference.sd_cpp_backend import _fetch_repo_map
+
+    repack = "Comfy-Org/z_image_turbo"
+    other = tmp_path / "before_the_move"
+    root = other / f"models--{repack.replace('/', '--')}"
+    snapshot = root / "snapshots" / ("d" * 40)
+    (snapshot / "split_files" / "vae").mkdir(parents = True)
+    (snapshot / "split_files" / "vae" / "ae.safetensors").write_bytes(b"x" * 64)
+    (root / "refs").mkdir(parents = True)
+    (root / "refs" / "main").write_text("d" * 40, encoding = "utf-8")
+    # The live root is the new, still-empty folder; the repack sits in the one HF captured at import.
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.active_hf_hub_cache",
+        lambda: str(tmp_path / "after_the_move"),
+        raising = False,
+    )
+    monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(other))
+
+    assets = [("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors", "vae")]
+    assert _fetch_repo_map(assets, None)["unsloth/Z-Image-Turbo-ComfyUI"] == repack
 
 
 def test_the_delete_guard_names_the_repack_as_well_as_the_mirror(monkeypatch):

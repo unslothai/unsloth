@@ -519,7 +519,35 @@ def canonical_base(repo_id: Optional[str]) -> str:
 _WEIGHT_SUFFIXES = frozenset({".safetensors", ".bin", ".pt", ".ckpt", ".gguf"})
 
 
-def _upstream_is_cached(repo_id: str, files: Optional[Sequence[str]] = None) -> bool:
+def _root_holds_upstream(root: Path, repo_id: str, wanted: Sequence[str]) -> bool:
+    """``_upstream_is_cached`` for ONE cache root. Never raises."""
+    try:
+        repo = root / f"models--{repo_id.replace('/', '--')}"
+        ref = repo / "refs" / "main"
+        revs = (
+            [repo / "snapshots" / ref.read_text(encoding = "utf-8").strip()]
+            if ref.is_file()
+            else sorted((repo / "snapshots").iterdir())
+        )
+        for rev in revs:
+            if not rev.is_dir():
+                continue
+            if wanted:
+                if all((rev / name).exists() for name in wanted):
+                    return True
+            elif any(p.suffix.lower() in _WEIGHT_SUFFIXES and p.is_file() for p in rev.rglob("*")):
+                return True
+        return False
+    except Exception:  # noqa: BLE001 -- an unreadable/absent cache just means "not cached"
+        return False
+
+
+def _upstream_is_cached(
+    repo_id: str,
+    files: Optional[Sequence[str]] = None,
+    *,
+    other_root: bool = False,
+) -> bool:
     """Whether the upstream load is SATISFIABLE from the local cache.
 
     Not "has any blob": one config left by an interrupted or previously-tokened pull would pin every
@@ -533,28 +561,26 @@ def _upstream_is_cached(repo_id: str, files: Optional[Sequence[str]] = None) -> 
     commit-pinned download) any revision counts, as before.
 
     Reads the LIVE cache root; huggingface_hub's import-time constant goes stale after a
-    cache-folder change.
+    cache-folder change. ``other_root`` adds that constant back, for the callers whose fetch passes
+    ``reuse_other_cache_root``: those resolve each file through whichever root holds it, so bytes
+    left in the pre-change root really do satisfy the load. OFF by default, because a
+    ``from_pretrained`` is pinned to the live root and cannot see the other one -- counting those
+    bytes there would send a gated base back to the 401 the mirror exists to avoid.
     """
     try:
         from utils.hf_cache_settings import active_hf_hub_cache
 
-        root = Path(active_hf_hub_cache()) / f"models--{repo_id.replace('/', '--')}"
+        roots = [Path(active_hf_hub_cache())]
+        if other_root:
+            from huggingface_hub import constants
+
+            # Exactly what ``cache_dir = None`` resolves to, i.e. the root the per-file reuse
+            # probe falls back to (file_download reads constants.HF_HUB_CACHE per call).
+            fallback = Path(constants.HF_HUB_CACHE)
+            if fallback != roots[0]:
+                roots.append(fallback)
         wanted = tuple(files or ())
-        ref = root / "refs" / "main"
-        revs = (
-            [root / "snapshots" / ref.read_text(encoding = "utf-8").strip()]
-            if ref.is_file()
-            else sorted((root / "snapshots").iterdir())
-        )
-        for rev in revs:
-            if not rev.is_dir():
-                continue
-            if wanted:
-                if all((rev / name).exists() for name in wanted):
-                    return True
-            elif any(p.suffix.lower() in _WEIGHT_SUFFIXES and p.is_file() for p in rev.rglob("*")):
-                return True
-        return False
+        return any(_root_holds_upstream(root, repo_id, wanted) for root in roots)
     except Exception:  # noqa: BLE001 -- an unreadable/absent cache just means "not cached"
         return False
 
@@ -586,12 +612,17 @@ def prefer_cached_legacy_source(repo_id: str, files: Optional[Sequence[str]] = N
     from re-fetching bytes it already has under the old repo key. Same ``_upstream_is_cached``
     probe the gated swap uses, so an interrupted or partial repack does not win.
 
+    Both cache roots count: the sd.cpp fetch passes ``reuse_other_cache_root``, so a repack left
+    behind by a cache-folder change is still reusable, and only the repo id can reach it -- once
+    the id has become the mirror those bytes are unreachable and the load re-pulls several GB
+    (offline, it fails outright).
+
     PURE: table lookup + local stat, no network, so the staging plan and the fetch agree.
     """
     legacy = _SD_CPP_LEGACY_SOURCES.get((repo_id or "").strip().lower())
     if not legacy:
         return repo_id
-    return legacy if _upstream_is_cached(legacy, files) else repo_id
+    return legacy if _upstream_is_cached(legacy, files, other_root = True) else repo_id
 
 
 def _is_local_path(base: str) -> bool:
