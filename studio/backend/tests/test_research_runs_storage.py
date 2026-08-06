@@ -1547,7 +1547,12 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(research_ho
         if "rigorous web research plan" in system:
             return json.dumps(_plan()), "Planned several lines of inquiry.", "stop", None
         if "iterative research process" in system:
-            return next(decisions), "Evaluated the evidence and selected the next action.", "stop", None
+            return (
+                next(decisions),
+                "Evaluated the evidence and selected the next action.",
+                "stop",
+                None,
+            )
         assert "<document_source_catalog>" in prompt
         assert "private.pdf" in prompt
         if kwargs.get("phase") == "synthesis_audit":
