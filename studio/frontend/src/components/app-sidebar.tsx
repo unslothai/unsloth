@@ -2413,9 +2413,9 @@ export function AppSidebar() {
       <SidebarFooter
         className={cn(
           "relative pb-[11px] group-data-[collapsible=icon]:px-0",
-          // Tighter top with the update card so the fade hugs it; fuller top
-          // for the profile on its own.
-          showUpdateCard ? "pt-0.5" : "pt-1",
+          // pt-[5px] + the 6px fade plateau matches the 11px below the
+          // profile, so it sits centred. Tighter with the update card above.
+          showUpdateCard ? "pt-1" : "pt-[5px]",
         )}
       >
         {/* Fade above the profile box, shown only when there's more list below
