@@ -35,6 +35,9 @@ on:
       - 'tests/studio/**'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/workflows/studio-mac-ui-smoke.yml'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
       # The absorbed update phase round-trips scripts/uninstall.sh, which none
       # of the entries above cover.
       - 'scripts/uninstall.sh'

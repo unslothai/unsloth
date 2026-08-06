@@ -27,6 +27,9 @@ on:
       - 'pyproject.toml'
       - 'tests/studio/**'
       - '.github/workflows/studio-api-smoke.yml'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
   push:
     branches: [main, pip]
   workflow_dispatch:

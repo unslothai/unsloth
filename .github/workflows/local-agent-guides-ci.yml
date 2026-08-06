@@ -54,6 +54,9 @@ on:
       - 'studio/backend/models/**'
       - 'install.sh'
       - '.github/workflows/local-agent-guides-ci.yml'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
       - '.github/scripts/serve-unsloth-run.sh'
       - '.github/scripts/assert-prompt-cache.sh'
       - '.github/scripts/agent-guides-install.sh'
@@ -72,6 +75,7 @@ on:
       - 'studio/backend/models/**'
       - 'install.sh'
       - '.github/workflows/local-agent-guides-ci.yml'
+      - '.github/actions/install-unsloth-local/action.yml'
       - '.github/scripts/serve-unsloth-run.sh'
       - '.github/scripts/assert-prompt-cache.sh'
       - '.github/scripts/agent-guides-install.sh'
