@@ -450,8 +450,9 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         .catch(() => undefined);
     };
     const handleResize = () => {
-      setNativeMacControlsHidden(false);
-      refresh();
+      setNativeMacControlsHidden(
+        window.innerHeight >= window.screen.height - 1,
+      );
     };
     refresh();
     window.addEventListener("resize", handleResize);
