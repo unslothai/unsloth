@@ -77,9 +77,9 @@ def test_nothing_the_backend_rejects_is_offered(value):
         "selecting the option the picker showed returns 422"
     )
     offered_subset = _valid_option(value, _CONFIG_RE)
-    assert offered_subset is None or _subset_accepted(offered_subset), (
-        f"{value!r} is offered as subset {offered_subset!r} but /training/start rejects it"
-    )
+    assert offered_subset is None or _subset_accepted(
+        offered_subset
+    ), f"{value!r} is offered as subset {offered_subset!r} but /training/start rejects it"
 
 
 def test_the_two_grammars_agree_over_a_generated_alphabet():
