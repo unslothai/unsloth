@@ -670,6 +670,7 @@ export const en = {
         noRamReserveDescription: "Keep no full copy in RAM.",
         noRamReserveHint: "Stream the weights into VRAM instead of keeping a full copy in RAM. Keeps llama.cpp's memory-mapped loading and drops --no-mmap and --mlock.",
         mlockVetoed: "--mlock stays off: pinning the model in place would reserve RAM for all of it. Idle auto-unload is still disabled.",
+        memlockCapped: "This system caps locked memory at {limit}. A larger model will not be fully pinned; raise the limit with ulimit -l.",
         reloadRequired: "Reload the model to apply the new memory flags.",
         loadError: "Failed to load model memory settings",
         saveError: "Failed to save model memory settings",

@@ -190,3 +190,49 @@ class TestPersistence:
         monkeypatch.setattr(mm, "_cached_setting", lambda key: stored)
         assert mm.get_keep_resident() is expected
         assert mm.get_no_ram_reserve() is expected
+
+
+class TestMemlockLimit:
+    """mlock cannot exceed RLIMIT_MEMLOCK. Linux commonly defaults to 8 MB,
+    where llama.cpp warns and carries on, so residency silently does nothing.
+    The settings response reports the cap so the UI can say so."""
+
+    def test_unlimited_reports_none(self, monkeypatch):
+        import resource
+
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(
+            resource, "getrlimit",
+            lambda _w: (resource.RLIM_INFINITY, resource.RLIM_INFINITY),
+        )
+        assert mm.memlock_limit_bytes() is None
+
+    @pytest.mark.parametrize("soft", [0, 64 * 1024, 8 * 1024 * 1024])
+    def test_finite_limits_are_reported(self, monkeypatch, soft):
+        import resource
+
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(resource, "getrlimit", lambda _w: (soft, soft))
+        assert mm.memlock_limit_bytes() == soft
+
+    def test_negative_is_treated_as_unlimited(self, monkeypatch):
+        import resource
+
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(resource, "getrlimit", lambda _w: (-1, -1))
+        assert mm.memlock_limit_bytes() is None
+
+    @pytest.mark.parametrize("exc", [ValueError, OSError, AttributeError])
+    def test_probe_failure_never_raises(self, monkeypatch, exc):
+        import resource
+
+        import utils.model_memory_settings as mm
+
+        def boom(_w):
+            raise exc("nope")
+
+        monkeypatch.setattr(resource, "getrlimit", boom)
+        assert mm.memlock_limit_bytes() is None

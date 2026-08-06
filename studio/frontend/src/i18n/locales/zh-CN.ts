@@ -656,6 +656,7 @@ export const zhCN = {
         noRamReserveDescription: "不在内存中保留完整副本。",
         noRamReserveHint: "将权重传输到显存，而不在内存中保留完整副本。保持 llama.cpp 的内存映射加载方式，并移除 --no-mmap 和 --mlock。",
         mlockVetoed: "--mlock 保持关闭：锁定模型会为其全部内容预留内存。空闲自动卸载仍处于禁用状态。",
+        memlockCapped: "本系统将锁定内存限制为 {limit}。更大的模型无法被完全锁定；请使用 ulimit -l 提高上限。",
         reloadRequired: "重新加载模型以应用新的内存选项。",
         loadError: "加载模型内存设置失败",
         saveError: "保存模型内存设置失败",

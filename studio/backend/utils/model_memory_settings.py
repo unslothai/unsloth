@@ -117,3 +117,23 @@ def set_model_memory_settings(
             _invalidate(key)
 
     return get_keep_resident(), get_no_ram_reserve()
+
+
+def memlock_limit_bytes() -> Optional[int]:
+    """Soft RLIMIT_MEMLOCK, or None when unlimited or unavailable.
+
+    mlock cannot exceed this. Linux commonly defaults to 8 MB, where llama.cpp
+    logs "failed to mlock" and carries on, so residency would silently do
+    nothing. None on Windows (no RLIMIT_MEMLOCK) and on macOS (unlimited).
+    """
+    try:
+        import resource
+    except ImportError:
+        return None
+    try:
+        soft, _hard = resource.getrlimit(resource.RLIMIT_MEMLOCK)
+    except (AttributeError, ValueError, OSError):
+        return None
+    if soft < 0 or soft == resource.RLIM_INFINITY:
+        return None
+    return int(soft)

@@ -694,6 +694,7 @@ export const it = {
         noRamReserveDescription: "Non tiene una copia completa in RAM.",
         noRamReserveHint: "Trasferisce i pesi nella VRAM invece di tenerne una copia completa in RAM. Mantiene il caricamento mappato in memoria di llama.cpp e rimuove --no-mmap e --mlock.",
         mlockVetoed: "--mlock resta disattivato: bloccare il modello riserverebbe RAM per l'intero modello. Lo scaricamento automatico in inattività resta disattivato.",
+        memlockCapped: "Questo sistema limita la memoria bloccata a {limit}. Un modello più grande non verrà bloccato del tutto; aumenta il limite con ulimit -l.",
         reloadRequired: "Ricarica il modello per applicare le nuove opzioni di memoria.",
         loadError: "Impossibile caricare le impostazioni di memoria del modello",
         saveError: "Impossibile salvare le impostazioni di memoria del modello",

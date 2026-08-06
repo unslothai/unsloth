@@ -42,6 +42,7 @@ from utils.model_memory_settings import (
     DEFAULT_KEEP_RESIDENT,
     DEFAULT_NO_RAM_RESERVE,
     get_model_memory_settings,
+    memlock_limit_bytes,
     set_model_memory_settings,
     should_mlock,
 )
@@ -123,6 +124,10 @@ class ModelMemoryResponse(BaseModel):
     # vetoes it; the UI surfaces that rather than failing silently.
     mlock_active: bool
     reload_required: bool
+    # Soft RLIMIT_MEMLOCK when finite. mlock cannot exceed it, so the UI warns
+    # that residency will not fully pin a model larger than this. None means
+    # unlimited (macOS) or not applicable (Windows).
+    memlock_limit_bytes: Optional[int] = None
 
 
 class HuggingFaceCachePayload(BaseModel):
@@ -289,6 +294,7 @@ def _model_memory_response() -> ModelMemoryResponse:
         no_ram_reserve = no_ram_reserve,
         mlock_active = want_mlock,
         reload_required = _model_memory_reload_required(want_mlock),
+        memlock_limit_bytes = memlock_limit_bytes() if want_mlock else None,
     )
 
 

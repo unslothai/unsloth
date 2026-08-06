@@ -12,6 +12,12 @@ import {
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  if (bytes >= 1024 ** 2) return `${Math.round(bytes / 1024 ** 2)} MB`;
+  return `${Math.round(bytes / 1024)} KB`;
+}
+
 export function ModelMemorySection() {
   const t = useT();
   const [settings, setSettings] = useState<ModelMemorySettings | null>(null);
@@ -60,6 +66,12 @@ export function ModelMemorySection() {
   // Both on suppresses --mlock. Say so, rather than looking like a no-op.
   const mlockVetoed =
     settings?.keepResident === true && settings.mlockActive === false;
+  // A finite locked-memory cap means llama.cpp logs "failed to mlock" and
+  // carries on, so residency would look enabled but do nothing.
+  const memlockCap =
+    settings?.mlockActive === true && settings.memlockLimitBytes !== null
+      ? settings.memlockLimitBytes
+      : null;
 
   return (
     <SettingsSection title={t("settings.resources.modelMemory.title")}>
@@ -98,6 +110,13 @@ export function ModelMemorySection() {
           {mlockVetoed ? (
             <p className="pb-1 text-xs text-muted-foreground">
               {t("settings.resources.modelMemory.mlockVetoed")}
+            </p>
+          ) : null}
+          {memlockCap !== null ? (
+            <p className="pb-1 text-xs text-amber-600 dark:text-amber-400">
+              {t("settings.resources.modelMemory.memlockCapped", {
+                limit: formatBytes(memlockCap),
+              })}
             </p>
           ) : null}
           {settings?.reloadRequired ? (

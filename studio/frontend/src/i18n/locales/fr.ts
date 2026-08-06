@@ -693,6 +693,7 @@ export const fr = {
         noRamReserveDescription: "Ne garde aucune copie complète en RAM.",
         noRamReserveHint: "Transfère les poids vers la VRAM au lieu d'en garder une copie complète en RAM. Conserve le chargement mappé en mémoire de llama.cpp et supprime --no-mmap et --mlock.",
         mlockVetoed: "--mlock reste désactivé : épingler le modèle réserverait de la RAM pour l'intégralité de celui-ci. Le déchargement automatique en veille reste désactivé.",
+        memlockCapped: "Ce système limite la mémoire verrouillée à {limit}. Un modèle plus grand ne sera pas entièrement épinglé ; augmentez la limite avec ulimit -l.",
         reloadRequired: "Rechargez le modèle pour appliquer les nouvelles options de mémoire.",
         loadError: "Impossible de charger les paramètres de mémoire du modèle",
         saveError: "Impossible d'enregistrer les paramètres de mémoire du modèle",

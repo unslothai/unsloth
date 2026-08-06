@@ -15,6 +15,8 @@ export type ModelMemorySettings = {
   mlockActive: boolean;
   /** A model is loaded whose --mlock state differs from the saved one. */
   reloadRequired: boolean;
+  /** Soft RLIMIT_MEMLOCK when finite; null means unlimited or N/A. */
+  memlockLimitBytes: number | null;
 };
 
 type ApiModelMemorySettings = {
@@ -30,6 +32,8 @@ type ApiModelMemorySettings = {
   mlock_active: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   reload_required: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  memlock_limit_bytes: number | null;
 };
 
 let cachedModelMemory: ModelMemorySettings | null = null;
@@ -53,6 +57,7 @@ function fromApi(settings: ApiModelMemorySettings): ModelMemorySettings {
     defaultNoRamReserve: settings.default_no_ram_reserve,
     mlockActive: settings.mlock_active,
     reloadRequired: settings.reload_required,
+    memlockLimitBytes: settings.memlock_limit_bytes,
   };
 }
 

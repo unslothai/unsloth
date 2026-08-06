@@ -658,6 +658,7 @@ export const ja = {
         noRamReserveDescription: "RAM に完全なコピーを保持しません。",
         noRamReserveHint: "RAM に完全なコピーを保持せず、重みを VRAM へ転送します。llama.cpp のメモリマップ読み込みを維持し、--no-mmap と --mlock を除去します。",
         mlockVetoed: "--mlock は無効のままです。モデルを固定するとモデル全体分の RAM を確保することになります。アイドル時の自動アンロードは引き続き無効です。",
+        memlockCapped: "このシステムはロック可能なメモリを {limit} に制限しています。これより大きいモデルは完全には固定されません。ulimit -l で上限を引き上げてください。",
         reloadRequired: "新しいメモリ設定を適用するにはモデルを再読み込みしてください。",
         loadError: "モデルメモリ設定の読み込みに失敗しました",
         saveError: "モデルメモリ設定の保存に失敗しました",

@@ -672,6 +672,7 @@ export const ko = {
         noRamReserveDescription: "RAM에 전체 사본을 두지 않습니다.",
         noRamReserveHint: "RAM에 전체 사본을 두지 않고 가중치를 VRAM으로 전송합니다. llama.cpp의 메모리 매핑 로딩을 유지하고 --no-mmap과 --mlock을 제거합니다.",
         mlockVetoed: "--mlock은 꺼진 상태로 유지됩니다. 모델을 고정하면 모델 전체 크기만큼 RAM을 예약하게 됩니다. 유휴 시 자동 언로드는 계속 비활성화됩니다.",
+        memlockCapped: "이 시스템은 잠금 메모리를 {limit}로 제한합니다. 더 큰 모델은 완전히 고정되지 않습니다. ulimit -l로 한도를 늘리세요.",
         reloadRequired: "새 메모리 옵션을 적용하려면 모델을 다시 로드하세요.",
         loadError: "모델 메모리 설정을 불러오지 못했습니다",
         saveError: "모델 메모리 설정을 저장하지 못했습니다",
