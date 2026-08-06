@@ -457,9 +457,7 @@ def test_stop_does_not_wait_forever_on_a_start_that_never_claims_ownership(monke
     monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 0))
     monkeypatch.setattr(cloudflare_tunnel, "capture_studio_tunnel_start_admission", lambda: (1, 0))
     stopped = threading.Event()
-    monkeypatch.setattr(
-        cloudflare_tunnel, "stop_studio_tunnel", lambda **_kw: stopped.set()
-    )
+    monkeypatch.setattr(cloudflare_tunnel, "stop_studio_tunnel", lambda **_kw: stopped.set())
     try:
         remote_access.stop_remote_access(_state())
         assert stopped.wait(5), "stop worker never reached stop_studio_tunnel"
@@ -492,7 +490,8 @@ def test_streaming_is_not_advertised_while_a_quick_tunnel_carries_the_traffic(mo
     assert remote_access.remote_access_status(_state())["streaming_supported"] is True
 
     monkeypatch.setattr(
-        cloudflare_tunnel, "get_studio_tunnel_status",
+        cloudflare_tunnel,
+        "get_studio_tunnel_status",
         lambda: _status("https://live.trycloudflare.com"),
     )
     assert remote_access.remote_access_status(_state())["streaming_supported"] is False
