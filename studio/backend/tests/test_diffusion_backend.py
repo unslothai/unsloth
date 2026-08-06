@@ -3730,9 +3730,7 @@ def _small_card(monkeypatch):
         lambda t: DeviceMemory("cuda", "cuda", "discrete_vram", 5000, 5120),
     )
     monkeypatch.setattr(dmod, "estimate_image_runtime_mib", lambda **kw: 100)
-    return types.SimpleNamespace(
-        device = "cuda", backend = "cuda", supports_model_cpu_offload = True
-    )
+    return types.SimpleNamespace(device = "cuda", backend = "cuda", supports_model_cpu_offload = True)
 
 
 def test_plan_memory_budgets_companions_from_the_other_root_snapshot(monkeypatch, tmp_path):
