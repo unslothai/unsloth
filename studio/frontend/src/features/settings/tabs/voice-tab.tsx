@@ -220,6 +220,7 @@ function SttModelPicker({
           <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
+            data-testid="stt-model-search"
             placeholder={t(
               "settings.voice.dictation.sttModelSearchPlaceholder",
             )}

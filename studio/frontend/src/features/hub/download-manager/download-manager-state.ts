@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isTauri } from "@/lib/api-base";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { INVENTORY_HINT_KIND } from "../inventory/constants";
@@ -253,6 +254,41 @@ export const useDownloadManagerStore = create<DownloadManagerState>()(
 
 export const setState = useDownloadManagerStore.setState;
 export const getState = useDownloadManagerStore.getState;
+
+/**
+ * Downloads run in the backend, which the quit path reaps, but only this store knows they
+ * are in flight. A Tauri quit never fires beforeunload, so mirror it to Rust to ask first.
+ */
+export function hasActiveDownloadJob(
+  jobs: Record<string, ManagedDownload>,
+): boolean {
+  // External jobs count too, unlike in `partialize`: their STT sidecars are reached
+  // through the backend, so a quit kills those transfers as well.
+  return Object.values(jobs).some((job) => ACTIVE_STATES.has(job.state));
+}
+
+function publishDownloadsActive(active: boolean): void {
+  if (!isTauri) return;
+  void import("@tauri-apps/api/core")
+    .then(({ invoke }) =>
+      invoke("set_renderer_activity", { kind: "downloads", active }),
+    )
+    .catch(() => {});
+}
+
+// Transitions only: the poll loop patches progress several times a second.
+let lastPublishedDownloadsActive: boolean | null = null;
+
+function syncDownloadsActivity(state: DownloadManagerState): void {
+  const active = hasActiveDownloadJob(state.jobs);
+  if (active === lastPublishedDownloadsActive) return;
+  lastPublishedDownloadsActive = active;
+  publishDownloadsActive(active);
+}
+
+// Once for whatever the persisted state restored, then on every change.
+syncDownloadsActivity(getState());
+useDownloadManagerStore.subscribe(syncDownloadsActivity);
 
 function withCompletedHintSignature(
   state: DownloadManagerState,

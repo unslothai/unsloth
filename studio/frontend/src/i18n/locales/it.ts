@@ -50,6 +50,11 @@ export const it = {
       projects: "Progetti",
       train: "Addestra",
       recipes: "Ricette",
+      images: "Immagini",
+      video: "Video",
+      more: "Altro",
+      customizeSidebar: "Personalizza la barra laterale",
+      newBadge: "Novità",
       export: "Esporta",
       recents: "Recenti",
       noChatsYet: "Ancora nessuna chat",
@@ -153,10 +158,20 @@ export const it = {
         sttNotDownloaded: "Non scaricato",
         sttDownloadStatusFailed: "Impossibile verificare lo stato del download",
         sttDownload: "Scarica",
+        sttDownloadConfirmTitle: "Vuoi scaricare {model}?",
+        sttDownloadConfirmBody:
+          "La dettatura locale funziona completamente offline, ma prima ha bisogno del modello vocale {model}. Occupa circa {size} e viene scaricato una sola volta nella tua cache di Hugging Face.",
+        sttDownloadConfirmBodyUnsized:
+          "La dettatura locale funziona completamente offline, ma prima ha bisogno del modello vocale {model}. Viene scaricato una sola volta nella tua cache di Hugging Face.",
+        sttOpenVoiceSettings: "Apri le impostazioni Voce",
+        sttDownloadStarted: "Download di {model} in corso",
         sttDownloading: "Download in corso… {progress}%",
         sttCancelDownload: "Annulla",
         sttCancellingDownload: "Annullamento…",
+        sttCancelDownloadFailed: "Impossibile annullare il download",
         sttDownloadComplete: "Modello di riconoscimento vocale scaricato",
+        sttModelReady: "{model} è pronto per la dettatura",
+        sttRecommended: "Consigliato",
         sttDownloadFailed:
           "Impossibile scaricare il modello di riconoscimento vocale",
         sttLoad: "Carica",
@@ -616,6 +631,14 @@ export const it = {
         compactSidebarDescription:
           "Mantieni la barra laterale espansa invece di ridurla a icone.",
       },
+      sidebarNav: {
+        title: "Navigazione della barra laterale",
+        description:
+          "Fissa e riordina le schede della barra laterale. Le schede non fissate vengono raccolte nel menu «Altro»; se ne resta una sola non fissata viene nascosta invece di creare un menu con una voce sola. «Nuova chat» resta sempre al suo posto.",
+        dragToReorder: "Trascina per riordinare",
+        pinToSidebar: "Fissa {name} nella barra laterale",
+        moreHolds: "Altro ({count})",
+      },
       sidebarMenu: {
         title: "Menu della barra laterale",
         description:
@@ -810,10 +833,10 @@ export const it = {
         title: "Impostazioni di selezione del modello",
         expandQuantizations: "Espandi le quantizzazioni",
         expandQuantizationsDescription:
-          "Attivata: i modelli GGUF presenti sul dispositivo mostrano subito le relative quantizzazioni. Disattivata: fai clic su un modello per visualizzarne le quantizzazioni.",
+          "Attivata: i modelli GGUF in «On Device» mostrano subito le relative quantizzazioni. Disattivata: fai clic su un modello per visualizzarne le quantizzazioni.",
         showAllQuantizations: "Mostra tutte le quantizzazioni",
         showAllQuantizationsDescription:
-          "Attivata: elenca tutte le quantizzazioni presenti sul dispositivo, incluse quelle non scaricate. Disattivata: mostra solo le quantizzazioni scaricate.",
+          "Attivata: elenca tutte le quantizzazioni in «On Device», incluse quelle non scaricate. Disattivata: mostra solo le quantizzazioni scaricate.",
       },
       menu: {
         title: "Menu della chat",
@@ -1419,7 +1442,7 @@ export const it = {
       cancelAction: "Annulla l'addestramento",
       stopTitle: "Ferma l'addestramento",
       stopDescription:
-        "Scegli come fermare il run di addestramento in corso. «Ferma e salva» crea un checkpoint da cui potrai riprendere più tardi; con «Ferma» non potrai riprendere l'addestramento.",
+        "Scegli come fermare il run di addestramento in corso. «Ferma e salva» crea un checkpoint da cui potrai riprendere più tardi; se lo fermi senza salvare non potrai riprendere l'addestramento.",
       stopAction: "Ferma",
       stopping: "Arresto in corso...",
       stopAndSave: "Ferma e salva",
@@ -1564,6 +1587,7 @@ export const it = {
         loadingDataset: "Caricamento del dataset",
         configuring: "Configurazione",
         training: "Addestramento",
+        finalizing: "Salvataggio del modello",
         completed: "Completato",
         error: "Errore",
         stopped: "Fermato",

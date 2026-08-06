@@ -126,9 +126,9 @@ def test_desktop_release_asset_names_are_human_readable() -> None:
         "MacOS.dmg",
         "ARM64.app.tar.gz",
         "ARM64.app.tar.gz.sig",
-        "Ubuntu.AppImage",
-        "Ubuntu.AppImage.sig",
-        "Linux.deb",
+        "Linux.AppImage",
+        "Linux.AppImage.sig",
+        "Ubuntu.deb",
         "Windows.exe",
         "Windows.exe.sig",
     }
