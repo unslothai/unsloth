@@ -338,7 +338,6 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     }
   }, [refreshSttStatus]);
 
-  // Safetensors audio runs on MLX here, and MLX has no TTS branch.
   const isMac = usePlatformStore((s) => s.deviceType) === "mac";
 
   const handleModelSelect = useCallback(
@@ -353,9 +352,8 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       }
       // TTS (or an uncurated repo the user pasted, which /load will validate).
       setMode("speak");
-      // On a Mac a safetensors TTS pick loads through MLX, which has no TTS branch:
-      // it loads, then every generation 501s. Take the group's GGUF build instead,
-      // and say so, rather than letting the pick dead-end.
+      // Safetensors here loads on MLX and then 501s on every generation, so take
+      // the GGUF build (see ggufSiblingFor) and say so.
       const gguf = isMac && !meta.ggufFilename ? ggufSiblingFor(id) : null;
       if (gguf) {
         toast.info(
