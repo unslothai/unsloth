@@ -1129,11 +1129,11 @@ export function DiffusionTrainPanel({
         >
           <div>
             {/* Matches "Training settings" across the rule, so the two headings read as one row. */}
-            <h2 className="font-heading flex items-center gap-1.5 text-base font-medium">
-              <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-4" />
+            <h2 className="font-heading flex items-center gap-1.5 text-xl font-medium">
+              <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-[22px]" />
               Train a LoRA
             </h2>
-            <p className="mt-1 text-ui-11 leading-snug text-muted-foreground">
+            <p className="mt-1 text-ui-12p5 leading-snug text-muted-foreground">
               Teach a model a style or subject from your own images.
             </p>
           </div>
@@ -1484,8 +1484,8 @@ export function DiffusionTrainPanel({
           <>
             <div className="flex flex-col gap-4">
               <div className="flex items-center justify-between">
-                <span className="font-heading flex items-center gap-1.5 text-base font-medium">
-                  <HugeiconsIcon icon={Settings02Icon} className="size-4" />
+                <span className="font-heading flex items-center gap-1.5 text-xl font-medium">
+                  <HugeiconsIcon icon={Settings02Icon} className="size-[22px]" />
                   Training settings
                 </span>
                 <span className="text-xs text-muted-foreground">

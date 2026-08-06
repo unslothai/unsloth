@@ -1559,12 +1559,12 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           >
           {/* Names the pane, as the Images column does. h-9 keeps both pages' headings level. */}
           <div className="grid gap-1">
-            <h2 className="flex h-9 items-center gap-2 font-heading text-lg font-medium text-foreground">
+            <h2 className="flex h-9 items-center gap-2 font-heading text-xl font-medium text-foreground">
               {/* The app's Video icon, same as the sidebar row. */}
-              <HugeiconsIcon icon={FlimSlateIcon} className="size-4 shrink-0" />
+              <HugeiconsIcon icon={FlimSlateIcon} className="size-[22px] shrink-0" />
               Create videos
             </h2>
-            <p className="text-ui-11p5 leading-snug text-muted-foreground">
+            <p className="text-ui-12p5 leading-snug text-muted-foreground">
               Generate a video from a prompt
             </p>
           </div>
