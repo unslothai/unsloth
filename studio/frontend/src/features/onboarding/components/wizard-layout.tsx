@@ -77,7 +77,8 @@ export function WizardLayout() {
   }, [isFinalStep]);
 
   return (
-    <div className="relative flex min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] justify-center overflow-y-auto overflow-x-hidden bg-gradient-to-br from-primary/5 via-background to-primary/3 p-4 sm:p-6 md:p-8">
+    // a bounded height, not just a minimum, or the container grows to the card and never scrolls
+    <div className="relative flex h-[calc(100dvh-var(--studio-titlebar-height,0px))] justify-center overflow-y-auto overflow-x-hidden bg-gradient-to-br from-primary/5 via-background to-primary/3 p-4 sm:p-6 md:p-8">
       {showSplash && (
         <SplashScreen
           onStartOnboarding={() => setShowSplash(false)}
