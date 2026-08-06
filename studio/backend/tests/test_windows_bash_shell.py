@@ -2123,3 +2123,70 @@ def test_a_document_name_may_still_hold_spaces(windows_terminal, command):
     # The other half: one trailing word is the document's own name, which may
     # carry spaces, and that is still a document rather than a command line.
     assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c start "" "C:\\tmp\\curl notes report.pdf"',
+        'cmd /c start "" "C:\\tmp\\my report.pdf"',
+    ],
+)
+def test_a_document_name_may_hold_many_words(windows_terminal, command):
+    # An OPTION behind the path is what makes a quoted string a command line.
+    # Without one the extra words belong to the file's own name, however many
+    # of them there are, and START opens it by association.
+    assert not tools._find_blocked_commands(command)
+
+
+def test_an_option_still_makes_it_a_command_line(windows_terminal):
+    # The other half, unchanged: `-Command` is an option, so this runs a shell.
+    assert "powershell" in tools._find_blocked_commands(
+        'start "" "C:\\tools\\powershell -Command script.ps1"'
+    )
+
+
+def test_a_quoted_shell_path_keeps_its_own_arguments(windows_cmd_only):
+    # The program name comes back with its quote marks removed, so slicing the
+    # payload by its length landed inside the executable and rebuilt a broken
+    # word. Measured on the raw span instead, closing mark included.
+    assert "powershell" in tools._find_blocked_commands(
+        'cmd /c"C:\\Program Files\\cmd.exe" /c powershell'
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    ['cmd /c "C:\\rm&x\\notepad.exe"', 'cmd /c start "" "C:\\rm&x\\notepad.exe"'],
+)
+def test_an_operator_inside_a_quoted_path_is_path_text(windows_terminal, command):
+    # cmd treats a special character inside a quoted path as text, so `rm&x` is
+    # a directory name rather than a command chain.
+    assert not tools._find_blocked_commands(command)
+
+
+def test_a_real_chain_behind_a_path_still_chains(windows_terminal):
+    # The other half: whitespace means the payload is not one path, so the
+    # operator really does open a second command.
+    assert "rm" in tools._find_blocked_commands(
+        'cmd /c "C:\\tools\\notepad.exe&rm -rf x"'
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["cmd //c call 'C:\\tmp\\rm.cmd' -rf x", "cmd //c call 'C:/tmp/rm.cmd' -rf x"],
+)
+def test_a_cmd_payload_keeps_cmd_paths_under_bash(windows_git_bash_only, command):
+    # bash's quoting carries the backslashes through, so the payload reaches cmd
+    # with the path intact and CALL resolves the batch file at the end of it.
+    assert "rm" in tools._find_blocked_commands(command)
+
+
+def test_a_group_closing_on_its_last_word_ends_the_command(windows_cmd_only):
+    # `if 1==0 (echo no) else powershell` runs the ELSE clause when the
+    # condition is false, and treating `no)` as an ordinary argument left it
+    # unread. The spaced spelling already worked.
+    assert "powershell" in tools._find_blocked_commands(
+        "cmd /c if 1==0 (echo no) else powershell -Command ls"
+    )

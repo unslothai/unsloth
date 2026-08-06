@@ -1148,12 +1148,15 @@ def _is_document_target(target: str) -> bool:
             break
         if _path_suffix(word) in _WINDOWS_EXE_SUFFIXES:
             return False
-    if stopped < len(words) - 1:
-        # The path ended with more than one word behind it, so those words are
-        # ARGUMENTS and the whole string is a command line. Judging it by the
-        # last one read `C:\tools\powershell -Command script.ps1` as a `.ps1`
-        # document and skipped the shell in front of it. A single trailing word
-        # is still the document's own name, which may hold spaces.
+    if stopped < len(words) and any(
+        word.strip('"').startswith("-") or _is_start_switch(word.strip('"'))
+        for word in words[stopped:]
+    ):
+        # An OPTION behind the path is what makes the string a command line:
+        # `C:\tools\powershell -Command script.ps1` runs a shell and hands it a
+        # script. Without one the extra words belong to the file's own name,
+        # which may hold as many spaces as it likes, so
+        # `C:\tmp\curl notes report.pdf` is one document START opens.
         return False
     # Nothing along the path is executable, so the whole target is a candidate
     # FILE and its own suffix decides. A document's name may hold spaces, which
@@ -1795,9 +1798,13 @@ def _quoted_program_word(payload: str) -> str:
             # below already stops where the path really ends.
             break
         program.append(bare)
-        if os.path.splitext(os.path.basename(bare.replace("\\", "/")))[1].lower() in (
-            _WINDOWS_EXE_SUFFIXES
-        ):
+        # `strip` above drops a PAIR of marks; a closing one glued to the end of
+        # a span whose opening mark sat on an earlier word survives it, and it
+        # hid the suffix: `"C:\Program Files\cmd.exe"` walked past its own
+        # `.exe` and reported the folder in front of it.
+        if os.path.splitext(os.path.basename(bare.replace("\\", "/").rstrip('"')))[
+            1
+        ].lower() in _WINDOWS_EXE_SUFFIXES:
             return " ".join(program)
     # PATHEXT makes the suffix optional, so a path that never carries one is
     # still a program: `cmd /c "C:\\tools.v2\\notepad -x"` launches notepad.
@@ -1969,7 +1976,18 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
         `cmd /c powershell&echo ok` runs powershell and read as one program named
         `powershell&echo`. That is a command line too, escaped carets aside.
         """
-        if _has_bare_cmd_operator(text):
+        if (
+            _has_bare_cmd_operator(text)
+            # Unless the whole payload is ONE program path. cmd treats a special
+            # character inside a quoted path as text, so `C:\rm&x\notepad.exe`
+            # names a directory called `rm&x` rather than chaining a command.
+            # A payload holding whitespace is not that shape and still chains.
+            and not (
+                not any(char.isspace() for char in text)
+                and _opens_a_path(text)
+                and _path_suffix(text.strip('"')) in _WINDOWS_EXE_SUFFIXES
+            )
+        ):
             # An operator means a second command follows, whatever the first one
             # looks like, so the whole line is read.
             return _find_blocked_commands(text, _cmd_payload = True)
@@ -2001,8 +2019,20 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             # Spelled by its stem so the walk reads it as the shell it is: the
             # path is what made it unrecognisable, and `cmd /c powershell` is
             # what this line runs once the directory is off the front.
+            # Measured on the raw text: `_quoted_program_word` hands back the
+            # name with its quote marks removed, so slicing by its length landed
+            # inside `"C:\Program Files\cmd.exe"` and rebuilt a broken word.
+            consumed = len(program_word)
+            for extra in range(len(text) - consumed + 1):
+                if text[: consumed + extra].replace('"', "") == program_word:
+                    consumed += extra
+                    break
+            if consumed < len(text) and text[consumed] == '"':
+                # The closing mark of the span belongs to the program, not to
+                # the arguments behind it.
+                consumed += 1
             return found | _find_blocked_commands(
-                program_stem + text[len(program_word) :], _cmd_payload = True
+                program_stem + text[consumed:], _cmd_payload = True
             )
         if any(char.isspace() or char in "\"'" for char in text):
             return _find_blocked_commands(text, _cmd_payload = True)
@@ -2394,6 +2424,14 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             expect_command = prefix_pending or tail_base in _SHELL_KEYWORDS_AS_SEP
             continue
         if not expect_command:
+            if not lexed_posix and _ends_with_cmd_operator(token):
+                # A group closing on the same token as its last word still ends
+                # the command: `if 1==0 (echo no) else powershell` runs the ELSE
+                # clause, and treating `no)` as an ordinary argument left it
+                # unread.
+                expect_command = True
+                prefix_pending = False
+                prefix_command = ""
             continue
         # A redirection may precede the command word (`</dev/null rm -rf x`).
         if _REDIR_PREFIX_RE.match(token):
@@ -2424,10 +2462,12 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
         # them before resolving the program, so `call "powershell" -Command ls`
         # and `"rm" -rf x` run the same thing their bare spellings do.
         base = _token_basename(_unquote(token))
-        if not lexed_posix:
+        if not lexed_posix or in_cmd_payload or _cmd_payload:
             # A backslash is cmd's path separator, not an escape, and
-            # os.path.basename leaves such a path whole off Windows. Only on
-            # this lexer: under bash those backslashes really are escapes.
+            # os.path.basename leaves such a path whole off Windows. True of a
+            # `/c` payload too, whatever lexed the line it came from: bash's
+            # quoting carries the backslashes through, so
+            # `cmd //c call 'C:\tmp\rm.cmd'` reaches cmd with the path intact.
             base = _cmd_path_basename(_unquote(token), base)
         screened_indexes.add(token_index)
         # Every word this loop reaches is one the shell would RUN, wrappers and
@@ -2796,9 +2836,13 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
         # Normalised like every other program lookup: os.path.basename leaves a
         # backslash path whole off Windows, so `call C:\tmp\rm.cmd` reported
         # nothing while the forward-slash spelling of the same path was caught.
-        published = _token_basename(_unquote(tokens[index]))
-        if not lexed_posix:
-            published = _cmd_path_basename(_unquote(tokens[index]), published)
+        # CALL is cmd's builtin, so anything this list holds is a word cmd
+        # resolves, whatever lexed the line it came from. bash's quoting carries
+        # the backslashes through: `cmd //c call 'C:\tmp\rm.cmd'` reaches cmd
+        # with the path intact, and reading it as one word missed the batch file.
+        published = _cmd_path_basename(
+            _unquote(tokens[index]), _token_basename(_unquote(tokens[index]))
+        )
         if published in _BLOCKED_COMMANDS:
             blocked.add(published)
         else:
