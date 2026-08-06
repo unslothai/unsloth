@@ -205,9 +205,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "QwenImagePipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image",
-        # int8 only: fp8 is family-denied (_FAMILY_SCHEME_DENY) so a repo entry would be dead.
+        # int8 only: no fp8 DiT checkpoint is published for this family yet. fp8 is no longer
+        # denied for inference, so adding one here would now be live rather than dead.
         prequant_repos = (("int8", "unsloth/Qwen-Image-FP8"),),
-        # Pre-cast Qwen2.5-VL-7B (16.6 -> 8.8 GB). The DiT fp8 denial is a transformer-scheme rule; the layerwise TE cast is unaffected.
+        # Pre-cast Qwen2.5-VL-7B (16.6 -> 8.8 GB). Always was independent of the DiT scheme rules.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image", "qwenimage"),
