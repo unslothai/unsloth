@@ -27,6 +27,12 @@ on:
       - 'pyproject.toml'
       - 'tests/studio/**'
       - '.github/workflows/studio-api-smoke.yml'
+      # Every server boot in this workflow shells out to that script, so an edit
+      # to it changes what this workflow actually runs.
+      - '.github/scripts/boot-studio-api-only.sh'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
   push:
     branches: [main, pip]
   workflow_dispatch:
@@ -109,14 +115,11 @@ jobs:
           key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
       - name: Install Unsloth (--local, --no-torch)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
       - name: Install pyjwt for the JWT-expiry forge test
         run: pip install 'pyjwt>=2.6'
@@ -124,11 +127,7 @@ jobs:
       - name: Reset auth + boot Unsloth (API-only)
         run: |
           # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
-            > logs/studio.log 2>&1 &
-          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
 
       - name: Wait for /api/health
         run: |

@@ -164,6 +164,7 @@ export function buildCachedInventoryRow(
     repo_id: string;
     size_bytes: number;
     cache_path?: string;
+    load_cache_path?: string;
     partial?: boolean;
     partial_transport?: string | null;
     has_variant_state?: boolean;
@@ -220,6 +221,7 @@ export function buildCachedInventoryRow(
     capabilities,
     bytes: row.size_bytes,
     cachePath: row.cache_path ?? null,
+    loadCachePath: row.load_cache_path ?? null,
     lastModified:
       typeof row.last_modified === "number" &&
       Number.isFinite(row.last_modified) &&

@@ -40,6 +40,12 @@ on:
       - 'install.sh'
       - 'pyproject.toml'
       - '.github/workflows/studio-mac-inference-smoke.yml'
+      # Every server boot in this workflow shells out to that script, so an edit
+      # to it changes what this workflow actually runs.
+      - '.github/scripts/boot-studio-api-only.sh'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
   push:
     branches: [main, pip]
   # Manual trigger for pre-warming model caches on main, or re-running
@@ -103,6 +109,45 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
+
+      # Shared preamble, but it sits below phase 1's model priming because the
+      # install probe (stories260K) rides along in that same step. `!cancelled()`
+      # Deliberately NO `if:`, so this rides the implicit success(). Nothing
+      # phase-local runs before it any more, so the only thing the implicit check
+      # can see is a genuine shared-preamble failure -- checkout, setup-node or
+      # setup-python -- and those SHOULD stop the job rather than install onto a
+      # runner that never got its pinned toolchain.
+      - name: Install Unsloth (--local, --no-torch)
+        id: install
+        timeout-minutes: 20
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+
+      # Last step of the shared preamble. Phases 2 and 3 gate on its outcome:
+      # once checkout, install and this check have passed, a failure inside one
+      # phase says nothing about the others, so the others should still run.
+      # Gates on `install` explicitly rather than on the implicit `success()` so
+      # that it keeps holding if a phase-local step is ever moved back above it.
+      # A broken install still skips this step, so its outcome stays non-success
+      # and the phases below correctly stay out.
+      - name: Assert llama.cpp loads on this macOS
+        id: assert-llama
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        timeout-minutes: 5
+        run: bash .github/scripts/assert-llama-loads.sh
+
+      # Phase 1's environment and model cache sit HERE, after the shared preamble,
+      # not before it. Ordering them first was what forced the installer onto an
+      # explicit `!cancelled()`: a phase-1 GGUF download failure would otherwise
+      # skip the install under the implicit success() and take phases 2 and 3
+      # down with it. That gate bought phase independence at the cost of running
+      # the installer on a runner whose setup-node or setup-python had failed.
+      # Moving the block is strictly better than either gate, because it makes
+      # the two failure classes structural: everything above is genuinely
+      # shared, everything from here down is phase 1's own.
       - name: Phase 1 environment
         run: |
           echo "GGUF_REPO=unsloth/gemma-3-270m-it-GGUF" >> "$GITHUB_ENV"
@@ -151,42 +196,6 @@ jobs:
         with:
           path: hf-cache
           key: ${{ runner.os }}-hf-unsloth/gemma-3-270m-it-GGUF-UD-Q4_K_XL-v2
-
-      # Shared preamble, but it sits below phase 1's model priming because the
-      # install probe (stories260K) rides along in that same step. `!cancelled()`
-      # keeps it out of the implicit `success()` chain: a phase-1 GGUF download
-      # failure or 15-minute timeout is a phase-1 resource problem, and skipping
-      # the shared install because of it would take the assert-llama gate --
-      # and with it phases 2 and 3 -- down as well. A step timeout sets the step
-      # to failed, not cancelled (actions/runner StepsRunner.cs), so `!cancelled()`
-      # is true here; a real run cancellation still skips.
-      - name: Install Unsloth (--local, --no-torch)
-        id: install
-        if: ${{ !cancelled() }}
-        timeout-minutes: 20
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
-
-      # Last step of the shared preamble. Phases 2 and 3 gate on its outcome:
-      # once checkout, install and this check have passed, a failure inside one
-      # phase says nothing about the others, so the others should still run.
-      # Gates on `install` explicitly rather than on the implicit `success()`,
-      # for the same reason as the step above: the implicit check is job-wide, so
-      # a phase-1 download failure would skip it and silently take phases 2 and 3
-      # with it. A broken install still skips this step, so its outcome stays
-      # non-success and the phases below correctly stay out.
-      - name: Assert llama.cpp loads on this macOS
-        id: assert-llama
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        timeout-minutes: 5
-        run: bash .github/scripts/assert-llama-loads.sh
-
       - name: Install OpenAI + Anthropic Python SDKs
         timeout-minutes: 5
         run: pip install 'openai>=1.50' 'anthropic>=0.40'
@@ -195,11 +204,7 @@ jobs:
         timeout-minutes: 2
         run: |
           # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
-            > logs/studio.log 2>&1 &
-          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
 
       - name: Wait for /api/health
         timeout-minutes: 5
@@ -443,7 +448,14 @@ jobs:
           key: ${{ runner.os }}-gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v2
 
       - name: Reset auth + boot Unsloth (API-only, default tool policy)
-        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' }}
+        id: boot-tools
+        # Phase-local prerequisite on top of the shared gate. The phase stays
+        # independent of EARLIER phases, which is what the shared assert-llama
+        # gate buys, but it is not independent of its own download: without this
+        # clause a failed download still boots a server with no model and runs
+        # the test against it. `!= 'failure'` and not `== 'success'`, because a
+        # cache hit skips the download.
+        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' && steps.download-gguf-tools.outcome != 'failure' }}
         timeout-minutes: 2
         # We deliberately use the API-only mode rather than
         # `unsloth studio run` because the latter calls
@@ -454,14 +466,12 @@ jobs:
         # tool_policy=None so each request's `enable_tools` field is
         # honoured.
         run: |
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
-            > logs/studio_tools.log 2>&1 &
-          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port "$STUDIO_PORT" --log logs/studio_tools.log
 
       - name: Wait for /api/health, log in, change password, load model
-        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' }}
+        id: ready-tools
+        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' && steps.boot-tools.outcome == 'success' }}
         # 180s health wait + curl's own --max-time 600, with headroom.
         timeout-minutes: 15
         run: |
@@ -495,7 +505,7 @@ jobs:
             | jq '{status, display_name}'
 
       - name: Tool calling, server-side tools, thinking on/off
-        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' && steps.ready-tools.outcome == 'success' }}
         timeout-minutes: 20
         env:
           BASE_URL: http://127.0.0.1:18898
@@ -872,25 +882,27 @@ jobs:
           key: ${{ runner.os }}-gguf-unsloth/gemma-4-E2B-it-GGUF-gemma-4-E2B-it-UD-Q4_K_XL.gguf-mmproj-F16.gguf-v3
 
       - name: Install OpenAI + Anthropic Python SDKs
+        id: sdks-vision
         if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' }}
         timeout-minutes: 5
         run: pip install 'openai>=1.50' 'anthropic>=0.40'
 
       - name: Reset auth + boot Unsloth (API-only)
-        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' }}
+        id: boot-vision
+        # Same phase-local prerequisite as phase 2. The SDK clause is here and
+        # not in phase 2 because only this phase imports openai/anthropic.
+        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' && steps.sdks-vision.outcome == 'success' && steps.download-gguf-vision.outcome != 'failure' }}
         timeout-minutes: 2
         # See phase 2's comment: API-only mode keeps tool_policy=None so
         # response_format requests aren't routed through the agentic
         # tool loop.
         run: |
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
-            > logs/studio_vision.log 2>&1 &
-          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port "$STUDIO_PORT" --log logs/studio_vision.log
 
       - name: Wait for /api/health, log in, change password, load model
-        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' }}
+        id: ready-vision
+        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' && steps.boot-vision.outcome == 'success' }}
         # 180s health wait + curl's own --max-time 900, with headroom.
         timeout-minutes: 20
         run: |
@@ -929,7 +941,7 @@ jobs:
             | jq '{status, display_name, is_vision}'
 
       - name: JSON schema decoding + image input
-        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' && steps.ready-vision.outcome == 'success' }}
         timeout-minutes: 20
         env:
           BASE_URL: http://127.0.0.1:18899

@@ -37,6 +37,24 @@ def timed(fn, iters = 20):
         return f"UNSUPPORTED ({type(e).__name__})"
 
 
+def _identity(run, reference):
+    """Whether ``run``'s dense output is bitwise-identical to the default dispatch's.
+
+    "yes" on exactly one backend names the kernel the dispatcher selected. A backend that cannot
+    run the dense mask at all reports why instead, so the column never silently reads as a
+    mismatch when nothing ran."""
+    if reference is None:
+        return "n/a"
+    try:
+        out = run()
+    except torch.OutOfMemoryError:
+        torch.cuda.empty_cache()
+        return "OOM"
+    except Exception:  # noqa: BLE001
+        return "unsupported"
+    return "yes" if torch.equal(reference, out) else f"no ({(reference - out).abs().max():.1e})"
+
+
 q, k, v = mk(), mk(), mk()
 dense = torch.ones(B, 1, N, N, dtype = torch.bool, device = dev)
 
@@ -48,8 +66,17 @@ backends = {
     "CUDNN": [SDPBackend.CUDNN_ATTENTION],
 }
 
+# The default dispatch's own dense output, so each forced backend can be checked against it.
+# Timings alone cannot say WHICH backend the dispatcher picked, because forcing one adds
+# sdpa_kernel overhead and two different kernels can land at similar times. Bitwise identity can:
+# the forced backend that reproduces this tensor exactly is the one the dispatcher chose.
+try:
+    reference = F.scaled_dot_product_attention(q, k, v, attn_mask = dense)
+except Exception:  # noqa: BLE001 -- no reference: the identity column just reports n/a
+    reference = None
+
 print(f"shape B={B} H={H} N={N} D={D} {dt}\n")
-print(f"{'backend':<20}{'mask=dense(ms)':>18}{'mask=None(ms)':>18}")
+print(f"{'backend':<20}{'mask=dense(ms)':>18}{'mask=None(ms)':>18}{'==default(dense)':>19}")
 for name, bk in backends.items():
 
     def run_dense():
@@ -68,4 +95,4 @@ for name, bk in backends.items():
     nms = timed(run_none)
     d_s = f"{dms:.2f}" if isinstance(dms, float) else dms
     n_s = f"{nms:.2f}" if isinstance(nms, float) else nms
-    print(f"{name:<20}{d_s:>18}{n_s:>18}")
+    print(f"{name:<20}{d_s:>18}{n_s:>18}{_identity(run_dense, reference):>19}")
