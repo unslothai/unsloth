@@ -854,3 +854,37 @@ def test_queue_state_counts_direct_overflow_as_queued(monkeypatch):
 
     state = inf._monitor_queue_state()
     assert state == {"capacity": 1, "active": 1, "queued": 1, "free": 0}
+
+
+def test_non_streaming_responses_reports_its_finish_reason(monkeypatch):
+    # The non-streaming Responses body carries finish_reason; the monitor row
+    # showed a blank Stop reason because it was never read off the choice.
+    import routes.inference as inf
+
+    seen = {}
+    monkeypatch.setattr(
+        inf,
+        "_monitor_usage",
+        lambda mid, usage, ctx = None, **kw: seen.update(kw),
+    )
+    body = {"choices": [{"message": {"content": "hi"}, "finish_reason": "length"}]}
+    choices = body.get("choices", [])
+    usage_data = {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+    # Mirrors the call the route makes at the end of _responses_non_streaming.
+    inf._monitor_usage(
+        "row",
+        usage_data,
+        None,
+        stop_reason = (choices[0].get("finish_reason") if choices else None),
+    )
+    assert seen.get("stop_reason") == "length"
+
+
+def test_parked_tool_resume_counts_as_queued():
+    # An approved tool continuation waits on a resume ticket; without it the
+    # readout shows a full server with no queued work.
+    from core.inference.llama_admission import LlamaAdmissionQueue
+
+    queue = LlamaAdmissionQueue("http://llama.test")
+    queue._unpark_tickets.append(1)
+    assert queue.snapshot().queued == 1

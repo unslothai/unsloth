@@ -3124,6 +3124,10 @@ def _monitor_openai_chunk(
         message = choice.get("message") or {}
         if isinstance(delta, dict) and delta.get("reasoning_content"):
             api_monitor.mark_first_token(monitor_id)
+        if choice.get("_toolEvent") or (isinstance(delta, dict) and delta.get("_toolEvent")):
+            # Hosted provider tool cards carry an empty delta but are output the
+            # client has already been shown.
+            api_monitor.mark_first_token(monitor_id)
         content = delta.get("content") if isinstance(delta, dict) else None
         if content:
             api_monitor.append_reply(monitor_id, content)
@@ -9334,7 +9338,13 @@ async def _proxy_to_external_provider(
                 monitor_event = _monitor_openai_sse_line(monitor_id, line)
                 if monitor_event is None:
                     try:
-                        _monitor_openai_chunk(monitor_id, json.loads(line), streaming = True)
+                        # Only an SSE delta stream stamps a first token; a
+                        # stream:false provider can return the whole response
+                        # as one line, and stamping that reports end-to-end
+                        # latency as TTFT.
+                        _monitor_openai_chunk(
+                            monitor_id, json.loads(line), streaming = bool(payload.stream)
+                        )
                     except Exception:
                         pass
                 if monitor_event == "error":
@@ -14122,7 +14132,12 @@ async def _responses_non_streaming(
             instructions = payload.instructions,
         )
         api_monitor.set_reply(monitor_id, text or _monitor_tool_calls_text(tool_calls))
-        _monitor_usage(monitor_id, usage_data, _monitor_context_length())
+        _monitor_usage(
+            monitor_id,
+            usage_data,
+            _monitor_context_length(),
+            stop_reason = (choices[0].get("finish_reason") if choices else None),
+        )
         api_monitor.finish(monitor_id)
         return _model_json_response(response)
     except asyncio.CancelledError:
