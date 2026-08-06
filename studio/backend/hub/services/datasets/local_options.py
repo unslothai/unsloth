@@ -36,19 +36,23 @@ _CONFIG_RE = re.compile(r"[A-Za-z0-9._\-]+")
 _SPLIT_RE = re.compile(r"[A-Za-z0-9_\-\[\]:%.+ ]+")
 
 
-def _valid_option(value: Any, pattern: re.Pattern[str]) -> Optional[str]:
+def _valid_option(
+    value: Any, pattern: re.Pattern[str], *, reject_dotdot: bool = False
+) -> Optional[str]:
     if not isinstance(value, str):
         return None
     normalized = value.strip()
     if not normalized or len(normalized) > _MAX_OPTION_LENGTH:
         return None
-    if (
-        "\x00" in normalized
-        or "/" in normalized
-        or "\\" in normalized
-        or ".." in normalized
-        or pattern.fullmatch(normalized) is None
-    ):
+    if "\x00" in normalized or "/" in normalized or "\\" in normalized:
+        return None
+    # _check_split_name rejects ".." anywhere, _check_subset does not, so a config named
+    # v1..v2 is startable and hiding it would be the same bug in the other direction.
+    # Neither charset admits a separator, so the bare "." and ".." names are the only
+    # traversal shapes left to refuse.
+    if normalized in {".", ".."} or (reject_dotdot and ".." in normalized):
+        return None
+    if pattern.fullmatch(normalized) is None:
         return None
     return normalized
 
@@ -60,7 +64,11 @@ def _split_names(value: Any) -> list[str]:
         candidates = (item.get("name") if isinstance(item, dict) else item for item in value)
     else:
         return []
-    return [name for item in candidates if (name := _valid_option(item, _SPLIT_RE)) is not None]
+    return [
+        name
+        for item in candidates
+        if (name := _valid_option(item, _SPLIT_RE, reject_dotdot = True)) is not None
+    ]
 
 
 def _config_name(value: Any, fallback: Any = None) -> Optional[str]:
@@ -125,7 +133,7 @@ def _add_config_options(options: set[tuple[str, str]], payload: Any) -> None:
         else:
             splits = ()
         for split_value in splits:
-            split = _valid_option(split_value, _SPLIT_RE)
+            split = _valid_option(split_value, _SPLIT_RE, reject_dotdot = True)
             if split is None:
                 continue
             options.add((config, split))
