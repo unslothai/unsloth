@@ -1293,7 +1293,7 @@ export function DatasetSection() {
                     </TooltipContent>
                   </Tooltip>
                 </div>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div className="flex flex-col gap-1.5">
                     <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                       {t("studio.dataset.trainSplitStart")}

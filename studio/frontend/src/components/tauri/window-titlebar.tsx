@@ -447,42 +447,42 @@ export function WindowTitlebar({
       </header>
       <div
         aria-hidden="true"
-        className="fixed inset-x-2 top-0 z-[70] h-1 cursor-n-resize"
+        className="pointer-events-auto fixed inset-x-2 top-0 z-[70] h-1 cursor-n-resize"
         onMouseDown={handleResizeMouseDown("North")}
       />
       <div
         aria-hidden="true"
-        className="fixed inset-x-2 bottom-0 z-[70] h-1 cursor-s-resize"
+        className="pointer-events-auto fixed inset-x-2 bottom-0 z-[70] h-1 cursor-s-resize"
         onMouseDown={handleResizeMouseDown("South")}
       />
       <div
         aria-hidden="true"
-        className="fixed inset-y-2 left-0 z-[70] w-1 cursor-w-resize"
+        className="pointer-events-auto fixed inset-y-2 left-0 z-[70] w-1 cursor-w-resize"
         onMouseDown={handleResizeMouseDown("West")}
       />
       <div
         aria-hidden="true"
-        className="fixed inset-y-2 right-0 z-[70] w-1 cursor-e-resize"
+        className="pointer-events-auto fixed inset-y-2 right-0 z-[70] w-1 cursor-e-resize"
         onMouseDown={handleResizeMouseDown("East")}
       />
       <div
         aria-hidden="true"
-        className="fixed left-0 top-0 z-[70] size-3 cursor-nw-resize"
+        className="pointer-events-auto fixed left-0 top-0 z-[70] size-3 cursor-nw-resize"
         onMouseDown={handleResizeMouseDown("NorthWest")}
       />
       <div
         aria-hidden="true"
-        className="fixed right-0 top-0 z-[70] size-3 cursor-ne-resize"
+        className="pointer-events-auto fixed right-0 top-0 z-[70] size-3 cursor-ne-resize"
         onMouseDown={handleResizeMouseDown("NorthEast")}
       />
       <div
         aria-hidden="true"
-        className="fixed bottom-0 left-0 z-[70] size-3 cursor-sw-resize"
+        className="pointer-events-auto fixed bottom-0 left-0 z-[70] size-3 cursor-sw-resize"
         onMouseDown={handleResizeMouseDown("SouthWest")}
       />
       <div
         aria-hidden="true"
-        className="fixed bottom-0 right-0 z-[70] size-3 cursor-se-resize"
+        className="pointer-events-auto fixed bottom-0 right-0 z-[70] size-3 cursor-se-resize"
         onMouseDown={handleResizeMouseDown("SouthEast")}
       />
     </>

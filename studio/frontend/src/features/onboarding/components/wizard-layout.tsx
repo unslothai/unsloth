@@ -77,7 +77,7 @@ export function WizardLayout() {
   }, [isFinalStep]);
 
   return (
-    <div className="relative flex min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] items-center justify-center overflow-hidden bg-gradient-to-br from-primary/5 via-background to-primary/3 p-4 sm:p-6 md:p-8">
+    <div className="relative flex min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] justify-center overflow-y-auto overflow-x-hidden bg-gradient-to-br from-primary/5 via-background to-primary/3 p-4 sm:p-6 md:p-8">
       {showSplash && (
         <SplashScreen
           onStartOnboarding={() => setShowSplash(false)}
@@ -96,7 +96,8 @@ export function WizardLayout() {
       </Suspense>
       {!showSplash && (
         <motion.div
-          className="w-full max-w-5xl"
+          // my-auto centers the card when it fits and lets it scroll from the top when it does not
+          className="my-auto w-full max-w-5xl"
           initial={{ opacity: 0, scale: 0.98, y: 10 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           transition={{

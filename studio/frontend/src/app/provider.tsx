@@ -284,6 +284,22 @@ function TauriUpdateLayer({
   );
 }
 
+/**
+ * Publishes the desktop titlebar height on <html> so body-portaled surfaces (dialogs,
+ * alert dialogs) can keep clear of it. The chrome style maps below are inline on a
+ * wrapper div, which portaled content never inherits from.
+ */
+function WindowChromeTopInsetEffect({ height }: { height: string }) {
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--studio-window-chrome-top", height);
+    return () => {
+      root.style.removeProperty("--studio-window-chrome-top");
+    };
+  }, [height]);
+  return null;
+}
+
 const HIDDEN_TITLEBAR_SIDEBAR_ROUTES = new Set([
   "/onboarding",
   "/login",
@@ -511,6 +527,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
           }
           style={MAC_NATIVE_CHROME_STYLE}
         >
+          <WindowChromeTopInsetEffect height="34px" />
           {!showApp || hidesTitlebarSidebar ? (
             <div
               data-tauri-drag-region={true}
@@ -533,6 +550,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       className="relative h-dvh min-h-0 overflow-hidden bg-background"
       style={CUSTOM_CHROME_STYLE}
     >
+      <WindowChromeTopInsetEffect height="34px" />
       <WindowTitlebar showSidebarSurface={showSidebarSurface} />
       <div className="h-full min-h-0 overflow-hidden">{content}</div>
     </div>
