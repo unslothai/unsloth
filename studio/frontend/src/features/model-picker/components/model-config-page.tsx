@@ -895,7 +895,10 @@ export function ModelConfigPage({
   const mlxKvQuantOutcome =
     isActiveModel &&
     (config.mlxKvBits ?? null) === (loadedMlxKvBitsRequested ?? null)
-      ? mlxKvQuantReason || mlxKvQuantNote || null
+      ? // Both, not either: a partial verdict on a vision model carries a reason
+        // and a note, and dropping the note promises savings before the offset
+        // where quantization actually starts.
+        [mlxKvQuantReason, mlxKvQuantNote].filter(Boolean).join(". ") || null
       : null;
   const servedByMlx = isServedByMlx(
     target.isGguf,
@@ -913,7 +916,15 @@ export function ModelConfigPage({
   // values opens the section on its own so those stay visible. Frozen at mount
   // so editing a field back to its default cannot close the section underfoot.
   const [autoOpenAdvanced] = useState(() => hasNonDefaultAdvanced(config));
-  const showAdvanced = advancedPreference ?? autoOpenAdvanced;
+  // Frozen like the rest of the auto-open decision, so editing the width does
+  // not reopen the section the user just closed.
+  const [initialMlxKvBits] = useState(() => config.mlxKvBits ?? null);
+  // Applicability stays live, unlike the snapshot above: MLX can become
+  // available after this page mounts, and a width that starts applying then has
+  // to surface rather than stay hidden until a remount.
+  const autoOpenForMlxKvBits = servedByMlx && initialMlxKvBits != null;
+  const showAdvanced =
+    advancedPreference ?? (autoOpenAdvanced || autoOpenForMlxKvBits);
   const toggleAdvanced = saveAdvancedSettingsOpen;
   const contextInputRef = useRef<NumericValueInputHandle>(null);
   const maxSeqLengthInputRef = useRef<NumericValueInputHandle>(null);
