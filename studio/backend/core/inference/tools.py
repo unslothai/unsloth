@@ -394,14 +394,13 @@ def _newline_mark(text: str) -> str:
     """
     present = set(text)
     code = 1
-    limit = len(present) + len(_NEWLINE_MARK_UNUSABLE) + 2
-    for _ in range(limit):
-        while chr(code) in _NEWLINE_MARK_UNUSABLE or chr(code) in present:
-            code += 1
-        return chr(code)
-    return ""
-
-
+    # Bounded by the text's own distinct characters plus the unusable ones, so
+    # this cannot run away even on input built to be awkward.
+    while chr(code) in _NEWLINE_MARK_UNUSABLE or chr(code) in present:
+        code += 1
+        if code > len(present) + len(_NEWLINE_MARK_UNUSABLE) + 1:
+            return ""
+    return chr(code)
 # The characters bash expands a word against the filesystem for, and the
 # placeholder standing in for a QUOTED one during the same second lex.
 _GLOB_CHARS = frozenset("*?[")
