@@ -469,9 +469,11 @@ def test_the_native_plan_preflights_its_companion_repos_too(monkeypatch):
         gguf_filename = "z-image-turbo-Q4_K_M.gguf",
         model_kind = "gguf",
     )
+    # The companion is the unsloth mirror now, not the community repack: this PR repointed the
+    # table, and no legacy copy is cached here so prefer_cached_legacy_source keeps the mirror.
     assert {e["repo_id"] for e in plan["entries"]} == {
         "unsloth/Z-Image-Turbo-GGUF",
-        "Comfy-Org/z_image_turbo",
+        "unsloth/Z-Image-Turbo-ComfyUI",
     }
 
 

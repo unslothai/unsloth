@@ -1052,6 +1052,74 @@ def test_cached_models_scan_flags_a_single_file_diffusion_checkpoint(monkeypatch
     assert row["partial"] is False
 
 
+def test_a_companion_mirror_carries_the_flag_on_the_hub_row(monkeypatch, tmp_path):
+    """The chat picker is backed by /api/hub/cached-models, NOT the legacy /api/models one, so a
+    flag set only on the legacy route arrives as undefined here -- the same trap single_file fell
+    into. A mirror that reaches this scan must carry it.
+
+    Given a config.json, because the real mirrors have none: see the test below for what that
+    means today.
+    """
+    row = _diffusion_scan(
+        monkeypatch,
+        tmp_path,
+        "unsloth/Z-Image-Turbo-ComfyUI",
+        [_file("config.json", 12), _file("model.safetensors", 300_000_000)],
+        task = None,
+    )
+
+    assert row["companion"] is True
+    # Startup auto-load filters on capabilities.can_chat (isChattableCachedRepo), never on the
+    # flag, so a row carrying only the flag was still auto-loadable as a chat model.
+    assert row["capabilities"]["can_chat"] is False
+
+
+def test_an_ordinary_repo_is_not_flagged_as_a_companion(monkeypatch, tmp_path):
+    """The flag names an exact set of mirrors, so a repo of the same shape is untouched."""
+    row = _diffusion_scan(
+        monkeypatch,
+        tmp_path,
+        "unsloth/Qwen3-8B",
+        [_file("config.json", 12), _file("model.safetensors", 100)],
+        task = None,
+    )
+
+    assert row["companion"] is False
+    # ...and an ordinary chat repo keeps its chat capability.
+    assert row["capabilities"]["can_chat"] is True
+
+
+def test_the_real_companion_shape_never_reaches_a_row_at_all(monkeypatch, tmp_path):
+    """Why the flag above is a latch, not a live fix.
+
+    The published mirrors are ComfyUI-style: weights under split_files/ and no config.json or
+    model_index.json. _repo_non_gguf_model_payload classifies that as ``unknown``, so
+    has_runnable_weights is False and _scan_cached_models drops the repo before any row exists.
+    Pinned because the flag's whole value is covering the day that classifier learns to admit
+    these -- if this test starts failing, the flag is what stops a denoiser-less repo becoming a
+    chat pick.
+    """
+    from types import SimpleNamespace
+
+    snapshot = tmp_path / "snapshots" / _SNAPSHOT_SHA
+    snapshot.mkdir(parents = True)
+    files = [_file("split_files/vae/ae.safetensors", 300_000_000), _file("README.md", 100)]
+    for f in files:
+        target = snapshot / f.file_name
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_bytes(b"\0" * 16)
+    repo = SimpleNamespace(
+        repo_id = "unsloth/Z-Image-Turbo-ComfyUI",
+        repo_type = "model",
+        repo_path = tmp_path,
+        revisions = [SimpleNamespace(files = files, snapshot_path = snapshot, commit_hash = _SNAPSHOT_SHA)],
+    )
+    payload = cache_inventory._repo_non_gguf_model_payload(repo)
+
+    assert payload.model_format == "unknown"
+    assert payload.has_runnable_weights is False
+
+
 def test_cached_models_scan_leaves_chat_repos_unflagged(monkeypatch, tmp_path):
     """The flag is a diffusion-picker concern: a chat repo (no task) never carries it, so a plain
     safetensors model is not mistaken for a single-file checkpoint."""

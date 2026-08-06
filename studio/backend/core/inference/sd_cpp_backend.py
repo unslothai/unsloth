@@ -41,6 +41,8 @@ from core.inference.diffusion_families import (
     detect_family_for_pick,
     family_sd_cpp_supported,
     mirror_repo,
+    legacy_source_repo,
+    prefer_cached_legacy_source,
     prefer_ungated_mirror,
     resolve_base_repo,
     resolve_local_gguf_child,
@@ -326,20 +328,27 @@ def _fetch_repo_map(assets: list[tuple[str, str, str]], hf_token: Optional[str])
     """upstream asset repo -> the repo to actually fetch from (its ungated mirror, or itself).
 
     Decided per REPO over its whole file list, the same input ``download_plan`` uses, so staging
-    and the load agree even when a repo carries several assets."""
+    and the load agree even when a repo carries several assets.
+
+    Two swaps, in order: a GATED vendor base goes to its ungated mirror, then a mirror whose
+    community repack is already cached goes back to the repack. The second only ever spares an
+    existing install a re-download of bytes it already holds under the old repo key; a fresh one
+    still pulls the mirror."""
     by_repo: dict[str, list[str]] = {}
     for repo, filename, _kind in assets:
         by_repo.setdefault(repo, []).append(filename)
     return {
-        repo: prefer_ungated_mirror(repo, hf_token, files = names) for repo, names in by_repo.items()
+        repo: prefer_cached_legacy_source(prefer_ungated_mirror(repo, hf_token, files = names), names)
+        for repo, names in by_repo.items()
     }
 
 
 def _with_mirrors(repo_ids) -> tuple[str, ...]:
-    """``repo_ids`` plus the ungated mirror of each, de-duplicated, order preserved.
+    """``repo_ids`` plus the ungated mirror and the community repack of each, de-duplicated, order
+    preserved.
 
-    The delete-cached guard must protect whichever of the pair the bytes landed in, and that
-    decision is re-taken per load; naming both is cheap and cannot under-protect."""
+    The delete-cached guard must protect whichever of the set the bytes landed in, and that
+    decision is re-taken per load; naming all of them is cheap and cannot under-protect."""
     out: list[str] = []
     for rid in repo_ids:
         if not rid:
@@ -348,6 +357,9 @@ def _with_mirrors(repo_ids) -> tuple[str, ...]:
         mirror = mirror_repo(rid)
         if mirror:
             out.append(mirror)
+        legacy = legacy_source_repo(rid)
+        if legacy:
+            out.append(legacy)
     return tuple(dict.fromkeys(out))
 
 

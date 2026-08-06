@@ -113,9 +113,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         controlnet_pipeline_class = "FluxControlNetPipeline",
         controlnet_model_class = "FluxControlNetModel",
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
+        # Byte-identical mirror of comfyanonymous/flux_text_encoders (CLIP-L + T5-XXL fp16).
         sd_cpp_text_encoders = (
-            ("comfyanonymous/flux_text_encoders", "clip_l.safetensors", "clip_l"),
-            ("comfyanonymous/flux_text_encoders", "t5xxl_fp16.safetensors", "t5xxl"),
+            ("unsloth/flux-text-encoders", "clip_l.safetensors", "clip_l"),
+            ("unsloth/flux-text-encoders", "t5xxl_fp16.safetensors", "t5xxl"),
         ),
     ),
     # FLUX.2-klein is Flux2KleinPipeline (Qwen3 encoder), not the Mistral Flux2Pipeline, so it must precede a generic flux match.
@@ -137,14 +138,18 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         inpaint_pipeline_class = "Flux2KleinInpaintPipeline",
         # FLUX.2 scales >1MP inputs to ~1MP, so outpaint can't grow.
         inpaint_preserves_size = False,
-        # FLUX.2's 32-channel AE needs the latent-format override; the single-file VAE ships in Comfy-Org/flux2-dev. Shares Qwen3-4B with z-image.
-        sd_cpp_vae = ("Comfy-Org/flux2-dev", "split_files/vae/flux2-vae.safetensors"),
+        # FLUX.2's 32-channel AE needs the latent-format override. The VAE is mirrored on its own because BFL licensed it Apache-2.0 while the rest of FLUX.2-dev is non-commercial. Shares Qwen3-4B with z-image.
+        sd_cpp_vae = ("unsloth/FLUX.2-VAE", "split_files/vae/flux2-vae.safetensors"),
         sd_cpp_vae_format = "flux2",
         sd_cpp_text_encoders = (
-            ("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b.safetensors", "llm"),
+            (
+                "unsloth/Z-Image-Turbo-ComfyUI",
+                "split_files/text_encoders/qwen_3_4b.safetensors",
+                "llm",
+            ),
         ),
     ),
-    # FLUX.2-dev: full (non-distilled) FLUX.2 on the Mistral Flux2Pipeline, so its own entry. Gated base, text-to-image only; VAE + Mistral encoder come from Comfy-Org/flux2-dev for sd-cli.
+    # FLUX.2-dev: full (non-distilled) FLUX.2 on the Mistral Flux2Pipeline, so its own entry. Gated base, text-to-image only; sd-cli takes the Mistral encoder from unsloth/FLUX.2-dev-ComfyUI and the VAE from unsloth/FLUX.2-VAE.
     DiffusionFamily(
         name = "flux.2-dev",
         pipeline_class = "Flux2Pipeline",
@@ -160,11 +165,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # LoRA training via the DiT trainer (QLoRA nf4); the gated base needs an HF token with the FLUX.2-dev license accepted.
         trainable = True,
         train_base_repos = ("black-forest-labs/FLUX.2-dev",),
-        sd_cpp_vae = ("Comfy-Org/flux2-dev", "split_files/vae/flux2-vae.safetensors"),
+        sd_cpp_vae = ("unsloth/FLUX.2-VAE", "split_files/vae/flux2-vae.safetensors"),
         sd_cpp_vae_format = "flux2",
         sd_cpp_text_encoders = (
             (
-                "Comfy-Org/flux2-dev",
+                "unsloth/FLUX.2-dev-ComfyUI",
                 "split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors",
                 "llm",
             ),
@@ -213,7 +218,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         inpaint_pipeline_class = "QwenImageInpaintPipeline",
         controlnet_pipeline_class = "QwenImageControlNetPipeline",
         controlnet_model_class = "QwenImageControlNetModel",
-        sd_cpp_vae = ("Comfy-Org/Qwen-Image_ComfyUI", "split_files/vae/qwen_image_vae.safetensors"),
+        # Byte-identical mirror of Comfy-Org/Qwen-Image_ComfyUI.
+        sd_cpp_vae = ("unsloth/Qwen-Image-ComfyUI", "split_files/vae/qwen_image_vae.safetensors"),
         # Qwen2.5-VL as a Q4_K_M GGUF keeps the CPU RAM win (bf16 encoder is ~15 GB). sd-cli --qwen2vl aliases --llm.
         sd_cpp_text_encoders = (
             (
@@ -245,9 +251,14 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         inpaint_pipeline_class = "ZImageInpaintPipeline",
         # Z-Image's MLP down-projections peak near 9e5, which overflows float16.
         fp16_incompatible = True,
-        sd_cpp_vae = ("Comfy-Org/z_image_turbo", "split_files/vae/ae.safetensors"),
+        # Byte-identical mirror of Comfy-Org/z_image_turbo (AE + Qwen3-4B).
+        sd_cpp_vae = ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors"),
         sd_cpp_text_encoders = (
-            ("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b.safetensors", "llm"),
+            (
+                "unsloth/Z-Image-Turbo-ComfyUI",
+                "split_files/text_encoders/qwen_3_4b.safetensors",
+                "llm",
+            ),
         ),
     ),
     # Krea 2 (diffusers >= 0.39): a ~12B single-stream DiT with a Qwen3-VL-4B encoder and the Qwen-Image VAE. Loaded per-component because the repo ships transformers-5.x configs.
@@ -508,7 +519,35 @@ def canonical_base(repo_id: Optional[str]) -> str:
 _WEIGHT_SUFFIXES = frozenset({".safetensors", ".bin", ".pt", ".ckpt", ".gguf"})
 
 
-def _upstream_is_cached(repo_id: str, files: Optional[Sequence[str]] = None) -> bool:
+def _root_holds_upstream(root: Path, repo_id: str, wanted: Sequence[str]) -> bool:
+    """``_upstream_is_cached`` for ONE cache root. Never raises."""
+    try:
+        repo = root / f"models--{repo_id.replace('/', '--')}"
+        ref = repo / "refs" / "main"
+        revs = (
+            [repo / "snapshots" / ref.read_text(encoding = "utf-8").strip()]
+            if ref.is_file()
+            else sorted((repo / "snapshots").iterdir())
+        )
+        for rev in revs:
+            if not rev.is_dir():
+                continue
+            if wanted:
+                if all((rev / name).exists() for name in wanted):
+                    return True
+            elif any(p.suffix.lower() in _WEIGHT_SUFFIXES and p.is_file() for p in rev.rglob("*")):
+                return True
+        return False
+    except Exception:  # noqa: BLE001 -- an unreadable/absent cache just means "not cached"
+        return False
+
+
+def _upstream_is_cached(
+    repo_id: str,
+    files: Optional[Sequence[str]] = None,
+    *,
+    other_root: bool = False,
+) -> bool:
     """Whether the upstream load is SATISFIABLE from the local cache.
 
     Not "has any blob": one config left by an interrupted or previously-tokened pull would pin every
@@ -522,30 +561,68 @@ def _upstream_is_cached(repo_id: str, files: Optional[Sequence[str]] = None) -> 
     commit-pinned download) any revision counts, as before.
 
     Reads the LIVE cache root; huggingface_hub's import-time constant goes stale after a
-    cache-folder change.
+    cache-folder change. ``other_root`` adds that constant back, for the callers whose fetch passes
+    ``reuse_other_cache_root``: those resolve each file through whichever root holds it, so bytes
+    left in the pre-change root really do satisfy the load. OFF by default, because a
+    ``from_pretrained`` is pinned to the live root and cannot see the other one -- counting those
+    bytes there would send a gated base back to the 401 the mirror exists to avoid.
     """
     try:
         from utils.hf_cache_settings import active_hf_hub_cache
 
-        root = Path(active_hf_hub_cache()) / f"models--{repo_id.replace('/', '--')}"
+        roots = [Path(active_hf_hub_cache())]
+        if other_root:
+            from huggingface_hub import constants
+
+            # Exactly what ``cache_dir = None`` resolves to, i.e. the root the per-file reuse
+            # probe falls back to (file_download reads constants.HF_HUB_CACHE per call).
+            fallback = Path(constants.HF_HUB_CACHE)
+            if fallback != roots[0]:
+                roots.append(fallback)
         wanted = tuple(files or ())
-        ref = root / "refs" / "main"
-        revs = (
-            [root / "snapshots" / ref.read_text(encoding = "utf-8").strip()]
-            if ref.is_file()
-            else sorted((root / "snapshots").iterdir())
-        )
-        for rev in revs:
-            if not rev.is_dir():
-                continue
-            if wanted:
-                if all((rev / name).exists() for name in wanted):
-                    return True
-            elif any(p.suffix.lower() in _WEIGHT_SUFFIXES and p.is_file() for p in rev.rglob("*")):
-                return True
-        return False
+        return any(_root_holds_upstream(root, repo_id, wanted) for root in roots)
     except Exception:  # noqa: BLE001 -- an unreadable/absent cache just means "not cached"
         return False
+
+
+# Lowercased unsloth mirror -> the community repack the tables named before it. The mirrors are
+# byte identical, so an existing install that already pulled the repack holds the very same bytes
+# under the OLD repo key: the HF cache is keyed by repo id, so re-pointing the table alone would
+# re-download up to tens of GB on upgrade and fail outright offline.
+_SD_CPP_LEGACY_SOURCES: dict[str, str] = {
+    "unsloth/flux-text-encoders": "comfyanonymous/flux_text_encoders",
+    "unsloth/qwen-image-comfyui": "Comfy-Org/Qwen-Image_ComfyUI",
+    "unsloth/flux.2-vae": "Comfy-Org/flux2-dev",
+    "unsloth/flux.2-dev-comfyui": "Comfy-Org/flux2-dev",
+    "unsloth/z-image-turbo-comfyui": "Comfy-Org/z_image_turbo",
+    "unsloth/flux.2-klein-9b-comfyui": "Comfy-Org/vae-text-encorder-for-flux-klein-9b",
+    "unsloth/wan2.2-ti2v-5b-gguf": "QuantStack/Wan2.2-TI2V-5B-GGUF",
+}
+
+
+def legacy_source_repo(repo_id: Optional[str]) -> Optional[str]:
+    """The community repack ``repo_id`` mirrors, or None when it is not one of the mirrors."""
+    return _SD_CPP_LEGACY_SOURCES.get((repo_id or "").strip().lower())
+
+
+def prefer_cached_legacy_source(repo_id: str, files: Optional[Sequence[str]] = None) -> str:
+    """``repo_id``, or the community repack it mirrors when THAT already satisfies ``files``.
+
+    The mirror stays the preferred source for a fresh install; this only spares an existing one
+    from re-fetching bytes it already has under the old repo key. Same ``_upstream_is_cached``
+    probe the gated swap uses, so an interrupted or partial repack does not win.
+
+    Both cache roots count: the sd.cpp fetch passes ``reuse_other_cache_root``, so a repack left
+    behind by a cache-folder change is still reusable, and only the repo id can reach it -- once
+    the id has become the mirror those bytes are unreachable and the load re-pulls several GB
+    (offline, it fails outright).
+
+    PURE: table lookup + local stat, no network, so the staging plan and the fetch agree.
+    """
+    legacy = _SD_CPP_LEGACY_SOURCES.get((repo_id or "").strip().lower())
+    if not legacy:
+        return repo_id
+    return legacy if _upstream_is_cached(legacy, files, other_root = True) else repo_id
 
 
 def _is_local_path(base: str) -> bool:
@@ -741,13 +818,44 @@ def family_sd_cpp_supported(fam: DiffusionFamily) -> bool:
 
 
 # FLUX.2-klein 9B pairs with Qwen3-8B, the 4B with the family-default Qwen3-4B (a mismatched encoder fails deep in sd-cli), so pick per variant.
+# Byte-identical mirror of Comfy-Org/vae-text-encorder-for-flux-klein-9b.
 _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS = (
     (
-        "Comfy-Org/vae-text-encorder-for-flux-klein-9b",
+        "unsloth/FLUX.2-klein-9B-ComfyUI",
         "split_files/text_encoders/qwen_3_8b.safetensors",
         "llm",
     ),
 )
+
+
+def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
+    """Lowercased ids of repos that exist ONLY to hand sd.cpp a single-file VAE / text encoder.
+
+    They carry no DENOISER, so no diffusion pipeline loads from one. Third-party repacks never
+    cleared the cached-model trust gate, but their ``unsloth/*`` mirrors do, so they need excluding
+    by hand or each becomes an un-loadable On Device row. Derived from the tables, minus repos that
+    are also a real base: FLUX.1-schnell ships the FLUX.1 VAE and IS loadable.
+
+    Diffusion-only, and callers must keep it that way: the set includes
+    ``unsloth/Qwen2.5-VL-7B-Instruct-GGUF``, which is a perfectly good CHAT model that sd.cpp also
+    borrows as a text encoder. Hiding this set from a chat or GGUF listing would take a real model
+    away from a user who downloaded it to chat with. Today's only consumer is the non-GGUF
+    cached-model listing, which never sees a GGUF-only repo."""
+    companions: set[str] = set()
+    loadable: set[str] = set()
+    for fam in _FAMILIES:
+        if fam.sd_cpp_vae:
+            companions.add(fam.sd_cpp_vae[0])
+        companions.update(repo for repo, _f, _k in fam.sd_cpp_text_encoders)
+        loadable.add(fam.base_repo)
+        loadable.update(fam.train_base_repos)
+        if fam.deploy_base_repo:
+            loadable.add(fam.deploy_base_repo)
+        loadable.update(repo for _scheme, repo in fam.prequant_repos)
+        loadable.update(repo for _base, _scheme, repo in fam.prequant_variant_repos)
+        loadable.update(repo for _scheme, _component, repo in fam.te_prequant_repos)
+    companions.update(repo for repo, _f, _k in _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
+    return frozenset(r.strip().lower() for r in companions - loadable if r)
 
 
 def sd_cpp_text_encoders_for(
