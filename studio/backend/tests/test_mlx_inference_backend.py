@@ -2491,3 +2491,36 @@ def test_an_override_that_renders_the_image_as_prose_is_not_a_marker(monkeypatch
     assert mlx_inference._image_placeholder(nested, processor) is None
     render_as("Image attached. ")
     assert mlx_inference._image_marker_survives(nested, processor, None) is True
+
+
+def test_the_load_response_declares_every_runtime_field_status_reports():
+    """A field only /status declares is silently dropped from a load response.
+
+    Pydantic ignores an extra keyword, so a route can construct the echo and
+    the client still sees nothing, with no error anywhere to notice it by.
+    """
+    from models.inference import (
+        InferenceStatusResponse,
+        LoadResponse,
+        _InferenceRuntimeFields,
+    )
+
+    shared = set(_InferenceRuntimeFields.model_fields)
+    runtime = {
+        name
+        for name in InferenceStatusResponse.model_fields
+        if name.startswith(("mlx_", "chat_template_override")) or name == "is_mlx"
+    }
+    assert runtime <= shared, f"declared on status only: {sorted(runtime - shared)}"
+    assert runtime <= set(LoadResponse.model_fields)
+
+    loaded = LoadResponse(
+        success = True,
+        status = "loaded",
+        model = "m",
+        display_name = "m",
+        inference = {},
+        chat_template_override = "{{ custom }}",
+        chat_template_override_reason = "why",
+    )
+    assert loaded.model_dump()["chat_template_override"] == "{{ custom }}"

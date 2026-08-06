@@ -558,6 +558,10 @@ class _InferenceRuntimeFields(BaseModel):
             "when the reason matters."
         ),
     )
+    chat_template_override: Optional[str] = Field(
+        None,
+        description = "Chat template override this model was loaded with. llama.cpp reports what it applied; MLX reports what was requested, since a refusal applies nothing and the reason accompanies it",
+    )
     chat_template_override_reason: Optional[str] = Field(
         None,
         description = (
@@ -733,10 +737,6 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     loaded: List[str] = Field(default_factory = list, description = "Models currently loaded")
     inference: Optional[Dict[str, Any]] = Field(
         None, description = "Recommended inference parameters for the active model"
-    )
-    chat_template_override: Optional[str] = Field(
-        None,
-        description = "Chat template override this model was loaded with. llama.cpp reports what it applied; MLX reports what was requested, since a refusal applies nothing and the reason accompanies it",
     )
     requested_context_length: Optional[int] = Field(
         None,
