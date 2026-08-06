@@ -1376,6 +1376,8 @@ _START_SWITCHES = _START_SWITCHES_WITH_VALUE | {
 _CMD_CONTROL_FLOW = frozenset({"if", "else", "do", "for"})
 # cmd builtins that re-execute what follows, so their child is a command.
 _CMD_FORWARDING_COMMANDS = frozenset({"call", "start", "start.exe"})
+# cmd's own switches: a bare letter, or a letter carrying a value (`/v:on`).
+_CMD_SWITCH_RE = re.compile(r"/[a-zA-Z](?::[\w.]+)?$")
 # Shell binaries whose -c/\c argument is a command line rather than data.
 _SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"})
 _SHELLS_WIN = frozenset({"cmd", "cmd.exe"})
@@ -1398,7 +1400,7 @@ _STARTS_A_NEW_PATH_RE = re.compile(r"(?:[a-zA-Z]:[/\\]|[/\\])")
 # reads the payload, not any later quoted argument.
 _CMD_DOUBLED_QUOTE_RE = re.compile(
     r"(?i)(?:^|[\s;&|(])(?:[^\s;&|(]*[\\/])?cmd(?:\.exe)?\s+"
-    r'(?:/[a-z]\s+|//[a-z]\s+)*//?[ck]\s+(".*")\s*$'
+    r'(?:/[a-z]\s+|//[a-z]\s+)*//?[ck]\s+(".*?")\s*(?:$|[&|;])'
 )
 
 
@@ -1547,6 +1549,13 @@ def _find_blocked_commands(command: str) -> set[str]:
             position += 1
             while position < len(argv):
                 word = argv[position]
+                if candidate == "env":
+                    # env's own -S nests: `env -S 'env --split-string=rm -rf x'`
+                    # really runs rm, and the generic flag skip swallowed it.
+                    following = argv[position + 1] if position + 1 < len(argv) else ""
+                    nested = _env_split_string_payload(word, following)
+                    if nested:
+                        return _screen_env_split_string(nested)
                 if word in _WRAPPER_VALUE_FLAGS_BY_CMD.get(candidate, frozenset()):
                     position += 2
                     continue
@@ -2003,6 +2012,11 @@ def _find_blocked_commands(command: str) -> set[str]:
                         k += 3  # `a EQU b`
                     else:
                         k += 1  # `string1==string2`, one token
+                        # ...unless the quoting split it: shlex yields `"x"`
+                        # and `=="x"`, and stopping after the first left the
+                        # operator fragment standing in for the body command.
+                        while k < len(tokens) and _cmd_unquote(tokens[k]).startswith("=="):
+                            k += 1
             # `else` / `do`: the command is simply the next word.
         return indexes
 
@@ -2055,10 +2069,16 @@ def _find_blocked_commands(command: str) -> set[str]:
             # an invocation hard blocked the payload behind it.
             prev_runs = _runnable_index(j)
             prev = _cmd_unquote(tokens[j]) if prev_runs else tokens[j]
+            if prev_runs and prev.startswith("("):
+                # A FOR /F command set keeps its opener and delimiter glued on
+                # (`('cmd`), so the shell name behind them was never matched.
+                prev = prev.lstrip("(").lstrip("'\"`")
             if prev.startswith("-"):
                 continue  # skip Unix flags like --login, -l
-            if is_win_c and prev.startswith("/") and len(prev) <= 3:
-                continue  # skip Windows flags like /s, /q (not /bin/bash)
+            if is_win_c and _CMD_SWITCH_RE.fullmatch(prev):
+                # /s, /q, and the value-style /v:on, /e:off, /t:0a. Anchored so
+                # a POSIX program path (/bin/bash) is never mistaken for one.
+                continue
             prev_base = os.path.basename(prev).lower()
             # Same for the payload: the cmd lexer makes `cmd /c "rm -rf x"` one
             # quoted token, which re-lexes to no command while still quoted.

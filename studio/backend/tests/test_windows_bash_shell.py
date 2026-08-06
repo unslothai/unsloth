@@ -1301,3 +1301,68 @@ def test_a_bare_quoted_cmd_payload_is_read_as_a_command_line(monkeypatch, comman
 def test_a_spaced_program_path_still_resolves(monkeypatch, command, bash):
     _fake_windows_screening(monkeypatch, bash = bash)
     assert "pwsh" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # cmd's own value-style switches sit between it and the /c payload.
+        "cmd /v:on /c powershell -Command ls",
+        "cmd /e:off /t:0a /c powershell",
+        # The quoting splits the comparison, so the operator fragment stood in
+        # for the body command.
+        'cmd /c if "x"=="x" powershell',
+        "cmd /c if x==x powershell",
+    ],
+)
+def test_cmd_switches_and_quoted_comparisons_reach_the_body(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+def test_a_posix_shell_path_is_not_read_as_a_cmd_switch(monkeypatch, bash):
+    # The switch skip is anchored, so /bin/bash is still the shell it names.
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert "rm" in tools._find_blocked_commands('/bin/bash -c "rm -rf x"')
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+def test_a_false_comparison_branch_launches_nothing(monkeypatch, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert not tools._find_blocked_commands('cmd /c if "x"=="y" echo no')
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+def test_a_doubled_quote_payload_before_a_separator(monkeypatch, bash):
+    # The capture was anchored to the end of the whole string, so a payload
+    # with another command after it was never extracted.
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert tools._find_blocked_commands('cmd /c ""powershell" -Command ls" & echo done')
+
+
+def test_a_for_f_set_running_a_shell_is_followed(monkeypatch):
+    # The set keeps its opener and delimiter glued on (`('cmd`), so the shell
+    # name behind them was never matched by the nested lookup.
+    _fake_windows_screening(monkeypatch, bash = None)
+    assert tools._find_blocked_commands("for /f %i in ('cmd /c powershell') do echo %i")
+    assert tools._find_blocked_commands(
+        'cmd /c "for /f %i in (\'cmd /c powershell\') do echo %i"'
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        # env's own -S nests, and the generic flag skip swallowed it.
+        ("env -S 'env --split-string=rm -rf victim'", True),
+        ("env -S 'env -S rm -rf victim'", True),
+        ("env -S 'env rm -rf victim'", True),
+        ("env -S 'env nice rm -rf x'", True),
+        ("env -S 'env echo hello'", False),
+    ],
+)
+def test_a_nested_env_split_string_is_followed(monkeypatch, command, expected):
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert bool(tools._find_blocked_commands(command)) is expected
