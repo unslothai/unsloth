@@ -2097,9 +2097,7 @@ def _attach_gguf_check_for_codex(
                     except OSError:
                         missing = False
                     if missing:
-                        _fail(
-                            f"{repo} does not exist. Check the path before pointing Codex at it."
-                        )
+                        _fail(f"{repo} does not exist. Check the path before pointing Codex at it.")
                     if not _direct_gguf_file_is_ready(repo):
                         _fail(
                             f"{repo} is incomplete (zero bytes or a split missing shards); "
