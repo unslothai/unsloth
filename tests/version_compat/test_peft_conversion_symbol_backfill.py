@@ -45,8 +45,7 @@ def _load_import_fixes():
     before a single test in this directory ran.
     """
     path = Path(__file__).resolve().parents[2] / "unsloth" / "import_fixes.py"
-    spec = importlib.util.spec_from_file_location(
-        "unsloth_import_fixes_for_backfill_tests", path)
+    spec = importlib.util.spec_from_file_location("unsloth_import_fixes_for_backfill_tests", path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -147,6 +146,7 @@ def test_the_backfill_runs_from_the_guard():
 
 # --- what the first review round found --------------------------------------
 
+
 def test_the_model_type_map_is_recovered_not_emptied(fake_modules):
     """peft copies this dict and looks model families up in it, so handing it
     the stub's empty one drops every alias silently: `_convert_peft_config_moe`
@@ -154,23 +154,23 @@ def test_the_model_type_map_is_recovered_not_emptied(fake_modules):
     error. A rename is the likeliest reason for the name to go, so the map is
     found by shape."""
     real = fake_modules["transformers.conversion_mapping"]
-    real._RENAMED_CONVERSION_PATTERN = {"qwen3_moe": "qwen2_moe",
-                                        "mixtral": "mixtral"}
+    real._RENAMED_CONVERSION_PATTERN = {"qwen3_moe": "qwen2_moe", "mixtral": "mixtral"}
 
     assert F._backfill_missing_conversion_symbols() is True
 
     recovered = real._MODEL_TO_CONVERSION_PATTERN
     assert recovered["qwen3_moe"] == "qwen2_moe"
-    assert recovered is not real._RENAMED_CONVERSION_PATTERN, \
-        "peft mutates its copy; hand it one of ours"
+    assert (
+        recovered is not real._RENAMED_CONVERSION_PATTERN
+    ), "peft mutates its copy; hand it one of ours"
 
 
 def test_no_recoverable_map_says_so(fake_modules, caplog):
     import logging
+
     with caplog.at_level(logging.WARNING):
         assert F._backfill_missing_conversion_symbols() is True
-    assert fake_modules["transformers.conversion_mapping"]\
-        ._MODEL_TO_CONVERSION_PATTERN == {}
+    assert fake_modules["transformers.conversion_mapping"]._MODEL_TO_CONVERSION_PATTERN == {}
     assert "fused MoE" in caplog.text
 
 
@@ -208,13 +208,15 @@ def test_the_import_only_symbols_still_come_from_the_stub(fake_modules):
     they must be real usable classes, not refusals."""
     F._backfill_missing_conversion_symbols()
     core = fake_modules["transformers.core_model_loading"]
-    class Mine(core.ConversionOps): pass
+
+    class Mine(core.ConversionOps):
+        pass
+
     assert core.Concatenate(dim = 1).dim == 1
     assert issubclass(Mine, core.ConversionOps)
 
 
 def test_every_runtime_symbol_is_one_we_backfill():
     """The two tables can drift; a name in neither is the silent case."""
-    known = {f"{m}.{s}" for m, syms in F._PEFT_CONVERSION_SYMBOLS.items()
-             for s in syms}
+    known = {f"{m}.{s}" for m, syms in F._PEFT_CONVERSION_SYMBOLS.items() for s in syms}
     assert F._PEFT_CONVERSION_RUNTIME_SYMBOLS <= known

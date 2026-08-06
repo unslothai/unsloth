@@ -2359,14 +2359,16 @@ _PEFT_CONVERSION_SYMBOLS = {
 # converter never runs. Landing an inert body on a REAL transformers is a
 # different matter -- peft would call it and get a wrong answer, so these are
 # replaced by a placeholder that says what is wrong instead.
-_PEFT_CONVERSION_RUNTIME_SYMBOLS = frozenset((
-    "transformers.core_model_loading.dot_natural_key",
-    "transformers.core_model_loading.rename_source_key",
-    "transformers.core_model_loading.WeightRenaming",
-    "transformers.core_model_loading.WeightConverter",
-    "transformers.conversion_mapping.get_checkpoint_conversion_mapping",
-    "transformers.conversion_mapping.get_model_conversion_mapping",
-))
+_PEFT_CONVERSION_RUNTIME_SYMBOLS = frozenset(
+    (
+        "transformers.core_model_loading.dot_natural_key",
+        "transformers.core_model_loading.rename_source_key",
+        "transformers.core_model_loading.WeightRenaming",
+        "transformers.core_model_loading.WeightConverter",
+        "transformers.conversion_mapping.get_checkpoint_conversion_mapping",
+        "transformers.conversion_mapping.get_model_conversion_mapping",
+    )
+)
 
 
 def _unsupported_conversion_symbol(qualified, donor_value = None):
@@ -2386,13 +2388,22 @@ def _unsupported_conversion_symbol(qualified, donor_value = None):
         "transformers that still exports it, or a peft that does not need it."
     )
     if isinstance(donor_value, type):
+
         def _refuse_init(self, *args, **kwargs):
             raise RuntimeError(message)
-        return type(short, (object,), {
-            "__init__": _refuse_init, "__doc__": message,
-        })
+
+        return type(
+            short,
+            (object,),
+            {
+                "__init__": _refuse_init,
+                "__doc__": message,
+            },
+        )
+
     def _refuse(*args, **kwargs):
         raise RuntimeError(message)
+
     _refuse.__name__ = _refuse.__qualname__ = short
     _refuse.__doc__ = message
     return _refuse
@@ -2411,8 +2422,7 @@ def _recover_conversion_pattern_map(real):
     for attribute in vars(real).values():
         if not isinstance(attribute, dict) or not attribute:
             continue
-        if not all(isinstance(k, str) and isinstance(v, str)
-                   for k, v in attribute.items()):
+        if not all(isinstance(k, str) and isinstance(v, str) for k, v in attribute.items()):
             continue
         if best is None or len(attribute) > len(best):
             best = attribute
@@ -2463,7 +2473,8 @@ def _backfill_missing_conversion_symbols():
                         "Unsloth: this transformers exports no model-type "
                         "conversion map, so peft cannot convert legacy LoRA "
                         "targets for fused MoE checkpoints. Adapters for other "
-                        "architectures are unaffected.")
+                        "architectures are unaffected."
+                    )
                 setattr(real, symbol, dict(recovered) if recovered else {})
                 added.append(qualified)
                 continue
@@ -2471,8 +2482,11 @@ def _backfill_missing_conversion_symbols():
                 # peft calls this one. The stub bodies exist to make the import
                 # work on transformers <5, where peft's converter never runs;
                 # on a real transformers it would run and answer wrongly.
-                setattr(real, symbol, _unsupported_conversion_symbol(
-                    qualified, getattr(donor, symbol, None)))
+                setattr(
+                    real,
+                    symbol,
+                    _unsupported_conversion_symbol(qualified, getattr(donor, symbol, None)),
+                )
                 added.append(qualified)
                 continue
             if hasattr(donor, symbol):
