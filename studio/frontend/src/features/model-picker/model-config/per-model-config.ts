@@ -642,7 +642,7 @@ function normalize(raw: unknown): PerModelConfig {
 
 function toStoredConfig(config: PerModelConfig): StoredPerModelConfig {
   const normalized = normalize(config);
-  // records without the v2-only batch fields keep v1 so an older client can still read and rewrite them safely
+  // records without the v2-only batch fields keep v1 so older clients can still rewrite them
   const version =
     normalized.nBatch != null || normalized.nUbatch != null
       ? STORAGE_SCHEMA_VERSION

@@ -3677,7 +3677,7 @@ def _active_gguf_intent(
             strip_tensor_split = _should_strip_tensor_split(request),
             strip_offload = request.gpu_memory_mode == "manual",
         )
-        # mirror _resolve_inherited_extra_args, or the fast path deems a stale inherited -b / -ub equal to the freshly set field
+        # mirror _resolve_inherited_extra_args, or a stale inherited -b / -ub reads as equal
         batch_stripped_extra = strip_shadowing_flags(
             effective_extra,
             strip_context = False,
@@ -3688,7 +3688,7 @@ def _active_gguf_intent(
             strip_batch = "n_batch" in request_fields_set,
             strip_ubatch = "n_ubatch" in request_fields_set,
         )
-        # a strip that changed the list is an override, not an inherit: the dedupe must compare the stripped list, not the launched one
+        # a strip that changed the list is an override, so the dedupe compares the stripped one
         batch_overrides_inherit = batch_stripped_extra != effective_extra
         effective_extra = batch_stripped_extra
     else:
@@ -4923,7 +4923,7 @@ def _estimate_gguf_kv_gb(
             n_ubatch = effective_ubatch,
             flash_attn = False,
         )
-        # the load also reserves the ubatch-scaled compute buffers, so a large micro-batch must count against training here too
+        # the load reserves ubatch-scaled compute buffers, so they count against training too
         if is_diffusion:
             return kv / (1024**3)
         devices = max(1, int(n_devices))
@@ -4938,7 +4938,7 @@ def _estimate_gguf_kv_gb(
                 + probe._compute_buffer_ctx_bytes(ctx, effective_ubatch, cache_type_for_budget)
             )
         else:
-            # mirrors the layer fit: flat buffer once, per-device overhead per extra device, ctx growth replicated across the split
+            # mirrors the layer fit: flat buffer once, then per extra device, ctx growth per device
             compute = (
                 probe._estimate_compute_buffer_bytes(
                     n_ubatch = effective_ubatch,
@@ -5013,7 +5013,7 @@ def _estimate_gguf_required_gb(
                 repo, hf_token = hf_token, include_mmproj = bool(has_vision)
             )
             total_gb = (main_bytes + companions) / (1024**3)
-            # remote metadata is unreadable, so only an explicit micro-batch override can be sized: the flash-attn kq mask alone grows linearly with ubatch and context, dwarfing the guard slack at large values
+            # remote dims are unreadable; only the kq mask, linear in ubatch x ctx, can be sized here
             from core.inference.llama_server_args import parse_ctx_override
 
             try:
@@ -5032,7 +5032,7 @@ def _estimate_gguf_required_gb(
                 )
             )
             if effective_ubatch:
-                # auto context: after download the loader budgets against the native context, so assume it at least fits one full micro-batch
+                # auto context: assume the native one fits at least a full micro-batch
                 budget_ctx = ctx if ctx > 0 else effective_ubatch
                 mask_bytes = (
                     budget_ctx
@@ -5052,13 +5052,19 @@ def _estimate_gguf_required_gb(
 def _guard_device_count(
     requested_gpu_ids: Optional[list[int]],
     vulkan_gpu_memory: Optional[list[tuple[int, int, int]]] = None,
+    *,
+    tensor_parallel: bool = False,
 ) -> int:
     """Devices the launch would spread its compute buffers over.
 
-    An explicit pin settles it. Otherwise automatic placement takes ggml's probed
-    Vulkan pool when there is one, since _effective_gpu_count only counts CUDA
-    devices and would charge a multi-GPU Vulkan host for a single buffer set.
+    Tensor mode replicates them on every usable device, so it takes the pool: a pin,
+    else ggml's Vulkan probe (_effective_gpu_count sees CUDA only), else CUDA. A layer
+    split lands on the fewest GPUs that hold the model (_select_gpus returns [1]
+    whenever one fits), so automatic placement is one device and a pin is charged for
+    what it names; sizing it per candidate would 409 a load that launches on one.
     """
+    if not tensor_parallel:
+        return max(1, len(requested_gpu_ids or ()))
     if not requested_gpu_ids and vulkan_gpu_memory:
         return max(1, len(vulkan_gpu_memory))
     return max(1, LlamaCppBackend._effective_gpu_count(requested_gpu_ids))
@@ -5500,7 +5506,12 @@ def _guard_chat_load_against_training(
             # automatic placement prefers the discrete cards, like the loader's fit
             vulkan_gpu_memory = LlamaCppBackend._vulkan_auto_gpu_memory(vulkan_gpu_memory)
 
-    guard_n_devices = _guard_device_count(requested_gpu_ids, vulkan_gpu_memory)
+    guard_tensor_parallel = _effective_tensor_parallel(
+        llama_extra_args, _guard_tensor_parallel
+    ) and (is_vulkan_backend or LlamaCppBackend._effective_gpu_count(requested_gpu_ids) >= 2)
+    guard_n_devices = _guard_device_count(
+        requested_gpu_ids, vulkan_gpu_memory, tensor_parallel = guard_tensor_parallel
+    )
 
     # Size with the count that will actually launch, or a load that fits gets a
     # 409: diffusion never receives --parallel, load_model clamps to 1 on an
@@ -5535,16 +5546,10 @@ def _guard_chat_load_against_training(
             # getattr: older callers hand this guard a bare request double
             n_batch = getattr(request, "n_batch", None),
             n_ubatch = getattr(request, "n_ubatch", None),
-            tensor_parallel = (
-                _effective_tensor_parallel(llama_extra_args, _guard_tensor_parallel)
-                and (
-                    is_vulkan_backend
-                    or LlamaCppBackend._effective_gpu_count(requested_gpu_ids) >= 2
-                )
-            ),
+            tensor_parallel = guard_tensor_parallel,
             # size the compute buffers for the split the loader would budget
             n_devices = guard_n_devices,
-            # a confirmed diffusion runner ignores the llama-server batch flags, so their reserve must not 409 it
+            # a confirmed diffusion runner ignores the batch flags, so no reserve for it
             is_diffusion = diffusion_kind is True,
         )
         if is_gguf
@@ -5689,7 +5694,7 @@ def _resolve_inherited_extra_args(
             # must not last-wins-override it. auto leaves a user's inherited -ngl
             # alone. getattr: a validate request reuses this resolver, no offload fields.
             strip_offload = getattr(request, "gpu_memory_mode", "auto") == "manual",
-            # a set first-class batch field emits its own flag; an inherited -b / -ub (appended last) must not last-wins-override it
+            # a set field emits its own flag; an inherited -b / -ub would last-wins-override it
             strip_batch = "n_batch" in fields_set,
             strip_ubatch = "n_ubatch" in fields_set,
         )

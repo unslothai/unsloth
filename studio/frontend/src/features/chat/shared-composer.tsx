@@ -1343,7 +1343,7 @@ export function SharedComposer({
                 gpu_layers: effectiveGpuLayers,
                 // Slots scale the KV estimate; keep validate sized like the load.
                 n_parallel: ownConfig.nParallel ?? null,
-                // omitted when blank: an explicit null counts as set server-side and would strip inherited -b / -ub pass-through flags
+                // omitted when blank: a null counts as set and strips inherited -b / -ub
                 ...(ownConfig.nBatch != null
                   ? { n_batch: ownConfig.nBatch }
                   : {}),

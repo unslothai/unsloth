@@ -1563,8 +1563,7 @@ def test_batch_sizes_setting_wired_end_to_end():
     assert "n_ubatch?: number | null;" in api_types
     runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
     assert "pendingLoadConfig?.nBatch" in runtime
-    # omitted when blank: an explicit null reads as a set field server-side and
-    # would strip inherited -b / -ub pass-through flags on every Apply
+    # omitted when blank: an explicit null reads as set and strips inherited -b / -ub
     assert "...(isGguf && loadNBatch != null ? { n_batch: loadNBatch } : {})," in runtime
     assert "...(isGguf && loadNUbatch != null ? { n_ubatch: loadNUbatch } : {})," in runtime
     assert "...(validateNBatch != null ? { n_batch: validateNBatch } : {})," in runtime
@@ -1573,9 +1572,7 @@ def test_batch_sizes_setting_wired_end_to_end():
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "loadNBatch = pendingLoadConfig?.nBatch ?? null;" in runtime
     assert "loadNUbatch = pendingLoadConfig?.nUbatch ?? null;" in runtime
-    # rollback re-sends a baseline only when one was actually asked: an explicit
-    # null counts as a set field server-side and would strip the previous
-    # server's own -b / -ub extras on the inherited reload
+    # rollback re-sends a baseline only when one was asked, for the same reason
     assert "{ n_batch: stateBeforeUnload.loadedNBatch }" in runtime
     assert "{ n_ubatch: stateBeforeUnload.loadedNUbatch }" in runtime
     assert "n_batch: stateBeforeUnload.loadedNBatch," not in runtime
@@ -1596,9 +1593,7 @@ def test_batch_sizes_setting_wired_end_to_end():
     assert "loadedNBatch: committedNBatch," in adapter
     assert "loadedNUbatch: committedNUbatch," in adapter
     status = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
-    # Both pairs hydrate through the one shared rule (resolveBatchSizeSeed):
-    # baseline always follows the echo, a clean control follows the move, a
-    # pending edit keeps the control.
+    # both pairs hydrate through the one shared rule
     assert "incoming: status.requested_n_batch," in status
     assert "incoming: status.requested_n_ubatch," in status
     assert '...("loaded" in nBatchSeed && { loadedNBatch: nBatchSeed.loaded ?? null }),' in status
@@ -1644,8 +1639,7 @@ def test_hydration_clears_the_batch_baselines_for_a_batchless_model():
     clean-control-follow and pending-edit rules live in resolveBatchSizeSeed and are
     behavior-tested in resolve-batch-size-seed.test.ts; here only the wiring is pinned."""
     seed = " ".join(_read("features/chat/lib/resolve-batch-size-seed.ts").split())
-    # a non-gguf status (or an explicit null echo) clears; an absent field on a
-    # gguf is an older backend and says nothing
+    # a non-gguf clears; an absent field on a gguf is an older backend saying nothing
     assert "const effective = isGguf ? incoming : null;" in seed
     assert "if (effective === undefined) { return {}; }" in seed
     assert (

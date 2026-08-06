@@ -157,7 +157,7 @@ class GgufLoadIntent:
     gpu_ids_are_vulkan_ordinals: Optional[bool] = None
     n_threads: Optional[int] = None
     n_parallel: int = 1
-    # none follows the llama.cpp defaults (2048 / 512); values emit --batch-size / --ubatch-size before user extra_args
+    # none follows the llama.cpp defaults (2048 / 512)
     n_batch: Optional[int] = None
     n_ubatch: Optional[int] = None
     extra_args: Optional[tuple[str, ...]] = None
@@ -2971,7 +2971,7 @@ class LlamaCppBackend:
         self._effective_parallel_slots: int = 1
         # --parallel the last load asked for, before any fit-time reduction.
         self._requested_n_parallel: int = 1
-        # --batch-size / --ubatch-size the last load asked for; none = llama.cpp defaults (or whatever extra_args / env set)
+        # --batch-size / --ubatch-size the last load asked for; none = defaults or extras / env
         self._requested_n_batch: Optional[int] = None
         self._requested_n_ubatch: Optional[int] = None
         self._chat_template: Optional[str] = None
@@ -9886,7 +9886,7 @@ class LlamaCppBackend:
                 elif not auto_fit:
                     cmd.extend(["-c", "0"])
 
-                # first-class batch sizes, emitted before user extra_args so an explicit -b / -ub pass-through still last-wins-overrides them
+                # emitted before user extras so a pass-through -b / -ub still last-wins-overrides
                 if n_batch is not None:
                     cmd.extend(["--batch-size", str(n_batch)])
                 if n_ubatch is not None:

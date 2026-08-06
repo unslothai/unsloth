@@ -23,7 +23,7 @@ from typing import Iterable, Mapping, Optional
 PARALLEL_MIN = 1
 PARALLEL_MAX = 64
 
-# valid --batch-size / --ubatch-size range, shared with LoadRequest.n_batch / n_ubatch and mirrored in per-model-config.ts (N_BATCH_MIN/MAX)
+# --batch-size / --ubatch-size range, mirrored by N_BATCH_MIN/MAX in per-model-config.ts
 BATCH_MIN = 1
 BATCH_MAX = 65536
 
@@ -213,7 +213,7 @@ _DEVICE_FLAGS: frozenset[str] = frozenset({"--device", "-dev", "--main-gpu", "-m
 # opt-in, not default. Layer flags are shared with llama_cpp's override
 # detection; the MoE flags are strip-only (manual's --n-cpu-moe slider owns them).
 _GPU_LAYER_FLAGS: frozenset[str] = frozenset({"-ngl", "--gpu-layers", "--n-gpu-layers"})
-# batch-size flags shadow the first-class n_batch / n_ubatch fields; inherited copies are stripped only when the current load sets the field
+# inherited copies of these shadow n_batch / n_ubatch, stripped only when the field is set
 _BATCH_FLAGS: frozenset[str] = frozenset({"-b", "--batch-size"})
 _UBATCH_FLAGS: frozenset[str] = frozenset({"-ub", "--ubatch-size"})
 _LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | frozenset({"-fit", "--fit"})

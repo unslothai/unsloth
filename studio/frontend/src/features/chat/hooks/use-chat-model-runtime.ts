@@ -1191,7 +1191,7 @@ export function useChatModelRuntime() {
               spec_draft_n_max: loadSpecDraftNMax,
               // GGUF-only: slots mean nothing for a transformers load.
               n_parallel: isGguf ? loadNParallel : null,
-              // omitted when blank: an explicit null counts as set server-side and would strip inherited -b / -ub pass-through flags
+              // omitted when blank: a null counts as set and strips inherited -b / -ub
               ...(isGguf && loadNBatch != null ? { n_batch: loadNBatch } : {}),
               ...(isGguf && loadNUbatch != null
                 ? { n_ubatch: loadNUbatch }
@@ -1475,7 +1475,7 @@ export function useChatModelRuntime() {
                   spec_draft_n_max:
                     stateBeforeUnload.loadedSpecDraftNMax,
                   n_parallel: stateBeforeUnload.loadedNParallel,
-                  // omit unset batch fields: an explicit null counts as set and would strip the previous server's own -b / -ub extras on the inherited reload
+                  // omit unset fields: a null counts as set and would strip the previous server's extras
                   ...(stateBeforeUnload.loadedNBatch != null
                     ? { n_batch: stateBeforeUnload.loadedNBatch }
                     : {}),

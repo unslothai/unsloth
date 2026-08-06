@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// What a fresh /api/inference/status does to one batch-size control/baseline pair
-// (nBatch or nUbatch). Own module like resolve-chat-template-seed.ts, importing
-// neither the store nor a barrel, so the rules are testable off a browser.
+// what a fresh /api/inference/status does to one batch control/baseline pair
 
 export interface BatchSizeSeedState {
   /** The editable control: what the next load or Apply would send. */
@@ -29,7 +27,7 @@ export function resolveBatchSizeSeed(options: {
   if (!seedLoadParams) {
     return {};
   }
-  // a non-gguf status has no batch flags; an absent field on a gguf is an older backend saying nothing
+  // a non-gguf has no batch flags; an absent field is an older backend saying nothing
   const effective = isGguf ? incoming : null;
   if (effective === undefined) {
     return {};
@@ -38,11 +36,7 @@ export function resolveBatchSizeSeed(options: {
   if (previous.loaded === effective) {
     return {};
   }
-  // The baseline is a fact about the running server, so it always advances (the
-  // rollback resends it). The control follows only while it still sits on the old
-  // non-null baseline; a pending edit or a blank "follow default" keeps its intent.
-  // A move to null (a same-model reload elsewhere dropped the override) follows the
-  // same rule, so the tab does not read dirty against a server back at defaults.
+  // the baseline is a fact about the running server; the control follows it only while clean
   const controlIsClean =
     previous.loaded !== null && previous.value === previous.loaded;
   return {

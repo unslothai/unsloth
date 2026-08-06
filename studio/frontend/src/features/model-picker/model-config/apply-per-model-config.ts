@@ -55,8 +55,9 @@ export function applyPerModelConfigToRuntime(
       readPersistedSpeculativeType(),
     specDraftNMax: config.specDraftNMax ?? null,
     nParallel: config.nParallel ?? null,
-    nBatch: config.nBatch ?? null,
-    nUbatch: config.nUbatch ?? null,
+    // the diffusion runner ignores the llama-server batch flags
+    nBatch: options.isDiffusion ? null : (config.nBatch ?? null),
+    nUbatch: options.isDiffusion ? null : (config.nUbatch ?? null),
     tensorParallel: options.isDiffusion
       ? false
       : (config.tensorParallel ?? false),

@@ -175,7 +175,7 @@ class ModelOverridePayload(BaseModel):
     spec_draft_n_max: Optional[int] = Field(default = None, ge = 1, le = 16)
     # Parallel decode slots (llama-server --parallel), GGUF-only; None follows the server default.
     n_parallel: Optional[int] = Field(default = None, ge = PARALLEL_SLOTS_MIN, le = PARALLEL_SLOTS_MAX)
-    # prompt batch sizes (llama-server --batch-size / --ubatch-size), gguf-only; none follows the llama.cpp defaults (2048 / 512)
+    # prompt batch sizes (--batch-size / --ubatch-size), gguf-only; none = llama.cpp defaults
     n_batch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
     n_ubatch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
     tensor_parallel: bool = False

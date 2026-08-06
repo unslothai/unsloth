@@ -2128,7 +2128,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               // split (0 especially) must not be refused as a full-GGUF occupant.
               gpu_layers: effectiveGpuLayers,
               n_parallel: config.nParallel ?? null,
-              // omitted when blank: an explicit null counts as set server-side and would strip inherited -b / -ub pass-through flags
+              // omitted when blank: a null counts as set and strips inherited -b / -ub
               ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
               ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
             }

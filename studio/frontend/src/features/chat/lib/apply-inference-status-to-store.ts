@@ -429,9 +429,7 @@ export function applyActiveModelStatusToStore(
       rememberedNParallel === status.requested_parallel_slots && {
         nParallel: rememberedNParallel,
       }),
-    // batch-size pair: baseline always follows the echo, a clean control follows
-    // the move (including back to null), a pending edit keeps the control. One
-    // rule per pair, shared with the tests via resolveBatchSizeSeed.
+    // one rule per batch pair, see resolveBatchSizeSeed
     ...("loaded" in nBatchSeed && { loadedNBatch: nBatchSeed.loaded ?? null }),
     ...("value" in nBatchSeed && { nBatch: nBatchSeed.value ?? null }),
     ...("loaded" in nUbatchSeed && {

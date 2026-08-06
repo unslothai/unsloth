@@ -155,8 +155,7 @@ def test_fast_path_intent_strips_inherited_batch_flags_when_field_set():
 
 
 def test_remote_gguf_guard_counts_explicit_micro_batch():
-    # a not-yet-downloaded gguf has no readable dims, but an explicit micro-batch
-    # override still has to count its kq-mask growth against active training
+    # a remote gguf has no readable dims, but an explicit ubatch still grows the kq mask
     from types import SimpleNamespace
     from unittest.mock import patch
 
@@ -185,8 +184,7 @@ def test_remote_gguf_guard_counts_explicit_micro_batch():
     # ctx-capped ubatch (32768) x ctx x 2 x 1.5 mask safety ~= 3 GiB on top
     assert big > base + 2.0
 
-    # auto context (max_seq_length 0) still reserves: assume the native context
-    # fits at least one full micro-batch
+    # auto context still reserves: assume the native one fits a full micro-batch
     with (
         patch(
             "utils.models.model_config.list_gguf_variants",
@@ -209,8 +207,7 @@ def test_remote_gguf_guard_counts_explicit_micro_batch():
     assert diffusion == pytest.approx(1.0)
 
 
-def test_guard_device_count_uses_the_automatic_vulkan_pool():
-    # a vulkan-only host has no cuda devices to count, but the loader still spreads over the pool
+def test_guard_device_count_follows_the_split_the_loader_would_pick():
     from unittest.mock import patch
 
     from routes.inference import _guard_device_count
@@ -221,11 +218,13 @@ def test_guard_device_count_uses_the_automatic_vulkan_pool():
         "_effective_gpu_count",
         lambda ids = None: len(ids) if ids else 0,
     ):
-        assert _guard_device_count(None, pool) == 3
-        # an explicit pin wins over the pool, and no pool at all still charges one buffer set
+        # tensor mode replicates on every device; a vulkan host counts the probed pool
+        assert _guard_device_count(None, pool, tensor_parallel = True) == 3
+        assert _guard_device_count([1, 2], pool, tensor_parallel = True) == 2
+        assert _guard_device_count(None, [], tensor_parallel = True) == 1
+        # a layer split lands on the fewest gpus that fit, so auto placement is one
+        assert _guard_device_count(None, pool) == 1
         assert _guard_device_count([1, 2], pool) == 2
-        assert _guard_device_count(None, []) == 1
-        assert _guard_device_count(None, None) == 1
 
 
 def test_override_strips_shadowing_batch_flags():
