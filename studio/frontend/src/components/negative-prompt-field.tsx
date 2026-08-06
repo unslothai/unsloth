@@ -40,7 +40,7 @@ export function NegativePromptField({
           aria-hidden={true}
           tabIndex={-1}
           onClick={() => onOpenChange(!open)}
-          className="ml-auto inline-flex"
+          className="inline-flex"
         >
           <ChevronDown
             className={cn(
