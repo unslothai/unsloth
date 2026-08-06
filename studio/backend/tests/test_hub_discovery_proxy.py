@@ -134,7 +134,9 @@ class TestDestinationIsServerControlled:
 
 class TestUpstreamFailureMapping:
     def test_upstream_401_is_not_surfaced_as_401(self, monkeypatch):
-        monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token, accept = None: (401, b"", ""))
+        monkeypatch.setattr(
+            discovery, "_fetch_upstream", lambda url, token, accept = None: (401, b"", "")
+        )
         err = _error(_call, [("search", "gemma")])
         assert err.status_code != 401, (
             "an HF 401 echoed as our own 401 makes authFetch clear the Studio "
@@ -143,23 +145,31 @@ class TestUpstreamFailureMapping:
         assert err.status_code == discovery._UPSTREAM_AUTH_STATUS
 
     def test_upstream_403_is_not_surfaced_as_403(self, monkeypatch):
-        monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token, accept = None: (403, b"", ""))
+        monkeypatch.setattr(
+            discovery, "_fetch_upstream", lambda url, token, accept = None: (403, b"", "")
+        )
         err = _error(_call, [("search", "gemma")])
         assert err.status_code == discovery._UPSTREAM_AUTH_STATUS
 
     def test_redirects_are_refused_not_followed(self, monkeypatch):
-        monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token, accept = None: (302, b"", ""))
+        monkeypatch.setattr(
+            discovery, "_fetch_upstream", lambda url, token, accept = None: (302, b"", "")
+        )
         err = _error(_call, [("search", "gemma")])
         assert err.status_code == 502
         assert "redirect" in str(err.detail).lower()
 
     def test_upstream_5xx_becomes_502(self, monkeypatch):
-        monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token, accept = None: (503, b"", ""))
+        monkeypatch.setattr(
+            discovery, "_fetch_upstream", lambda url, token, accept = None: (503, b"", "")
+        )
         err = _error(_call, [("search", "gemma")])
         assert err.status_code == 502
 
     def test_malformed_json_becomes_502(self, monkeypatch):
-        monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token, accept = None: (200, b"not json", ""))
+        monkeypatch.setattr(
+            discovery, "_fetch_upstream", lambda url, token, accept = None: (200, b"not json", "")
+        )
         err = _error(_call, [("search", "gemma")])
         assert err.status_code == 502
 
@@ -172,7 +182,11 @@ class TestTokenHandling:
     def test_token_is_never_echoed_in_an_error(self, monkeypatch):
         secret = "hf_averysecrettokenvalue"
 
-        def _boom(url, token, accept = None):
+        def _boom(
+            url,
+            token,
+            accept = None,
+        ):
             raise RuntimeError(f"connection failed using {secret}")
 
         monkeypatch.setattr(discovery, "_fetch_upstream", _boom)
@@ -273,7 +287,9 @@ class TestPaginationLink:
         assert "huggingface.co" not in target
 
     def test_no_upstream_link_means_no_header(self, monkeypatch):
-        monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token, accept = None: (200, b"[]", ""))
+        monkeypatch.setattr(
+            discovery, "_fetch_upstream", lambda url, token, accept = None: (200, b"[]", "")
+        )
         response = _call([("search", "gemma")])
         assert (response.headers.get("link") or response.headers.get("Link")) is None
 
@@ -322,7 +338,11 @@ class TestInfoRoute:
         monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.example")
         seen = {}
 
-        def _capture(url, token, accept = None):
+        def _capture(
+            url,
+            token,
+            accept = None,
+        ):
             seen["url"] = url
             return 200, b'{"id": "x"}', ""
 
@@ -527,7 +547,11 @@ class TestTheDeadlineIsWallClock:
     def test_a_stalled_lookup_does_not_outlive_the_window(self, monkeypatch):
         import time as _time
 
-        def _hang(url, token, accept = None):
+        def _hang(
+            url,
+            token,
+            accept = None,
+        ):
             _time.sleep(5)
             return 200, b"[]", ""
 
@@ -567,7 +591,11 @@ class TestErrorDetailScrubbing:
     def test_the_search_query_is_not_echoed_in_a_transport_error(self, monkeypatch):
         # requests names the failing URL in its message, and for this proxy that
         # URL carries the user's search terms.
-        def _boom(url, token, accept = None):
+        def _boom(
+            url,
+            token,
+            accept = None,
+        ):
             # The real requests/urllib3 shape, which names the target twice.
             raise RuntimeError(
                 "HTTPSConnectionPool(host='hf-mirror.acme.internal', port=443): Max "
@@ -583,7 +611,11 @@ class TestErrorDetailScrubbing:
 
     def test_the_egress_proxy_host_is_not_echoed(self, monkeypatch):
         # A proxied failure names the internal proxy, which we report nowhere else.
-        def _boom(url, token, accept = None):
+        def _boom(
+            url,
+            token,
+            accept = None,
+        ):
             raise RuntimeError(
                 "ProxyError('Unable to connect to proxy', NameResolutionError("
                 "\"HTTPSConnection(host='squid.corp.internal', port=3128): "
@@ -641,7 +673,11 @@ class TestReadmeRoute:
         monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.example")
         seen = {}
 
-        def _fetch(url, token, accept = None):
+        def _fetch(
+            url,
+            token,
+            accept = None,
+        ):
             seen["url"] = url
             return 200, b"# card", ""
 
@@ -654,7 +690,9 @@ class TestReadmeRoute:
         """_fetch_upstream returns redirects with an empty body, and they are
         under 400, so without an explicit branch they shipped as a 200."""
         monkeypatch.delenv("HF_ENDPOINT", raising = False)
-        monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token, accept = None: (status, b"", ""))
+        monkeypatch.setattr(
+            discovery, "_fetch_upstream", lambda url, token, accept = None: (status, b"", "")
+        )
         response = self._call()
         assert response.status_code == 502
         assert response.headers.get(discovery.HUB_PROXY_MARKER_HEADER) == "1"
@@ -663,7 +701,11 @@ class TestReadmeRoute:
         """The search and info routes map these; without it this one 500s raw."""
         monkeypatch.delenv("HF_ENDPOINT", raising = False)
 
-        def _fetch(url, token, accept = None):
+        def _fetch(
+            url,
+            token,
+            accept = None,
+        ):
             raise OSError("HTTPSConnectionPool(host='huggingface.co', port=443)")
 
         monkeypatch.setattr(discovery, "_fetch_upstream", _fetch)
@@ -700,17 +742,23 @@ class TestReadmeRoute:
         assert err.status_code == 400
 
     def test_upstream_auth_is_not_surfaced_as_our_own(self, monkeypatch):
-        monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token, accept = None: (401, b"", ""))
+        monkeypatch.setattr(
+            discovery, "_fetch_upstream", lambda url, token, accept = None: (401, b"", "")
+        )
         err = _error(self._call)
         assert err.status_code == discovery._UPSTREAM_AUTH_STATUS
 
     def test_a_missing_card_is_a_plain_404(self, monkeypatch):
-        monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token, accept = None: (404, b"", ""))
+        monkeypatch.setattr(
+            discovery, "_fetch_upstream", lambda url, token, accept = None: (404, b"", "")
+        )
         err = _error(self._call)
         assert err.status_code == 404
 
     def test_the_card_is_returned_with_the_private_headers(self, monkeypatch):
-        monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token, accept = None: (200, b"# card", ""))
+        monkeypatch.setattr(
+            discovery, "_fetch_upstream", lambda url, token, accept = None: (200, b"# card", "")
+        )
         response = self._call()
         assert response.body == b"# card"
         assert response.headers.get("cache-control") == "no-store"
@@ -726,7 +774,9 @@ class TestEveryResponseCarriesTheMarker:
     """
 
     def _listing(self, monkeypatch, status):
-        monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token, accept = None: (status, b"{}", ""))
+        monkeypatch.setattr(
+            discovery, "_fetch_upstream", lambda url, token, accept = None: (status, b"{}", "")
+        )
         return asyncio.run(
             discovery.discovery_search(
                 "models",
@@ -767,7 +817,11 @@ class TestTheAcceptHeaderMatchesTheBody:
         monkeypatch.delenv("HF_ENDPOINT", raising = False)
         seen = {}
 
-        def _fetch(url, token, accept = None):
+        def _fetch(
+            url,
+            token,
+            accept = None,
+        ):
             seen["accept"] = accept
             return 200, b"# card", ""
 
@@ -788,7 +842,11 @@ class TestTheAcceptHeaderMatchesTheBody:
     def test_the_listing_still_asks_for_json(self, monkeypatch):
         seen = {}
 
-        def _fetch(url, token, accept = None):
+        def _fetch(
+            url,
+            token,
+            accept = None,
+        ):
             seen["accept"] = accept
             return 200, b"[]", ""
 
@@ -890,7 +948,6 @@ class TestTimedOutWorkersAreBounded:
 
     def test_the_pool_is_capped(self):
         from concurrent.futures import ThreadPoolExecutor
-
         assert isinstance(discovery._UPSTREAM_POOL, ThreadPoolExecutor)
         assert 0 < discovery._UPSTREAM_POOL._max_workers <= 16
 
@@ -901,7 +958,11 @@ class TestTimedOutWorkersAreBounded:
         release = threading.Event()
         started = threading.Semaphore(0)
 
-        def _hang(url, token, accept = None):
+        def _hang(
+            url,
+            token,
+            accept = None,
+        ):
             started.release()
             release.wait(10)
             return 200, b"[]", ""
