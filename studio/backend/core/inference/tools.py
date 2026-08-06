@@ -1159,9 +1159,7 @@ def _is_win_comparison(tokens: "list[str]", index: int) -> bool:
     token = tokens[index]
     if "==" in token and not token.startswith("=="):
         return True
-    return (
-        index + 1 < len(tokens) and tokens[index + 1].lower() in _WIN_COMPARE_OPERATORS
-    )
+    return index + 1 < len(tokens) and tokens[index + 1].lower() in _WIN_COMPARE_OPERATORS
 
 
 def _live_operator_tail(token: str, lexed_posix: bool) -> str:

@@ -1779,7 +1779,9 @@ def test_a_prefix_handed_over_by_an_operator_still_forwards(windows_cmd_only, co
     assert "powershell" in tools._find_blocked_commands(command)
 
 
-@pytest.mark.parametrize("command", ['cmd /c echo(start "" powershell', 'cmd /c rem(start "" powershell'])
+@pytest.mark.parametrize(
+    "command", ['cmd /c echo(start "" powershell', 'cmd /c rem(start "" powershell']
+)
 def test_a_glued_parenthesis_after_a_word_opens_no_group(windows_cmd_only, command):
     # `echo(` and `rem(` are the no-space forms of those commands and print what
     # follows. Only a `(` of its own, or one behind another operator, opens a
