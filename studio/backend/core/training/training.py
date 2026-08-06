@@ -54,6 +54,9 @@ def _env_int(name: str, default: int) -> int:
 _STOP_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_GRACE_S", 15)
 _STOP_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S", 600)
 _CANCEL_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_CANCEL_TIMEOUT_S", 120)
+# Backstop to reclaim the GPU from a worker wedged in teardown. Generous: is_run_finished
+# already unwedges the UI, and a post-run wandb sync can legitimately take a while.
+_COMPLETE_EXIT_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_COMPLETE_EXIT_GRACE_S", 120)
 
 # Watchdog DB finalize: a few short retries so a transient SQLite lock doesn't lose the
 # terminal state, since the watchdog is the sole finalizer once _proc is dropped.
@@ -770,6 +773,8 @@ class TrainingBackend:
         # True while a pump thread should be running; cleared on intended exits.
         # Left True after an abnormal death so _ensure_pump_alive spots a crash.
         self._pump_running: bool = False
+        # True from the start_training() guard passing until its spawn finishes; blocks a second concurrent start (routes call it from a worker thread).
+        self._start_in_progress: bool = False
         self._lock = threading.Lock()
         self._run_intent_lock = threading.RLock()
 
@@ -848,11 +853,36 @@ class TrainingBackend:
         still letting auto-selection place training against the freed memory.
         Hook failures never block the start.
         """
+        # Compare-and-set start guard: the route runs this on a worker thread, so two overlapping /train/start requests can reach
+        # it concurrently and both pass the alive-check below (the proc is assigned last) and double-spawn. Mirrors reserve().
         with self._lock:
+            if self._start_in_progress:
+                logger.warning("Training start already in progress")
+                return False
             if self._proc is not None and self._proc.is_alive():
                 logger.warning("Training subprocess already running")
                 return False
+            self._start_in_progress = True
+        try:
+            return self._start_training_impl(
+                job_id,
+                before_spawn = before_spawn,
+                resume_source_run_id = resume_source_run_id,
+                **kwargs,
+            )
+        finally:
+            with self._lock:
+                self._start_in_progress = False
 
+    # Named, not part of **kwargs: the body reads it directly and it must not reach the worker config either.
+    def _start_training_impl(
+        self,
+        job_id: str,
+        *,
+        before_spawn = None,
+        resume_source_run_id: Optional[str] = None,
+        **kwargs,
+    ) -> bool:
         # Join prior pump thread — refuse to start if it won't die
         if self._pump_thread is not None and self._pump_thread.is_alive():
             self._pump_thread.join(timeout = 5.0)
@@ -1086,6 +1116,11 @@ class TrainingBackend:
             with self._lock:
                 if self.current_job_id != run_id:
                     return False
+                # The pump can finish the run between the route's terminal check and this
+                # lock, so re-test: latching _should_stop after the fact would report a
+                # saved run as stopped for good.
+                if save and self._run_finished_locked():
+                    return False
                 if save or not run_id:
                     self._should_stop = True
                 if not save and not run_id:
@@ -1109,10 +1144,14 @@ class TrainingBackend:
         self,
         cancel: bool,
         expected_job_id: Optional[str] = None,
+        grace_s: Optional[float] = None,
+        terminal_seen: bool = False,
     ) -> None:
-        """Start a daemon that force-terminates the worker if a requested stop does not
-        exit on its own. No-op if no worker is alive or a live watchdog already watches
-        this proc (a stale watchdog on an old proc never blocks a new run's watcher)."""
+        """Start a daemon that force-terminates a worker that will not exit. Armed by a stop
+        and by a run's own terminal event, since a wedged worker strands the UI either way.
+        No-op if no worker is alive or a live watchdog already watches this proc (a stale one
+        never blocks a new run). ``grace_s`` overrides the post-terminal grace;
+        ``terminal_seen`` starts it now, for an ending that never sets ``_complete_seen``."""
         with self._lock:
             if expected_job_id is not None and self.current_job_id != expected_job_id:
                 return
@@ -1128,6 +1167,7 @@ class TrainingBackend:
             watchdog = threading.Thread(
                 target = self._stop_watchdog_loop,
                 args = (proc, cancel, self.current_job_id),
+                kwargs = {"grace_s": grace_s, "terminal_seen": terminal_seen},
                 name = f"stop-watchdog-{self.current_job_id or 'unknown'}",
                 daemon = True,
             )
@@ -1140,12 +1180,16 @@ class TrainingBackend:
         target_proc: "mp.Process",
         cancel: bool,
         watched_job_id: Optional[str] = None,
+        grace_s: Optional[float] = None,
+        terminal_seen: bool = False,
     ) -> None:
-        """Escalate a stuck stop to force_terminate(): grace after "complete", else the
-        absolute backstop (see the module timeouts). No-ops on a clean exit; exits
-        silently if a new run replaces the worker."""
+        """Escalate a worker that will not exit to force_terminate(): grace after "complete",
+        else the absolute backstop (module timeouts). No-ops on a clean exit or once a new run
+        replaces the worker. ``grace_s`` overrides ``_STOP_GRACE_S``; ``terminal_seen`` starts
+        the grace at entry, so an ending that never sets ``_complete_seen`` (an error) does
+        not sit out the whole backstop."""
         started = time.monotonic()
-        complete_at: Optional[float] = None
+        complete_at: Optional[float] = started if terminal_seen else None
         reason = ""
         while True:
             with self._lock:
@@ -1157,9 +1201,10 @@ class TrainingBackend:
                 return
             now = time.monotonic()
             abs_timeout = _CANCEL_TIMEOUT_S if cancelling else _STOP_TIMEOUT_S
+            grace = _STOP_GRACE_S if grace_s is None else grace_s
             if complete_at is None and self._complete_seen.is_set():
                 complete_at = now
-            if complete_at is not None and now - complete_at >= _STOP_GRACE_S:
+            if complete_at is not None and now - complete_at >= grace:
                 reason = "worker still alive after save"
                 break
             if now - started >= abs_timeout:
@@ -1179,7 +1224,9 @@ class TrainingBackend:
                 reason,
             )
         else:
-            logger.warning("Stop watchdog force-terminating stuck training worker: %s", reason)
+            logger.warning(
+                "Training watchdog force-terminating a worker that will not exit: %s", reason
+            )
         # force_terminate can raise on a wedged child; finalize regardless.
         try:
             self.force_terminate(target_proc = target_proc)
@@ -1227,9 +1274,11 @@ class TrainingBackend:
         with self._lock:
             if self.current_job_id != run_id:
                 return
-            self._progress.status_message = error_message or "Training stopped."
             if error_message:
-                self._progress.error = error_message
+                self._progress.status_message = self._progress.error = error_message
+            elif status != "completed":
+                self._progress.status_message = "Training stopped."
+            # A completed run keeps its message; reaping a wedged worker must not relabel it.
         # Create the row if a start-time create failed (no-op otherwise; skips when the pump
         # is mid-create, in which case its create-then-finalize records the run instead).
         self._ensure_db_run_created()
@@ -1375,6 +1424,7 @@ class TrainingBackend:
         with self._lock:
             recover = self._in_model_load and not self._xet_fallback_used
             proc = self._proc
+            run_id = self.current_job_id
             if recover:
                 self._xet_fallback_used = True
                 self._needs_xet_respawn = True
@@ -1392,6 +1442,18 @@ class TrainingBackend:
         # Terminate either way so the pump loop proceeds (respawn or finalize).
         if proc is not None and proc.is_alive():
             proc.terminate()
+        if not recover:
+            # terminate() is only a request: arm the same backstop as the other terminal
+            # paths so a worker that ignores it cannot hold the GPU for good. Signal first,
+            # since arming no-ops when a watchdog already watches this proc and only this
+            # drops it to the grace.
+            self._complete_seen.set()
+            self._start_stop_watchdog(
+                cancel = False,
+                expected_job_id = run_id,
+                grace_s = _COMPLETE_EXIT_GRACE_S,
+                terminal_seen = True,
+            )
 
     def _respawn_worker_disable_xet(self) -> None:
         """Respawn the worker once with HF_HUB_DISABLE_XET=1 after a model-load
@@ -1533,6 +1595,25 @@ class TrainingBackend:
             new_pump.start()
         return True
 
+    def _run_finished_locked(self) -> bool:
+        """is_run_finished()'s terminal test, for callers already holding _lock."""
+        if self._start_in_progress:
+            return False
+        p = self._progress
+        return bool(self._complete_seen.is_set() or p.is_completed or p.error)
+
+    def is_run_finished(self) -> bool:
+        """Whether the current run reached its own terminal state (saved and finalized).
+
+        is_training_active() is liveness-based, so it stays true until the worker exits, which
+        can lag minutes behind a slow teardown or never happen at all, leaving the UI at 100%.
+        Status and progress read this so a finished run reports terminal at once; the GPU
+        admission guards keep using is_training_active(), since a lingering worker holds VRAM."""
+        if getattr(self, "_spawn_in_progress", False):
+            return False  # a new run is spawning; _progress is still the old run's
+        with self._lock:
+            return self._run_finished_locked()
+
     def is_training_active(self) -> bool:
         """Check if training is currently active."""
         # A spawn past its sidecar-swap recheck counts as active even before _proc is recorded,
@@ -1543,6 +1624,11 @@ class TrainingBackend:
         # training invisibly behind a frozen UI. Cheap enough for per-second polls.
         self._ensure_pump_alive()
         with self._lock:
+            # A run reserved in start_training but not yet spawned (before_spawn frees residents, then GPU auto-selection, then
+            # proc.start()) is already active: the load/start guards read this to refuse a concurrent /images/load or /diffusion/start.
+            if self._start_in_progress:
+                return True
+
             if self._proc is not None and self._proc.is_alive():
                 return True
 
@@ -1684,7 +1770,13 @@ class TrainingBackend:
                 self._safe_handle_event(event)
                 continue
 
-            if self._proc.is_alive():
+            # Snapshot: the watchdog drops _proc last, so a re-read can hit None and kill
+            # this thread. A dropped handle means it already finalized.
+            proc = self._proc
+            if proc is None:
+                self._pump_running = False
+                return
+            if proc.is_alive():
                 continue
 
             # Worker exited. Drain the backlog and finalize, guarded so a slow or
@@ -1972,6 +2064,9 @@ class TrainingBackend:
             elif etype == "error":
                 self._progress.is_training = False
                 self._progress.error = event.get("error", "Unknown error")
+                # Nothing left to save: drop an in-flight watchdog to its grace, not the
+                # save backstop.
+                self._complete_seen.set()
                 if self._cancel_requested:
                     self._output_dir = self._progress.output_dir = None
                 logger.error("Training error: %s", event.get("error"))
@@ -2026,6 +2121,16 @@ class TrainingBackend:
             self._flush_metrics_to_db()
         elif db_action == "finalize":
             self._finalize_run_in_db(**db_action_kwargs)
+
+        # Bound how long a worker that will not exit can hold the UI at 100%. No-ops on a
+        # prompt exit. Outside the lock: _start_stop_watchdog takes it, not reentrant.
+        if etype in ("complete", "error"):
+            self._start_stop_watchdog(
+                cancel = False,
+                expected_job_id = db_action_kwargs.get("expected_job_id"),
+                grace_s = _COMPLETE_EXIT_GRACE_S,
+                terminal_seen = True,
+            )
 
         if etype == "progress":
             self._log_training_progress()

@@ -50,6 +50,11 @@ export const it = {
       projects: "Progetti",
       train: "Addestra",
       recipes: "Ricette",
+      images: "Immagini",
+      video: "Video",
+      more: "Altro",
+      customizeSidebar: "Personalizza la barra laterale",
+      newBadge: "Novità",
       export: "Esporta",
       recents: "Recenti",
       noChatsYet: "Ancora nessuna chat",
@@ -153,16 +158,27 @@ export const it = {
         sttNotDownloaded: "Non scaricato",
         sttDownloadStatusFailed: "Impossibile verificare lo stato del download",
         sttDownload: "Scarica",
+        sttDownloadConfirmTitle: "Vuoi scaricare {model}?",
+        sttDownloadConfirmBody:
+          "La dettatura locale funziona completamente offline, ma prima ha bisogno del modello vocale {model}. Occupa circa {size} e viene scaricato una sola volta nella tua cache di Hugging Face.",
+        sttDownloadConfirmBodyUnsized:
+          "La dettatura locale funziona completamente offline, ma prima ha bisogno del modello vocale {model}. Viene scaricato una sola volta nella tua cache di Hugging Face.",
+        sttOpenVoiceSettings: "Apri le impostazioni Voce",
+        sttDownloadStarted: "Download di {model} in corso",
         sttDownloading: "Download in corso… {progress}%",
         sttCancelDownload: "Annulla",
         sttCancellingDownload: "Annullamento…",
+        sttCancelDownloadFailed: "Impossibile annullare il download",
         sttDownloadComplete: "Modello di riconoscimento vocale scaricato",
+        sttModelReady: "{model} è pronto per la dettatura",
+        sttRecommended: "Consigliato",
         sttDownloadFailed:
           "Impossibile scaricare il modello di riconoscimento vocale",
         sttLoad: "Carica",
         sttUnload: "Rimuovi dalla memoria",
         sttUnloading: "Rimozione dalla memoria…",
         microphoneLabel: "Microfono",
+        microphoneFallbackName: "Microfono {index}",
         microphoneDescription: "Usato per la dettatura",
         microphoneFallbackHint:
           "Usato per la dettatura. Se il motore vocale del browser non può usare questo dispositivo, si passa a quello predefinito di sistema",
@@ -187,6 +203,10 @@ export const it = {
         manage: "Gestisci",
         backToVoice: "Torna a Voce",
         addEntry: "Aggiungi voce",
+        newEntryAria: "Nuova voce del dizionario",
+        entryPlaceholder: "Maria Rossi",
+        entryAria: "Voce del dizionario {index}",
+        removeEntryAria: "Rimuovi la voce del dizionario {index}",
       },
       recents: {
         sectionTitle: "Cronologia delle dettature",
@@ -248,6 +268,7 @@ export const it = {
         previewLabel: "Ascolta la voce",
         previewDescription: "Riproduci un breve campione",
         previewAction: "Ascolta",
+        previewFailed: "Impossibile riprodurre l'anteprima TTS",
         stopAction: "Interrompi",
         ttsLabel: "Sintesi vocale",
         notSupported: "Non supportato in questo browser",
@@ -262,6 +283,8 @@ export const it = {
         "Usato per caricare modelli ad accesso limitato e pubblicare artefatti.",
       hideToken: "Nascondi il token",
       showToken: "Mostra il token",
+      clearToken: "Cancella",
+      checkingToken: "Verifica del token...",
       tokenValidated: "Token convalidato",
       password: "Password",
       passwordDescription: "Cambia la password di questo account Unsloth.",
@@ -313,6 +336,8 @@ export const it = {
         idleUnload: "Scaricamento automatico dalla memoria per inattività",
         idleUnloadDescription:
           "Libera la VRAM dopo il numero indicato di secondi di inattività. 0 mantiene il modello in memoria; il minimo è 60.",
+        idleSecondsAriaLabel:
+          "Secondi di inattività prima dello scaricamento automatico",
         idleNeedsEnable:
           "Attiva prima «Cambia modello in base alla richiesta».",
         idleActiveViaEnv: "Attivo tramite UNSLOTH_MODEL_IDLE_TTL.",
@@ -606,6 +631,14 @@ export const it = {
         compactSidebarDescription:
           "Mantieni la barra laterale espansa invece di ridurla a icone.",
       },
+      sidebarNav: {
+        title: "Navigazione della barra laterale",
+        description:
+          "Fissa e riordina le schede della barra laterale. Le schede non fissate vengono raccolte nel menu «Altro»; se ne resta una sola non fissata viene nascosta invece di creare un menu con una voce sola. «Nuova chat» resta sempre al suo posto.",
+        dragToReorder: "Trascina per riordinare",
+        pinToSidebar: "Fissa {name} nella barra laterale",
+        moreHolds: "Altro ({count})",
+      },
       sidebarMenu: {
         title: "Menu della barra laterale",
         description:
@@ -623,6 +656,13 @@ export const it = {
       disableOverlay: "Disattiva la sovrapposizione",
       liveMonitor: {
         title: "Monitor in tempo reale",
+        apiTitle: "Monitor API",
+        summary: "Richieste attive, errori e utilizzo dei token",
+        status: "{active} attive · {recent} recenti · {model}",
+        noModelLoaded: "nessun modello caricato",
+        autoOpen: "Mostra automaticamente il monitor fluttuante",
+        autoOpenDescription:
+          "Apre un piccolo pannello quando arriva traffico API.",
         cpu: "CPU",
         ram: "RAM",
         disk: "Disco",
@@ -634,6 +674,8 @@ export const it = {
       },
       gpu: {
         title: "Dispositivi GPU",
+        ggufInference: "Inferenza GGUF",
+        unavailable: "non disponibile",
         noGpu:
           "Nessuna GPU visibile rilevata. Sopra sono mostrate le risorse della sola CPU.",
         unknownDevice: "GPU sconosciuta",
@@ -786,7 +828,29 @@ export const it = {
     chat: {
       title: "Chat",
       description:
-        "Gestisci la cronologia delle chat memorizzata su questo dispositivo.",
+        "Personalizza il comportamento della chat su questo dispositivo.",
+      modelSelection: {
+        title: "Impostazioni di selezione del modello",
+        expandQuantizations: "Espandi le quantizzazioni",
+        expandQuantizationsDescription:
+          "Attivata: i modelli GGUF in «On Device» mostrano subito le relative quantizzazioni. Disattivata: fai clic su un modello per visualizzarne le quantizzazioni.",
+        showAllQuantizations: "Mostra tutte le quantizzazioni",
+        showAllQuantizationsDescription:
+          "Attivata: elenca tutte le quantizzazioni in «On Device», incluse quelle non scaricate. Disattivata: mostra solo le quantizzazioni scaricate.",
+      },
+      menu: {
+        title: "Menu della chat",
+        description:
+          "Fissa le voci nel menu laterale «+» della chat. Le altre verranno spostate in «Altro».",
+        chatWithFiles: "Chat con file (RAG)",
+        mcp: "MCP",
+        savedPrompts: "Prompt salvati",
+        compareChat: "Confronta chat",
+        exportChat: "Esporta chat",
+      },
+      showResponseModel: "Mostra il modello della risposta",
+      showResponseModelDescription:
+        "Mostra i metadati del modello nelle risposte dell'assistente.",
       modelDisclaimer: "Mostra l'avviso sul modello",
       modelDisclaimerDescription:
         "Mostra «Gli LLM possono commettere errori» sotto il campo della chat.",
@@ -859,6 +923,8 @@ export const it = {
     },
     data: {
       title: "Dati",
+      backToData: "Torna a Dati",
+      exportFailed: "Impossibile esportare le chat",
       description:
         "Gestisci la cronologia delle chat e i file caricati su questo dispositivo.",
       archivedChats: "Chat archiviate",
@@ -944,7 +1010,7 @@ export const it = {
       osWindows: "Windows",
       secureHttps: "HTTPS sicuro",
       secureHttpsHint:
-        "La porta su 0.0.0.0 resta raggiungibile da tutta la rete. Per la massima sicurezza avvia Unsloth con --secure, così viene esposto solo questo link HTTPS.",
+        "La porta su 0.0.0.0 resta raggiungibile da ovunque. Per la massima sicurezza avvia Unsloth con --secure, così viene esposto solo questo link HTTPS.",
       copyTunnelUrl: "Copia l'URL del tunnel",
       copySnippet: "Copia lo snippet",
       copy: "Copia",
@@ -959,15 +1025,8 @@ export const it = {
       codingAgentsDetectedHint: "Rilevati su questo computer: {agents}.",
       relativeNever: "mai",
       relativeJustNow: "proprio ora",
-      relativeHoursAgo: "{count} h fa",
-      relativeDaysAgo: "{count} g fa",
-      relativeOneMonthAgo: "1 mese fa",
-      relativeMonthsAgo: "{count} mesi fa",
-      relativeOneYearAgo: "1 anno fa",
-      relativeYearsAgo: "{count} anni fa",
       expired: "scaduta",
       today: "oggi",
-      inDays: "tra {count} g",
       created: "Creato {value}",
       used: "Ultimo utilizzo: {value}",
       expires: "Scadenza: {value}",
@@ -993,6 +1052,7 @@ export const it = {
       gpu: "GPU",
       cuda: "CUDA",
       rocm: "ROCm",
+      xpu: "XPU",
       updates: "Aggiornamento",
       help: "Aiuto",
       documentation: "Documentazione",
@@ -1039,7 +1099,33 @@ export const it = {
           "Se hai ancora il checkout del repository, esegui l'installer locale da lì:",
         restartAfterUpdate: "Riavvia Unsloth dopo l'aggiornamento.",
         desktopManaged:
-          "L'app desktop mantiene aggiornato il backend integrato e avvisa quando è disponibile una nuova versione.",
+          "L'app desktop verifica automaticamente la presenza di nuove versioni. Puoi anche controllare o aggiornare qui in qualsiasi momento.",
+        desktopReady: "Aggiornamenti dell'app desktop",
+        desktopReadyDescription:
+          "Verifica se è disponibile una versione più recente dell'app desktop.",
+        desktopChecking: "Verifica degli aggiornamenti",
+        desktopCheckingDescription:
+          "Questa operazione richiede in genere pochi secondi.",
+        desktopAvailable:
+          "È disponibile la versione {version} dell'app desktop",
+        desktopAvailableDescription:
+          "Aggiorna ora: al termine, l'app desktop verrà riavviata.",
+        desktopExternalServer:
+          "Esegui `unsloth studio update` nel terminale da cui hai avviato il server.",
+        desktopManualInstall:
+          "Apri la pagina della release per installare il pacchetto Linux più recente.",
+        desktopCheckFailed:
+          "Impossibile verificare la disponibilità di aggiornamenti",
+        desktopCheckFailedDescription: "Controlla la connessione e riprova.",
+        desktopCurrent: "L'app desktop è aggiornata",
+        desktopCurrentDescription:
+          "Unsloth continuerà a verificare automaticamente la disponibilità di aggiornamenti.",
+        checkForUpdates: "Verifica aggiornamenti",
+        checkAgain: "Verifica di nuovo",
+        retryCheck: "Riprova",
+        checking: "Verifica in corso...",
+        updateNow: "Aggiorna ora",
+        openReleasePage: "Apri la pagina della release",
         unknownInstall:
           "Impossibile rilevare come è stato installato Unsloth. Per installazioni tramite installer o PyPI, usa i comandi sopra.",
         localCheckout:
@@ -1356,7 +1442,7 @@ export const it = {
       cancelAction: "Annulla l'addestramento",
       stopTitle: "Ferma l'addestramento",
       stopDescription:
-        "Scegli come fermare il run di addestramento in corso. «Ferma e salva» crea un checkpoint da cui potrai riprendere più tardi; con «Ferma» non potrai riprendere l'addestramento.",
+        "Scegli come fermare il run di addestramento in corso. «Ferma e salva» crea un checkpoint da cui potrai riprendere più tardi; se lo fermi senza salvare non potrai riprendere l'addestramento.",
       stopAction: "Ferma",
       stopping: "Arresto in corso...",
       stopAndSave: "Ferma e salva",
@@ -1392,9 +1478,6 @@ export const it = {
       steps: "Step",
       lossTrendSparkline: "Sparkline dell'andamento della loss",
       relativeJustNow: "proprio ora",
-      relativeMinutesAgo: "{count} min fa",
-      relativeHoursAgo: "{count} h fa",
-      relativeDaysAgo: "{count} g fa",
       status: {
         completed: "Completato",
         stopped: "Fermato",
@@ -1504,6 +1587,7 @@ export const it = {
         loadingDataset: "Caricamento del dataset",
         configuring: "Configurazione",
         training: "Addestramento",
+        finalizing: "Salvataggio del modello",
         completed: "Completato",
         error: "Errore",
         stopped: "Fermato",

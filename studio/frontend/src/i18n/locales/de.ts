@@ -13,11 +13,11 @@ export const de = {
     error: "Fehler",
     export: "Exportieren",
     help: "Hilfe",
-    loading: "Wird geladen...",
+    loading: "Wird geladen…",
     new: "Neu",
     rename: "Umbenennen",
     save: "Speichern",
-    saving: "Wird gespeichert...",
+    saving: "Wird gespeichert…",
     search: "Suchen",
     shutdown: "Herunterfahren",
   },
@@ -33,7 +33,7 @@ export const de = {
       drag: "Zum Ändern der Größe ziehen",
     },
     aria: {
-      home: "Unsloth Startseite",
+      home: "Unsloth-Startseite",
       closeSidebar: "Seitenleiste schließen",
       openSidebar: "Seitenleiste öffnen",
       resizeSidebar: "Seitenleiste anpassen oder einklappen",
@@ -53,6 +53,11 @@ export const de = {
       projects: "Projekte",
       train: "Trainieren",
       recipes: "Rezepte",
+      images: "Bilder",
+      video: "Video",
+      more: "Mehr",
+      customizeSidebar: "Seitenleiste anpassen",
+      newBadge: "Neu",
       export: "Exportieren",
       recents: "Zuletzt verwendet",
       noChatsYet: "Noch keine Chats",
@@ -73,11 +78,11 @@ export const de = {
     dialog: {
       deleteChat: {
         title: "Chat löschen",
-        description: 'Möchten Sie diesen Chat "{name}" wirklich löschen?',
+        description: "Möchten Sie den Chat „{name}“ wirklich löschen?",
       },
       deleteRun: {
         title: "Trainingslauf löschen",
-        description: 'Möchten Sie diesen Lauf "{name}" wirklich löschen?',
+        description: "Möchten Sie den Trainingslauf „{name}“ wirklich löschen?",
       },
       renameChat: {
         title: "Chat umbenennen",
@@ -114,7 +119,7 @@ export const de = {
       chat: "Chat",
       connections: "Verbindungen",
       apiKeys: "API",
-      about: "Über",
+      about: "Info",
       data: "Daten",
       agents: "Agenten",
       voice: "Sprachfunktionen",
@@ -156,16 +161,27 @@ export const de = {
         sttDownloadStatusFailed:
           "Der Download-Status konnte nicht geprüft werden",
         sttDownload: "Herunterladen",
+        sttDownloadConfirmTitle: "{model} herunterladen?",
+        sttDownloadConfirmBody:
+          "Das lokale Diktat läuft vollständig offline, benötigt aber zuerst das Spracherkennungsmodell {model}. Etwa {size}, wird einmalig in Ihren Hugging Face-Cache geladen.",
+        sttDownloadConfirmBodyUnsized:
+          "Das lokale Diktat läuft vollständig offline, benötigt aber zuerst das Spracherkennungsmodell {model}. Es wird einmalig in Ihren Hugging Face-Cache geladen.",
+        sttOpenVoiceSettings: "Einstellungen für Sprachfunktionen öffnen",
+        sttDownloadStarted: "{model} wird heruntergeladen",
         sttDownloading: "Wird heruntergeladen… {progress} %",
         sttCancelDownload: "Abbrechen",
         sttCancellingDownload: "Wird abgebrochen…",
+        sttCancelDownloadFailed: "Der Download konnte nicht abgebrochen werden",
         sttDownloadComplete: "Spracherkennungsmodell heruntergeladen",
+        sttModelReady: "{model} ist bereit für das Diktat",
+        sttRecommended: "Empfohlen",
         sttDownloadFailed:
           "Das Spracherkennungsmodell konnte nicht heruntergeladen werden",
         sttLoad: "Laden",
         sttUnload: "Entladen",
         sttUnloading: "Wird entladen…",
         microphoneLabel: "Mikrofon",
+        microphoneFallbackName: "Mikrofon {index}",
         microphoneDescription: "Wird für das Diktat verwendet",
         microphoneFallbackHint:
           "Wird für das Diktat verwendet. Greift auf den Systemstandard zurück, wenn die Sprach-Engine des Browsers dieses Gerät nicht nutzen kann",
@@ -190,6 +206,10 @@ export const de = {
         manage: "Verwalten",
         backToVoice: "Zurück zu den Sprachfunktionen",
         addEntry: "Eintrag hinzufügen",
+        newEntryAria: "Neuer Wörterbucheintrag",
+        entryPlaceholder: "Erika Mustermann",
+        entryAria: "Wörterbucheintrag {index}",
+        removeEntryAria: "Wörterbucheintrag {index} entfernen",
       },
       recents: {
         sectionTitle: "Diktatverlauf",
@@ -236,7 +256,7 @@ export const de = {
         buttonLabel: "Vorlesen-Schaltfläche",
         buttonDescription: "Bei Assistentenantworten anzeigen",
         engineLabel: "TTS-Engine",
-        engineSystemDescription: "Integrierte Gerätestimmen",
+        engineSystemDescription: "Auf dem Gerät integrierte Stimmen",
         engineStudioDescription:
           "Verwendet das geladene Audiomodell (z. B. Orpheus)",
         engineSystem: "Systemstimmen",
@@ -250,7 +270,8 @@ export const de = {
         pitchLabel: "Tonhöhe",
         volumeLabel: "Lautstärke",
         previewLabel: "Stimme anhören",
-        previewDescription: "Eine kurze Probe abspielen",
+        previewDescription: "Eine kurze Hörprobe abspielen",
+        previewFailed: "Die TTS-Vorschau ist fehlgeschlagen",
         previewAction: "Anhören",
         stopAction: "Stopp",
         ttsLabel: "Sprachausgabe",
@@ -261,11 +282,13 @@ export const de = {
       title: "Allgemein",
       description: "Globale Einstellungen für Unsloth.",
       account: "Konto",
-      huggingFaceToken: "Hugging Face Token",
+      huggingFaceToken: "Hugging-Face-Token",
       huggingFaceTokenDescription:
-        "Wird verwendet, um gated Modelle zu laden und Artefakte zu pushen.",
+        "Wird verwendet, um zugriffsbeschränkte Modelle zu laden und Artefakte hochzuladen.",
       hideToken: "Token verbergen",
       showToken: "Token anzeigen",
+      clearToken: "Löschen",
+      checkingToken: "Token wird geprüft...",
       tokenValidated: "Token validiert",
       password: "Passwort",
       passwordDescription:
@@ -310,12 +333,13 @@ export const de = {
         sectionTitle: "Automatischer Modellwechsel (OpenAI API)",
         enable: "Modell je Anfrage wechseln",
         enableDescription:
-          "Wenn eine OpenAI-kompatible Anfrage ein anderes heruntergeladenes GGUF nennt, wird dieses vor der Auslieferung geladen. Standardmäßig aus; unbekannte Namen liefern weiterhin das geladene Modell aus.",
+          "Lädt vor der Verarbeitung einer API-Anfrage ein darin angegebenes, bereits heruntergeladenes GGUF. Standardmäßig deaktiviert.",
         idleUnload: "Automatisches Entladen bei Inaktivität",
         idleUnloadDescription:
-          "Entlädt das Modell nach dieser Anzahl inaktiver Sekunden, um VRAM freizugeben; die nächste Anfrage lädt es erneut. 0 hält es geladen. Minimum 60 Sekunden.",
-        idleNeedsEnable:
-          "Aktivieren Sie \"Modell je Anfrage wechseln\", damit ein entladenes Modell bei der nächsten Nutzung erneut geladen wird.",
+          "Gibt VRAM nach der angegebenen Anzahl von Sekunden ohne Aktivität frei. Bei 0 bleibt das Modell geladen; der Mindestwert ist 60.",
+        idleSecondsAriaLabel:
+          "Inaktivitätsdauer bis zum automatischen Entladen in Sekunden",
+        idleNeedsEnable: "Aktivieren Sie zuerst „Modell je Anfrage wechseln“.",
         idleActiveViaEnv:
           "Automatisches Entladen bei Inaktivität ist über die Umgebungsvariable UNSLOTH_MODEL_IDLE_TTL aktiv.",
         loadError:
@@ -328,7 +352,7 @@ export const de = {
           "Lädt ein in einer API-Anfrage genanntes GGUF herunter, das noch nicht vorhanden ist. Wer einen API-Schlüssel hat, kann dann Speicherplatz und Bandbreite verbrauchen.",
         keepKv: "Chat-Kontext beim automatischen Entladen behalten",
         keepKvDescription:
-          "Speichert den KV-Cache vor dem Entladen bei Inaktivität, damit fortgesetzte Chats den Verlauf nicht erneut einlesen. Bis zu 10 GB auf der Festplatte.",
+          "Speichert den KV-Cache vor dem Entladen bei Inaktivität, damit der Verlauf bei fortgesetzten Chats nicht erneut eingelesen werden muss. Bis zu 10 GB auf der Festplatte.",
       },
       previewSharing: {
         sectionTitle: "Vorschau-Freigabe",
@@ -371,11 +395,11 @@ export const de = {
         sectionTitle: "Dokumente & RAG",
         embeddingModel: "Embedding-Modell",
         embeddingModelDescription:
-          "Hugging Face Modell oder lokaler Pfad zum Indexieren und Durchsuchen Ihrer Dokumente. Standard ist {defaultModel}.",
+          "Hugging-Face-Modell oder lokaler Pfad zum Indexieren und Durchsuchen Ihrer Dokumente. Standard ist {defaultModel}.",
         reindexWarning:
           "Betrifft nur neu indexierte Dokumente. Laden Sie bestehende nach einer Modelländerung erneut hoch.",
         emptyError:
-          "Geben Sie eine Hugging Face Modell-ID oder einen lokalen Pfad ein.",
+          "Geben Sie eine Hugging-Face-Modell-ID oder einen lokalen Pfad ein.",
         loadError:
           "Die Embedding-Modell-Einstellung konnte nicht geladen werden.",
         saveError: "Das Embedding-Modell konnte nicht gespeichert werden.",
@@ -532,7 +556,7 @@ export const de = {
         fontImportedGroup: "Importiert",
         fontDeviceGroup: "Auf diesem Gerät",
         fontFolderGroup: "Aus einem Ordner",
-        fontDeviceLoading: "Geräteschriften werden gesucht…",
+        fontDeviceLoading: "Schriftarten auf diesem Gerät werden gesucht…",
         fontSearch: "Schriften suchen…",
         fontNoResults: "Keine Schriften gefunden.",
         colorPicker: {
@@ -608,6 +632,14 @@ export const de = {
         compactSidebarDescription:
           "Hält die Seitenleiste ausgeklappt, statt sie zu Symbolen einzuklappen.",
       },
+      sidebarNav: {
+        title: "Seitenleisten-Navigation",
+        description:
+          "Tabs der Seitenleiste anheften und neu anordnen. Nicht angeheftete Tabs sammeln sich im Menü „Mehr“; ein einzelner nicht angehefteter Tab wird ausgeblendet, statt ein Menü mit nur einem Eintrag zu erhalten. „Neuer Chat“ bleibt fest.",
+        dragToReorder: "Zum Neuanordnen ziehen",
+        pinToSidebar: "{name} an die Seitenleiste anheften",
+        moreHolds: "Mehr ({count})",
+      },
       sidebarMenu: {
         title: "Seitenleistenmenü",
         description:
@@ -625,6 +657,13 @@ export const de = {
       disableOverlay: "Overlay deaktivieren",
       liveMonitor: {
         title: "Live-Monitor",
+        apiTitle: "API-Monitor",
+        summary: "Aktive Anfragen, Fehler und Token-Nutzung",
+        status: "Aktiv: {active} · kürzlich: {recent} · {model}",
+        noModelLoaded: "kein Modell geladen",
+        autoOpen: "Schwebenden Monitor automatisch anzeigen",
+        autoOpenDescription:
+          "Öffnet ein kleines Fenster, wenn API-Aktivität eingeht.",
         cpu: "CPU",
         ram: "RAM",
         disk: "Festplatte",
@@ -636,6 +675,8 @@ export const de = {
       },
       gpu: {
         title: "GPU-Geräte",
+        ggufInference: "GGUF-Inferenz",
+        unavailable: "nicht verfügbar",
         noGpu:
           "Keine sichtbare GPU erkannt. Oben werden nur die CPU-Ressourcen angezeigt.",
         unknownDevice: "Unbekannte GPU",
@@ -688,7 +729,7 @@ export const de = {
     agents: {
       title: "Agenten",
       description:
-        "Verbinden Sie Coding-Agents wie Claude Code und Codex über unsloth start mit einem lokalen Modell.",
+        "Verbinden Sie Coding-Agenten wie Claude Code und Codex über unsloth start mit einem lokalen Modell.",
       intro:
         "verbindet Claude Code, Codex, Hermes, OpenClaw, OpenCode und weitere Agenten mit einem lokal von Unsloth bereitgestellten Modell, vollständig offline. Es startet einen OpenAI-kompatiblen Server und verändert nie die Konfigurationsdateien Ihres Agenten.",
       readDocs: "Dokumentation lesen",
@@ -713,7 +754,7 @@ export const de = {
       agentDocs: "Einrichtungsdokumentation zu {agent} öffnen",
       copyGeneratedCommand: "Generierten Befehl kopieren",
       modelNote:
-        "Codex benötigt ein GGUF-Modell, das von llama-server bereitgestellt wird. Andere Agents können auch Transformer-basierte Modelle verwenden; lassen Sie --model weg, um das bereits in Unsloth geladene Modell zu nutzen.",
+        "Codex benötigt ein GGUF-Modell, das von llama-server bereitgestellt wird. Andere Agenten können auch Transformer-basierte Modelle verwenden; lassen Sie --model weg, um das bereits in Unsloth geladene Modell zu nutzen.",
       subagent: {
         title: "Ein lokales Modell als Subagent verwenden",
         description:
@@ -756,7 +797,7 @@ export const de = {
           "Legt die gewünschte Kontextlänge fest (Alias: --max-seq-length).",
         ggufVariant: "Wählt die GGUF-Quantisierungsvariante.",
         loadIn4bit:
-          "Schaltet das 4-Bit-Laden für Hugging Face Modelle ein oder aus.",
+          "Schaltet das 4-Bit-Laden für Hugging-Face-Modelle ein oder aus.",
         tensorParallel:
           "Schaltet Tensor-Parallelität über mehrere GPUs ein oder aus.",
         serve: "Aktiviert oder deaktiviert den automatischen lokalen Server.",
@@ -772,7 +813,7 @@ export const de = {
           "Überspringt Bestätigungsabfragen. Nur in vertrauenswürdigen Umgebungen verwenden.",
       },
       remote: {
-        title: "Mit einem entfernten Studio verbinden",
+        title: "Mit einem Remote-Studio verbinden",
         description:
           "Richten Sie unsloth start auf ein anderswo laufendes Studio aus, indem Sie diese Variablen vor dem Aufruf setzen (oder --api-key direkt übergeben):",
       },
@@ -789,19 +830,40 @@ export const de = {
     },
     chat: {
       title: "Chat",
-      description:
-        "Verwalten Sie den auf diesem Gerät gespeicherten Chatverlauf.",
+      description: "Passen Sie an, wie sich der Chat auf diesem Gerät verhält.",
+      modelSelection: {
+        title: "Einstellungen für die Modellauswahl",
+        expandQuantizations: "Quantisierungen ausklappen",
+        expandQuantizationsDescription:
+          "Ein: Bei GGUF-Modellen unter „On Device“ werden die Quantisierungen sofort angezeigt. Aus: Klicken Sie auf ein Modell, um seine Quantisierungen anzuzeigen.",
+        showAllQuantizations: "Alle Quantisierungen anzeigen",
+        showAllQuantizationsDescription:
+          "Ein: Alle Quantisierungen unter „On Device“ auflisten, auch nicht heruntergeladene. Aus: Nur heruntergeladene Quantisierungen anzeigen.",
+      },
+      menu: {
+        title: "Chatmenü",
+        description:
+          "Elemente im seitlichen Plus-Menü des Chats anheften. Die übrigen werden unter „Mehr“ angezeigt.",
+        chatWithFiles: "Chat mit Dateien (RAG)",
+        mcp: "MCP",
+        savedPrompts: "Gespeicherte Prompts",
+        compareChat: "Chats vergleichen",
+        exportChat: "Chat exportieren",
+      },
+      showResponseModel: "Antwortmodell anzeigen",
+      showResponseModelDescription:
+        "Modellmetadaten in Antworten des Assistenten anzeigen.",
       modelDisclaimer: "Modell-Hinweis anzeigen",
       modelDisclaimerDescription:
-        'Zeigt "LLMs können Fehler machen" unter dem Chatfeld an.',
+        "Zeigt „LLMs können Fehler machen“ unter dem Chatfeld an.",
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "HTML-Blöcke einklappen",
         collapseHtmlBlocksDescription:
-          "Der Canvas-Modus klappt vollständiges HTML automatisch ein. Aktivieren Sie dies, um auch abgegrenzte HTML-Dokumente einzuklappen, wenn Canvas aus ist.",
+          "Der Canvas-Modus klappt vollständiges HTML automatisch ein. Aktivieren Sie diese Option, um auch HTML-Dokumente in Codeblöcken einzuklappen, wenn Canvas deaktiviert ist.",
         allowNetworkAccess: "Netzwerkzugriff für Canvas erlauben",
         allowNetworkAccessDescription:
-          "Erlaubt Canvas-Vorschauen, Skripte, Stile, Schriften, Medien und Netzwerkressourcen von CDNs zu laden. Für vollständig offline Vorschauen ausgeschaltet lassen.",
+          "Erlaubt Canvas-Vorschauen, Skripte, Stile, Schriftarten, Medien und Netzwerkressourcen von CDNs zu laden. Für vollständig offline nutzbare Vorschauen deaktiviert lassen.",
       },
       data: "Daten",
       exportHistory: "Chatverlauf exportieren",
@@ -809,9 +871,9 @@ export const de = {
         "Alle Chats und Nachrichten als JSON herunterladen.",
       exportAction: "Exportieren",
       exportingAction: "Wird exportiert...",
-      exportConversations: "Zuletzt verwendete und Projekte exportieren",
+      exportConversations: "„Zuletzt verwendet“ und Projekte exportieren",
       exportConversationsDescription:
-        "Laden Sie zuletzt verwendete Chats oder diese plus Projekt-Chats als Raw JSONL, CSV oder ShareGPT JSONL herunter, kombiniert oder pro Chat.",
+        "Laden Sie Chats aus „Zuletzt verwendet“ oder zusätzlich auch Projekt-Chats als Raw JSONL, CSV oder ShareGPT JSONL herunter, kombiniert oder einzeln pro Chat.",
       exportConversationsAction: "Exportieren",
       exportScopeRecents: "Zuletzt verwendet",
       exportScopeAll: "Zuletzt verwendet + Projekte",
@@ -819,12 +881,12 @@ export const de = {
       exportPerChatSuffix: "(pro Chat)",
       importChats: "Chats importieren",
       importChatsDescription:
-        "Importieren Sie einen JSONL-, NDJSON- oder CSV-Export in \"Zuletzt verwendet\".",
+        "Importieren Sie einen JSONL-, NDJSON- oder CSV-Export in „Zuletzt verwendet“.",
       importChatsAction: "Importieren",
       importNoConversations: "Keine Konversationen in der Datei gefunden.",
-      importedOneChat: "1 Konversation in \"Zuletzt verwendet\" importiert.",
+      importedOneChat: "1 Konversation in „Zuletzt verwendet“ importiert.",
       importedChatCount:
-        "{count} Konversationen in \"Zuletzt verwendet\" importiert.",
+        "{count} Konversationen in „Zuletzt verwendet“ importiert.",
       importFailed: "Import fehlgeschlagen.",
       clearHistory: "Chatverlauf löschen",
       clearHistoryDescription: "Chatverlauf von diesem Gerät löschen.",
@@ -858,13 +920,15 @@ export const de = {
       oneChatClearedRemainOne:
         "1 Chat gelöscht; 1 Chat verbleibt. Bitte erneut versuchen.",
       storageClearFailedOne:
-        "Ein Speichervorgang ist fehlgeschlagen; 1 Chat verbleibt möglicherweise. Bitte erneut versuchen.",
+        "Das Löschen aus dem Speicher ist fehlgeschlagen; möglicherweise verbleibt 1 Chat. Bitte erneut versuchen.",
       storageClearFailed:
-        "Ein Speichervorgang ist fehlgeschlagen; {count} Chats verbleiben möglicherweise. Bitte erneut versuchen.",
+        "Das Löschen aus dem Speicher ist fehlgeschlagen; möglicherweise verbleiben {count} Chats. Bitte erneut versuchen.",
       failedToClearChats: "Chats konnten nicht gelöscht werden",
     },
     data: {
       title: "Daten",
+      backToData: "Zurück zu Daten",
+      exportFailed: "Chats konnten nicht exportiert werden",
       description:
         "Verwalten Sie Chatverlauf und hochgeladene Dateien, die auf diesem Gerät gespeichert sind.",
       archivedChats: "Archivierte Chats",
@@ -955,44 +1019,42 @@ export const de = {
       setupDocs: "Einrichtungsdokumentation:",
       codingAgents: "Coding-Agents",
       codingAgentsHint:
-        "Starten Sie einen Coding-Agent gegen diesen Server. Er verwendet das geladene Modell; ein lokaler Server erstellt automatisch einen API-Schlüssel, ein entfernter fügt ihn dem Befehl hinzu.",
+        "Starten Sie einen Coding-Agenten für diesen Server. Er verwendet das geladene Modell; ein lokaler Server erstellt automatisch einen API-Schlüssel, ein Remote-Server fügt ihn dem Befehl hinzu.",
       codingAgentsSwap:
         "Ersetzen Sie claude durch codex, openclaw, opencode oder hermes.",
       codingAgentDetected: "Auf diesem Gerät installiert",
       codingAgentsDetectedHint: "Auf diesem Gerät erkannt: {agents}.",
       relativeNever: "nie",
       relativeJustNow: "gerade eben",
-      relativeHoursAgo: "vor {count} h",
-      relativeDaysAgo: "vor {count} T",
-      relativeMonthsAgo: "vor {count} Mon.",
-      relativeYearsAgo: "vor {count} J",
       expired: "abgelaufen",
       today: "heute",
-      inDays: "in {count} T",
       created: "Erstellt {value}",
       used: "Verwendet {value}",
-      expires: "Läuft ab {value}",
+      expires: "Läuft {value} ab",
       actionsFor: "Aktionen für {name}",
       copyPrefix: "Präfix kopieren",
       revokeToken: "Token widerrufen",
-      revokeTitle: 'Zugriffstoken "{name}" widerrufen?',
+      revokeTitle: "Zugriffstoken „{name}“ widerrufen?",
       revokeDescription:
         "Apps, die dieses Token verwenden, verlieren sofort den Zugriff. Dies kann nicht rückgängig gemacht werden.",
-      revokeAction: '"{name}" widerrufen',
+      revokeAction: "„{name}“ widerrufen",
       revoking: "Wird widerrufen...",
       usageNoModel:
         "Laden Sie ein Modell oder laden Sie eines herunter, um ausführbare Beispiele zu sehen. Dieser Server kennt noch kein Modell, das in den Beispielen verwendet werden könnte.",
     },
     about: {
-      title: "Über",
+      title: "Info",
       description: "Dokumentation, Versionshinweise, Feedback und Build-Infos.",
       studioVersion: "Unsloth-Version",
       packageVersion: "Paketversion",
+      desktopAppVersion: "Version der Desktop-App",
+      desktopAppVersionUnavailable: "Nicht verfügbar",
       llamaCppVersion: "llama.cpp-Version",
       hardware: "Hardware",
       gpu: "GPU",
       cuda: "CUDA",
       rocm: "ROCm",
+      xpu: "XPU",
       updates: "Update",
       help: "Hilfe",
       documentation: "Dokumentation",
@@ -1016,12 +1078,12 @@ export const de = {
       shutDown: "Herunterfahren",
       update: {
         title: "Unsloth aktualisieren",
-        commandText: "{label}-Text",
+        commandText: "{label} als Text",
         copied: "Kopiert",
         copyCommand: "Befehl kopieren",
         commandCopied: "{label} kopiert",
         copyNamedCommand: "{label} kopieren",
-        checkingInstall: "Prüfe, wie Unsloth installiert wurde...",
+        checkingInstall: "Es wird geprüft, wie Unsloth installiert wurde...",
         installIntro: "So installieren oder aktualisieren Sie Unsloth:",
         localUpdateHeading: "Lokales Update",
         installCommandUnix: "macOS/Linux-Installationsbefehl",
@@ -1038,7 +1100,32 @@ export const de = {
           "Wenn Sie den Repository-Checkout noch haben, führen Sie den lokalen Installer daraus aus:",
         restartAfterUpdate: "Starten Sie Unsloth nach dem Update neu.",
         desktopManaged:
-          "Die Desktop-App hält ihr gebündeltes Backend aktuell und weist auf neue Versionen hin, sobald sie verfügbar sind.",
+          "Die Desktop-App sucht automatisch nach neuen App-Versionen. Sie können hier auch jederzeit nach Updates suchen oder ein Update durchführen.",
+        desktopReady: "Updates für die Desktop-App",
+        desktopReadyDescription:
+          "Prüfen Sie, ob eine neuere Version der Desktop-App verfügbar ist.",
+        desktopChecking: "Es wird nach Updates gesucht",
+        desktopCheckingDescription:
+          "Dies dauert in der Regel einige Sekunden.",
+        desktopAvailable: "Version {version} der Desktop-App ist verfügbar",
+        desktopAvailableDescription:
+          "Aktualisieren Sie jetzt. Die Desktop-App wird nach Abschluss des Updates neu gestartet.",
+        desktopExternalServer:
+          "Führen Sie `unsloth studio update` in dem Terminal aus, über das Sie Ihren Server gestartet haben.",
+        desktopManualInstall:
+          "Öffnen Sie die Release-Seite, um das neueste Linux-Paket zu installieren.",
+        desktopCheckFailed: "Die Suche nach Updates ist fehlgeschlagen",
+        desktopCheckFailedDescription:
+          "Überprüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
+        desktopCurrent: "Die Desktop-App ist auf dem neuesten Stand",
+        desktopCurrentDescription:
+          "Unsloth sucht weiterhin automatisch nach Updates.",
+        checkForUpdates: "Nach Updates suchen",
+        checkAgain: "Erneut suchen",
+        retryCheck: "Erneut versuchen",
+        checking: "Wird geprüft...",
+        updateNow: "Jetzt aktualisieren",
+        openReleasePage: "Release-Seite öffnen",
         unknownInstall:
           "Es konnte nicht erkannt werden, wie Unsloth installiert wurde. Verwenden Sie für Installer- oder PyPI-Installationen die obigen Befehle.",
         localCheckout:
@@ -1065,7 +1152,7 @@ export const de = {
       currentRun: "Aktueller Lauf",
       history: "Verlauf",
     },
-    loadingRuntime: "Trainingslaufzeit wird geladen...",
+    loadingRuntime: "Trainingsumgebung wird geladen...",
     backToHistory: "Zurück zum Verlauf",
     sections: {
       model: "Modell",
@@ -1104,9 +1191,9 @@ export const de = {
       hfCache: "HF-Cache",
       customFolders: "Eigene Ordner",
       localDir: "Lokales Verzeichnis",
-      huggingFaceModel: "Hugging Face Modell",
+      huggingFaceModel: "Hugging-Face-Modell",
       huggingFaceModelTooltip:
-        "Durchsuchen Sie Hugging Face Modelle oder wählen Sie aus unserer empfohlenen Liste.",
+        "Durchsuchen Sie Hugging-Face-Modelle oder wählen Sie aus unserer empfohlenen Liste.",
       searchModels: "Modelle suchen...",
       searching: "Wird gesucht...",
       noModelsFound: "Keine Modelle gefunden",
@@ -1120,8 +1207,8 @@ export const de = {
       fullFineTune: "Vollständiges Fine-Tuning",
       checkingToken: "Token wird geprüft...",
       getOrUpdateToken: "Token abrufen oder aktualisieren",
-      huggingFaceTokenOptional: "Hugging Face Token (optional)",
-      continuedPretraining: "Continued Pretraining",
+      huggingFaceTokenOptional: "Hugging-Face-Token (optional)",
+      continuedPretraining: "Fortgesetztes Vortraining",
       localModels: "Lokale Modelle",
       localModelsFound: "{count} lokale/zwischengespeicherte Modelle gefunden",
       loadingLocalModels: "Lokale Modelle werden geladen...",
@@ -1134,7 +1221,7 @@ export const de = {
       chooseDatasetTooltip:
         "Wechseln Sie über die Popup-Tabs zwischen Hugging Face und lokalen Recipe-Ausgaben.",
       localTab: "Lokal",
-      searchHuggingFaceDatasets: "Hugging Face Datensätze suchen...",
+      searchHuggingFaceDatasets: "Hugging-Face-Datensätze suchen...",
       searchLocalDatasets: "Lokale Datensätze suchen...",
       searching: "Wird gesucht...",
       noDatasetsFound: "Keine Datensätze gefunden",
@@ -1150,7 +1237,7 @@ export const de = {
       localDatasets: "Lokale Datensätze",
       localDataset: "Lokaler Datensatz",
       localDatasetRows: " / {count} Zeilen",
-      huggingFaceDataset: "Hugging Face Datensatz",
+      huggingFaceDataset: "Hugging-Face-Datensatz",
       localDatasetMetadata: "Metadaten des lokalen Datensatzes",
       dataRecipeOutput: "Data-Recipe-Ausgabe.",
       rows: "Zeilen",
@@ -1308,7 +1395,7 @@ export const de = {
         "Erhöht die Lernrate zu Trainingsbeginn schrittweise für mehr Stabilität.",
       scheduleEpochsTooltip:
         "Anzahl vollständiger Durchläufe über den Datensatz. Auf 0 setzen, um nach max. Schritten zu laufen.",
-      saveSteps: "Speicher-Schritte",
+      saveSteps: "Speicherintervall in Schritten",
       saveStepsTooltip:
         "Speichert alle N Schritte einen Checkpoint. 0 zum Deaktivieren.",
       evalSteps: "Eval-Schritte",
@@ -1360,7 +1447,7 @@ export const de = {
       cancelAction: "Training abbrechen",
       stopTitle: "Training stoppen",
       stopDescription:
-        "Wählen Sie, wie Sie den aktuellen Trainingslauf stoppen möchten.",
+        "Wählen Sie, wie Sie den aktuellen Trainingslauf stoppen möchten. „Stoppen und speichern“ schreibt einen Checkpoint, von dem aus Sie später fortsetzen können; ein einfach gestopptes Training kann nicht fortgesetzt werden.",
       stopAction: "Stoppen",
       stopping: "Wird gestoppt...",
       stopAndSave: "Stoppen und speichern",
@@ -1375,7 +1462,7 @@ export const de = {
       title: "Verlauf",
       emptyTitle: "Noch keine Trainingsläufe",
       emptyDescription:
-        "Noch keine Trainingsläufe. Starten Sie Ihren ersten Trainingslauf im Tab \"Konfigurieren\".",
+        "Noch keine Trainingsläufe. Starten Sie Ihren ersten Trainingslauf im Tab „Konfigurieren“.",
       loadError: "Trainingsläufe konnten nicht geladen werden",
       deleteError:
         "Trainingslauf konnte nicht gelöscht werden. Bitte erneut versuchen.",
@@ -1397,9 +1484,6 @@ export const de = {
       steps: "Schritte",
       lossTrendSparkline: "Loss-Trend-Sparkline",
       relativeJustNow: "gerade eben",
-      relativeMinutesAgo: "vor {count} Min.",
-      relativeHoursAgo: "vor {count} Std.",
-      relativeDaysAgo: "vor {count} T",
       status: {
         completed: "Abgeschlossen",
         stopped: "Gestoppt",
@@ -1481,7 +1565,7 @@ export const de = {
       dropout: "Dropout",
       variant: "Variante",
       epoch: "Epoche {value}",
-      percentComplete: "{percent}% abgeschlossen",
+      percentComplete: "{percent} % abgeschlossen",
       stepProgress: "Schritt {current} / {total}",
       loss: "Loss",
       lr: "LR",
@@ -1508,6 +1592,7 @@ export const de = {
         loadingDataset: "Datensatz wird geladen",
         configuring: "Wird konfiguriert",
         training: "Training",
+        finalizing: "Modell wird gespeichert",
         completed: "Abgeschlossen",
         error: "Fehler",
         stopped: "Gestoppt",

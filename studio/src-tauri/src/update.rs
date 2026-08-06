@@ -7,6 +7,10 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 
+#[cfg(windows)]
+const WINDOWS_CLI_ENTRYPOINT: &str =
+    "import sys; sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()";
+
 // ── Types ──
 
 pub struct UpdateProcess {
@@ -32,6 +36,35 @@ pub fn new_update_state() -> UpdateState {
 }
 
 // ── Spawn ──
+fn build_update_command(bin: &std::path::Path) -> Result<Command, String> {
+    #[cfg(windows)]
+    {
+        let python = bin
+            .parent()
+            .ok_or_else(|| "Managed Unsloth executable has no parent directory.".to_string())?
+            .join("python.exe");
+        if !python.is_file() {
+            return Err(format!(
+                "Managed Python interpreter not found beside Unsloth: {}",
+                python.display()
+            ));
+        }
+        let mut cmd = Command::new(python);
+        // Isolated mode prevents a project-local unsloth_cli module or an
+        // inherited Python search path from shadowing the managed package.
+        cmd.args(["-I", "-c", WINDOWS_CLI_ENTRYPOINT, "studio", "update"]);
+        cmd.env_remove("PYTHONHOME");
+        cmd.env_remove("PYTHONPATH");
+        Ok(cmd)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let mut cmd = Command::new(bin);
+        cmd.args(["studio", "update"]);
+        Ok(cmd)
+    }
+}
 
 fn spawn_update(
     bin: &std::path::Path,
@@ -49,10 +82,8 @@ fn spawn_update(
     }
     update.intentional_stop = false;
 
-    let mut cmd = Command::new(bin);
-    cmd.args(["studio", "update"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    let mut cmd = build_update_command(bin)?;
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     // AppImage sets LD_LIBRARY_PATH to its bundled libs, which breaks Python
     #[cfg(target_os = "linux")]
@@ -182,7 +213,7 @@ fn wait_for_exit(state: &UpdateState) -> Result<(ExitStatus, bool), String> {
                     return Err(format!("Error waiting for update: {}", e));
                 }
             },
-            None if intentional => return Err("Update stopped.".to_string()),
+            None if intentional => return Err(UPDATE_STOPPED.to_string()),
             None => return Err("Update process disappeared unexpectedly.".to_string()),
         }
 
@@ -300,11 +331,11 @@ fn run_backend_update_with_terminal_events(
                 &attempt,
                 Some(status.to_string()),
                 true,
-                Some("Update stopped.".to_string()),
+                Some(UPDATE_STOPPED.to_string()),
             );
             clear_current_attempt(&state);
             info!("[update] Update stopped intentionally");
-            Err("Update stopped.".to_string())
+            Err(UPDATE_STOPPED.to_string())
         }
         Ok((status, intentional)) => {
             let code = status.code().unwrap_or(-1);
@@ -341,6 +372,13 @@ fn clear_current_attempt(state: &UpdateState) {
     }
 }
 
+pub fn is_update_running(state: &UpdateState) -> bool {
+    state
+        .lock()
+        .map(|update| update.child.is_some())
+        .unwrap_or(false)
+}
+
 pub fn record_update_intentional_stop(state: &UpdateState, diagnostics: &DiagnosticsState) {
     let attempt = state
         .lock()
@@ -356,6 +394,8 @@ pub fn record_update_intentional_stop(state: &UpdateState, diagnostics: &Diagnos
         );
     }
 }
+
+pub const UPDATE_STOPPED: &str = "Update stopped.";
 
 pub fn stop_update(state: &UpdateState) -> Result<(), String> {
     let mut child = {
@@ -430,5 +470,51 @@ mod tests {
         .unwrap();
 
         assert_eq!(lines, ["bad\u{fffd}", "[TAURI:STEP] next"]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_update_command_uses_python_not_replaceable_console_stub() {
+        use std::ffi::{OsStr, OsString};
+
+        let dir =
+            std::env::temp_dir().join(format!("unsloth-update-command-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let python = dir.join("python.exe");
+        let bin = dir.join("unsloth.exe");
+        std::fs::write(&python, b"").unwrap();
+
+        let cmd = build_update_command(&bin).unwrap();
+
+        assert_eq!(cmd.get_program(), python.as_os_str());
+        assert_ne!(cmd.get_program(), bin.as_os_str());
+        assert_eq!(
+            cmd.get_args().map(OsString::from).collect::<Vec<_>>(),
+            vec![
+                OsString::from("-I"),
+                OsString::from("-c"),
+                OsString::from(WINDOWS_CLI_ENTRYPOINT),
+                OsString::from("studio"),
+                OsString::from("update")
+            ]
+        );
+        for name in ["PYTHONHOME", "PYTHONPATH"] {
+            assert!(cmd
+                .get_envs()
+                .any(|(key, value)| key == OsStr::new(name) && value.is_none()));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_update_command_fails_closed_without_managed_python() {
+        let bin = std::env::temp_dir()
+            .join("missing-managed-python")
+            .join("unsloth.exe");
+        assert!(build_update_command(&bin)
+            .unwrap_err()
+            .contains("python.exe"));
     }
 }

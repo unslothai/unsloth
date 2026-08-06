@@ -29,7 +29,7 @@
         "resizable": false,
         "decorations": true,
         "titleBarStyle": "Overlay",
-        "trafficLightPosition": { "x": 14, "y": 24 },
+        "trafficLightPosition": { "x": 14, "y": 26 },
         "hiddenTitle": true
       }
     ]
@@ -69,6 +69,10 @@
       "icons/icon.icns"
     ],
     "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      },
       "nsis": {
         "installerHooks": "./windows/hooks.nsh",
         "template": "./windows/installer.nsi",

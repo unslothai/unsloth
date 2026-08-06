@@ -449,7 +449,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
           }),
     [isDataset, row.id, row.result, deviceType],
   );
-  const unsupported = support?.status === "unsupported";
+  const unsupported = support?.status === "unsupported" && !support?.supportedIn;
   const handleClick = useCallback(() => onSelect(row.id), [onSelect, row.id]);
   const partialRepoId =
     row.isAvailableOnDevice && row.isPartialOnDevice
@@ -596,16 +596,16 @@ export const InventoryRow = memo(function InventoryRow({
   const rowTagsSignature = row.tags?.join("\u0001") ?? "";
   const unsupported = useMemo(() => {
     if (isDataset) return false;
-    return (
-      classifyUnslothSupport({
-        modelId: rowModelId,
-        pipelineTag: row.pipelineTag,
-        tags: rowTagsSignature ? rowTagsSignature.split("\u0001") : undefined,
-        libraryName: row.libraryName,
-        quantMethod: row.quantMethod,
-        deviceType,
-      }).status === "unsupported"
-    );
+    const classified = classifyUnslothSupport({
+      modelId: rowModelId,
+      pipelineTag: row.pipelineTag,
+      tags: rowTagsSignature ? rowTagsSignature.split("\u0001") : undefined,
+      libraryName: row.libraryName,
+      quantMethod: row.quantMethod,
+      deviceType,
+    });
+    // Images/Video run these, so they are not unsupported to a user.
+    return classified.status === "unsupported" && !classified.supportedIn;
   }, [
     isDataset,
     rowModelId,

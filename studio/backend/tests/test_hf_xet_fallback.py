@@ -44,6 +44,32 @@ import utils.hf_xet_fallback as xf
 DL_REPO, FILE = "ztest/xet-dl", "model-Q4_K_XL.gguf"
 
 
+@pytest.fixture(autouse = True)
+def _restore_shim_module_identity():
+    """Put BOTH bindings of the shim back after every test in this file.
+
+    The degraded-path tests below drop ``utils.hf_xet_fallback`` from ``sys.modules`` and import a
+    throwaway copy. Restoring only the ``sys.modules`` entry is not enough: the import machinery
+    also rebinds the module as an attribute of the ``utils`` PACKAGE, and that binding keeps
+    pointing at the throwaway. The two then disagree, and a later test in the same process
+    monkeypatches one copy (pytest resolves a dotted target through the package attribute) while
+    the code under test imports the other, so the patch silently does nothing and the real
+    downloader runs against the network. Caught by
+    tests/test_video_backend.py::test_fetch_te_prequant_only_reports_what_it_downloaded, which
+    reached the Hub and got a 401 when it ran after this file."""
+    import utils as _utils_pkg
+
+    original = sys.modules.get("utils.hf_xet_fallback")
+    original_attr = getattr(_utils_pkg, "hf_xet_fallback", None)
+    try:
+        yield
+    finally:
+        if original is not None:
+            sys.modules["utils.hf_xet_fallback"] = original
+        if original_attr is not None:
+            _utils_pkg.hf_xet_fallback = original_attr
+
+
 def _requires_shared():
     if shared is None:
         pytest.skip("unsloth_zoo.hf_xet_fallback is not installed in this environment")
@@ -307,6 +333,56 @@ def test_degrades_when_shared_helper_import_raises_importerror():
             sys.modules["utils.hf_xet_fallback"] = saved_shim
 
 
+def test_no_light_gpu_init_retry_on_an_accelerator_host(monkeypatch):
+    """The UNSLOTH_ZOO_DISABLE_GPU_INIT retry makes unsloth_zoo take its MLX/CPU path, which injects
+    triton and bitsandbytes STUBS into sys.modules for the whole process. On a GPU host whose
+    unsloth_zoo import failed for an unrelated reason (a bitsandbytes/CUDA mismatch, say), those
+    stubs raise "called on Apple Silicon / MLX" from the first CUDA-only kernel a later GGUF or
+    compiled diffusion generation touches, so a healthy GPU starts 500ing. The shim must degrade
+    instead of retrying there."""
+    import importlib
+    import os
+
+    monkeypatch.delenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", raising = False)
+    attempts = []
+
+    class _Blocker:
+        def find_spec(
+            self,
+            name,
+            path = None,
+            target = None,
+        ):
+            if name == "unsloth_zoo":
+                attempts.append(os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT"))
+                raise RuntimeError("CUDA Setup failed despite GPU being available")
+            return None
+
+    finder = _Blocker()
+    saved = {
+        k: v
+        for k, v in list(sys.modules.items())
+        if k == "unsloth_zoo" or k.startswith("unsloth_zoo.")
+    }
+    for k in saved:
+        del sys.modules[k]
+    saved_shim = sys.modules.pop("utils.hf_xet_fallback", None)
+    sys.meta_path.insert(0, finder)
+    try:
+        shim = importlib.import_module("utils.hf_xet_fallback")
+        monkeypatch.setattr(shim, "_gpu_present", lambda: True)
+        assert shim._load_shared() is False
+        # Exactly ONE attempt, made without the light-init flag.
+        assert attempts == [None], attempts
+        assert os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") is None
+    finally:
+        sys.meta_path.remove(finder)
+        sys.modules.pop("utils.hf_xet_fallback", None)
+        sys.modules.update(saved)
+        if saved_shim is not None:
+            sys.modules["utils.hf_xet_fallback"] = saved_shim
+
+
 def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
     """GPU detection in unsloth_zoo's __init__ raises NotImplementedError on a GPU-less host. The shim
     retries under UNSLOTH_ZOO_DISABLE_GPU_INIT=1, restores the env, and degrades if the retry fails.
@@ -345,6 +421,8 @@ def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
     sys.meta_path.insert(0, finder)
     try:
         degraded = importlib.import_module("utils.hf_xet_fallback")
+        # The retry only applies to a host with no accelerator (see _gpu_present); pin that on the freshly imported module.
+        monkeypatch.setattr(degraded, "_gpu_present", lambda: False)
         # Import is light (lazy backend); unsloth_zoo not loaded yet.
         assert seen_env == [], seen_env
         # First use of a heavy helper triggers the load (attempt without the light env, then a retry
@@ -582,3 +660,95 @@ def test_start_watchdog_passes_everything_to_a_zoo_that_accepts_it(monkeypatch):
 
     shim.start_watchdog(repo_ids = ["a/b"], on_stall = lambda _m: None, connect_timeout = 600.0)
     assert seen["connect_timeout"] == 600.0, "a newer zoo lost the kwarg it supports"
+
+
+def test_apply_xet_env_delegates_to_the_zoo(monkeypatch):
+    """One rule, in one place: Studio asks the zoo to size the worker rather than sizing it too."""
+    import types
+
+    import utils.hf_xet_fallback as shim
+
+    seen = {}
+
+    def _apply(env, **kwargs):
+        seen["env"] = env
+        seen["kwargs"] = kwargs
+        env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE"] = "123"
+        return {"HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE": "123"}
+
+    monkeypatch.setattr(
+        shim, "_load_optional", lambda _name: types.SimpleNamespace(apply_xet_env = _apply)
+    )
+    env = {"HF_HUB_DISABLE_XET": "0"}
+    assert shim.apply_xet_env(env) == {"HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE": "123"}
+    assert env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE"] == "123"
+    assert seen["env"] is env, "the worker's own env has to be the one that gets sized"
+    # Short Xet timeouts suit a child our ladder supervises; process-wide they would not.
+    assert seen["kwargs"]["fail_fast"] is True
+
+
+def test_apply_xet_env_returns_none_when_the_zoo_cannot_size(monkeypatch):
+    """None, not {}: an empty write is a legitimate result, so the caller needs the two apart to
+    know whether to fall back to clearing the high-performance flag itself."""
+    import types
+
+    import utils.hf_xet_fallback as shim
+
+    monkeypatch.setattr(shim, "_load_optional", lambda _name: None)
+    assert shim.apply_xet_env({}) is None
+
+    monkeypatch.setattr(shim, "_load_optional", lambda _name: types.SimpleNamespace())
+    assert shim.apply_xet_env({}) is None, "an older zoo without apply_xet_env must read as absent"
+
+    def _boom(env, **kwargs):
+        raise RuntimeError("no")
+
+    monkeypatch.setattr(
+        shim, "_load_optional", lambda _name: types.SimpleNamespace(apply_xet_env = _boom)
+    )
+    assert shim.apply_xet_env({}) is None, "a raising zoo must degrade, not crash the download"
+
+
+def test_a_zoo_that_can_resize_is_asked_for_the_workers_own_cache(monkeypatch):
+    """``env`` is a copy of ours and already carries the zoo's import-time sizing, which its
+    setdefault apply would keep. A zoo that can resize gets the worker's cache instead, so a backend
+    whose cache moved after startup does not size the worker for the volume it left behind. An older
+    zoo, with no resize to call, keeps the previous behaviour."""
+    import types
+
+    import utils.hf_xet_fallback as shim
+
+    seen = {}
+
+    def _resize(env, cache_dir, **kwargs):
+        seen["cache_dir"] = cache_dir
+        env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT"] = "1000000000"
+        return {"HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT": "1000000000"}
+
+    def _apply(env, **kwargs):
+        seen["applied"] = True
+        return {}
+
+    monkeypatch.setattr(
+        shim,
+        "_load_optional",
+        lambda _name: types.SimpleNamespace(
+            apply_xet_env = _apply,
+            resize_for_cache_dir = _resize,
+        ),
+    )
+    env = {
+        "HF_HUB_CACHE": "/new/volume/hub",
+        "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT": "64000000000",
+    }
+    written = shim.apply_xet_env(env, env["HF_HUB_CACHE"])
+    assert seen["cache_dir"] == "/new/volume/hub"
+    assert "applied" not in seen, "resizing and applying both would size the worker twice"
+    assert written["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT"] == "1000000000"
+    assert env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT"] == "1000000000"
+
+    monkeypatch.setattr(
+        shim, "_load_optional", lambda _name: types.SimpleNamespace(apply_xet_env = _apply)
+    )
+    assert shim.apply_xet_env({}, "/new/volume/hub") == {}
+    assert seen["applied"] is True

@@ -8,6 +8,7 @@ import {
   resolveDictationLanguage,
   useVoiceSettingsStore,
 } from "@/features/settings/stores/voice-settings-store";
+import { isTauri } from "@/lib/api-base";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
@@ -132,6 +133,9 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
   static isSupported(): boolean {
     return (
       typeof window !== "undefined" &&
+      // WKWebView exposes the API but Apple's service refuses it
+      // (service-not-allowed); WebView2 and webkit2gtk have no engine at all.
+      !isTauri &&
       window.isSecureContext &&
       getSpeechRecognitionAPI() !== undefined &&
       navigator.mediaDevices?.getUserMedia !== undefined
