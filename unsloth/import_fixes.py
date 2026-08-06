@@ -2287,6 +2287,15 @@ def fix_peft_transformers_weight_conversion_import():
         _install_transformers_core_model_loading_stub()
         patched_any = True
 
+    # Present but incomplete. transformers 5.x kept both modules and dropped
+    # names peft still imports at module top -- `cannot import name
+    # '_MODEL_TO_CONVERSION_PATTERN' from 'transformers.conversion_mapping'`.
+    # The stubs above only fire when a module is ABSENT, so that case fell
+    # through here and no-oped. Backfill the missing names onto the real
+    # module: strictly additive, so a transformers that still defines them is
+    # untouched, and nothing else on either side changes.
+    patched_any = _backfill_missing_conversion_symbols() or patched_any
+
     # An importable submodule can still lack individual symbols; backfill just
     # those names rather than replacing a real module wholesale.
     backfilled = {}
@@ -2302,7 +2311,7 @@ def fix_peft_transformers_weight_conversion_import():
         )
 
     if not patched_any:
-        # Real submodules present; failure was for some other reason.
+        # Real submodules present and complete; failure was for another reason.
         return False
 
     # Force a fresh import now that stubs are in place. Drop any cached
@@ -2323,6 +2332,69 @@ def fix_peft_transformers_weight_conversion_import():
         "transformers <5."
     )
     return True
+
+
+# What peft.utils.transformers_weight_conversion imports at module top. Kept
+# beside the stubs so the two lists cannot drift apart.
+_PEFT_CONVERSION_SYMBOLS = {
+    "transformers.conversion_mapping": (
+        "_MODEL_TO_CONVERSION_PATTERN",
+        "get_checkpoint_conversion_mapping",
+        "get_model_conversion_mapping",
+    ),
+    "transformers.core_model_loading": (
+        "Concatenate", "ConversionOps", "MergeModulelist", "Transpose",
+        "WeightConverter", "WeightRenaming", "dot_natural_key",
+        "rename_source_key",
+    ),
+}
+
+
+def _backfill_missing_conversion_symbols():
+    """Add only the names a real module is missing, taken from our own stub.
+
+    Never replaces a module and never overwrites a name transformers defines,
+    so this is a no-op on every release that still exports them.
+    """
+    builders = {
+        "transformers.conversion_mapping":
+            _install_transformers_conversion_mapping_stub,
+        "transformers.core_model_loading":
+            _install_transformers_core_model_loading_stub,
+    }
+    added = []
+    for name, symbols in _PEFT_CONVERSION_SYMBOLS.items():
+        real = sys.modules.get(name)
+        if real is None:
+            try:
+                real = importlib.import_module(name)
+            except Exception:
+                continue
+        if getattr(real, _UNSLOTH_STUB_SENTINEL, False):
+            continue                      # ours already, and complete
+        missing = [s for s in symbols if not hasattr(real, s)]
+        if not missing:
+            continue
+        # Build the stub off to the side rather than installing it, so the real
+        # module keeps its identity and everything else it exports.
+        saved = sys.modules.pop(name, None)
+        try:
+            donor = builders[name]()
+        finally:
+            if saved is not None:
+                sys.modules[name] = saved
+            else:
+                sys.modules.pop(name, None)
+        for symbol in missing:
+            if hasattr(donor, symbol):
+                setattr(real, symbol, getattr(donor, symbol))
+                added.append(f"{name}.{symbol}")
+    if added:
+        logger.info(
+            "Unsloth: backfilled %s so peft.utils."
+            "transformers_weight_conversion imports on this transformers.",
+            ", ".join(added))
+    return bool(added)
 
 
 def patch_peft_weight_converter_compatibility():
