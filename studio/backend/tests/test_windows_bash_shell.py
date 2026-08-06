@@ -970,6 +970,63 @@ def test_an_unquoted_for_set_is_data_under_the_cmd_lexer(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # A separator inside a group is between the branch's own commands, so
+        # the `if` it belongs to is still open and its `else` still reopens.
+        ('cmd /c if exist no_f (echo ok & echo done) else start "" powershell', True),
+        ('cmd /c if exist no_f (echo a & echo b) else echo start "" pwsh', False),
+        # ...while one outside a group closes the statement as before.
+        ('cmd /c if exist x echo ok & echo do start "" powershell', False),
+        # The cmd lexer keeps the quotes and splits `"a"=="a"`, whose second
+        # half was taking the command position.
+        ('cmd /c if "a"=="a" start "" powershell', True),
+        ('cmd /c if /i "a" == "a" start "" pwsh', True),
+        ('cmd /c if "a"=="a" echo start "" powershell', False),
+        # cmd strips the quotes round its own name before running the payload.
+        ('"cmd.exe" /c start "" powershell', True),
+        ('"cmd" /c start "" pwsh', True),
+        # The group opener comes off before the echo-suppression prefix.
+        ('cmd /c (@start "" powershell)', True),
+        ('cmd /c (@echo start "" powershell)', False),
+    ],
+)
+def test_cmd_groups_quotes_and_prefixes_compose(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize("bash", [r"C:\Program Files\Git\bin\bash.exe", None])
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # The set is found by re-reading the text, which cannot tell a construct
+        # from a quotation of one, so it only runs where cmd runs a `for`.
+        ("""echo "for /f %i in ('rm -rf victim') do echo %i\"""", False),
+        ("""cmd /c echo "for /f %i in ('start "" pwsh') do echo %i\"""", False),
+        ("""cmd //c for /f %i in ('start "" pwsh') do echo %i""", True),
+    ],
+)
+def test_a_quoted_for_expression_is_not_a_for(monkeypatch, bash, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+def test_a_bare_for_is_only_cmds_where_cmd_is_the_shell(monkeypatch):
+    # The substitution is cmd syntax. Under Git Bash the same text is bash's
+    # own: the parentheses open a subshell and the quoted set is one word, so
+    # there is no cmd construct to read.
+    monkeypatch.setattr(sys, "platform", "win32")
+    command = """for /f %i in ('start "" pwsh') do echo %i"""
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert tools._find_blocked_commands(command)
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
     "command", ["pwsh -Command ls", "powershell -c ls", "rmdir x", "runas /u:a b"]
 )
 def test_windows_only_names_are_not_hard_blocked_off_windows(monkeypatch, command):

@@ -1597,9 +1597,12 @@ def _find_blocked_commands(command: str) -> set[str]:
         `for %i in (x)do start "" powershell` leaves `(x)do` as one token under
         the cmd lexer, whose `do` still hands the body along.
         """
-        plain = _cmd_split(word, "")[0].lstrip("@").strip(";&|`{}")
+        plain = _cmd_split(word, "")[0].strip(";&|`{}")
         pieces = [piece for piece in re.split(r"[()]", plain) if piece]
-        return os.path.basename((pieces[-1] if pieces else "").replace("\\", "/")).lower()
+        # The bracket comes off before the prefix, or `(@start` keeps its `@`
+        # and never matches: cmd reads the group opener, then the suppression.
+        name = (pieces[-1] if pieces else "").lstrip("@").strip('"')
+        return os.path.basename(name.replace("\\", "/")).lower()
 
     def _cmd_condition_words(index: int) -> int:
         """How many words cmd's `if` condition occupies, starting at ``index``.
@@ -1628,13 +1631,22 @@ def _find_blocked_commands(command: str) -> set[str]:
             and _cmd_word_base(tokens[index + words + 1]) in _CMD_COMPARE_OPS
         ):
             return words + 3
-        return words + 1  # the `a==b` form, which cmd lexes as one word
+        # The `a==b` form is one word unquoted, but the cmd lexer keeps the
+        # quotes and splits `"a"=="a"` into `"a"` and `=="a"`, whose second half
+        # then took the command position. Read on until both sides are in.
+        text = ""
+        for extra in range(words, len(tokens) - index):
+            text += _cmd_split(tokens[index + extra], "")[0]
+            head, sep, tail = text.partition("==")
+            if sep and head.strip() and tail.strip():
+                return extra + 1
+        return words + 1
 
-    def _cmd_start_positions(begin: int) -> "set[int]":
-        """Indexes of the `start` words cmd runs as a command in the command
-        line beginning at ``begin``.
+    def _cmd_command_positions(begin: int) -> "dict[int, str]":
+        """The words cmd runs as a command in the command line beginning at
+        ``begin``, by index.
 
-        Anywhere but a command position a start is an operand of whatever is
+        Anywhere but a command position a word is an operand of whatever is
         running, whether that prints it (`cmd //c echo start "t" pwsh`) or reads
         it as a name (`cmd /c dir start "" powershell`), so tracking where cmd
         begins a command is what separates a launch from a word. Its grammar is
@@ -1650,9 +1662,10 @@ def _find_blocked_commands(command: str) -> set[str]:
         escaped one is passed through to cmd, which reads it as its own, and it
         can arrive glued to a word once bash has removed the escape.
         """
-        found: "set[int]" = set()
+        found: "dict[int, str]" = {}
         expect = True  # the next word is one cmd runs
         control = False  # an `if` or a `for` is open, so else/do hand off
+        depth = 0  # open group brackets, which an `if` branch is written in
         skip = 0  # condition words still to consume
         skip_operand = False  # the word after a bare redirection operator
         for index in range(begin, len(tokens)):
@@ -1662,7 +1675,12 @@ def _find_blocked_commands(command: str) -> set[str]:
                     break
                 if len(_cmd_split(token, _CMD_SEPARATORS)) > 1:
                     expect = True
-                    control = False
+                    # A separator inside a group is between the branch's own
+                    # commands, so the `if` it belongs to is still open:
+                    # `if exist x (echo a & echo b) else start "" pwsh` runs the
+                    # start, and clearing here lost the else that reopens it.
+                    control = control and depth > 0
+                depth += token.count("(") - token.count(")")
                 continue
             # A separator with no space around it stays inside the token, under
             # either lexer: the cmd one takes no punctuation_chars, and bash
@@ -1685,7 +1703,8 @@ def _find_blocked_commands(command: str) -> set[str]:
             pieces = [token] if requoted else _cmd_split(token, _CMD_SEPARATORS)
             if len(pieces) > 1:
                 expect = True
-                control = False
+                control = control and depth > 0
+            depth += token.count("(") - token.count(")")
             word = _cmd_word_base(pieces[-1])
             if skip > 0:
                 skip -= 1
@@ -1700,8 +1719,9 @@ def _find_blocked_commands(command: str) -> set[str]:
                 continue
             if not expect:
                 continue
+            if word:
+                found[index] = word
             if word == "start":
-                found.add(index)
                 expect = False
             elif word == "call":
                 pass  # it reparses its target, so a command follows it
@@ -1768,6 +1788,7 @@ def _find_blocked_commands(command: str) -> set[str]:
     sed_indexes: "list[int]" = []  # command-position sed words, for the `e` scan below
     sed_xargs: "dict[int, int]" = {}  # sed word -> the xargs that builds its argv
     start_indexes: "set[int]" = set()  # command-position start words, for the scan below
+    cmd_for_indexes: "set[int]" = set()  # command-position for words, for the scan below
     xargs_index = -1  # an xargs awaiting the command it wraps
     for token_index, token in enumerate(tokens):
         if skip_operand:
@@ -1960,7 +1981,11 @@ def _find_blocked_commands(command: str) -> set[str]:
             # as `(cmd` and matched no shell. Under bash the opener is its own
             # token, so one still attached survived quoting and is part of the
             # word: `echo '(bash' -c rm` prints three arguments and runs none.
-            prev_base = os.path.basename(prev).lower() if lexed_posix else _token_basename(prev)
+            # The cmd lexer keeps the quotes cmd itself strips, so `"cmd.exe" /c`
+            # matched no shell at all.
+            prev_base = (
+                os.path.basename(prev).lower() if lexed_posix else _token_basename(prev.strip('"'))
+            )
             if is_unix_c and prev_base in _SHELLS:
                 blocked |= _find_blocked_commands(tokens[i + 1])
             elif is_win_c and prev_base in _SHELLS_WIN:
@@ -1969,28 +1994,39 @@ def _find_blocked_commands(command: str) -> set[str]:
                 # scan can only read as arguments of cmd. Recursing does not
                 # reach it either: only the one token is passed on, and `start`
                 # by itself blocks nothing.
-                start_indexes |= _cmd_start_positions(i + 1)
+                for pos, cmd_word in _cmd_command_positions(i + 1).items():
+                    if cmd_word == "start":
+                        start_indexes.add(pos)
+                    elif cmd_word == "for":
+                        cmd_for_indexes.add(pos)
             break  # stop at first non-flag token
 
     # `cmd /c start "" prog` puts prog in a command position the scan above
     # sees only as an argument, so screen what start actually launches.
-    # `for /f %i in ('CMD') do ...` runs CMD as a child command and reads its
-    # output, so the set is a command position the token scan sees only as data.
-    # Backquotes are the same form under usebackq.
-    for match in _CMD_FOR_SUBSTITUTION_RE.finditer(command):
-        # The escapes are the outer parse's, so cmd hands the child a line with
-        # them already applied: `echo x ^& start ""` reaches it as a real
-        # separator, and reading it raw left the start an operand of echo.
-        body = match.group("body") or match.group("alt") or ""
-        blocked |= _find_blocked_commands(_cmd_split(body, "")[0])
-
     title_tokens: "frozenset[int] | None" = None
     # When cmd is the shell the whole line is its command line, so it is read
     # with cmd's grammar rather than the POSIX command positions above, which
     # hand a wrapper's operand to the next word: `time` is a cmd builtin that
     # shows the clock, and `time start "" powershell` launches nothing.
     if not lexed_posix:
-        start_indexes |= _cmd_start_positions(0)
+        for pos, cmd_word in _cmd_command_positions(0).items():
+            if cmd_word == "start":
+                start_indexes.add(pos)
+            elif cmd_word == "for":
+                cmd_for_indexes.add(pos)
+    # `for /f %i in ('CMD') do ...` runs CMD as a child command and reads its
+    # output, so the set is a command position the token scan sees only as data.
+    # Backquotes are the same form under usebackq.
+    # Only where cmd runs a `for` itself. The body is found by re-reading the
+    # text, which cannot tell a construct from a quotation of one on its own, so
+    # `echo "for /f %i in ('rm -rf x') do echo %i"` was refused for printing.
+    for match in _CMD_FOR_SUBSTITUTION_RE.finditer(command if cmd_for_indexes else ""):
+        # The escapes are the outer parse's, so cmd hands the child a line with
+        # them already applied: `echo x ^& start ""` reaches it as a real
+        # separator, and reading it raw left the start an operand of echo.
+        body = match.group("body") or match.group("alt") or ""
+        blocked |= _find_blocked_commands(_cmd_split(body, "")[0])
+
     # `start` launches a program in cmd. On a POSIX host it is whatever the user
     # has by that name, its arguments are arguments, and reading them as cmd
     # syntax refused `start "dry run" rm` on Linux and macOS.
