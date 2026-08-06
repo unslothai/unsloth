@@ -2231,3 +2231,17 @@ def test_a_refusal_names_the_program_not_its_path(windows_cmd_only, command):
     blocked = tools._find_blocked_commands(command)
     assert "sed" in blocked
     assert not [name for name in blocked if "/" in name or "\\" in name]
+
+
+@pytest.mark.parametrize("command", ["fd . -x\\ ;", "fd . --exec= ", "fd . -x\\ &"])
+def test_a_blank_attached_command_names_no_program(windows_git_bash_only, command):
+    # bash's backslash escapes the space behind it and joins the words, so the
+    # flag arrives carrying one blank. Reading a first word out of it raised,
+    # and a screen that raises decides nothing.
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("command", ["fd . -xrm -rf x", "fd . --exec=rm", "fd . -x rm -rf x"])
+def test_an_attached_command_is_still_read(windows_git_bash_only, command):
+    # The other half: a flag that really does carry a command still names it.
+    assert "rm" in tools._find_blocked_commands(command)

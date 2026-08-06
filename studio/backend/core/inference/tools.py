@@ -2549,8 +2549,13 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             attached = tok[2:].strip("\"'")
         elif "=" in tok and tok.split("=", 1)[0] in _ATTACHED_EXEC_FLAGS:
             attached = tok.split("=", 1)[1].strip("\"'")
-        if attached:
-            attached_base = _token_basename(attached.split()[0])
+        # Whitespace is not a program. bash's backslash escapes the space behind
+        # it and joins the words, so `fd . -x\ ;` reaches this as the token
+        # `-x `, whose attached value is one blank: reading a first word out of
+        # it raised IndexError, and a screen that raises decides nothing.
+        attached_words = attached.split()
+        if attached_words:
+            attached_base = _token_basename(attached_words[0])
             if _is_sed_command(attached_base):
                 # The words after the flag are that sed's arguments, so its
                 # program is screened from the FLAG. fd 9 actually takes them
