@@ -173,9 +173,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE documents ADD COLUMN linked_folder_id TEXT")
     if "linked_relative_path" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN linked_relative_path TEXT")
-    folder_cols = {
-        r[1] for r in conn.execute("PRAGMA table_info(linked_folders)").fetchall()
-    }
+    folder_cols = {r[1] for r in conn.execute("PRAGMA table_info(linked_folders)").fetchall()}
     if "root_device" not in folder_cols:
         conn.execute("ALTER TABLE linked_folders ADD COLUMN root_device INTEGER")
     if "root_inode" not in folder_cols:

@@ -214,9 +214,7 @@ class UpdateFolderRequest(BaseModel):
     auto_sync: bool | None = Field(default = None, alias = "autoSync")
 
 
-def _resolve_linked_folder_path(
-    native_path_lease: str, *, verifier = None
-) -> str:
+def _resolve_linked_folder_path(native_path_lease: str, *, verifier = None) -> str:
     """Resolve a desktop grant; the injectable verifier keeps resolution unit-testable."""
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
 
@@ -236,7 +234,9 @@ def _resolve_linked_folder_path(
 
 
 def _folder_view(row: dict) -> dict:
-    status = "syncing" if row["status"] == "syncing" else "error" if row["status"] == "error" else "idle"
+    status = (
+        "syncing" if row["status"] == "syncing" else "error" if row["status"] == "error" else "idle"
+    )
     return {
         "id": row["id"],
         "displayName": row["name"],
@@ -388,7 +388,9 @@ def list_kb_documents(kb_id: str, subject: str = Depends(get_current_subject)) -
 
 @router.post("/knowledge-bases/{kb_id}/linked-folders")
 def link_kb_folder(
-    kb_id: str, payload: LinkFolderRequest, subject: str = Depends(get_current_subject)
+    kb_id: str,
+    payload: LinkFolderRequest,
+    subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
     conn = rag_db.get_connection()
@@ -475,7 +477,9 @@ def list_project_documents(project_id: str, subject: str = Depends(get_current_s
 
 @router.post("/projects/{project_id}/linked-folders")
 def link_project_folder(
-    project_id: str, payload: LinkFolderRequest, subject: str = Depends(get_current_subject)
+    project_id: str,
+    payload: LinkFolderRequest,
+    subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
     from storage.studio_db import get_chat_project
@@ -493,18 +497,24 @@ def list_linked_folders(
 ) -> dict:
     _require_rag()
     if bool(scope_type) != bool(scope_id):
-        raise HTTPException(status_code = 400, detail = "scope_type and scope_id must be provided together")
+        raise HTTPException(
+            status_code = 400, detail = "scope_type and scope_id must be provided together"
+        )
     if scope_type:
         if scope_type not in {"knowledge_base", "project"}:
             raise HTTPException(status_code = 400, detail = "Unsupported linked-folder scope")
         scope = (
-            store.kb_scope(scope_id) if scope_type == "knowledge_base" else store.project_scope(scope_id)
+            store.kb_scope(scope_id)
+            if scope_type == "knowledge_base"
+            else store.project_scope(scope_id)
         )
         rows = folder_sync.list_folders(scope)
     else:
         conn = rag_db.get_connection()
         try:
-            scopes = [row["scope"] for row in conn.execute("SELECT DISTINCT scope FROM linked_folders")]
+            scopes = [
+                row["scope"] for row in conn.execute("SELECT DISTINCT scope FROM linked_folders")
+            ]
             kb_names = {row["id"]: row["name"] for row in store.list_kbs(conn)}
         finally:
             conn.close()
@@ -522,13 +532,13 @@ def list_linked_folders(
 
 @router.patch("/linked-folders/{folder_id}")
 def update_linked_folder(
-    folder_id: str, payload: UpdateFolderRequest, subject: str = Depends(get_current_subject)
+    folder_id: str,
+    payload: UpdateFolderRequest,
+    subject: str = Depends(get_current_subject),
 ) -> dict:
     _require_rag()
     try:
-        row = folder_sync.update_folder(
-            folder_id, name = payload.name, auto_sync = payload.auto_sync
-        )
+        row = folder_sync.update_folder(folder_id, name = payload.name, auto_sync = payload.auto_sync)
     except KeyError as exc:
         raise HTTPException(status_code = 404, detail = "Linked folder not found") from exc
     except ValueError as exc:
@@ -562,7 +572,9 @@ def rebuild_folder(folder_id: str, subject: str = Depends(get_current_subject)) 
     _require_rag()
     try:
         return {
-            "job": _folder_job_view(folder_sync.get_job(folder_sync.request_sync(folder_id, rebuild = True)))
+            "job": _folder_job_view(
+                folder_sync.get_job(folder_sync.request_sync(folder_id, rebuild = True))
+            )
         }
     except KeyError as exc:
         raise HTTPException(status_code = 404, detail = "Linked folder not found") from exc
@@ -658,7 +670,12 @@ def job_events(job_id: str, subject: str = Depends(get_current_subject)) -> Stre
 
 
 def _folder_job_view(row: dict) -> dict:
-    processed = (row.get("added") or 0) + (row.get("changed") or 0) + (row.get("deleted") or 0) + (row.get("failed") or 0)
+    processed = (
+        (row.get("added") or 0)
+        + (row.get("changed") or 0)
+        + (row.get("deleted") or 0)
+        + (row.get("failed") or 0)
+    )
     return {
         "id": row["id"],
         "linkedFolderId": row["folder_id"],
@@ -698,8 +715,11 @@ def folder_job_events(
         for event in folder_sync.job_events(job_id):
             view = _folder_job_view(event)
             view["type"] = (
-                "complete" if event["status"] == "completed" else "error"
-                if event["status"] == "failed" else "progress"
+                "complete"
+                if event["status"] == "completed"
+                else "error"
+                if event["status"] == "failed"
+                else "progress"
             )
             yield f"data: {json.dumps(view)}\n\n"
         yield "data: [DONE]\n\n"

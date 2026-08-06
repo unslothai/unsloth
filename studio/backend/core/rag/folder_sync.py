@@ -99,7 +99,12 @@ def _root_identity(root: str) -> tuple[int, int]:
 
 
 def create_folder(
-    *, scope_type: str, scope_id: str, path: str, name: str | None = None, auto_sync: bool = True
+    *,
+    scope_type: str,
+    scope_id: str,
+    path: str,
+    name: str | None = None,
+    auto_sync: bool = True,
 ) -> dict:
     if scope_type not in {"knowledge_base", "project"}:
         raise ValueError("Linked folders support only knowledge-base and project scopes")
@@ -109,7 +114,9 @@ def create_folder(
     except RuntimeError as exc:
         raise ValueError(str(exc)) from exc
     scope = (
-        store.kb_scope(scope_id) if scope_type == "knowledge_base" else store.project_scope(scope_id)
+        store.kb_scope(scope_id)
+        if scope_type == "knowledge_base"
+        else store.project_scope(scope_id)
     )
     folder_id = str(uuid.uuid4())
     now = _now()
@@ -142,7 +149,9 @@ def create_folder(
             ),
         )
         conn.commit()
-        return dict(conn.execute("SELECT * FROM linked_folders WHERE id=?", (folder_id,)).fetchone())
+        return dict(
+            conn.execute("SELECT * FROM linked_folders WHERE id=?", (folder_id,)).fetchone()
+        )
     finally:
         conn.close()
 
@@ -172,7 +181,12 @@ def list_folders(scope: str) -> list[dict]:
         conn.close()
 
 
-def update_folder(folder_id: str, *, name: str | None = None, auto_sync: bool | None = None) -> dict:
+def update_folder(
+    folder_id: str,
+    *,
+    name: str | None = None,
+    auto_sync: bool | None = None,
+) -> dict:
     conn = rag_db.get_connection()
     try:
         if conn.execute("SELECT 1 FROM linked_folders WHERE id=?", (folder_id,)).fetchone() is None:
@@ -191,7 +205,9 @@ def update_folder(folder_id: str, *, name: str | None = None, auto_sync: bool | 
                 (int(auto_sync), _now(), folder_id),
             )
         conn.commit()
-        return dict(conn.execute("SELECT * FROM linked_folders WHERE id=?", (folder_id,)).fetchone())
+        return dict(
+            conn.execute("SELECT * FROM linked_folders WHERE id=?", (folder_id,)).fetchone()
+        )
     finally:
         conn.close()
 
@@ -213,7 +229,10 @@ def delete_folder(folder_id: str, *, remove_index: bool = True) -> bool:
         conn = rag_db.get_connection()
         snapshots: list[str] = []
         try:
-            if conn.execute("SELECT 1 FROM linked_folders WHERE id=?", (folder_id,)).fetchone() is None:
+            if (
+                conn.execute("SELECT 1 FROM linked_folders WHERE id=?", (folder_id,)).fetchone()
+                is None
+            ):
                 return False
             docs = conn.execute(
                 "SELECT d.id, d.stored_path FROM linked_folder_files ff "
@@ -294,9 +313,7 @@ def _prune_terminal_jobs(conn) -> None:
 def get_job(job_id: str) -> dict | None:
     conn = rag_db.get_connection()
     try:
-        row = conn.execute(
-            "SELECT * FROM linked_folder_sync_jobs WHERE id=?", (job_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM linked_folder_sync_jobs WHERE id=?", (job_id,)).fetchone()
         return dict(row) if row else None
     finally:
         conn.close()
@@ -407,7 +424,12 @@ def _snapshot(root: str, metadata: dict) -> str:
         before = os.fstat(fd)
         if not stat.S_ISREG(before.st_mode):
             raise RuntimeError("Linked source is not a regular file")
-        expected = (metadata["size_bytes"], metadata["mtime_ns"], metadata["device"], metadata["inode"])
+        expected = (
+            metadata["size_bytes"],
+            metadata["mtime_ns"],
+            metadata["device"],
+            metadata["inode"],
+        )
         actual = (before.st_size, before.st_mtime_ns, before.st_dev, before.st_ino)
         if actual != expected:
             raise RuntimeError("Linked source changed during reconciliation")
@@ -490,8 +512,15 @@ def _install_mapping(
             "document_id=excluded.document_id, synced_at=excluded.synced_at, "
             "content_hash=excluded.content_hash",
             (
-                folder["id"], rel, metadata["size_bytes"], metadata["mtime_ns"],
-                metadata["device"], metadata["inode"], document_id, _now(), content_hash,
+                folder["id"],
+                rel,
+                metadata["size_bytes"],
+                metadata["mtime_ns"],
+                metadata["device"],
+                metadata["inode"],
+                document_id,
+                _now(),
+                content_hash,
             ),
         )
         if old is not None and old["document_id"] != document_id:
@@ -513,8 +542,14 @@ def _update_mapping_metadata(folder_id: str, rel: str, metadata: dict, content_h
             "UPDATE linked_folder_files SET size_bytes=?, mtime_ns=?, device=?, inode=?, "
             "content_hash=?, synced_at=? WHERE folder_id=? AND relative_path=?",
             (
-                metadata["size_bytes"], metadata["mtime_ns"], metadata["device"],
-                metadata["inode"], content_hash, _now(), folder_id, rel,
+                metadata["size_bytes"],
+                metadata["mtime_ns"],
+                metadata["device"],
+                metadata["inode"],
+                content_hash,
+                _now(),
+                folder_id,
+                rel,
             ),
         )
         conn.commit()
@@ -581,7 +616,10 @@ def _reconcile_folder(job_id: str) -> None:
     folder = get_folder(job["folder_id"])
     if folder is None:
         _set_job(
-            job_id, status = "failed", stage = "error", error = "Linked folder not found",
+            job_id,
+            status = "failed",
+            stage = "error",
+            error = "Linked folder not found",
             completed_at = _now(),
         )
         return
@@ -603,9 +641,7 @@ def _reconcile_folder(job_id: str) -> None:
         _establish_root_identity(folder["id"], scanned_identity)
     except Exception as exc:
         # A partial/unavailable scan is never authoritative for deletion.
-        _set_job(
-            job_id, status = "failed", stage = "error", error = str(exc), completed_at = _now()
-        )
+        _set_job(job_id, status = "failed", stage = "error", error = str(exc), completed_at = _now())
         conn = rag_db.get_connection()
         try:
             conn.execute(
@@ -721,10 +757,16 @@ def _reconcile_folder(job_id: str) -> None:
         )
 
     status = "completed" if failed == 0 else "failed"
-    error = None if failed == 0 else f"{failed} file(s) could not be indexed; prior versions retained"
+    error = (
+        None if failed == 0 else f"{failed} file(s) could not be indexed; prior versions retained"
+    )
     _set_job(
-        job_id, status = status, stage = "done" if failed == 0 else "error",
-        progress = 1.0, error = error, completed_at = _now(),
+        job_id,
+        status = status,
+        stage = "done" if failed == 0 else "error",
+        progress = 1.0,
+        error = error,
+        completed_at = _now(),
     )
     conn = rag_db.get_connection()
     try:
@@ -740,9 +782,7 @@ def _reconcile_folder(job_id: str) -> None:
 
 def _fail_job(job_id: str, exc: Exception) -> None:
     error = str(exc) or exc.__class__.__name__
-    _set_job(
-        job_id, status = "failed", stage = "error", error = error, completed_at = _now()
-    )
+    _set_job(job_id, status = "failed", stage = "error", error = error, completed_at = _now())
     job = get_job(job_id)
     if job is None:
         return

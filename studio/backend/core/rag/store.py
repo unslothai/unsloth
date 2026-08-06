@@ -241,7 +241,12 @@ def add_chunks(
     conn.commit()
 
 
-def delete_document(conn: sqlite3.Connection, document_id: str, *, commit: bool = True) -> None:
+def delete_document(
+    conn: sqlite3.Connection,
+    document_id: str,
+    *,
+    commit: bool = True,
+) -> None:
     """Remove a document and all its chunks (+ fts + vec rows)."""
     ids = [
         r["id"]

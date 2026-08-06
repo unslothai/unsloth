@@ -123,9 +123,7 @@ def test_schema_migrates_legacy_linked_folder_root_identity(rag_home):
 
 
 @requires_sqlite_vec
-def test_reconcile_add_rename_delete_and_skip_unsupported_and_symlinks(
-    rag_home, stub_embeddings
-):
+def test_reconcile_add_rename_delete_and_skip_unsupported_and_symlinks(rag_home, stub_embeddings):
     source, folder = _folder(rag_home)
     (source / "notes.txt").write_text("alpha original", encoding = "utf-8")
     (source / "ignored.exe").write_text("alpha ignored", encoding = "utf-8")
@@ -173,9 +171,12 @@ def test_reconcile_add_rename_delete_and_skip_unsupported_and_symlinks(
     conn = rag_db.get_connection()
     try:
         assert store.get_document(conn, old_document_id) is None
-        assert conn.execute(
-            "SELECT 1 FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
-        ).fetchone() is None
+        assert (
+            conn.execute(
+                "SELECT 1 FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            ).fetchone()
+            is None
+        )
     finally:
         conn.close()
 
@@ -221,9 +222,12 @@ def test_changed_file_failure_and_unavailable_scan_retain_prior_index(
     assert unavailable["status"] == "failed"
     conn = rag_db.get_connection()
     try:
-        assert conn.execute(
-            "SELECT document_id FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
-        ).fetchone()["document_id"] == prior["document_id"]
+        assert (
+            conn.execute(
+                "SELECT document_id FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            ).fetchone()["document_id"]
+            == prior["document_id"]
+        )
     finally:
         conn.close()
 
@@ -314,18 +318,18 @@ def test_backend_routes_match_linked_folder_client_contract():
 
 
 @requires_sqlite_vec
-def test_same_size_same_mtime_inode_replacement_is_reconciled(
-    rag_home, stub_embeddings
-):
+def test_same_size_same_mtime_inode_replacement_is_reconciled(rag_home, stub_embeddings):
     source, folder = _folder(rag_home)
     path = source / "notes.txt"
     path.write_text("first text", encoding = "utf-8")
     assert _run(folder["id"])["status"] == "completed"
     conn = rag_db.get_connection()
     try:
-        before = dict(conn.execute(
-            "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
-        ).fetchone())
+        before = dict(
+            conn.execute(
+                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            ).fetchone()
+        )
     finally:
         conn.close()
 
@@ -340,9 +344,11 @@ def test_same_size_same_mtime_inode_replacement_is_reconciled(
     assert result["changed"] == 1
     conn = rag_db.get_connection()
     try:
-        after = dict(conn.execute(
-            "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
-        ).fetchone())
+        after = dict(
+            conn.execute(
+                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            ).fetchone()
+        )
         assert after["inode"] != before["inode"]
         assert after["document_id"] != before["document_id"]
         assert store.search_lexical(conn, folder["scope"], "other", 5)
@@ -360,9 +366,11 @@ def test_content_identical_touch_updates_metadata_without_reembedding(
     assert _run(folder["id"])["status"] == "completed"
     conn = rag_db.get_connection()
     try:
-        before = dict(conn.execute(
-            "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
-        ).fetchone())
+        before = dict(
+            conn.execute(
+                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            ).fetchone()
+        )
     finally:
         conn.close()
     assert before["content_hash"]
@@ -378,9 +386,11 @@ def test_content_identical_touch_updates_metadata_without_reembedding(
     assert result["changed"] == 0
     conn = rag_db.get_connection()
     try:
-        after = dict(conn.execute(
-            "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
-        ).fetchone())
+        after = dict(
+            conn.execute(
+                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            ).fetchone()
+        )
         assert after["document_id"] == before["document_id"]
         assert after["mtime_ns"] != before["mtime_ns"]
         assert store.search_lexical(conn, folder["scope"], "stable", 5)
@@ -389,9 +399,7 @@ def test_content_identical_touch_updates_metadata_without_reembedding(
 
 
 @requires_sqlite_vec
-def test_sync_requests_are_atomically_deduplicated_and_history_is_pruned(
-    rag_home, monkeypatch
-):
+def test_sync_requests_are_atomically_deduplicated_and_history_is_pruned(rag_home, monkeypatch):
     _, folder = _folder(rag_home)
     barrier = threading.Barrier(3)
     results = []
@@ -411,10 +419,14 @@ def test_sync_requests_are_atomically_deduplicated_and_history_is_pruned(
 
     conn = rag_db.get_connection()
     try:
-        assert conn.execute(
-            "SELECT COUNT(*) AS n FROM linked_folder_sync_jobs "
-            "WHERE folder_id=? AND status IN ('pending','running')", (folder["id"],)
-        ).fetchone()["n"] == 1
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) AS n FROM linked_folder_sync_jobs "
+                "WHERE folder_id=? AND status IN ('pending','running')",
+                (folder["id"],),
+            ).fetchone()["n"]
+            == 1
+        )
         conn.execute(
             "UPDATE linked_folder_sync_jobs SET status='completed', completed_at=created_at"
         )
@@ -430,9 +442,12 @@ def test_sync_requests_are_atomically_deduplicated_and_history_is_pruned(
             "WHERE status IN ('completed','failed')"
         ).fetchone()["n"]
         assert terminal_count <= 1
-        assert conn.execute(
-            "SELECT id FROM linked_folder_sync_jobs WHERE status='pending'"
-        ).fetchone()["id"] == active
+        assert (
+            conn.execute(
+                "SELECT id FROM linked_folder_sync_jobs WHERE status='pending'"
+            ).fetchone()["id"]
+            == active
+        )
     finally:
         conn.close()
 
@@ -440,16 +455,27 @@ def test_sync_requests_are_atomically_deduplicated_and_history_is_pruned(
 def test_document_and_folder_views_expose_management_and_scope_name():
     from routes.rag import _doc_view, _folder_view
 
-    assert _doc_view({
-        "id": "doc", "filename": "x", "status": "completed", "linked_folder_id": "folder"
-    })["managed"] is True
-    assert _doc_view({"id": "doc", "filename": "x", "status": "completed"})[
-        "managed"
-    ] is False
-    assert _folder_view({
-        "id": "folder", "name": "Docs", "scope_type": "project", "scope_id": "p1",
-        "scope_name": "Project One", "status": "ready", "created_at": "now",
-    })["scopeName"] == "Project One"
+    assert (
+        _doc_view(
+            {"id": "doc", "filename": "x", "status": "completed", "linked_folder_id": "folder"}
+        )["managed"]
+        is True
+    )
+    assert _doc_view({"id": "doc", "filename": "x", "status": "completed"})["managed"] is False
+    assert (
+        _folder_view(
+            {
+                "id": "folder",
+                "name": "Docs",
+                "scope_type": "project",
+                "scope_id": "p1",
+                "scope_name": "Project One",
+                "status": "ready",
+                "created_at": "now",
+            }
+        )["scopeName"]
+        == "Project One"
+    )
 
 
 @requires_sqlite_vec
@@ -466,9 +492,7 @@ def test_global_folder_list_resolves_scope_name(rag_home, monkeypatch):
         conn.close()
     source = rag_home / "source"
     source.mkdir()
-    folder_sync.create_folder(
-        scope_type = "knowledge_base", scope_id = "kb1", path = str(source)
-    )
+    folder_sync.create_folder(scope_type = "knowledge_base", scope_id = "kb1", path = str(source))
     result = list_linked_folders(scope_type = None, scope_id = None, subject = "test")
     assert result["linkedFolders"][0]["scopeName"] == "Knowledge One"
 
@@ -498,7 +522,10 @@ def test_project_rag_cleanup_runs_off_the_event_loop(monkeypatch):
     from routes import chat_history
 
     project = {
-        "id": "p1", "name": "Project", "createdAt": 1, "updatedAt": 1,
+        "id": "p1",
+        "name": "Project",
+        "createdAt": 1,
+        "updatedAt": 1,
     }
     cleanup_threads = []
     monkeypatch.setattr(chat_history, "list_chat_threads", lambda **kwargs: [])
