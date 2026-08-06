@@ -1227,15 +1227,23 @@ _CMD_SEPARATORS = "&|"
 # registered association, including URLs, which are automatically detected and
 # opened in the default browser" (the start reference), whose own example is
 # `start "Bing" "https://www.bing.com"`.
-_URL_SCHEME_RE = re.compile(r"[a-z][a-z0-9+.\-]*://", re.IGNORECASE)
+# Two letters at least: a one-letter "scheme" is a drive, and Win32 takes `/`
+# as a separator ("Naming Files, Paths, and Namespaces"), so
+# `C://Windows/System32/WindowsPowerShell/v1.0/powershell.exe` is a program and
+# reading it as a URL walked past the name.
+_URL_SCHEME_RE = re.compile(r"[a-z][a-z0-9+.\-]+://", re.IGNORECASE)
 # cmd's comparison operators, which sit between the two words of an `if` test.
 _CMD_COMPARE_OPS = frozenset({"equ", "neq", "lss", "leq", "gtr", "geq"})
 # ...and its tests that take one operand of their own before the command.
 _CMD_TWO_WORD_TESTS = frozenset({"exist", "defined", "errorlevel", "cmdextversion"})
 # `for /f ... in ('CMD')` runs CMD and reads its output, the command-substitution
-# form documented for `for`; usebackq spells the same thing with backquotes.
+# form documented for `for`. Which quoting spells it is decided by usebackq, so
+# the option string in between is captured rather than skipped -- and captured
+# quote by quote, since `delims=(` is a legal option holding cmd's own bracket
+# and stopping at the first one hid the set behind it.
 _CMD_FOR_SUBSTITUTION_RE = re.compile(
-    r"\bfor\s+/f\b[^(]*\(\s*(?:'(?P<body>[^']*)'|`(?P<alt>[^`]*)`)\s*\)",
+    r"\bfor\s+/f\b(?P<options>(?:\"[^\"]*\"|[^(\"])*)"
+    r"\(\s*(?:'(?P<body>[^']*)'|`(?P<alt>[^`]*)`)\s*\)",
     re.IGNORECASE,
 )
 
@@ -1371,13 +1379,26 @@ def _blocked_start_program(token: str) -> "set[str]":
     # `start "" https://example.com/curl` is not curl.
     if _URL_SCHEME_RE.match(target):
         return set()
-    base = os.path.basename(target.replace("\\", "/")).lower()
-    stem, ext = os.path.splitext(base)
-    if ext in {".exe", ".com", ".bat", ".cmd"}:
-        base = stem
-    if base in _blocked_commands():
-        return {base}
-    return _blocked_matching_glob(base)
+    # cmd expands its variables before it resolves the program, and a substring
+    # expansion can contribute nothing at all: `powershell%PATH:~0,0%` launches
+    # powershell, where the literal spelling matches no name. What each one
+    # expands to is not knowable here, so the name is read both ways and the
+    # blocked one counts -- refusing a file really called that is the safe
+    # direction, and `report%DATE%.txt` still names no program.
+    names = {target}
+    if "%" in target:
+        names.add(_CMD_VARIABLE_RE.sub("", target))
+    blocked: "set[str]" = set()
+    for name in names:
+        base = os.path.basename(name.replace("\\", "/")).lower()
+        stem, ext = os.path.splitext(base)
+        if ext in {".exe", ".com", ".bat", ".cmd"}:
+            base = stem
+        if base in _blocked_commands():
+            blocked.add(base)
+        else:
+            blocked |= _blocked_matching_glob(base)
+    return blocked
 
 
 def _xargs_replacement(tokens: "list[str]", start: int, end: int) -> str:
@@ -1561,6 +1582,13 @@ _START_SWITCHES_WITH_VALUE = {"/d", "/node", "/affinity", "/machine"}
 # arguments in MSYS form, so `start "" /c/Windows/System32/powershell.exe` is the
 # launched program, and skipping it as a switch walked straight past the block.
 _START_SWITCH_RE = re.compile(r"/[a-z][a-z0-9]*", re.IGNORECASE)
+# cmd's own switches, which sit between it and the /c holding its command line.
+# One letter, and a value behind a colon for the documented /t:, /e:, /f: and
+# /v:. Anchored at both ends so a path is not mistaken for one: `/bin/bash` and
+# `/c/Windows/System32/cmd.exe` are programs.
+_CMD_SWITCH_RE = re.compile(r"/[a-z](?::[^\s/]*)?$", re.IGNORECASE)
+# A cmd variable expansion, `%NAME%` or a substring of one (`%PATH:~0,0%`).
+_CMD_VARIABLE_RE = re.compile(r"%[^%\s]*%")
 
 
 def _find_blocked_commands(command: str) -> set[str]:
@@ -2118,8 +2146,12 @@ def _find_blocked_commands(command: str) -> set[str]:
             prev = tokens[j]
             if prev.startswith("-"):
                 continue  # skip Unix flags like --login, -l
-            if is_win_c and prev.startswith("/") and len(prev) <= 3:
-                continue  # skip Windows flags like /s, /q (not /bin/bash)
+            if is_win_c and _CMD_SWITCH_RE.match(_win_switch(prev)):
+                # Skip cmd's own switches (/s, /q, and the value-bearing /v:on,
+                # /e:off, /t:0a) without skipping a path: a length test alone
+                # stopped the search at `cmd /v:on /c ...`, so the cmd in front
+                # of it was never found and its command line never read.
+                continue
             # The cmd lexer keeps a glued opener, so `(cmd //c ...)` left prev
             # as `(cmd` and matched no shell. Under bash the opener is its own
             # token, so one still attached survived quoting and is part of the
@@ -2158,6 +2190,14 @@ def _find_blocked_commands(command: str) -> set[str]:
         # real while the inner expression is echo's data, so each match has to
         # be unquoted where it sits, not merely accompanied by a construct.
         if match.start() < len(quoted_offsets) and quoted_offsets[match.start()]:
+            continue
+        # Only one of the two spellings is a child command, and usebackq is what
+        # swaps them: Microsoft documents `('<command>')` without it and
+        # ``(`<command>`)`` with it, the other being a literal string to parse.
+        # Reading both as commands refused `for /f %i in (`powershell`)`, which
+        # looks up a file by that name.
+        backquoted = match.group("alt") is not None
+        if backquoted != ("usebackq" in (match.group("options") or "").lower()):
             continue
         # The escapes are the outer parse's, so cmd hands the child a line with
         # them already applied: `echo x ^& start ""` reaches it as a real

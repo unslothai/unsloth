@@ -1179,6 +1179,71 @@ def test_a_nested_cmd_payload_needs_a_cmd_that_runs(monkeypatch, bash, command, 
 
 
 @pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # usebackq swaps which quoting runs a command: Microsoft documents
+        # `('<command>')` without it and ``(`<command>`)`` with it, the other
+        # spelling being a literal string to parse.
+        ("""cmd /c for /f %i in (`start "" powershell`) do echo %i""", False),
+        ("""cmd /c for /f "usebackq" %i in ('start "" powershell') do echo %i""", False),
+        ("""cmd /c for /f "usebackq" %i in (`start "" powershell`) do echo %i""", True),
+        ("""cmd /c for /f %i in ('start "" powershell') do echo %i""", True),
+        # `delims=(` is a legal option holding cmd's own bracket, and stopping
+        # the option scan at the first one hid the set behind it.
+        ("""cmd /c for /f "delims=(" %i in ('start "" powershell') do echo %i""", True),
+        ("""cmd /c for /f "usebackq delims=(" %i in (`start "" powershell`) do echo %i""", True),
+    ],
+)
+def test_a_for_set_runs_only_in_the_spelling_usebackq_selects(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # cmd's own switches sit between it and the /c holding its command
+        # line, and the value-bearing ones outran a length test, so the cmd in
+        # front of them was never found and its payload never read.
+        ('cmd /v:on /c start "" powershell', True),
+        ('cmd /e:off /f:on /t:0a /c start "" pwsh', True),
+        ('cmd /s /q /d /c start "" powershell', True),
+        # ...while a path is a program, not a switch.
+        ("cmd /c /bin/bash -c ls", False),
+    ],
+)
+def test_cmd_switches_do_not_hide_the_shell_in_front_of_them(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # Win32 takes `/` as a separator, so a drive path can be spelled with a
+        # doubled one and read as a URL scheme, walking past the program name.
+        ('cmd /c start "" C://Windows/System32/WindowsPowerShell/v1.0/powershell.exe', True),
+        ('cmd /c start "" C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe', True),
+        # A scheme of two letters or more is still a URL, which start hands to
+        # the browser rather than running.
+        ('cmd /c start "" https://example.com/powershell', False),
+        ('cmd /c start "" file:///C:/tmp/powershell', False),
+        # cmd expands its variables before it resolves the program, and a
+        # substring expansion can contribute nothing at all.
+        ('cmd /c start "" powershell%PATH:~0,0%', True),
+        ('cmd /c start "" %COMSPEC%', False),
+        ('cmd /c start "" report%DATE%.txt', False),
+    ],
+)
+def test_a_start_target_is_read_as_cmd_resolves_it(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
     "command", ["pwsh -Command ls", "powershell -c ls", "rmdir x", "runas /u:a b"]
 )
 def test_windows_only_names_are_not_hard_blocked_off_windows(monkeypatch, command):
