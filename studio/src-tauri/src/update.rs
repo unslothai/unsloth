@@ -85,14 +85,6 @@ fn spawn_update(
     let mut cmd = build_update_command(bin)?;
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    // AppImage sets LD_LIBRARY_PATH to its bundled libs, which breaks Python
-    #[cfg(target_os = "linux")]
-    if std::env::var_os("APPIMAGE").is_some() {
-        cmd.env_remove("LD_LIBRARY_PATH");
-        cmd.env_remove("PYTHONHOME");
-        cmd.env_remove("PYTHONPATH");
-    }
-
     // Tauri manages the legacy root; scrub so 'unsloth studio update' targets
     // the same install the desktop app uses, not an inherited custom root.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");

@@ -1342,6 +1342,51 @@ def _win_switch(token: str) -> str:
 # position. These switches precede it; the value-taking ones eat a token.
 _START_SWITCHES_WITH_VALUE = {"/d", "/node", "/affinity", "/machine"}
 
+# A slash, one letter, optional `:value` (/s, /v:on, /t:0a). Matched in full so
+# a program spelled as a path (/bin/bash) is never skipped as a switch.
+_CMD_SWITCH_RE = re.compile(r"/[a-zA-Z](?::[\w.]+)?")
+
+# START's documented switches. Matched by name rather than by a leading slash,
+# because MSYS rewrites a POSIX path argument and hands cmd back something like
+# /c/Windows/.../powershell.exe, which is a program and not a switch.
+_START_SWITCHES = frozenset(
+    {
+        "/min",
+        "/max",
+        "/separate",
+        "/shared",
+        "/low",
+        "/normal",
+        "/high",
+        "/realtime",
+        "/abovenormal",
+        "/belownormal",
+        "/wait",
+        "/b",
+        "/i",
+        "/d",
+        "/node",
+        "/affinity",
+        "/machine",
+    }
+)
+
+
+def _is_start_title(token: str) -> bool:
+    """True when START would read ``token`` as its window title, not the program.
+
+    The cmd lexer keeps the quote marks, so a title still arrives quoted. The
+    posix lexer has stripped them, leaving two spellings a bare program name
+    cannot have: the empty ``start ""`` idiom, and a title containing
+    whitespace. A single-word posix title (``start "job" prog``) is
+    indistinguishable from a program name and is deliberately not guessed.
+    """
+    return (
+        token == ""
+        or any(char.isspace() for char in token)
+        or (len(token) >= 2 and token[0] == '"' and token[-1] == '"')
+    )
+
 
 def _find_blocked_commands(command: str) -> set[str]:
     """Detect blocked commands at shell command position only.
@@ -1632,18 +1677,26 @@ def _find_blocked_commands(command: str) -> set[str]:
         if not (is_unix_c or is_win_c) or i < 1 or i + 1 >= len(tokens):
             continue
         # Look back past flags for the shell binary. Windows flags and absolute
-        # paths both start with /, so only skip short /X flags (not /bin/bash).
+        # paths both start with /, so only skip things shaped like a whole
+        # switch (/s, /v:on) and never a program spelled as a path (/bin/bash).
         for j in range(i - 1, -1, -1):
             prev = tokens[j]
             if prev.startswith("-"):
                 continue  # skip Unix flags like --login, -l
-            if is_win_c and prev.startswith("/") and len(prev) <= 3:
-                continue  # skip Windows flags like /s, /q (not /bin/bash)
+            # Git Bash doubles the slash on these switches too, so normalise
+            # them like the trigger: else `cmd //v:on //c powershell` stops here.
+            if is_win_c and _CMD_SWITCH_RE.fullmatch(_win_switch(prev)):
+                continue  # skip Windows switches like /s, /q, /v:on
             prev_base = os.path.basename(prev).lower()
             if is_unix_c and prev_base in _SHELLS:
                 blocked |= _find_blocked_commands(tokens[i + 1])
             elif is_win_c and prev_base in _SHELLS_WIN:
-                blocked |= _find_blocked_commands(tokens[i + 1])
+                # The cmd lexer keeps the marks, so `cmd /c "powershell ls"`
+                # would recurse on a first word of `"powershell` and match nothing.
+                payload = tokens[i + 1]
+                if len(payload) > 1 and payload[0] == '"' and payload[-1] == '"':
+                    payload = payload[1:-1]
+                blocked |= _find_blocked_commands(payload)
             break  # stop at first non-flag token
 
     # `cmd /c start "" prog` puts prog in a command position the scan above
@@ -1652,17 +1705,24 @@ def _find_blocked_commands(command: str) -> set[str]:
         if os.path.basename(token).lower() not in ("start", "start.exe"):
             continue
         j = i + 1
-        while j < len(tokens):
-            switch = _win_switch(tokens[j].lower())
-            if not switch.startswith("/"):
-                break
+        while j < len(tokens) and _win_switch(tokens[j].lower()) in _START_SWITCHES:
             # /d C:\dir and friends carry their value in the next token.
-            j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
-        # `start ""` is the idiom for "no title"; anything else is the program.
-        if j < len(tokens) and tokens[j] == "":
-            j += 1
+            j += 2 if _win_switch(tokens[j].lower()) in _START_SWITCHES_WITH_VALUE else 1
+        # cmd reads a quoted first argument as the window title, putting the
+        # program one token further on. Reading that second token only when the
+        # first is recognisably a title keeps `echo start notepad powershell`
+        # runnable; deciding whether `start` itself is executed is deliberately
+        # not attempted, since every local approximation of it under-approximated
+        # and let a real launch through.
         if j < len(tokens):
             blocked |= _find_blocked_commands(tokens[j])
+        if j + 1 < len(tokens) and _is_start_title(tokens[j]):
+            k = j + 1
+            # `start "my window" /min prog` puts switches after the title too.
+            while k < len(tokens) and _win_switch(tokens[k].lower()) in _START_SWITCHES:
+                k += 2 if _win_switch(tokens[k].lower()) in _START_SWITCHES_WITH_VALUE else 1
+            if k < len(tokens):
+                blocked |= _find_blocked_commands(tokens[k])
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The
@@ -6582,6 +6642,10 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
 
     if sys.platform == "win32":
         sysroot = os.environ.get("SystemRoot", r"C:\Windows")
+        # Ahead of System32 and its DOS twins (bare `find` would hit FIND.EXE,
+        # not GNU find), behind the interpreter dirs so a Git-shipped
+        # python.exe cannot shadow the environment this server runs in.
+        path_entries.extend(_windows_bash_userland_dirs())
         path_entries.extend([os.path.join(sysroot, "System32"), sysroot])
     else:
         path_entries.extend(["/usr/local/bin", "/usr/bin", "/bin"])
@@ -6621,6 +6685,10 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     # Windows needs SystemRoot for Python/subprocess to work.
     if sys.platform == "win32":
         env["SystemRoot"] = os.environ.get("SystemRoot", r"C:\Windows")
+        # Windows tempfile / native SDKs honour TEMP/TMP, not TMPDIR; without
+        # these a child falls back to GetTempPath and writes outside the workdir.
+        env["TEMP"] = workdir
+        env["TMP"] = workdir
         # Restrict PATHEXT so cwd .BAT/.CMD cannot hijack bare names (#7317).
         pathext = ".EXE;.COM"
         if git_ext and git_ext not in (".EXE", ".COM"):
@@ -6977,6 +7045,34 @@ def _windows_bash() -> "str | None":
         if os.path.isfile(candidate) and _is_trusted_windows_bash(candidate):
             return candidate
     return None
+
+
+def _windows_bash_userland_dirs() -> list[str]:
+    """Trusted dirs holding the resolved bash and the POSIX tools beside it.
+
+    ``bash -c`` is non-login, so /etc/profile never runs and Git for Windows'
+    ``usr\\bin`` stays off PATH, leaving ls / cat / grep "command not found".
+    bash.exe ships under ``Git\\bin`` or ``Git\\usr\\bin``, so both parents are
+    probed. Candidates clear the same Program Files trust boundary as the git
+    entry (#7317) and are canonicalised against junctions. Fails closed: no
+    trusted bash, no entries, PATH unchanged.
+    """
+    bash = _windows_bash()
+    if not bash:
+        return []
+    bin_dir = os.path.dirname(bash)
+    candidates = [bin_dir]
+    for root in (os.path.dirname(bin_dir), os.path.dirname(os.path.dirname(bin_dir))):
+        if root:
+            candidates.append(os.path.join(root, "usr", "bin"))
+    dirs: list[str] = []
+    for candidate in candidates:
+        if not os.path.isdir(candidate) or not _is_trusted_windows_program_dir(candidate):
+            continue
+        real = os.path.realpath(candidate)
+        if real not in dirs:
+            dirs.append(real)
+    return dirs
 
 
 def _shell_is_posix() -> bool:

@@ -48,6 +48,8 @@ def test_detect_override_and_unknown():
     [
         "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
         "wan-ai/wan2.2-ti2v-5b-diffusers",
+        "unsloth/Wan2.2-TI2V-5B-GGUF",
+        # The old curated repack: anyone who downloaded it still has it cached, so keep detecting it.
         "QuantStack/Wan2.2-TI2V-5B-GGUF",
         "some/dir/wan2.2-ti2v-5b-Q4_K_M.gguf",
     ],
@@ -324,3 +326,16 @@ def test_video_resolution_presets_are_upstream_sanctioned():
 
     ti2v = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
     assert set(ti2v.resolution_presets) == {(1280, 704), (704, 1280)}
+
+
+def test_curated_gguf_repos_are_unsloth_mirrors():
+    """No curated video GGUF pick may point at a community repack.
+
+    ``gguf_repo`` is a one-click download, so its availability is Studio's problem: a rename or
+    takedown upstream turns the pick into a 404 no client can fix.
+    """
+    from core.inference.video_families import _FAMILIES
+
+    curated = {fam.name: fam.gguf_repo for fam in _FAMILIES if fam.gguf_repo}
+    assert curated["wan2.2-ti2v-5b"] == "unsloth/Wan2.2-TI2V-5B-GGUF"
+    assert all(repo.startswith("unsloth/") for repo in curated.values()), curated

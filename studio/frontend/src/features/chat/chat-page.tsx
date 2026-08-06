@@ -3286,7 +3286,7 @@ export function ChatPage({
                 title="New chat"
                 aria-label="New chat"
                 onClick={handleDesktopNewChat}
-                className="!size-[33px] rounded-[10px] text-muted-foreground"
+                className="!size-[30px] rounded-[10px] text-muted-foreground"
               >
                 <HugeiconsIcon
                   icon={PencilEdit02Icon}
@@ -3406,7 +3406,7 @@ export function ChatPage({
                     type="button"
                     onClick={toggleIncognito}
                     className={cn(
-                      "flex size-[var(--studio-chat-control-height,34px)] cursor-pointer items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                      "flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                       incognito
                         ? "bg-primary/10 text-primary hover:bg-primary/15"
                         : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
@@ -3444,7 +3444,7 @@ export function ChatPage({
                       closeArtifactSurface();
                       openResearchPanel(latestResearchRun.id);
                     }}
-                    className="relative flex size-[var(--studio-chat-control-height,34px)] cursor-pointer items-center justify-center rounded-full text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-white"
+                    className="relative flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-white"
                     aria-label="Open research activity"
                     aria-pressed={openResearchRunId === latestResearchRun.id}
                   >
@@ -3472,7 +3472,7 @@ export function ChatPage({
                       useResearchRunStore.getState().closePanel();
                       setSettingsOpen(true);
                     }}
-                    className="flex size-[var(--studio-chat-control-height,34px)] cursor-pointer items-center justify-center rounded-full text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    className="flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     aria-label="Open run settings"
                   >
                     <HugeiconsIcon

@@ -21,6 +21,9 @@ on:
       - 'tests/studio/**'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/workflows/studio-windows-ui-smoke.yml'
+      # Every server boot in this workflow shells out to that script, so an edit
+      # to it changes what this workflow actually runs.
+      - '.github/scripts/boot-studio-api-only.sh'
   push:
     branches: [main, pip]
   workflow_dispatch:
@@ -101,7 +104,17 @@ jobs:
           bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }}
-        if: always() && steps.prime-hf.outcome == 'success'
+        # Save on main only. Caches created on a PR ref are scoped to that
+        # merge ref -- per GitHub's docs they "can only be restored by re-runs
+        # of the pull request" -- while every PR *can* restore from the default
+        # branch. So a PR-scoped save helps almost nothing and competes for the
+        # 10GB per-repo budget, and when that budget is exceeded GitHub evicts
+        # by least-recently-used, which deletes main's copies that all PRs share.
+        # This repo was measured at 33.3GB across 30 caches, 3.3x over, with the
+        # same 4.6GB model held four times on four different PR refs and no copy
+        # on main at all. That is the thrash loop: PR misses -> downloads ->
+        # saves its own copy -> evicts main's -> next PR misses.
+        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
@@ -298,11 +311,7 @@ jobs:
       - name: Reset auth + boot Unsloth
         run: |
           # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
-            > logs/studio.log 2>&1 &
-          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
 
       - name: Wait for /api/health
         run: |
@@ -353,11 +362,8 @@ jobs:
 
       - name: Reset auth + boot Unsloth for extra UI tests (port 18897)
         run: |
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18897 \
-            > logs/studio_extra.log 2>&1 &
-          echo "STUDIO_EXTRA_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port 18897 --log logs/studio_extra.log --pid-var STUDIO_EXTRA_PID
 
       - name: Wait for /api/health on 18897
         run: |
