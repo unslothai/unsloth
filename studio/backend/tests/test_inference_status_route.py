@@ -143,7 +143,9 @@ def test_overlapping_status_probes_leave_default_executor_for_streaming(monkeypa
         ]
         try:
             started = await _wait_for_probe()
-            token = await asyncio.wait_for(asyncio.to_thread(lambda: "token"), timeout = _GUARD_SECONDS)
+            token = await asyncio.wait_for(
+                asyncio.to_thread(lambda: "token"), timeout = _GUARD_SECONDS
+            )
         finally:
             release.set()
         responses = await asyncio.gather(*statuses)
