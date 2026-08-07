@@ -431,6 +431,15 @@ fn spawn_script(
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
 
+    // We decode this child as UTF-8 below, so its Python descendants must emit
+    // UTF-8 or the log fills with U+FFFD. The .ps1 entry points set these too;
+    // this covers any path reaching Python without them.
+    #[cfg(windows)]
+    {
+        cmd.env("PYTHONUTF8", "1");
+        cmd.env("PYTHONIOENCODING", "utf-8");
+    }
+
     // On Windows, launch the installer directly with CREATE_NO_WINDOW.
     // The app process is assigned to a KILL_ON_JOB_CLOSE job in main.rs, so
     // child cleanup on crash comes from inherited job membership instead.
