@@ -368,6 +368,15 @@ class TestPydanticModels:
 # =====================================================================
 
 
+# `match` capture nodes, which bind a name without an ast.Name store. Looked up rather than named
+# directly so this file still parses on a Python without them.
+_MATCH_CAPTURES = tuple(
+    node
+    for node in (getattr(ast, attr, None) for attr in ("MatchAs", "MatchStar", "MatchMapping"))
+    if node is not None
+) or (type(None),)
+
+
 class TestRouteCompleteness:
     """All response construction sites in routes/inference.py include native_context_length."""
 
@@ -426,6 +435,13 @@ class TestRouteCompleteness:
         nothing about the outer name and is skipped. A binding form this does not model (a for
         target, a ``with ... as``) yields a None value, which the caller reads as "not the helper"
         so an unrecognised rebind fails closed rather than passing silently.
+
+        Not every binding is an ``ast.Name`` store, though, and the ones that are not would slip
+        past a Name-only walk entirely rather than fail closed. ``except E as fields`` is the sharp
+        one: Python DELETES the target when the handler ends, so a handled-exception path can reach
+        the constructor with the name unbound. ``import x as fields`` and the capture patterns of a
+        ``match`` statement bind through their own node types too. All are recorded with a None
+        value.
         """
         found: list = []
         handled: set = set()
@@ -456,6 +472,17 @@ class TestRouteCompleteness:
                     and child.id == name
                     and isinstance(child.ctx, ast.Store)
                     and id(child) not in handled
+                ):
+                    found.append((child, None))
+                elif isinstance(child, ast.ExceptHandler) and child.name == name:
+                    found.append((child, None))
+                elif isinstance(child, ast.alias) and (child.asname or child.name) == name:
+                    found.append((child, None))
+                elif isinstance(child, (ast.Global, ast.Nonlocal)) and name in child.names:
+                    found.append((child, None))
+                elif isinstance(child, _MATCH_CAPTURES) and name in (
+                    getattr(child, "name", None),
+                    getattr(child, "rest", None),  # MatchMapping spells its capture `rest`
                 ):
                     found.append((child, None))
                 walk(child)
@@ -547,16 +574,23 @@ class TestRouteCompleteness:
     # never produced.
     _PROTECTED_RUNTIME_KEYS = frozenset({"native_context_length"})
 
-    def _mutations_are_safe(self, scope, name: str) -> bool:
+    def _mutations_are_safe(self, scope, name: str, call) -> bool:
         """True when nothing in ``scope`` can remove a protected key from ``name``.
 
         The real call site edits one entry of the hoisted dict before splatting it, so mutation has
         to be allowed -- but only the additive kind. A subscript write to an unprotected key adds or
-        replaces something this contract makes no claim about. Anything else fails closed: ``del``,
-        a computed subscript key we cannot read, and every method call, because ``pop``, ``clear``
-        and ``popitem`` all drop keys and ``update`` can overwrite them. A legitimate new pattern
-        will trip this and get a human to re-read the contract, which is the cheaper mistake.
+        replaces something this contract makes no claim about.
+
+        Everything else about the name fails closed, and the rule is stated positively for that
+        reason: the ONLY reads of the name allowed anywhere in the scope are the splat itself and
+        the object of an allowed subscript write. Enumerating forbidden mutations instead
+        (``del``, ``pop``, ``clear``) misses the one that reaches them all -- ``alias = fields``,
+        after which every check aimed at ``fields`` looks at the wrong name while the same dict
+        loses keys through ``alias``. Passing the dict to a function is the same hole with the
+        mutation offsite. A legitimate new pattern will trip this and get a human to re-read the
+        contract, which is the cheaper mistake.
         """
+        allowed_reads: set = {id(call_kw.value) for call_kw in call.keywords if call_kw.arg is None}
         ok = True
 
         def walk(node) -> None:
@@ -564,16 +598,7 @@ class TestRouteCompleteness:
             for child in ast.iter_child_nodes(node):
                 if isinstance(child, self._NESTED_SCOPES):
                     continue
-                if isinstance(child, ast.Delete):
-                    for target in child.targets:
-                        value = getattr(target, "value", None)
-                        if isinstance(value, ast.Name) and value.id == name:
-                            ok = False
-                elif isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute):
-                    obj = child.func.value
-                    if isinstance(obj, ast.Name) and obj.id == name:
-                        ok = False
-                elif isinstance(child, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+                if isinstance(child, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
                     targets = child.targets if isinstance(child, ast.Assign) else [child.target]
                     for target in targets:
                         if not isinstance(target, ast.Subscript):
@@ -586,9 +611,29 @@ class TestRouteCompleteness:
                             ok = False  # a computed key could be any of the protected ones
                         elif key.value in self._PROTECTED_RUNTIME_KEYS:
                             ok = False
+                        else:
+                            allowed_reads.add(id(obj))
                 walk(child)
 
         walk(scope)
+        if not ok:
+            return False
+
+        def check_reads(node) -> None:
+            nonlocal ok
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, self._NESTED_SCOPES):
+                    continue
+                if (
+                    isinstance(child, ast.Name)
+                    and child.id == name
+                    and not isinstance(child.ctx, ast.Store)
+                    and id(child) not in allowed_reads
+                ):
+                    ok = False
+                check_reads(child)
+
+        check_reads(scope)
         return ok
 
     def _status_calls_getting_runtime_fields(self) -> list:
@@ -648,7 +693,7 @@ class TestRouteCompleteness:
                     continue
                 if not self._binding_dominates(scope, name, call):
                     continue
-                if not self._mutations_are_safe(scope, name):
+                if not self._mutations_are_safe(scope, name, call):
                     continue
                 found.append(call)
                 break
@@ -765,6 +810,51 @@ class TestRouteCompleteness:
                 return InferenceStatusResponse(is_gguf = True, **fields)
                 """
             ), f"{destructive} left the /status contract green"
+
+    def test_the_hoist_analysis_rejects_reaching_the_dict_by_another_name(self):
+        """Naming the dict twice routes every mutation past a check aimed at the first name.
+
+        `alias = fields` then `alias.pop(...)` drops a protected key while nothing touches
+        `fields`, and handing the dict to a function moves the same mutation offsite. So the rule
+        is positive: the only reads of the splatted name are the splat and the object of an
+        allowed subscript write.
+        """
+        for leak in ("alias = fields\n                alias.pop('native_context_length')",
+                     "_scrub(fields)",
+                     "return InferenceStatusResponse(is_gguf = True, **fields, extra = fields)"):
+            assert not self._accepts(
+                f"""
+                fields = _llama_runtime_fields(llama_backend)
+                {leak}
+                return InferenceStatusResponse(is_gguf = True, **fields)
+                """
+            ), f"{leak!r} left the /status contract green"
+
+    def test_the_hoist_analysis_rejects_a_binding_form_with_no_name_node(self):
+        """`except E as fields` deletes the name when the handler ends.
+
+        The exception target is not an `ast.Name` store, so a Name-only walk misses the rebind
+        entirely rather than failing closed on it, and a handled-exception path then reaches the
+        constructor with `fields` unbound.
+        """
+        assert not self._accepts(
+            """
+            fields = _llama_runtime_fields(llama_backend)
+            try:
+                _probe()
+            except Exception as fields:
+                pass
+            return InferenceStatusResponse(is_gguf = True, **fields)
+            """
+        )
+        # Same for the other name-binding forms that carry no Name node.
+        assert not self._accepts(
+            """
+            fields = _llama_runtime_fields(llama_backend)
+            import json as fields
+            return InferenceStatusResponse(is_gguf = True, **fields)
+            """
+        )
 
     def test_non_gguf_status_path_reports_runtime_context_length(self):
         """Non-GGUF InferenceStatusResponse reports context_length from model_info."""
