@@ -310,8 +310,14 @@ def _header_reader(**dims):
 
 
 _QWEN3_8B = dict(
-    vocab_size = 151936, embedding_length = 4096, n_layers = 36, n_heads = 32,
-    n_kv_heads = 8, head_dim = 128, context_length = 262144, architecture = "qwen3",
+    vocab_size = 151936,
+    embedding_length = 4096,
+    n_layers = 36,
+    n_heads = 32,
+    n_kv_heads = 8,
+    head_dim = 128,
+    context_length = 262144,
+    architecture = "qwen3",
 )
 
 
@@ -360,7 +366,6 @@ def test_batch_bounds_stay_standard_json_schema():
     # int core schema, so they leak out as non-standard ge/le and generated clients drop
     # them. Pin the batch fields against an untouched sibling.
     from models.inference import LoadRequest, ValidateModelRequest
-
     for model in (LoadRequest, ValidateModelRequest):
         props = model.model_json_schema()["properties"]
         sibling = next(s for s in props["n_parallel"]["anyOf"] if s.get("type") == "integer")
@@ -374,16 +379,16 @@ def test_batch_bounds_stay_standard_json_schema():
 @pytest.mark.parametrize(
     "n_batch,n_parallel,expected",
     [
-        (1, 1, 2),      # GGML_ASSERT(n_tokens_all <= cparams.n_batch); a slots-only
-        (1, 2, 2),      # floor would emit 1 here and abort
+        (1, 1, 2),  # GGML_ASSERT(n_tokens_all <= cparams.n_batch); a slots-only
+        (1, 2, 2),  # floor would emit 1 here and abort
         (2, 1, 2),
-        (1, 8, 8),      # GGML_ASSERT(n_outputs_max <= cparams.n_outputs_max)
+        (1, 8, 8),  # GGML_ASSERT(n_outputs_max <= cparams.n_outputs_max)
         (4, 8, 8),
         (7, 8, 8),
         (8, 8, 8),
         (32, 64, 64),
         (64, 64, 64),
-        (64, 1, 64),    # already above both floors: untouched
+        (64, 1, 64),  # already above both floors: untouched
         (4096, 8, 4096),
     ],
 )
@@ -404,8 +409,11 @@ def test_remote_guard_drops_the_split_mask_when_pipelining_is_disabled():
     from routes import inference as route
 
     config = SimpleNamespace(
-        gguf_file = None, gguf_mmproj_file = None, gguf_mtp_file = None,
-        gguf_hf_repo = "owner/repo", gguf_variant = "Q4_K_M",
+        gguf_file = None,
+        gguf_mmproj_file = None,
+        gguf_mtp_file = None,
+        gguf_hf_repo = "owner/repo",
+        gguf_variant = "Q4_K_M",
     )
     remote_variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 1024**3)
 
@@ -418,8 +426,11 @@ def test_remote_guard_drops_the_split_mask_when_pipelining_is_disabled():
             patch.object(route, "_remote_gguf_companion_bytes", return_value = 0),
         ):
             return route._estimate_gguf_required_gb(
-                config, max_seq_length = 32768, n_ubatch = 2048,
-                n_devices = 2, llama_extra_args = extra_args,
+                config,
+                max_seq_length = 32768,
+                n_ubatch = 2048,
+                n_devices = 2,
+                llama_extra_args = extra_args,
             )
 
     split = _required(None)

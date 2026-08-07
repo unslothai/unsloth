@@ -5140,7 +5140,6 @@ def _estimate_gguf_kv_gb(
             # device. layer_split follows the loader's own condition: extras that disable
             # pipeline parallelism (-ot, -ncmoe, --no-kv-offload) leave one KQ-mask copy.
             from core.inference.llama_cpp import _pipeline_parallel_disabled_by_args
-
             pipeline_parallel_off = _pipeline_parallel_disabled_by_args(
                 llama_extra_args, n_layers = getattr(probe, "_n_layers", None)
             )
@@ -5310,9 +5309,7 @@ def _estimate_gguf_required_gb(
                     LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT
                     if devices > 1
                     and not tensor_parallel
-                    and not _pipeline_parallel_disabled_by_args(
-                        llama_extra_args, n_layers = None
-                    )
+                    and not _pipeline_parallel_disabled_by_args(llama_extra_args, n_layers = None)
                     else 1
                 )
                 mask_bytes = (
