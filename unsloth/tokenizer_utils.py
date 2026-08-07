@@ -68,6 +68,40 @@ IGNORED_TOKENIZER_NAMES = frozenset(
 )
 os.environ["UNSLOTH_IGNORED_TOKENIZER_NAMES"] = "\n".join(IGNORED_TOKENIZER_NAMES)
 
+# Gemma 4 base (non-it) mirrors on the Hub ship without add_bos_token: true even
+# though google/gemma-4-* does. -it variants are fine: chat_template.jinja emits
+# {{- bos_token -}}. See unslothai/unsloth#7903.
+_GEMMA4_BASE_MODEL_RE = re.compile(
+    r"^gemma-4-(?:e2b|e4b|31b|26b-a4b)(?:-unsloth-bnb-4bit)?$",
+    flags = re.IGNORECASE,
+)
+
+
+def _model_basename(model_name):
+    return model_name.rstrip("/\\").replace("\\", "/").split("/")[-1]
+
+
+def _is_gemma4_base_model_name(model_name):
+    base = _model_basename(model_name).lower()
+    if "-it" in base:
+        return False
+    return _GEMMA4_BASE_MODEL_RE.match(base) is not None
+
+
+def _fix_gemma4_base_bos_token(tokenizer, model_name):
+    if tokenizer is None or not _is_gemma4_base_model_name(model_name):
+        return tokenizer
+    if hasattr(tokenizer, "add_bos_token") and not tokenizer.add_bos_token:
+        tokenizer.add_bos_token = True
+    return tokenizer
+
+
+def _apply_post_load_tokenizer_fixes(tokenizer, model_name, fix_tokenizer):
+    if not fix_tokenizer:
+        return tokenizer
+    return _fix_gemma4_base_bos_token(tokenizer, model_name)
+
+
 # Check environments
 keynames = "\n" + "\n".join(os.environ.keys())
 IS_COLAB_ENVIRONMENT = "\nCOLAB_" in keynames
@@ -620,13 +654,13 @@ def _load_correct_tokenizer(
     )
 
     if not fix_tokenizer or tokenizer_name.lower() in IGNORED_TOKENIZER_NAMES:
-        return fast_tokenizer
+        return _apply_post_load_tokenizer_fixes(fast_tokenizer, tokenizer_name, fix_tokenizer)
     # Ignore Mistral ones - they're a bit weird to handle!
     elif "mistral" in tokenizer_name.lower():
-        return fast_tokenizer
+        return _apply_post_load_tokenizer_fixes(fast_tokenizer, tokenizer_name, fix_tokenizer)
     # Ignore Phi-4 ones as well
     elif "phi-4" in tokenizer_name.lower():
-        return fast_tokenizer
+        return _apply_post_load_tokenizer_fixes(fast_tokenizer, tokenizer_name, fix_tokenizer)
     elif slow_tokenizer is not None:
         if hasattr(fast_tokenizer, "add_bos_token") and hasattr(slow_tokenizer, "add_bos_token"):
             fast_tokenizer.add_bos_token = slow_tokenizer.add_bos_token
@@ -635,13 +669,17 @@ def _load_correct_tokenizer(
 
         # Confirm if slow and fast are equivalent!
         if assert_same_tokenization(slow_tokenizer, fast_tokenizer):
-            return fast_tokenizer
+            return _apply_post_load_tokenizer_fixes(fast_tokenizer, tokenizer_name, fix_tokenizer)
         else:
             logger.warning(f"Unsloth: Will load {tokenizer_name} as a legacy tokenizer.")
-            return convert_to_fast_tokenizer(slow_tokenizer)
+            return _apply_post_load_tokenizer_fixes(
+                convert_to_fast_tokenizer(slow_tokenizer),
+                tokenizer_name,
+                fix_tokenizer,
+            )
         pass
     else:
-        return fast_tokenizer
+        return _apply_post_load_tokenizer_fixes(fast_tokenizer, tokenizer_name, fix_tokenizer)
 
 
 def _fix_pad_token(tokenizer):
