@@ -1476,7 +1476,6 @@ def test_usage_only_sse_is_recognized_for_relay_filtering(line, dropped):
     # proxy has to drop the standalone chunk on the way out: a client that did not opt in
     # would index choices[0] on it. Same rule _cmpl_stream_event_out applies locally.
     import routes.inference as inf
-
     assert inf._is_openai_usage_only_sse(line) is dropped
 
 
