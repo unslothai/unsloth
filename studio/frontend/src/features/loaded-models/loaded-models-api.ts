@@ -6,7 +6,6 @@
 // images/video/api-monitor are reached directly, as api-monitor-page.tsx does:
 // their indexes re-export pages __root.tsx keeps out of the eager bundle.
 
-import { unloadResident } from "@/features/api-monitor/unload-resident";
 import { authFetch } from "@/features/auth";
 import {
   getInferenceStatus,
@@ -15,12 +14,15 @@ import {
   unloadModel,
   useChatRuntimeStore,
 } from "@/features/chat";
+import { disposableTimeoutSignal } from "@/features/hub/lib/abort-signals";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import {
   getDiffusionStatus,
   unloadDiffusionModel,
 } from "@/features/images/api";
 import { getVideoStatus, unloadVideoModel } from "@/features/video/api";
+import { notifyModelEjected } from "@/lib/model-eject-events";
+import { ejectChatModel } from "./eject-chat-model";
 import {
   type LoadedModelEntry,
   type SttStatusResponse,
@@ -31,18 +33,33 @@ import {
   mergeLoadedModels,
 } from "./loaded-models-sources";
 
-async function readSttStatus(): Promise<SttStatusResponse | null> {
-  const response = await authFetch("/api/inference/audio/stt/status");
+async function readSttStatus(
+  signal?: AbortSignal,
+): Promise<SttStatusResponse | null> {
+  const response = await authFetch("/api/inference/audio/stt/status", {
+    signal,
+  });
   if (!response.ok) return null;
   return (await response.json()) as SttStatusResponse;
 }
 
-/** null on failure: one unreachable runtime must not empty the list. */
-async function settled<T>(read: () => Promise<T>): Promise<T | null> {
+// A runtime that accepts the connection and never answers would leave the whole
+// batch pending forever, and with it the in-flight guard gating every later
+// refresh. Well past a cold status probe, so a slow-but-healthy read still lands
+// and only a real hang trips it.
+const READ_TIMEOUT_MS = 10_000;
+
+/** null on failure or timeout: one stalled runtime must not empty the list. */
+async function settled<T>(
+  read: (signal: AbortSignal) => Promise<T>,
+): Promise<T | null> {
+  const timeout = disposableTimeoutSignal(READ_TIMEOUT_MS);
   try {
-    return await read();
+    return await read(timeout.signal);
   } catch {
     return null;
+  } finally {
+    timeout.dispose();
   }
 }
 
@@ -62,10 +79,9 @@ export async function readLoadedModels(): Promise<LoadedModelEntry[]> {
   ]);
 }
 
-/** Read, unload, re-read, as the API monitor's Unload does: an auto-switch can
- *  replace the model mid-eject, and /unload naming a replaced model is a no-op. */
-async function ejectActiveChatModel(): Promise<string | null> {
-  const { unloadedAliases, stillResident } = await unloadResident({
+/** Release the model this row names, and only that one. See eject-chat-model.ts. */
+async function ejectChatRow(entry: LoadedModelEntry): Promise<string | null> {
+  const { unloadedAliases, stillResident } = await ejectChatModel(entry.name, {
     readResident: async () => {
       const status = await getInferenceStatus();
       const checkpoint = resolveInferenceCheckpointId(status);
@@ -78,7 +94,8 @@ async function ejectActiveChatModel(): Promise<string | null> {
         ),
       };
     },
-    unload: (checkpoint) => unloadModel({ model_path: checkpoint }),
+    unload: (modelPath) => unloadModel({ model_path: modelPath }),
+    matches: modelIdsMatch,
   });
   clearChatSelectionFor(unloadedAliases);
   return stillResident;
@@ -100,21 +117,17 @@ export async function ejectLoadedModel(
   entry: LoadedModelEntry,
 ): Promise<string | null> {
   switch (entry.source) {
-    case "chat": {
-      if (entry.inactive) {
-        // Not active, so no auto-switch can swap it under the call.
-        await unloadModel({ model_path: entry.name });
-        clearChatSelectionFor([entry.name]);
-        return null;
-      }
-      return ejectActiveChatModel();
-    }
+    case "chat":
+      return ejectChatRow(entry);
     case "image": {
       const status = await unloadDiffusionModel();
+      // The page owning this runtime keeps its own copy of the status.
+      notifyModelEjected("image");
       return status.loaded ? (status.repo_id ?? entry.name) : null;
     }
     case "video": {
       const status = await unloadVideoModel();
+      notifyModelEjected("video");
       return status.loaded ? (status.repo_id ?? entry.name) : null;
     }
     case "stt": {

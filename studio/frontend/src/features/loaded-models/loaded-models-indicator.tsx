@@ -34,12 +34,15 @@ import {
   type LoadedModelKind,
   shortModelLabel,
 } from "./loaded-models-sources";
-import { useShowLoadedModels } from "./show-loaded-models-pref";
+import {
+  LOADED_MODELS_PREFERENCE_KEYS,
+  useShowLoadedModels,
+} from "./show-loaded-models-pref";
 import { useLoadedModels } from "./use-loaded-models";
 
 // Collapsing to the pill is deliberate, so it survives reloads. Expanded by
 // default: a card you have to open first answers nothing.
-const COLLAPSED_KEY = "unsloth_loaded_models_collapsed";
+const COLLAPSED_KEY = LOADED_MODELS_PREFERENCE_KEYS.collapsed;
 
 const KIND_ICONS: Record<LoadedModelKind, typeof ChipIcon> = {
   text: Message01Icon,

@@ -92,6 +92,27 @@ test("a model the runtime still holds besides the active one gets its own row", 
   assert.equal(rows[1].inactive, true);
 });
 
+// A server predating the engine split reports only the top-level fields.
+test("a legacy STT status still shows its resident Transformers model", () => {
+  const rows = describeSttStatus({
+    loaded_model: "openai/whisper-large-v3",
+    device: "cuda",
+  });
+  assert.deepEqual(
+    rows.map((row) => [row.sttEngine, row.name, row.detail]),
+    [["transformers", "openai/whisper-large-v3", "Transformers · cuda"]],
+  );
+});
+
+test("an engine block wins over the legacy fields, and never doubles a row", () => {
+  const rows = describeSttStatus({
+    loaded_model: "openai/whisper-large-v3",
+    device: "cuda",
+    transformers: { loaded_model: null },
+  });
+  assert.deepEqual(rows, []);
+});
+
 test("each STT engine that has a model resident gets a row naming its engine", () => {
   const rows = describeSttStatus({
     transformers: { loaded_model: null },

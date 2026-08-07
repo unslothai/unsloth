@@ -7,7 +7,13 @@
 
 import { useSyncExternalStore } from "react";
 
-const STORAGE_KEY = "unsloth_show_loaded_models_indicator";
+/** Every key this feature owns, so "Reset all local preferences" clears them. */
+export const LOADED_MODELS_PREFERENCE_KEYS = {
+  show: "unsloth_show_loaded_models_indicator",
+  collapsed: "unsloth_loaded_models_collapsed",
+} as const;
+
+const STORAGE_KEY = LOADED_MODELS_PREFERENCE_KEYS.show;
 
 const listeners = new Set<() => void>();
 

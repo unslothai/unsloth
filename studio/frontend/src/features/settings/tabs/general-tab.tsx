@@ -16,6 +16,7 @@ import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
 import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
 import {
+  LOADED_MODELS_PREFERENCE_KEYS,
   setShowLoadedModels,
   useShowLoadedModels,
 } from "@/features/loaded-models";
@@ -128,6 +129,8 @@ const PREFS_KEYS: string[] = [
   // Update notifications
   "unsloth_show_llama_update_banner",
   "unsloth_monitor_overlay",
+  LOADED_MODELS_PREFERENCE_KEYS.show,
+  LOADED_MODELS_PREFERENCE_KEYS.collapsed,
   // Voice settings
   "unsloth_voice_settings",
 ];

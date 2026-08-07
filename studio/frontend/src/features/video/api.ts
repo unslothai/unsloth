@@ -157,8 +157,10 @@ async function parseJson<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
-export async function getVideoStatus(): Promise<VideoStatus> {
-  return parseJson(await authFetch("/api/inference/video/status"));
+export async function getVideoStatus(
+  signal?: AbortSignal,
+): Promise<VideoStatus> {
+  return parseJson(await authFetch("/api/inference/video/status", { signal }));
 }
 
 export async function getVideoLoadProgress(): Promise<VideoLoadProgress> {

@@ -146,8 +146,10 @@ export async function listLoras(
   return parseJsonOrThrow<ListLorasResponse>(response);
 }
 
-export async function getInferenceStatus(): Promise<InferenceStatusResponse> {
-  const response = await authFetch("/api/inference/status");
+export async function getInferenceStatus(
+  signal?: AbortSignal,
+): Promise<InferenceStatusResponse> {
+  const response = await authFetch("/api/inference/status", { signal });
   return parseJsonOrThrow<InferenceStatusResponse>(response);
 }
 

@@ -183,8 +183,10 @@ async function parseJson<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
-export async function getDiffusionStatus(): Promise<DiffusionStatus> {
-  return parseJson(await authFetch("/api/inference/images/status"));
+export async function getDiffusionStatus(
+  signal?: AbortSignal,
+): Promise<DiffusionStatus> {
+  return parseJson(await authFetch("/api/inference/images/status", { signal }));
 }
 
 // One family's bf16 component sizes + estimated resident footprint per quant scheme. Hardware-independent, so it can be fetched before anything is loaded.

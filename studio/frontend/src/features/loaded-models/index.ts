@@ -3,6 +3,7 @@
 
 export { LoadedModelsIndicator } from "./loaded-models-indicator";
 export {
+  LOADED_MODELS_PREFERENCE_KEYS,
   getShowLoadedModels,
   setShowLoadedModels,
   useShowLoadedModels,

@@ -40,7 +40,7 @@ export type SttEngineStatus = {
   device?: string | null;
 };
 
-export type SttStatusResponse = {
+export type SttStatusResponse = SttEngineStatus & {
   transformers?: SttEngineStatus | null;
   mtmd?: SttEngineStatus | null;
   gguf?: SttEngineStatus | null;
@@ -157,6 +157,19 @@ export function describeVideoStatus(
   ];
 }
 
+/** A server predating the engine split reports the resident Transformers model
+ *  only at the top level, so fall back to it rather than showing no row. */
+function sttEngineStatus(
+  status: SttStatusResponse,
+  engine: SttEngine,
+): SttEngineStatus | null {
+  const block = status[engine];
+  if (block) return block;
+  return engine === "transformers"
+    ? { loaded_model: status.loaded_model, device: status.device }
+    : null;
+}
+
 export function describeSttStatus(
   status: SttStatusResponse | null,
 ): LoadedModelEntry[] {
@@ -164,14 +177,14 @@ export function describeSttStatus(
   const engines: SttEngine[] = ["transformers", "mtmd", "gguf"];
   const entries: LoadedModelEntry[] = [];
   for (const engine of engines) {
-    const loaded = status[engine]?.loaded_model;
-    if (!loaded) continue;
+    const block = sttEngineStatus(status, engine);
+    if (!block?.loaded_model) continue;
     entries.push({
       id: `stt:${engine}`,
       kind: "stt",
       source: "stt",
-      name: loaded,
-      detail: joinDetail(STT_ENGINE_LABELS[engine], status[engine]?.device),
+      name: block.loaded_model,
+      detail: joinDetail(STT_ENGINE_LABELS[engine], block.device),
       sttEngine: engine,
     });
   }

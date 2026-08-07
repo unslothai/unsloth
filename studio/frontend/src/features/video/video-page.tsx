@@ -65,6 +65,7 @@ import { useStagedDownload } from "@/features/hub/download-manager";
 import { cn } from "@/lib/utils";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
 import { toast } from "@/lib/toast";
+import { subscribeModelEjected } from "@/lib/model-eject-events";
 
 import {
   type GalleryVideo,
@@ -883,6 +884,13 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       await refreshStatus();
     })();
   }, [active, refreshStatus]);
+
+  // Ejected from the loaded models indicator, which does not run handleUnload:
+  // without this the controls keep offering to generate on a freed runtime.
+  useEffect(
+    () => subscribeModelEjected("video", () => void refreshStatus()),
+    [refreshStatus],
+  );
 
   // Collapse the body-ported model selector when leaving the tab so returning to /video does not pop it back open unprompted.
   useEffect(() => {

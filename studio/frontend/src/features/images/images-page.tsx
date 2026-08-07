@@ -75,6 +75,7 @@ import { cn } from "@/lib/utils";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
 import { toast } from "@/lib/toast";
+import { subscribeModelEjected } from "@/lib/model-eject-events";
 
 import {
   type ControlNetSpecInput,
@@ -1544,6 +1545,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       await refreshStatus();
     })();
   }, [active, refreshStatus]);
+
+  // Ejected from the loaded models indicator, which does not run handleUnload:
+  // without this the controls keep offering to generate on a freed runtime.
+  useEffect(
+    () => subscribeModelEjected("image", () => void refreshStatus()),
+    [refreshStatus],
+  );
 
   // Collapse the body-ported popovers when leaving the tab: the open flag stays set, so returning would pop them back open.
   useEffect(() => {
