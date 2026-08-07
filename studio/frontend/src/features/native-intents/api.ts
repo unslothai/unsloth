@@ -36,6 +36,10 @@ export async function registerNativeAttachmentPath(path: string): Promise<Native
   return invokeNative<NativeIntent>("register_native_attachment_path", { path });
 }
 
+export async function registerNativeDatasetPath(path: string): Promise<NativeIntent> {
+  return invokeNative<NativeIntent>("register_native_dataset_path", { path });
+}
+
 export async function consumeNativePathToken(
   token: string,
   operation: NativePathOperation,
@@ -54,8 +58,7 @@ export async function openPathToken(token: string): Promise<void> {
   return invokeNative<void>("open_path_token", { token });
 }
 
-// Open a backend-resolved directory (e.g. the models/HF cache folder) in the
-// OS file manager. The Tauri command validates the path is a real directory.
+// Open a backend-resolved directory in the OS file manager; Tauri validates it is a real directory.
 export async function openModelsDir(path: string): Promise<void> {
   return invokeNative<void>("open_models_dir", { path });
 }

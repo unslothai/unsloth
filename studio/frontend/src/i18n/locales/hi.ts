@@ -5,6 +5,37 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const hi = {
+  picker: {
+    onDevice: "डिवाइस पर",
+    huggingFace: "Hugging Face",
+    retry: "पुनः प्रयास करें",
+    loadMore: "और लोड करें",
+    offlineTitle: "आप ऑफ़लाइन हैं",
+    offlineBody:
+      "कैश किए गए या स्थानीय {noun} का उपयोग करने के लिए डिवाइस पर जाएं।",
+    offlineSwitchDevice: "डिवाइस",
+    searchAriaLabel: "{noun} खोजें",
+    modelSourceAriaLabel: "मॉडल स्रोत",
+    hubSectionAriaLabel: "Hub सेक्शन",
+    pickModelFile: "डिस्क से मॉडल फ़ाइल चुनें",
+    ejectLoadedModel: "लोड किया गया मॉडल इजेक्ट करें",
+    multipleMatches:
+      "एक से अधिक मेल खाते {noun} मिले। सूची में से एक चुनें।",
+    rateLimitedTitle: "Hugging Face की अनुरोध सीमा पूरी हो गई",
+    rateLimitedBody:
+      "कुछ देर प्रतीक्षा करें, फिर {noun} की खोज दोबारा करें।",
+    hfToken: {
+      label: "HF टोकन",
+      saved: "सहेजा गया",
+      add: "जोड़ें",
+      savedAriaLabel: "Hugging Face टोकन सहेजा गया",
+      addAriaLabel: "Hugging Face टोकन सेट करें",
+      savedHint:
+        "टोकन सहेजा गया। इसका उपयोग करने पर एक्सेस की जांच की जाएगी।",
+      addHint:
+        "निजी और गेटेड रिपॉज़िटरी एक्सेस करने के लिए टोकन सेट करें।",
+    },
+  },
   common: {
     cancel: "रद्द करें",
     close: "बंद करें",
@@ -291,6 +322,13 @@ export const hi = {
         title: "पासवर्ड बदलें",
         description:
           "अपना वर्तमान पासवर्ड दर्ज करें और एक नया चुनें (कम से कम {minLength} अक्षर)।",
+        setTrigger: "रिमोट पासवर्ड सेट करें",
+        setTitle: "रिमोट पासवर्ड सेट करें",
+        setDescription:
+          "वह पासवर्ड चुनें जिससे रिमोट ब्राउज़र unsloth के रूप में साइन इन करते हैं (कम से कम {minLength} अक्षर)। Unsloth डेस्कटॉप ऐप स्वतः साइन इन करता रहेगा।",
+        setSubmit: "पासवर्ड सेट करें",
+        setting: "सेट हो रहा है...",
+        setDone: "पासवर्ड सेट हो गया।",
         currentPassword: "वर्तमान पासवर्ड",
         newPassword: "नया पासवर्ड",
         confirmPassword: "नए पासवर्ड की पुष्टि करें",
@@ -1123,8 +1161,194 @@ export const hi = {
     },
   },
   studio: {
+    imageTraining: "इमेज ट्रेनिंग",
+    goToImageTraining: "इमेज ट्रेनिंग पर जाएं",
     routeTitle: "ट्रेनिंग",
-    title: "फ़ाइन-ट्यूनिंग Studio",
+    wizard: {
+      modelTitle: "मॉडल",
+      modelDescription: "मॉडल और ट्रेनिंग विधि चुनें",
+      datasetTitle: "डेटासेट",
+      datasetDescription: "ट्रेनिंग डेटा चुनें या अपलोड करें",
+      paramsTitle: "पैरामीटर",
+      paramsDescription: "ट्रेनिंग पैरामीटर कॉन्फ़िगर करें",
+      configTitle: "कॉन्फ़िगरेशन",
+      configDescription: "कॉन्फ़िगरेशन सहेजें और लोड करें",
+      modelLabel: "मॉडल",
+      methodLabel: "विधि",
+      datasetLabel: "डेटासेट",
+      modelTooltip: "वह बेस मॉडल जिसे आप फ़ाइन-ट्यून करना चाहते हैं।",
+      methodTooltip: "मॉडल को कैसे ट्रेन किया जाता है। LoRA और QLoRA सभी वेट्स के बजाय छोटे अडैप्टर अपडेट करते हैं।",
+      datasetTooltip: "मॉडल को फ़ाइन-ट्यून करने के लिए उपयोग किया जाने वाला ट्रेनिंग डेटा।",
+      hfTokenLabel: "Hugging Face टोकन",
+      hfTokenDescription:
+        "गेटेड या निजी मॉडल और डेटासेट के लिए आवश्यक।",
+      hfTokenGet: "टोकन प्राप्त करें",
+      hfTokenChecking: "टोकन की जाँच हो रही है…",
+      modelPickerDescription:
+        "Hugging Face पर खोजें या इस डिवाइस पर पहले से मौजूद ट्रेनिंग योग्य मॉडल चुनें।",
+      trainingMethod: "ट्रेनिंग विधि",
+      trainingMethodDescription: "{model} को फ़ाइन-ट्यून करने का तरीका चुनें",
+      trainingMethodTooltip:
+        "QLoRA न्यूनतम VRAM उपयोग के लिए 4-बिट क्वांटाइज़ेशन का उपयोग करता है। LoRA 16-बिट वेट का उपयोग करता है, जबकि पूर्ण फ़ाइन-ट्यूनिंग हर वेट को अपडेट करती है।",
+      datasetPickerDescription:
+        "Hugging Face पर खोजें या इस डिवाइस पर पहले से मौजूद डेटासेट चुनें।",
+      uploadDataset: "डेटासेट अपलोड करें",
+      uploadDatasetDescription: "CSV, JSONL, JSON और Parquet समर्थित हैं।",
+      chooseFile: "फ़ाइल चुनें",
+      format: "फ़ॉर्मैट",
+      autoDetect: "स्वतः पहचान",
+      uploadLocalLabel: "या कोई स्थानीय फ़ाइल अपलोड करें",
+      sourceBrowse: "ब्राउज़ करें",
+      releaseToUpload: "अपलोड करने के लिए छोड़ें",
+      loadYaml: "YAML लोड करें",
+      saveYaml: "YAML सहेजें",
+      resetDefaults: "डिफ़ॉल्ट पर रीसेट करें",
+      cachedModelGoneTitle: "कैश किया गया मॉडल अब उपलब्ध नहीं है",
+      cachedModelGoneDescription:
+        "मॉडल फ़ाइलें अब इस डिवाइस पर नहीं हैं, इसलिए ट्रेनिंग उन्हें दोबारा डाउनलोड करेगी।",
+      cachedDatasetGoneTitle: "कैश किया गया डेटासेट अब उपलब्ध नहीं है",
+      cachedDatasetGoneDescription:
+        "डेटासेट फ़ाइलें अब इस डिवाइस पर नहीं हैं, इसलिए ट्रेनिंग उन्हें दोबारा डाउनलोड करेगी।",
+    },
+    preview: {
+      title: "रन पूर्वावलोकन",
+      ready: "तैयार",
+      notReady: "तैयार नहीं",
+      modelPending: "मॉडल लंबित",
+      datasetPending: "डेटासेट लंबित",
+      method: "विधि",
+      length: "लंबाई",
+      stepZero: "{count} स्टेप्स",
+      step: "{count} स्टेप",
+      stepTwo: "{count} स्टेप्स",
+      stepFew: "{count} स्टेप्स",
+      stepMany: "{count} स्टेप्स",
+      steps: "{count} स्टेप्स",
+      epochZero: "{count} एपॉक",
+      epoch: "{count} एपॉक",
+      epochTwo: "{count} एपॉक",
+      epochFew: "{count} एपॉक",
+      epochMany: "{count} एपॉक",
+      epochs: "{count} एपॉक",
+      batch: "बैच",
+      context: "कॉन्टेक्स्ट",
+      lr: "LR",
+      hardware: "हार्डवेयर",
+      noGpu: "कोई GPU नहीं मिला",
+      hfToken: "HF टोकन",
+      saved: "सहेजा गया",
+      notSet: "सेट नहीं",
+      files: "फ़ाइलें",
+      model: "मॉडल",
+      dataset: "डेटासेट",
+      downloadsOnStart: "शुरू होने पर डाउनलोड होगा",
+      continuesOnStart: "शुरू होने पर जारी रहेगा",
+      noticeModelDownload:
+        "यह मॉडल अभी इस डिवाइस पर नहीं है। ट्रेनिंग इसे अपने आप डाउनलोड करेगी।",
+      noticeModelPartial:
+        "ट्रेनिंग मॉडल लोड करने से पहले उसका अधूरा डाउनलोड पूरा करेगी।",
+      noticeDatasetDownload:
+        "यह डेटासेट अभी इस डिवाइस पर नहीं है। ट्रेनिंग इसे अपने आप डाउनलोड करेगी।",
+      noticeDatasetPartial:
+        "ट्रेनिंग डेटासेट पढ़ने से पहले उसका अधूरा डाउनलोड पूरा करेगी।",
+      advancedSettings: "उन्नत सेटिंग्स",
+      defaultAdvancedSettings: "डिफ़ॉल्ट",
+      nonDefaultAdvancedSettings: "{count} गैर-डिफ़ॉल्ट",
+    },
+    datasetPicker: {
+      noun: "डेटासेट",
+      selectDataset: "डेटासेट चुनें",
+      hubPlaceholder: "Hugging Face डेटासेट खोजें...",
+      devicePlaceholder: "स्थानीय डेटासेट खोजें...",
+      useAsHubDataset: "Hugging Face डेटासेट के रूप में उपयोग करें",
+      hfCacheLabel: "HF कैश",
+      scanningLocal: "इस डिवाइस पर डेटासेट स्कैन हो रहे हैं…",
+      couldntScan: "स्थानीय डेटासेट स्कैन नहीं किए जा सके",
+      someLocationsUnscanned:
+        "कुछ डेटासेट स्थान स्कैन नहीं किए जा सके।",
+      noLocalDatasets:
+        "इस डिवाइस पर अभी कुछ नहीं है। Hub से डेटासेट डाउनलोड करें, रेसिपी में बनाएं, या कोई फ़ाइल अपलोड करें।",
+      openDataRecipes: "डेटा रेसिपी खोलें",
+      searchingHub: "Hugging Face पर खोजा जा रहा है…",
+      noDatasetsFound: "कोई डेटासेट नहीं मिला।",
+      tokenRejectedTitle: "Hugging Face टोकन अस्वीकार किया गया",
+      tokenRejectedBody:
+        "सेटिंग्स → सामान्य में अपना टोकन अपडेट करें, फिर पुनः प्रयास करें।",
+      hubUnreachable: "Hugging Face तक नहीं पहुंच सके",
+      cantUseDataset: "डेटासेट का उपयोग नहीं किया जा सकता",
+      reasonInvalidHubId:
+        "एक मान्य Hugging Face डेटासेट ID दर्ज करें: रेपो या मालिक/रेपो, जिसमें केवल अक्षर, अंक, ., _ या - हों (हर भाग में अधिकतम 96 वर्ण)।",
+      sourceRecipe: "रेसिपी",
+      sourceUpload: "अपलोड",
+      sourceLocal: "स्थानीय",
+    },
+    modelPicker: {
+      noun: "मॉडल",
+      selectModel: "मॉडल चुनें",
+      hubPlaceholder: "Hugging Face ID खोजें या पेस्ट करें...",
+      devicePlaceholder: "स्थानीय मॉडल खोजें या फ़ोल्डर पथ पेस्ट करें...",
+      useAsHubModel: "Hugging Face मॉडल के रूप में उपयोग करें",
+      useAsLocalPath: "स्थानीय पथ के रूप में उपयोग करें",
+      hfCacheLabel: "HF कैश",
+      scanningLocal: "स्थानीय मॉडल स्कैन हो रहे हैं…",
+      couldntScan: "स्थानीय मॉडल स्कैन नहीं किए जा सके",
+      someLocationsUnscanned: "कुछ स्थानीय स्थान स्कैन नहीं किए जा सके।",
+      noLocalModels: "कोई स्थानीय मॉडल नहीं मिला।",
+      noLocalModelsHint:
+        "ऊपर फ़ोल्डर पथ पेस्ट करें या Hugging Face पर जाएं।",
+      searchingHub: "Hugging Face पर खोजा जा रहा है…",
+      noModelsFound: "कोई मॉडल नहीं मिला।",
+      tokenRejectedTitle: "Hugging Face टोकन अस्वीकार किया गया",
+      tokenRejectedBody:
+        "सेटिंग्स → सामान्य में अपना टोकन अपडेट करें, फिर पुनः प्रयास करें।",
+      hubUnreachable: "Hugging Face तक नहीं पहुंच सके",
+      cantUseModel: "मॉडल को ट्रेनिंग के लिए उपयोग नहीं कर सकते",
+      reasonTypeMismatch:
+        "यह मॉडल पिछले चरण में चुने गए प्रशिक्षण प्रकार से मेल नहीं खाता।",
+      reasonEmptyId: "मॉडल ID या स्थानीय मॉडल पथ दर्ज करें।",
+      reasonInvalidHubId:
+        "एक मान्य Hugging Face मॉडल ID दर्ज करें: रेपो या मालिक/रेपो, जिसमें केवल अक्षर, अंक, ., _ या - हों (हर भाग में अधिकतम 96 वर्ण)।",
+      reasonGguf: "GGUF मॉडल ट्रेनिंग के लिए उपयोग नहीं किए जा सकते।",
+      reasonAdapter:
+        "एडेप्टर आउटपुट को बेस ट्रेनिंग मॉडल के रूप में उपयोग नहीं किया जा सकता।",
+      reasonNotTrainable:
+        "इस डिवाइस पर मौजूद मॉडल को ट्रेन नहीं किया जा सकता।",
+      reasonUnsupportedFormat:
+        "यह मॉडल फ़ॉर्मेट ट्रेनिंग के लिए समर्थित नहीं है।",
+      vramNeeds: "लगभग {est}GB VRAM चाहिए (GPU: {total}GB)",
+      vramTight: "लगभग {est}GB VRAM ({total}GB पर बमुश्किल फिट)",
+      vramApprox: "लगभग {est}GB VRAM",
+      sourceModelsFolder: "मॉडल फ़ोल्डर",
+      sourceHfCache: "HF कैश",
+      sourceLmStudio: "LM Studio",
+      sourceOllama: "Ollama",
+      sourceCustomFolder: "कस्टम फ़ोल्डर",
+      sourceLocalModel: "स्थानीय मॉडल",
+      vramOomBadge: "OOM",
+      vramTightBadge: "कम जगह",
+    },
+    methods: {
+      qlora: {
+        label: "QLoRA",
+        hint: "4-बिट क्वांटाइज़ेशन। सबसे कम VRAM और सबसे तेज़ शुरुआत।",
+        note: "4-बिट",
+      },
+      lora: {
+        label: "LoRA",
+        hint: "16-बिट एडेप्टर। गुणवत्ता और मेमोरी का संतुलन।",
+        note: "16-बिट",
+      },
+      full: {
+        label: "फुल फ़ाइन-ट्यून",
+        hint: "सभी वेट्स को ट्रेन करता है। सर्वोत्तम गुणवत्ता, सबसे अधिक VRAM की आवश्यकता।",
+        note: "fp16",
+      },
+      cpt: {
+        label: "निरंतर प्री-ट्रेनिंग",
+        hint: "नए डोमेन या भाषाओं के लिए निरंतर प्री-ट्रेनिंग।",
+        note: "निरंतर",
+      },
+    },
     subtitles: {
       configure: "कॉन्फ़िगर करें और ट्रेनिंग शुरू करें",
       trainingInProgress: "ट्रेनिंग जारी है",
@@ -1155,64 +1379,29 @@ export const hi = {
       checkingDataset: "डेटासेट जांचा जा रहा है...",
       trainingConfig: "ट्रेनिंग कॉन्फ़िग",
     },
-    model: {
-      title: "मॉडल",
-      description: "बेस मॉडल और ट्रेनिंग विधि चुनें",
-      fasterTrainingBadge: "2x तेज़ ट्रेनिंग",
-      baseModel: "बेस मॉडल",
-      localModel: "स्थानीय मॉडल",
-      localModelTooltip:
-        "स्थानीय रूप से डाउनलोड किए गए मॉडल या कस्टम HF रेपो का पथ।",
-      scanningLocalAndCachedModels: "स्थानीय और कैश किए गए मॉडल स्कैन हो रहे हैं...",
-      scanning: "स्कैन हो रहा है...",
-      scanningLocalModels: "स्थानीय मॉडल स्कैन हो रहे हैं...",
-      noLocalModelsFound: "कोई स्थानीय मॉडल नहीं मिला",
-      noLocalModelsFoundManual: "कोई स्थानीय मॉडल नहीं मिला। पथ मैन्युअल रूप से दर्ज करें।",
-      failedToLoadLocalModels: "स्थानीय मॉडल लोड करने में विफल",
-      hfCache: "HF कैश",
-      customFolders: "कस्टम फ़ोल्डर",
-      localDir: "स्थानीय dir",
-      huggingFaceModel: "Hugging Face मॉडल",
-      huggingFaceModelTooltip:
-        "Hugging Face मॉडल खोजें या हमारी अनुशंसित सूची से चुनें।",
-      searchModels: "मॉडल खोजें...",
-      searching: "खोजा जा रहा है...",
-      noModelsFound: "कोई मॉडल नहीं मिला",
-      needsVram: "~{vram}GB VRAM चाहिए (GPU: {gpu}GB)",
-      tightVram: "~{vram}GB VRAM ({gpu}GB पर बमुश्किल फिट)",
-      vramEstimate: "लगभग {vram}GB VRAM",
-      method: "विधि",
-      methodTooltip:
-        "QLoRA सबसे कम VRAM के लिए 4-बिट क्वांटाइज़ेशन का उपयोग करता है। LoRA 16-बिट का उपयोग करता है। Full सभी वेट्स को अपडेट करता है। CPT (Continued Pretraining) चैट फ़ॉर्मेटिंग के बिना मॉडल को नए डोमेन के अनुकूल बनाने के लिए कच्चे टेक्स्ट पर ट्रेन करता है।",
-      readMore: "और पढ़ें",
-      fullFineTune: "फुल फ़ाइन-ट्यून",
-      checkingToken: "token जांचा जा रहा है...",
-      getOrUpdateToken: "token प्राप्त या अपडेट करें",
-      huggingFaceTokenOptional: "Hugging Face Token (वैकल्पिक)",
-      continuedPretraining: "निरंतर प्री-ट्रेनिंग",
-      localModels: "स्थानीय मॉडल",
-      localModelsFound: "{count} स्थानीय/कैश किए गए मॉडल मिले",
-      loadingLocalModels: "स्थानीय मॉडल लोड हो रहे हैं...",
-    },
     dataset: {
-      title: "डेटासेट",
-      description: "ट्रेनिंग डेटा चुनें या अपलोड करें",
+      selectors: {
+        subset: "सबसेट",
+        subsetTooltip: "उपयोग करने के लिए डेटासेट का सबसेट (कॉन्फ़िगरेशन) चुनें।",
+        trainSplit: "ट्रेनिंग स्प्लिट",
+        trainSplitTooltip: "ट्रेनिंग के लिए उपयोग होने वाला स्प्लिट चुनें।",
+        evaluationSplit: "मूल्यांकन स्प्लिट",
+        evaluationSplitTooltip:
+          "मूल्यांकन के लिए उपयोग होने वाला स्प्लिट चुनें। कोई नहीं का अर्थ है कि ट्रेनिंग के दौरान मूल्यांकन नहीं होगा।",
+        selectSubset: "सबसेट चुनें...",
+        selectSplit: "स्प्लिट चुनें...",
+        none: "कोई नहीं",
+        loading: "डेटासेट कॉन्फ़िगरेशन और स्प्लिट लोड हो रहे हैं...",
+        manualTitle: "डेटासेट विकल्प मैन्युअल रूप से दर्ज करें",
+        manualDescription:
+          "उपयोग करने के लिए सटीक Hugging Face कॉन्फ़िगरेशन और स्प्लिट नाम दर्ज करें।",
+        manualSubsetPlaceholder: "वैकल्पिक कॉन्फ़िगरेशन नाम",
+        manualRequired: "ट्रेनिंग स्प्लिट आवश्यक है।",
+        manualTooLong: "128 या उससे कम वर्णों का उपयोग करें।",
+        manualInvalid: "इस मान में असमर्थित वर्ण हैं।",
+      },
       source: "डेटासेट स्रोत",
-      chooseDataset: "डेटासेट चुनें",
-      chooseDatasetTooltip:
-        "Hugging Face और स्थानीय recipe आउटपुट के बीच स्विच करने के लिए पॉपअप टैब का उपयोग करें।",
-      localTab: "स्थानीय",
-      searchHuggingFaceDatasets: "Hugging Face डेटासेट खोजें...",
-      searchLocalDatasets: "स्थानीय डेटासेट खोजें...",
-      searching: "खोजा जा रहा है...",
-      noDatasetsFound: "कोई डेटासेट नहीं मिला",
-      loadingLocalDatasets: "स्थानीय डेटासेट लोड हो रहे हैं...",
-      failedToLoadLocalDatasets: "स्थानीय डेटासेट लोड करने में विफल।",
-      noLocalDatasetsYet: "अभी तक कोई स्थानीय डेटासेट नहीं।",
-      noLocalDatasetsMatchSearch: "कोई स्थानीय डेटासेट खोज से मेल नहीं खाता।",
-      openDataRecipes: "Data Recipes खोलें",
-      browsingSource: "{browsing} ब्राउज़ कर रहे हैं। वर्तमान चयन {current} रहता है।",
-      localDatasets: "स्थानीय डेटासेट",
+      sourceAriaLabel: "डेटासेट स्रोत",
       localDataset: "स्थानीय डेटासेट",
       localDatasetRows: " / {count} पंक्तियां",
       huggingFaceDataset: "Hugging Face डेटासेट",
@@ -1224,14 +1413,72 @@ export const hi = {
       updated: "अपडेट किया गया",
       evalDataset: "Eval डेटासेट",
       uploading: "अपलोड हो रहा है...",
-      upload: "अपलोड करें",
       uploadEvalFile: "eval फ़ाइल अपलोड करें",
+      fileTooLarge: "फ़ाइल बहुत बड़ी है",
+      fileTooLargeDescription:
+        "{file} का आकार {size} है। ट्रेनिंग अपलोड की अधिकतम सीमा {limit} है।",
+      uploadLimitsHint:
+        "CSV, JSONL, JSON, Parquet · अधिकतम {limit}; PDF/DOCX/TXT → Learning Recipes",
+      documentRedirect: {
+        title: "इस फ़ाइल को पहले रूपांतरित करना होगा",
+        genericFile: "यह फ़ाइल",
+        description:
+          "{file} स्रोत सामग्री है, ट्रेनिंग के लिए तैयार डेटासेट नहीं। दस्तावेज़ को डेटासेट में बदलने के लिए Data Recipes का उपयोग करें, फिर फ़ाइन-ट्यूनिंग के लिए यहां लौटें।",
+        nextStepTitle: "अगला सुझाया गया कदम",
+        nextStepDescription:
+          "Learning Recipes खोलें और PDF grounded QA जैसी दस्तावेज़-आधारित रेसिपी से शुरू करें।",
+        openAction: "Learning Recipes खोलें",
+      },
       evalDatasetDescription:
         "वैकल्पिक। यदि प्रदान नहीं किया गया, तो ट्रेनिंग डेटा से एक छोटा हिस्सा अलग किया जाएगा।",
       advanced: "उन्नत",
       targetFormat: "लक्ष्य प्रारूप",
       targetFormatTooltip:
         "आपके ट्रेनिंग डेटा का प्रारूप। ऑटो-डिटेक्ट अधिकांश डेटासेट के लिए काम करता है।",
+      streamingInfoAriaLabel: "डेटासेट स्ट्रीमिंग की जानकारी",
+      streaming: {
+        label: "स्ट्रीमिंग चालू करें",
+        description:
+          "Hugging Face टेक्स्ट डेटासेट को डाउनलोड करने के बजाय स्ट्रीम करें।",
+        unavailable: "स्ट्रीमिंग उपलब्ध नहीं है। इसे चालू करने के लिए:",
+        completionsUnavailable:
+          "डेटासेट स्ट्रीमिंग चालू होने पर उपलब्ध नहीं है।",
+        blockers: {
+          source:
+            "Hugging Face डेटासेट का उपयोग करें (स्थानीय अपलोड या S3 स्रोत का नहीं)।",
+          maxSteps:
+            "अधिकतम स्टेप्स > 0 सेट करें — स्ट्रीमिंग डेटासेट की लंबाई ज्ञात नहीं होती।",
+          trainOnCompletions: '"केवल असिस्टेंट completions" बंद करें।',
+          evalSplit:
+            "एक अलग eval स्प्लिट चुनें — मूल्यांकन चालू है, लेकिन अलग eval स्प्लिट सेट नहीं है।",
+          visionModel: "विज़न मॉडल स्ट्रीमिंग का समर्थन नहीं करते।",
+          audioModel: "ऑडियो मॉडल स्ट्रीमिंग का समर्थन नहीं करते।",
+          embeddingModel:
+            "एम्बेडिंग मॉडल स्ट्रीमिंग का समर्थन नहीं करते (ट्रेनिंग के लिए पूरा डेटासेट चाहिए)।",
+          imageDataset:
+            "यह डेटासेट इमेज वाला लगता है, जिसे स्ट्रीम नहीं किया जा सकता।",
+          audioDataset:
+            "यह डेटासेट ऑडियो वाला लगता है, जिसे स्ट्रीम नहीं किया जा सकता।",
+          appleSilicon:
+            "Apple Silicon (MLX) पर अभी स्ट्रीमिंग समर्थित नहीं है।",
+        },
+        options: {
+          trainOnCompletions: "केवल असिस्टेंट completions",
+          evaluation: "मूल्यांकन (एक अलग eval स्प्लिट चाहिए)",
+        },
+        notifications: {
+          turnedOffMaxSteps:
+            "स्ट्रीमिंग बंद की गई: स्ट्रीमिंग के लिए अधिकतम स्टेप्स की निश्चित संख्या > 0 चाहिए।",
+          adjusted:
+            "स्ट्रीमिंग के लिए सेटिंग्स बदली गईं। असंगत विकल्प बंद किए गए: {options}।",
+          needsMaxSteps:
+            "स्ट्रीमिंग के लिए अधिकतम स्टेप्स की निश्चित संख्या चाहिए (स्ट्रीमिंग डेटासेट की लंबाई ज्ञात नहीं होती)। पहले अधिकतम स्टेप्स > 0 सेट करें।",
+          enabledAdjusted:
+            "स्ट्रीमिंग चालू की गई। असंगत विकल्प बंद किए गए: {options}।",
+          disabledForDetectedModality:
+            "स्ट्रीमिंग बंद कर दी गई क्योंकि इमेज और ऑडियो डेटासेट को पूरा डाउनलोड करना आवश्यक है। सेटिंग की समीक्षा करें, फिर ट्रेनिंग दोबारा शुरू करें।",
+        },
+      },
       auto: "स्वतः",
       rawText: "कच्चा टेक्स्ट",
       trainSplitStart: "ट्रेन स्प्लिट प्रारंभ",
@@ -1243,6 +1490,9 @@ export const hi = {
       endPlaceholder: "समाप्त",
       clear: "साफ़ करें",
       dropFileOrClick: "यहां 1 फ़ाइल छोड़ें या अपलोड करने के लिए क्लिक करें",
+      uploadDetails: "अपलोड विवरण",
+      uploadDetailsTooltip:
+        "प्रति फ़ाइल अधिकतम {limit}। PDF, DOCX और TXT ट्रेनिंग के लिए तैयार डेटासेट नहीं हैं, इसलिए पहले उन्हें रेसिपी में बदलें।",
       viewDataset: "डेटासेट देखें",
       uploadFailed: "अपलोड विफल",
       unknownError: "अज्ञात त्रुटि",
@@ -1253,9 +1503,27 @@ export const hi = {
       uploadOneFileAtATime: "एक बार में एक फ़ाइल अपलोड करें",
       uploadSingleFileDescription:
         "ट्रेनिंग डेटासेट अपलोड एक ही फ़ाइल स्वीकार करता है।",
-      checkingToken: "token जांचा जा रहा है...",
-      getOrUpdateToken: "token प्राप्त या अपडेट करें",
       preview: "डेटासेट का पूर्वावलोकन करें",
+      previewLoadingHuggingFace:
+        "Hugging Face से डेटासेट पूर्वावलोकन प्राप्त किया जा रहा है...",
+      previewLoading: "पूर्वावलोकन लोड हो रहा है...",
+      mappingRequirements: {
+        audioAndText: "ऑडियो और टेक्स्ट",
+        imageAndText: "इमेज और टेक्स्ट",
+        instructionAndOutput: "निर्देश और आउटपुट",
+        humanAndGpt: "ह्यूमन और GPT",
+        userAndAssistant: "यूज़र और असिस्टेंट",
+      },
+      mappingStatus: {
+        heuristicTitle: "ह्यूरिस्टिक से पहचानी गई मैपिंग",
+        readyTitle: "मैपिंग तैयार है",
+        requiredTitle: "डेटासेट कॉलम मैप करें",
+        heuristicDescription:
+          "हमने ह्यूरिस्टिक का उपयोग करके नीचे दी गई कॉलम मैपिंग अपने आप पहचानी है। कॉलम हेडर के ड्रॉपडाउन से इसकी समीक्षा और बदलाव करें, या बेहतर मैपिंग के लिए AI सहायता का उपयोग करें।",
+        readyDescription: "सब ठीक है। हम इस डेटासेट को अपने आप बदल देंगे।",
+        requiredDescription:
+          "हेडर के ड्रॉपडाउन का उपयोग करके कॉलम को भूमिकाएँ दें। कम से कम {required} असाइन करें।",
+      },
       split: "स्प्लिट",
       subset: "उपसमूह",
       s3: {
@@ -1285,8 +1553,11 @@ export const hi = {
       },
     },
     params: {
-      title: "पैरामीटर",
-      description: "ट्रेनिंग हाइपरपैरामीटर कॉन्फ़िगर करें",
+      mode: {
+        simple: "सरल",
+        advanced: "उन्नत",
+        ariaLabel: "पैरामीटर मोड",
+      },
       projectName: "प्रोजेक्ट नाम",
       optional: "वैकल्पिक",
       projectNameDescription:
@@ -1299,13 +1570,9 @@ export const hi = {
       useEpochs: "एपॉक का उपयोग करें",
       maxStepsTooltip: "कुल ऑप्टिमाइज़र स्टेप्स को ओवरराइड करें।",
       epochsTooltip: "डेटासेट पर पूर्ण पास की संख्या।",
-      epochsDescription: "प्रत्येक एपॉक आपके डेटासेट पर एक पूर्ण पास है।",
-      maxStepsDescription:
-        "ट्रेनिंग को ऑप्टिमाइज़र स्टेप्स की एक निश्चित संख्या तक सीमित करता है।",
       contextLength: "कॉन्टेक्स्ट लंबाई",
       contextLengthTooltip: "प्रति ट्रेनिंग सैंपल अधिकतम टोकन संख्या।",
       customContextLength: "एक कस्टम मान दर्ज करें",
-      contextLengthDescription: "ट्रेनिंग सैंपल के लिए अधिकतम अनुक्रम लंबाई",
       learningRate: "लर्निंग रेट",
       learningRateTooltip:
         "वेट अपडेट के लिए स्टेप साइज़। कम मान धीमी लेकिन अधिक स्थिर ट्रेनिंग करते हैं।",
@@ -1314,8 +1581,6 @@ export const hi = {
       embeddingLearningRate: "एम्बेडिंग लर्निंग रेट",
       embeddingLearningRateTooltip:
         "केवल तब उपयोग किया जाता है जब CPT embed_tokens को ट्रेन कर रहा हो। एम्बेडिंग LoRA वेट्स की तुलना में अधिक आसानी से अस्थिर हो जाती हैं, इसलिए उन्हें आमतौर पर एक छोटी LR की आवश्यकता होती है। lr/10 उपयोग करने के लिए खाली छोड़ें; सामान्य कार्यशील सीमा मुख्य LR से 2x-10x छोटी है। इसे केवल तभी बढ़ाएं जब शब्दावली या डोमेन-टोकन अनुकूलन बहुत धीमा हो।",
-      embeddingLearningRateDescription:
-        "lr/10 उपयोग करने के लिए खाली छोड़ें (अनुशंसित)। सामान्य सीमा मुख्य लर्निंग रेट से 2x-10x छोटी है।",
       rank: "Rank",
       rankTooltip:
         "लो-रैंक मैट्रिक्स का आयाम। अधिक = अधिक क्षमता।",
@@ -1334,12 +1599,15 @@ export const hi = {
       stableRank: "स्थिर Rank",
       memoryEfficient: "मेमोरी कुशल",
       weightDecomposed: "भार-विघटित",
+      notSupportedAppleSilicon: "Apple Silicon पर समर्थित नहीं",
       optimization: "ऑप्टिमाइज़ेशन",
       schedule: "शेड्यूल",
       memory: "मेमोरी",
       optimizer: "ऑप्टिमाइज़र",
       optimizerTooltip:
         "ऑप्टिमाइज़ेशन एल्गोरिदम। 8-बिट वेरिएंट मेमोरी उपयोग कम करते हैं। विज़न मॉडल के लिए Fused अनुशंसित है।",
+      optimizerTooltipMlx:
+        "ऑप्टिमाइज़ेशन एल्गोरिदम। AdamW डिफ़ॉल्ट है। Lion कम मेमोरी उपयोग करता है, लेकिन आम तौर पर कम लर्निंग रेट की आवश्यकता होती है।",
       lrScheduler: "LR शेड्यूलर",
       lrSchedulerTooltip:
         "ट्रेनिंग के दौरान लर्निंग रेट कैसे बदलता है। Linear स्थिर रूप से घटता है; cosine एक वक्र में घटता है।",
@@ -1381,29 +1649,65 @@ export const hi = {
       enablePacking: "packing सक्षम करें",
       assistantCompletionsOnly: "केवल असिस्टेंट completions",
       readMore: "और पढ़ें",
-      optimizerTooltipMlx:
-        "ऑप्टिमाइज़ेशन एल्गोरिदम। डिफ़ॉल्ट AdamW है। Lion कम मेमोरी लेता है, पर आमतौर पर इसे कम लर्निंग रेट चाहिए।",
     },
     training: {
-      title: "ट्रेनिंग",
-      description: "ट्रेनिंग की निगरानी और नियंत्रण करें",
-      chartNoDataTitle: "अभी तक कोई ट्रेनिंग डेटा नहीं",
-      chartNoDataDescription: "loss प्रगति देखने के लिए ट्रेनिंग शुरू करें",
       startTraining: "ट्रेनिंग शुरू करें",
       starting: "शुरू हो रहा है...",
       loadingModel: "मॉडल लोड हो रहा है...",
       checkingDataset: "डेटासेट जांचा जा रहा है...",
-      configLabel: "ट्रेनिंग कॉन्फ़िग",
-      upload: "अपलोड करें",
+      chooseModel: "मॉडल चुनें",
+      chooseDataset: "डेटासेट चुनें",
+      chooseModelAndDataset: "मॉडल और डेटासेट चुनें",
+      modelUnverified:
+        "इस मॉडल की सेटिंग्स सत्यापित नहीं की जा सकीं। अपना कनेक्शन या Hugging Face टोकन जांचें, फिर पुनः प्रयास करें।",
+      legacyDatasetScriptUnsupported:
+        "यह Hub डेटासेट एक पुराने कस्टम स्क्रिप्ट पर निर्भर है और इस ट्रेनिंग फ़्लो में समर्थित नहीं है।",
+      hfModelAccessDenied:
+        "Hugging Face ने इस मॉडल का एक्सेस अस्वीकार कर दिया। रिपॉज़िटरी एक्सेस वाला मान्य Hugging Face टोकन जोड़ें, आवश्यक एक्सेस शर्तें स्वीकार करें और फिर से कोशिश करें।",
+      hfModelVerificationRateLimited:
+        "Hugging Face मॉडल सत्यापन की दर सीमित है। थोड़ी देर बाद फिर से कोशिश करें।",
+      hfModelVerificationFailed:
+        "Hugging Face मॉडल सत्यापित नहीं किया जा सका। रिपॉज़िटरी ID और अपना एक्सेस टोकन जाँचें।",
+      hfModelMetadataUnavailable:
+        "Hugging Face मॉडल मेटाडेटा अस्थायी रूप से उपलब्ध नहीं है। ट्रेनिंग शुरू करने से पहले फिर से कोशिश करें।",
+      datasetUnverified:
+        "यह सत्यापित नहीं किया जा सका कि डेटासेट इस मॉडल के साथ संगत है। अपना कनेक्शन या Hugging Face टोकन जांचें — ट्रेनिंग शुरू करने पर जांच फिर से की जाएगी।",
+      setupChanged:
+        "जांच के दौरान ट्रेनिंग सेटअप बदल गया। इसकी समीक्षा करें और फिर से ट्रेनिंग शुरू करें।",
+      validation: {
+        s3MultimodalUnsupported:
+          "S3 डेटासेट अभी विज़न या ऑडियो ट्रेनिंग के लिए समर्थित नहीं हैं।",
+        s3BucketRequired: "पहले S3 बकेट का नाम दर्ज करें।",
+        s3CredentialsRequired: "S3 एक्सेस कुंजियाँ दें या IAM रोल सक्षम करें।",
+        modelRequired: "पहले बेस मॉडल चुनें।",
+        learningRatePositive: "शून्य से अधिक लर्निंग रेट दर्ज करें।",
+        embeddingLearningRateRange:
+          "0 से अधिक और 1 से कम एम्बेडिंग लर्निंग रेट दर्ज करें।",
+        hfDatasetRequired: "पहले Hugging Face डेटासेट चुनें।",
+        hfDatasetSplitRequired: "पहले ट्रेनिंग स्प्लिट चुनें या दर्ज करें।",
+        localDatasetRequired: "पहले स्थानीय डेटासेट चुनें।",
+        unsupportedDatasetSource: "असमर्थित डेटासेट स्रोत।",
+      },
+      startFailed: "ट्रेनिंग शुरू करने में विफल",
+      startUnconfirmed:
+        "Unsloth यह पुष्टि नहीं कर सका कि ट्रेनिंग शुरू हुई या नहीं। बैकग्राउंड में स्थिति जांची जा रही है।",
+      stopFailed: "ट्रेनिंग रोकने में विफल",
+      trainingStillActiveTitle: "ट्रेनिंग अभी भी सक्रिय है",
+      stopBeforeConfig: "पहले ट्रेनिंग रोकें, फिर कॉन्फ़िगरेशन पर लौटें।",
+      resumeFailed: "ट्रेनिंग फिर से शुरू करने में विफल",
+      resumeFailedTitle: "ट्रेनिंग फिर से शुरू नहीं की जा सकी",
+      resumeUnavailable:
+        "केवल उन ट्रेनिंग रन को फिर से शुरू किया जा सकता है जिन्हें रोका गया हो या जो त्रुटि के साथ समाप्त हुई हों और जिनका चेकपॉइंट सहेजा गया हो।",
       uploadConfigTooltip: "एक सहेजा गया YAML कॉन्फ़िग लोड करें",
-      save: "सहेजें",
       saveConfigTooltip: "वर्तमान कॉन्फ़िग को YAML के रूप में डाउनलोड करें",
-      reset: "रीसेट करें",
       resetConfigTooltip: "मॉडल डिफ़ॉल्ट पर रीसेट करें",
       configLoaded: "कॉन्फ़िग लोड हुआ",
       failedToLoadConfig: "कॉन्फ़िग लोड करने में विफल",
       invalidYamlFile: "अमान्य YAML फ़ाइल",
+      configTooLarge:
+        "प्रशिक्षण कॉन्फ़िगरेशन फ़ाइल बहुत बड़ी है (अधिकतम 1 MiB)।",
       failedToReadFile: "फ़ाइल पढ़ने में विफल",
+      failedToSaveConfig: "कॉन्फ़िग सहेजने में विफल",
       parametersReset: "पैरामीटर मॉडल डिफ़ॉल्ट पर रीसेट किए गए",
       audioIncompatible:
         "यह मॉडल ऑडियो का समर्थन नहीं करता। एक ऑडियो-सक्षम मॉडल पर स्विच करें या एक गैर-ऑडियो डेटासेट चुनें।",
@@ -1428,6 +1732,20 @@ export const hi = {
     },
     history: {
       title: "इतिहास",
+      filesDeleted: "फ़ाइलें हटा दी गईं",
+      deleteArtifactsLabel: "डिस्क से एडेप्टर फ़ाइलें भी हटाएं",
+      deleteArtifactsDescription:
+        "सहेजे गए एडेप्टर और चेकपॉइंट सहित रन का आउटपुट फ़ोल्डर हटाता है।",
+      deleteArtifactsSharedNote:
+        "कोई अन्य रन इस आउटपुट फ़ोल्डर का उपयोग करता है। फ़ाइलें तब तक रखी जाएंगी जब तक इसका उपयोग करने वाला अंतिम रन हटा नहीं दिया जाता।",
+      artifactsKeptShared:
+        "रन हटा दिया गया। एडेप्टर फ़ाइलें रखी गईं क्योंकि कोई अन्य रन उसी फ़ोल्डर का उपयोग करता है।",
+      deleteArtifactsActiveError:
+        "इन फ़ाइलों का उपयोग जारी ट्रेनिंग रन कर रहा है। इन्हें हटाने से पहले ट्रेनिंग रोकें।",
+      deleteArtifactsFailed:
+        "रन हटा दिया गया, लेकिन उसकी फ़ाइलें नहीं हटाई जा सकीं।",
+      deleteArtifactsRetainedError:
+        "अडैप्टर फ़ाइलें नहीं हटाई जा सकीं, इसलिए ट्रेनिंग रन को इतिहास में रखा गया है।",
       emptyTitle: "अभी तक कोई ट्रेनिंग रन नहीं",
       emptyDescription:
         "अभी तक कोई ट्रेनिंग रन नहीं। कॉन्फ़िगर टैब में अपना पहला ट्रेनिंग रन शुरू करें।",

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   INITIAL_STARTUP_MESSAGE,
+  installProgressMessage,
   SERVER_START_FALLBACK_MS,
   startupMessageFromLog,
 } from "../src/components/tauri/startup-messages.ts";
@@ -25,6 +26,18 @@ test("startup messages follow backend phases without regressing", () => {
     server,
   );
 });
+
+test("installer progress uses friendly staged messages", () => {
+  assert.deepEqual(installProgressMessage(-1), {
+    title: "Getting things ready...",
+    subtitle: "This won’t take long.",
+  });
+  assert.equal(installProgressMessage(2).title, "Preparing your workspace...");
+  assert.equal(installProgressMessage(4).title, "Installing Unsloth...");
+  assert.equal(installProgressMessage(6).title, "Nearly done...");
+  assert.equal(installProgressMessage(999).title, "Nearly done...");
+});
+
 
 test("server fallback delay is three seconds", () => {
   assert.equal(SERVER_START_FALLBACK_MS, 3_000);

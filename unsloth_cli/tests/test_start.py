@@ -3678,6 +3678,104 @@ def test_resolve_model_same_quant_prints_no_switch_warning(monkeypatch, capsys):
     assert "Reusing loaded model: owner/model-GGUF:Q8_0" in out
 
 
+def test_resolve_model_refused_load_reports_survivor(monkeypatch, capsys):
+    models = [{"id": "owner/model-GGUF", "loaded": True}]
+
+    def http_json(
+        method,
+        url,
+        key,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/api/inference/status"):
+            return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
+        assert url.endswith("/v1/models"), url
+        return {"data": models}
+
+    def refuse_load(base, key, model, load, payload):
+        typer.echo("Model load failed: GGUF variant 'NOPE_Q9' not found", err = True)
+        raise typer.Exit(code = 1)
+
+    monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
+    monkeypatch.setattr(start, "_http_json", http_json)
+    monkeypatch.setattr(start, "_load_model_with_progress", refuse_load)
+
+    with pytest.raises(typer.Exit):
+        start._resolve_model(
+            BASE, "key", "owner/model-GGUF", start.LoadOptions(gguf_variant = "NOPE_Q9")
+        )
+
+    captured = capsys.readouterr()
+    assert "This unloads the current model" in captured.out
+    assert "Nothing was unloaded; owner/model-GGUF is still serving." in captured.err
+
+
+def test_resolve_model_interrupt_skips_survivor_probe(monkeypatch, capsys):
+    models = [{"id": "owner/model-GGUF", "loaded": True}]
+    probes = []
+
+    def http_json(
+        method,
+        url,
+        key,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
+
+    def interrupted_load(base, key, model, load, payload):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
+    monkeypatch.setattr(start, "_http_json", http_json)
+    monkeypatch.setattr(start, "_load_model_with_progress", interrupted_load)
+    monkeypatch.setattr(
+        start, "_model_still_loaded", lambda base, key, model_id: probes.append(model_id) or True
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        start._resolve_model(
+            BASE, "key", "owner/model-GGUF", start.LoadOptions(gguf_variant = "Q8_0")
+        )
+
+    assert probes == []
+    assert "Nothing was unloaded" not in capsys.readouterr().err
+
+
+def test_resolve_model_failed_load_stays_quiet_when_model_gone(monkeypatch, capsys):
+    models = [{"id": "owner/model-GGUF", "loaded": True}]
+
+    def http_json(
+        method,
+        url,
+        key,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/api/inference/status"):
+            return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
+        assert url.endswith("/v1/models"), url
+        return {"data": []}
+
+    def failing_load(base, key, model, load, payload):
+        raise typer.Exit(code = 1)
+
+    monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
+    monkeypatch.setattr(start, "_http_json", http_json)
+    monkeypatch.setattr(start, "_load_model_with_progress", failing_load)
+
+    with pytest.raises(typer.Exit):
+        start._resolve_model(
+            BASE, "key", "owner/model-GGUF", start.LoadOptions(gguf_variant = "Q8_0")
+        )
+
+    assert "Nothing was unloaded" not in capsys.readouterr().err
+
+
 def test_auto_serves_when_no_server_then_keeps_server(fake_studio, monkeypatch):
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     started = {}

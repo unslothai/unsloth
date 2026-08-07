@@ -7,10 +7,10 @@ import threading
 from typing import Any, Literal, Optional
 from urllib.parse import unquote, urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from auth.storage import rotate_preview_link_secret
 from core.rag.config import default_gguf_repo, effective_gguf_repo
 from loggers import get_logger
@@ -69,6 +69,13 @@ from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
     get_preview_sharing_enabled,
     set_preview_sharing_enabled,
+)
+from utils.remote_access_settings import (
+    DEFAULT_REMOTE_ACCESS_AUTO_START,
+    remote_access_status,
+    set_remote_access_auto_start,
+    start_remote_access,
+    stop_remote_access,
 )
 from utils.embedding_model_settings import (
     MAX_EMBEDDING_MODEL_LENGTH,
@@ -198,6 +205,8 @@ class ModelOverridePayload(BaseModel):
     max_seq_length: Optional[int] = Field(default = None, ge = 1, le = 1048576)
     custom_context_length: Optional[int] = Field(default = None, ge = 1, le = 1048576)
     kv_cache_dtype: Optional[str] = Field(default = None, max_length = 32)
+    # A discrete set, enforced by the normalizer; these bounds only block absurd values.
+    mlx_kv_bits: Optional[int] = Field(default = None, ge = 2, le = 8)
     speculative_type: Optional[str] = Field(default = None, max_length = 32)
     spec_draft_n_max: Optional[int] = Field(default = None, ge = 1, le = 16)
     # Parallel decode slots (llama-server --parallel), GGUF-only; None follows the server default.
@@ -715,6 +724,7 @@ def update_openai_auto_switch_override(
                 max_seq_length = payload.max_seq_length,
                 custom_context_length = payload.custom_context_length,
                 kv_cache_dtype = payload.kv_cache_dtype,
+                mlx_kv_bits = payload.mlx_kv_bits,
                 speculative_type = payload.speculative_type,
                 spec_draft_n_max = payload.spec_draft_n_max,
                 n_parallel = payload.n_parallel,
@@ -1034,6 +1044,98 @@ class PreviewSharingPayload(BaseModel):
 class PreviewSharingResponse(BaseModel):
     enabled: bool
     default_enabled: bool = DEFAULT_PREVIEW_SHARING_ENABLED
+
+
+class RemoteAccessAutoStartPayload(BaseModel):
+    enabled: StrictBool
+
+
+class RemoteAccessResponse(BaseModel):
+    state: Literal["off", "starting", "online", "stopping", "error"]
+    url: Optional[str] = None
+    error: Optional[str] = None
+    auto_start: bool
+    default_auto_start: bool = DEFAULT_REMOTE_ACCESS_AUTO_START
+    available: bool
+    managed_by: Optional[Literal["launch", "settings", "colab"]] = None
+    can_start: bool
+    can_stop: bool
+    block_reason: Optional[str] = None
+    password_pending: bool = False
+    streaming_supported: bool = True
+
+
+def _require_ui_session(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
+    if via_api_key:
+        raise HTTPException(status_code = 403, detail = "Remote access requires a UI session.")
+
+
+def _remote_access_response(request: Request) -> RemoteAccessResponse:
+    return RemoteAccessResponse(**remote_access_status(request.app.state))
+
+
+@router.get("/remote-access", response_model = RemoteAccessResponse)
+def get_remote_access(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> RemoteAccessResponse:
+    return _remote_access_response(request)
+
+
+@router.post("/remote-access/start", response_model = RemoteAccessResponse)
+def start_remote_access_route(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> RemoteAccessResponse:
+    try:
+        response = RemoteAccessResponse(**start_remote_access(request.app.state))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info("settings.remote_access_start_requested subject=%s", current_subject)
+    return response
+
+
+@router.post("/remote-access/stop", response_model = RemoteAccessResponse)
+def stop_remote_access_route(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> RemoteAccessResponse:
+    try:
+        status = stop_remote_access(request.app.state)
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    status.update(
+        state = "off",
+        url = None,
+        error = None,
+        managed_by = None,
+        can_start = False,
+        can_stop = False,
+    )
+    response = RemoteAccessResponse(**status)
+    logger.info("settings.remote_access_stop_requested subject=%s", current_subject)
+    return response
+
+
+@router.put("/remote-access/auto-start", response_model = RemoteAccessResponse)
+def update_remote_access_auto_start(
+    request: Request,
+    payload: RemoteAccessAutoStartPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> RemoteAccessResponse:
+    if bool(getattr(request.app.state, "remote_access_is_colab", False)):
+        raise HTTPException(status_code = 409, detail = "colab")
+    set_remote_access_auto_start(payload.enabled)
+    logger.info(
+        "settings.remote_access_auto_start_updated subject=%s enabled=%s",
+        current_subject,
+        payload.enabled,
+    )
+    return _remote_access_response(request)
 
 
 @router.get("/preview-sharing", response_model = PreviewSharingResponse)
