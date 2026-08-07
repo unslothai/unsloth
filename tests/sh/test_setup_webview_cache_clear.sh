@@ -3,10 +3,10 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Unit tests for _clear_webview_caches() from studio/setup.sh.
 #
-# The WebView caches keyed by the app bundle id (ai.unsloth.studio) hold copies
-# of the previous frontend, so an install/update must clear them or the app can
-# keep rendering old styles. Clearing must be cache-only: LocalStorage,
-# IndexedDB, app data, and unrelated apps' caches stay intact.
+# WebView caches keyed by the bundle id (ai.unsloth.studio) hold copies of the
+# previous frontend, so an install/update must clear them or the app keeps
+# rendering old styles. Cache-only: LocalStorage, IndexedDB, app data and
+# unrelated apps' caches stay intact.
 #
 # Follows the extract-via-sed pattern of test_uninstall_shared_icon.sh; uname
 # is overridden per test with a shell function to select the OS branch.
@@ -87,9 +87,9 @@ assert_gone    "linux: XDG_DATA_HOME WebKitCache removed"    "$XDG/data/$BID/Web
 assert_present "linux: XDG_DATA_HOME localstorage kept"      "$XDG/data/$BID/localstorage"
 assert_present "linux: default data dir kept under override" "$H/.local/share/$BID/WebKitCache"
 
-# ── 3a. A relative XDG_DATA_HOME is invalid per the XDG spec, so dirs (and so
-# Tauri) ignores it. Following it would rm -rf under the installer's own cwd and
-# leave the cache Tauri actually uses in place ──
+# ── 3a. A relative XDG_DATA_HOME is invalid per the XDG spec, so dirs (and Tauri)
+# ignores it. Following it would rm -rf under the installer's cwd and leave the
+# cache Tauri actually uses in place ──
 H=$(new_home)
 W=$(mktemp -d "$_TMP_ROOT/work.XXXXXX")
 mkdir -p "$W/reldata/$BID/WebKitCache" "$H/.local/share/$BID/WebKitCache"
@@ -121,9 +121,8 @@ uname() { echo SunOS; }
 HOME="$H" _clear_webview_caches
 assert_present "unknown OS: nothing removed" "$H/Library/Caches/$BID"
 
-# ── 6. No HOME is a no-op, not a delete under /Library or /.cache. Unset, not
-# empty: `set -u` fires on unset only, and the empty case alone passes even with
-# the guard deleted, since the paths just miss. ──
+# ── 6. No HOME is a no-op, not a delete under /Library or /.cache. Unset, not empty:
+# `set -u` fires on unset only, and the empty case passes even without the guard ──
 uname() { echo Darwin; }
 _wvc_rc=0
 # `|| _wvc_rc=$?` keeps the abort we are testing for off `set -e`'s exit path.
@@ -136,10 +135,9 @@ fi
 
 # ── 6b. The clear must invalidate the app's version stamp. ──
 # The app skips its own clear whenever .webview-cache-cleared matches the running
-# version (main.rs). An update runs while the old WebView still holds these files, so
-# the rm here can fail and the app's clear is the retry. A repair or a local frontend
-# rebuild leaves the version unchanged, so a surviving stamp suppresses that retry and
-# the cache we could not remove stays forever.
+# version (main.rs), and that clear is the retry for an rm here that failed. A repair
+# or a local rebuild leaves the version unchanged, so a surviving stamp suppresses the
+# retry and the cache we could not remove stays forever.
 _st_home=$(new_home)
 _st_data="$_st_home/.local/share/$BID"
 mkdir -p "$_st_data/WebKitCache"
@@ -180,11 +178,10 @@ else
 fi
 
 # ── 8. a bad override must not cost the user their cache ──
-# Every case above extracts the function, so none of them sees the one thing
-# that is a property of the script rather than the function: where the call
-# sits. setup.sh runs under `set -euo pipefail` with no trap, so a clear placed
-# before the UNSLOTH_STUDIO_HOME validation turns a typo into cache loss plus
-# the same abort. Driven in situ, which is the only way to observe the ordering.
+# Every case above extracts the function, so none of them sees where the call sits.
+# setup.sh runs under `set -euo pipefail` with no trap, so a clear placed before the
+# UNSLOTH_STUDIO_HOME validation turns a typo into cache loss plus the same abort.
+# Driven in situ, the only way to observe the ordering.
 _ord_home=$(new_home)
 mkdir -p "$_ord_home/.local/share/$BID/WebKitCache" "$_ord_home/.local/share/$BID/CacheStorage"
 : > "$_ord_home/.local/share/$BID/WebKitCache/asset.js"

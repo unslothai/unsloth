@@ -1623,19 +1623,16 @@ if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     Write-Host "  $Rule" -ForegroundColor DarkGray
 }
 
-# WebView2 caches keyed by the app bundle id hold copies of the previous
-# frontend and can keep serving it after an update (old styles linger).
-# Cache-only paths: Local Storage, IndexedDB, cookies, settings, models,
-# and the studio database are untouched.
+# WebView2 caches keyed by the bundle id can keep serving the previous frontend
+# after an update. Cache-only: storage, cookies, settings, models and the studio
+# database are untouched.
 if ($env:LOCALAPPDATA) {
     $wvDefault = Join-Path $env:LOCALAPPDATA "ai.unsloth.studio\EBWebView\Default"
-    # Drop the app's version stamp before touching anything. This runs while the old
-    # WebView still holds these files, which is exactly why the removals below can fail,
-    # and the app's own clear (the retry) is skipped whenever the stamp already matches
-    # the running version. A repair or a local frontend rebuild leaves the version
-    # unchanged, so without this the retry never happens. Unconditional: whether the
-    # deletes succeed is not knowable for files another process holds open, and a
-    # redundant clear on the next launch is the cheap side of the trade.
+    # Drop the version stamp first. The old WebView still holds these files, which is
+    # why the removals below can fail; the app's own clear is the retry, and it is
+    # skipped while the stamp matches the running version. Unconditional, since a
+    # repair or a local rebuild leaves the version unchanged and a redundant clear on
+    # the next launch is the cheap side of the trade.
     Remove-Item -LiteralPath (Join-Path $env:LOCALAPPDATA "ai.unsloth.studio\.webview-cache-cleared") `
         -Force -ErrorAction SilentlyContinue
     $wvCleared = $false

@@ -533,18 +533,16 @@ rm -rf "$REPO_ROOT/unsloth_compiled_cache"
 rm -rf "$SCRIPT_DIR/backend/unsloth_compiled_cache"
 rm -rf "$SCRIPT_DIR/tmp/unsloth_compiled_cache"
 
-# WebView caches keyed by the app bundle id hold copies of the previous
-# frontend and can keep serving it after an update (old styles linger).
-# Cache-only paths: LocalStorage, IndexedDB, cookies, settings, models,
-# and the studio database are untouched.
+# WebView caches keyed by the bundle id can keep serving the previous frontend
+# after an update. Cache-only: storage, cookies, settings, models and the studio
+# database are untouched.
 _clear_webview_caches() {
-    # No HOME: bail rather than let `set -u` abort the install or "" expand
-    # to /Library and /.cache.
+    # No HOME: bail rather than let `set -u` abort or "" expand to /Library and /.cache.
     [ -n "${HOME:-}" ] || return 0
     _wvc_bid="ai.unsloth.studio"
     _wvc_paths=()
-    # Where the desktop app keeps its version stamp (main.rs webview_profile_root).
-    # Not the same directory as the caches on macOS, so it is tracked separately.
+    # The app's version stamp dir (main.rs webview_profile_root), which on macOS
+    # is not the cache dir, so it is tracked separately.
     _wvc_root=""
     case "$(uname -s 2>/dev/null)" in
         Darwin)
@@ -556,9 +554,9 @@ _clear_webview_caches() {
         Linux)
             # wry points WebKitGTK's base-cache dir at the app data dir, so the
             # caches sit beside localstorage/, databases/ and cookies, which stay.
-            # A relative XDG_DATA_HOME is invalid per the XDG spec and is dropped
-            # by dirs, so Tauri uses the default; match that rather than rm -rf a
-            # relative path under whatever directory the installer runs from.
+            # A relative XDG_DATA_HOME is invalid per the XDG spec and dropped by
+            # dirs, so match Tauri and use the default rather than rm -rf under
+            # whatever directory the installer runs from.
             _wvc_data="${XDG_DATA_HOME:-$HOME/.local/share}"
             case "$_wvc_data" in /*) ;; *) _wvc_data="$HOME/.local/share" ;; esac
             _wvc_data="$_wvc_data/$_wvc_bid"
@@ -571,15 +569,12 @@ _clear_webview_caches() {
             ;;
         *) return 0 ;;
     esac
-    # Drop the app's version stamp before touching anything. An update runs while the
-    # old WebView still holds these files, so an rm here can fail; the app's own clear
-    # is the retry, and it is skipped whenever the stamp already matches the running
-    # version. A repair or a local frontend rebuild leaves the version unchanged, so
-    # without this the retry never happens and the cache we failed to remove survives.
-    # Unconditional: whether the rm below succeeds is not knowable for files another
-    # process holds open, and a redundant clear on the next launch is the cheap side.
-    # An `if`, not `[ ... ] && rm`: under `set -e` that compound returns 1 when the
-    # guard is false and would abort the whole install.
+    # Drop the version stamp first. An update runs while the old WebView still holds
+    # these files, so the rm below can fail; the app's own clear is the retry, and it
+    # is skipped while the stamp matches the running version. Unconditional, since a
+    # repair or a local rebuild leaves the version unchanged and a redundant clear on
+    # the next launch is the cheap side. An `if`, not `[ ... ] && rm`: under `set -e`
+    # that compound returns 1 when the guard is false and would abort the install.
     if [ -n "$_wvc_root" ]; then
         rm -f "$_wvc_root/.webview-cache-cleared" 2>/dev/null || true
     fi
@@ -594,11 +589,10 @@ _clear_webview_caches() {
     fi
     return 0
 }
-# Deliberately NOT called here. setup.sh runs under `set -euo pipefail` with no
-# trap, and the UNSLOTH_STUDIO_HOME / STUDIO_HOME override is not validated until
-# further down. Clearing first means a typo'd override deletes the WebView cache
-# and only then aborts, which is a side effect the pre-existing fail-fast path
-# never had. The call site is after the override is known to be good.
+# Deliberately NOT called here: setup.sh runs under `set -euo pipefail` with no
+# trap and the UNSLOTH_STUDIO_HOME / STUDIO_HOME override is not validated until
+# further down, so clearing first would let a typo'd override delete the cache
+# and only then abort. The call site is after the override is known to be good.
 
 # ── Detect Colab ──
 IS_COLAB=false
@@ -645,9 +639,8 @@ else
     STUDIO_HOME="$HOME/.unsloth/studio"
 fi
 
-# Now that the override has been validated, the clear can run without turning a
-# typo into cache loss. Still before any install work, which is the ordering that
-# matters: the caches must go while the old frontend is the one on disk.
+# The override is validated, so a typo can no longer cost the cache. Still before
+# any install work: the caches must go while the old frontend is the one on disk.
 _clear_webview_caches
 
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
