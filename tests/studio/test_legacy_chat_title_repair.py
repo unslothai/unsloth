@@ -53,10 +53,7 @@ def test_the_repair_reads_only_stored_messages():
     assert "listUnimportedChatMessages" not in repair
     assert "mergeMessagesById" not in repair
     assert "db.messages" not in repair
-    assert (
-        "for (const id of threadsMissingMessages(ids, messages)) attempted.delete(id);"
-        in repair
-    )
+    assert "for (const id of threadsMissingMessages(ids, messages)) attempted.delete(id);" in repair
 
 
 def test_the_next_page_is_scheduled_rather_than_waited_for():
