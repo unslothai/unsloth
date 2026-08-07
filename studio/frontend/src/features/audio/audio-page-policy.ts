@@ -14,6 +14,21 @@ export type AudioPickTask = "tts" | "stt" | null;
 export type AudioCreateMode = "speak" | "transcribe";
 export type SttEngine = "transformers" | "gguf" | "mtmd";
 
+const TTS_AUDIO_TYPES = new Set(["snac", "csm", "bicodec", "dac"]);
+const GGUF_TTS_AUDIO_TYPES = new Set(["snac", "bicodec", "dac"]);
+
+export function isTtsAudioType(
+  audioType?: string | null,
+  isGguf = false,
+): boolean {
+  return Boolean(
+    audioType &&
+      (isGguf
+        ? GGUF_TTS_AUDIO_TYPES.has(audioType)
+        : TTS_AUDIO_TYPES.has(audioType)),
+  );
+}
+
 type SttDownloadedStatus = {
   downloaded_models?: readonly string[];
   transformers?: { downloaded_models?: readonly string[] };
@@ -158,13 +173,13 @@ export function expectedGgufDownloadBytes(variant: AutoGgufVariant): number {
     : variant.size_bytes;
 }
 
-/** Gallery persistence is proven only by a new id, not by a non-empty old
- * history list. */
-export function newlyPersistedClip<T extends { id: string }>(
-  previousIds: ReadonlySet<string>,
+/** Match the gallery record returned by this generation, never another
+ * client's concurrently persisted clip. */
+export function persistedClipForGeneration<T extends { id: string }>(
+  clipId: string | null | undefined,
   refreshed: readonly T[],
 ): T | null {
-  return refreshed.find((clip) => !previousIds.has(clip.id)) ?? null;
+  return clipId ? (refreshed.find((clip) => clip.id === clipId) ?? null) : null;
 }
 
 export function sttSelectionReady(

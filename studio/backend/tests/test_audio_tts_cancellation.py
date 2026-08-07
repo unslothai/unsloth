@@ -52,7 +52,7 @@ def test_route_passes_request_cancel_event_to_transformers_backend(monkeypatch):
 
     class _Backend:
         active_model_name = "some/custom-tts"
-        models = {"some/custom-tts": {"is_audio": True}}
+        models = {"some/custom-tts": {"is_audio": True, "audio_type": "snac"}}
 
         def generate_audio_response(self, **kwargs):
             captured.update(kwargs)

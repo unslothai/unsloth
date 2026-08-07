@@ -26,6 +26,8 @@ export interface GeneratedAudio {
 export interface GenerateAudioResponse {
   model: string;
   audio: GeneratedAudio;
+  /** Exact gallery record created for this request; null when persistence failed. */
+  clip_id?: string | null;
 }
 
 /** Sampling knobs the /audio/generate route reads from its chat-shaped body. */

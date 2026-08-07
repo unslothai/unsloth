@@ -40,6 +40,10 @@ test("Speak eject unloads the live main model and cancels stale auto-load", () =
 test("Transcribe eject only unloads a sidecar owned by the current selection", () => {
   assert.match(
     source,
+    /const handleEject[\s\S]*stopAndDiscardRecording\(\);[\s\S]*if \(mode === "transcribe"\)/,
+  );
+  assert.match(
+    source,
     /if \(mode === "transcribe"\)[\s\S]*const selectedEngine = sttEngineForRepoId\(selected\)[\s\S]*sttLoadedModel !== sttSidecarKeyFor\(selected\)[\s\S]*sttLoadedEngine !== selectedEngine[\s\S]*await unloadSttModel\(selectedEngine\)/,
   );
   assert.match(

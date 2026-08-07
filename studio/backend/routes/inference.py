@@ -8214,6 +8214,9 @@ async def get_load_progress(current_subject: str = Depends(get_current_subject))
 # Audio (TTS) Generation  (/audio/generate)
 # =====================================================================
 
+_TRANSFORMERS_TTS_AUDIO_TYPES = frozenset(("snac", "csm", "bicodec", "dac"))
+_GGUF_TTS_AUDIO_TYPES = frozenset(("snac", "bicodec", "dac"))
+
 
 async def _generate_tts_wav(
     text: str, payload: ChatCompletionRequest, request: Request, current_subject: str
@@ -8245,6 +8248,7 @@ async def _generate_tts_wav(
         # never the absolute .gguf path.
         model_name = _llama_public_model_id(llama_backend)
         audio_type = getattr(llama_backend, "_audio_type", None)
+        supported_audio_types = _GGUF_TTS_AUDIO_TYPES
         _audio_model_id = getattr(llama_backend, "model_identifier", None) or model_name
         gen = lambda: llama_backend.generate_audio_response(
             text = text,
@@ -8266,6 +8270,7 @@ async def _generate_tts_wav(
             raise HTTPException(status_code = 400, detail = "Active model is not an audio model.")
         model_name = public_model_id(backend.active_model_name)
         audio_type = model_info.get("audio_type")
+        supported_audio_types = _TRANSFORMERS_TTS_AUDIO_TYPES
         _audio_model_id = getattr(backend, "active_model_name", None) or model_name
         gen = lambda: backend.generate_audio_response(
             text = text,
@@ -8277,6 +8282,12 @@ async def _generate_tts_wav(
             repetition_penalty = payload.repetition_penalty,
             use_adapter = payload.use_adapter,
             cancel_event = _audio_cancel,
+        )
+
+    if audio_type not in supported_audio_types:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Active model does not support text-to-speech (audio_type={audio_type or 'unknown'}).",
         )
 
     # Apply per-model recommended sampling + any operator UNSLOTH_SAMPLING_* pin before
@@ -8334,12 +8345,12 @@ def _wav_duration_seconds(wav_bytes: bytes, sample_rate: int) -> float:
 
 def _persist_tts_clip(
     wav_bytes: bytes, sample_rate: int, text: str, model_name: str, audio_type: Optional[str]
-) -> None:
+) -> Optional[dict[str, Any]]:
     """Best-effort gallery save: persistence never fails the request that produced
     the audio. Blocking, so callers run it off the event loop."""
     from core.inference import audio_gallery
     try:
-        audio_gallery.save(
+        return audio_gallery.save(
             wav_bytes,
             {
                 "prompt": text,
@@ -8352,6 +8363,7 @@ def _persist_tts_clip(
         )
     except Exception as exc:  # noqa: BLE001 - log and serve the audio anyway
         logger.warning("audio_gallery.persist_failed: %s", exc)
+        return None
 
 
 @router.post("/audio/generate")
@@ -8379,7 +8391,9 @@ async def generate_audio(
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
         text, payload, request, current_subject
     )
-    await asyncio.to_thread(_persist_tts_clip, wav_bytes, sample_rate, text, model_name, audio_type)
+    persisted_clip = await asyncio.to_thread(
+        _persist_tts_clip, wav_bytes, sample_rate, text, model_name, audio_type
+    )
 
     audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
     return JSONResponse(
@@ -8387,6 +8401,7 @@ async def generate_audio(
             "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
             "object": "chat.completion.audio",
             "model": model_name,
+            "clip_id": persisted_clip.get("id") if persisted_clip else None,
             "audio": {"data": audio_b64, "format": "wav", "sample_rate": sample_rate},
             "choices": [
                 {

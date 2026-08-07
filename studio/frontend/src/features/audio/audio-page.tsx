@@ -90,9 +90,10 @@ import {
   canTransitionAudioMode,
   exactGgufLoadSelector,
   expectedGgufDownloadBytes,
+  isTtsAudioType,
   macTtsPickAction,
   micStreamRequestIsCurrent,
-  newlyPersistedClip,
+  persistedClipForGeneration,
   reconcileSttSelection,
   resolveAudioPickTask,
   resolveSttResidency,
@@ -506,12 +507,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           is_lora: false,
           gguf_variant: ggufFilename ?? null,
         });
-        if (res.is_audio) {
+        if (res.is_audio && isTtsAudioType(res.audio_type)) {
           toast.success(`Model loaded (${res.audio_type ?? "audio"})`, {
             id: toastId,
           });
         } else {
-          toast.error(`${repoId} loaded but is not a TTS audio model.`, {
+          toast.error(`${repoId} loaded but is not a supported TTS model.`, {
             id: toastId,
           });
         }
@@ -898,8 +899,10 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     }
     const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.task ?? ""}`;
     if (handledRouteModel.current === key) return;
+    // The persistent Audio page may still be finishing hidden work. Keep the
+    // handoff in the URL and retry it when that work releases the lifecycle.
+    if (busyRef.current !== null) return;
     handledRouteModel.current = key;
-    void navigateSelf({ to: "/audio", search: {}, replace: true });
     handleModelSelect(wanted, {
       source: "hub",
       isLora: false,
@@ -909,8 +912,10 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       isDownloaded: routeSearch.quant ? false : undefined,
       pipelineTag: routeSearch.task ?? null,
     });
+    void navigateSelf({ to: "/audio", search: {}, replace: true });
   }, [
     active,
+    busy,
     routeSearch.model,
     routeSearch.quant,
     routeSearch.task,
@@ -920,12 +925,19 @@ export function AudioPage({ active = true }: { active?: boolean }) {
 
   // --- Speak --------------------------------------------------------------
 
-  const ttsLoaded = Boolean(status?.is_audio && status?.active_model);
+  const ttsLoaded = Boolean(
+    status?.active_model &&
+      isTtsAudioType(status.audio_type, status.is_gguf === true),
+  );
   const handleEject = useCallback(() => {
     if (busy !== null || isRecording) {
       toast.info("Stop the active audio task before ejecting its model.");
       return;
     }
+
+    // Eject also owns unresolved permission requests. Invalidating here makes
+    // their eventual streams self-discard instead of recording for an old STT pick.
+    stopAndDiscardRecording();
 
     if (mode === "transcribe") {
       const selected = selectedSttRepo;
@@ -1011,6 +1023,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     status?.active_model,
     sttLoadedModel,
     sttLoadedEngine,
+    stopAndDiscardRecording,
   ]);
 
   const handleGenerate = useCallback(async () => {
@@ -1020,19 +1033,19 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     const controller = new AbortController();
     generateAbort.current = controller;
     try {
-      const previousClipIds = new Set(
-        galleryCache.clips.map((clip) => clip.id),
-      );
       const generated = await generateAudio(text, {
         temperature,
         max_tokens: maxTokens,
         signal: controller.signal,
       });
       await refreshGallery();
-      const newest = newlyPersistedClip(previousClipIds, galleryCache.clips);
-      if (newest) {
+      const generatedClip = persistedClipForGeneration(
+        generated.clip_id,
+        galleryCache.clips,
+      );
+      if (generatedClip) {
         setFallbackClip(null);
-        selectClip(newest.id);
+        selectClip(generatedClip.id);
       } else {
         // Gallery persistence is best-effort server-side, so a full or unwritable
         // disk still returns the audio. Play it from the response rather than
@@ -1518,7 +1531,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                   <input
                     type="file"
                     accept="audio/*"
-                    disabled={!sttReady || busy !== null || isRecording}
+                    disabled={
+                      !sttReady ||
+                      busy !== null ||
+                      isRecording ||
+                      micRequestPending
+                    }
                     onChange={(event) => {
                       handleTranscribeFile(event.target.files?.[0]);
                       event.target.value = "";

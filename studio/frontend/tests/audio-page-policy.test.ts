@@ -9,9 +9,10 @@ import {
   canTransitionAudioMode,
   exactGgufLoadSelector,
   expectedGgufDownloadBytes,
+  isTtsAudioType,
   macTtsPickAction,
   micStreamRequestIsCurrent,
-  newlyPersistedClip,
+  persistedClipForGeneration,
   reconcileSttSelection,
   resolveSttLoadedModel,
   resolveSttResidency,
@@ -97,12 +98,23 @@ test("Mac sibling resolution returns an exact managed-download file", () => {
   assert.equal(remote && expectedGgufDownloadBytes(remote), 3_500);
 });
 
-test("old gallery history never impersonates the new generated clip", () => {
-  const before = new Set(["old"]);
-  assert.equal(newlyPersistedClip(before, [{ id: "old" }]), null);
-  assert.deepEqual(newlyPersistedClip(before, [{ id: "new" }, { id: "old" }]), {
-    id: "new",
+test("only the generation's persisted gallery id is selected", () => {
+  const refreshed = [{ id: "other-client" }, { id: "ours" }];
+  assert.deepEqual(persistedClipForGeneration("ours", refreshed), {
+    id: "ours",
   });
+  assert.equal(persistedClipForGeneration(null, refreshed), null);
+  assert.equal(persistedClipForGeneration("missing", refreshed), null);
+});
+
+test("Speak requires a supported TTS codec, not any audio model", () => {
+  for (const codec of ["snac", "csm", "bicodec", "dac"])
+    assert.equal(isTtsAudioType(codec), true);
+  assert.equal(isTtsAudioType("csm", true), false);
+  for (const codec of ["snac", "bicodec", "dac"])
+    assert.equal(isTtsAudioType(codec, true), true);
+  for (const codec of ["whisper", "audio_vlm", "", null])
+    assert.equal(isTtsAudioType(codec), false);
 });
 
 test("STT controls require the selected sidecar to be resident", () => {
@@ -234,5 +246,20 @@ test("leaving Audio clears an unresolved microphone permission wait", () => {
   assert.match(
     audioPageSource,
     /const stopAndDiscardRecording[\s\S]*micRequestGeneration\.current \+= 1;[\s\S]*micPendingGeneration\.current = null;[\s\S]*setMicRequestPending\(false\)/,
+  );
+});
+
+test("routed picks wait in the URL until Audio is idle", () => {
+  assert.match(
+    audioPageSource,
+    /if \(busyRef\.current !== null\) return;[\s\S]*handledRouteModel\.current = key;[\s\S]*handleModelSelect\(wanted/,
+  );
+  assert.match(audioPageSource, /\[\s*active,\s*busy,/);
+});
+
+test("file transcription cannot overlap a pending microphone permission", () => {
+  assert.match(
+    audioPageSource,
+    /type="file"[\s\S]*disabled=\{[\s\S]*micRequestPending[\s\S]*onChange=/,
   );
 });
