@@ -9,8 +9,8 @@ import {
   fallbackTitleFromUserText,
   isLegacyClippedTitle,
   planLegacyTitleRepairs,
-  repairsStillValid,
   selectLegacyRepairPage,
+  threadsAwaitingImport,
   threadsMissingMessages,
 } from "../src/features/chat/utils/chat-title.ts";
 
@@ -266,24 +266,28 @@ test("a chat whose opening prompt is gone is decided, not retried forever", () =
   );
 });
 
-test("a rename drops the rewrite even where the guard is not enforced", () => {
-  // The desktop app can meet an older backend, which ignores expectedTitle and
-  // would apply the write. This check is what stops it there.
-  const legacy = LONG.slice(0, 48) + "...";
-  const repairs = [
-    { threadId: "a", previousTitle: legacy, openingMessageId: "a-m1", title: LONG },
-    { threadId: "b", previousTitle: legacy, openingMessageId: "b-m1", title: LONG },
-    { threadId: "c", previousTitle: legacy, openingMessageId: "c-m1", title: LONG },
-  ];
-  const current = new Map([
-    ["a", legacy],
-    // Renamed since the page was planned.
-    ["b", "what the user typed"],
-    // "c" is missing: the thread is gone.
+test("an emptied chat is decided, one still importing is not", () => {
+  // Both read back as zero messages. The ledger is what tells them apart: a
+  // thread it knows was imported, so empty is the whole answer, while one it
+  // has never seen may still be on its way.
+  const ids = ["emptied", "importing", "fine"];
+  const messages = new Map<string, MessageRecord[]>([
+    ["emptied", []],
+    ["importing", []],
+    ["fine", [userMessage("fine", LONG)]],
   ]);
 
+  assert.deepEqual(threadsMissingMessages(ids, messages), [
+    "emptied",
+    "importing",
+  ]);
   assert.deepEqual(
-    repairsStillValid(repairs, current).map((r) => r.threadId),
-    ["a"],
+    threadsAwaitingImport(ids, messages, new Set(["emptied"])),
+    ["importing"],
   );
+  // An unreadable ledger decides nothing, so both stay retryable.
+  assert.deepEqual(threadsAwaitingImport(ids, messages, new Set()), [
+    "emptied",
+    "importing",
+  ]);
 });

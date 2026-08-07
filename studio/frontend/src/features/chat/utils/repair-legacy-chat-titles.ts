@@ -2,13 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { batchListChatMessages, listChatThreads } from "../api/chat-api";
+import {
+  batchListChatMessages,
+  listChatImportLedger,
+  updateChatThread,
+} from "../api/chat-api";
 import type { MessageRecord, ThreadRecord } from "../types";
-import { updateStoredChatThread } from "./chat-history-storage";
 import {
   planLegacyTitleRepairs,
-  repairsStillValid,
   selectLegacyRepairPage,
+  threadsAwaitingImport,
   threadsMissingMessages,
 } from "./chat-title";
 import { type GuardProbe, readGuardProbe } from "./openapi-support";
@@ -101,35 +104,35 @@ async function runRepairPass(threads: ThreadRecord[]): Promise<number> {
   // imported yet reads as unknown below and is retried once they land.
   const repairs = planLegacyTitleRepairs(candidates, messages);
 
-  // Nothing known at all reads as an incomplete answer, not an empty chat: a
-  // clipped title means there was an opening message once. Leave those rows for
-  // a later refresh rather than writing them off for the session.
-  for (const id of threadsMissingMessages(ids, messages)) attempted.delete(id);
-
-  // expectedTitle is only enforced by a backend that knows the field. The
-  // desktop app ships its own frontend and can meet an older one, which would
-  // apply the write regardless, so confirm the titles here too. One call for
-  // the page, taken last, so a rename is respected either way.
-  let live: ReturnType<typeof repairsStillValid>;
-  try {
-    const current = await listChatThreads({ includeArchived: true });
-    live = repairsStillValid(
-      repairs,
-      new Map(current.map((thread) => [thread.id, thread.title])),
-    );
-  } catch {
-    for (const id of ids) attempted.delete(id);
-    return 0;
+  // A chat with nothing stored is either mid-import, so worth another pass, or
+  // one the user emptied, which no pass can change. The ledger tells them
+  // apart, and is only worth fetching when there is something to decide.
+  const withoutMessages = threadsMissingMessages(ids, messages);
+  if (withoutMessages.length > 0) {
+    let imported = new Set<string>();
+    try {
+      imported = await listChatImportLedger();
+    } catch {
+      // Undecided, so keep every one of them retryable.
+    }
+    for (const id of threadsAwaitingImport(ids, messages, imported)) {
+      attempted.delete(id);
+    }
   }
 
   let repaired = 0;
-  await runWithConcurrency(live, REPAIR_CONCURRENCY, async (repair) => {
+  await runWithConcurrency(repairs, REPAIR_CONCURRENCY, async (repair) => {
     try {
-      // Both guards make this atomic where the backend enforces them: a
-      // rename or a deleted opening prompt landing now answers 409, so the
-      // user's title stays and no deleted text is expanded into one. A title
-      // patch leaves updatedAt alone, so Recents keeps its order.
-      await updateStoredChatThread(
+      // The backend PATCH directly, not updateStoredChatThread: that ensures
+      // the thread first, which re-imports one deleted on another client from
+      // the Dexie rows still sitting here. A migration must never create
+      // anything, so a missing thread has to stay missing and 404.
+      //
+      // Both guards make this atomic: a rename or a deleted opening prompt
+      // landing now answers 409, so the user's title stays and no deleted text
+      // is expanded into one. A title patch leaves updatedAt alone, so Recents
+      // keeps its order.
+      await updateChatThread(
         repair.threadId,
         { title: repair.title },
         {

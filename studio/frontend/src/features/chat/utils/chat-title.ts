@@ -115,24 +115,27 @@ export function selectLegacyRepairPage(
   };
 }
 
-/** Repairs whose row still holds the title they were planned from. The write
- *  carries that title as a guard, but only a backend that knows the field
- *  enforces it, so an older one needs this check to respect a rename. */
-export function repairsStillValid(
-  repairs: LegacyTitleRepair[],
-  currentTitleById: ReadonlyMap<string, string>,
-): LegacyTitleRepair[] {
-  return repairs.filter(
-    (repair) => currentTitleById.get(repair.threadId) === repair.previousTitle,
-  );
-}
-
-/** Threads nothing is known about at all, so nothing can be concluded. */
+/** Threads the backend holds no messages for. */
 export function threadsMissingMessages(
   ids: readonly string[],
   messagesByThreadId: ReadonlyMap<string, MessageRecord[]>,
 ): string[] {
   return ids.filter((id) => (messagesByThreadId.get(id) ?? []).length === 0);
+}
+
+/** Of those, the ones still worth retrying: no record of their import
+ *  finishing, so their messages may yet land. One the ledger knows is simply
+ *  empty, every message deleted, which no later pass can change. Retrying
+ *  those would re-read them on every refresh for the session, since the title
+ *  stays clipped and keeps matching the pre-filter. */
+export function threadsAwaitingImport(
+  ids: readonly string[],
+  messagesByThreadId: ReadonlyMap<string, MessageRecord[]>,
+  importedThreadIds: ReadonlySet<string>,
+): string[] {
+  return threadsMissingMessages(ids, messagesByThreadId).filter(
+    (id) => !importedThreadIds.has(id),
+  );
 }
 
 /** Rows to rewrite. A title must be the exact old cut of its own first

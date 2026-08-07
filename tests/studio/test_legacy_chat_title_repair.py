@@ -53,7 +53,32 @@ def test_the_repair_reads_only_stored_messages():
     assert "listUnimportedChatMessages" not in repair
     assert "mergeMessagesById" not in repair
     assert "db.messages" not in repair
-    assert "for (const id of threadsMissingMessages(ids, messages)) attempted.delete(id);" in repair
+
+
+def test_an_emptied_chat_is_not_retried_for_the_session():
+    """A chat the user deleted every message from reads back the same as one
+    still importing. Retrying it would re-read it on every refresh, since its
+    title stays clipped and keeps matching the pre-filter."""
+    repair = _read(REPAIR)
+    assert "const withoutMessages = threadsMissingMessages(ids, messages);" in repair
+    # Only fetched when there is something to decide, so a page of ordinary
+    # rows does not pay for it.
+    assert "if (withoutMessages.length > 0) {" in repair
+    assert "imported = await listChatImportLedger();" in repair
+    assert (
+        "for (const id of threadsAwaitingImport(ids, messages, imported)) { attempted.delete(id); }"
+        in repair
+    )
+
+
+def test_the_repair_never_creates_anything():
+    """updateStoredChatThread ensures the thread first, which re-imports one
+    deleted on another client from the Dexie rows still sitting here. A
+    migration patching a row that is gone has to 404, not resurrect it."""
+    repair = _read(REPAIR)
+    # The storage layer is out of the picture entirely, not just at this call.
+    assert 'from "./chat-history-storage"' not in repair
+    assert "await updateChatThread( repair.threadId, { title: repair.title }," in repair
 
 
 def test_the_next_page_is_scheduled_rather_than_waited_for():
@@ -75,17 +100,14 @@ def test_only_one_repair_pass_runs_at_a_time():
     assert "return serial(() => runRepairPass(threads));" in repair
 
 
-def test_a_rename_wins_even_where_the_guard_is_not_enforced():
-    """expectedTitle is only enforced by a backend that knows the field, and the
-    desktop app ships its own frontend, so it can meet one that does not."""
+def test_a_rename_is_left_to_the_backend_guard():
+    """The pass only runs where the guard is enforced, so re-listing the whole
+    history per page to check titles client side was both redundant and
+    quadratic: every page of 100 pulled every thread the account has."""
     repair = _read(REPAIR)
-    assert "const current = await listChatThreads({ includeArchived: true });" in repair
-    assert (
-        "live = repairsStillValid( repairs, new Map(current.map((thread) => [thread.id, thread.title])), );"
-        in repair
-    )
-    # The write runs over the confirmed set, not the planned one.
-    assert "await runWithConcurrency(live, REPAIR_CONCURRENCY," in repair
+    assert "listChatThreads" not in repair
+    assert "repairsStillValid" not in repair
+    assert "await runWithConcurrency(repairs, REPAIR_CONCURRENCY," in repair
     assert "expectedTitle: repair.previousTitle," in repair
 
 
