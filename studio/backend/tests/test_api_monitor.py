@@ -1301,6 +1301,25 @@ def test_streamed_stop_reason_is_withheld_until_the_request_finishes(monkeypatch
     assert row()["stop_reason"] == "stop"
 
 
+@pytest.mark.parametrize(
+    "status, expected",
+    [("completed", "stop"), ("cancelled", None), ("failed", None)],
+)
+def test_accumulated_stop_reasons_resolve_only_for_completed_requests(status, expected):
+    # A cancelled n > 1 stream stopped its remaining choices rather than hearing from them,
+    # so the reasons in hand describe part of the request, not the request.
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+    )
+    monitor.note_stop_reason(entry_id, "stop")
+    monitor.finish(entry_id, status)
+    assert next(r for r in monitor.snapshot() if r["id"] == entry_id)["stop_reason"] == expected
+
+
 def test_non_streaming_stop_reason_survives_the_finish(monkeypatch):
     # Nothing accumulates on that path, so resolving at finish must not clear what
     # set_perf already recorded.

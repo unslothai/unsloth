@@ -15135,6 +15135,11 @@ async def _responses_stream(
                 },
             },
         }
+        # A healed call reaches the client as a function_call item while the upstream chunk
+        # still says "stop", so report what this adapter emitted -- same rule the chat
+        # stream's synthetic finish line applies.
+        if healer is not None and healer.healed:
+            stream_finish_reason = "tool_calls"
         if stream_finish_reason:
             api_monitor.set_perf(monitor_id, stop_reason = stream_finish_reason)
         api_monitor.finish(monitor_id)

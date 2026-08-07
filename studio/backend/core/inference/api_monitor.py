@@ -462,7 +462,10 @@ class ApiMonitor:
             # already ran) must not move finished_*.
             if entry.finished_at is not None:
                 return
-            self._resolve_stop_reason_locked(entry)
+            # Completed only: a cancelled stream stopped its remaining choices rather than
+            # hearing from them, so the reasons in hand describe part of the request.
+            if status == "completed":
+                self._resolve_stop_reason_locked(entry)
             now = time.time()
             entry.status = status
             entry.updated_at = now
