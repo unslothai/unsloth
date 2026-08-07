@@ -134,8 +134,10 @@ def test_x86_powershell_reports_64_bit_managed_process(tmp_path: Path):
     scripts.mkdir(parents = True)
     probe = scripts / "guard-probe.exe"
     shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", probe)
+    # Long-lived: a 32-bit shell pays a WOW64 start plus an Add-Type compile, so
+    # a short probe can exit before the scan runs and empty the result.
     child = subprocess.Popen(
-        [str(probe), "-n", "6", "127.0.0.1"],
+        [str(probe), "-n", "120", "127.0.0.1"],
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     try:
@@ -147,7 +149,13 @@ $ErrorActionPreference = "Stop"
 """
         env = os.environ.copy()
         env["TEST_VENV"] = str(scripts.parent)
-        observed = _run_powershell(str(x86_shell), script, env).splitlines()
+        deadline = time.monotonic() + 30
+        observed = []
+        while time.monotonic() < deadline:
+            observed = _run_powershell(str(x86_shell), script, env).splitlines()
+            if str(child.pid) in observed:
+                break
+            time.sleep(0.5)
         assert str(child.pid) in observed
     finally:
         child.terminate()
