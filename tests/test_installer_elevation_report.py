@@ -60,9 +60,9 @@ def test_diag_marker_prefix_is_still_parsed_and_reported():
     markers become invisible without either file changing."""
     assert '"[TAURI:DIAG] "' in _read(INSTALL_RS), "install.rs no longer parses [TAURI:DIAG]"
     assert "record_diag_marker" in _read(INSTALL_RS), "the marker is parsed but not recorded"
-    assert "installer_diag_markers" in _read(
-        REPORT_RS
-    ), "the support report no longer prints markers"
+    assert "installer_diag_markers" in _read(REPORT_RS), (
+        "the support report no longer prints markers"
+    )
 
 
 # ── Elevation ──
@@ -91,18 +91,23 @@ def test_install_ps1_elevation_state_covers_unreadable_tokens():
         assert value in block, f"Get-ElevationState must be able to return {value}"
 
 
-def test_install_ps1_warns_before_any_install_work():
-    """The warning is only useful while the user can still stop."""
+def test_install_ps1_warns_before_anything_is_created():
+    """Telling the user to stop is only honest while stopping leaves nothing
+    behind. The override resolver creates the custom root and writes a probe
+    into it, so an elevated run that warned afterwards had already made the
+    admin-owned folder the warning is about."""
     src = _read(INSTALL_PS1)
     notice_idx = src.index("Write-ElevationNotice -State (Get-ElevationState)")
     for marker in (
+        "[System.IO.Directory]::CreateDirectory($envOverride)",
+        '$probe = Join-Path $StudioHome (".unsloth-write-probe-',
         'step "winget" "available"',
         "uv venv $VenvDir --python",
         'step "setup" "running unsloth studio setup..."',
     ):
-        assert notice_idx < src.index(
-            marker
-        ), f"the elevation notice must be printed before {marker!r}"
+        assert notice_idx < src.index(marker), (
+            f"the elevation notice must be printed before {marker!r}"
+        )
 
 
 def test_install_ps1_marker_uses_the_parsed_tauri_flag():
@@ -116,9 +121,9 @@ def test_install_ps1_marker_uses_the_parsed_tauri_flag():
         src[src.index("function Write-ElevationNotice") : src.index("$ElevationRoot = if")]
     )
     assert "[TAURI:DIAG] elevated=$State" in notice
-    assert (
-        "$env:UNSLOTH_TAURI_MODE" not in notice
-    ), "the env var is unset at this point; gate on the --tauri flag instead"
+    assert "$env:UNSLOTH_TAURI_MODE" not in notice, (
+        "the env var is unset at this point; gate on the --tauri flag instead"
+    )
     assert "-Tauri:$TauriMode" in src, "the parsed --tauri flag must be what drives the marker"
     # The flag has to be parsed before the call, or it is always false.
     assert src.index('"--tauri"    { $TauriMode = $true }') < src.index("-Tauri:$TauriMode")
@@ -134,11 +139,39 @@ def test_install_ps1_warning_names_the_root_actually_written():
     assert "$Root" in notice, "the warning must name the resolved root, not a fixed path"
     assert "outlives an uninstall" in notice, "the warning must say reinstalling does not clear it"
     root = src[src.index("$ElevationRoot = if") : src.index("-Tauri:$TauriMode")]
-    assert "$StudioRedirectMode -eq 'env'" in root, "a custom root must be named instead"
     assert '".unsloth"' in root, "a default install must name the parent that also holds llama.cpp"
-    # $StudioHome and $StudioRedirectMode are set by the resolver above; if the
-    # notice moved above it, $Root would silently be empty.
-    assert src.index("$StudioRedirectMode = 'default'") < src.index("$ElevationRoot = if")
+    # The notice runs before the resolver, so $StudioHome does not exist yet and
+    # naming it would render empty; mirror the override precedence instead.
+    assert "$StudioHome" not in root, "$StudioHome is not assigned until the resolver below"
+    assert "UNSLOTH_STUDIO_HOME" in root and "$env:STUDIO_HOME" in root, (
+        "both override names must be honoured, in that order"
+    )
+    assert root.index("UNSLOTH_STUDIO_HOME") < root.index("$env:STUDIO_HOME"), (
+        "UNSLOTH_STUDIO_HOME wins when both are set"
+    )
+
+
+def test_both_scripts_resolve_the_warning_root_the_same_way():
+    """install.ps1 and setup.ps1 each mirror the resolver's precedence for the
+    message, so a drift in one would send only half the flows to the right
+    directory."""
+    install_root = _read(INSTALL_PS1)
+    install_root = install_root[
+        install_root.index("$ElevationRoot = if") : install_root.index("-Tauri:$TauriMode")
+    ]
+    setup_src = _read(SETUP_PS1)
+    setup_root = setup_src[
+        setup_src.index("$_elevRoot = if") : setup_src.index("# Back up User PATH")
+    ]
+    for fragment in (
+        "IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)",
+        "$env:UNSLOTH_STUDIO_HOME.Trim()",
+        "IsNullOrWhiteSpace($env:STUDIO_HOME)",
+        "$env:STUDIO_HOME.Trim()",
+        'Join-Path $env:USERPROFILE ".unsloth"',
+    ):
+        assert fragment in install_root, f"install.ps1 root resolution lost {fragment!r}"
+        assert fragment in setup_root, f"setup.ps1 root resolution lost {fragment!r}"
 
 
 def test_install_ps1_warning_does_not_assume_a_powershell_window():
@@ -169,18 +202,18 @@ def test_setup_ps1_warning_names_the_root_actually_written():
     idx = src.index('if ($env:SKIP_STUDIO_BASE -ne "1") {')
     block = src[idx : src.index("# Back up User PATH")]
     assert "$_elevRoot" in block, "the warning must name a resolved root"
-    assert (
-        "UNSLOTH_STUDIO_HOME" in block and "STUDIO_HOME" in block
-    ), "both override names must be honoured, in that order"
-    assert block.index("UNSLOTH_STUDIO_HOME") < block.index(
-        "$env:STUDIO_HOME"
-    ), "UNSLOTH_STUDIO_HOME wins when both are set"
+    assert "UNSLOTH_STUDIO_HOME" in block and "STUDIO_HOME" in block, (
+        "both override names must be honoured, in that order"
+    )
+    assert block.index("UNSLOTH_STUDIO_HOME") < block.index("$env:STUDIO_HOME"), (
+        "UNSLOTH_STUDIO_HOME wins when both are set"
+    )
     for phrase in ("Close this window", "normal PowerShell"):
         assert phrase not in block, f"{phrase!r} is wrong for the desktop repair flow"
     # Naming $StudioHome directly here would render empty.
-    assert idx < src.index(
-        "$StudioHome = Join-Path $env:USERPROFILE"
-    ), "this test is only meaningful while the notice precedes the resolver"
+    assert idx < src.index("$StudioHome = Join-Path $env:USERPROFILE"), (
+        "this test is only meaningful while the notice precedes the resolver"
+    )
 
 
 # ── Degraded llama.cpp ──
@@ -193,9 +226,9 @@ def test_degraded_llama_cpp_is_recorded_not_only_flashed():
         assert "llama_cpp=unavailable" in src, f"{path.name} does not record the degraded verdict"
         progress_idx = src.index("llama.cpp unavailable; GGUF inference is disabled")
         marker_idx = src.index("llama_cpp=unavailable")
-        assert (
-            marker_idx > progress_idx
-        ), f"{path.name} must keep the user-facing progress line and add the marker beside it"
+        assert marker_idx > progress_idx, (
+            f"{path.name} must keep the user-facing progress line and add the marker beside it"
+        )
 
 
 def test_degraded_llama_cpp_still_fails_outside_tauri_mode():
@@ -227,6 +260,6 @@ def test_desktop_repair_marker_does_not_change_the_update_contract():
     for path in (SETUP_SH, SETUP_PS1):
         block = _code_only(_repair_block(path))
         for forbidden in ("setup_fail", "Exit-SetupFailure", "TAURI:PROGRESS", "exit "):
-            assert (
-                forbidden not in block
-            ), f"{path.name}: the repair block must be marker-only, found {forbidden!r}"
+            assert forbidden not in block, (
+                f"{path.name}: the repair block must be marker-only, found {forbidden!r}"
+            )

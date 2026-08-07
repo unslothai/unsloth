@@ -252,6 +252,62 @@ function Install-UnslothStudio {
     # able to complete, over a package it will not install.
     if ($SkipTorch) { $PythonSkip = @() }
 
+    # ── How this run was launched ──
+    # "true", "false", or "unknown" when the token cannot be read. An elevated
+    # run writes the install root as Administrators, so the same account cannot
+    # read it back afterwards. Keep in step with studio/setup.ps1.
+    function Get-ElevationState {
+        try {
+            $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+            $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+            if ($principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+                return "true"
+            }
+            return "false"
+        } catch {
+            return "unknown"
+        }
+    }
+
+    # Record it either way, and warn only when it will cause the problem. The
+    # marker reaches the desktop support report via install.rs record_diag_marker.
+    function Write-ElevationNotice {
+        param(
+            [Parameter(Mandatory = $true)][string]$State,
+            [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Root,
+            # $env:UNSLOTH_TAURI_MODE is not set until setup.ps1 is invoked far
+            # below, so the desktop's own --tauri flag is what is readable here.
+            [switch]$Tauri
+        )
+
+        if ($Tauri) {
+            [Console]::Out.WriteLine("[TAURI:DIAG] elevated=$State")
+            [Console]::Out.Flush()
+        }
+        if ($State -ne "true") { return }
+        Write-Host "  [WARNING] Running as administrator. Unsloth does not need this." -ForegroundColor Yellow
+        Write-Host "            Anything written to $Root will be owned by Administrators," -ForegroundColor Yellow
+        Write-Host "            and your normal account will not be able to read it afterwards." -ForegroundColor Yellow
+        Write-Host "            That folder outlives an uninstall, so a later install, setup or" -ForegroundColor Yellow
+        Write-Host "            update run normally fails on it." -ForegroundColor Yellow
+        Write-Host "            Stop and start again without 'Run as administrator'." -ForegroundColor Yellow
+        Write-Host ""
+    }
+
+    # The resolver below creates and write-probes a custom root, so warn first or
+    # an elevated run leaves behind the very folder this is about. That means
+    # mirroring its override precedence here rather than reusing $StudioHome.
+    # llama.cpp is a sibling of studio under ~/.unsloth on a default install, so
+    # name the parent; a custom root holds every artefact itself.
+    $ElevationRoot = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
+        $env:UNSLOTH_STUDIO_HOME.Trim()
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
+        $env:STUDIO_HOME.Trim()
+    } else {
+        Join-Path $env:USERPROFILE ".unsloth"
+    }
+    Write-ElevationNotice -State (Get-ElevationState) -Root $ElevationRoot -Tauri:$TauriMode
+
     # Resolve install destinations. Priority: UNSLOTH_STUDIO_HOME, then
     # STUDIO_HOME alias, then USERPROFILE-redirect, then default.
     # Reject whitespace-only values so " " is treated as unset (matches the
@@ -391,57 +447,6 @@ function Install-UnslothStudio {
         Write-Host "  $Rule" -ForegroundColor DarkGray
     }
     Write-Host ""
-
-    # ── How this run was launched ──
-    # "true", "false", or "unknown" when the token cannot be read. An elevated
-    # run writes the install root as Administrators, so the same account cannot
-    # read it back afterwards. Keep in step with studio/setup.ps1.
-    function Get-ElevationState {
-        try {
-            $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-            $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
-            if ($principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
-                return "true"
-            }
-            return "false"
-        } catch {
-            return "unknown"
-        }
-    }
-
-    # Record it either way, and warn only when it will cause the problem. The
-    # marker reaches the desktop support report via install.rs record_diag_marker.
-    function Write-ElevationNotice {
-        param(
-            [Parameter(Mandatory = $true)][string]$State,
-            [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Root,
-            # $env:UNSLOTH_TAURI_MODE is not set until setup.ps1 is invoked far
-            # below, so the desktop's own --tauri flag is what is readable here.
-            [switch]$Tauri
-        )
-
-        if ($Tauri) {
-            [Console]::Out.WriteLine("[TAURI:DIAG] elevated=$State")
-            [Console]::Out.Flush()
-        }
-        if ($State -ne "true") { return }
-        Write-Host "  [WARNING] Running as administrator. Unsloth does not need this." -ForegroundColor Yellow
-        Write-Host "            Anything written to $Root will be owned by Administrators," -ForegroundColor Yellow
-        Write-Host "            and your normal account will not be able to read it afterwards." -ForegroundColor Yellow
-        Write-Host "            That folder outlives an uninstall, so a later install, setup or" -ForegroundColor Yellow
-        Write-Host "            update run normally fails on it." -ForegroundColor Yellow
-        Write-Host "            Stop and start again without 'Run as administrator'." -ForegroundColor Yellow
-        Write-Host ""
-    }
-
-    # llama.cpp is a sibling of studio under ~/.unsloth on a default install, so
-    # name the parent; a custom root holds every artefact itself.
-    $ElevationRoot = if ($StudioRedirectMode -eq 'env') {
-        $StudioHome
-    } else {
-        Join-Path $env:USERPROFILE ".unsloth"
-    }
-    Write-ElevationNotice -State (Get-ElevationState) -Root $ElevationRoot -Tauri:$TauriMode
 
     # ── Helper: refresh PATH from registry (deduplicating entries) ──
     # Merge order: venv Scripts (if active) > Machine > User > current $env:Path.
