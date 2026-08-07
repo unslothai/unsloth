@@ -3314,7 +3314,6 @@ def test_merge_scraped_evidence_handles_empty_sides():
 def _route_sync(messages, *, prune_missing = False):
     """Drive the real PUT /threads/{id}/messages against the real database."""
     from routes import chat_history
-
     return chat_history.replace_thread_messages(
         "thread-1",
         chat_history.ChatMessageSyncRequest(
@@ -3347,11 +3346,7 @@ def test_route_autosave_survives_drifted_research_content(research_home):
 
     response = _route_sync(replayed)
 
-    assert {message.id for message in response.messages} == {
-        "user-1",
-        "assistant-1",
-        "followup",
-    }
+    assert {message.id for message in response.messages} == {"user-1", "assistant-1", "followup"}
     # The unrelated message is saved, and the server's copy of the research turn wins.
     assert studio_db.get_chat_message("thread-1", "followup") is not None
     assert studio_db.get_chat_message("thread-1", "user-1")["content"] == [
