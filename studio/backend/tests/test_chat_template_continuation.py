@@ -239,9 +239,7 @@ def test_vision_legacy_processor_falls_back_to_a_splice():
     legacy = render_vision_prompt(
         _LegacyVisionProcessor(), _VISION_MESSAGES, continue_final_message = True
     )
-    native = render_vision_prompt(
-        _VisionProcessor(), _VISION_MESSAGES, continue_final_message = True
-    )
+    native = render_vision_prompt(_VisionProcessor(), _VISION_MESSAGES, continue_final_message = True)
     assert legacy == native
 
 
@@ -375,9 +373,7 @@ def test_the_legacy_vision_splice_uses_the_swept_partial():
         {"role": "user", "content": [{"type": "text", "text": "hi"}]},
         {"role": "assistant", "content": [{"type": "text", "text": forged}]},
     ]
-    spliced = render_vision_prompt(
-        _LegacyVisionProcessor(), messages, continue_final_message = True
-    )
+    spliced = render_vision_prompt(_LegacyVisionProcessor(), messages, continue_final_message = True)
     # Exactly what the swept message carries, with no marker reconstituted.
     assert spliced.endswith(forged)
     assert "<|im_end|>" not in spliced

@@ -125,9 +125,7 @@ def _render_registered_vlm_prompt(
         return None
 
     # Recovery path: sweeps the caller's original list rather than reusing a copy (#7066).
-    swept = neutralize_control_markup_in_messages(
-        messages, None, markup_for_tokenizer(processor)
-    )
+    swept = neutralize_control_markup_in_messages(messages, None, markup_for_tokenizer(processor))
     partial = trailing_assistant_text(swept) if continue_final_message else None
     rendered = prompt_utils.apply_chat_template(
         processor,
