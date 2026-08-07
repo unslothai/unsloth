@@ -188,6 +188,14 @@ test("the KB list's own 200 does not overrule its marker", () => {
     ragUnavailableReason: BACKEND_REASON,
   };
   noteRagResponse(200, body);
+  // Assert BEFORE the marker read, which is the only call that can prove the exemption
+  // exists. noteRagAvailability writes available:false unconditionally, so checking only
+  // after it passed even with the exemption deleted -- the last writer hid the bug.
+  assert.equal(
+    useRagAvailabilityStore.getState().availabilityUnknown(),
+    true,
+    "the list's 200 was read as a verdict, racing its own marker back to available",
+  );
   noteRagAvailability(body);
   assert.equal(
     useRagAvailabilityStore.getState().isUnavailable(),

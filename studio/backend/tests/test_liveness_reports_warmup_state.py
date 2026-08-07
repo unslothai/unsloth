@@ -112,6 +112,7 @@ print("RESULT" + json.dumps({
     "torch_warm_in_progress": body.get("torch_warm_in_progress"),
     "has_warm_key": "torch_warm_in_progress" in body,
     "studio_root_id": body.get("studio_root_id"),
+    "has_root_id": "studio_root_id" in body,
 }))
 """
 
@@ -230,7 +231,15 @@ def test_liveness_answers_immediately_and_never_starts_detection():
     # Still the full port-validation payload the launcher matches on. The key must be
     # present because the launcher reads it; its value is environment-derived and is
     # legitimately empty on a bare CI runner, so presence is what this asserts.
-    assert "studio_root_id" in result
+    #
+    # Read it off has_root_id, not off `result`. The subprocess snippet builds `result`
+    # with `body.get("studio_root_id")`, so the key exists in `result` whether or not the
+    # reply carried it -- `"studio_root_id" in result` was true even with the field
+    # deleted from liveness_check(). Its two neighbours already use this indirection.
+    assert result["has_root_id"], (
+        "/api/liveness dropped studio_root_id; desktop_backend_owner.rs deserializes it "
+        "into DesktopLiveness and rejects a sibling port without it"
+    )
 
 
 def test_the_desktop_watchdog_still_reads_these_fields():
