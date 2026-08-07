@@ -333,9 +333,7 @@ with sync_playwright() as p:
     else:
         step("setup: change-password")
         if not BOOTSTRAP_PW:
-            raise RuntimeError(
-                "STUDIO_OLD_PW is required for the first-boot change-password flow"
-            )
+            raise RuntimeError("STUDIO_OLD_PW is required for the first-boot change-password flow")
         # 3-attempt retry: the form can re-render mid-fill on slow runners and
         # detach the password fields; each retry re-navigates with a fresh page.
         form_err: Exception | None = None
