@@ -2602,7 +2602,9 @@ def test_sources_dedupe_on_the_load_target_alone():
     assert "source.kind" not in key
     order = src.split("function orderAutoLoadSources", 1)[1].split("\n}\n", 1)[0]
     # Ordered first, so the survivor is the row the cascade would have reached.
-    assert order.index("const ordered = [...sources].sort(") < order.index("const seen = new Set<string>()")
+    assert order.index("const ordered = [...sources].sort(") < order.index(
+        "const seen = new Set<string>()"
+    )
 
 
 def test_variant_scans_take_the_run_signal():

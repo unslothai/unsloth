@@ -1047,9 +1047,9 @@ def test_a_mixed_cached_repo_is_attempted_once_not_twice():
 
     assert _loaded_paths(out) == [GEMMA_REPO]
     # The GGUF row is the one the backend will actually resolve, so it survives.
-    assert [
-        event["gguf_variant"] for event in out["events"] if event["kind"] == "loadModel"
-    ] == ["UD-Q4_K_XL"]
+    assert [event["gguf_variant"] for event in out["events"] if event["kind"] == "loadModel"] == [
+        "UD-Q4_K_XL"
+    ]
 
 
 def test_a_mixed_cached_repo_still_loads_through_its_gguf_row():
@@ -1076,9 +1076,7 @@ def test_distinct_repos_are_not_collapsed_by_the_dedupe():
 
 def test_variant_scans_carry_the_run_abort_signal():
     """Bounded by their own timeout, but a stopped send should not wait it out."""
-    out = _run(
-        "scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })"
-    )
+    out = _run("scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })")
     scans = [event for event in out["events"] if event["kind"] == "listGgufVariants"]
     assert scans, "no variant scan ran"
     assert all(scan["hasSignal"] for scan in scans)
