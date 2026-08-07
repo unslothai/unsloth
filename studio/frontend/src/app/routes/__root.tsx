@@ -1,17 +1,15 @@
-
-
-
 import { AppSidebar } from "@/components/app-sidebar";
 import { Navbar } from "@/components/navbar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { FEATURE_IMAGES } from "@/config/disabled-features";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { ApiMonitorOverlay } from "@/features/api-monitor/api-monitor-overlay";
 import { hasAuthToken } from "@/features/auth";
 import {
   ChatPage,
   type ChatSearch,
-  clearNewChatDraft,
   StopRunningChatsDialog,
+  clearNewChatDraft,
   useChatRuntimeStore,
 } from "@/features/chat";
 import { useExportRuntimeLifecycle } from "@/features/export";
@@ -34,8 +32,8 @@ import {
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
 import {
-  lazy,
   Suspense,
+  lazy,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -170,12 +168,13 @@ function RootLayout() {
 
   // Same persistent mount for /images so a long batch keeps generating off-tab (ImagesPage reads no URL search, so it needs
   // only the mount latch). Mounts lazily on first visit, then stays mounted, hidden+inert while off-route.
-  const isImagesRoute = pathname === "/images";
+  // With Images switched off (see config/disabled-features) the route redirects, so this never mounts.
+  const isImagesRoute = FEATURE_IMAGES && pathname === "/images";
   const [imagesMounted, setImagesMounted] = useState(isImagesRoute);
   if (isImagesRoute && !imagesMounted) {
     setImagesMounted(true);
   }
-  const shouldMountImages = isImagesRoute || imagesMounted;
+  const shouldMountImages = FEATURE_IMAGES && (isImagesRoute || imagesMounted);
 
   // Same persistent mount for /video so a long generation keeps running off-tab. Mounts lazily on first visit, then stays mounted, hidden+inert while off-route.
   const isVideoRoute = pathname === "/video";

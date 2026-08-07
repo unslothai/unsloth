@@ -1,7 +1,3 @@
-
-
-
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Delete02Icon,
   Download01Icon,
@@ -11,10 +7,18 @@ import {
   VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import { MediaPageLink } from "@/components/media-page-link";
-import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
+import { NegativePromptField } from "@/components/negative-prompt-field";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -22,6 +26,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { InfoHint } from "@/components/ui/info-hint";
 import { Input } from "@/components/ui/input";
 import {
   Popover,
@@ -42,29 +47,29 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { InfoHint } from "@/components/ui/info-hint";
-import { NegativePromptField } from "@/components/negative-prompt-field";
-import { useScrollFades } from "@/hooks/use-scroll-fades";
+import { FEATURE_IMAGES } from "@/config/disabled-features";
+import { ParamSlider } from "@/features/chat";
+import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
+import { useStagedDownload } from "@/features/hub/download-manager";
+import { formatBytes, formatEta } from "@/features/hub/lib/format";
+import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
-import { VIDEO_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
 import {
   VIDEO_CATALOG,
   catalogToModelOptions,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
+import { VIDEO_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
-import { ParamSlider } from "@/features/chat";
-import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
-import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
-import { formatBytes, formatEta } from "@/features/hub/lib/format";
-import { useNavigate, useSearch } from "@tanstack/react-router";
-import { useStagedDownload } from "@/features/hub/download-manager";
-import { cn } from "@/lib/utils";
+import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
+import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
 import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 
 import {
   type GalleryVideo,
@@ -77,10 +82,10 @@ import {
   fetchGalleryVideoExport,
   fetchGalleryVideoSignedUrl,
   generateVideo,
+  getVideoDownloadPlan,
   getVideoGallery,
   getVideoGenerateProgress,
   getVideoLoadProgress,
-  getVideoDownloadPlan,
   getVideoStatus,
   loadVideoModel,
   unloadVideoModel,
@@ -93,7 +98,11 @@ const VIDEO_MODELS: ModelOption[] = catalogToModelOptions(VIDEO_CATALOG);
 // Per-model generation defaults (steps + guidance), matched by repo-id substring, most specific first.
 const DEFAULT_GEN = { steps: 8, guidance: 1 };
 
-const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> = [
+const MODEL_DEFAULTS: Array<{
+  match: string;
+  steps: number;
+  guidance: number;
+}> = [
   // "distilled" before the generic "ltx": the distilled model runs at 8 steps, guidance 1.
   { match: "distilled", steps: 8, guidance: 1 },
   { match: "ltx", steps: 40, guidance: 4 },
@@ -157,7 +166,10 @@ const PAGE_SIZE = 50;
 // Export filename, e.g. Unsloth_video_20260624-143005_123.mp4.
 type VideoExportFormat = "mp4" | "webm" | "gif";
 
-function exportFilename(video: GalleryVideo, format: VideoExportFormat = "mp4"): string {
+function exportFilename(
+  video: GalleryVideo,
+  format: VideoExportFormat = "mp4",
+): string {
   const d = new Date(video.created_at);
   const p = (n: number) => String(n).padStart(2, "0");
   const stamp = Number.isNaN(d.getTime())
@@ -200,7 +212,10 @@ function formatTimestamp(iso: string): string {
 
 // A terse clip descriptor for the gallery card / player caption: duration + resolution.
 function clipMeta(video: GalleryVideo): string {
-  const secs = video.duration_s > 0 ? `${video.duration_s.toFixed(1)}s` : `${video.num_frames}f`;
+  const secs =
+    video.duration_s > 0
+      ? `${video.duration_s.toFixed(1)}s`
+      : `${video.num_frames}f`;
   return `${secs} · ${video.width}×${video.height}`;
 }
 
@@ -209,7 +224,8 @@ function genStepLabel(p: VideoGenerateProgress): string {
   if (p.phase === "export") return "Encoding video…";
   // Text encoding and the first-step warmup run before the first scheduler tick, so step 0 means "working, not denoising yet" -- up to a minute at 720p.
   if (p.step === 0) return "Preparing (text encoding + warmup)…";
-  const base = p.total > 0 ? `Denoising step ${p.step}/${p.total}` : "Denoising…";
+  const base =
+    p.total > 0 ? `Denoising step ${p.step}/${p.total}` : "Denoising…";
   const eta = p.eta_seconds != null ? formatEta(p.eta_seconds) : "";
   return eta ? `${base} · ~${eta}` : base;
 }
@@ -259,7 +275,7 @@ function loadToastArgs(p: VideoLoadProgress, id?: string | number) {
   return {
     ...(id != null ? { id } : {}),
     description: loadToastDescription(p),
-    duration: Infinity,
+    duration: Number.POSITIVE_INFINITY,
     closeButton: true,
     classNames: LOAD_TOAST_CLASSNAMES,
   };
@@ -319,7 +335,9 @@ function Field({
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
       <div className="flex items-center gap-1">
-        <label className="text-xs font-medium text-muted-foreground">{label}</label>
+        <label className="text-xs font-medium text-muted-foreground">
+          {label}
+        </label>
         {hint && <InfoHint>{hint}</InfoHint>}
       </div>
       {children}
@@ -331,7 +349,8 @@ function Field({
 function formatResolvedValue(value: string | boolean | null): string {
   if (value === null || value === "") return "Off";
   if (typeof value === "boolean") return value ? "On" : "Off";
-  if (value === "_native_cudnn" || value.toLowerCase() === "cudnn") return "cuDNN";
+  if (value === "_native_cudnn" || value.toLowerCase() === "cudnn")
+    return "cuDNN";
   return value.toUpperCase();
 }
 
@@ -428,7 +447,7 @@ function RecipePopover({
   }, [active]);
   return (
     <Popover open={active && open} onOpenChange={(o) => setOpen(active && o)}>
-      <PopoverTrigger asChild>
+      <PopoverTrigger asChild={true}>
         <Button size="sm" variant="ghost" className="gap-1.5">
           <HugeiconsIcon icon={InformationCircleIcon} className="size-4" />
           Recipe
@@ -437,23 +456,39 @@ function RecipePopover({
       <PopoverContent align="end" side="top" className="w-80 p-0">
         <div className="border-b border-border/60 px-4 py-2.5">
           <p className="text-sm font-semibold">Generation settings</p>
-          <p className="text-ui-11 text-muted-foreground">{formatTimestamp(video.created_at)}</p>
+          <p className="text-ui-11 text-muted-foreground">
+            {formatTimestamp(video.created_at)}
+          </p>
         </div>
         <div className="flex flex-col gap-2 px-4 py-3 text-xs">
-          <RecipeRow label="Prompt" value={video.prompt} wrap />
+          <RecipeRow label="Prompt" value={video.prompt} wrap={true} />
           {video.negative_prompt ? (
-            <RecipeRow label="Negative" value={video.negative_prompt} wrap />
+            <RecipeRow
+              label="Negative"
+              value={video.negative_prompt}
+              wrap={true}
+            />
           ) : null}
           {video.model ? <RecipeRow label="Model" value={video.model} /> : null}
           <RecipeRow label="Size" value={`${video.width} × ${video.height}`} />
-          <RecipeRow label="Frames" value={`${video.num_frames} @ ${video.fps} fps`} />
-          <RecipeRow label="Duration" value={`${video.duration_s.toFixed(2)}s`} />
+          <RecipeRow
+            label="Frames"
+            value={`${video.num_frames} @ ${video.fps} fps`}
+          />
+          <RecipeRow
+            label="Duration"
+            value={`${video.duration_s.toFixed(2)}s`}
+          />
           <RecipeRow label="Steps" value={String(video.steps)} />
           <RecipeRow label="Guidance" value={String(video.guidance)} />
-          <RecipeRow label="Seed" value={String(video.seed)} mono />
+          <RecipeRow label="Seed" value={String(video.seed)} mono={true} />
         </div>
         <div className="border-t border-border/60 px-3 py-2.5">
-          <Button size="sm" className="w-full gap-1.5" onClick={() => onRestore(video)}>
+          <Button
+            size="sm"
+            className="w-full gap-1.5"
+            onClick={() => onRestore(video)}
+          >
             Restore these settings
           </Button>
         </div>
@@ -511,19 +546,27 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     "unsloth_video_advanced_open",
   );
   // Advanced (load-time) options; "auto"/"off" map to the backend defaults. "Reapply" reloads with new values.
-  const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
-  const [speedMode, setSpeedMode] = useState<"auto" | "off" | "eager" | "default" | "max">("auto");
+  const [memoryMode, setMemoryMode] = useState<
+    "auto" | "fast" | "balanced" | "low_vram"
+  >("auto");
+  const [speedMode, setSpeedMode] = useState<
+    "auto" | "off" | "eager" | "default" | "max"
+  >("auto");
   const [attentionBackend, setAttentionBackend] = useState<
     "auto" | "native" | "cudnn" | "flash3" | "sage"
   >("auto");
-  const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache">("auto");
+  const [transformerCache, setTransformerCache] = useState<
+    "auto" | "off" | "fbcache"
+  >("auto");
   const [transformerQuant, setTransformerQuant] = useState<
     "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8"
   >("auto");
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options.
-  const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
-    null,
-  );
+  const lastLoad = useRef<{
+    repoId: string;
+    kind: "gguf" | "single_file" | "pipeline";
+    filename?: string;
+  } | null>(null);
   // Whether this session holds a reapply descriptor: with a model already resident, lastLoad is null, so hide the button rather than offer a dead control.
   const [canReapply, setCanReapply] = useState(false);
 
@@ -542,9 +585,13 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     className: settingsFadeClass,
   } = useScrollFades();
   // Records come from the backend (durable); srcById maps each id to its object URL.
-  const [videos, setVideos] = useState<GalleryVideo[]>(() => galleryCache.videos);
+  const [videos, setVideos] = useState<GalleryVideo[]>(
+    () => galleryCache.videos,
+  );
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
-  const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
+  const [selectedId, setSelectedId] = useState<string | null>(
+    () => galleryCache.selectedId,
+  );
   // Autoplay replays per selected clip (3 total plays, then pause). Reset on every selection change.
   const playCountRef = useRef(0);
   useEffect(() => {
@@ -574,7 +621,10 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   const quantRevert = useRef<{ prev: string | null } | null>(null);
   // The Reapply target (and its canReapply flag) to restore if the optimistic swap fails: handleLoad overwrites lastLoad at
   // load start, and a load failing AFTER that leaves the previous model resident, so the poll rolls it back.
-  const lastLoadRevert = useRef<{ prev: typeof lastLoad.current; canReapply: boolean } | null>(null);
+  const lastLoadRevert = useRef<{
+    prev: typeof lastLoad.current;
+    canReapply: boolean;
+  } | null>(null);
 
   const dismissLoadToast = useCallback(() => {
     if (loadToastId.current != null) toast.dismiss(loadToastId.current);
@@ -608,7 +658,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   const fps = status?.defaults?.fps ?? FALLBACK_FPS;
 
   // Duration presets: valid frame counts (k*frame_step+1) closest to ~1s/2s/3s/5s at the current fps, deduped.
-  const durationOptions = useMemo<Array<{ frames: number; seconds: number }>>(() => {
+  const durationOptions = useMemo<
+    Array<{ frames: number; seconds: number }>
+  >(() => {
     const targets = [1, 2, 3, 5];
     const seen = new Set<number>();
     const out: Array<{ frames: number; seconds: number }> = [];
@@ -637,7 +689,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       // A newly loaded family brings its own default clip length; without this the pre-load fallback sticks and every default run is a ~1s clip.
       if (familyChanged && loadedFamily && familyDefaultFrames) {
         const best = durationOptions.reduce((a, b) =>
-          Math.abs(b.frames - familyDefaultFrames) < Math.abs(a.frames - familyDefaultFrames)
+          Math.abs(b.frames - familyDefaultFrames) <
+          Math.abs(a.frames - familyDefaultFrames)
             ? b
             : a,
         );
@@ -661,7 +714,12 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   useEffect(() => {
     const modelChanged = loadedModelKey !== prevLoadedModelRef.current;
     prevLoadedModelRef.current = loadedModelKey;
-    if (modelChanged && loadedModelKey && defaultSteps != null && defaultGuidance != null) {
+    if (
+      modelChanged &&
+      loadedModelKey &&
+      defaultSteps != null &&
+      defaultGuidance != null
+    ) {
       setSteps(defaultSteps);
       setGuidance(defaultGuidance);
     }
@@ -678,10 +736,15 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     try {
       const url = await fetchGalleryVideoSignedUrl(video.id);
       // The record can be deleted (or the gallery cleared) while the link is being minted; caching it then would strand an entry.
-      if (galleryCache.deleted.has(video.id) || galleryCache.epoch !== epochAtStart) return;
+      if (
+        galleryCache.deleted.has(video.id) ||
+        galleryCache.epoch !== epochAtStart
+      )
+        return;
       galleryCache.srcById.set(video.id, { url, mintedAt: Date.now() });
       // The URL is cached above either way; skip the state update after unmount (matches the other async callbacks in this file).
-      if (isMounted.current) setSrcById((prev) => ({ ...prev, [video.id]: url }));
+      if (isMounted.current)
+        setSrcById((prev) => ({ ...prev, [video.id]: url }));
     } catch {
       // Leave it without a src; the card shows a placeholder.
     } finally {
@@ -720,7 +783,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       // and a viewport-root margin would never reach it. The strip scrolls horizontally, so the sideways margin is the one that matters.
       { root, rootMargin: "0px 600px" },
     );
-    for (const card of root.querySelectorAll("[data-clip-id]")) io.observe(card);
+    for (const card of root.querySelectorAll("[data-clip-id]"))
+      io.observe(card);
     return () => io.disconnect();
   }, [videos, ensureSrc]);
 
@@ -777,7 +841,11 @@ export function VideoPage({ active = true }: { active?: boolean }) {
 
   // WebM/GIF go through a server-side transcode that can take seconds (and 501s when the codec is missing), so wrap the helper with toasts.
   const handleDownload = useCallback(
-    async (src: string, video: GalleryVideo, format: "mp4" | "webm" | "gif") => {
+    async (
+      src: string,
+      video: GalleryVideo,
+      format: "mp4" | "webm" | "gif",
+    ) => {
       if (format === "mp4") {
         void downloadVideo(src, video, format);
         return;
@@ -800,7 +868,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     try {
       await deleteGalleryVideo(id);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to delete video");
+      toast.error(
+        err instanceof Error ? err.message : "Failed to delete video",
+      );
       return;
     }
     galleryCache.srcById.delete(id);
@@ -820,7 +890,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     try {
       await clearVideoGallery();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to clear gallery");
+      toast.error(
+        err instanceof Error ? err.message : "Failed to clear gallery",
+      );
       return;
     }
     galleryCache.srcById.clear();
@@ -954,7 +1026,10 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     if (genPollTimer.current) clearInterval(genPollTimer.current);
     genPollTimer.current = null;
     if (genVisibilityListener.current) {
-      document.removeEventListener("visibilitychange", genVisibilityListener.current);
+      document.removeEventListener(
+        "visibilitychange",
+        genVisibilityListener.current,
+      );
       genVisibilityListener.current = null;
     }
   }, []);
@@ -977,7 +1052,10 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           if (p.phase === "completed" && p.video) {
             // Prepend the new clip (newest first) and mint its link.
             const clip = p.video;
-            setVideos((prev) => [clip, ...prev.filter((v) => v.id !== clip.id)]);
+            setVideos((prev) => [
+              clip,
+              ...prev.filter((v) => v.id !== clip.id),
+            ]);
             setSelectedId(clip.id);
             void ensureSrc(clip);
           } else if (p.phase === "failed") {
@@ -1007,7 +1085,10 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     genVisibilityListener.current = () => {
       if (document.visibilityState === "visible") void pollGenerateOnce();
     };
-    document.addEventListener("visibilitychange", genVisibilityListener.current);
+    document.addEventListener(
+      "visibilitychange",
+      genVisibilityListener.current,
+    );
     genPollTimer.current = setInterval(() => void pollGenerateOnce(), 300);
   }, [ensureSrc, stopGenPoll]);
 
@@ -1039,7 +1120,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           const clip = g.video;
           // Deleted this session: the backend clears its terminal record on delete, but a client racing that must not merge a record whose file is gone.
           if (!galleryCache.deleted.has(clip.id)) {
-            setVideos((prev) => (prev.some((v) => v.id === clip.id) ? prev : [clip, ...prev]));
+            setVideos((prev) =>
+              prev.some((v) => v.id === clip.id) ? prev : [clip, ...prev],
+            );
             void ensureSrc(clip);
           }
         } else if (g.phase === "failed") {
@@ -1056,7 +1139,14 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       stopGenPoll();
       dismissLoadToast();
     };
-  }, [refreshStatus, dismissLoadToast, pollLoadProgress, startGenPoll, stopGenPoll, ensureSrc]);
+  }, [
+    refreshStatus,
+    dismissLoadToast,
+    pollLoadProgress,
+    startGenPoll,
+    stopGenPoll,
+    ensureSrc,
+  ]);
 
   const handleLoad = useCallback(
     // Resolves true when the background load STARTED (callers may revert optimistic picker state on false).
@@ -1078,7 +1168,10 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename };
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
-      lastLoadRevert.current = { prev: prevLastLoad, canReapply: prevCanReapply };
+      lastLoadRevert.current = {
+        prev: prevLastLoad,
+        canReapply: prevCanReapply,
+      };
       try {
         // Returns immediately -- the load runs in the background and we poll. The backend infers the family + base repo from the id; the "auto"/"off" sentinels map to omitted.
         await loadVideoModel({
@@ -1088,16 +1181,21 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           hf_token: hfApiToken(getHfToken()),
           memory_mode: memoryMode === "auto" ? undefined : memoryMode,
           speed_mode: speedMode === "auto" ? undefined : speedMode,
-          attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
-          transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
-          transformer_quant: transformerQuant === "auto" ? undefined : transformerQuant,
+          attention_backend:
+            attentionBackend === "auto" ? undefined : attentionBackend,
+          transformer_cache:
+            transformerCache === "auto" ? undefined : transformerCache,
+          transformer_quant:
+            transformerQuant === "auto" ? undefined : transformerQuant,
         });
       } catch (err) {
         lastLoad.current = prevLastLoad;
         setCanReapply(prevCanReapply);
         lastLoadRevert.current = null;
         dismissLoadToast();
-        toast.error(err instanceof Error ? err.message : "Failed to start load");
+        toast.error(
+          err instanceof Error ? err.message : "Failed to start load",
+        );
         setBusy(null);
         void refreshStatus();
         return false;
@@ -1234,7 +1332,11 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         const d = defaultsFor(spec.filename ? `${id}/${spec.filename}` : id);
         setSteps(d.steps);
         setGuidance(d.guidance);
-        void loadOrStage(id, { kind: spec.kind, filename: spec.filename }, meta.isDownloaded);
+        void loadOrStage(
+          id,
+          { kind: spec.kind, filename: spec.filename },
+          meta.isDownloaded,
+        );
         return;
       }
       // GGUF quant pick from the variant expander. Optimistic for picker feedback, reverted if the load fails to START; the poll owns the after-start revert.
@@ -1284,7 +1386,10 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         return;
       }
       // A direct local .safetensors pick must load via from_single_file: the pipeline route rejects a bare file, and only after evicting the resident model.
-      if (meta.source === "local" && id.toLowerCase().endsWith(".safetensors")) {
+      if (
+        meta.source === "local" &&
+        id.toLowerCase().endsWith(".safetensors")
+      ) {
         const norm = id.replace(/\\/g, "/");
         const slash = norm.lastIndexOf("/");
         const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
@@ -1295,17 +1400,21 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         const dsf = defaultsFor(id);
         setSteps(dsf.steps);
         setGuidance(dsf.guidance);
-        void handleLoad(dir, { kind: "single_file", filename }).then((started) => {
-          if (!started) {
-            setQuant(prevQuant);
-            quantRevert.current = null;
-          }
-        });
+        void handleLoad(dir, { kind: "single_file", filename }).then(
+          (started) => {
+            if (!started) {
+              setQuant(prevQuant);
+              quantRevert.current = null;
+            }
+          },
+        );
         return;
       }
       // Otherwise treat it as a full diffusers repo. The backend gates loads to unsloth/* repos, the family bases, or on-device paths.
       if (meta.source !== "local" && !id.toLowerCase().startsWith("unsloth/")) {
-        toast.error("Only unsloth or on-device video models can be loaded here");
+        toast.error(
+          "Only unsloth or on-device video models can be loaded here",
+        );
         return;
       }
       setQuant(null);
@@ -1329,7 +1438,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       setStatus(await unloadVideoModel());
       setQuant(null);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to unload model");
+      toast.error(
+        err instanceof Error ? err.message : "Failed to unload model",
+      );
       void refreshStatus();
     } finally {
       setBusy(null);
@@ -1373,7 +1484,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       await generateVideo({
         prompt: prompt.trim(),
         // Only send a negative prompt when guidance uses it, so the recipe does not record one the model ignored.
-        negative_prompt: guidance > 0 ? negativePrompt.trim() || undefined : undefined,
+        negative_prompt:
+          guidance > 0 ? negativePrompt.trim() || undefined : undefined,
         width: w,
         height: h,
         num_frames: numFrames,
@@ -1384,7 +1496,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       });
     } catch (err) {
       if (!isMounted.current) return;
-      toast.error(err instanceof Error ? err.message : "Video generation failed");
+      toast.error(
+        err instanceof Error ? err.message : "Video generation failed",
+      );
       setBusy(null);
       setGenStep(null);
       return;
@@ -1439,9 +1553,13 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         <AdvancedSelect
           label="Precision"
           hint="How the model computes. Auto picks the fastest precision the hardware supports (at least INT8 on a capable GPU; FP8 on data-center cards) by quantising the transformer onto low-precision tensor cores, and keeps plain bf16 when the device or memory plan can't take it. Off always runs bf16."
-          badge={<ResolvedBadge status={status} controlKey="transformer_quant" />}
+          badge={
+            <ResolvedBadge status={status} controlKey="transformer_quant" />
+          }
           value={transformerQuant}
-          onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
+          onValueChange={(v) =>
+            setTransformerQuant(v as typeof transformerQuant)
+          }
           options={[
             ["auto", "Auto (fastest for GPU)"],
             ["none", "Off (bf16)"],
@@ -1456,7 +1574,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
             Precision
           </span>
-          <span className="text-xs text-muted-foreground/60">Full-pipeline models only</span>
+          <span className="text-xs text-muted-foreground/60">
+            Full-pipeline models only
+          </span>
         </div>
       )}
       <AdvancedSelect
@@ -1497,7 +1617,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
               Reapply to loaded model
             </Button>
           </TooltipTrigger>
-          <TooltipContent>Reload the current model with these advanced options</TooltipContent>
+          <TooltipContent>
+            Reload the current model with these advanced options
+          </TooltipContent>
         </Tooltip>
       )}
     </>
@@ -1512,7 +1634,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         <div className="flex items-center gap-3">
           <ModelSelector
             models={VIDEO_MODELS}
-            value={status?.loaded ? status.repo_id ?? undefined : undefined}
+            value={status?.loaded ? (status.repo_id ?? undefined) : undefined}
             activeGgufVariant={quant}
             onValueChange={handleModelSelect}
             onEject={status?.loaded ? handleUnload : undefined}
@@ -1527,18 +1649,26 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           {/* Loaded-model status line: family / kind / offload / speed, as the images page surfaces on load. Hidden until a model is resident. */}
           {status?.loaded && (
             <div className="hidden items-center gap-3 text-ui-11 md:flex">
-              {status.family && <StatusChip label="Family" value={status.family} />}
-              {status.model_kind && <StatusChip label="Kind" value={status.model_kind} />}
+              {status.family && (
+                <StatusChip label="Family" value={status.family} />
+              )}
+              {status.model_kind && (
+                <StatusChip label="Kind" value={status.model_kind} />
+              )}
               {status.offload_policy && (
                 <StatusChip label="Offload" value={status.offload_policy} />
               )}
-              {status.speed_mode && <StatusChip label="Speed" value={status.speed_mode} />}
+              {status.speed_mode && (
+                <StatusChip label="Speed" value={status.speed_mode} />
+              )}
             </div>
           )}
         </div>
         <div className="flex items-center gap-2">
           {/* Images is a separate page, so it sits out here, not in this page's controls. */}
-          <MediaPageLink to="/images" label="Images" icon={Image03Icon} />
+          {FEATURE_IMAGES && (
+            <MediaPageLink to="/images" label="Images" icon={Image03Icon} />
+          )}
         </div>
       </div>
 
@@ -1557,121 +1687,128 @@ export function VideoPage({ active = true }: { active?: boolean }) {
               settingsFadeClass,
             )}
           >
-          {/* Names the pane, as the Images column does. Same shape there, so
+            {/* Names the pane, as the Images column does. Same shape there, so
               the two pages stay level. */}
-          <div className="mb-2 grid gap-1.5">
-            <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
-              {/* The app's Video icon, same as the sidebar row. */}
-              <HugeiconsIcon icon={FlimSlateIcon} className="size-[18px] shrink-0" />
-              Create videos
-            </h2>
-            <p className="text-xs leading-snug text-muted-foreground">
-              Generate a video from a prompt
-            </p>
-          </div>
+            <div className="mb-2 grid gap-1.5">
+              <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
+                {/* The app's Video icon, same as the sidebar row. */}
+                <HugeiconsIcon
+                  icon={FlimSlateIcon}
+                  className="size-[18px] shrink-0"
+                />
+                Create videos
+              </h2>
+              <p className="text-xs leading-snug text-muted-foreground">
+                Generate a video from a prompt
+              </p>
+            </div>
 
-          <Field label="Prompt">
-            <Textarea
-              rows={4}
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
+            <Field label="Prompt">
+              <Textarea
+                rows={4}
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+              />
+            </Field>
+
+            <NegativePromptField
+              value={negativePrompt}
+              onChange={setNegativePrompt}
+              open={negativeOpen}
+              onOpenChange={setNegativeOpen}
+              hint="What to steer the video away from. Only used when guidance is above 0."
             />
-          </Field>
 
-          <NegativePromptField
-            value={negativePrompt}
-            onChange={setNegativePrompt}
-            open={negativeOpen}
-            onOpenChange={setNegativeOpen}
-            hint="What to steer the video away from. Only used when guidance is above 0."
-          />
-
-          <Field
-            label="Resolution"
-            hint="The frame size. Presets come from the loaded model; portrait presets are marked."
-          >
-            <Select
-              value={String(resolutionIdx)}
-              onValueChange={(v) => setResolutionIdx(Number(v))}
+            <Field
+              label="Resolution"
+              hint="The frame size. Presets come from the loaded model; portrait presets are marked."
             >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {resolutionPresets.map(([w, h], i) => (
-                  <SelectItem key={`${w}x${h}`} value={String(i)}>
-                    {w} × {h}
-                    {h > w ? " (portrait)" : ""}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
+              <Select
+                value={String(resolutionIdx)}
+                onValueChange={(v) => setResolutionIdx(Number(v))}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {resolutionPresets.map(([w, h], i) => (
+                    <SelectItem key={`${w}x${h}`} value={String(i)}>
+                      {w} × {h}
+                      {h > w ? " (portrait)" : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
 
-          <Field
-            label="Duration"
-            hint="Clip length in seconds at the current frame rate. Valid lengths are set by the model's temporal lattice."
-          >
-            <Select
-              value={String(numFrames)}
-              onValueChange={(v) => setNumFrames(Number(v))}
+            <Field
+              label="Duration"
+              hint="Clip length in seconds at the current frame rate. Valid lengths are set by the model's temporal lattice."
             >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {durationOptions.map((o) => (
-                  <SelectItem key={o.frames} value={String(o.frames)}>
-                    {o.seconds.toFixed(1)}s · {o.frames} frames
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
+              <Select
+                value={String(numFrames)}
+                onValueChange={(v) => setNumFrames(Number(v))}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {durationOptions.map((o) => (
+                    <SelectItem key={o.frames} value={String(o.frames)}>
+                      {o.seconds.toFixed(1)}s · {o.frames} frames
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
 
-          <div className="flex items-center justify-between">
-            <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
-              Frame rate
-              <InfoHint>Playback frame rate, fixed per model.</InfoHint>
-            </span>
-            <span className="font-mono text-xs font-medium text-foreground">{fps} fps</span>
-          </div>
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                Frame rate
+                <InfoHint>Playback frame rate, fixed per model.</InfoHint>
+              </span>
+              <span className="font-mono text-xs font-medium text-foreground">
+                {fps} fps
+              </span>
+            </div>
 
-          <SliderField
-            label="Steps"
-            hint="Denoising steps. Distilled models want very few (8); the full base model wants more (40)."
-            value={steps}
-            min={1}
-            max={100}
-            step={1}
-            onChange={setSteps}
-          />
-          <SliderField
-            label="Guidance"
-            hint="Classifier-free guidance scale. Keep low (1) for the distilled model; the base model uses real guidance (4)."
-            value={guidance}
-            min={0}
-            max={20}
-            step={0.5}
-            onChange={setGuidance}
-          />
-          {/* A slider row ends flush with its track, so the label below needs room. */}
-          <Field
-            label="Seed"
-            hint="Leave empty for a fresh random seed each run."
-            className="pt-2"
-          >
-            <Input
-              placeholder="Random if empty"
-              value={seed}
-              onChange={(e) => setSeed(e.target.value)}
+            <SliderField
+              label="Steps"
+              hint="Denoising steps. Distilled models want very few (8); the full base model wants more (40)."
+              value={steps}
+              min={1}
+              max={100}
+              step={1}
+              onChange={setSteps}
             />
-          </Field>
+            <SliderField
+              label="Guidance"
+              hint="Classifier-free guidance scale. Keep low (1) for the distilled model; the base model uses real guidance (4)."
+              value={guidance}
+              min={0}
+              max={20}
+              step={0.5}
+              onChange={setGuidance}
+            />
+            {/* A slider row ends flush with its track, so the label below needs room. */}
+            <Field
+              label="Seed"
+              hint="Leave empty for a fresh random seed each run."
+              className="pt-2"
+            >
+              <Input
+                placeholder="Random if empty"
+                value={seed}
+                onChange={(e) => setSeed(e.target.value)}
+              />
+            </Field>
 
-          <AdvancedDisclosure open={advancedOpen} onOpenChange={setAdvancedOpen}>
-            {advancedControls}
-          </AdvancedDisclosure>
-
+            <AdvancedDisclosure
+              open={advancedOpen}
+              onOpenChange={setAdvancedOpen}
+            >
+              {advancedControls}
+            </AdvancedDisclosure>
           </div>
           {/* Floats over the settings so it needs no bar of its own. */}
           <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-7 pl-8 pr-7">
@@ -1706,10 +1843,10 @@ export function VideoPage({ active = true }: { active?: boolean }) {
                   key={selected.id}
                   ref={previewRef}
                   src={selectedSrc}
-                  controls
-                  autoPlay
-                  muted
-                  playsInline
+                  controls={true}
+                  autoPlay={true}
+                  muted={true}
+                  playsInline={true}
                   onPlay={() => {
                     playCountRef.current += 1;
                   }}
@@ -1731,27 +1868,41 @@ export function VideoPage({ active = true }: { active?: boolean }) {
                 )}
                 {/* Actions grouped in one glass toolbar so they stay legible over any clip. */}
                 <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur">
-                  <RecipePopover video={selected} onRestore={restoreSettings} active={active} />
+                  <RecipePopover
+                    video={selected}
+                    onRestore={restoreSettings}
+                    active={active}
+                  />
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild={true}>
                       <Button size="sm" variant="ghost" className="gap-1.5">
-                        <HugeiconsIcon icon={Download01Icon} className="size-4" />
+                        <HugeiconsIcon
+                          icon={Download01Icon}
+                          className="size-4"
+                        />
                         Download
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem
-                        onClick={() => void handleDownload(selectedSrc, selected, "mp4")}
+                        onClick={() =>
+                          void handleDownload(selectedSrc, selected, "mp4")
+                        }
                       >
-                        MP4 (original{selected.has_audio ? ", keeps audio" : ""})
+                        MP4 (original{selected.has_audio ? ", keeps audio" : ""}
+                        )
                       </DropdownMenuItem>
                       <DropdownMenuItem
-                        onClick={() => void handleDownload(selectedSrc, selected, "webm")}
+                        onClick={() =>
+                          void handleDownload(selectedSrc, selected, "webm")
+                        }
                       >
                         WebM (web embeds)
                       </DropdownMenuItem>
                       <DropdownMenuItem
-                        onClick={() => void handleDownload(selectedSrc, selected, "gif")}
+                        onClick={() =>
+                          void handleDownload(selectedSrc, selected, "gif")
+                        }
                       >
                         GIF (preview, no audio)
                       </DropdownMenuItem>
@@ -1782,7 +1933,11 @@ export function VideoPage({ active = true }: { active?: boolean }) {
             ) : busy === "generating" ? null : (
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
                 {/* Same icon as the Video nav item. */}
-                <HugeiconsIcon icon={FlimSlateIcon} className="size-12" strokeWidth={1.5} />
+                <HugeiconsIcon
+                  icon={FlimSlateIcon}
+                  className="size-12"
+                  strokeWidth={1.5}
+                />
                 <p className="text-sm">
                   {status?.loaded
                     ? "Enter a prompt and hit Generate."
@@ -1805,7 +1960,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
                     title={null}
                     message="Starting…"
                     progressPercent={
-                      genStep && genStep.total > 0 ? (genStep.step / genStep.total) * 100 : null
+                      genStep && genStep.total > 0
+                        ? (genStep.step / genStep.total) * 100
+                        : null
                     }
                     progressLabel={genStep ? genStepLabel(genStep) : null}
                   />
@@ -1821,7 +1978,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
               onScroll={(e) => {
                 // Near the right edge: pull the next older page (infinite scroll).
                 const el = e.currentTarget;
-                if (el.scrollWidth - el.scrollLeft - el.clientWidth < 400) void loadMore();
+                if (el.scrollWidth - el.scrollLeft - el.clientWidth < 400)
+                  void loadMore();
               }}
             >
               {/* In-progress generation: a placeholder tile at the front so past clips stay visible and browsable while the new one renders. */}
@@ -1832,44 +1990,44 @@ export function VideoPage({ active = true }: { active?: boolean }) {
               )}
               {videos.map((video) => (
                 <Tooltip key={video.id}>
-                <TooltipTrigger asChild={true}>
-                <button
-                  type="button"
-                  data-clip-id={video.id}
-                  onClick={() => setSelectedId(video.id)}
-                  className="relative flex h-16 w-24 shrink-0 flex-col justify-end overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  {srcById[video.id] ? (
-                    // Muted, preload="metadata" so the first frame renders as a poster without playing every card at once.
-                    <video
-                      src={srcById[video.id]}
-                      muted
-                      playsInline
-                      preload="metadata"
-                      onError={() => remintSrc(video)}
-                      className="absolute inset-0 size-full object-cover"
-                    />
-                  ) : (
-                    <span className="absolute inset-0 flex items-center justify-center">
-                      <Spinner className="size-4 text-muted-foreground" />
+                  <TooltipTrigger asChild={true}>
+                    <button
+                      type="button"
+                      data-clip-id={video.id}
+                      onClick={() => setSelectedId(video.id)}
+                      className="relative flex h-16 w-24 shrink-0 flex-col justify-end overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      {srcById[video.id] ? (
+                        // Muted, preload="metadata" so the first frame renders as a poster without playing every card at once.
+                        <video
+                          src={srcById[video.id]}
+                          muted={true}
+                          playsInline={true}
+                          preload="metadata"
+                          onError={() => remintSrc(video)}
+                          className="absolute inset-0 size-full object-cover"
+                        />
+                      ) : (
+                        <span className="absolute inset-0 flex items-center justify-center">
+                          <Spinner className="size-4 text-muted-foreground" />
+                        </span>
+                      )}
+                      {/* A terse caption strip so cards read at a glance. Left/bottom padding clears the rounded corner and the selection border. */}
+                      <span className="relative z-10 truncate bg-gradient-to-t from-black/70 to-transparent px-2 pb-1 pt-2 text-left text-ui-9 font-medium leading-none text-white">
+                        {clipMeta(video)}
+                      </span>
+                      {/* Selection marker on a non-focusable overlay. */}
+                      {video.id === selected?.id && (
+                        <span className="pointer-events-none absolute inset-0 z-20 rounded-[10px] border border-border bg-white/35 dark:border-white/25 dark:bg-white/20" />
+                      )}
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-xs">
+                    {video.prompt}
+                    <span className="mt-0.5 block opacity-70">
+                      seed {video.seed} - {clipMeta(video)}
                     </span>
-                  )}
-                  {/* A terse caption strip so cards read at a glance. Left/bottom padding clears the rounded corner and the selection border. */}
-                  <span className="relative z-10 truncate bg-gradient-to-t from-black/70 to-transparent px-2 pb-1 pt-2 text-left text-ui-9 font-medium leading-none text-white">
-                    {clipMeta(video)}
-                  </span>
-                  {/* Selection marker on a non-focusable overlay. */}
-                  {video.id === selected?.id && (
-                    <span className="pointer-events-none absolute inset-0 z-20 rounded-[10px] border border-border bg-white/35 dark:border-white/25 dark:bg-white/20" />
-                  )}
-                </button>
-                </TooltipTrigger>
-                <TooltipContent className="max-w-xs">
-                  {video.prompt}
-                  <span className="mt-0.5 block opacity-70">
-                    seed {video.seed} - {clipMeta(video)}
-                  </span>
-                </TooltipContent>
+                  </TooltipContent>
                 </Tooltip>
               ))}
               {/* Tail spinner while older pages stream in on scroll. */}
@@ -1897,7 +2055,6 @@ export function VideoPage({ active = true }: { active?: boolean }) {
             </div>
           )}
         </div>
-
       </div>
     </div>
   );

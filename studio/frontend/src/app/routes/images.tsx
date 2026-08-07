@@ -1,7 +1,5 @@
-
-
-
-import { createRoute } from "@tanstack/react-router";
+import { FEATURE_IMAGES } from "@/config/disabled-features";
+import { createRoute, redirect } from "@tanstack/react-router";
 import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
@@ -17,6 +15,11 @@ export const Route = createRoute({
     ...(typeof search.model === "string" ? { model: search.model } : {}),
     ...(typeof search.quant === "string" ? { quant: search.quant } : {}),
   }),
-  beforeLoad: () => requireAuth(),
+  beforeLoad: () => {
+    // Images is switched off (see config/disabled-features): keep the route so
+    // deep links resolve, but send them to chat instead of an empty shell.
+    if (!FEATURE_IMAGES) throw redirect({ to: "/chat" });
+    return requireAuth();
+  },
   component: () => null,
 });

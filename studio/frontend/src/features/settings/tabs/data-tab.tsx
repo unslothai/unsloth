@@ -1,6 +1,3 @@
-
-
-
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -22,6 +19,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { FEATURE_TRAIN } from "@/config/disabled-features";
 import { usePlatformStore } from "@/config/env";
 import {
   EXPORT_FORMATS_LIST,
@@ -41,11 +39,11 @@ import {
 import { useT } from "@/i18n";
 
 import { isTauri } from "@/lib/api-base";
-import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import {
   ChevronDownStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
+import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
   Archive02Icon,
@@ -104,6 +102,8 @@ export function DataTab() {
   // the Train tab would upload it and then strand the user; gate the action
   // the same way the sidebar gates Train.
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  // Train is also unreachable when switched off (see config/disabled-features).
+  const trainUnavailable = chatOnly || !FEATURE_TRAIN;
   const storedFineTuneAction = useSettingsPanelPrefsStore(
     (s) => s.fineTuneAction,
   );
@@ -115,7 +115,7 @@ export function DataTab() {
     : "export";
   // derived, not corrected: a stored "train" returns when chat-only flips off.
   const fineTuneAction =
-    chatOnly && restoredAction === "train" ? "export" : restoredAction;
+    trainUnavailable && restoredAction === "train" ? "export" : restoredAction;
   // Chat Completions (OpenAI messages) is the only export format we ship.
   const fineTuneFormat: FineTuneFormat = "openai";
   // Requests can arrive after Data is already mounted (for example from the
@@ -307,7 +307,7 @@ export function DataTab() {
   const fineTuneBusy = loadingTraining || openingRecipe || fineTuneExporting;
   const runFineTuneAction = () => {
     if (fineTuneAction === "train") {
-      if (chatOnly) return;
+      if (trainUnavailable) return;
       void handleUseInTraining();
     } else if (fineTuneAction === "recipes") void handleOpenInRecipes();
     else void handleFineTuneExport();
@@ -489,10 +489,12 @@ export function DataTab() {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
-                {FINE_TUNE_ACTIONS.map((action) => (
+                {FINE_TUNE_ACTIONS.filter(
+                  (action) => action !== "train" || FEATURE_TRAIN,
+                ).map((action) => (
                   <DropdownMenuItem
                     key={action}
-                    disabled={action === "train" && chatOnly}
+                    disabled={action === "train" && trainUnavailable}
                     onSelect={() => setFineTuneAction(action)}
                   >
                     <span className="flex-1">

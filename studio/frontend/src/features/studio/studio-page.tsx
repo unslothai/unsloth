@@ -1,10 +1,10 @@
-
-
-
+import { MediaPageLink } from "@/components/media-page-link";
 import { Button } from "@/components/ui/button";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
+import { FEATURE_IMAGES } from "@/config/disabled-features";
 import { useHfTokenStore } from "@/features/hub";
+import { useImageWorkflowStore } from "@/features/images/stores/image-workflow-store";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import {
   useDatasetPreviewDialogStore,
@@ -13,8 +13,6 @@ import {
   useTrainingRuntimeStore,
 } from "@/features/training";
 import { useT } from "@/i18n";
-import { MediaPageLink } from "@/components/media-page-link";
-import { useImageWorkflowStore } from "@/features/images/stores/image-workflow-store";
 import { ArrowLeft01Icon, Image03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -177,17 +175,19 @@ export function StudioPage(): ReactElement {
                 />
                 {/* Image training is a mode of the Images page, not a route, so it sits
                     beside the sub-nav rather than in it. */}
-                <div className="ml-auto flex items-center gap-2 pb-2">
-                  <MediaPageLink
-                    to="/images"
-                    label={t("studio.imageTraining")}
-                    tooltip={t("studio.goToImageTraining")}
-                    icon={Image03Icon}
-                    onNavigate={() =>
-                      useImageWorkflowStore.getState().setPageMode("train")
-                    }
-                  />
-                </div>
+                {FEATURE_IMAGES && (
+                  <div className="ml-auto flex items-center gap-2 pb-2">
+                    <MediaPageLink
+                      to="/images"
+                      label={t("studio.imageTraining")}
+                      tooltip={t("studio.goToImageTraining")}
+                      icon={Image03Icon}
+                      onNavigate={() =>
+                        useImageWorkflowStore.getState().setPageMode("train")
+                      }
+                    />
+                  </div>
+                )}
               </div>
             )}
           </header>
