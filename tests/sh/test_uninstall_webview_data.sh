@@ -374,6 +374,56 @@ case "$_out" in
         FAIL=$((FAIL+1)) ;;
 esac
 
+# ── 3j3. A relocated install: ~/.unsloth/studio is a symlink to another disk. rm -rf on a
+# symlink unlinks the link and leaves the target, so the database survives and the summary
+# must not report it gone. Reachable whenever a user moves Studio off the system disk. ──
+H=$(new_home)
+_ELSEWHERE=$(mktemp -d "$_TMP_ROOT/otherdisk.XXXXXX")
+mkdir -p "$_ELSEWHERE/unsloth_studio" "$H/.unsloth"
+: > "$_ELSEWHERE/unsloth_studio/.unsloth-studio-owned"
+: > "$_ELSEWHERE/studio.db"
+ln -s "$_ELSEWHERE" "$H/.unsloth/studio"
+_out=$(run_uninstall_out "$H" Linux)
+assert_present "linux: relocated studio.db survived the symlink removal" "$_ELSEWHERE/studio.db"
+case "$_out" in
+    *"studio.db it found"*)
+        echo "  FAIL: linux: claimed the database is gone but it is on the other disk"
+        FAIL=$((FAIL+1)) ;;
+    *)
+        echo "  PASS: linux: relocated install -> no claim that the database is gone"
+        PASS=$((PASS+1)) ;;
+esac
+case "$_out" in
+    *"may"*"still be on disk"*)
+        echo "  PASS: linux: relocated install reported as incomplete"; PASS=$((PASS+1)) ;;
+    *)
+        echo "  FAIL: linux: relocated install not reported as incomplete"; FAIL=$((FAIL+1)) ;;
+esac
+
+# ── 3j4. Marker storage that vanishes mid-run. The pathname still looks fine, so a
+# predicate that only tests for emptiness keeps reporting success while every failure
+# _set_marker tried to record was silently dropped. ──
+H=$(new_home)
+mkdir -p "$H/.local/share/$BID"
+_VAN=$(mktemp -d "$_TMP_ROOT/vanish.XXXXXX")
+# mktemp -d names a directory it does not leave behind. Deterministic, rather than racing
+# a background delete: $_MARKER_DIR is non-empty so the pathname still looks usable, which
+# is the state the predicate has to catch.
+cat > "$STUB_BIN/mktemp" <<EOF
+#!/bin/sh
+printf '%s\n' "$_VAN/marker.gone"
+exit 0
+EOF
+chmod +x "$STUB_BIN/mktemp"
+_out=$(run_uninstall_out "$H" Linux)
+rm -f "$STUB_BIN/mktemp"
+case "$_out" in
+    *"may"*"still be on disk"*)
+        echo "  PASS: linux: vanished marker dir -> cautious summary"; PASS=$((PASS+1)) ;;
+    *)
+        echo "  FAIL: linux: vanished marker dir still reported success"; FAIL=$((FAIL+1)) ;;
+esac
+
 # ── 3k. _set_marker itself must survive a write it cannot perform. 3i only proves the
 # mktemp -d guard holds, since an unusable TMPDIR leaves the marker path empty and the
 # redirection never runs. This drives the redirection directly: the marker directory

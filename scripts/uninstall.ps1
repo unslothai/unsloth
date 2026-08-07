@@ -103,11 +103,29 @@ Environment:
     # root, so an env-mode install keeps it inside the custom root. A bare run with neither
     # variable set cannot discover that root, so the summary must not claim the history is
     # gone unless a database was really deleted.
-    function _NoteStudioDb {
+    # Remove an install root and record whether its studio.db really went with it. The
+    # check runs on the RESOLVED target: a relocated install (a directory junction or
+    # symlink to another disk) satisfies the before-check through the link, but the delete
+    # unlinks the reparse point and leaves the target intact, and afterwards the link is
+    # gone so the original path stops resolving and reads as absent either way.
+    # Verifying rather than chasing the link is deliberate: following a reparse point out
+    # of the expected location to delete its target is what the deny list exists to stop.
+    function _RemoveRootRecordingDb {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
-        if (Test-Path -LiteralPath (Join-Path $Path "studio.db") -PathType Leaf) {
-            $script:StudioDbRemoved = $true
+        $real = $Path
+        try {
+            $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+            if ($item -and $item.Target) { $real = @($item.Target)[0] }
+        } catch { }
+        $hadDb = Test-Path -LiteralPath (Join-Path $real "studio.db") -PathType Leaf
+        _RemovePath $Path
+        if ($hadDb) {
+            if (Test-Path -LiteralPath (Join-Path $real "studio.db") -PathType Leaf) {
+                $script:RemoveFailed = $true
+            } else {
+                $script:StudioDbRemoved = $true
+            }
         }
     }
 
@@ -533,8 +551,7 @@ Environment:
             _Substep "refusing to remove non-Unsloth path: $r" "Yellow"
             continue
         }
-        _NoteStudioDb $r
-        _RemovePath $r
+        _RemoveRootRecordingDb $r
         # Native diffusion (stable-diffusion.cpp) for a custom/env-mode Studio installs beside
         # the root at <parent>\stable-diffusion.cpp -- find_sd_cpp_binary resolves it from
         # UNSLOTH_STUDIO_HOME.parent (sd_cpp_engine.py) -- so removing only the root leaves the
@@ -552,7 +569,7 @@ Environment:
         }
     }
     # Default install dir (always at %USERPROFILE%\.unsloth\studio when present).
-    if ($defaultStudioHome) { _NoteStudioDb $defaultStudioHome; _RemovePath $defaultStudioHome }
+    if ($defaultStudioHome) { _RemoveRootRecordingDb $defaultStudioHome }
     # Default data dir.
     if ($defaultDataDir) { _RemoveDataDirKeepingWslIcon $defaultDataDir }
     # Default-mode shared llama.cpp build + cache (siblings of studio under

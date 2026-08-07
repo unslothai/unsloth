@@ -219,8 +219,16 @@ _set_marker() {
     return 0
 }
 _marker_set() { [ -n "$1" ] && [ -f "$1" ]; }
-# No marker storage means no record of what failed, so the summary must not claim success.
-_markers_unavailable() { [ -z "$_MARKER_DIR" ]; }
+# No usable marker storage means no record of what failed, so the summary must not claim
+# success. Re-checked rather than trusting the startup result: the directory can be removed
+# or made unwritable while the uninstall is running, after which _set_marker silently
+# discards every failure and the pathname alone still looks fine.
+_markers_unavailable() {
+    [ -n "$_MARKER_DIR" ] || return 0
+    [ -d "$_MARKER_DIR" ] || return 0
+    [ -w "$_MARKER_DIR" ] || return 0
+    return 1
+}
 
 # EXIT, not a line at the end of main: --help returns early, an unknown argument exits
 # non-zero, and `set -e` can fire partway through, none of which would reach it.
@@ -232,8 +240,36 @@ _cleanup_markers() {
 trap _cleanup_markers EXIT
 
 # Record whether the install root about to be removed carries a studio.db.
-_note_studio_db() {
-    [ -f "$1/studio.db" ] && _set_marker "$_DB_REMOVED_FLAG"
+# Remove an install root and record whether its studio.db really went with it.
+#
+# The check has to happen on the RESOLVED directory, before and after. A relocated
+# install (`~/.unsloth/studio` a symlink to another disk) satisfies `-f "$root/studio.db"`
+# through the link, but `rm -rf` on a symlink unlinks the symlink and leaves the target
+# intact, so a naive before-check would report the database gone while it is still there.
+# Checking `$root/studio.db` afterwards is no better: the link is gone, so the path stops
+# resolving and the file reads as absent either way.
+#
+# Deliberately verifying rather than chasing the link: following a symlink out of the
+# expected location to `rm -rf` its target is exactly what the deny lists exist to prevent.
+# A relocated install keeps its database, and the summary now says so.
+_remove_root_recording_db() {
+    _rrd_root="$1"
+    # shellcheck disable=SC1007
+    _rrd_real=$(CDPATH= cd -P -- "$_rrd_root" 2>/dev/null && pwd -P) || _rrd_real=""
+    [ -n "$_rrd_real" ] || _rrd_real="$_rrd_root"
+    _rrd_had_db=0
+    if [ -f "$_rrd_real/studio.db" ]; then
+        _rrd_had_db=1
+    fi
+    _remove_path "$_rrd_root"
+    if [ "$_rrd_had_db" = 1 ]; then
+        if [ -f "$_rrd_real/studio.db" ]; then
+            # Only the link went, or the delete failed: the data is still on disk.
+            _set_marker "$_REMOVE_FAILED_FLAG"
+        else
+            _set_marker "$_DB_REMOVED_FLAG"
+        fi
+    fi
     return 0
 }
 
@@ -395,8 +431,7 @@ _unsloth_uninstall_main() {
             echo "  refusing to remove non-Unsloth path: $_custom_root" >&2
             continue
         fi
-        _note_studio_db "$_custom_root"
-        _remove_path "$_custom_root"
+        _remove_root_recording_db "$_custom_root"
         # Native diffusion (stable-diffusion.cpp) for a custom/env-mode Studio installs beside
         # the root at <parent>/stable-diffusion.cpp -- find_sd_cpp_binary resolves it from
         # UNSLOTH_STUDIO_HOME.parent (sd_cpp_engine.py) -- so removing only the root leaves the
@@ -414,8 +449,7 @@ _unsloth_uninstall_main() {
             _remove_path "$_custom_sd_cpp"
         fi
     done
-    _note_studio_db "$HOME/.unsloth/studio"
-    _remove_path "$HOME/.unsloth/studio"
+    _remove_root_recording_db "$HOME/.unsloth/studio"
     # Default-mode shared llama.cpp build + cache are siblings of studio (not removed
     # by deleting it). No-op in env/custom mode (they nest under the custom root) and
     # when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is intentionally kept.
