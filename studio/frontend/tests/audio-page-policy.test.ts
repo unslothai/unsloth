@@ -229,3 +229,10 @@ test("MediaRecorder setup failures release the acquired microphone stream", () =
     /recorder\.start\(\);[\s\S]*?catch \{[\s\S]*?stopRecordStream\(\);/,
   );
 });
+
+test("leaving Audio clears an unresolved microphone permission wait", () => {
+  assert.match(
+    audioPageSource,
+    /const stopAndDiscardRecording[\s\S]*micRequestGeneration\.current \+= 1;[\s\S]*micPendingGeneration\.current = null;[\s\S]*setMicRequestPending\(false\)/,
+  );
+});

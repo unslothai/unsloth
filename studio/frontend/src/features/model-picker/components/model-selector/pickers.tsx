@@ -93,6 +93,7 @@ import {
 import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventory";
 import {
   type CommunityModelPolicy,
+  allowedHiddenModelIdMatches,
   communityAudioRowIsRunnable,
   curatedAudioInventoryMatches,
   curatedAudioInventoryTask,
@@ -2486,9 +2487,21 @@ export function HubModelPicker({
     [catalog, isMac, task],
   );
 
+  const taskCatalogSeedIds = useMemo(
+    () =>
+      task
+        ? new Set(models.map((model) => model.id.trim().toLowerCase()))
+        : undefined,
+    [models, task],
+  );
+
   const recommendedIds = useMemo(() => {
     const all = dedupe([...models.map((model) => model.id), value ?? ""])
-      .filter((id) => !isHiddenModelId(id))
+      .filter(
+        (id) =>
+          !isHiddenModelId(id) ||
+          allowedHiddenModelIdMatches(taskCatalogSeedIds, id),
+      )
       .filter((id) => !downloadedSet.has(id.toLowerCase()))
       // Task-scoped pages load single-file GGUF only; chat-only keeps runnable formats (GGUF anywhere, plus MLX/safetensors on Mac).
       // A curated artifact stays listed whatever its format: loadSpecFor knows how to load each, and a GGUF-only rule hid every non-GGUF curated model.
@@ -2518,6 +2531,7 @@ export function HubModelPicker({
     isMac,
     task,
     catalog,
+    taskCatalogSeedIds,
   ]);
 
   const showHfSection = debouncedQuery.trim().length > 0;

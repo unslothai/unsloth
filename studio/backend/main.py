@@ -933,17 +933,26 @@ _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX = (
 # The diffusion dataset upload (POST /api/train/diffusion/dataset) is a multipart upload
 # under /api/train; like /api/datasets/upload it enforces its own cap. EXACT path.
 _DIFFUSION_DATASET_UPLOAD_PATH = "/api/train/diffusion/dataset"
+_STT_MULTIPART_UPLOAD_PATHS = (
+    "/v1/audio/transcriptions",
+    "/api/inference/audio/transcriptions",
+)
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
     *_DATASET_UPLOAD_PASSTHROUGH_PREFIXES,
     _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX,
 )
-# Matched by EXACT path (the multipart upload only), so sibling JSON sub-routes keep the normal cap.
-_BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (_DIFFUSION_DATASET_UPLOAD_PATH,)
+# Matched by EXACT path (multipart uploads only), so sibling JSON sub-routes keep the normal cap.
+_BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
+    _DIFFUSION_DATASET_UPLOAD_PATH,
+    *_STT_MULTIPART_UPLOAD_PATHS,
+)
 
 
 def _get_upload_passthrough_request_max_bytes(path: str) -> int:
     if path.startswith(_DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX):
         return upload_request_limit_bytes(UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES)
+    if path.rstrip("/") in _STT_MULTIPART_UPLOAD_PATHS:
+        return upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
     # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
     if (
@@ -960,7 +969,7 @@ def _get_request_body_max_bytes(path: str) -> int:
     if path.startswith("/api/inference/audio/transcribe"):
         return STT_AUDIO_JSON_MAX_BYTES
     # multipart headroom over the raw stt cap for the openai transcription route on both mounts
-    if path.rstrip("/") in ("/v1/audio/transcriptions", "/api/inference/audio/transcriptions"):
+    if path.rstrip("/") in _STT_MULTIPART_UPLOAD_PATHS:
         return upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
     return default_request_body_limit_bytes()
 

@@ -307,6 +307,8 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     // Also invalidates a getUserMedia request that has not resolved yet. Its
     // eventual stream is stopped before a MediaRecorder can be created.
     micRequestGeneration.current += 1;
+    micPendingGeneration.current = null;
+    setMicRequestPending(false);
     const recorder = recorderRef.current;
     if (recorder) {
       discardRecordingRef.current = true;
@@ -928,12 +930,13 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     if (mode === "transcribe") {
       const selected = selectedSttRepo;
       if (!selected) return;
+      const selectedEngine = sttEngineForRepoId(selected);
 
       // A selection can exist before its sidecar is resident. Only issue an
       // unload when our latest sidecar snapshot says this selection owns it.
       if (
         sttLoadedModel !== sttSidecarKeyFor(selected) ||
-        sttLoadedEngine !== sttEngineForRepoId(selected)
+        sttLoadedEngine !== selectedEngine
       ) {
         deferredSttLoad.current = null;
         selectedSttRepoRef.current = null;
@@ -946,7 +949,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       const toastId = toast.loading("Unloading transcription model…");
       void (async () => {
         try {
-          await unloadSttModel();
+          await unloadSttModel(selectedEngine);
           deferredSttLoad.current = null;
           selectedSttRepoRef.current = null;
           sttLoadGeneration.current += 1;

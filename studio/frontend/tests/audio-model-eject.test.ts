@@ -9,6 +9,13 @@ const source = readFileSync(
   new URL("../src/features/audio/audio-page.tsx", import.meta.url),
   "utf8",
 );
+const adapterSource = readFileSync(
+  new URL(
+    "../src/features/chat/adapters/studio-model-dictation-adapter.ts",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 test("Audio exposes the shared picker eject action only while idle", () => {
   assert.match(
@@ -33,11 +40,15 @@ test("Speak eject unloads the live main model and cancels stale auto-load", () =
 test("Transcribe eject only unloads a sidecar owned by the current selection", () => {
   assert.match(
     source,
-    /if \(mode === "transcribe"\)[\s\S]*sttLoadedModel !== sttSidecarKeyFor\(selected\)[\s\S]*setSelectedSttRepo\(null\);[\s\S]*await unloadSttModel\(\)/,
+    /if \(mode === "transcribe"\)[\s\S]*const selectedEngine = sttEngineForRepoId\(selected\)[\s\S]*sttLoadedModel !== sttSidecarKeyFor\(selected\)[\s\S]*sttLoadedEngine !== selectedEngine[\s\S]*await unloadSttModel\(selectedEngine\)/,
   );
   assert.match(
     source,
-    /await unloadSttModel\(\);[\s\S]*setSelectedSttRepo\(null\);[\s\S]*await refreshSttStatus\(\)/,
+    /await unloadSttModel\(selectedEngine\);[\s\S]*setSelectedSttRepo\(null\);[\s\S]*await refreshSttStatus\(\)/,
+  );
+  assert.match(
+    adapterSource,
+    /unloadSttModel\(engine\?: SttEngine\)[\s\S]*\?engine=\$\{encodeURIComponent\(engine\)\}/,
   );
 });
 

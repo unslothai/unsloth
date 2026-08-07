@@ -114,9 +114,7 @@ class TestMaxBodyMiddleware:
         app = _make_protected_app(
             4096,
             main_module,
-            request_max_bytes_getter = lambda path: (
-                128 if path.endswith("/transcribe/raw") else 4096
-            ),
+            request_max_bytes_getter = lambda path: 128 if path.endswith("/transcribe/raw") else 4096,
         )
         c = TestClient(app)
 
@@ -152,6 +150,13 @@ class TestMaxBodyMiddleware:
         for path in ("/v1/audio/transcriptions", "/api/inference/audio/transcriptions"):
             assert main_module._get_request_body_max_bytes(path) == upload_request_limit_bytes(
                 STT_AUDIO_RAW_MAX_BYTES
+            ), path
+            assert path in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS, path
+            assert main_module._get_upload_passthrough_request_max_bytes(path) == (
+                upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
+            ), path
+            assert main_module._get_upload_passthrough_request_max_bytes(path + "/") == (
+                upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
             ), path
 
     def test_settings_put_body_over_cap_rejected(self, main_module):

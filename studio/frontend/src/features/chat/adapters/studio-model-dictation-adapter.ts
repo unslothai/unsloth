@@ -278,11 +278,13 @@ export async function cancelSttDownload(
 }
 
 /** Release the local STT model and its RAM/VRAM allocations. */
-export function unloadSttModel(): Promise<void> {
+export function unloadSttModel(engine?: SttEngine): Promise<void> {
   return queueSttLifecycle(async () => {
-    const response = await authFetch("/api/inference/audio/stt/unload", {
-      method: "POST",
-    });
+    const query = engine ? `?engine=${encodeURIComponent(engine)}` : "";
+    const response = await authFetch(
+      `/api/inference/audio/stt/unload${query}`,
+      { method: "POST" },
+    );
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as {
         detail?: string;
