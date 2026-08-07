@@ -728,6 +728,31 @@ def _is_stream(dataset):
     return not hasattr(dataset, "__len__") or not hasattr(dataset, "__getitem__")
 
 
+_CAP_SIGNATURE_ATTR = "_unsloth_cap_signature"
+
+
+def _cap_signature(dataset):
+    """What this split was already capped to, or None if we did not cap it.
+
+    Read through `__dict__` for our own wrappers: `_CappedBase.__getattr__`
+    forwards anything it does not hold to the split inside, so a plain `getattr`
+    on an unmarked wrapper asks the INNER split, and an inner split we happen to
+    have capped earlier would answer for the outer one.
+    """
+    own = getattr(dataset, "__dict__", None)
+    if isinstance(own, dict) and _CAP_SIGNATURE_ATTR in own:
+        return own[_CAP_SIGNATURE_ATTR]
+    return None
+
+
+def _mark_capped(dataset, cap, drop_unsupervised):
+    try:
+        setattr(dataset, _CAP_SIGNATURE_ATTR, (cap, drop_unsupervised))
+    except Exception:
+        pass  # a split that refuses attributes just gets scanned twice
+    return dataset
+
+
 def _first_row_without_consuming(dataset):
     """Row 0, or None when reading one would cost the caller that row."""
     if not _is_stream(dataset):
@@ -834,13 +859,23 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         args,
         drop_unsupervised = True,
     ):
+        # `evaluate()` caps the split, stores it on the trainer, and Transformers
+        # then calls `get_eval_dataloader`, which this module also wraps -- so the
+        # paired wrappers reach here twice for one call. Re-capping is a no-op at
+        # best, and over a one-shot stream it is destructive: `_column_names` and
+        # `_sliceable_per_token` each read a row to probe it, and `_CappedStream`
+        # hands out a fresh generator over the SAME exhausted source rather than
+        # rewinding, so the second pass eats the first rows instead of replaying
+        # them. Our own wrapper, capped the same way, is already the answer.
+        if _cap_signature(dataset) == (cap, drop_unsupervised):
+            return dataset
         names, dataset = _column_names(dataset)
         if "input_ids" not in names:
             # No tokens here yet, so there is nothing to cut. TRL does not
             # tokenize a late split either -- `_prepare_dataset` runs only from
             # `__init__` -- but that is its own gap and not one a truncation can
             # close.
-            return dataset
+            return _mark_capped(dataset, cap, drop_unsupervised)
         # `eval_packing` is deliberately NOT consulted here, unlike at
         # construction time. There the packer really does own the split, and
         # every strategy owns the overflow with it. Here nothing packs anything:
@@ -856,7 +891,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         # is worse than not cutting: the construction-time cap refuses this shape
         # too.
         if "seq_lengths" in names:
-            return dataset
+            return _mark_capped(dataset, cap, drop_unsupervised)
         try:
             # TRL slices [-max_length:] for `keep_end`, and so does the
             # construction-time cap. Always keeping the prefix evaluates the wrong
@@ -893,7 +928,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             # Returning early on the length alone was the one way the two paths
             # disagreed.
             if not overlength and not supervision:
-                return dataset
+                return _mark_capped(dataset, cap, drop_unsupervised)
             # A split we cannot rewrite is capped on read instead. `map` belongs to
             # `datasets`, and a `with_transform` split has it but recreates its rows
             # on every read, so mapping writes a table nobody reads.
@@ -904,8 +939,12 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                 or transform == "custom"
             ):
                 if _is_stream(dataset):
-                    return _capped_stream(dataset, cut, supervision, per_token)
-                return _CappedRows(dataset, cut, supervision, per_token)
+                    return _mark_capped(
+                        _capped_stream(dataset, cut, supervision, per_token),
+                        cap, drop_unsupervised)
+                return _mark_capped(
+                    _CappedRows(dataset, cut, supervision, per_token),
+                    cap, drop_unsupervised)
             new = (
                 dataset
                 if not overlength
@@ -936,7 +975,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                     new = new if len(kept) == len(new) else kept
                 except Exception:
                     new = kept
-            return new
+            return _mark_capped(new, cap, drop_unsupervised)
         except Exception:
             return dataset  # never turn an eval call into a hard error
 
@@ -1779,10 +1818,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # An unprobeable stream cannot be ruled tokenized either, and
                     # `True` there clears the cap on the same guess: refuse instead
                     # and keep `max_length` for TRL's collator.
+                    # One rule, read twice: the late `_unsloth_pretokenized` probe asks the
+                    # same question of an eval split and must not trust its columns either.
+                    "    def _unsloth_is_transformed(_ds):\n"
+                    "        _f = getattr(_ds, 'format', None)\n"
+                    "        _f = _f.get('type') if isinstance(_f, dict) else None\n"
+                    "        return (_f or getattr(_ds, '_format_type', None)) == 'custom'\n"
                     "    try:\n"
-                    "        _unsloth_fmt = getattr(train_dataset, 'format', None)\n"
-                    "        _unsloth_fmt = _unsloth_fmt.get('type') if isinstance(_unsloth_fmt, dict) else None\n"
-                    "        _unsloth_transformed = (_unsloth_fmt or getattr(train_dataset, '_format_type', None)) == 'custom'\n"
+                    "        _unsloth_transformed = _unsloth_is_transformed(train_dataset)\n"
                     "        _unsloth_columns = None if _unsloth_transformed else getattr(train_dataset, 'column_names', None)\n"
                     "        if _unsloth_columns is None and train_dataset is not None:\n"
                     "            _unsloth_probe_cols = iter(train_dataset)\n"
@@ -2013,7 +2056,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # which holds `max_length` rather than clearing it on a guess.
                     "        def _unsloth_pretokenized(_ds):\n"
                     "            try:\n"
-                    "                _cols = getattr(_ds, 'column_names', None)\n"
+                    # Columns first, EXCEPT for a transform: a `with_transform` split reports
+                    # its backing table, so one storing `text` and yielding overlength
+                    # `input_ids` answered "raw" here. `_unsloth_truncatable` already refuses
+                    # to rewrite it, and this answer then marked it safe anyway and cleared
+                    # `max_length`, leaving padding-free with rows nothing truncates. Its rows
+                    # are rebuilt on every read, so probing one below costs nothing.
+                    "                _cols = None if _unsloth_is_transformed(_ds) else getattr(_ds, 'column_names', None)\n"
                     "                if isinstance(_cols, dict):\n"
                     "                    _cols = [_c for _v in _cols.values() for _c in (_v or [])]\n"
                     "                if _cols is not None: return 'input_ids' in _cols\n"
@@ -2116,7 +2165,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # unknown-mode refusal seeded above, so a `truncation_mode` this cannot
                     # honour was warned about and then silently served as keep_start, with
                     # `max_length` cleared and padding-free left on.
-                    "            if not _unsloth_prep_truncates:\n"
+                    # `_unsloth_known_mode` too: seeding `_unsloth_capped` false only drops the
+                    # ENFORCEMENT claim. The slice still ran, with `_unsloth_keep_end` false for
+                    # any unknown value, so the fallback scanned an already-trimmed split, found
+                    # it within the cap and merely turned padding-free off -- every row silently
+                    # cut from the start right after warning that the mode could not be honoured.
+                    # Leaving the split alone lets that scan see the real lengths and say so.
+                    "            if _unsloth_known_mode and not _unsloth_prep_truncates:\n"
                     "                train_dataset, _unsloth_split_ok = _unsloth_cap_split(train_dataset)\n"
                     "                _unsloth_capped = _unsloth_capped and _unsloth_split_ok\n"
                     # An eval split TRL will PACK must not be truncated first. The branch
@@ -2137,7 +2192,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # cannot rewrite.
                     # Each eval split on its own: a raw one stays raw for the tokenizer pass
                     # that follows, and only a materialised tokenized one is cut.
-                    "            if _unsloth_eval_packing:\n"
+                    "            if _unsloth_eval_packing or not _unsloth_known_mode:\n"
                     "                _unsloth_capped = False\n"
                     "            elif 'eval_dataset' in locals() and eval_dataset is not None:\n"
                     "                if isinstance(eval_dataset, dict):\n"

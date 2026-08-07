@@ -1283,7 +1283,8 @@ def test_the_codegen_leaves_a_packed_eval_split_to_the_packer():
     )
     # And it drops the enforcement claim rather than the split: packing needs
     # `max_length`, so clearing it would make TRL raise instead.
-    assert "if _unsloth_eval_packing:" in block
+    # `or not _unsloth_known_mode`: a mode this cannot honour spares the split too.
+    assert "if _unsloth_eval_packing or not _unsloth_known_mode:" in block
     assert "_unsloth_capped = False\\n" in block
     # And the fallback scan must not then raise on the split it just spared.
     assert (
@@ -2355,11 +2356,110 @@ def test_the_pretokenized_probe_does_not_eat_a_one_shot_row():
     without: read raw it declares the split safe and training starts at row 2,
     read tokenized it rejects a caller-owned stream it has already mutated."""
     block = _padding_free_codegen_block()
+    # Sliced to the next def, not a fixed window: a comment added inside the probe
+    # used to push the line under test out of the window and pass the test blind.
     start = block.index("def _unsloth_pretokenized")
-    body = block[start : start + 900]
-    assert (
-        "_probe is _ds or _probe is iter(_ds)" in body
-    ), "the pretokenized probe still reads a row off a one-shot stream"
-    assert body.index("column_names") < body.index(
-        "iter(_ds)"
-    ), "the schema is not consulted before a row is taken"
+    body = block[start:block.index("def _unsloth_cap_split", start)]
+    assert "_probe is _ds or _probe is iter(_ds)" in body, \
+        "the pretokenized probe still reads a row off a one-shot stream"
+    assert body.index("column_names") < body.index("iter(_ds)"), \
+        "the schema is not consulted before a row is taken"
+
+
+# ── round fourteen: capping once, and not cutting what we cannot honour ──────
+
+
+def test_capping_a_one_shot_stream_twice_does_not_eat_its_rows():
+    """`evaluate()` caps the split and stores it, then Transformers calls
+    `get_eval_dataloader`, which this module also wraps -- so one call reaches
+    the cap twice. `_CappedStream.__iter__` hands out a fresh generator over the
+    same exhausting source rather than rewinding, so the second pass's schema and
+    per-token probes read the first rows off instead of replaying them."""
+    from unsloth.models.rl import _wrap_sft_evaluate_cap
+
+    _, tok = _load_plain()
+    ids = tok("The quick brown fox. " * 200)["input_ids"]
+    rows = [{"input_ids": list(ids), "attention_mask": [1] * len(ids)} for _ in range(4)]
+    seen = {}
+
+    class Stub:
+        def evaluate(self, eval_dataset = None, **kw):
+            # What Trainer.evaluate does: hand the stored split to the builder.
+            return self.get_eval_dataloader(eval_dataset)
+
+        def get_eval_dataloader(self, eval_dataset = None, **kw):
+            split = self.eval_dataset if eval_dataset is None else eval_dataset
+            seen["rows"] = list(split)
+            return split
+
+    _wrap_sft_evaluate_cap(Stub)
+    stub = Stub()
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
+    stub.eval_dataset = None
+    stub.evaluate(_SharedIteratorStream(rows))
+
+    assert len(seen["rows"]) == len(rows), "the second cap ate rows off the stream"
+    assert all(len(r["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH for r in seen["rows"])
+
+
+def test_a_capped_split_is_handed_straight_back_to_the_second_pass():
+    """The signature is what stops the second pass, and it must be OUR mark:
+    `_CappedBase.__getattr__` forwards anything it does not hold to the split
+    inside, so an unmarked wrapper around a marked split would answer for it."""
+    from unsloth.models import rl
+
+    inner = rl._CappedRows.__new__(rl._CappedRows)
+    inner.__dict__[rl._CAP_SIGNATURE_ATTR] = (16, True)
+    outer = rl._CappedRows.__new__(rl._CappedRows)
+    outer.__dict__["_inner"] = inner
+
+    assert rl._cap_signature(inner) == (16, True)
+    assert rl._cap_signature(outer) is None, "the outer wrapper read the inner one's mark"
+    assert getattr(outer, rl._CAP_SIGNATURE_ATTR) == (16, True), \
+        "premise: a plain getattr does forward, which is why __dict__ is read"
+
+
+def test_an_unknown_truncation_mode_leaves_the_split_alone():
+    """Seeding `_unsloth_capped` false only drops the ENFORCEMENT claim. The
+    slice still ran, with keep_end false for any unknown value, so the fallback
+    scanned an already-trimmed split, found it within the cap and merely turned
+    padding-free off -- every row silently cut from the start right after warning
+    that the mode could not be honoured."""
+    block = _padding_free_codegen_block()
+    for guarded in (
+        "if _unsloth_known_mode and not _unsloth_prep_truncates:",
+        "if _unsloth_eval_packing or not _unsloth_known_mode:",
+    ):
+        assert guarded in block, f"the split is still rewritten under an unknown mode: {guarded}"
+    # And the refusal it protects is still seeded, not assigned over.
+    assert "_unsloth_capped = _unsloth_known_mode" in block
+
+
+def test_the_transform_rule_is_read_by_both_schema_probes():
+    """`column_names` describes the BACKING table. The construction-time probe
+    already distrusted it for a transform; the late `_unsloth_pretokenized` one
+    did not, so a `with_transform` split storing `text` and yielding overlength
+    `input_ids` was reported raw, marked safe, and had its cap cleared."""
+    block = _padding_free_codegen_block()
+    assert block.count("_unsloth_is_transformed(") >= 3, \
+        "the rule is not defined once and read by both probes"
+    start = block.index("def _unsloth_pretokenized")
+    body = block[start:block.index("def _unsloth_cap_split", start)]
+    assert body.index("_unsloth_is_transformed(_ds)") < body.index("column_names"), \
+        "the late probe still trusts the backing columns of a transformed split"
+
+
+def test_a_transformed_eval_split_keeps_its_cap(tmp_path, trl_has_guard):
+    """The same split on the eval side, which is the path `_unsloth_pretokenized`
+    decides: `_unsloth_truncatable` refuses to rewrite it, so the answer here is
+    what clears `max_length` or holds it."""
+    if not trl_has_guard:
+        pytest.skip("no guard in this TRL: the block under test is not generated at all")
+    tok = _load_plain()[1]
+    trainer = _build(
+        tmp_path,
+        eval_dataset = _transformed_tokenized_dataset(tok),
+        padding_free = True,
+        max_length = _MODEL_MAX_SEQ_LENGTH,
+    )
+    assert trainer.args.max_length is not None, "nothing else truncates the yielded rows"
