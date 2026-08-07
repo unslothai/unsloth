@@ -73,7 +73,7 @@ assert_eq "junk override ignored" "7" "$(run_jobs 20 16384 "lots")"
 # namespace, but under Slurm, systemd or --cgroupns=host the binding limit is
 # the process's own path or an ancestor's, and a root-only read sees "max".
 _CG_FILE=$(mktemp)
-for _fn in _cg_read _cg_limit _cg_dirs _cg_mount _cgroup_free_mb; do
+for _fn in _cg_read _cg_limit _cg_dirs _cg_mount _cg_rel _cgroup_free_mb; do
     sed -n "/^${_fn}()/,/^}/p" "$SETUP_SH" >> "$_CG_FILE"
 done
 if [ ! -s "$_CG_FILE" ]; then
@@ -171,6 +171,40 @@ printf '0::/a\n'      > "$_TMPD/hyb.proc"
 printf '%s\n' "43 30 0:38 / $_TMPD/hyb/unified rw - cgroup2 cgroup2 rw" > "$_TMPD/hyb.mnt"
 assert_eq "v2 found at a relocated unified mount" "1024" \
     "$(run_cgroup "$_TMPD/hyb" "$_TMPD/hyb.proc" "$_TMPD/hyb.mnt")"
+
+# 14) A bind-mounted subtree: mount root /slice at the mount point, while
+#     /proc/self/cgroup still reports the host-absolute /slice/job. The files
+#     are at <mountpoint>/job, so joining the two unmapped walks a path that
+#     does not exist and settles on the outer slice limit instead of the job's.
+mkdir -p "$_TMPD/bind/cg/job"
+printf '8589934592\n' > "$_TMPD/bind/cg/memory.max"
+printf '1073741824\n' > "$_TMPD/bind/cg/job/memory.max"
+printf '0::/slice/job\n' > "$_TMPD/bind.proc"
+printf '%s\n' "50 30 0:40 /slice $_TMPD/bind/cg rw - cgroup2 cgroup2 rw" > "$_TMPD/bind.mnt"
+assert_eq "bind mount finds the innermost limit" "1024" \
+    "$(run_cgroup "$_TMPD/bind" "$_TMPD/bind.proc" "$_TMPD/bind.mnt")"
+
+# 15) The same fixture with the mount root claimed as "/" picks the outer limit,
+#     which is what the unmapped join used to do.
+printf '%s\n' "50 30 0:40 / $_TMPD/bind/cg rw - cgroup2 cgroup2 rw" > "$_TMPD/bind.slash"
+assert_eq "an unmapped join settles for the outer limit" "8192" \
+    "$(run_cgroup "$_TMPD/bind" "$_TMPD/bind.proc" "$_TMPD/bind.slash")"
+
+# 16) A process outside the mount's root gets nothing from it rather than a
+#     limit belonging to some other part of the tree.
+printf '0::/elsewhere/job\n' > "$_TMPD/bind.out"
+assert_eq "a path outside the mount root yields the mount's own limit" "8192" \
+    "$(run_cgroup "$_TMPD/bind" "$_TMPD/bind.out" "$_TMPD/bind.mnt")"
+
+# 17) v1 bind mounts map the same way, via the controller's own path column.
+mkdir -p "$_TMPD/bind/v1/task"
+printf '4294967296\n' > "$_TMPD/bind/v1/memory.limit_in_bytes"
+printf '2147483648\n' > "$_TMPD/bind/v1/task/memory.limit_in_bytes"
+printf '3:memory:/docker/abc/task\n' > "$_TMPD/bindv1.proc"
+printf '%s\n' "51 30 0:41 /docker/abc $_TMPD/bind/v1 rw - cgroup cgroup rw,memory" \
+    > "$_TMPD/bindv1.mnt"
+assert_eq "v1 bind mount finds the innermost limit" "2048" \
+    "$(run_cgroup "$_TMPD/bind" "$_TMPD/bindv1.proc" "$_TMPD/bindv1.mnt")"
 
 # The min() that ties it together. _usable_ram_mb hardcodes the real paths, so
 # stub the reader to prove the wiring rather than just the parts.

@@ -329,11 +329,12 @@ _cg_dirs() {
     printf '%s\n' "$_root"
 }
 
-# Echo a cgroup hierarchy's mount point, or nothing. $1 = a mountinfo file,
-# $2 = "cgroup2" for the unified mount or a v1 controller name. mountinfo is
-# "... <mountpoint> <opts> [tags] - <fstype> <source> <superopts>", and a v1
-# hierarchy lists its controllers in the super options, so a co-mounted or
-# relocated one is found by name instead of assumed to sit at <root>/<name>.
+# Echo a cgroup hierarchy's "<mount root><tab><mount point>", or nothing.
+# $1 = a mountinfo file, $2 = "cgroup2" for the unified mount or a v1 controller
+# name. mountinfo is "... <root> <mountpoint> <opts> [tags] - <fstype> <source>
+# <superopts>", and a v1 hierarchy lists its controllers in the super options,
+# so a co-mounted or relocated one is found by name instead of assumed to sit
+# at <root>/<name>.
 _cg_mount() {
     [ -r "$1" ] || return 0
     awk -v want="$2" '
@@ -341,13 +342,32 @@ _cg_mount() {
             for (i = 1; i <= NF; i++) if ($i == "-") break
             if (i + 3 > NF) next
             if (want == "cgroup2") {
-                if ($(i + 1) == "cgroup2") { print $5; exit }
+                if ($(i + 1) == "cgroup2") { print $4 "\t" $5; exit }
                 next
             }
             if ($(i + 1) != "cgroup") next
             n = split($(i + 3), opts, ",")
-            for (j = 1; j <= n; j++) if (opts[j] == want) { print $5; exit }
+            for (j = 1; j <= n; j++) if (opts[j] == want) { print $4 "\t" $5; exit }
         }' "$1" 2>/dev/null
+    return 0
+}
+
+# Echo the process's path within a mount, or nothing when the mount does not
+# expose it. Args: mount root, process cgroup path. A bind-mounted subtree
+# (Docker without a cgroup namespace, a systemd slice) shows a mount root like
+# /slice while /proc/self/cgroup still reports the host-absolute /slice/job, and
+# the files are then at <mountpoint>/job. Joining the two unmapped walks a path
+# that does not exist and settles on an outer limit instead of the binding one.
+_cg_rel() {
+    local _root=$1 _rel=$2
+    [ -n "$_rel" ] || return 0
+    [ "$_root" = "/" ] && { printf '%s' "$_rel"; return 0; }
+    case "$_rel" in
+        "$_root") printf '%s' "/" ;;
+        "$_root"/*) printf '%s' "${_rel#"$_root"}" ;;
+        # Not under this mount's root: nothing here describes this process.
+        *) : ;;
+    esac
     return 0
 }
 
@@ -360,7 +380,8 @@ _cg_mount() {
 # the directory that set it, because an ancestor's usage counts siblings this
 # process cannot see. The smallest remaining allowance wins.
 _cgroup_free_mb() {
-    local _root=$1 _proc=$2 _mnt=${3:-} _rel _dir _used _limit _free _name _min="" _v2 _v1
+    local _root=$1 _proc=$2 _mnt=${3:-} _rel _dir _used _limit _free _name _min=""
+    local _v2 _v1 _v2root _v1root
     _consider() {
         [ -n "$1" ] || return 0
         if [[ "$2" =~ ^[0-9]+$ ]]; then _free=$(( $1 - $2 )); else _free=$1; fi
@@ -368,12 +389,15 @@ _cgroup_free_mb() {
         if [ -z "$_min" ] || [ "$_free" -lt "$_min" ]; then _min=$_free; fi
         return 0
     }
-    # Prefer the real mount points; fall back to the conventional layout.
-    _v2=$(_cg_mount "$_mnt" cgroup2); [ -n "$_v2" ] || _v2=$_root
-    _v1=$(_cg_mount "$_mnt" memory);  [ -n "$_v1" ] || _v1="$_root/memory"
+    # Prefer the real mounts; fall back to the conventional layout.
+    IFS=$'\t' read -r _v2root _v2 <<< "$(_cg_mount "$_mnt" cgroup2)"
+    IFS=$'\t' read -r _v1root _v1 <<< "$(_cg_mount "$_mnt" memory)"
+    [ -n "$_v2" ] || { _v2=$_root; _v2root="/"; }
+    [ -n "$_v1" ] || { _v1="$_root/memory"; _v1root="/"; }
     if [ -d "$_v2" ]; then
         # The v2 line is "0::<path>"; systemd hybrid mode adds v1 lines alongside.
         _rel=$(awk -F: '/^0::/ { print $3; exit }' "$_proc" 2>/dev/null || true)
+        _rel=$(_cg_rel "$_v2root" "$_rel")
         while IFS= read -r _dir; do
             _used=$(_cg_read "$_dir/memory.current")
             for _name in memory.max memory.high; do
@@ -385,6 +409,7 @@ _cgroup_free_mb() {
     if [ -d "$_v1" ]; then
         # v1 is "<id>:<controllers>:<path>", and mounts are often combined.
         _rel=$(awk -F: '$2 ~ /(^|,)memory(,|$)/ { print $3; exit }' "$_proc" 2>/dev/null || true)
+        _rel=$(_cg_rel "$_v1root" "$_rel")
         while IFS= read -r _dir; do
             _used=$(_cg_read "$_dir/memory.usage_in_bytes")
             _limit=$(_cg_limit "$(_cg_read "$_dir/memory.limit_in_bytes")")
