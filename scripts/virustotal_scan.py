@@ -537,12 +537,7 @@ def _attributes(payload: object) -> dict:
 
 
 def _record(
-    report: FileReport,
-    source: str,
-    raw_stats: object,
-    raw_results: object,
-    *,
-    completed: bool,
+    report: FileReport, source: str, raw_stats: object, raw_results: object, *, completed: bool
 ) -> None:
     """Attach a verdict, but only when an analysis has actually completed.
 

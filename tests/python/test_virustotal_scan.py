@@ -632,11 +632,13 @@ class TestNoCompletedAnalysis:
     """A known hash with no finished analysis must not read as clean. Reporting
     zero detections when no engine ran is the worst outcome available here."""
 
-    def _report(self, attributes, completed = False):
+    def _report(
+        self,
+        attributes,
+        completed = False,
+    ):
         report = vt.FileReport(name = "a.exe")
-        vt._record(
-            report, "known to VirusTotal (no upload)", *attributes, completed = completed
-        )
+        vt._record(report, "known to VirusTotal (no upload)", *attributes, completed = completed)
         return report
 
     def test_a_completed_analysis_is_trusted_without_engine_counts(self):
