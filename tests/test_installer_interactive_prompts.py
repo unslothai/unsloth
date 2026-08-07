@@ -135,6 +135,11 @@ _FIELD = re.compile(r"\{[^}]*\(")
 # `<# ... #>` opened and closed on one line.
 _INLINE_BLOCK = re.compile(r"<#.*?#>", re.DOTALL)
 
+# `@' ... '@` is literal, unlike the expandable `@" ... "@`. The uninstaller prints
+# its help from one and install.ps1 embeds source in the other.
+_HERESTRING_OPEN = re.compile(r"@'\s*$")
+_HERESTRING_CLOSE = re.compile(r"^\s*'@")
+
 # Regex/glob syntax: a `sed` pattern next to a prompt also contains a `?`.
 _REGEXY = re.compile(r"\\|\(\?|\^|\$\(|\[0|\{[0-9]|\.\*|\|")
 
@@ -170,7 +175,7 @@ def _blank_strings(line: str, script: str = "") -> str:
     return _QUOTED.sub(keep, line)
 
 
-def _is_interactive_read(line: str, script: str) -> bool:
+def _is_interactive_read(line: str, script: str, *, loop_input: bool = False) -> bool:
     """A read that waits on a person: a prompt option, /dev/tty, `select`, `input()`,
     `set /p`, or plain inherited stdin. Redirected and loop reads consume a file, not
     a person. Quoted text is blanked first, so a message naming `Read-Host` is not
@@ -181,10 +186,15 @@ def _is_interactive_read(line: str, script: str) -> bool:
     if script.endswith(".py"):
         return bool(_PY_READ.search(code))
     if script.endswith(".bat"):
-        # `set /p version=<VERSION.txt` reads the file, not the user.
-        return "<" not in code and bool(_BAT_READ.search(code))
+        # `set /p version=<VERSION.txt` reads the file, not the user, but the
+        # redirection belongs to that command alone.
+        return any("<" not in part and _BAT_READ.search(part) for part in code.split("&"))
     if _POSIX_READ.search(code) or _SELECT.search(code):
         return True
+    # Inside a file-fed loop only a bare read consumes the file: an explicit
+    # /dev/tty or -p read above overrode it and still waits on the terminal.
+    if loop_input:
+        return False
     # Per command: in `read -r reply; echo done | tee log` the pipe is the echo's.
     # `||` is a fallback, not a pipeline, and leaves the read on the terminal.
     for command in code.split(";"):
@@ -276,6 +286,7 @@ def blank_comments(source: str, script: str) -> str:
     batch = script.endswith(".bat")
     python = script.endswith(".py")
     opened = -1
+    in_herestring = False
     for index, line in enumerate(source.splitlines()):
         if powershell and in_block:
             # Code can follow the terminator on the same line.
@@ -293,7 +304,13 @@ def blank_comments(source: str, script: str) -> str:
                 opened = index
             elif not in_docstring:
                 opened = -1
+        if powershell and in_herestring:
+            lines.append("")
+            in_herestring = not _HERESTRING_CLOSE.match(line)
+            continue
         if powershell:
+            if _HERESTRING_OPEN.search(_blank_strings(line)):
+                in_herestring = True
             line = _INLINE_BLOCK.sub("", line)
             if "<#" in line:
                 lines.append(line.split("<#", 1)[0])
@@ -394,7 +411,7 @@ def find_prompts(script: str, source: str) -> list[tuple[str, int, str]]:
             )
             found.setdefault((script, question), (script, line_number, question))
 
-        if index not in redirected and _is_interactive_read(line, script):
+        if _is_interactive_read(line, script, loop_input = index in redirected):
             for question in _questions_for_read(lines, index):
                 found.setdefault((script, question), (script, line_number, question))
 
@@ -465,6 +482,9 @@ def test_every_installer_script_is_scanned():
         "studio/setup*.sh",
         "studio/setup*.ps1",
         "studio/setup*.bat",
+        "setup*.sh",
+        "setup*.ps1",
+        "setup*.bat",
         "install*.bat",
         "install*.py",
         "studio/install_*.py",
@@ -552,12 +572,18 @@ def test_the_workflow_runs_for_every_scanned_script():
         )
         return re.compile(body + "$")
 
+    def covered(script: str, patterns: list[str]) -> bool:
+        # GitHub applies `!` exclusions in order, so the last match decides.
+        included = False
+        for pattern in patterns:
+            negated = pattern.startswith("!")
+            if matcher(pattern.lstrip("!")).match(script):
+                included = not negated
+        return included
+
     # Each event on its own: a filter present only on push leaves pull requests bare.
     for patterns in blocks:
-        matchers = [matcher(pattern) for pattern in patterns]
-        uncovered = sorted(
-            script for script in SCANNED_SCRIPTS if not any(m.match(script) for m in matchers)
-        )
+        uncovered = sorted(script for script in SCANNED_SCRIPTS if not covered(script, patterns))
         assert not uncovered, (
             f"scanned scripts with no path filter in cross-platform-parity-ci.yml: {uncovered}. "
             f"A later PR touching only one of these would not run this guard."
@@ -838,6 +864,28 @@ def test_detects_a_read_used_as_a_condition():
     assert [question for _, _, question in find_prompts("install.sh", source)] == [
         "continue with installation?",
     ]
+
+
+def test_keeps_an_explicit_terminal_read_inside_a_fed_loop():
+    """`</dev/tty` overrides the loop's stdin, so only a bare read consumes the file."""
+    source = (
+        'while true; do\n    printf "  Enable telemetry? "\n'
+        "    read -r _reply </dev/tty\ndone < manifest\n"
+    )
+    questions = [question for _, _, question in find_prompts("install.sh", source)]
+    assert "enable telemetry?" in questions
+
+
+def test_a_batch_redirection_belongs_to_its_own_command():
+    source = 'choice /M "Enable telemetry?" & set /p version=<VERSION.txt\n'
+    questions = [question for _, _, question in find_prompts("studio/setup.bat", source)]
+    assert "enable telemetry?" in questions
+
+
+def test_ignores_a_powershell_literal_here_string():
+    """`@' ... '@` cannot expand, and the uninstaller prints its help from one."""
+    source = "Write-Host @'\nRead-Host \"Enable telemetry? [Y/n]\"\n'@\n"
+    assert find_prompts("scripts/uninstall.ps1", source) == []
 
 
 def test_ignores_a_read_in_a_loop_redirected_at_the_done():
