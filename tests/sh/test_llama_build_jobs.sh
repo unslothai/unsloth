@@ -73,7 +73,7 @@ assert_eq "junk override ignored" "7" "$(run_jobs 20 16384 "lots")"
 # namespace, but under Slurm, systemd or --cgroupns=host the binding limit is
 # the process's own path or an ancestor's, and a root-only read sees "max".
 _CG_FILE=$(mktemp)
-for _fn in _cg_read _cg_limit _cg_dirs _cgroup_free_mb; do
+for _fn in _cg_read _cg_limit _cg_dirs _cg_mount _cgroup_free_mb; do
     sed -n "/^${_fn}()/,/^}/p" "$SETUP_SH" >> "$_CG_FILE"
 done
 if [ ! -s "$_CG_FILE" ]; then
@@ -82,9 +82,12 @@ if [ ! -s "$_CG_FILE" ]; then
 fi
 
 _TMPD=$(mktemp -d)
-# $1 = cgroup root, $2 = the /proc/self/cgroup stand-in
+# $1 = fallback root, $2 = /proc/self/cgroup stand-in, $3 = mountinfo stand-in.
+# The mountinfo argument is always passed, and defaults to a path that does not
+# exist, so a Linux runner's real mounts cannot leak into these fixtures.
 run_cgroup() {
-    bash -c ". '$_CG_FILE'; _cgroup_free_mb \"\$1\" \"\$2\"" _ "$1" "$2"
+    bash -c ". '$_CG_FILE'; _cgroup_free_mb \"\$1\" \"\$2\" \"\$3\"" \
+        _ "$1" "$2" "${3:-$_TMPD/no-mountinfo}"
 }
 
 echo "=== cgroup limits ==="
@@ -137,6 +140,37 @@ assert_eq "v1 sentinel is not a limit" "" "$(run_cgroup "$_TMPD/v1" "$_TMPD/v1.p
 
 # 9) No cgroupfs at all: nothing to report, and no error.
 assert_eq "absent hierarchy reports nothing" "" "$(run_cgroup "$_TMPD/missing" "$_TMPD/missing.proc")"
+
+# 10) v1 mounted somewhere other than <root>/memory. Without reading mountinfo
+#     this branch was skipped and the budget silently fell back to host memory.
+mkdir -p "$_TMPD/odd/mem-controller/slice"
+printf '2147483648\n' > "$_TMPD/odd/mem-controller/slice/memory.limit_in_bytes"
+printf '2:memory:/slice\n' > "$_TMPD/odd.proc"
+printf '%s\n' "40 30 0:35 / $_TMPD/odd/mem-controller rw - cgroup cgroup rw,memory" > "$_TMPD/odd.mnt"
+assert_eq "v1 found at a relocated mount" "2048" \
+    "$(run_cgroup "$_TMPD/odd" "$_TMPD/odd.proc" "$_TMPD/odd.mnt")"
+assert_eq "and missed without mountinfo" "" "$(run_cgroup "$_TMPD/odd" "$_TMPD/odd.proc")"
+
+# 11) v1 co-mounted with other controllers: matched by super option, not name.
+printf '%s\n' "41 30 0:36 / $_TMPD/odd/mem-controller rw - cgroup cgroup rw,cpu,memory,cpuacct" \
+    > "$_TMPD/odd.co"
+assert_eq "v1 found on a co-mounted hierarchy" "2048" \
+    "$(run_cgroup "$_TMPD/odd" "$_TMPD/odd.proc" "$_TMPD/odd.co")"
+
+# 12) A controller that is not memory must not be mistaken for it.
+printf '%s\n' "42 30 0:37 / $_TMPD/odd/mem-controller rw - cgroup cgroup rw,cpu,cpuacct" \
+    > "$_TMPD/odd.other"
+assert_eq "a non-memory hierarchy is not used" "" \
+    "$(run_cgroup "$_TMPD/odd" "$_TMPD/odd.proc" "$_TMPD/odd.other")"
+
+# 13) v2 unified mounted away from the root, as under systemd hybrid mode.
+mkdir -p "$_TMPD/hyb/unified/a"
+printf 'max\n'        > "$_TMPD/hyb/unified/memory.max"
+printf '1073741824\n' > "$_TMPD/hyb/unified/a/memory.max"
+printf '0::/a\n'      > "$_TMPD/hyb.proc"
+printf '%s\n' "43 30 0:38 / $_TMPD/hyb/unified rw - cgroup2 cgroup2 rw" > "$_TMPD/hyb.mnt"
+assert_eq "v2 found at a relocated unified mount" "1024" \
+    "$(run_cgroup "$_TMPD/hyb" "$_TMPD/hyb.proc" "$_TMPD/hyb.mnt")"
 
 # The min() that ties it together. _usable_ram_mb hardcodes the real paths, so
 # stub the reader to prove the wiring rather than just the parts.

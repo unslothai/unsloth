@@ -329,16 +329,38 @@ _cg_dirs() {
     printf '%s\n' "$_root"
 }
 
+# Echo a cgroup hierarchy's mount point, or nothing. $1 = a mountinfo file,
+# $2 = "cgroup2" for the unified mount or a v1 controller name. mountinfo is
+# "... <mountpoint> <opts> [tags] - <fstype> <source> <superopts>", and a v1
+# hierarchy lists its controllers in the super options, so a co-mounted or
+# relocated one is found by name instead of assumed to sit at <root>/<name>.
+_cg_mount() {
+    [ -r "$1" ] || return 0
+    awk -v want="$2" '
+        {
+            for (i = 1; i <= NF; i++) if ($i == "-") break
+            if (i + 3 > NF) next
+            if (want == "cgroup2") {
+                if ($(i + 1) == "cgroup2") { print $5; exit }
+                next
+            }
+            if ($(i + 1) != "cgroup") next
+            n = split($(i + 3), opts, ",")
+            for (j = 1; j <= n; j++) if (opts[j] == want) { print $5; exit }
+        }' "$1" 2>/dev/null
+    return 0
+}
+
 # Echo the memory free under the binding cgroup limit in MiB, or nothing.
-# Args: cgroup root, /proc/self/cgroup path; both taken as arguments so the
-# tests can drive a real tree. Mirrors unsloth/dataset_num_proc.py: reading the
+# Args: fallback cgroup root, /proc/self/cgroup path, /proc/self/mountinfo
+# path; all taken as arguments so the tests can drive a real tree. Mirrors unsloth/dataset_num_proc.py: reading the
 # hierarchy root alone only works in a container with a private cgroup
 # namespace, and under Slurm, systemd or --cgroupns=host the binding limit is
 # the process's own path or an ancestor's. Each limit pairs with the usage of
 # the directory that set it, because an ancestor's usage counts siblings this
 # process cannot see. The smallest remaining allowance wins.
 _cgroup_free_mb() {
-    local _root=$1 _proc=$2 _rel _dir _used _limit _free _name _min=""
+    local _root=$1 _proc=$2 _mnt=${3:-} _rel _dir _used _limit _free _name _min="" _v2 _v1
     _consider() {
         [ -n "$1" ] || return 0
         if [[ "$2" =~ ^[0-9]+$ ]]; then _free=$(( $1 - $2 )); else _free=$1; fi
@@ -346,7 +368,10 @@ _cgroup_free_mb() {
         if [ -z "$_min" ] || [ "$_free" -lt "$_min" ]; then _min=$_free; fi
         return 0
     }
-    if [ -d "$_root" ]; then
+    # Prefer the real mount points; fall back to the conventional layout.
+    _v2=$(_cg_mount "$_mnt" cgroup2); [ -n "$_v2" ] || _v2=$_root
+    _v1=$(_cg_mount "$_mnt" memory);  [ -n "$_v1" ] || _v1="$_root/memory"
+    if [ -d "$_v2" ]; then
         # The v2 line is "0::<path>"; systemd hybrid mode adds v1 lines alongside.
         _rel=$(awk -F: '/^0::/ { print $3; exit }' "$_proc" 2>/dev/null || true)
         while IFS= read -r _dir; do
@@ -355,16 +380,16 @@ _cgroup_free_mb() {
                 _limit=$(_cg_limit "$(_cg_read "$_dir/$_name")")
                 _consider "$_limit" "$_used"
             done
-        done <<< "$(_cg_dirs "$_root" "$_rel")"
+        done <<< "$(_cg_dirs "$_v2" "$_rel")"
     fi
-    if [ -d "$_root/memory" ]; then
+    if [ -d "$_v1" ]; then
         # v1 is "<id>:<controllers>:<path>", and mounts are often combined.
         _rel=$(awk -F: '$2 ~ /(^|,)memory(,|$)/ { print $3; exit }' "$_proc" 2>/dev/null || true)
         while IFS= read -r _dir; do
             _used=$(_cg_read "$_dir/memory.usage_in_bytes")
             _limit=$(_cg_limit "$(_cg_read "$_dir/memory.limit_in_bytes")")
             _consider "$_limit" "$_used"
-        done <<< "$(_cg_dirs "$_root/memory" "$_rel")"
+        done <<< "$(_cg_dirs "$_v1" "$_rel")"
     fi
     [ -n "$_min" ] && printf '%d' "$(( _min / 1048576 ))"
     return 0
@@ -385,7 +410,7 @@ _usable_ram_mb() {
     elif _bytes=$(sysctl -n hw.memsize 2>/dev/null); then
         [[ "$_bytes" =~ ^[0-9]+$ ]] && _mb=$(( _bytes / 1048576 ))
     fi
-    _free=$(_cgroup_free_mb /sys/fs/cgroup /proc/self/cgroup)
+    _free=$(_cgroup_free_mb /sys/fs/cgroup /proc/self/cgroup /proc/self/mountinfo)
     if [[ "$_free" =~ ^[0-9]+$ ]]; then
         if [ -z "$_mb" ] || [ "$_free" -lt "$_mb" ]; then _mb=$_free; fi
     fi
