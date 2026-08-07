@@ -360,40 +360,43 @@ def test_every_named_eval_split_is_truncated(tmp_path, trl_has_guard):
         ), f"{name}: eval split was not truncated"
 
 
-@pytest.mark.parametrize(
-    "name, dataset, config_kwargs",
-    [
-        (
-            "skip_prepare_dataset",
-            lambda tok: _tokenized_dataset(tok),
-            {"dataset_kwargs": {"skip_prepare_dataset": True}},
-        ),
-    ],
-)
-def test_unprepared_datasets_keep_their_length_cap(
-    tmp_path, trl_has_guard, name, dataset, config_kwargs
-):
-    """`skip_prepare_dataset` means the user asked for the dataset to be left alone.
+def _short_tokenized_dataset(tok):
+    """Pre-tokenized and already within the cap: nothing to enforce."""
+    from datasets import Dataset
 
-    TRL skips truncation there too, so touching the rows would break the promise the
-    flag makes. Drop padding-free instead and keep the cap for the collator.
+    ids = tok("The quick brown fox.")["input_ids"][: _MODEL_MAX_SEQ_LENGTH // 2]
+    return Dataset.from_list([
+        {"input_ids": list(ids), "attention_mask": [1] * len(ids)} for _ in range(4)
+    ])
+
+
+def test_unprepared_datasets_keep_their_length_cap(tmp_path, trl_has_guard):
+    """`skip_prepare_dataset` means the user asked for the dataset to be left
+    alone, so the rows are not touched: drop padding-free and keep the cap for
+    the collator.
+
+    On rows that already fit. This used to pass an OVERLENGTH split, which is
+    the one configuration nothing downstream can enforce -- TRL skips both its
+    truncation and its collator truncation length -- so it now raises, and
+    `test_skip_prepare_dataset_does_not_excuse_an_overlength_row` covers that.
+    Asserting both here would have been asserting two opposite things.
     """
-    trainer = _build(tmp_path, dataset = dataset, **config_kwargs)
+    trainer = _build(
+        tmp_path,
+        dataset = _short_tokenized_dataset,
+        dataset_kwargs = {"skip_prepare_dataset": True},
+    )
     args = trainer.args
 
     assert (
         args.max_length == _MODEL_MAX_SEQ_LENGTH
-    ), f"{name}: the length cap must not be cleared for an unprepared dataset"
+    ), "the length cap must not be cleared for an unprepared dataset"
     if trl_has_guard:
         assert (
             args.padding_free is False
-        ), f"{name}: padding-free must be dropped, since it disables truncation"
-    # The rows themselves stay long: the user owns preparation here.
-    assert _longest(trainer) > _MODEL_MAX_SEQ_LENGTH
-    if getattr(trainer.data_collator, "max_length", None) is not None:
-        assert (
-            _collated_width(trainer) == _MODEL_MAX_SEQ_LENGTH
-        ), f"{name}: overlength rows reached the model"
+        ), "padding-free must be dropped, since it disables truncation"
+    # The rows themselves are untouched: the user owns preparation here.
+    assert _longest(trainer) <= _MODEL_MAX_SEQ_LENGTH
 
 
 def _transformed_dataset(tok):
@@ -932,8 +935,11 @@ def test_the_codegen_carries_the_third_round_fixes():
     assert "hasattr(_first, '__len__')" not in block
     assert "try:    len(_first)" in block
 
-    # Supervision is carried three ways, and only `labels` was filtered.
-    assert "'labels', 'completion_mask', 'assistant_masks'" in block
+    # Supervision is carried three ways and only `labels` was filtered, but a
+    # mask only supervises when its loss mode is on, so each is gated.
+    assert "_unsloth_supervision = [('labels', -100)]" in block
+    assert "getattr(args, 'completion_only_loss', None) is not False" in block
+    assert "getattr(args, 'assistant_only_loss', False)" in block
 
     # skip_prepare_dataset must not exempt the overlength check.
     assert "if not _unsloth_skip_prepare and not (_unsloth_within_cap" not in block

@@ -1443,12 +1443,24 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # long prompt can leave that mask all zeros; TRL's collator turns
                     # those into all -100 and a batch made of them has no supervised
                     # token at all, which is a NaN loss rather than a small one.
-                    "            _unsloth_supervision = ('labels', 'completion_mask', 'assistant_masks')\n"
+                    # A mask is only supervision when its loss mode is on. With
+                    # `completion_only_loss = False` TRL ignores `completion_mask`
+                    # and trains from the normal labels, so a row whose retained
+                    # mask is all zero is still a perfectly good row and dropping
+                    # it biases the split or empties it. `completion_only_loss`
+                    # defaults to None, which TRL reads as "on for a
+                    # prompt-completion dataset", so only an explicit False opts
+                    # out; `assistant_only_loss` defaults to False and has to be
+                    # asked for. `labels` is unconditional: it IS the supervision.
+                    "            _unsloth_supervision = [('labels', -100)]\n"
+                    "            if getattr(args, 'completion_only_loss', None) is not False:\n"
+                    "                _unsloth_supervision.append(('completion_mask', 0))\n"
+                    "            if getattr(args, 'assistant_only_loss', False):\n"
+                    "                _unsloth_supervision.append(('assistant_masks', 0))\n"
                     "            try:\n"
                     "                _unsloth_cols = getattr(_new, 'column_names', None) or ()\n"
-                    "                for _unsloth_sup in _unsloth_supervision:\n"
+                    "                for _unsloth_sup, _unsloth_empty in _unsloth_supervision:\n"
                     "                    if _unsloth_sup not in _unsloth_cols: continue\n"
-                    "                    _unsloth_empty = -100 if _unsloth_sup == 'labels' else 0\n"
                     "                    _new = _new.filter(lambda _e, _c = _unsloth_sup, _z = _unsloth_empty: any(_l != _z for _l in _e[_c]), **_kw)\n"
                     "            except Exception:\n"
                     "                pass\n"
