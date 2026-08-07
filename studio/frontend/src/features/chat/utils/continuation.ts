@@ -2,13 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Resuming a response that stopped early.
+ * Resuming a response that stopped early: Max Tokens ran out (`length`), Stop was
+ * pressed (`cancelled`), or the stream was cut (`interrupted`).
  *
- * A turn can end before the model was done in three ways the user can act on: Max
- * Tokens ran out (`length`), Stop was pressed (`cancelled`), or the stream was cut
- * (`interrupted`). Continuing re-sends the conversation with the partial as the final
- * assistant turn plus `continue_final_message`, so the prompt ends mid-sentence and
- * the model emits the next token. The new text is appended to the partial.
+ * Continuing re-sends the conversation with the partial as the final assistant turn
+ * plus `continue_final_message`, so the prompt ends mid-sentence and the model emits
+ * the next token. The new text is appended to the partial.
  */
 
 /** Why a turn ended before the model was done. */
@@ -61,10 +60,9 @@ export function incompleteLabel(reason: IncompleteReason): string {
 }
 
 /**
- * Drop text the continuation repeated from the end of the partial.
- *
- * Local models continue token-exactly, but a provider that ignores assistant prefill
- * can restate the last few words. Only a suffix the continuation opens with is removed.
+ * Drop text the continuation repeated from the end of the partial. Local models
+ * continue token-exactly, but a provider that ignores assistant prefill can restate
+ * the last few words. Only a suffix the continuation opens with is removed.
  */
 export function stripContinuationOverlap(
   partial: string,
@@ -83,10 +81,9 @@ export function stripContinuationOverlap(
 }
 
 /**
- * True when the "continuation" is really a fresh answer.
- *
- * Judged on the partial's opening, which a genuine continuation never reproduces.
- * Appending a restart would read as a stutter, so the caller keeps it alone.
+ * True when the "continuation" is really a fresh answer. Judged on the partial's
+ * opening, which a genuine continuation never reproduces; appending a restart would
+ * read as a stutter, so the caller keeps it alone.
  */
 export function isRestart(partial: string, continuation: string): boolean {
   const head = partial.trimStart().slice(0, RESTART_PROBE);
@@ -120,11 +117,10 @@ export function joinContinuation(
 /**
  * Whether a finished MLX turn used its whole budget, i.e. stopped for length.
  *
- * MLX alone needs the inference: it reports finish_reason "stop" at the cap, so an
- * exhausted budget is the only signal there. Everyone else reports "length" themselves,
- * including transformers, which sets it from the token count `generate` returned and
- * knows the difference between a turn that ran out of budget and one that happened to
- * end on its stop token at the cap. Inferring for them would relabel a finished answer.
+ * MLX alone needs the inference: it reports finish_reason "stop" at the cap. Everyone
+ * else reports "length" themselves, transformers included (from the token count
+ * `generate` returned, which distinguishes an exhausted budget from a stop token that
+ * happened to land at the cap), so inferring for them would relabel a finished answer.
  */
 export function budgetImpliesTruncation({
   isMlx,
@@ -148,10 +144,9 @@ export function budgetImpliesTruncation({
 /**
  * Whether an assistant turn can be resumed at all.
  *
- * A turn that called a tool cannot: the continuation runs as a sibling, so the tool
- * call and its result are not in the outbound history, and resuming only the text
- * would ask the model to carry on from an answer whose evidence is missing. Matches
- * the backend guard, which also refuses a trailing turn holding tool calls.
+ * A turn that called a tool cannot: the continuation runs as a sibling, so the call and
+ * its result are absent from the outbound history and the model would be asked to carry
+ * on from an answer whose evidence is missing. Matches the backend guard.
  */
 export function isContinuableContent(
   content: readonly unknown[] | undefined,
@@ -166,8 +161,7 @@ export function isContinuableContent(
       hasText = hasText || ((part as { text?: string }).text ?? "").length > 0;
       continue;
     }
-    // Reasoning is not replayed either way, so it neither blocks nor enables.
-    // Citations are the same: appended for display at finalization, never sent back.
+    // Reasoning and citations are never replayed, so they neither block nor enable.
     if (type === "reasoning" || type === "source") {
       continue;
     }
@@ -177,10 +171,9 @@ export function isContinuableContent(
 }
 
 /**
- * The newest Gemini text-part thoughtSignature on an assistant turn.
- *
- * The streaming adapter pins it onto the final text part; the continuation carries it
- * so the resumed turn is replayed signed rather than as bare text.
+ * The newest Gemini text-part thoughtSignature on an assistant turn. The streaming
+ * adapter pins it onto the final text part; the continuation carries it so the resumed
+ * turn is replayed signed rather than as bare text.
  */
 export function readTextThoughtSignature(
   content: readonly unknown[] | undefined,
@@ -206,13 +199,11 @@ export function readTextThoughtSignature(
 /**
  * Providers that reject a trailing assistant turn.
  *
- * Anthropic removed assistant prefill in Claude 4.6 (400 on the last message being
- * assistant) and never allowed it with extended thinking. Gemini requires a multiturn
- * request to end in a user turn or a function response and 400s otherwise. Mistral
- * takes a prefill only on an assistant message carrying its own `prefix: true` field,
- * which neither the outbound message type nor the backend schema has, so a bare one
- * 400s with "Expected last role User or Tool (or Assistant with prefix True)". All get
- * the partial plus an instruction turn instead, keeping the last message a user turn.
+ * Anthropic removed assistant prefill in Claude 4.6 and never allowed it with extended
+ * thinking. Gemini requires a multiturn request to end in a user turn or a function
+ * response. Mistral takes a prefill only on an assistant message carrying `prefix: true`,
+ * which neither the outbound message type nor the backend schema has. All get the partial
+ * plus an instruction turn instead, keeping the last message a user turn.
  */
 const PREFILL_REJECTING_PROVIDERS = new Set(["anthropic", "gemini", "mistral"]);
 
@@ -227,8 +218,8 @@ export function rejectsAssistantPrefill(
  *
  * Mirrors `_CONTINUATION_FLAG_PROVIDERS` in `core/inference/external_provider.py`: vLLM
  * and llama-server document `continue_final_message` + `add_generation_prompt`, so they
- * resume at the exact token boundary like a local model and need no overlap repair.
- * Every other connection may ignore the trailing assistant turn and restart.
+ * resume at the exact token boundary and need no overlap repair. Every other connection
+ * may ignore the trailing assistant turn and restart.
  */
 const EXACT_RESUME_PROVIDERS = new Set(["vllm", "llama_cpp"]);
 
@@ -241,7 +232,7 @@ export function resumesExactly(providerType: string | undefined): boolean {
  *
  * These three answer from scratch before the continuation request is read: audio input
  * re-listens, an audio-output model regenerates the clip, and armed Deep Research
- * replaces the turn with a report. Continue would restart there, so it is hidden.
+ * replaces the turn with a report. Continue would restart, so it is hidden.
  */
 export function modeAllowsContinuation({
   fromAudioInput,
@@ -267,9 +258,8 @@ export type ContinuationRequest = {
   /** The partial answer to resume, exactly as it was rendered. */
   partial: string;
   /**
-   * Gemini text-part thoughtSignature from the turn being resumed. The sibling run
-   * drops the original assistant message, so replaying it here keeps the model
-   * history signed for Gemini 3's strict validation.
+   * Gemini text-part thoughtSignature from the turn being resumed. The sibling run drops
+   * the original assistant message, so replaying it here keeps the history signed.
    */
   thoughtSignature?: string;
 };

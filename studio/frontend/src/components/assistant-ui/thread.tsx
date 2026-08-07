@@ -4901,10 +4901,9 @@ const CancelledIndicator: FC = () => {
 
 /** Text of an assistant turn: what a continuation resumes from.
  *
- * Text parts only, matching replay: reasoning is not sent back, so it cannot resume.
- * Joined with nothing, like the backend's `trailing_assistant_text`: a turn split
- * around a reasoning part never had a newline between its halves, and inventing one
- * moves the prompt boundary off the text on screen. */
+ * Text parts only, matching replay: reasoning is not sent back. Joined with nothing,
+ * like the backend's `trailing_assistant_text`: a turn split around a reasoning part
+ * never had a newline between its halves, and inventing one moves the boundary. */
 function assistantMessageText(content: readonly unknown[] | undefined): string {
   if (!content) {
     return "";
@@ -4920,10 +4919,9 @@ function assistantMessageText(content: readonly unknown[] | undefined): string {
 }
 
 /**
- * Resume a response that stopped early instead of regenerating it.
- *
- * Shown under the last assistant turn when Max Tokens ran out, Stop was pressed, or
- * the stream dropped. Retry keeps its old meaning: drop the partial and start over.
+ * Resume a response that stopped early instead of regenerating it. Shown under the last
+ * assistant turn when Max Tokens ran out, Stop was pressed, or the stream dropped.
+ * Retry keeps its old meaning: drop the partial and start over.
  */
 const ContinueMessageBar: FC = () => {
   const aui = useAui();
@@ -4937,18 +4935,18 @@ const ContinueMessageBar: FC = () => {
   const partial = useAuiState(({ message }) =>
     assistantMessageText(message.content),
   );
-  // A turn that called a tool cannot be resumed: the continuation runs as a sibling,
-  // so the call and its result would be missing from the outbound history.
+  // A tool-calling turn cannot be resumed: the continuation runs as a sibling, so the
+  // call and its result would be missing from the outbound history.
   const continuable = useAuiState(({ message }) =>
     isContinuableContent(message.content),
   );
-  // Gemini signs its text parts; the resumed turn is replayed from this branch, so
-  // the signature travels with the partial.
+  // Gemini signs its text parts, and the resumed turn is replayed from this branch,
+  // so the signature travels with the partial.
   const thoughtSignature = useAuiState(({ message }) =>
     readTextThoughtSignature(message.content),
   );
-  // Audio input routes to a generator that re-listens to the recording and answers
-  // afresh rather than resuming, so continuing there would append a second answer.
+  // Audio input re-listens to the recording and answers afresh rather than resuming,
+  // so continuing there would append a second answer.
   const fromAudioInput = useAuiState(({ thread }) =>
     Boolean(findLatestUserAudioBase64(thread.messages, false)),
   );
@@ -4960,8 +4958,8 @@ const ContinueMessageBar: FC = () => {
   // Research armed after the cut owns no run yet, so the gates above stay clear.
   const deepResearchArmed = useChatRuntimeStore((s) => s.deepResearchEnabled);
 
-  // Cancelled comes through status (the adapter yields nothing after an abort);
-  // the other two are stamped on metadata so they survive a reload.
+  // Cancelled comes through status (the adapter yields nothing after an abort); the
+  // other two are stamped on metadata so they survive a reload.
   const stamped = readIncompleteInfo(metadata);
   const cancelled =
     status?.type === "incomplete" && status?.reason === "cancelled";

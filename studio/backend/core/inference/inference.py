@@ -246,7 +246,7 @@ class InferenceBackend:
     """Unified inference backend supporting text, vision, and LoRA models"""
 
     # Usage + budget exhaustion of the latest generation, shipped on gen_done.
-    # A class attribute as well, so a backend built with __new__ still answers.
+    # Class attribute too, so a backend built with __new__ still answers.
     last_generation_stats = None
 
     def __init__(self):
@@ -931,8 +931,8 @@ class InferenceBackend:
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
-                # Self-limiting: after a tool call the conversation ends with a
-                # tool result, so later turns render as ordinary new turns.
+                # Self-limiting: after a tool call the conversation ends on a tool
+                # result, so later turns render as ordinary new turns.
                 continue_final_message = continue_final_message,
                 presence_penalty = presence_penalty,
             )
@@ -1239,8 +1239,8 @@ class InferenceBackend:
         # for some models. Safe unwrap for tokenize-only ops.
         raw_tokenizer = getattr(processor, "tokenizer", processor)
 
-        # Extract user message. Scans back, so a continuation (which ends on the
-        # assistant partial) still prompts from the turn that asked the question.
+        # Scans back, so a continuation (which ends on the assistant partial) still
+        # prompts from the turn that asked the question.
         from core.inference.chat_template_helpers import (
             last_user_text,
             render_prompt_with_boundary,
@@ -1379,8 +1379,8 @@ class InferenceBackend:
             def generate_fn():
                 with self._generation_lock:
                     try:
-                        # See generate_stream: the returned sequences carry the
-                        # only exact count of generated tokens.
+                        # See generate_stream: only the returned sequences carry
+                        # an exact generated-token count.
                         gen_outputs["sequences"] = model.generate(**generation_kwargs)
                     except Exception as e:
                         err["msg"] = str(e)
@@ -1583,8 +1583,8 @@ class InferenceBackend:
                         # As in the text path: apply under the lock so Base-vs-LoRA
                         # compare doesn't run the adapter on both sides (None = no-op).
                         self._apply_adapter_state(use_adapter)
-                        # See generate_stream: the returned sequences carry the
-                        # only exact count of generated tokens.
+                        # See generate_stream: only the returned sequences carry
+                        # an exact generated-token count.
                         gen_outputs["sequences"] = model.generate(**generation_kwargs)
                     except Exception as e:
                         err["msg"] = str(e)
@@ -1599,8 +1599,8 @@ class InferenceBackend:
             thread.start()
 
             output = ""
-            # This finally always sets cancel_event, so the flag (not the event)
-            # is what tells a user stop apart from a run that reached its end.
+            # The finally below always sets cancel_event, so this flag (not the
+            # event) tells a user stop apart from a run that reached its end.
             generation_complete = False
             try:
                 while True:
@@ -1659,8 +1659,8 @@ class InferenceBackend:
 
         Uses the pre-built transformers pipeline created at model load.
         """
-        # The pipeline reports no token counts, so clear the previous run's
-        # rather than let gen_done ship a chat turn's stats as this one's.
+        # The pipeline reports no token counts, so clear rather than let gen_done
+        # ship a chat turn's stats as this one's.
         self.last_generation_stats = None
 
         model_info = self.models[self.active_model_name]
@@ -1856,8 +1856,8 @@ class InferenceBackend:
                     try:
                         if _adapter_state is not None:
                             self._apply_adapter_state(_adapter_state)
-                        # The returned sequences are the only exact token count;
-                        # the streamer only ever sees decoded text.
+                        # Only the returned sequences carry an exact token count;
+                        # the streamer sees decoded text.
                         gen_outputs["sequences"] = model.generate(**generation_kwargs)
                     except Exception as e:
                         err["msg"] = str(e)
@@ -2300,8 +2300,8 @@ class InferenceBackend:
                 f"""Failed with messages: {[f"{m['role']}: {m['content'][:30]}..." for m in chat_messages]}"""
             )
 
-        # Every manual formatter closes the assistant turn and opens a new one, so a
-        # continuation renders without the partial and resumes from its text instead.
+        # Every manual formatter closes the assistant turn, so a continuation renders
+        # without the partial and appends its text instead.
         partial = chat_messages[-1]["content"] if _continuing else None
         manual_messages = chat_messages[:-1] if _continuing else chat_messages
 
@@ -2515,9 +2515,8 @@ class InferenceBackend:
         """New tokens ``generate`` produced, or None when the shape says nothing.
 
         ``generate`` returns prompt + completion for decoder-only models and
-        decoder-start + completion for encoder-decoder ones. Anything else (a
-        stubbed or patched generate that returns None) yields None, which keeps
-        the caller from reporting a token count it did not measure.
+        decoder-start + completion for encoder-decoder ones. Anything else yields
+        None, so the caller never reports a count it did not measure.
         """
         sequences = getattr(outputs, "sequences", outputs)
         shape = getattr(sequences, "shape", None)
@@ -2531,10 +2530,10 @@ class InferenceBackend:
         return total - int(prompt_len)
 
     def _ended_on_stop_token(self, outputs, stop_token_ids) -> bool:
-        """Whether the final token is a stop token rather than a token cut off by the cap.
+        """Whether the final token is a stop token rather than one cut off by the cap.
 
-        A response whose last token lands exactly on ``max_new_tokens`` ended
-        naturally; only one that did NOT emit a stop token ran out of budget.
+        A response landing exactly on ``max_new_tokens`` ended naturally; only one
+        that did NOT emit a stop token ran out of budget.
         """
         sequences = getattr(outputs, "sequences", outputs)
         if isinstance(stop_token_ids, int):
@@ -2557,9 +2556,8 @@ class InferenceBackend:
         """Latch usage + budget exhaustion for the worker's gen_done stats channel.
 
         Left at None when the token count is unknown, so a path that cannot count
-        keeps reporting exactly what it reported before. ``truncated`` is what the
-        route turns into finish_reason "length"; a cancelled run stopped early by
-        request, not at the cap, so it never sets it.
+        reports what it did before. ``truncated`` becomes finish_reason "length";
+        a cancelled run stopped by request, not at the cap, so it never sets it.
         """
         if completion_tokens is None:
             return

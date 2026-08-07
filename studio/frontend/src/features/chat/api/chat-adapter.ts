@@ -3454,16 +3454,16 @@ export function createOpenAIStreamAdapter(
         );
       }
 
-      // Continue: the run's messages stop at the user turn (this is a sibling
-      // branch), so the partial is appended here for the backend to resume.
+      // The run's messages stop at the user turn (this is a sibling branch), so the
+      // partial is appended here for the backend to resume.
       const continuation = readContinuationRequest(runConfig);
       if (continuation) {
         outboundMessages.push({
           role: "assistant",
           content: continuation.partial,
         });
-        // Replay the resumed turn's Gemini signature: the original assistant message
-        // is not in this branch, so without it the model history goes back unsigned.
+        // The original assistant message is not in this branch, so without its
+        // signature the model history goes back unsigned.
         attachAssistantThoughtSignature(
           outboundMessages,
           continuation.thoughtSignature,
@@ -3579,9 +3579,8 @@ export function createOpenAIStreamAdapter(
       // Scan post-prune history so a refused user turn's image/audio
       // doesn't gate or mis-attribute the next turn.
       const imageBase64 = findLatestUserImageBase64(survivingMessages);
-      // A continuation resumes the turn as it was sent, and the Continue gate ignores
-      // pending audio: picking up a clip staged in the composer since would switch the
-      // request onto the audio path the backend refuses to continue.
+      // A continuation resumes the turn as it was sent: picking up a clip staged in the
+      // composer since would switch it onto the audio path, which cannot be continued.
       const audioBase64 = findLatestUserAudioBase64(
         survivingMessages,
         !queuedRunSettings && !continuation,
@@ -3786,15 +3785,14 @@ export function createOpenAIStreamAdapter(
         local: !isExternalRequest,
         owner: serverCancel,
       });
-      // Seeded with the partial so the bubble reads as one response. The boundary
-      // lets the finalizers re-derive the new output and repair a repeat/restart.
+      // Seeded with the partial so the bubble reads as one response; the boundary lets
+      // the finalizers re-derive the new output and repair a repeat/restart.
       let cumulativeText = continuation ? continuation.partial : "";
       const continuationPartial = continuation?.partial ?? "";
-      // Local backends resume at the exact token boundary, so their output is already
-      // the rest of the answer: trimming an overlap there could only delete words the
-      // model meant to write (a sentence legitimately restating the preceding phrase).
-      // The repair is for providers that may ignore the prefill and repeat or restart.
-      // A self-hosted vLLM or llama-server is sent the flags too, so it resumes exactly.
+      // Local backends (and a self-hosted vLLM / llama-server, which get the flags)
+      // resume at the exact token boundary, so their output is already the rest of the
+      // answer and trimming could only delete words the model meant to write. The repair
+      // is for providers that may ignore the prefill and repeat or restart.
       const repairContinuation =
         isExternalRequest && !resumesExactly(externalProvider?.providerType);
       const mergeContinuation = (text: string): string =>
@@ -3805,22 +3803,21 @@ export function createOpenAIStreamAdapter(
             )
           : text;
       // Every streamed yield carries the repaired text, not just the terminal ones:
-      // assistant-ui drops whatever the generator yields after an abort, so on Stop the
-      // last STREAMED yield is the saved answer, and raw text saves the repeat/restart.
+      // assistant-ui drops whatever is yielded after an abort, so on Stop the last
+      // STREAMED yield is what gets saved.
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
-      // Provisional reason carried on every streamed yield: an abort stops the
-      // generator without reaching a terminal yield, and a reload rebuilds messages
-      // with status "complete", so a stopped turn would otherwise lose the reason it
-      // was short. The terminal yields overwrite this with the real value, or clear it.
+      // Provisional reason on every streamed yield: an abort skips the terminal yields
+      // and a reload rebuilds messages as "complete", so a stopped turn would otherwise
+      // lose why it was short. The terminal yields overwrite or clear it.
       const liveCustom = () => ({
         ...reasoningDurationTracker.metadata(),
         incomplete: { reason: "cancelled" as const },
       });
       // Why this turn stopped early. Drives the Continue affordance.
       let incompleteReason: IncompleteReason | null = null;
-      // MLX reports finish_reason "stop" even at the cap, so an exhausted budget is the
-      // only truncation signal on that route. Everyone else reports "length" honestly.
+      // MLX reports finish_reason "stop" even at the cap, so an exhausted budget is its
+      // only truncation signal. Everyone else reports "length" honestly.
       let requestedMaxTokens: number | undefined;
       const isMlxRequest = !isExternalRequest && activeModel?.isMlx === true;
       const reasoningDurationTracker = createReasoningDurationTracker();
@@ -3937,8 +3934,7 @@ export function createOpenAIStreamAdapter(
       };
 
       // Yielded before the request starts: an abort during load skips the partial-content
-      // yield below, which would save an empty message and strand the resumed text on the
-      // sibling branch with no way back to it.
+      // yield below, saving an empty message and stranding the resumed text.
       if (continuation) {
         yield {
           content: buildAssistantContent(cumulativeText),
@@ -4996,8 +4992,8 @@ export function createOpenAIStreamAdapter(
               }
 
               totalChunks += 1;
-              // Latched rather than read off the last chunk: a provider can send
-              // the terminal reason ahead of its usage chunk.
+              // Latched, not read off the last chunk: a provider can send the
+              // terminal reason ahead of its usage chunk.
               if (chunk.choices?.[0]?.finish_reason === "length") {
                 incompleteReason = "length";
               } else if (chunk.choices?.[0]?.finish_reason) {

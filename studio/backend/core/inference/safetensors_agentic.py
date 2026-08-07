@@ -545,9 +545,8 @@ def run_safetensors_tool_loop(
 
     # off never prompts, so (like auto) it must not lose first-pass retrieval
     # even if a direct caller passes a stale confirm_tool_calls flag.
-    # A resumed turn must keep the partial as the trailing message: autoinject
-    # appends a tool call plus its result, which moves the boundary and makes the
-    # model open a fresh answer instead of continuing.
+    # A resumed turn must keep the partial trailing: autoinject appends a tool call
+    # plus its result, moving the boundary so the model opens a fresh answer.
     _skip_autoinject = (
         confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
     ) or bool(continue_final_message and trailing_assistant_text(conversation))
@@ -1056,7 +1055,7 @@ def run_safetensors_tool_loop(
                         len(intent_text),
                     )
                     # Merges into a resumed partial: the nudge that follows is a user
-                    # turn, so a second assistant turn would break alternation.
+                    # turn, so a second assistant turn breaks alternation.
                     append_assistant_turn(
                         conversation,
                         {"role": "assistant", "content": intent_text},
@@ -1231,8 +1230,8 @@ def run_safetensors_tool_loop(
 
             if not assistant_appended:
                 assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
-                # Merges into a resumed partial, so a continued turn that calls a
-                # tool stays one assistant message.
+                # Merges into a resumed partial, so a continued turn that calls a tool
+                # stays one assistant message.
                 append_assistant_turn(
                     conversation,
                     assistant_msg,

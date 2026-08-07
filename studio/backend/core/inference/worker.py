@@ -580,8 +580,8 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
             {
                 "type": "gen_done",
                 "request_id": request_id,
-                # usage/timings from the MLX backend, usage + "truncated" from the
-                # safetensors one (None for a backend that reports neither).
+                # usage/timings from MLX, usage + "truncated" from safetensors
+                # (None for a backend that reports neither).
                 "stats": getattr(backend, "last_generation_stats", None),
             },
         )

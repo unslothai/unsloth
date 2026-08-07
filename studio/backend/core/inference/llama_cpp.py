@@ -13866,9 +13866,8 @@ class LlamaCppBackend:
         # off never prompts either, so it also keeps first-pass retrieval.
         from core.inference.chat_template_helpers import trailing_assistant_text
 
-        # A resumed turn must keep the partial as the trailing message: autoinject
-        # appends a tool call plus its result, which moves the boundary and makes the
-        # model open a fresh answer instead of continuing.
+        # A resumed turn must keep the partial trailing: autoinject appends a tool call
+        # plus its result, moving the boundary so the model opens a fresh answer.
         _skip_autoinject = (
             confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
         ) or bool(continue_final_message and trailing_assistant_text(conversation))
@@ -14123,8 +14122,8 @@ class LlamaCppBackend:
             )
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
-            # Re-checked per iteration: once a tool result is appended the
-            # conversation no longer ends with the partial, so later turns are normal.
+            # Re-checked per iteration: once a tool result is appended the partial is
+            # no longer trailing, so later turns are normal.
             if continue_final_message and trailing_assistant_text(conversation):
                 payload["continue_final_message"] = True
                 payload["add_generation_prompt"] = False
@@ -14776,9 +14775,8 @@ class LlamaCppBackend:
                                 f"model responded without calling tools "
                                 f"({len(_stripped)} chars)"
                             )
-                            # Merges into a resumed partial: the nudge that follows is
-                            # a user turn, so a second assistant turn would break
-                            # alternation.
+                            # Merges into a resumed partial: the nudge that follows is a
+                            # user turn, so a second assistant turn breaks alternation.
                             append_assistant_turn(
                                 conversation,
                                 {"role": "assistant", "content": _stripped},
@@ -15031,8 +15029,8 @@ class LlamaCppBackend:
 
                     if not assistant_appended:
                         assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
-                        # Merges into a resumed partial, so a continued turn that
-                        # calls a tool stays one assistant message.
+                        # Merges into a resumed partial, so a continued turn that calls
+                        # a tool stays one assistant message.
                         append_assistant_turn(
                             conversation,
                             assistant_msg,

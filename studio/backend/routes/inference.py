@@ -272,8 +272,8 @@ def _clamp_finish_reason(value) -> str:
 def _continue_final_message(payload) -> bool:
     """Whether this request resumes the trailing assistant turn.
 
-    An ill-formed request (no assistant turn to resume, or one holding tool calls)
-    degrades to an ordinary new turn rather than erroring.
+    Nothing resumable (no assistant turn, or one holding tool calls) degrades to an
+    ordinary new turn rather than erroring.
     """
     if not getattr(payload, "continue_final_message", None):
         return False
@@ -308,8 +308,7 @@ def _continue_final_message(payload) -> bool:
 
 def _reject_audio_output_continuation(payload) -> None:
     """Audio output re-speaks the newest user text, so there is no partial to resume
-    from; refuse rather than return a fresh clip labelled as a continuation. Both the
-    GGUF and the non-GGUF TTS branch return before any continuation handling."""
+    from; refuse rather than return a fresh clip labelled as a continuation."""
     if _continue_final_message(payload):
         raise HTTPException(
             status_code = 400,
@@ -916,10 +915,9 @@ def _chat_final_chunk(completion_id, created, model_name, finish_reason) -> str:
 def _stats_finish_reason(stats, default: str = "stop") -> str:
     """``"length"`` when the backend reports the turn ran out of token budget.
 
-    Only the in-process backends fill ``truncated`` (the safetensors one counts the
-    tokens ``generate`` returned). llama-server and MLX report their own finish
-    reason and never set it, so they keep ``default``, as does any backend that
-    ships no stats at all.
+    Only the in-process backends fill ``truncated``. llama-server and MLX report their
+    own finish reason and never set it, so they keep ``default``, as does a backend
+    shipping no stats at all.
     """
     if isinstance(stats, dict) and stats.get("truncated"):
         return "length"
@@ -10032,9 +10030,8 @@ async def openai_chat_completions(
 
         # ── Audio INPUT path: decode WAV and route to audio input generation ──
         if payload.audio_base64 and model_info.get("has_audio_input"):
-            # This route re-listens to the recording and answers afresh, so there is no
-            # boundary to resume from. Refuse rather than return a restart labelled as
-            # a continuation; the Studio UI already hides Continue here.
+            # This route re-listens to the recording and answers afresh, so there is
+            # no boundary to resume from; the Studio UI already hides Continue here.
             if _continue_final_message(payload):
                 raise HTTPException(
                     status_code = 400,
@@ -10505,8 +10502,8 @@ async def openai_chat_completions(
 
             # ── Strip stale tool-call XML from conversation history ─
             # The continuation target keeps its exact whitespace: the frontend appends
-            # the model's output to the partial it holds, so trimming the tail here
-            # would resume from a different boundary and double or drop indentation.
+            # the model's output to the partial it holds, so trimming the tail here would
+            # resume from a different boundary.
             _gguf_continue_target = (
                 gguf_messages[-1] if _continue_final_message(payload) and gguf_messages else None
             )
@@ -11835,7 +11832,7 @@ async def openai_chat_completions(
         _sf_template_tools
     )
 
-    # A continued turn renders no generation prompt, so no <think> is prefilled and the
+    # A continued turn renders no generation prompt, so nothing is prefilled and the
     # resumed text is the visible answer. Only the first turn continues; later tool-loop
     # turns render a fresh generation prompt and prefill as usual.
     _sf_continue = _continue_final_message(payload)
@@ -12136,8 +12133,8 @@ async def openai_chat_completions(
                 # GGUF tool loop's metadata. Request-scoped holder, so
                 # concurrent streams cannot read each other's stats.
                 _stats = _sf_stats_holder.get("stats")
-                # The last turn's own budget decides: an earlier turn stopping at
-                # the cap does not truncate the answer this one went on to write.
+                # The last turn's own budget decides: an earlier turn stopping at the
+                # cap does not truncate the answer this one went on to write.
                 yield _chat_final_chunk(
                     completion_id,
                     created,
@@ -12216,10 +12213,10 @@ async def openai_chat_completions(
 
             def _drain_to_text():
                 full_text = ""
-                # Only the resumed turn renders no generation prompt. Later tool-loop turns
-                # prefill <think> again, and the kept text is the LAST turn's, so track the
-                # boundary and pin the mode of the turn that text came from (streaming latch
-                # parity: the same events reset that path's extractor).
+                # Only the resumed turn renders no generation prompt; later tool-loop turns
+                # prefill <think> again. The kept text is the LAST turn's, so track the
+                # boundary and pin the mode of the turn that text came from (the same events
+                # reset the streaming path's extractor).
                 continued = _sf_continue
                 prefilled = _sf_reasoning_prefilled and not continued
                 gen = sf_generate_with_tools()
@@ -12594,8 +12591,8 @@ async def openai_chat_completions(
                 # Request-scoped holder, so concurrent streams cannot
                 # read each other's stats.
                 _stats = stats_holder.get("stats")
-                # A healed tool call still wins: the turn ended on a call, not on
-                # the cap. A cancelled one stopped on request, so it is never "length".
+                # A healed tool call wins: the turn ended on a call, not at the cap. A
+                # cancelled one stopped on request, so it is never "length".
                 _finish = (
                     "tool_calls"
                     if (healer is not None and not _cancelled and healer.healed)
@@ -12700,8 +12697,8 @@ async def openai_chat_completions(
             _msg = {"role": "assistant", "content": _visible_text}
             if _reasoning_text:
                 _msg["reasoning_content"] = _reasoning_text
-            # Budget exhaustion unless a heal below promotes a tool call; a cancelled
-            # turn stopped on request, not at the cap, so it stays "stop".
+            # Budget exhaustion unless a heal below promotes a tool call; a cancelled turn
+            # stopped on request, not at the cap, so it stays "stop".
             _finish = (
                 "stop" if cancel_event.is_set() else _stats_finish_reason(stats_holder.get("stats"))
             )
@@ -12727,7 +12724,7 @@ async def openai_chat_completions(
                             # Re-split reasoning on the retry so its visible text is
                             # what heals into a call (and reaches the monitor).
                             # The nudge retry appends messages, so it is not a
-                            # continuation: normal prefill detection applies.
+                            # continuation and normal prefill detection applies.
                             _retry_reasoning, _retry_visible = _extract_responses_reasoning(
                                 retry_text,
                                 parse_think_markers = _sf_parse_think,
@@ -14096,8 +14093,8 @@ def _build_chat_request(
             chat_kwargs["auto_heal_tool_calls"] = _extra["auto_heal_tool_calls"]
         if isinstance(_extra.get("nudge_tool_calls"), bool):
             chat_kwargs["nudge_tool_calls"] = _extra["nudge_tool_calls"]
-        # Same for continuation, or a Responses request resuming a trailing
-        # assistant turn opens a fresh one and restarts the answer.
+        # Same for continuation, or a Responses request resuming a trailing assistant
+        # turn opens a fresh one and restarts the answer.
         if isinstance(_extra.get("continue_final_message"), bool):
             chat_kwargs["continue_final_message"] = _extra["continue_final_message"]
 

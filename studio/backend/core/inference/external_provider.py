@@ -28,7 +28,7 @@ import structlog
 _TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom"})
 
 # The subset documenting "continue_final_message" + "add_generation_prompt" on
-# /v1/chat/completions: vLLM (extra_body extensions) and llama-server (server-schema).
+# /v1/chat/completions.
 _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 
 # structlog so INFO diagnostics reach the backend's JSON log stream (the
@@ -980,7 +980,7 @@ class ExternalProviderClient:
                 tools = safe_tools
 
         # Both are set because a server rejects continuing while a generation prompt is
-        # still asked for. Sent only to the two that document the pair: "custom" is any
+        # still asked for. Sent only to the two documenting the pair: "custom" is any
         # user-supplied base_url, and a strict endpoint 400s on an unknown field, so it
         # keeps the trailing assistant turn on its own as before.
         _continue_body = (

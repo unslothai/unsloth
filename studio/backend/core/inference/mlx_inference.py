@@ -113,9 +113,9 @@ def _render_registered_vlm_prompt(
     """Render through mlx-vlm when it declares a formatter for this model.
 
     With *continue_final_message* the trailing assistant turn is dropped from the render
-    and appended as text, so this recovery path resumes the partial rather than opening a
-    fresh turn. The appended text is taken from the SWEPT messages: a raw partial could
-    close the turn or open another role instead of resuming (#7066).
+    and appended as text, resuming the partial rather than opening a fresh turn. That text
+    comes from the SWEPT messages: a raw partial could close the turn or open another
+    role instead of resuming (#7066).
     """
     from mlx_vlm import prompt_utils
 

@@ -2302,7 +2302,7 @@ def markup_for_tokenizer(
 def trailing_assistant_text(messages: list) -> Optional[str]:
     """Plain text of a trailing assistant turn, else None.
 
-    Only plain text can be resumed: tool calls and image parts have no resume point.
+    Only plain text resumes: tool calls and image parts have no resume point.
     """
     if not messages:
         return None
@@ -2314,7 +2314,6 @@ def trailing_assistant_text(messages: list) -> Optional[str]:
     content = last.get("content")
     if isinstance(content, str):
         return content
-    # Continuable only when every part is text.
     if isinstance(content, list):
         texts = []
         for part in content:
@@ -2328,10 +2327,9 @@ def trailing_assistant_text(messages: list) -> Optional[str]:
 def last_user_text(messages: list) -> str:
     """Text of the newest user turn, with any ``<img>`` markup stripped.
 
-    The vision path builds its prompt from that turn, so it must scan back rather
-    than read ``messages[-1]``: a continuation ends on the assistant partial. Stops
-    at the newest user turn even when it is empty (an image-only message), so an
-    older question is never resurrected as the prompt for a new image.
+    Scans back rather than reading ``messages[-1]``: a continuation ends on the
+    assistant partial. Stops at the newest user turn even when it is empty (an
+    image-only message), so an older question is never resurrected.
     """
     from core.inference.message_content import content_to_text
 
@@ -2350,14 +2348,12 @@ def append_assistant_turn(
 ) -> None:
     """Append a generated assistant turn to *conversation*.
 
-    A continuation leaves the resumed partial as the trailing assistant turn, so a
-    plain append produces two consecutive assistant messages and templates that
-    enforce role alternation reject the next render. The partial and what the model
-    just added are one turn, so they are merged. Self-limiting: after a tool result
-    the conversation no longer ends with a plain assistant turn.
+    A continuation leaves the resumed partial trailing, and the partial plus what the
+    model just added are one turn, so they are merged: appending would instead give two
+    consecutive assistant messages and break role alternation. Self-limiting, since
+    after a tool result the conversation no longer ends with a plain assistant turn.
     """
-    # Same acceptance rule as the prompt boundary, so a partial sent as text parts
-    # merges too instead of appending a second assistant turn.
+    # Same acceptance rule as the prompt boundary, so a partial sent as text parts merges too.
     prev_text = trailing_assistant_text(conversation) if continue_final_message else None
     if prev_text is not None and isinstance(assistant_msg.get("content"), str):
         assistant_msg["content"] = f"{prev_text}{assistant_msg['content']}"
@@ -2369,12 +2365,10 @@ def append_assistant_turn(
 def strip_open_reasoning_prefill(prefix: str) -> str:
     """Drop a generation prompt's unclosed ``<think>`` opener.
 
-    A splice appends the already-visible partial to this prefix, so on a template that
-    prefills an open block (DeepSeek-R1, QwQ, Qwen3-Thinking) the answer would resume
-    as reasoning and the model would close the block instead of continuing it.
-
-    Only an opener the generation prompt itself ends on counts: a bare "<think>" typed
-    into an earlier turn is rendered text, and cutting there would eat the transcript.
+    A splice appends the visible partial to this prefix, so on a template that prefills
+    an open block (DeepSeek-R1, QwQ, Qwen3-Thinking) the answer would resume as reasoning.
+    Only an opener the prompt itself ends on counts: a bare "<think>" typed into an
+    earlier turn is rendered text, and cutting there would eat the transcript.
     """
     open_at = prefix.rfind(_THINK_OPEN)
     if open_at == -1 or open_at < prefix.rfind(_THINK_CLOSE):
@@ -2391,11 +2385,10 @@ def render_prompt_with_boundary(
 ) -> str:
     """Render *messages* through a renderer's own chat template.
 
-    With *continue_final_message* the prompt ends inside the trailing assistant turn,
-    so the model resumes it. Processors predating the kwarg get a manual splice, whose
-    text comes from *messages* rather than a separate copy: the caller sweeps these for
-    control markup, and a raw partial could otherwise close the turn or open another
-    role instead of being resumed as text (#7066).
+    With *continue_final_message* the prompt ends inside the trailing assistant turn, so
+    the model resumes it. Processors predating the kwarg get a manual splice, taking the
+    partial from *messages* (which the caller already swept) rather than a separate copy:
+    a raw partial could close the turn or open another role instead of resuming (#7066).
     """
     partial = trailing_assistant_text(messages) if continue_final_message else None
     if not partial:
@@ -2428,8 +2421,8 @@ def apply_chat_template_for_generation(
     group at a time on TypeError. Jinja / missing-variable errors
     propagate.
 
-    With *continue_final_message* the prompt ends inside the trailing assistant turn,
-    so the model resumes the partial response instead of restarting it."""
+    With *continue_final_message* the prompt ends inside the trailing assistant
+    turn, so the model resumes the partial instead of restarting it."""
     # Shared choke point for the transformers and MLX backends (#7066). Gated on the
     # loaded model's own markers, so text naming another family's sentinel is left alone.
     _markup = markup_for_tokenizer(tokenizer, tools)
@@ -2476,9 +2469,8 @@ def apply_chat_template_for_generation(
             _fallback_markup = markup_for_tokenizer(tokenizer, None)
         return neutralize_control_markup_in_messages(msgs, None, _fallback_markup)
 
-    # Anything not continuable renders as an ordinary new turn. An empty partial has no
-    # resume point either, so it is excluded here too, matching the route guard and
-    # render_prompt_with_boundary.
+    # Anything not continuable (an empty partial included, matching the route guard and
+    # render_prompt_with_boundary) renders as an ordinary new turn.
     _continue_text = trailing_assistant_text(messages) if continue_final_message else None
     _continuing = bool(_continue_text)
     _boundary_kwargs = (
@@ -2511,9 +2503,8 @@ def apply_chat_template_for_generation(
     def _render_continuation_manually(msgs: list) -> str:
         """For tokenizers predating ``continue_final_message`` (TypeError above).
 
-        Prefix and partial come from the SAME swept copy: an attempt that drops the
-        tools kwarg re-sweeps for the default template, and a boundary unique to that
-        profile would otherwise survive raw in the appended text.
+        Prefix and partial come from the SAME swept copy: an attempt that drops the tools
+        kwarg re-sweeps for the default template, whose markup would otherwise survive raw.
         """
         for kwargs in attempts:
             swept = _swept_for(kwargs, msgs)

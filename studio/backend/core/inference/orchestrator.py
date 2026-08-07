@@ -1684,8 +1684,8 @@ class InferenceOrchestrator:
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
-                # Self-limiting: after a tool call the conversation ends with a
-                # tool result, so later turns render as ordinary new turns.
+                # Self-limiting: after a tool call the conversation ends on a tool
+                # result, so later turns render as ordinary new turns.
                 continue_final_message = continue_final_message,
                 # last turn wins, like the GGUF tool loop
                 stats_holder = stats_holder,
@@ -2119,7 +2119,7 @@ class InferenceOrchestrator:
         """Shared inner logic for audio input generation (Whisper + ASR).
 
         ``stats_holder``: as in generate_chat_response — caller-owned, filled on
-        gen_done with the worker's usage / budget-exhaustion report.
+        gen_done with the worker's usage / budget report.
         """
         if not self._ensure_subprocess_alive():
             yield GenStreamError("Error: Inference subprocess is not running", public = True)

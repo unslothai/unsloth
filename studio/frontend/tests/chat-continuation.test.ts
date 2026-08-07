@@ -27,8 +27,8 @@ const PARTIAL =
   "There are three steps to proofing dough properly. First, warm the bowl and";
 
 test("a token-exact continuation is appended verbatim", () => {
-  // What a local model returns: the prompt ended inside the partial turn, so the
-  // continuation opens on the next word with nothing repeated.
+  // A local model's prompt ended inside the partial turn, so the continuation opens
+  // on the next word with nothing repeated.
   assert.equal(
     joinContinuation(PARTIAL, " cover it with a damp cloth."),
     `${PARTIAL} cover it with a damp cloth.`,
@@ -68,16 +68,15 @@ test("mid-stream the restart check is deferred", () => {
 });
 
 test("a live yield is repaired like the terminal one, so Stop saves clean text", () => {
-  // Stop is an end a continuation reaches without a terminal yield: assistant-ui applies
-  // nothing the generator yields after the abort, so the last LIVE yield is what persists.
-  // Streaming raw text saved the provider's repeat as the cancelled answer.
+  // Stop reaches no terminal yield: assistant-ui drops whatever the generator yields
+  // after the abort, so the last LIVE yield is what persists.
   assert.equal(
     joinContinuation(PARTIAL, "warm the bowl and cover it with"),
     `${PARTIAL} cover it with`,
   );
 
-  // A partial longer than the overlap scan is where the two joins diverge: only the
-  // restart check reaches back that far, so a live yield runs the same join as the end.
+  // The two joins diverge past the overlap scan: only the restart check reaches back
+  // that far, so a live yield runs the same join as the terminal one.
   const long = `${PARTIAL} ${Array.from(
     { length: 12 },
     (_, i) => `Step ${i} is to knead it for ${i} minutes without adding flour.`,
@@ -107,9 +106,9 @@ test("an empty partial yields the continuation alone", () => {
 test("an exhausted budget only implies truncation on the MLX route", () => {
   const capped = { maxTokens: 256, completionTokens: 256 };
   assert.equal(budgetImpliesTruncation({ isMlx: true, ...capped }), true);
-  // Everyone else reports "length" itself. llama-server's tool loop in particular sums
-  // completion_tokens over every pass while max_tokens caps each pass, and transformers
-  // knows an answer that ended on its stop token at the cap from one that ran out.
+  // Everyone else reports "length" itself: llama-server's tool loop sums
+  // completion_tokens over passes max_tokens caps individually, and transformers tells
+  // an answer that ended on its stop token at the cap from one that ran out.
   assert.equal(
     budgetImpliesTruncation({
       isMlx: false,
@@ -175,8 +174,8 @@ test("a continuation request is read only when it carries text", () => {
 });
 
 test("a turn that called a tool cannot be continued", () => {
-  // The continuation runs as a sibling, so the call and its result are not in the
-  // outbound history and the resumed text would have lost its evidence.
+  // The continuation runs as a sibling, so the call and its result are absent from
+  // the outbound history and the resumed text would have lost its evidence.
   assert.equal(
     isContinuableContent([
       { type: "text", text: "Looking that up." },
@@ -204,10 +203,9 @@ test("text and reasoning parts are continuable, empty text is not", () => {
 });
 
 test("providers that reject a trailing assistant turn get the instruction path", () => {
-  // Anthropic 400s on a trailing assistant message since Claude 4.6; Gemini requires
-  // a multiturn request to end in a user turn or a function response. Mistral answers
-  // "Expected last role User or Tool (or Assistant with prefix True)" unless the turn
-  // carries its `prefix: true` field, which the outbound message type has no room for.
+  // Anthropic 400s on a trailing assistant message since Claude 4.6; Gemini requires a
+  // multiturn request to end in a user turn or a function response; Mistral needs the
+  // turn to carry `prefix: true`, which the outbound message type has no room for.
   assert.equal(rejectsAssistantPrefill("anthropic"), true);
   assert.equal(rejectsAssistantPrefill("gemini"), true);
   assert.equal(rejectsAssistantPrefill("mistral"), true);
@@ -227,13 +225,12 @@ test("modes that answer from scratch do not offer Continue", () => {
     false,
   );
   // A stopped TTS turn keeps its "Generating audio..." text, which passes the content
-  // gates; the resumed run would regenerate the whole clip instead of continuing.
+  // gates, but the resumed run regenerates the whole clip.
   assert.equal(
     modeAllowsContinuation({ ...plain, audioOutputModel: true }),
     false,
   );
-  // Deep Research armed after the turn was cut: the run researches the user message
-  // and its report replaces the partial.
+  // Research armed after the cut: the run replaces the partial with its report.
   assert.equal(
     modeAllowsContinuation({ ...plain, deepResearchArmed: true }),
     false,
@@ -241,9 +238,8 @@ test("modes that answer from scratch do not offer Continue", () => {
 });
 
 test("the overlap repair can eat a legitimate repeat, so local output skips it", () => {
-  // A local backend resumes at the exact token boundary, so its output is already the
-  // rest of the answer. Running the repair over it would delete a phrase the model
-  // meant to write, which is why the adapter only repairs external provider output.
+  // A local backend resumes at the exact token boundary, so repairing its output would
+  // delete a phrase the model meant to write. Hence external providers only.
   const partial = "Ranking them, the clear winner is the second result";
   const continuation = "the second result held up best under load.";
   // "the second result" is trimmed as a repeat even though the model wrote it.
@@ -259,8 +255,8 @@ test("the overlap repair can eat a legitimate repeat, so local output skips it",
 });
 
 test("a continuation carries the Gemini signature of the turn it resumes", () => {
-  // The sibling run drops the original assistant message, so the signature has to
-  // travel with the partial or the model history goes back to Gemini unsigned.
+  // The sibling run drops the original assistant message, so the signature travels
+  // with the partial or the history goes back to Gemini unsigned.
   assert.equal(
     readTextThoughtSignature([
       { type: "text", text: "first", _google_thought_signature: "SIG-A" },
@@ -291,8 +287,8 @@ test("a continuation carries the Gemini signature of the turn it resumes", () =>
 });
 
 test("only the servers sent the flags resume exactly", () => {
-  // The backend forwards continue_final_message + add_generation_prompt to these two
-  // only, so only they skip the lossy overlap repair.
+  // The backend forwards the continuation flags to these two only, so only they skip
+  // the lossy overlap repair.
   for (const providerType of ["vllm", "llama_cpp"]) {
     assert.equal(resumesExactly(providerType), true, providerType);
   }
