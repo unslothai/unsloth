@@ -1677,9 +1677,13 @@ def _drafter_matches_weight(candidate_name: str, weight_name: Optional[str], *, 
 
     A multi-model folder must not attach a foreign drafter, so the family the
     drafter names has to PREFIX the weight filename at a non-alphanumeric
-    boundary. Prefix alone is not enough: ``DeepSeek-V4-Flash-Lite`` and
-    ``DeepSeek-V4-Flash`` would otherwise pair in both directions and launch
-    the wrong sidecar as --model-draft.
+    boundary. That blocks one direction of a ``DeepSeek-V4-Flash-Lite`` /
+    ``DeepSeek-V4-Flash`` pair but not the other: the shorter family name is a
+    prefix of the longer weight, so a base-family sidecar still matches a
+    longer-named sibling's weights. Exact equality cannot replace the prefix
+    rule -- ``mtp-gemma-4-12B-it.gguf`` really does ship beside
+    ``gemma-4-12B-it-qat-*.gguf`` -- so the remaining direction is settled by
+    ranking: callers prefer the longest matching stem (see _drafter_stem_rank).
     """
     if weight_name is None:
         return True
@@ -1690,6 +1694,16 @@ def _drafter_matches_weight(candidate_name: str, weight_name: Optional[str], *, 
         and weight.startswith(stem)
         and (len(weight) == len(stem) or not weight[len(stem)].isalnum())
     )
+
+
+def _drafter_stem_rank(candidate_name: str, *, kind: str) -> int:
+    """Sort key placing the most specific family first (longest stem wins).
+
+    Both ``mtp-DeepSeek-V4-Flash-BF16.gguf`` and
+    ``mtp-DeepSeek-V4-Flash-0731-BF16.gguf`` prefix-match a 0731 weight, and
+    only the second is really its drafter.
+    """
+    return -len(_drafter_pairing_stem(candidate_name, kind = kind) or "")
 
 
 def _drafter_launch_path(candidate: Path) -> str:
@@ -1779,7 +1793,7 @@ def detect_mtp_file(
     def _launchable(candidate: Path) -> bool:
         return _drafter_split_is_complete(candidate)
 
-    def _smallest_first(candidate: Path) -> tuple[int, int, str]:
+    def _smallest_first(candidate: Path) -> tuple[int, int, int, str]:
         # Cheapest compatible copy wins. Size first: a fixed precision list ranked unknown quants
         # behind BF16, so a small K-quant lost to a far larger BF16. Precision breaks size ties,
         # name keeps it stable. Split copies collapse to shard 1, so sum across their shards.
@@ -1793,7 +1807,15 @@ def detect_mtp_file(
             precision = 2
         else:
             precision = 3
-        return _drafter_total_size(candidate), precision, name
+        # Family first, for the same reason as DSpark: both a base-family and a
+        # release-specific sidecar prefix-match, and only the longer one is
+        # really this weight's drafter.
+        return (
+            _drafter_stem_rank(candidate.name, kind = "mtp"),
+            _drafter_total_size(candidate),
+            precision,
+            name,
+        )
 
     p = Path(path)
     weight_name = p.name.lower() if p.suffix.lower() == ".gguf" else None
@@ -1801,6 +1823,11 @@ def detect_mtp_file(
     dirs = [start_dir]
     if search_root is not None:
         dirs.append(Path(search_root))
+    # Both tiers are collected before either is emitted: two sidecars can
+    # prefix-match the same weight (mtp-model.gguf and mtp-model_v2-Q8_0.gguf
+    # beside model_v2-*.gguf), across layouts as well as within one, and only the
+    # one naming this family is really its drafter.
+    root_candidates: list[Path] = []
     if not skip_root:
         for d in dirs:
             try:
@@ -1813,15 +1840,17 @@ def detect_mtp_file(
                     continue
                 if not _matches_weight(f):
                     continue
+                # Launchability is settled here, not at emission: an unusable
+                # candidate that outranks everything (a dangling link, a partial
+                # split) would otherwise win the tier comparison below and then
+                # be skipped, handing back a less specific sibling. The subdir
+                # tier is filtered at collection for the same reason.
                 try:
                     if not (f.is_file() and _launchable(f)):
                         continue
-                    launch = _drafter_launch_path(f)
                 except OSError:
                     continue
-                if accept is not None and not accept(launch):
-                    continue
-                return launch
+                root_candidates.append(f)
 
     subdir_candidates: list[Path] = []
     for d in dirs:
@@ -1864,15 +1893,39 @@ def detect_mtp_file(
                 except OSError:
                     continue
 
-    for candidate in sorted(dict.fromkeys(subdir_candidates), key = _smallest_first):
-        try:
-            resolved = _drafter_launch_path(candidate)
-        except OSError:
-            continue
-        if accept is not None and not accept(resolved):
-            continue
-        logger.info(f"Detected MTP subdirectory drafter: {resolved}")
-        return resolved
+    def _first_pick(candidates: list[Path]) -> Optional[tuple[int, str]]:
+        """The candidate this tier would really launch, with its specificity.
+
+        Ranking the tier's best NAME would let a file that never launches speak
+        for it: rejected by ``accept`` (out of a native grant) or unresolvable,
+        it is skipped at emission and a less specific sibling goes out instead.
+        So each tier is represented by the first candidate that survives every
+        filter, which is the one actually on offer.
+        """
+        for c in candidates:
+            try:
+                launch = _drafter_launch_path(c)
+            except OSError:
+                continue
+            if accept is not None and not accept(launch):
+                continue
+            return _drafter_stem_rank(c.name, kind = "mtp"), launch
+        return None
+
+    # Ranking is stable, so files of equal specificity keep the scan order.
+    root_pick = _first_pick(
+        sorted(root_candidates, key = lambda c: _drafter_stem_rank(c.name, kind = "mtp"))
+    )
+    subdir_pick = _first_pick(sorted(dict.fromkeys(subdir_candidates), key = _smallest_first))
+
+    # Root keeps its preference at equal specificity, which is every published
+    # layout. It loses only to a strictly more specific companion copy, where
+    # the root file names a different family and is not this weight's drafter.
+    if subdir_pick is not None and (root_pick is None or subdir_pick[0] < root_pick[0]):
+        logger.info(f"Detected MTP subdirectory drafter: {subdir_pick[1]}")
+        return subdir_pick[1]
+    if root_pick is not None:
+        return root_pick[1]
     return None
 
 
@@ -1900,11 +1953,13 @@ def detect_dspark_file(
     rejection as no sidecar at all.
     """
 
-    def _rank(candidate: Path) -> tuple[int, int, str]:
-        # Precision first (the model card's recommendation), then total size so
-        # a split copy cannot outrank a smaller single file, then name for a
-        # stable order.
+    def _rank(candidate: Path) -> tuple[int, int, int, str]:
+        # Most specific family first, so a base-family sidecar cannot win over
+        # the one that names this exact release. Then precision (the model
+        # card's recommendation), then total size so a split copy cannot
+        # outrank a smaller single file, then name for a stable order.
         return (
+            _drafter_stem_rank(candidate.name, kind = "dspark"),
             dspark_precision_rank(candidate.name),
             _drafter_total_size(candidate),
             candidate.name.lower(),
@@ -1953,7 +2008,12 @@ def detect_dspark_file(
                 try:
                     # Collapse a split copy to shard 1 before ranking.
                     launch = _local_gguf_load_path(candidate)
-                    if not _drafter_split_is_complete(launch):
+                    # is_file() follows the link, so this also drops a dangling
+                    # snapshot symlink and a directory named like a sidecar.
+                    # Without it --model-draft gets a path llama-server cannot
+                    # open, which fails the whole load rather than falling back
+                    # to no speculation (detect_mtp_file guards the same way).
+                    if not (launch.is_file() and _drafter_split_is_complete(launch)):
                         continue
                     resolved = launch.resolve()
                 except OSError:
@@ -3363,6 +3423,33 @@ class ModelConfig:
                 # list_gguf_variants() detects vision & resolves the variant
                 variants, has_vision = list_gguf_variants(identifier, hf_token = hf_token)
                 variant = gguf_variant
+                if variant:
+                    from core.inference.llama_cpp import (
+                        _gguf_files_for_variant,
+                        cached_gguf_for_load,
+                    )
+
+                    # Reject before the load path unloads the resident model.
+                    # Only a live, complete repo listing can prove the variant
+                    # absent; without one, let the load path resolve it. The
+                    # cache escape mirrors the load path's own reuse predicate.
+                    try:
+                        from huggingface_hub import list_repo_files
+                        repo_files = list_repo_files(identifier, token = hf_token)
+                    except Exception:
+                        repo_files = None
+                    if (
+                        repo_files
+                        and not _gguf_files_for_variant(repo_files, variant)
+                        and not cached_gguf_for_load(
+                            identifier, variant, verify_sizes = True, hf_token = hf_token
+                        )
+                    ):
+                        available = ", ".join(v.quant for v in variants)
+                        raise ValueError(
+                            f"GGUF variant '{variant}' not found in {identifier}. "
+                            f"Available variants: {available}"
+                        )
                 if not variant:  # auto-select best quant
                     variant_filenames = [v.filename for v in variants]
                     best = _pick_best_gguf(variant_filenames)
