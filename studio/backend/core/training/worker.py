@@ -771,6 +771,26 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
 
 _CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
 _CAUSAL_CONV1D_PACKAGE_VERSION = "1.6.1"
+_CAUSAL_CONV1D_MODEL_SUBSTRINGS = (
+    "qwen3.5",
+    "qwen3_5",
+    "qwen3.6",
+    "qwen3_6",
+    "qwen3-next",
+    "qwen3_next",
+    "nemotron_h",
+    "nemotron-h",
+    "nemotron-3-nano",
+    "falcon_h1",
+    "falcon-h1",
+    "granite-4.0-h",
+    "granitemoehybrid",
+    "lfm2",
+    "mamba",
+    "jamba",
+    "zamba",
+    "bamba",
+)
 _MAMBA_SSM_RELEASE_TAG = "v2.3.1"
 _MAMBA_SSM_PACKAGE_VERSION = "2.3.1"
 _FLASH_ATTN_RUNTIME_MIN_SEQ_LEN = 32768
@@ -915,25 +935,7 @@ if sys.platform == "win32":
 
 def _model_wants_causal_conv1d(model_name: str) -> bool:
     name = model_name.lower()
-    return any(
-        key in name
-        for key in (
-            "qwen3.5",
-            "qwen3_5",
-            "qwen3.6",
-            "qwen3_6",
-            "qwen3-next",
-            "qwen3_next",
-            "nemotron_h",
-            "nemotron-h",
-            "nemotron-3-nano",
-            "falcon_h1",
-            "falcon-h1",
-            "granite-4.0-h",
-            "granitemoehybrid",
-            "lfm2",
-        )
-    )
+    return any(key in name for key in _CAUSAL_CONV1D_MODEL_SUBSTRINGS)
 
 
 def _hipcc_gcc_install_dir() -> str | None:
@@ -979,6 +981,10 @@ def _install_package_wheel_first(
         return True
     except ImportError:
         pass
+
+    if _model_offline_mode_enabled():
+        logger.info("Skipping %s installation while offline", display_name)
+        return False
 
     env = probe_torch_wheel_env(timeout = 30)
     if wheel_url_builder is not None:
@@ -1265,6 +1271,10 @@ def _ensure_flash_linear_attention_unconditional(event_queue: Any) -> bool:
     if already_importable and _flash_linear_attention_current(already_importable = True):
         logger.info("flash-linear-attention already importable at the pinned version")
         return True
+
+    if _model_offline_mode_enabled():
+        logger.info("Skipping flash-linear-attention installation while offline")
+        return False
 
     _send_status(
         event_queue,
@@ -1598,6 +1608,16 @@ def _ensure_tilelang_backend_unconditional(event_queue: Any) -> bool:
         logger.info("tilelang + apache-tvm-ffi already installed")
         return True
 
+    if _model_offline_mode_enabled():
+        if needs_repair and os.environ.get("FLA_TILELANG") is None:
+            os.environ["FLA_TILELANG"] = "0"
+            logger.warning(
+                "Disabling TileLang while offline because apache-tvm-ffi %s is unsafe",
+                existing_tvm_ffi,
+            )
+        logger.info("Skipping TileLang installation while offline")
+        return False
+
     # Step 1: --no-deps keeps --force-reinstall off torch/CUDA via the dep graph.
     if needs_repair:
         logger.info(
@@ -1784,10 +1804,13 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
         )
         return bool(ok)
 
-    for gate_name, install_fn, post_fn in (
+    hooks = [
         ("is_flash_linear_attention_available", _fla_install, _fla_post_available),
-        ("is_causal_conv1d_available", _causal_conv1d_install, None),
-    ):
+    ]
+    if _model_wants_causal_conv1d(model_name):
+        hooks.append(("is_causal_conv1d_available", _causal_conv1d_install, None))
+
+    for gate_name, install_fn, post_fn in hooks:
         original = getattr(_iu, gate_name, None)
         if original is None:
             logger.info(
@@ -2790,13 +2813,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     # ── 7. Apply train_on_responses_only if requested ──
     # Auto-detect markers from the chat template first, manual table as fallback. Mirror the
-    # CUDA skips: raw/CPT text has no chat turns and Alpaca-rendered text lacks the markers.
+    # CUDA skips: raw/CPT text has no chat turns.
     # Check the resolved format too, since format_type="auto" can land on alpaca or raw.
     if (
         config.get("train_on_completions", False)
         and not raw_text_mode
-        and format_type != "alpaca"
-        and dataset_final_format not in ("alpaca", "raw_text")
+        and dataset_final_format != "raw_text"
     ):
         _send("status", status_message = "Configuring response-only training...")
         # No catch: the helper handles detection failures and double misses, so an exception here
@@ -2807,6 +2829,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             model_name,
             train_on_responses_only,
             notify = lambda level, message: _send("status", status_message = message),
+            dataset_template = "alpaca" if dataset_final_format == "alpaca" else None,
         )
 
     # ── 8. Setup wandb / tensorboard ──

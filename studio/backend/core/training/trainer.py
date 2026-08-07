@@ -3655,7 +3655,7 @@ class UnslothTrainer:
                 train_on_responses_enabled
                 and not self.is_audio_vlm
                 and not self.is_audio
-                and not (is_deepseek_ocr or dataset_final_format == "alpaca")
+                and not is_deepseek_ocr
             ):
                 from unsloth.chat_templates import train_on_responses_only
 
@@ -3675,6 +3675,7 @@ class UnslothTrainer:
                     train_on_responses_only,
                     num_proc = config_args["dataset_num_proc"],
                     notify = _notify,
+                    dataset_template = ("alpaca" if dataset_final_format == "alpaca" else None),
                 )
 
                 if not masking_applied:

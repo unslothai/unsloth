@@ -11,6 +11,7 @@ training worker (the original source of this behaviour).
 import sys
 import types
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -19,6 +20,12 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from utils import ssm_runtime  # noqa: E402
+
+
+@pytest.fixture(autouse = True)
+def _clear_offline_environment(monkeypatch):
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
 
 
 class _Result:
@@ -57,6 +64,11 @@ def test_ssm_models_detected(name):
         "Qwen/Qwen3-Next-80B-A3B",
         "unsloth/Qwen3.5-2B",
         "LiquidAI/LFM2-1.2B",
+        "state-spaces/mamba-2.8b-hf",
+        "ai21labs/Jamba-v0.1",
+        "Zyphra/Zamba2-7B",
+        "ibm/Bamba-9B",
+        "tiiuae/falcon-mamba-7b",
     ],
 )
 def test_causal_conv1d_only_models(name):
@@ -171,6 +183,7 @@ def test_ssm_causal_failure_nonfatal_when_mamba_ok(monkeypatch):
 
 
 def test_install_kernel_idempotent_when_present(monkeypatch):
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: True)
     called = []
     monkeypatch.setattr(ssm_runtime, "url_exists", lambda u: called.append("url") or True)
@@ -186,6 +199,39 @@ def test_install_kernel_idempotent_when_present(monkeypatch):
     )
     assert ok is True
     assert called == []  # short-circuits before touching the network
+
+
+@pytest.mark.parametrize("offline_variable", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
+def test_install_kernel_skips_all_install_work_offline(monkeypatch, offline_variable):
+    monkeypatch.setenv(offline_variable, "on")
+    monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: False)
+    torch_probe = mock.Mock()
+    wheel_builder = mock.Mock()
+    url_probe = mock.Mock()
+    wheel_install = mock.Mock()
+    process_run = mock.Mock()
+    monkeypatch.setattr(ssm_runtime, "probe_torch_wheel_env", torch_probe)
+    monkeypatch.setattr(ssm_runtime, "direct_wheel_url", wheel_builder)
+    monkeypatch.setattr(ssm_runtime, "url_exists", url_probe)
+    monkeypatch.setattr(ssm_runtime, "install_wheel", wheel_install)
+
+    installed = ssm_runtime._install_kernel(
+        import_name = "causal_conv1d",
+        display_name = "causal-conv1d",
+        pypi_name = "causal-conv1d",
+        package_version = "1.6.1",
+        release_tag = "v1.6.1.post4",
+        release_base_url = "https://example.invalid/releases",
+        status_cb = None,
+        run = process_run,
+    )
+
+    assert installed is False
+    torch_probe.assert_not_called()
+    wheel_builder.assert_not_called()
+    url_probe.assert_not_called()
+    wheel_install.assert_not_called()
+    process_run.assert_not_called()
 
 
 def test_install_kernel_uses_prebuilt_wheel(monkeypatch):
@@ -525,6 +571,9 @@ def test_constants_match_training_worker():
         pytest.skip(f"training worker not importable here: {exc}")
 
     assert set(ssm_runtime.SSM_MODEL_SUBSTRINGS) == set(tw._SSM_MODEL_SUBSTRINGS)
+    assert set(ssm_runtime.CAUSAL_CONV1D_MODEL_SUBSTRINGS) == set(
+        tw._CAUSAL_CONV1D_MODEL_SUBSTRINGS
+    )
     assert ssm_runtime.MAMBA_SSM_PACKAGE_VERSION == tw._MAMBA_SSM_PACKAGE_VERSION
     assert ssm_runtime.MAMBA_SSM_RELEASE_TAG == tw._MAMBA_SSM_RELEASE_TAG
     assert ssm_runtime.CAUSAL_CONV1D_PACKAGE_VERSION == tw._CAUSAL_CONV1D_PACKAGE_VERSION
@@ -538,6 +587,10 @@ def test_constants_match_training_worker():
         "ibm-granite/granite-4.0-h-micro",
         "Qwen/Qwen3-Next-80B",
         "LiquidAI/LFM2-1.2B",
+        "state-spaces/mamba-2.8b-hf",
+        "ai21labs/Jamba-v0.1",
+        "Zyphra/Zamba2-7B",
+        "ibm/Bamba-9B",
         "unsloth/Llama-3.2-1B-Instruct",
         "unsloth/Qwen2.5-7B",
     ):

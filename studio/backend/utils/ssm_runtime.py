@@ -69,6 +69,10 @@ CAUSAL_CONV1D_MODEL_SUBSTRINGS = (
     "granite-4.0-h",
     "granitemoehybrid",
     "lfm2",
+    "mamba",
+    "jamba",
+    "zamba",
+    "bamba",
 )
 
 
@@ -172,6 +176,12 @@ def _install_kernel(
     if _is_importable(import_name):
         logger.info("%s already installed", display_name)
         return True
+
+    from utils.utils import hf_env_offline
+
+    if hf_env_offline():
+        logger.info("Skipping %s installation while offline", display_name)
+        return False
 
     env = probe_torch_wheel_env(timeout = 30)
     wheel_url = direct_wheel_url(
