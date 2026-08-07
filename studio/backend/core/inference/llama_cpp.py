@@ -8929,6 +8929,7 @@ class LlamaCppBackend:
                 ctx_override = parse_ctx_override(extra_args)
                 requested_ctx = resolve_requested_ctx(extra_args, n_ctx)
                 swa_full = _swa_full_from_args_or_env(extra_args)
+
                 # The emitted batch, not the requested one: the floor raise below is what
                 # llama.cpp caps the micro-batch against, so the fit, the slot search and
                 # every compute-buffer reserve must be sized from the value that launches.

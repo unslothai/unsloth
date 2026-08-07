@@ -175,8 +175,17 @@ class TestSlotsThatFitOnGpu:
         def _fit(**kwargs):
             calls = []
             got = _backend(kv_calls = calls)._slots_that_fit_on_gpu(
-                4, CTX, [(0, 24576)], {0: 24576}, 23750 * MIB, "q8_0", FRAC, 0, 1,
-                n_ubatch = 64, **kwargs
+                4,
+                CTX,
+                [(0, 24576)],
+                {0: 24576},
+                23750 * MIB,
+                "q8_0",
+                FRAC,
+                0,
+                1,
+                n_ubatch = 64,
+                **kwargs,
             )
             return got, [call["n_ubatch"] for call in calls]
 

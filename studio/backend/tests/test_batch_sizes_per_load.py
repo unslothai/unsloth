@@ -593,13 +593,9 @@ def test_the_local_guard_charges_diffusion_nothing_for_the_batch_flags():
     from routes import inference as route
 
     # SWA needs the KV widths as well as the window, or the estimate takes the dense path
-    swa_header = dict(
-        _QWEN3_8B, sliding_window = 1024, kv_key_length = 128, kv_value_length = 128
-    )
+    swa_header = dict(_QWEN3_8B, sliding_window = 1024, kv_key_length = 128, kv_value_length = 128)
     with patch.object(LlamaCppBackend, "_read_gguf_metadata", _header_reader(**swa_header)):
-        quiet = route._estimate_gguf_kv_gb(
-            "/x.gguf", 131072, n_parallel = 1, is_diffusion = True
-        )
+        quiet = route._estimate_gguf_kv_gb("/x.gguf", 131072, n_parallel = 1, is_diffusion = True)
         loud = route._estimate_gguf_kv_gb(
             "/x.gguf",
             131072,
