@@ -132,8 +132,7 @@ def parse_detections(raw: object) -> list[str]:
 def select_scan_targets(paths: Iterable[Path]) -> list[Path]:
     """Filter a directory listing down to the bundles worth spending quota on."""
     targets = [
-        path for path in paths
-        if path.is_file() and not path.name.endswith(SKIPPED_SUFFIXES)
+        path for path in paths if path.is_file() and not path.name.endswith(SKIPPED_SUFFIXES)
     ]
     return sorted(targets, key = lambda path: path.name)
 
@@ -150,10 +149,7 @@ def exceeds_threshold(reports: Sequence[FileReport], threshold: int) -> bool:
     """True when the run should fail. threshold <= 0 means advisory-only."""
     if threshold <= 0:
         return False
-    return any(
-        report.stats is not None and report.stats.flagged >= threshold
-        for report in reports
-    )
+    return any(report.stats is not None and report.stats.flagged >= threshold for report in reports)
 
 
 def render_markdown(reports: Sequence[FileReport], threshold: int) -> str:
@@ -167,9 +163,7 @@ def render_markdown(reports: Sequence[FileReport], threshold: int) -> str:
     for report in reports:
         stats = report.stats
         if stats is None:
-            lines.append(
-                f"| `{report.name}` | - | - | - | - | - | {report.source} |"
-            )
+            lines.append(f"| `{report.name}` | - | - | - | - | - | {report.source} |")
         else:
             lines.append(
                 f"| `{report.name}` | {stats.malicious} | {stats.suspicious} | "
@@ -204,10 +198,7 @@ def render_markdown(reports: Sequence[FileReport], threshold: int) -> str:
 
 
 def _default_transport(
-    method: str,
-    url: str,
-    headers: dict[str, str],
-    body: bytes | None,
+    method: str, url: str, headers: dict[str, str], body: bytes | None
 ) -> tuple[int, bytes]:
     request = urllib.request.Request(url, data = body, headers = headers, method = method)
     context = ssl.create_default_context()
@@ -295,7 +286,9 @@ class VirusTotalClient:
             except json.JSONDecodeError:
                 return status, None
 
-        raise RuntimeError(f"VirusTotal request failed after {_MAX_ATTEMPTS} attempts: {last_error}")
+        raise RuntimeError(
+            f"VirusTotal request failed after {_MAX_ATTEMPTS} attempts: {last_error}"
+        )
 
     def lookup_hash(self, sha256: str) -> object | None:
         """Return the existing file report, or None when VirusTotal has never seen it.
@@ -420,7 +413,9 @@ def _emit(report: FileReport) -> None:
             flush = True,
         )
     if report.note:
-        print(f"::warning title=VirusTotal scan incomplete::{report.name}: {report.note}", flush = True)
+        print(
+            f"::warning title=VirusTotal scan incomplete::{report.name}: {report.note}", flush = True
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -431,14 +426,30 @@ def build_parser() -> argparse.ArgumentParser:
         type = Path,
         help = "release bundles to scan, or a directory containing them",
     )
-    parser.add_argument("--output-markdown", type = Path, default = None,
-                        help = "write the summary table here (for $GITHUB_STEP_SUMMARY)")
-    parser.add_argument("--timeout-seconds", type = float, default = DEFAULT_TIMEOUT_SECONDS,
-                        help = "overall wall-clock cap for the whole scan")
-    parser.add_argument("--request-interval", type = float, default = DEFAULT_REQUEST_INTERVAL,
-                        help = "minimum seconds between API calls (free tier allows 4/min)")
-    parser.add_argument("--fail-threshold", type = int, default = DEFAULT_FAIL_THRESHOLD,
-                        help = "exit non-zero when malicious + suspicious >= N (0 disables)")
+    parser.add_argument(
+        "--output-markdown",
+        type = Path,
+        default = None,
+        help = "write the summary table here (for $GITHUB_STEP_SUMMARY)",
+    )
+    parser.add_argument(
+        "--timeout-seconds",
+        type = float,
+        default = DEFAULT_TIMEOUT_SECONDS,
+        help = "overall wall-clock cap for the whole scan",
+    )
+    parser.add_argument(
+        "--request-interval",
+        type = float,
+        default = DEFAULT_REQUEST_INTERVAL,
+        help = "minimum seconds between API calls (free tier allows 4/min)",
+    )
+    parser.add_argument(
+        "--fail-threshold",
+        type = int,
+        default = DEFAULT_FAIL_THRESHOLD,
+        help = "exit non-zero when malicious + suspicious >= N (0 disables)",
+    )
     return parser
 
 

@@ -87,12 +87,14 @@ class TestParseStats:
 
 class TestParseDetections:
     def test_only_malicious_and_suspicious_are_reported(self):
-        names = vt.parse_detections({
-            "AlphaAV": {"category": "malicious", "result": "Trojan.Gen"},
-            "BetaAV": {"category": "undetected"},
-            "GammaAV": {"category": "suspicious", "result": None},
-            "DeltaAV": {"category": "harmless"},
-        })
+        names = vt.parse_detections(
+            {
+                "AlphaAV": {"category": "malicious", "result": "Trojan.Gen"},
+                "BetaAV": {"category": "undetected"},
+                "GammaAV": {"category": "suspicious", "result": None},
+                "DeltaAV": {"category": "harmless"},
+            }
+        )
         assert names == ["AlphaAV (Trojan.Gen)", "GammaAV"]
 
     def test_non_dict_is_tolerated(self):
@@ -157,10 +159,12 @@ class TestLargeFileUploadFlow:
         bundle = tmp_path / "big.exe"
         bundle.write_bytes(b"payload")
         signed = "https://upload.virustotal.example/receive?sig=secret"
-        client, transport = _client({
-            "/files/upload_url": (200, b'{"data": "' + signed.encode() + b'"}'),
-            "upload.virustotal.example": (200, b'{"data": {"id": "analysis-1"}}'),
-        })
+        client, transport = _client(
+            {
+                "/files/upload_url": (200, b'{"data": "' + signed.encode() + b'"}'),
+                "upload.virustotal.example": (200, b'{"data": {"id": "analysis-1"}}'),
+            }
+        )
 
         assert client.upload(bundle) == "analysis-1"
 
@@ -192,11 +196,16 @@ class TestHashLookupFirst:
     def test_known_hash_short_circuits_the_upload(self, tmp_path):
         bundle = tmp_path / "known.exe"
         bundle.write_bytes(b"payload")
-        client, transport = _client({
-            "/files/": (200, b'{"data": {"attributes": {"last_analysis_stats": '
-                             b'{"malicious": 1}, "last_analysis_results": '
-                             b'{"AlphaAV": {"category": "malicious", "result": "X"}}}}}'),
-        })
+        client, transport = _client(
+            {
+                "/files/": (
+                    200,
+                    b'{"data": {"attributes": {"last_analysis_stats": '
+                    b'{"malicious": 1}, "last_analysis_results": '
+                    b'{"AlphaAV": {"category": "malicious", "result": "X"}}}}}',
+                ),
+            }
+        )
         report = vt.scan_file(client, bundle, deadline = float("inf"))
         assert report.source == "known to VirusTotal (no upload)"
         assert report.stats.malicious == 1
@@ -207,13 +216,18 @@ class TestHashLookupFirst:
     def test_unknown_hash_falls_through_to_upload(self, tmp_path):
         bundle = tmp_path / "new.exe"
         bundle.write_bytes(b"payload")
-        client, transport = _client({
-            "/files/upload_url": (200, b'{"data": "https://up.example/x"}'),
-            "up.example": (200, b'{"data": {"id": "an-1"}}'),
-            "/analyses/": (200, b'{"data": {"attributes": {"status": "completed", '
-                               b'"stats": {"malicious": 0}, "results": {}}}}'),
-            "/files/": (404, b"{}"),
-        })
+        client, transport = _client(
+            {
+                "/files/upload_url": (200, b'{"data": "https://up.example/x"}'),
+                "up.example": (200, b'{"data": {"id": "an-1"}}'),
+                "/analyses/": (
+                    200,
+                    b'{"data": {"attributes": {"status": "completed", '
+                    b'"stats": {"malicious": 0}, "results": {}}}}',
+                ),
+                "/files/": (404, b"{}"),
+            }
+        )
         report = vt.scan_file(client, bundle, deadline = float("inf"))
         assert report.source == "uploaded"
         assert report.stats.malicious == 0
@@ -247,8 +261,12 @@ class TestRenderMarkdown:
 
     def test_flagging_engines_are_listed(self):
         text = vt.render_markdown(
-            [vt.FileReport(name = "a.exe", stats = vt.ScanStats(malicious = 1),
-                           detections = ["AlphaAV (Trojan)"])], 0
+            [
+                vt.FileReport(
+                    name = "a.exe", stats = vt.ScanStats(malicious = 1), detections = ["AlphaAV (Trojan)"]
+                )
+            ],
+            0,
         )
         assert "Flagging engines" in text
         assert "AlphaAV (Trojan)" in text
