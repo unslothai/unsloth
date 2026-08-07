@@ -2623,3 +2623,27 @@ def test_cached_rows_classify_chat_capability_too():
     fields = src.split("def _cache_inventory_fields", 1)[1].split("\ndef ", 1)[0]
     assert "can_chat_override" in fields
     assert 'model_format in {"safetensors", "checkpoint"} and snapshot_path is not None' in fields
+
+
+def test_every_load_target_comparison_uses_the_same_case_rules():
+    """Source dedupe, remembered matching, and tried-candidate keys all compare
+    load targets, so all three must agree on POSIX case or they disagree about
+    which model is which."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    for fn in ("autoLoadSourceKey", "isRememberedSource", "autoLoadCandidateKey"):
+        body = src.split(f"function {fn}(", 1)[1].split("\n}", 1)[0]
+        assert "normalizeTarget(" in body, fn
+        assert "id.toLowerCase()" not in body, fn
+
+
+def test_the_default_variant_lookup_takes_the_run_signal():
+    src = _read("features/chat/api/chat-adapter.ts")
+    helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
+    helper = helper.split("async function autoLoadSmallestModel", 1)[0]
+    assert (
+        "listGgufVariants(DEFAULT_CHAT_MODEL_REPO, undefined, {\n      signal: abortSignal,\n    })"
+        in helper
+    )
+    # The catch below swallows the abort rejection, so the guard after it is
+    # what actually stops the download from starting.
+    assert helper.index("} catch {") < helper.index("abortSignal?.throwIfAborted();")

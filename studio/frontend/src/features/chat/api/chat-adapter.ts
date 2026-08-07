@@ -1647,12 +1647,14 @@ type AutoLoadCandidate = {
   successLabel: string;
 };
 
+// Same case rules as autoLoadSourceKey: folding a POSIX load target would let
+// a failed /models/Foo mark a distinct /models/foo as already tried.
 function autoLoadCandidateKey(
   kind: LastLocalModelKind,
   id: string,
   ggufVariant?: string | null,
 ): string {
-  return `${kind}:${id.toLowerCase()}:${(ggufVariant ?? "").toLowerCase()}`;
+  return `${kind}:${normalizeTarget(id)}:${(ggufVariant ?? "").toLowerCase()}`;
 }
 
 function hasBigEndianGgufMarker(filename: string, quant?: string | null): boolean {
@@ -2122,7 +2124,9 @@ async function ensureDefaultModelDownloaded(
   const variantKey = DEFAULT_CHAT_MODEL_VARIANT.toLowerCase();
   let expectedBytes = 0;
   try {
-    const listing = await listGgufVariants(DEFAULT_CHAT_MODEL_REPO);
+    const listing = await listGgufVariants(DEFAULT_CHAT_MODEL_REPO, undefined, {
+      signal: abortSignal,
+    });
     const variant = listing.variants.find(
       (entry) => entry.quant?.toLowerCase() === variantKey,
     );

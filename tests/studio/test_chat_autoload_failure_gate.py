@@ -1080,3 +1080,35 @@ def test_variant_scans_carry_the_run_abort_signal():
     scans = [event for event in out["events"] if event["kind"] == "listGgufVariants"]
     assert scans, "no variant scan ran"
     assert all(scan["hasSignal"] for scan in scans)
+
+
+def test_a_failed_path_does_not_mark_a_case_distinct_sibling_as_tried():
+    """On Linux /models/Foo.gguf and /models/foo.gguf are two models. Folding
+    the tried-candidate key made the first one's failure suppress the second,
+    which can leave nothing loaded."""
+    rows = (
+        "{ ...LOCAL_GGUF, id: '/models/Foo.gguf', load_id: '/models/Foo.gguf',"
+        " path: '/models/Foo.gguf', size_bytes: 1 },"
+        " { ...LOCAL_GGUF, id: '/models/foo.gguf', load_id: '/models/foo.gguf',"
+        " path: '/models/foo.gguf', size_bytes: 2 }"
+    )
+    out = _run(
+        f"scenario({{ localModels: [{rows}],"
+        " load: (p) => p.model_path === '/models/Foo.gguf' ? new Error(OOM) : LOADED(p) })"
+    )
+
+    assert _loaded_paths(out) == ["/models/Foo.gguf", "/models/foo.gguf"]
+    assert out["result"]["loaded"] is True
+    assert _downloads_started(out) == []
+
+
+def test_the_default_variant_lookup_carries_the_run_abort_signal():
+    """Bounded by its own 30s timeout, but a stopped send should not hold the
+    model-loading lease waiting it out before the download even starts."""
+    out = _run("scenario({})")
+    [lookup] = [
+        event
+        for event in out["events"]
+        if event["kind"] == "listGgufVariants" and event["repoId"] == DEFAULT_MODEL
+    ]
+    assert lookup["hasSignal"] is True
