@@ -755,7 +755,7 @@ class TestRouteCompleteness:
             'del fields["native_context_length"]',
             'fields.pop("native_context_length", None)',
             "fields.clear()",
-            'fields[_key] = None',  # a computed key could be the protected one
+            "fields[_key] = None",  # a computed key could be the protected one
             'fields["native_context_length"] = None',
         ):
             assert not self._accepts(
