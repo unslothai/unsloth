@@ -120,16 +120,20 @@ def is_mtp_drafter_path(path: str) -> bool:
     )
 
 
-def is_mtp_only_drafter_path(path: str) -> bool:
-    """MTP drafters only, for the delete path rather than selection. Studio fetches
-    the root ``mtp-*.gguf`` with every variant, so a variant delete may reclaim it.
-    DSpark and DFlash are opt-in and in no variant plan, so sweeping them up would
-    destroy a file Studio never downloaded."""
+def is_reclaimable_drafter_path(path: str) -> bool:
+    """Drafters a repo's last-variant delete may reclaim: MTP, fetched with every
+    variant, and DSpark, fetched on opt-in. Both are useless once no main GGUF is
+    left, and companion filtering hides them from the variant menu, so leaving one
+    behind is an invisible allocation (DSpark is ~11 GB). DFlash is excluded: the
+    name doubles as a family a user picks for real weights."""
     p = path.replace("\\", "/").lower()
     if not p.endswith(".gguf"):
         return False
     parts = [segment for segment in p.split("/") if segment]
-    return parts[-1].startswith("mtp-") or "mtp" in parts[:-1]
+    name, parents = parts[-1], parts[:-1]
+    return any(name.startswith(f"{kind}-") for kind in _DRAFTER_DIR_KINDS) or any(
+        kind in parents for kind in _DRAFTER_DIR_KINDS
+    )
 
 
 def is_gguf_filename(filename: str) -> bool:
@@ -584,7 +588,11 @@ def list_gguf_variants(
             has_vision = True
             continue
         quant = extract_quant_label(filename)
-        if is_big_endian_gguf_path(filename, quant):
+        # The two extractors disagree on F16-be-checkpoint-Q4_K_M shapes; judge with the
+        # loader's label so no row is advertised for a file the remote detector refuses.
+        from utils.models.model_config import _extract_quant_label as _loader_quant
+
+        if is_big_endian_gguf_path(filename, _loader_quant(filename)):
             continue
         quant_totals[quant] = quant_totals.get(quant, 0) + int(getattr(sibling, "size", 0) or 0)
         quant_first_file.setdefault(quant, filename)
@@ -657,7 +665,11 @@ def list_local_gguf_variants(
         if _is_local_mtp_drafter(file, custom_root, rel):
             continue
         quant = extract_quant_label(rel)
-        if is_big_endian_gguf_path(rel, quant):
+        # The two extractors disagree on F16-be-checkpoint-Q4_K_M shapes; judge with the
+        # loader's label so no row is listed for a file the local detector refuses.
+        from utils.models.model_config import _extract_quant_label as _loader_quant
+
+        if is_big_endian_gguf_path(rel, _loader_quant(rel)):
             continue
         quant_totals[quant] = quant_totals.get(quant, 0) + size
         quant_first_file.setdefault(quant, rel)

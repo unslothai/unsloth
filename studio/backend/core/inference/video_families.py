@@ -160,7 +160,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # bf16-RESIDENT. transformer + VAE ship FP32 on disk (20.0 GB = 5B x 4), so bf16 transformer ~10.0; UMT5 TE bf16 (11.4); VAE fp32 (2.8).
         bf16_components_gb = (10.0, 11.4, 2.8),
         vae_force_fp32 = True,
-        gguf_repo = "QuantStack/Wan2.2-TI2V-5B-GGUF",
+        # Byte-identical mirror of QuantStack/Wan2.2-TI2V-5B-GGUF (13 quants + companion VAE).
+        gguf_repo = "unsloth/Wan2.2-TI2V-5B-GGUF",
     ),
     # Wan2.2-T2V-A14B (diffusers >= 0.35, verified on 0.39): the dual-expert MoE. Both transformers are WanTransformer3DModel with boundary_ratio 0.875; high-noise steps route through transformer, low-noise through transformer_2, so cfg2_kwarg is threaded only here.
     VideoFamily(

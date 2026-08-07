@@ -23,6 +23,10 @@ from typing import Iterable, Mapping, Optional
 PARALLEL_MIN = 1
 PARALLEL_MAX = 64
 
+# --batch-size / --ubatch-size range, mirrored by N_BATCH_MIN/MAX in per-model-config.ts
+BATCH_MIN = 1
+BATCH_MAX = 65536
+
 # Each group = every alias (short + long) of one hard-denied flag.
 # Extend the matching group when llama.cpp adds a new alias.
 _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
@@ -209,7 +213,11 @@ _DEVICE_FLAGS: frozenset[str] = frozenset({"--device", "-dev", "--main-gpu", "-m
 # opt-in, not default. Layer flags are shared with llama_cpp's override
 # detection; the MoE flags are strip-only (manual's --n-cpu-moe slider owns them).
 _GPU_LAYER_FLAGS: frozenset[str] = frozenset({"-ngl", "--gpu-layers", "--n-gpu-layers"})
-_LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | frozenset({"-fit", "--fit"})
+# inherited copies of these shadow n_batch / n_ubatch, stripped only when the field is set
+_BATCH_FLAGS: frozenset[str] = frozenset({"-b", "--batch-size"})
+_UBATCH_FLAGS: frozenset[str] = frozenset({"-ub", "--ubatch-size"})
+_FIT_FLAGS: frozenset[str] = frozenset({"-fit", "--fit"})
+_LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | _FIT_FLAGS
 _MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
 _OFFLOAD_SHADOWING_FLAGS: frozenset[str] = _LAYER_OFFLOAD_FLAGS | _MOE_OFFLOAD_FLAGS
 
@@ -482,6 +490,8 @@ def strip_shadowing_flags(
     strip_tensor_split: bool = False,
     strip_offload: bool = False,
     strip_device: bool = False,
+    strip_batch: bool = False,
+    strip_ubatch: bool = False,
 ) -> list[str]:
     """Strip flags that shadow first-class Unsloth settings.
 
@@ -515,6 +525,10 @@ def strip_shadowing_flags(
         shadowing |= _OFFLOAD_SHADOWING_FLAGS
     if strip_device:
         shadowing |= _DEVICE_FLAGS
+    if strip_batch:
+        shadowing |= _BATCH_FLAGS
+    if strip_ubatch:
+        shadowing |= _UBATCH_FLAGS
 
     tokens = [str(a) for a in (args or [])]
     out: list[str] = []

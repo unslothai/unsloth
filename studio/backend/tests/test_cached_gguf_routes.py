@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import json
 import sys
 import threading
 import time
@@ -2515,7 +2516,7 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     assert models_route._arch_to_task("wan") not in ("text-generation", "text-to-image")
     # With a repo/file name hint the loadable TI2V-5B resolves to Video while the A14B MoE stays unsupported, matching the loader.
     assert (
-        models_route._arch_to_task("wan", ("QuantStack/Wan2.2-TI2V-5B-GGUF",))
+        models_route._arch_to_task("wan", ("unsloth/Wan2.2-TI2V-5B-GGUF",))
         == models_route._VIDEO_GEN_TASK
     )
     assert (
@@ -2684,7 +2685,7 @@ def test_delete_cached_refuses_loaded_native_companion_repo(monkeypatch):
             loaded_repo_ids = lambda: (
                 "unsloth/FLUX.1-dev-GGUF",
                 "black-forest-labs/FLUX.1-dev",
-                "comfyanonymous/flux_text_encoders",
+                "unsloth/flux-text-encoders",
             ),
             loading_repo_ids = lambda: (),
         ),
@@ -2692,7 +2693,7 @@ def test_delete_cached_refuses_loaded_native_companion_repo(monkeypatch):
     monkeypatch.setattr(video_mod, "get_video_backend", _idle_video_backend)
 
     try:
-        asyncio.run(deletion.delete_cached_model_response("comfyanonymous/flux_text_encoders"))
+        asyncio.run(deletion.delete_cached_model_response("unsloth/flux-text-encoders"))
         assert False, "expected HTTPException refusing the in-use companion delete"
     except HTTPException as e:
         assert e.status_code == 400
@@ -2833,8 +2834,20 @@ def test_pipeline_scans_read_the_snapshot_the_loader_will_open(tmp_path):
     new_snap = repo_dir / "snapshots" / "new"
     for d in (old_snap / "transformer", new_snap / "vae"):
         d.mkdir(parents = True)
-    (old_snap / "model_index.json").write_text("{}", encoding = "utf-8")
-    (new_snap / "model_index.json").write_text("{}", encoding = "utf-8")
+    # A real manifest, not "{}": the scan reads the denoiser names off it, and one declaring none
+    # has nothing it can prove absent.
+    manifest = json.dumps(
+        {
+            "_class_name": "FluxPipeline",
+            "transformer": ["diffusers", "FluxTransformer2DModel"],
+            "vae": ["diffusers", "AutoencoderKL"],
+        }
+    )
+    (old_snap / "model_index.json").write_text(manifest, encoding = "utf-8")
+    (new_snap / "model_index.json").write_text(manifest, encoding = "utf-8")
+    # Real weights, not just the dirs: an empty transformer/ is a torn denoiser, not a present one.
+    (old_snap / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 256)
+    (new_snap / "vae" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 256)
     # Make "new" unambiguously newer than "old" for the mtime rule both this and the loader use.
     os.utime(old_snap, (1_000_000, 1_000_000))
     os.utime(new_snap, (2_000_000, 2_000_000))
@@ -2864,6 +2877,71 @@ def test_pipeline_scans_read_the_snapshot_the_loader_will_open(tmp_path):
         _rev(new_snap, ["model_index.json", "vae/diffusion_pytorch_model.safetensors"]),
     ]
     assert scan.repo_pipeline_missing_denoiser(info) is False
+
+
+@pytest.mark.parametrize(
+    "extra_files, manifest_extra",
+    [
+        # A dual-denoiser pipeline whose second expert never landed.
+        ({}, {"transformer_2": ["diffusers", "WanTransformer3DModel"]}),
+        # A single denoiser whose shard index names two shards and got one.
+        (
+            {
+                "transformer/diffusion_pytorch_model.safetensors.index.json": json.dumps(
+                    {
+                        "weight_map": {
+                            "a": "diffusion_pytorch_model-00001-of-00002.safetensors",
+                            "b": "diffusion_pytorch_model-00002-of-00002.safetensors",
+                        }
+                    }
+                ).encode(),
+                "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": b"\0" * 256,
+            },
+            {},
+        ),
+    ],
+    ids = ["dual-denoiser", "half-sharded"],
+)
+def test_both_cached_listings_agree_on_a_torn_pipeline(extra_files, manifest_extra, tmp_path):
+    # /api/models/cached-models ORs the repo-wide helper while the hub inventory calls the snapshot
+    # one, so a disagreement leaves a row the hub hides as partial still advertised as runnable.
+    import hub.utils.inventory_scan as scan
+
+    manifest = {
+        "_class_name": "WanPipeline",
+        "transformer": ["diffusers", "WanTransformer3DModel"],
+        "vae": ["diffusers", "AutoencoderKLWan"],
+    }
+    manifest.update(manifest_extra)
+    repo_dir = tmp_path / "models--Org--Repo"
+    snapshot = repo_dir / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    files = {
+        "model_index.json": json.dumps(manifest).encode(),
+        "vae/diffusion_pytorch_model.safetensors": b"\0" * 256,
+    }
+    if not extra_files:
+        files["transformer/diffusion_pytorch_model.safetensors"] = b"\0" * 256
+    files.update(extra_files)
+    for name, blob in files.items():
+        target = snapshot / name
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_bytes(blob)
+    info = SimpleNamespace(
+        repo_id = "Org/Repo",
+        repo_path = repo_dir,
+        revisions = [
+            SimpleNamespace(
+                snapshot_path = snapshot,
+                last_modified = float(snapshot.stat().st_mtime),
+                files = [
+                    SimpleNamespace(file_name = Path(n).name, file_path = snapshot / n) for n in files
+                ],
+            )
+        ],
+    )
+    assert scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+    assert scan.repo_pipeline_missing_denoiser(info) is True
 
 
 def test_list_cached_models_flags_single_file_diffusion_repos(monkeypatch, tmp_path):
@@ -2924,6 +3002,89 @@ def test_cached_repo_task_gates_an_image_pipeline_on_the_load_path_trust_rule(tm
     assert (
         models_route._cached_repo_task(_pipeline_repo("someone/their-sdxl-mix", tmp_path)) is None
     )
+
+
+def test_cached_repo_task_never_offers_an_sd_cpp_companion_repo_as_a_model(tmp_path):
+    """The single-file VAE / text-encoder repos hold no denoiser, so none of them is a pick.
+
+    Their unsloth mirrors clear the trust gate the old third-party ids never did, and the ids
+    resolve to a family, so without the companion check each would list an unloadable Images row.
+    """
+    from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
+
+    for repo_id in (
+        "unsloth/Z-Image-Turbo-ComfyUI",
+        "unsloth/Qwen-Image-ComfyUI",
+        "unsloth/FLUX.2-dev-ComfyUI",
+        "unsloth/FLUX.2-VAE",
+        "unsloth/FLUX.2-klein-9B-ComfyUI",
+        "unsloth/flux-text-encoders",
+    ):
+        assert repo_id.lower() in sd_cpp_companion_only_repo_ids(), repo_id
+        assert models_route._cached_repo_task(_pipeline_repo(repo_id, tmp_path)) is None, repo_id
+
+    # FLUX.1-schnell also serves a companion VAE, but it is a real base and must stay loadable.
+    assert "black-forest-labs/flux.1-schnell" not in sd_cpp_companion_only_repo_ids()
+    assert (
+        models_route._cached_repo_task(_pipeline_repo("black-forest-labs/FLUX.1-schnell", tmp_path))
+        == "text-to-image"
+    )
+
+
+def test_a_companion_mirror_is_listed_but_flagged_so_no_picker_offers_it(monkeypatch, tmp_path):
+    """A task of None does NOT drop the row: it is exactly what an unclassified CHAT repo carries,
+    so the chat picker showed the companion as loadable. Deleting the row instead would hide tens
+    of GB the user can then never find or remove, so the row stays and carries a flag the pickers
+    filter on."""
+    companion = _repo(
+        "unsloth/Z-Image-Turbo-ComfyUI",
+        [_file("split_files/vae/ae.safetensors", 300_000)],
+        tmp_path / "models--unsloth--Z-Image-Turbo-ComfyUI",
+    )
+    chat = _repo(
+        "unsloth/Qwen3-8B",
+        [_file("model.safetensors", 900_000)],
+        tmp_path / "models--unsloth--Qwen3-8B",
+    )
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [companion, chat])]
+    )
+
+    rows = {
+        r["repo_id"]: r
+        for r in asyncio.run(models_route.list_cached_models(current_subject = "test-user"))["cached"]
+    }
+
+    # Listed, so it stays visible and deletable...
+    assert "unsloth/Z-Image-Turbo-ComfyUI" in rows
+    # ...and flagged, which is the part a task of None could never express.
+    assert rows["unsloth/Z-Image-Turbo-ComfyUI"]["companion"] is True
+    assert rows["unsloth/Z-Image-Turbo-ComfyUI"]["task"] is None
+    # An ordinary chat repo carries the same task of None and must NOT be flagged.
+    assert rows["unsloth/Qwen3-8B"].get("companion") is None
+    assert rows["unsloth/Qwen3-8B"]["task"] is None
+
+
+def test_the_companion_set_never_hides_a_repo_that_is_a_real_chat_model(tmp_path):
+    """sd.cpp borrows unsloth/Qwen2.5-VL-7B-Instruct-GGUF as a text encoder, but it is a genuine
+    chat model. It is in the companion set, so the only thing keeping it safe is that the listing
+    this set feeds never sees a GGUF-only repo. Pin that, or a future caller takes a downloaded
+    model away from the user."""
+    from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
+
+    assert "unsloth/qwen2.5-vl-7b-instruct-gguf" in sd_cpp_companion_only_repo_ids()
+    # A GGUF-only repo has no .safetensors / .bin, so list_cached_models drops it before the flag.
+    gguf_only = _repo(
+        "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
+        [_file("Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf", 4_000_000)],
+        tmp_path / "models--unsloth--Qwen2.5-VL-7B-Instruct-GGUF",
+    )
+    assert not [
+        f
+        for rev in gguf_only.revisions
+        for f in rev.files
+        if f.file_name.endswith((".safetensors", ".bin"))
+    ]
 
 
 def test_cached_repo_task_hides_an_untrusted_video_repo_instead_of_listing_it_under_images(
@@ -3674,6 +3835,21 @@ def test_switching_cache_storage_does_not_join_a_stuck_scan(monkeypatch, tmp_pat
     assert any("wedgedvol" in root for root in scanned), scanned
     assert answered, "the new request waited on the scan stuck against the old cache"
     assert any("healthyvol" in root for root in scanned), scanned
+
+
+def test_gguf_variants_route_carries_local_resolution(monkeypatch, tmp_path):
+    # The CLI gate reads resolved_locally, so the legacy constructor must carry it.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "models" / "qwen").mkdir(parents = True)
+    (tmp_path / "models" / "qwen" / "q-Q4_K_M.gguf").write_bytes(b"GGUF")
+
+    result = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "models/qwen", hf_token = None, current_subject = "test-user"
+        )
+    )
+    assert result.resolved_locally is True
+    assert [v.quant for v in result.variants] == ["Q4_K_M"]
 
 
 def _write_cached_gguf(
