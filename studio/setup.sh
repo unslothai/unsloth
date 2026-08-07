@@ -539,16 +539,33 @@ _cgroup_free_mb() {
     return 0
 }
 
-# macOS available memory in MiB, read from vm_stat on stdin. free + inactive +
-# speculative + purgeable is the reclaim-aware equivalent of MemAvailable; the
-# page size comes from the header rather than being assumed 4096, which is wrong
-# on Apple Silicon. Empty when the output does not parse.
+# macOS available memory in MiB, read from vm_stat on stdin. free + inactive is
+# the reclaim-aware equivalent of MemAvailable; the page size comes from the
+# header rather than being assumed 4096, which is wrong on Apple Silicon. Empty
+# when the output does not parse.
+#
+# Only those two, because the other candidates are not disjoint from them and
+# adding either overstates what can be reclaimed, which buys back exactly the
+# oversubscription this cap removes:
+#
+#   speculative -- xnu osfmk/mach/vm_statistics.h says so outright: "NB:
+#     speculative pages are already accounted for in free_count, so
+#     speculative_count is the number of free pages that are used to hold data
+#     that was read speculatively from disk".
+#   purgeable   -- an attribute of a page, not a queue it sits on. A volatile
+#     page is still on the active or inactive queue, so it is already counted
+#     there. The disjoint partition is free + active + inactive + wired +
+#     throttled + compressor.
+#
+# Dropping them under-counts by the purgeable pages sitting on the ACTIVE queue,
+# which are reclaimable but not in either term. That is the safe direction for a
+# cap: it costs build time on a busy Mac rather than the machine.
 _vm_stat_avail_mb() {
     awk '
         /page size of/ {
             for (i = 1; i < NF; i++) if ($i == "of") { ps = $(i + 1) + 0; break }
         }
-        /^Pages (free|inactive|speculative|purgeable)/ {
+        /^Pages (free|inactive)/ {
             gsub(/\./, "", $NF); pages += $NF
         }
         # A zero page count is a reading, not a parse failure; a missing page

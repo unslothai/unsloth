@@ -550,8 +550,10 @@ assert_eq "pre-3.14 kernels fall back to MemTotal" "16384" \
         _ "$_RAM_FILE" "$_TMPD/meminfo-old")"
 
 # macOS has no MemAvailable, so the reclaim-aware figure comes from vm_stat.
-# Fed synthetically: 1024 + 1024 + 512 + 512 pages at the 16 KiB Apple Silicon
-# page size is 48 MiB, and the page size is read rather than assumed to be 4096.
+# Fed synthetically: free 1024 + inactive 1024 at the 16 KiB Apple Silicon page
+# size is 32 MiB, and the page size is read rather than assumed to be 4096.
+# speculative and purgeable are deliberately NOT in the sum; the fixture carries
+# both so that adding either back is visible as a wrong number.
 _VM_SAMPLE=$(printf '%s\n' \
     "Mach Virtual Memory Statistics: (page size of 16384 bytes)" \
     "Pages free:                                    1024." \
@@ -561,10 +563,26 @@ _VM_SAMPLE=$(printf '%s\n' \
     "Pages wired down:                            999999." \
     "Pages purgeable:                                512.")
 run_vm_stat() { bash -c ". '$_RAM_FILE'; _vm_stat_avail_mb" _; }
-assert_eq "vm_stat sums the reclaimable classes" "48" "$(printf '%s\n' "$_VM_SAMPLE" | run_vm_stat)"
+assert_eq "vm_stat sums the disjoint reclaimable queues" "32" "$(printf '%s\n' "$_VM_SAMPLE" | run_vm_stat)"
 # active and wired are resident, not reclaimable, and must not be counted.
-assert_eq "vm_stat ignores active and wired" "48" \
+assert_eq "vm_stat ignores active and wired" "32" \
     "$(printf '%s\n' "$_VM_SAMPLE" | sed 's/999999/1/' | run_vm_stat)"
+# speculative is a SUBSET of free, not a sibling of it: xnu's
+# osfmk/mach/vm_statistics.h states "speculative pages are already accounted for
+# in free_count". Adding it counts those pages twice and overstates what can be
+# reclaimed, which is the direction that hands the machine more jobs than it can
+# hold. Raising it alone must not move the answer.
+assert_eq "a larger speculative count does not change the answer" "32" \
+    "$(printf '%s\n' "$_VM_SAMPLE" | sed 's/^Pages speculative:.*/Pages speculative:  99999./' | run_vm_stat)"
+# purgeable is an attribute of a page, not a queue: a volatile page still sits on
+# the active or inactive queue and is already counted there.
+assert_eq "a larger purgeable count does not change the answer" "32" \
+    "$(printf '%s\n' "$_VM_SAMPLE" | sed 's/^Pages purgeable:.*/Pages purgeable:  99999./' | run_vm_stat)"
+# And the two terms that ARE counted must each move it.
+assert_eq "free moves the answer" "48" \
+    "$(printf '%s\n' "$_VM_SAMPLE" | sed 's/^Pages free:.*/Pages free:  2048./' | run_vm_stat)"
+assert_eq "inactive moves the answer" "48" \
+    "$(printf '%s\n' "$_VM_SAMPLE" | sed 's/^Pages inactive:.*/Pages inactive:  2048./' | run_vm_stat)"
 assert_eq "vm_stat gibberish yields nothing" "" "$(printf 'no stats here\n' | run_vm_stat)"
 # A header with no reclaimable pages is a zero reading, not a parse failure.
 assert_eq "vm_stat reports a genuine zero" "0" \
