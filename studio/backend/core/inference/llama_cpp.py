@@ -2671,9 +2671,7 @@ def _emitted_n_batch(n_batch: Optional[int], n_parallel: int) -> Optional[int]:
     return max(int(n_batch), max(2, int(n_parallel or 1)))
 
 
-def _repatch_parallel_slots(
-    argv: list[str], n_parallel: int, n_batch: Optional[int]
-) -> bool:
+def _repatch_parallel_slots(argv: list[str], n_parallel: int, n_batch: Optional[int]) -> bool:
     """Point ``--parallel`` at ``n_parallel``, re-raising ``--batch-size`` to match.
 
     The batch flag is emitted from the slot count as it stood then, so a later
