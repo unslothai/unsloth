@@ -2219,16 +2219,15 @@ const Composer: FC<{
             try {
               await aui.composer().addAttachment(file);
             } catch (error) {
+              // Every reachable rejection here is about the chat, not the file:
+              // the model can't take images, or it isn't loaded. Rust already
+              // enforces the same 20 MiB cap the adapter checks. So the rest of
+              // the batch would fail identically -- drop it rather than reading
+              // and rejecting each one for its own pair of toasts.
               toast.error("Could not attach dropped images", {
                 description:
                   error instanceof Error ? error.message : String(error),
               });
-              const remaining = intents.slice(index + 1);
-              if (remaining.length > 0) {
-                useNativeIntentStore
-                  .getState()
-                  .addImageAttachments(targetKey, remaining);
-              }
               return;
             }
           }
