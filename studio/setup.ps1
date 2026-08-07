@@ -1623,6 +1623,68 @@ if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     Write-Host "  $Rule" -ForegroundColor DarkGray
 }
 
+# ── How this run was launched ──
+# install.ps1 (SKIP_STUDIO_BASE=1) already reported this for the install it
+# drives; this covers direct 'unsloth studio setup', 'update', and desktop
+# repair. Keep in step with the copies in install.ps1.
+if ($env:SKIP_STUDIO_BASE -ne "1") {
+    $ElevationState = "unknown"
+    try {
+        $_identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        $_principal = New-Object System.Security.Principal.WindowsPrincipal($_identity)
+        $ElevationState = if ($_principal.IsInRole(
+                [System.Security.Principal.WindowsBuiltInRole]::Administrator)) { "true" } else { "false" }
+    } catch { }
+    if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or
+        (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) {
+        [Console]::Out.WriteLine("[TAURI:DIAG] elevated=$ElevationState")
+        [Console]::Out.Flush()
+    }
+    # Expand a leading ~ and normalize separators and .. segments, so an override
+    # spelled differently still compares equal to the legacy default. GetFullPath
+    # alone keeps a literal ~ and resolves it against the cwd.
+    function Get-CanonicalRootPath {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+        $_p = $Path.Trim()
+        if (($_p -eq "~" -or $_p -like "~/*" -or $_p -like "~\*") -and
+            -not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+            # A bare "~" leaves an empty child path, which Join-Path rejects on PS 5.1.
+            $_rest = $_p.Substring(1).TrimStart('/', '\')
+            $_p = if ($_rest) { Join-Path $env:USERPROFILE $_rest } else { $env:USERPROFILE }
+        }
+        try { $_p = [System.IO.Path]::GetFullPath($_p) } catch { }
+        return $_p.TrimEnd('\', '/')
+    }
+
+    if ($ElevationState -eq "true") {
+        # $StudioHome is resolved much later, so mirror its override precedence
+        # here for the message only. llama.cpp is a sibling of studio under
+        # ~/.unsloth on a default install, so name the parent.
+        $_unslothRoot = Join-Path $env:USERPROFILE ".unsloth"
+        $_elevRoot = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
+            $env:UNSLOTH_STUDIO_HOME.Trim()
+        } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
+            $env:STUDIO_HOME.Trim()
+        } else {
+            $_unslothRoot
+        }
+        # An override equal to the legacy default is not a custom root downstream:
+        # llama.cpp and node stay siblings under ~/.unsloth, so name that parent.
+        if ((Get-CanonicalRootPath $_elevRoot) -ieq
+            (Get-CanonicalRootPath (Join-Path $_unslothRoot "studio"))) {
+            $_elevRoot = $_unslothRoot
+        }
+        Write-Host ""
+        Write-Host "  [WARNING] Running as administrator. Unsloth does not need this." -ForegroundColor Yellow
+        Write-Host "            Anything written to $_elevRoot will be owned by Administrators," -ForegroundColor Yellow
+        Write-Host "            and your normal account will not be able to read it afterwards." -ForegroundColor Yellow
+        Write-Host "            That folder outlives an uninstall, so a later install, setup or" -ForegroundColor Yellow
+        Write-Host "            update run normally fails on it." -ForegroundColor Yellow
+        Write-Host "            Stop and start again without 'Run as administrator'." -ForegroundColor Yellow
+    }
+}
+
 # Back up User PATH under HKCU\Software\Unsloth before any modifications.
 try {
     $envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false)
@@ -6016,10 +6078,24 @@ if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -eq "1") {
     # footer just said complete. [TAURI:PROGRESS] (not [TAURI:STEP], which would
     # push the frontend step counter past the seven INSTALL_STEPS entries) reaches
     # the user as install-progress-detail text.
+    #
+    # DIAG as well: progress detail is cleared by the next install-step and is gone
+    # once the install screen closes, so it cannot answer "why is GGUF missing"
+    # afterwards. record_diag_marker keeps this in the support report.
     if (@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) {
         [Console]::Out.WriteLine("[TAURI:PROGRESS] llama.cpp unavailable; GGUF inference is disabled until 'unsloth studio update' succeeds")
+        [Console]::Out.WriteLine("[TAURI:DIAG] llama_cpp=unavailable")
         [Console]::Out.Flush()
     } else {
         Exit-SetupFailure "llama.cpp setup did not produce a usable server"
     }
+}
+
+# A desktop repair runs update.rs, which sets UNSLOTH_TAURI_UPDATE alone, so the
+# block above is skipped and a degraded repair recorded nothing. update.rs parses
+# [TAURI:DIAG] the same way. Marker only: the update contract stays successful.
+if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -ne "1" -and
+    (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) {
+    [Console]::Out.WriteLine("[TAURI:DIAG] llama_cpp=unavailable")
+    [Console]::Out.Flush()
 }
