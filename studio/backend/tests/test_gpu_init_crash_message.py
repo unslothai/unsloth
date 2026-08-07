@@ -89,6 +89,7 @@ def _run_cpu_fallback_load(
     first_output = "",
     mmproj_from_argv = False,
     mmproj_env = None,
+    cpu_fallback_available = True,
 ):
     def _gguf_string(value: str) -> bytes:
         encoded = value.encode()
@@ -170,6 +171,8 @@ def _run_cpu_fallback_load(
 
     def _prepare_cpu_fallback(_binary, failed_cmd, _env, _server_caps):
         fallback_sources.append(list(failed_cmd))
+        if not cpu_fallback_available:
+            return None
         return ["/staged/llama-server", "--device", "none"], None
 
     backend._wait_for_health = _wait_for_health
@@ -590,6 +593,18 @@ def test_confirmed_projector_failure_replays_the_text_command_on_cpu(monkeypatch
     assert len(fallback_sources) == 1
     assert "--mmproj" not in fallback_sources[0]
     assert backend._is_vision is False
+
+
+def test_confirmed_projector_signal_retry_keeps_gpu_init_diagnosis(monkeypatch, tmp_path):
+    with pytest.raises(RuntimeError, match = "GPU driver/runtime initialization crash"):
+        _run_cpu_fallback_load(
+            monkeypatch,
+            tmp_path,
+            returncodes = [1, -11],
+            first_output = "projector-incompatible",
+            mmproj_from_argv = True,
+            cpu_fallback_available = False,
+        )
 
 
 @pytest.mark.parametrize("name", ["LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"])

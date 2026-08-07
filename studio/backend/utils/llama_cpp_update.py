@@ -611,7 +611,11 @@ def _plan_llama_phase() -> dict:
         asset = marker.get("asset")
         force_cpu = bool(marker.get("force_cpu"))
         llama_backend = marker.get("llama_backend")
-        if llama_backend == "vulkan":
+        # Markers written before #7188 lack llama_backend. Their Vulkan asset
+        # was an explicit selection, so retain it across an update. Newer
+        # automatic Intel installs carry the key with a null value and must
+        # rerun hardware detection to remain eligible for CPU recovery.
+        if "llama_backend" not in marker and asset and "vulkan" in str(asset).lower():
             llama_backend = "vulkan"
         # Install exactly the release the banner offered: the installer's own
         # "latest" is commit-date ordered and can lag the published_at pick

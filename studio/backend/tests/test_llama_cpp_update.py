@@ -85,6 +85,7 @@ def _write_install(
     release_tag: str | None = None,
     force_cpu: bool | None = None,
     llama_backend: str | None = None,
+    include_llama_backend: bool = False,
 ) -> str:
     """Create a fake prebuilt install and return the llama-server path."""
     bin_dir = dir_ / "build" / "bin"
@@ -103,7 +104,7 @@ def _write_install(
         marker["asset"] = asset
     if force_cpu is not None:
         marker["force_cpu"] = force_cpu
-    if llama_backend is not None:
+    if include_llama_backend or llama_backend is not None:
         marker["llama_backend"] = llama_backend
     (dir_ / MARKER).write_text(json.dumps(marker))
     return str(binary)
@@ -461,15 +462,20 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "llama_backend,expect_forced",
-    [(None, False), ("vulkan", True), ("auto", False)],
+    "llama_backend,include_llama_backend,expect_forced",
+    [
+        (None, False, True),
+        (None, True, False),
+        ("vulkan", True, True),
+        ("auto", True, False),
+    ],
 )
 def test_start_update_preserves_vulkan_selection(
-    monkeypatch, tmp_path, llama_backend, expect_forced
+    monkeypatch, tmp_path, llama_backend, include_llama_backend, expect_forced
 ):
-    # Only an explicit Vulkan install stays forced. Markerless Intel and
-    # automatic Windows AMD installs rerun hardware detection so they remain
-    # eligible for automatic CPU crash recovery after an update.
+    # A legacy markerless Vulkan asset was an explicit selection. New automatic
+    # Intel and Windows AMD installs carry llama_backend (None or "auto") and
+    # rerun hardware detection so they remain eligible for CPU crash recovery.
     monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
     install_dir = tmp_path / "llama.cpp"
@@ -479,6 +485,7 @@ def test_start_update_preserves_vulkan_selection(
         repo = "ggml-org/llama.cpp",
         asset = "llama-b9493-bin-ubuntu-vulkan-x64.tar.gz",
         llama_backend = llama_backend,
+        include_llama_backend = include_llama_backend,
     )
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
     monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")

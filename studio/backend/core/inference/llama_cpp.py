@@ -11741,7 +11741,7 @@ class LlamaCppBackend:
                                     _retry_rc,
                                 ):
                                     healthy = True
-                                elif not _projector_msg:
+                                else:
                                     _raise_terminal_load_failure(
                                         self._gpu_init_crash_message(binary)
                                     )
