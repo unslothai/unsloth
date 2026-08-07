@@ -579,3 +579,40 @@ def test_override_strips_shadowing_batch_flags():
         is_gguf = True,
     )
     assert kwargs["llama_extra_args"] == ["-ub", "256"]
+
+
+def test_the_local_guard_charges_diffusion_nothing_for_the_batch_flags():
+    """The diffusion runner takes neither --batch-size nor --ubatch-size, but SWA metadata
+    prices the KV against the micro-batch (swa_limit = swa * slots + ubatch), so deriving
+    one from the ignored fields charged a diffusion load for a graph it never builds:
+    measured 5.449 GB against 4.658, or 0.79 GB of phantom cache that can 409 a chat
+    coexisting with training. The remote branch was already gated on is_diffusion; this
+    is the local one."""
+    from unittest.mock import patch
+
+    from routes import inference as route
+
+    # SWA needs the KV widths as well as the window, or the estimate takes the dense path
+    swa_header = dict(
+        _QWEN3_8B, sliding_window = 1024, kv_key_length = 128, kv_value_length = 128
+    )
+    with patch.object(LlamaCppBackend, "_read_gguf_metadata", _header_reader(**swa_header)):
+        quiet = route._estimate_gguf_kv_gb(
+            "/x.gguf", 131072, n_parallel = 1, is_diffusion = True
+        )
+        loud = route._estimate_gguf_kv_gb(
+            "/x.gguf",
+            131072,
+            n_parallel = 1,
+            n_batch = 8192,
+            n_ubatch = 8192,
+            is_diffusion = True,
+        )
+        # the same header on a real llama-server load, where the flags DO apply
+        chat_quiet = route._estimate_gguf_kv_gb("/x.gguf", 131072, n_parallel = 1)
+        chat_loud = route._estimate_gguf_kv_gb(
+            "/x.gguf", 131072, n_parallel = 1, n_batch = 8192, n_ubatch = 8192
+        )
+    assert loud == pytest.approx(quiet, abs = 0.001)
+    # and the gate is not vacuous: on the identical header a chat load pays for them
+    assert chat_loud > chat_quiet + 0.7

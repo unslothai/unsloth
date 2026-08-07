@@ -6088,6 +6088,7 @@ class LlamaCppBackend:
         kv_unified: bool = True,
         flash_attn: bool = True,
         split_extra_bytes: int = 0,
+        ubatch_for_slots: Optional[Callable[[int], Optional[int]]] = None,
     ) -> tuple[Optional[list[int]], bool, int]:
         """Largest serving-slot count in [1, n_parallel) whose fully-on-GPU footprint fits,
         so Unsloth keeps the model on GPU (-ngl -1) instead of --fit on, which offloads layers
@@ -6097,10 +6098,16 @@ class LlamaCppBackend:
         and KV, then re-selects GPUs like the explicit-context path -- ``split_extra_bytes``
         included, so a multi-GPU candidate is re-checked at the split rate. Returns
         (gpu_indices, use_fit=False, slots) for the largest fitting count, else (None, True,
-        n_parallel). Only ever reduces; unit-testable with synthetic VRAM maps."""
+        n_parallel). Only ever reduces; unit-testable with synthetic VRAM maps.
+        ``ubatch_for_slots`` re-derives the micro-batch per candidate: the emitted
+        --batch-size is raised to max(slots, 2), and llama.cpp caps the micro-batch
+        against it, so a batch below the requested slot count shrinks as the candidates
+        do. Holding it at the requested count made a fitting candidate look too big and
+        dropped the load to --fit offload."""
         for slots in range(n_parallel - 1, 0, -1):
+            _ub = ubatch_for_slots(slots) if ubatch_for_slots else n_ubatch
             cb = self._estimate_compute_buffer_bytes(
-                n_ubatch = n_ubatch, n_parallel = slots, per_device_tensor = False
+                n_ubatch = _ub, n_parallel = slots, per_device_tensor = False
             )
             if cb <= 0:
                 cb = self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024
@@ -6113,7 +6120,7 @@ class LlamaCppBackend:
                     n_parallel = slots,
                     swa_full = swa_full,
                     kv_unified = kv_unified,
-                    n_ubatch = n_ubatch,
+                    n_ubatch = _ub,
                     flash_attn = flash_attn,
                 )
             )
@@ -8925,12 +8932,17 @@ class LlamaCppBackend:
                 # The emitted batch, not the requested one: the floor raise below is what
                 # llama.cpp caps the micro-batch against, so the fit, the slot search and
                 # every compute-buffer reserve must be sized from the value that launches.
-                _effective_ubatch = _extra_args_n_ubatch(
-                    extra_args,
-                    n_ctx = (requested_ctx if requested_ctx > 0 else self._context_length),
-                    n_batch = _emitted_n_batch(n_batch, n_parallel),
-                    n_ubatch = n_ubatch,
-                )
+                # Slot-dependent, since the floor is max(slots, 2): the slot search below
+                # reduces the count, and each candidate launches at its own batch.
+                def _ubatch_for_slots(slots: int) -> Optional[int]:
+                    return _extra_args_n_ubatch(
+                        extra_args,
+                        n_ctx = (requested_ctx if requested_ctx > 0 else self._context_length),
+                        n_batch = _emitted_n_batch(n_batch, slots),
+                        n_ubatch = n_ubatch,
+                    )
+
+                _effective_ubatch = _ubatch_for_slots(n_parallel)
                 planned_kv_unified = _kv_unified_from_args(
                     extra_args,
                     default = n_parallel > 1 and server_caps.get("supports_kv_unified", False),
@@ -10036,6 +10048,7 @@ class LlamaCppBackend:
                             kv_unified = planned_kv_unified,
                             flash_attn = planned_flash_attn,
                             split_extra_bytes = _cc_split_extra(effective_ctx),
+                            ubatch_for_slots = _ubatch_for_slots,
                         )
                         if not _uf_slots:
                             logger.info(
@@ -10046,6 +10059,10 @@ class LlamaCppBackend:
                                 effective_ctx,
                             )
                             gpu_indices, use_fit, n_parallel = _gi_slots, False, _slots
+                            # Fewer slots means a lower batch floor, so the launch runs a
+                            # smaller micro-batch than the one this was sized at. Re-derive
+                            # it, or the recorded _n_ubatch describes a graph never built.
+                            _effective_ubatch = _ubatch_for_slots(n_parallel)
 
                     # MTP reserve at the final context, for the logs below.
                     _mtp_reserve_bytes = _mtp_bytes(effective_ctx) if _mtp_will_engage else 0

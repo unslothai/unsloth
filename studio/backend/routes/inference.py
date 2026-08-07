@@ -5081,12 +5081,19 @@ def _estimate_gguf_kv_gb(
                 key = _kv_bytes_per_elem,
             )
         # the loader raises --batch-size to max(slots, 2) before launch, and llama.cpp
-        # caps the micro-batch against it, so budget from the emitted value
-        effective_ubatch = _extra_args_n_ubatch(
-            llama_extra_args,
-            n_ctx = ctx,
-            n_batch = _emitted_n_batch(n_batch, slots),
-            n_ubatch = n_ubatch,
+        # caps the micro-batch against it, so budget from the emitted value. Diffusion
+        # takes neither flag, and SWA metadata prices the KV against the micro-batch,
+        # so consuming them here would charge a diffusion load for a batch it never
+        # runs. Gated like the remote branch already is.
+        effective_ubatch = (
+            None
+            if is_diffusion
+            else _extra_args_n_ubatch(
+                llama_extra_args,
+                n_ctx = ctx,
+                n_batch = _emitted_n_batch(n_batch, slots),
+                n_ubatch = n_ubatch,
+            )
         )
         kv = probe._estimate_kv_cache_bytes(
             ctx,
