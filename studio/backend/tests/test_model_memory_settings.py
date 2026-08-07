@@ -1941,19 +1941,11 @@ class TestTheGateDoesNotOverFire:
     def test_a_zero_cpu_moe_count_places_nothing(self, monkeypatch, flag):
         """_args_place_tensors_on_cpu already treats 0 as a no-op; the offload
         proof used flag presence, so the count flipped an all-GPU launch."""
-        assert (
-            TestHostMemoryGate._gate(
-                monkeypatch, extra_args = ["-ngl", "-1", flag, "0"]
-            )
-            is False
-        )
+        assert TestHostMemoryGate._gate(monkeypatch, extra_args = ["-ngl", "-1", flag, "0"]) is False
 
     @pytest.mark.parametrize("extras", [["-cmoe"], ["--n-cpu-moe", "4"], ["-ot", "exps=CPU"]])
     def test_real_cpu_placement_still_counts(self, monkeypatch, extras):
-        assert (
-            TestHostMemoryGate._gate(monkeypatch, extra_args = ["-ngl", "-1", *extras])
-            is True
-        )
+        assert TestHostMemoryGate._gate(monkeypatch, extra_args = ["-ngl", "-1", *extras]) is True
 
     def test_the_rocm_apu_probe_is_not_consulted_under_vulkan(self, monkeypatch):
         """gpu_indices are Vulkan ordinals there, which the ROCm helper would
@@ -1970,7 +1962,4 @@ class TestTheGateDoesNotOverFire:
         )
 
     def test_the_rocm_apu_probe_still_decides_off_vulkan(self, monkeypatch):
-        assert (
-            TestHostMemoryGate._gate(monkeypatch, extra_args = ["-ngl", "-1"], amd = True)
-            is True
-        )
+        assert TestHostMemoryGate._gate(monkeypatch, extra_args = ["-ngl", "-1"], amd = True) is True
