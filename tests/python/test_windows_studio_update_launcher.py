@@ -51,7 +51,13 @@ def studio(monkeypatch):
     return module
 
 
-def _configure_windows(monkeypatch, studio, tmp_path, *, launcher=ORIGINAL_LAUNCHER):
+def _configure_windows(
+    monkeypatch,
+    studio,
+    tmp_path,
+    *,
+    launcher = ORIGINAL_LAUNCHER,
+):
     scripts = tmp_path / "Scripts"
     scripts.mkdir()
     python = scripts / "python.exe"
@@ -88,21 +94,21 @@ def _configure_windows(monkeypatch, studio, tmp_path, *, launcher=ORIGINAL_LAUNC
         "STUDIO_LOCAL_REPO",
         "UNSLOTH_TAURI_UPDATE",
     ):
-        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name, raising = False)
     return scripts, launcher_path
 
 
-def _successful_version_run(calls=None):
+def _successful_version_run(calls = None):
     def run(argv, **kwargs):
         if calls is not None:
             calls.append((argv, kwargs))
-        return types.SimpleNamespace(returncode=0)
+        return types.SimpleNamespace(returncode = 0)
 
     return run
 
 
-def _update(studio, *, verify=True):
-    studio.update(local=False, package="unsloth", verbose=False, verify=verify)
+def _update(studio, *, verify = True):
+    studio.update(local = False, package = "unsloth", verbose = False, verify = verify)
 
 
 def test_setup_noop_preserves_launcher_and_removes_backup(monkeypatch, studio, tmp_path):
@@ -141,7 +147,7 @@ def test_setup_failure_restores_original_and_propagates(monkeypatch, studio, tmp
 
     monkeypatch.setattr(studio, "_run_setup_script", setup)
 
-    with pytest.raises(RuntimeError, match="setup failed"):
+    with pytest.raises(RuntimeError, match = "setup failed"):
         _update(studio)
 
     assert launcher.read_bytes() == ORIGINAL_LAUNCHER
@@ -182,7 +188,7 @@ def test_runtime_check_failure_restores_launcher(monkeypatch, studio, tmp_path, 
     def run(argv, **kwargs):
         if outcome == "timeout":
             raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
-        return types.SimpleNamespace(returncode=7)
+        return types.SimpleNamespace(returncode = 7)
 
     monkeypatch.setattr(studio.subprocess, "run", run)
 
@@ -201,14 +207,14 @@ def test_no_verify_still_checks_launcher_but_skips_integrity_scan(monkeypatch, s
     integrity_calls = []
     monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda: integrity_calls.append(True))
 
-    _update(studio, verify=False)
+    _update(studio, verify = False)
 
     assert calls[0][0] == [str(launcher), "--version"]
     assert integrity_calls == []
 
 
 def test_legacy_backup_recovers_only_when_launcher_is_missing(monkeypatch, studio, tmp_path):
-    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher=None)
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
     legacy = scripts / "unsloth.exe.deleteme"
     legacy.write_bytes(ORIGINAL_LAUNCHER)
 
@@ -266,7 +272,7 @@ def test_non_windows_preserves_call_order_without_launcher_operations(
         "STUDIO_LOCAL_REPO",
         "UNSLOTH_TAURI_UPDATE",
     ):
-        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name, raising = False)
 
     _update(studio)
 

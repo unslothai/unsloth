@@ -3235,7 +3235,6 @@ class _WindowsLauncherUpdateTransaction:
             return
         try:
             import msvcrt
-
             self._lock_file.seek(0)
             msvcrt.locking(self._lock_file.fileno(), msvcrt.LK_UNLCK, 1)
         except OSError:
@@ -3334,7 +3333,10 @@ class _WindowsLauncherUpdateTransaction:
         try:
             self._recover_missing_launcher()
             if not self._is_valid_pe(self.launcher):
-                typer.echo(f"Error: the managed Unsloth launcher is missing or invalid: {self.launcher}", err = True)
+                typer.echo(
+                    f"Error: the managed Unsloth launcher is missing or invalid: {self.launcher}",
+                    err = True,
+                )
                 if self._is_valid_pe(self.backup):
                     typer.echo(f"Manual recovery copy retained at: {self.backup}", err = True)
                 raise typer.Exit(1)
