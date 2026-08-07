@@ -392,7 +392,14 @@ export function useTauriUpdate(isExternalServer = false) {
         console.error("Could not mark the in-app relaunch:", e);
       });
       const { relaunch } = await import("@tauri-apps/plugin-process");
-      await relaunch();
+      try {
+        await relaunch();
+      } catch (relaunchError) {
+        // No replacement process, so the marker would outlive it and let a later
+        // login start show its window.
+        await invoke("clear_in_app_relaunch").catch(() => {});
+        throw relaunchError;
+      }
     } catch (e) {
       console.error("Update failed:", e);
       const msg = String(e);

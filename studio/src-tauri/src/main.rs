@@ -24,6 +24,7 @@ use process::new_backend_state;
 use simplelog::{
     CombinedLogger, Config, LevelFilter, SharedLogger, TermLogger, TerminalMode, WriteLogger,
 };
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -55,6 +56,15 @@ fn mark_in_app_relaunch(app: tauri::AppHandle) -> Result<(), String> {
         )
     })?;
     write_in_app_relaunch_marker(&dir)
+}
+
+/// Undo the marker when the relaunch it was written for never happens, so it cannot be
+/// consumed by an unrelated later start.
+#[tauri::command]
+fn clear_in_app_relaunch(app: tauri::AppHandle) -> Result<(), String> {
+    let dir = in_app_relaunch_config_dir(&app)?;
+    take_in_app_relaunch_marker(&dir);
+    Ok(())
 }
 
 fn in_app_relaunch_config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -99,7 +109,10 @@ fn resolve_launched_hidden(app: &tauri::AppHandle) -> bool {
     let relaunched = in_app_relaunch_config_dir(app)
         .map(|dir| take_in_app_relaunch_marker(&dir))
         .unwrap_or(false);
-    std::env::args().any(|arg| arg == "--hidden") && !relaunched
+    // args_os, not args: the latter panics on an argument that is not valid Unicode,
+    // which argv[0] is whenever the binary sits under a non-UTF-8 path.
+    let hidden = std::env::args_os().any(|arg| arg == *OsStr::new("--hidden"));
+    hidden && !relaunched
 }
 
 /// Started by the OS login autostart entry, so the frontend keeps the window hidden in the tray.
@@ -868,6 +881,7 @@ fn main() {
             has_saved_window_state,
             was_launched_hidden,
             mark_in_app_relaunch,
+            clear_in_app_relaunch,
             reveal_main_window,
             get_launch_at_login,
             set_launch_at_login,
@@ -939,6 +953,26 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// std::env::args() panics on a non-Unicode argument, which argv[0] is under a
+    /// non-UTF-8 install path, so the flag scan has to run over OsStr.
+    #[test]
+    fn hidden_flag_scan_tolerates_non_unicode_args() {
+        use std::ffi::OsString;
+        #[cfg(unix)]
+        use std::os::unix::ffi::OsStringExt;
+
+        #[cfg(unix)]
+        let args: Vec<OsString> = vec![
+            OsString::from_vec(b"/opt/\xff\xfe/Unsloth".to_vec()),
+            OsString::from("--hidden"),
+        ];
+        #[cfg(not(unix))]
+        let args: Vec<OsString> = vec![OsString::from("Unsloth.exe"), OsString::from("--hidden")];
+
+        assert!(args.iter().any(|arg| arg == OsStr::new("--hidden")));
+        assert!(!args[..1].iter().any(|arg| arg == OsStr::new("--hidden")));
+    }
 
     #[test]
     fn relaunch_marker_is_consumed_by_the_next_start() {
