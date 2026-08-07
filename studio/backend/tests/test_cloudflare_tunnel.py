@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the Cloudflare quick-tunnel helper and run.py wiring.
+"""Tests for the Cloudflare temporary-tunnel helper and run.py wiring.
 
 cloudflare_tunnel.py is stdlib-only (storage_roots is imported lazily), so it
 loads via spec_from_file_location without the studio venv. run.py defaults are
@@ -56,7 +56,7 @@ def test_url_regex_no_match_on_unrelated():
 
 def test_url_regex_ignores_api_endpoint():
     # cloudflared's failure line names its own API host; it must never be taken
-    # as the tunnel URL (it returns a 404 and is not a quick tunnel).
+    # as the tunnel URL (it returns a 404 and is not a temporary tunnel).
     line = (
         'failed to request quick Tunnel: Post "https://api.trycloudflare.com/tunnel": '
         "context deadline exceeded"

@@ -467,9 +467,7 @@ def test_stop_does_not_wait_forever_on_a_start_that_never_claims_ownership(monke
         remote_access._open_remote_access_stop_response_admission()
 
 
-def test_streaming_is_not_advertised_while_a_quick_tunnel_carries_the_traffic(monkeypatch):
-    # Cloudflare documents that Quick Tunnels do not support Server-Sent Events,
-    # and Studio only ever opens Quick Tunnels. Measured against a real tunnel: an
+def test_streaming_is_not_advertised_while_a_temporary_tunnel_carries_the_traffic(monkeypatch):
     # SSE endpoint answers 200 with text/event-stream but delivers zero events.
     monkeypatch.setattr(remote_access, "_start_worker", None)
     monkeypatch.setattr(remote_access, "_stop_worker", None)

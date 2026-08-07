@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Free Cloudflare quick tunnel for Unsloth's 0.0.0.0 launches.
+"""Free Cloudflare temporary tunnel for Unsloth's 0.0.0.0 launches.
 
 The raw http://<ip>:<port> is often unreachable (https-vs-http, blocked ports,
-closed security groups); a cloudflared quick tunnel gives a free
+closed security groups); a cloudflared temporary tunnel gives a free
 https://*.trycloudflare.com URL that works anywhere, with no account or domain.
 
 Best-effort throughout: any failure collapses to "no URL" and Unsloth keeps
@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Callable, Optional, Tuple
 
-# cloudflared logs the quick-tunnel URL; match only the URL so we do not depend
+# cloudflared logs the temporary-tunnel URL; match only the URL so we do not depend
 # on the surrounding wording, which Cloudflare may change. The negative lookahead
 # drops cloudflared's own API host, which appears in failure lines such as
 #   failed to request quick Tunnel: Post "https://api.trycloudflare.com/tunnel"
@@ -32,7 +32,7 @@ from typing import Callable, Optional, Tuple
 _URL_RE = re.compile(r"https://(?!api\.)[A-Za-z0-9-]+\.trycloudflare\.com")
 
 # cloudflared logs this once per edge connection it establishes. Until at least
-# one appears the quick-tunnel URL returns Cloudflare error 1033 (HTTP 530), so
+# one appears the temporary-tunnel URL returns Cloudflare error 1033 (HTTP 530), so
 # we wait for it before advertising the URL.
 _REGISTERED_MARKER = "Registered tunnel connection"
 
@@ -71,6 +71,9 @@ _EDGE_PROBE_RETRY_DELAY = 0.5
 _EDGE_WAIT_MAX = 15.0
 # A network that blocks the edge blocks every attempt, so stop spending the wait.
 _EDGE_MAX_UNREACHABLE = 2
+
+# Tunnel kind is independent of its launch/settings owner.
+TUNNEL_KINDS = frozenset({"temporary", "custom"})
 
 
 def _windows_hidden_kwargs() -> dict:
@@ -398,11 +401,18 @@ def _process_exited(proc: subprocess.Popen) -> bool:
         return False
 
 
-class CloudflareTunnel:
-    """A cloudflared quick tunnel to http://localhost:<port>. Best-effort throughout.
+def temporary_tunnel_args(port: int, protocol: Optional[str] = None) -> list:
+    args = ["tunnel", "--url", f"http://localhost:{port}", "--no-autoupdate"]
+    if protocol:
+        args += ["--protocol", protocol]
+    return args
 
-    Use localhost (not the wildcard bind) as the tunnel origin so cloudflared's
-    upstream stays local-only.
+
+class CloudflareTunnel:
+    """A running cloudflared connector. Best-effort throughout.
+
+    Kinds differ only in `args` and in whether they know `url` up front; a temporary
+    tunnel does not, because cloudflared mints the hostname.
     """
 
     def __init__(
@@ -410,18 +420,23 @@ class CloudflareTunnel:
         port: int,
         binary: str,
         protocol: Optional[str] = None,
+        *,
+        kind: str = "temporary",
+        args: Optional[list] = None,
+        url: Optional[str] = None,
     ):
+        if kind not in TUNNEL_KINDS:
+            raise ValueError(f"Unknown Cloudflare tunnel kind: {kind}")
         self.port = port
         self.binary = binary
-        # None lets cloudflared pick its default (quic, with its own http2
-        # fallback); set to "http2" to force it when quic is blocked.
-        self.protocol = protocol
+        self.kind = kind
+        self._args = list(args) if args is not None else temporary_tunnel_args(port, protocol)
         self._proc: Optional[subprocess.Popen] = None
         self._lock = threading.Lock()
         self._stopped = False
         self._url_event = threading.Event()
         self._ready_event = threading.Event()
-        self.url: Optional[str] = None
+        self.url: Optional[str] = url
         self.ready = False
         self.error: Optional[str] = None
         self.on_exit: Optional[Callable[["CloudflareTunnel"], None]] = None
@@ -429,15 +444,7 @@ class CloudflareTunnel:
         self._runtime_active = False
 
     def start(self) -> None:
-        cmd = [
-            self.binary,
-            "tunnel",
-            "--url",
-            f"http://localhost:{self.port}",
-            "--no-autoupdate",
-        ]
-        if self.protocol:
-            cmd += ["--protocol", self.protocol]
+        cmd = [self.binary, *self._args]
         with self._lock:
             # A stop() that landed before us (e.g. a shutdown in the caller's
             # register->start window) marks the tunnel stopped; spawning now would
@@ -597,6 +604,7 @@ _tunnel_lifecycle = 0
 _accepting_starts = True
 _tunnel_state = "off"
 _tunnel_owner: Optional[str] = None
+_tunnel_kind: Optional[str] = None
 _tunnel_url: Optional[str] = None
 _tunnel_error: Optional[str] = None
 _tunnel_port: Optional[int] = None
@@ -695,6 +703,7 @@ def get_studio_tunnel_status() -> dict:
         return {
             "state": _tunnel_state,
             "managed_by": _tunnel_owner,
+            "kind": _tunnel_kind,
             "url": _tunnel_url,
             "error": _tunnel_error,
             "port": _tunnel_port,
@@ -715,7 +724,7 @@ def _set_failed(generation: int, owner: str, port: int, error: str) -> None:
 
 
 def _active_tunnel_exited(tunnel: CloudflareTunnel) -> None:
-    global _active_tunnel, _tunnel_state, _tunnel_owner
+    global _active_tunnel, _tunnel_state, _tunnel_owner, _tunnel_kind
     global _tunnel_url, _tunnel_error, _tunnel_port
     with _active_lock:
         if _active_tunnel is not tunnel:
@@ -745,6 +754,7 @@ def _active_tunnel_exited(tunnel: CloudflareTunnel) -> None:
             _active_tunnel = None
             _tunnel_state = "off"
             _tunnel_owner = None
+            _tunnel_kind = None
             _tunnel_error = None
             _tunnel_port = None
 
@@ -763,7 +773,7 @@ def start_studio_tunnel(
     managed_by: str = "launch",
     admission: Optional[Tuple[int, int]] = None,
 ) -> Optional[str]:
-    """Start a quick tunnel and return its public URL once it is actually
+    """Start a temporary tunnel and return its public URL once it is actually
     serving, or None (best-effort).
 
     Waits for cloudflared to both mint the URL and register an edge connection,
@@ -775,6 +785,7 @@ def start_studio_tunnel(
     """
     global _active_tunnel, _shutdown_requested, _tunnel_generation
     global _tunnel_state, _tunnel_owner, _tunnel_url, _tunnel_error, _tunnel_port
+    global _tunnel_kind
     if managed_by not in _TUNNEL_OWNERS:
         raise ValueError(f"Unknown Cloudflare tunnel owner: {managed_by}")
     with _active_lock:
@@ -806,6 +817,7 @@ def start_studio_tunnel(
             prior_at_start, _active_tunnel = _active_tunnel, None
             _tunnel_state = "starting"
             _tunnel_owner = managed_by
+            _tunnel_kind = "temporary"
             _set_tunnel_url_locked(None)
             _tunnel_error = None
             _tunnel_port = port
@@ -898,6 +910,7 @@ def start_studio_tunnel(
                         _active_tunnel = None
                         _tunnel_state = "off"
                         _tunnel_owner = None
+                        _tunnel_kind = None
                         _tunnel_error = None
                         _tunnel_port = None
                     else:
@@ -933,6 +946,7 @@ def stop_studio_tunnel(*, admission: Optional[Tuple[int, int]] = None) -> None:
     """Terminate the active tunnel, if any. Idempotent."""
     global _active_tunnel, _shutdown_requested, _tunnel_generation
     global _tunnel_state, _tunnel_owner, _tunnel_url, _tunnel_error, _tunnel_port
+    global _tunnel_kind
     with _active_lock:
         if admission is not None and admission != (_tunnel_lifecycle, _tunnel_generation):
             return
@@ -964,6 +978,7 @@ def stop_studio_tunnel(*, admission: Optional[Tuple[int, int]] = None) -> None:
                 _active_tunnel = None
                 _tunnel_state = "off"
                 _tunnel_owner = None
+                _tunnel_kind = None
                 _tunnel_port = None
 
 
