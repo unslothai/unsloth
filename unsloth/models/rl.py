@@ -587,31 +587,82 @@ def _wrap_sft_evaluate_cap(trainer_cls):
 
     Both entry points, not just `evaluate`: `predict(test_dataset = ...)` comes
     from the base Trainer and reaches the same collator by the same route.
+
+    This has to agree with the construction-time cap on every detail, because it
+    is the same cap arriving late. It honours `truncation_mode`, refuses a packed
+    split, drops rows left with no supervised token, and handles a stream.
     """
 
-    def _cap(dataset, cap):
-        names = getattr(dataset, "column_names", None) or ()
+    _PER_TOKEN = (
+        "input_ids",
+        "attention_mask",
+        "labels",
+        "completion_mask",
+        "assistant_masks",
+        "token_type_ids",
+        "position_ids",
+    )
+
+    def _supervision_masks(args, names):
+        """The mask columns TRL's collator will actually apply to this split.
+
+        `assistant_masks` on presence alone, `completion_mask` only under
+        `completion_only_loss`, which TRL resolves from the dataset shape when it
+        is None. Same rule as the construction-time filter.
+        """
+        masks = []
+        only = getattr(args, "completion_only_loss", None)
+        if only is None:
+            only = "prompt" in names and "completion" in names
+        if only and "completion_mask" in names:
+            masks.append("completion_mask")
+        if "assistant_masks" in names:
+            masks.append("assistant_masks")
+        return masks
+
+    def _cap(dataset, cap, args):
+        names = tuple(getattr(dataset, "column_names", None) or ())
         if "input_ids" not in names:
             return dataset  # raw text: prep tokenizes it with the cap
+        # A packed split carries document lengths, not tokens. Slicing `input_ids`
+        # under a `seq_lengths` that still describes the longer row makes
+        # padding-free build position ids for tokens the row no longer has, which
+        # is worse than not cutting: the construction-time cap refuses this shape
+        # too.
+        if "seq_lengths" in names:
+            return dataset
         try:
-            first = dataset[0]["input_ids"]
-            if len(first) <= cap and max(len(r) for r in dataset["input_ids"]) <= cap:
+            # A stream has no length and cannot be rewound, so there is no prefix
+            # scan to skip the work with, and indexing it does not even fail
+            # loudly: on datasets 4.x `dataset[0]` reads 0 as a COLUMN name and
+            # returns an IterableColumn, whose len() then raised TypeError into
+            # the catch below and handed the eval call its uncapped stream back.
+            # map() is lazy and applies to every row it will ever yield.
+            stream = not hasattr(dataset, "__len__")
+            if not stream and max(len(r) for r in dataset["input_ids"]) <= cap:
                 return dataset
-            per_token = [
-                c
-                for c in names
-                if c
-                in (
-                    "input_ids",
-                    "attention_mask",
-                    "labels",
-                    "completion_mask",
-                    "assistant_masks",
-                    "token_type_ids",
-                    "position_ids",
+            # TRL slices [-max_length:] for `keep_end`, and so does the
+            # construction-time cap. Always keeping the prefix evaluates the wrong
+            # half of every long row for callers whose completion sits at the tail.
+            keep_end = getattr(args, "truncation_mode", "keep_start") == "keep_end"
+            cut = slice(-cap, None) if keep_end else slice(None, cap)
+            per_token = [c for c in names if c in _PER_TOKEN]
+            new = dataset.map(lambda e: {c: e[c][cut] for c in per_token})
+            # Truncating can leave a row with every label at -100, or a mask that is
+            # now all zeros, which the collator turns into all -100. A batch of
+            # those has no supervised token and reports a NaN loss. TRL filters them
+            # right after its own truncation; here `args.max_length` is already None
+            # so TRL does not, and the construction-time cap filters them for the
+            # splits it saw. Masks are applied one after another onto the same
+            # labels, so what survives is their intersection.
+            masks = _supervision_masks(args, names)
+            if "labels" in names:
+                new = new.filter(lambda e: any(l != -100 for l in e["labels"]))
+            if masks:
+                new = new.filter(
+                    lambda e, c = tuple(masks): any(all(v) for v in zip(*[e[n] for n in c]))
                 )
-            ]
-            return dataset.map(lambda e: {c: e[c][:cap] for c in per_token})
+            return new
         except Exception:
             return dataset  # never turn an eval call into a hard error
 
@@ -621,9 +672,9 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             given = kwargs.get(keyword, args[0] if args else None)
             if cap and given is not None and getattr(self.args, "max_length", None) is None:
                 if isinstance(given, dict):
-                    capped = {k: _cap(v, cap) for k, v in given.items()}
+                    capped = {k: _cap(v, cap, self.args) for k, v in given.items()}
                 else:
-                    capped = _cap(given, cap)
+                    capped = _cap(given, cap, self.args)
                 if keyword in kwargs:
                     kwargs[keyword] = capped
                 else:
@@ -1561,9 +1612,28 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # A raw train split is tokenized with the cap by prep, so leave it alone.
                     "            if not _unsloth_prep_truncates:\n"
                     "                train_dataset, _unsloth_capped = _unsloth_cap_split(train_dataset)\n"
+                    # An eval split TRL will PACK must not be truncated first. The branch
+                    # is gated on `not args.packing`, but `eval_packing` is resolved
+                    # separately:
+                    #     packing = args.packing if args.eval_packing is None else args.eval_packing
+                    # (sft_trainer.py), so packing = False with eval_packing = True reaches
+                    # here. TRL then packs the eval split instead of truncating it
+                    # (`if packing: ... elif args.max_length is not None: truncate_dataset`),
+                    # and the wrapped strategy concatenates the whole token stream before
+                    # chunking it, so cutting each row at the cap first throws away every
+                    # token past it and evaluates on a truncated corpus.
+                    # Leaving it uncut also means the cap is not enforced for that split, and
+                    # packing needs `max_length` anyway ("When packing is enabled,
+                    # `max_length` can't be `None`"), so this drops the enforcement claim
+                    # rather than the split: `max_length` stays and padding-free turns off,
+                    # which is the same answer this block already gives for a split it
+                    # cannot rewrite.
+                    "            _unsloth_eval_packing = getattr(args, 'packing', False) if getattr(args, 'eval_packing', None) is None else getattr(args, 'eval_packing')\n"
                     # Each eval split on its own: a raw one stays raw for the tokenizer pass
                     # that follows, and only a materialised tokenized one is cut.
-                    "            if 'eval_dataset' in locals() and eval_dataset is not None:\n"
+                    "            if 'eval_dataset' in locals() and eval_dataset is not None and _unsloth_eval_packing:\n"
+                    "                _unsloth_capped = False\n"
+                    "            elif 'eval_dataset' in locals() and eval_dataset is not None:\n"
                     "                if isinstance(eval_dataset, dict):\n"
                     "                    _unsloth_new_eval = {}\n"
                     "                    for _k, _v in eval_dataset.items():\n"

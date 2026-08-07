@@ -1141,3 +1141,121 @@ def test_a_trainer_without_predict_is_not_broken():
 
     _wrap_sft_evaluate_cap(OnlyEvaluate)
     assert not hasattr(OnlyEvaluate, "predict")
+
+
+# ── the late cap has to agree with the construction-time cap ─────────────────
+def test_evaluate_caps_an_iterable_split():
+    """A stream reached the collator uncapped, and did so silently.
+
+    `dataset[0]` does not raise on a stream: `datasets` 4.x reads the 0 as a
+    COLUMN name and hands back an `IterableColumn`, whose `len()` then threw
+    TypeError into the wrapper's catch, which returns the original. So neither
+    this wrapper nor TRL enforced anything, which is the whole failure this
+    wrapper exists to prevent.
+    """
+    _, tok = _load_plain()
+    late = _tokenized_dataset(tok).to_iterable_dataset()
+    Stub, seen = _stub_trainer_class()
+    stub = Stub()
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
+    stub.evaluate(eval_dataset = late)
+
+    got = seen["ds"]
+    assert got is not late, "the stream came back untouched"
+    rows = list(got)
+    assert rows and all(len(r["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH for r in rows)
+    assert all(len(r["attention_mask"]) == len(r["input_ids"]) for r in rows)
+
+
+def test_evaluate_honours_keep_end():
+    """TRL slices [-max_length:] for `keep_end`, and so does the cap at init.
+
+    Always keeping the prefix evaluates the wrong half of every long row for the
+    callers who set this, which is exactly the ones whose completion sits at the
+    tail of a long prompt.
+    """
+    _, tok = _load_plain()
+    late = _tokenized_dataset(tok)
+    tail = [row[-_MODEL_MAX_SEQ_LENGTH:] for row in late["input_ids"]]
+
+    Stub, seen = _stub_trainer_class()
+    stub = Stub()
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
+    stub.args.truncation_mode = "keep_end"
+    stub.evaluate(eval_dataset = late)
+
+    assert seen["ds"]["input_ids"] == tail
+
+
+def test_evaluate_drops_rows_left_with_no_supervision():
+    """Cutting a long prompt can leave every label at -100.
+
+    TRL filters those right after its own truncation, but `args.max_length` is
+    None on this path so TRL does not run, and a batch made of such rows has no
+    supervised token at all: a NaN loss rather than a small one.
+    """
+    from datasets import Dataset
+
+    _, tok = _load_plain()
+    ids = tok("The quick brown fox. " * 200)["input_ids"]
+    cap = _MODEL_MAX_SEQ_LENGTH
+    assert len(ids) > cap
+    # One row supervised only past the cap, one supervised from the start.
+    doomed = {"input_ids": ids, "attention_mask": [1] * len(ids), "labels": [-100] * cap + ids[cap:]}
+    fine = {"input_ids": ids, "attention_mask": [1] * len(ids), "labels": list(ids)}
+    late = Dataset.from_list([doomed, fine])
+
+    Stub, seen = _stub_trainer_class()
+    stub = Stub()
+    stub.args = _Args(cap, None)
+    stub.evaluate(eval_dataset = late)
+
+    got = seen["ds"]
+    assert len(got) == 1, "the row with no supervised token left should be gone"
+    assert any(label != -100 for label in got[0]["labels"])
+
+
+def test_evaluate_leaves_a_packed_split_alone():
+    """`seq_lengths` describes documents, not tokens.
+
+    Slicing `input_ids` under a `seq_lengths` that still describes the longer row
+    makes padding-free build position ids for tokens the row no longer has. The
+    construction-time cap refuses this shape for the same reason.
+    """
+    from datasets import Dataset
+
+    _, tok = _load_plain()
+    ids = tok("The quick brown fox. " * 200)["input_ids"]
+    packed = Dataset.from_list(
+        [{"input_ids": ids, "seq_lengths": [len(ids) // 2, len(ids) - len(ids) // 2]}] * 2
+    )
+
+    Stub, seen = _stub_trainer_class()
+    stub = Stub()
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
+    stub.evaluate(eval_dataset = packed)
+    assert seen["ds"] is packed
+
+
+def test_the_codegen_leaves_a_packed_eval_split_to_the_packer():
+    """`eval_packing` is resolved separately from `packing`.
+
+    The branch is gated on `not args.packing`, so packing = False with
+    eval_packing = True still reaches it, and TRL then PACKS that eval split
+    rather than truncating it. Wrapped packing concatenates the whole token
+    stream before chunking, so cutting each row at the cap first evaluates on a
+    truncated corpus.
+    """
+    import inspect
+
+    from unsloth.models import rl
+
+    block = inspect.getsource(rl)
+    assert "_unsloth_eval_packing = getattr(args, 'packing', False) if getattr(args, 'eval_packing', None) is None else getattr(args, 'eval_packing')" in block
+    # And it drops the enforcement claim rather than the split: packing needs
+    # `max_length`, so clearing it would make TRL raise instead.
+    assert (
+        "if 'eval_dataset' in locals() and eval_dataset is not None and _unsloth_eval_packing:"
+        in block
+    )
+    assert "_unsloth_capped = False\\n" in block
