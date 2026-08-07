@@ -407,7 +407,10 @@ def test_hidden_desktop_routes_scroll_without_moving_custom_titlebar():
     assert "${contentOverflowClass}" in content_wrapper
     assert source.count("const usesCustomTitlebar = shouldUseCustomWindowTitlebar();") == 1
     assert source.count("const usesNativeMacTitlebar = shouldUseNativeMacWindowTitlebar();") == 1
-    assert source.count("const hidesTitlebarSidebar = HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);") == 1
+    assert (
+        source.count("const hidesTitlebarSidebar = HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);")
+        == 1
+    )
     assert source.count("const contentOverflowClass") == 1
 
 
