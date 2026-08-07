@@ -1306,3 +1306,25 @@ def test_the_unconverted_list_is_still_outside_the_upstream_map():
         pytest.skip("upstream map shape changed")
     gained = keys & set(F._PEFT_MOE_NAMED_NOT_CONVERTED)
     assert not gained, f"now in the upstream map, so no longer safe to skip: {sorted(gained)}"
+
+
+def test_the_moe_aware_map_wins_over_the_inert_donor():
+    """Two backfills cover the same two submodules and both are `hasattr`-gated,
+    so whichever runs first decides what `_MODEL_TO_CONVERSION_PATTERN` IS. The
+    general pass donates an inert `{}`, which answers every lookup with a silent
+    None; this one installs a map that refuses a fused-MoE lookup it cannot
+    answer. Order is the only thing keeping a fused MoE adapter from loading
+    with its LoRA targets unconverted and no error."""
+    src = inspect.getsource(F.fix_peft_transformers_weight_conversion_import)
+    mine = src.index("_backfill_missing_conversion_symbols()")
+    general = src.index("_backfill_missing_peft_symbols(_submodule)")
+    assert mine < general, "the inert donor now runs first and wins the symbol"
+
+
+def test_the_general_pass_does_not_overwrite_an_installed_stand_in():
+    """Even in the right order it must stay additive: a second pass that
+    re-donated would undo the first."""
+    donor = F._PEFT_STUB_BUILDERS["transformers.conversion_mapping"]()
+    assert isinstance(getattr(donor, "_MODEL_TO_CONVERSION_PATTERN", None), dict)
+    src = inspect.getsource(F._backfill_missing_peft_symbols)
+    assert "not hasattr(mod, s)" in src, "the general pass no longer gates on absence"
