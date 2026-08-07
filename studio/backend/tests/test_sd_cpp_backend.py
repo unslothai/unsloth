@@ -248,7 +248,9 @@ def test_download_plan_skips_assets_already_in_the_cache(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend,
         "_hub_file_is_cached",
-        staticmethod(lambda repo_id, filename, revision = None, expected_size = None: filename.endswith(".gguf")),
+        staticmethod(
+            lambda repo_id, filename, revision = None, expected_size = None: filename.endswith(".gguf")
+        ),
     )
 
     plan = b.download_plan(

@@ -1600,9 +1600,7 @@ class DiffusionBackend:
             missing = [
                 name
                 for name in files
-                if not self._hub_file_is_cached(
-                    repo, name, revision, declared_sizes.get(name)
-                )
+                if not self._hub_file_is_cached(repo, name, revision, declared_sizes.get(name))
             ]
             if not missing:
                 return
@@ -1681,11 +1679,10 @@ class DiffusionBackend:
             from huggingface_hub import try_to_load_from_cache
 
             roots = (hub_cache_dir(), None)
+
             def hits(rev: Optional[str]):
                 for root in roots:
-                    hit = try_to_load_from_cache(
-                        repo_id, filename, cache_dir = root, revision = rev
-                    )
+                    hit = try_to_load_from_cache(repo_id, filename, cache_dir = root, revision = rev)
                     if isinstance(hit, str) and Path(hit).is_file():
                         yield hit
 

@@ -5150,7 +5150,8 @@ def test_download_plan_omits_a_cached_gguf_but_keeps_missing_companions(monkeypa
         DiffusionBackend,
         "_hub_file_is_cached",
         staticmethod(
-            lambda repo_id, filename, revision = None, expected_size = None: repo_id == "unsloth/FLUX.1-dev-GGUF"
+            lambda repo_id, filename, revision = None, expected_size = None: repo_id
+            == "unsloth/FLUX.1-dev-GGUF"
             and filename == "flux1-dev-Q4_K_M.gguf"
         ),
     )
@@ -5233,7 +5234,15 @@ def test_download_plan_sizes_the_checkpoint_when_the_base_is_the_same_repo(monke
     assert entry["bytes"] == plan["required_bytes"] == 7 * GB + 2 * GB + 1300
 
 
-def _write_hub_cache(root, repo_id, filename, sha, size, *, symlink = True):
+def _write_hub_cache(
+    root,
+    repo_id,
+    filename,
+    sha,
+    size,
+    *,
+    symlink = True,
+):
     """The tree hf_hub_download leaves behind: blobs/ + snapshots/<sha>/ + refs/main."""
     import os
 
@@ -5248,7 +5257,6 @@ def _write_hub_cache(root, repo_id, filename, sha, size, *, symlink = True):
         os.symlink(os.path.relpath(blob, target.parent), target)
     else:
         import shutil
-
         shutil.copyfile(blob, target)
     (refs / "main").write_text(sha)
 
@@ -5264,12 +5272,12 @@ def test_a_cached_file_survives_an_unrelated_commit_to_its_repo(tmp_path, monkey
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "unused"))
 
     assert DiffusionBackend._hub_file_is_cached(repo, name, "a" * 40, 4096)
-    assert DiffusionBackend._hub_file_is_cached(repo, name, "b" * 40, 4096), (
-        "an unrelated repo commit must not invalidate a file the plan sized identically"
-    )
-    assert not DiffusionBackend._hub_file_is_cached(repo, name, "b" * 40, 9999), (
-        "a republished file has a different declared size and must be fetched through the manager"
-    )
+    assert DiffusionBackend._hub_file_is_cached(
+        repo, name, "b" * 40, 4096
+    ), "an unrelated repo commit must not invalidate a file the plan sized identically"
+    assert not DiffusionBackend._hub_file_is_cached(
+        repo, name, "b" * 40, 9999
+    ), "a republished file has a different declared size and must be fetched through the manager"
     # Nothing declared to compare against: trust the ref rather than call a present file missing.
     assert DiffusionBackend._hub_file_is_cached(repo, name, "b" * 40, 0)
 
@@ -5299,7 +5307,9 @@ def test_download_plan_probes_the_cache_at_the_revision_it_sized(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend,
         "_hub_file_is_cached",
-        staticmethod(lambda repo_id, filename, revision = None, expected_size = None: bool(seen.append(revision))),
+        staticmethod(
+            lambda repo_id, filename, revision = None, expected_size = None: bool(seen.append(revision))
+        ),
     )
 
     DiffusionBackend().download_plan(
