@@ -635,7 +635,9 @@ def test_hosted_parts_replay_before_studio_function_call(monkeypatch):
         ],
     )
 
-    model_turn = next(content for content in captured["body"]["contents"] if content["role"] == "model")
+    model_turn = next(
+        content for content in captured["body"]["contents"] if content["role"] == "model"
+    )
     assert model_turn["parts"][:2] == [executable_part, result_part]
     function_call = model_turn["parts"][2]
     assert function_call["functionCall"]["name"] == "lookup"

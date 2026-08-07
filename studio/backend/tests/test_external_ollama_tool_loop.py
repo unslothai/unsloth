@@ -456,17 +456,12 @@ def test_gemini_hosted_parts_survive_studio_tool_continuation(monkeypatch):
         "data: " + json.dumps(hosted_end),
         *_tool_round(),
     ]
-    client = _FakeClient(
-        [first_round, [_chunk(delta = {"content": "done"}), "data: [DONE]"]]
-    )
+    client = _FakeClient([first_round, [_chunk(delta = {"content": "done"}), "data: [DONE]"]])
 
     asyncio.run(_collect(client))
 
     assistant = client.calls[1]["messages"][-2]
-    assert assistant["extra_content"]["google"]["hosted_parts"] == [
-        executable_part,
-        result_part,
-    ]
+    assert assistant["extra_content"]["google"]["hosted_parts"] == [executable_part, result_part]
 
 
 def test_anthropic_thinking_metadata_is_private_and_replayed(monkeypatch):
@@ -648,9 +643,7 @@ def test_openai_response_link_is_removed_when_parallel_calls_are_dropped(monkeyp
         _chunk(delta = {}, finish_reason = "tool_calls"),
         "data: [DONE]",
     ]
-    client = _FakeClient(
-        [parallel_round, [_chunk(delta = {"content": "done"}), "data: [DONE]"]]
-    )
+    client = _FakeClient([parallel_round, [_chunk(delta = {"content": "done"}), "data: [DONE]"]])
 
     asyncio.run(_collect(client, parallel_tool_calls = False))
 

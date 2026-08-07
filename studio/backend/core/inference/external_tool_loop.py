@@ -119,9 +119,7 @@ def _collect_round_delta(
         )
         google_metadata = event_google if isinstance(event_google, Mapping) else argument_google
         native_part = (
-            google_metadata.get("native_part")
-            if isinstance(google_metadata, Mapping)
-            else None
+            google_metadata.get("native_part") if isinstance(google_metadata, Mapping) else None
         )
         native_parts = native_part.get("parts") if isinstance(native_part, Mapping) else None
         if isinstance(native_parts, list):
@@ -491,9 +489,7 @@ async def stream_external_chat_with_tools(
             for _decision, raw_call in decision_pairs:
                 extra_content = raw_call.get("extra_content")
                 openai_extra = (
-                    extra_content.get("openai")
-                    if isinstance(extra_content, Mapping)
-                    else None
+                    extra_content.get("openai") if isinstance(extra_content, Mapping) else None
                 )
                 if not isinstance(openai_extra, dict):
                     continue

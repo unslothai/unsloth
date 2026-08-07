@@ -3473,13 +3473,9 @@ class ExternalProviderClient:
                                     break
             if role == "assistant":
                 _msg_extra = msg.get("extra_content") if isinstance(msg, dict) else None
-                _msg_google = (
-                    _msg_extra.get("google") if isinstance(_msg_extra, dict) else None
-                )
+                _msg_google = _msg_extra.get("google") if isinstance(_msg_extra, dict) else None
                 _hosted_parts = (
-                    _msg_google.get("hosted_parts")
-                    if isinstance(_msg_google, dict)
-                    else None
+                    _msg_google.get("hosted_parts") if isinstance(_msg_google, dict) else None
                 )
                 for _hosted_part in _hosted_parts if isinstance(_hosted_parts, list) else []:
                     if not isinstance(_hosted_part, dict):
