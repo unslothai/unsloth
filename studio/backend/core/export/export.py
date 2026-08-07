@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional, Tuple, List
 
 # unsloth imports torch on non-MLX hosts, so a --no-torch install raises here. Stay importable
-# (null the classes) so exports return a clean "PyTorch is not installed" error, not an import crash.
+# (null the classes) so exports return a clean "PyTorch is not installed" error.
 try:
     from unsloth import FastLanguageModel, FastVisionModel, _IS_MLX
     _UNSLOTH_IMPORT_ERROR = None
@@ -29,6 +29,7 @@ from huggingface_hub import HfApi, ModelCard
 from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
+from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.model_config import detect_audio_type
 from utils.paths import (
     ensure_dir,
@@ -38,8 +39,7 @@ from utils.paths import (
 )
 from core.inference import get_inference_backend
 
-# GPU/PyTorch-only imports, skipped on MLX and on a --no-torch install so the module stays
-# importable; export then degrades to a clear "PyTorch is not installed" error.
+# GPU/PyTorch-only imports, skipped on MLX and --no-torch installs so the module stays importable.
 torch = None
 _TORCH_IMPORT_ERROR: Optional[BaseException] = None
 if not _IS_MLX:
@@ -98,8 +98,7 @@ def _multi_gpu_device_map_kwargs() -> dict:
         if len(visible) > 1:
             device_map = get_device_map(visible)
         elif not visible:
-            # UUID/MIG masks resolve to no numeric ids; get_device_map(None) falls back
-            # to the visible-GPU count, so a multi-GPU UUID/MIG host still shards.
+            # UUID/MIG masks resolve to no numeric ids; get_device_map(None) falls back to the visible count.
             device_map = get_device_map(None)
         else:
             return {}
@@ -166,6 +165,31 @@ def _supports_kwarg(fn, name):
     except (TypeError, ValueError):
         return False
     return name in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def _reported_gguf_files(result):
+    """Absolute GGUF paths unsloth reported writing, or None if it reported nothing.
+
+    None means "fall back to the legacy heuristics", which covers every older shape:
+    pre-2025.10 unsloth returned nothing, is_main_process=False returns None, and
+    save_method="lora" returns a str. An empty result is None too, since a stale
+    manifest is indistinguishable from an old build.
+    """
+    if not isinstance(result, dict):
+        return None
+    files = result.get("gguf_files")
+    if not isinstance(files, (list, tuple)):
+        return None
+
+    resolved = []
+    for entry in files:
+        # A malformed payload must not be half-trusted.
+        if not isinstance(entry, (str, os.PathLike)):
+            return None
+        path = os.path.abspath(os.fspath(entry))
+        if path.lower().endswith(".gguf") and os.path.isfile(path):
+            resolved.append(path)
+    return resolved or None
 
 
 def _compressed_export_supported():
@@ -268,7 +292,6 @@ def _apply_wsl_sudo_patch():
         logger.warning(f"Could not apply WSL sudo patch: {e}")
 
 
-# Model card template
 MODEL_CARD = """---
 base_model: {base_model}
 tags:
@@ -380,8 +403,7 @@ class ExportBackend:
             # Skip the Hub when offline so a no-internet export uses the local cache.
             local_files_only = _hf_offline()
 
-            # Shard across every visible GPU instead of stacking on GPU0 (#7053); {} on
-            # single-GPU/CPU/MLX. _device_map_override is the single-device retry below.
+            # Shard across every visible GPU instead of stacking on GPU0 (#7053); {} on single-GPU/CPU/MLX.
             _device_map_kw = (
                 _multi_gpu_device_map_kwargs()
                 if _device_map_override is None
@@ -511,6 +533,12 @@ class ExportBackend:
                 self.is_peft = adapter_config.exists()
             else:
                 self.is_peft = isinstance(model, (PeftModel, PeftModelForCausalLM))
+
+            restored_repo_id = restore_hf_cache_repo_identity(model, base_model)
+            if restored_repo_id:
+                logger.info(
+                    f"Restored Hub model identity for legacy adapter export: {restored_repo_id}"
+                )
 
             self.current_model = model
             self.current_tokenizer = tokenizer
@@ -1049,12 +1077,47 @@ class ExportBackend:
 
                 _model_tmp = os.path.join(abs_save_dir, f"_tmp_model_{uuid.uuid4().hex[:8]}")
                 model_tmp_to_cleanup = _model_tmp
-                self.current_model.save_pretrained_gguf(
+                _gguf_result = self.current_model.save_pretrained_gguf(
                     _model_tmp,
                     self.current_tokenizer,
                     quantization_method = quant_method,
                     **imatrix_kw,
                 )
+
+                # Trust what unsloth reports over guessing: the heuristics below only
+                # check cwd, new subdirs of the save dir, and the checkpoint sibling,
+                # so anything written elsewhere was silently lost (#7897). Relocate
+                # first, before the flatten pass rmtree's the temp dir it lives in.
+                for src in _reported_gguf_files(_gguf_result) or []:
+                    dest = os.path.join(abs_save_dir, os.path.basename(src))
+                    if os.path.abspath(src) == os.path.abspath(dest):
+                        continue
+                    try:
+                        shutil.move(src, dest)
+                    except FileNotFoundError:
+                        continue
+                    logger.info(
+                        f"Relocated GGUF (reported by unsloth): "
+                        f"{os.path.basename(src)} → {abs_save_dir}/"
+                    )
+
+                # The Modelfile lands in the temp *_gguf dir, which the flatten pass
+                # deletes after moving only *.gguf.
+                _modelfile = (
+                    _gguf_result.get("modelfile_location")
+                    if isinstance(_gguf_result, dict)
+                    else None
+                )
+                if (
+                    isinstance(_modelfile, str)
+                    and os.path.isfile(_modelfile)
+                    and os.path.dirname(os.path.abspath(_modelfile)) != abs_save_dir
+                ):
+                    try:
+                        shutil.move(_modelfile, os.path.join(abs_save_dir, "Modelfile"))
+                        logger.info(f"Relocated Modelfile → {abs_save_dir}/")
+                    except OSError:
+                        pass
 
                 # Relocate the .gguf that convert_to_gguf wrote to cwd (repo root).
                 new_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf"))) - pre_existing_ggufs
@@ -1069,7 +1132,9 @@ class ExportBackend:
                         continue
                     if sub.name in pre_existing_subs:
                         continue
-                    for src in sub.glob("*.gguf"):
+                    # rglob: the rmtree below is unconditional, so a GGUF one level
+                    # deeper (sharded output) would otherwise be destroyed.
+                    for src in sorted(sub.rglob("*.gguf")):
                         dest = os.path.join(abs_save_dir, src.name)
                         shutil.move(str(src), dest)
                         logger.info(f"Relocated GGUF: {src.name} → {abs_save_dir}/")
@@ -1094,15 +1159,32 @@ class ExportBackend:
                         shutil.rmtree(str(gguf_dir), ignore_errors = True)
                         logger.info(f"Cleaned up intermediate GGUF dir: {gguf_dir}")
 
-                # Write export metadata so the Chat page can identify the base model
-                self._write_export_metadata(abs_save_dir)
-
-                final_ggufs = sorted(glob.glob(os.path.join(abs_save_dir, "*.gguf")))
+                # iterdir, not glob.glob: glob hides dot-leading names, so an empty
+                # model stem's ".Q4_K_M.gguf" got reported as "(none)".
+                final_ggufs = sorted(
+                    str(p)
+                    for p in Path(abs_save_dir).iterdir()
+                    if p.is_file() and p.name.lower().endswith(".gguf")
+                )
                 logger.info(
                     "GGUF export complete. Final files in %s:\n  %s",
                     abs_save_dir,
                     "\n  ".join(os.path.basename(f) for f in final_ggufs) or "(none)",
                 )
+                if not final_ggufs:
+                    # Reporting success over an empty directory is what hid #7897.
+                    shutil.rmtree(model_tmp_to_cleanup, ignore_errors = True)
+                    return (
+                        False,
+                        f"GGUF conversion reported success but wrote no .gguf file to "
+                        f"{abs_save_dir}. Check the export log for the path the "
+                        f"converter actually used, then upgrade with "
+                        f"`pip install --upgrade unsloth unsloth_zoo` and retry.",
+                        None,
+                    )
+
+                # Only write metadata once an artifact is actually present.
+                self._write_export_metadata(abs_save_dir)
                 output_path = str(Path(abs_save_dir).resolve())
 
             if push_to_hub:
@@ -1229,7 +1311,12 @@ class ExportBackend:
                         # Forward the token so convert_lora_to_gguf.py can fetch a gated base's config.
                         token = hf_token or None,
                     )
-                    final_ggufs = sorted(glob.glob(os.path.join(save_directory, "*.gguf")))
+                    # iterdir, not glob.glob: glob hides dot-leading names.
+                    final_ggufs = sorted(
+                        str(p)
+                        for p in Path(save_directory).iterdir()
+                        if p.is_file() and p.name.lower().endswith(".gguf")
+                    )
                     logger.info(
                         "LoRA GGUF export complete. Files in %s:\n  %s",
                         save_directory,

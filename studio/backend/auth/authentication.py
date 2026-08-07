@@ -11,11 +11,12 @@ import jwt
 
 from .storage import (
     API_KEY_PREFIX,
+    credential_generation,
     get_jwt_secret,
     get_user_and_secret,
     load_jwt_secret,
     save_refresh_token,
-    validate_api_key,
+    validate_api_key_with_credential,
     verify_refresh_token,
 )
 
@@ -54,11 +55,14 @@ def create_access_token(
     expires_delta: Optional[timedelta] = None,
     *,
     desktop: bool = False,
+    secret: Optional[str] = None,
 ) -> str:
     """
     Create a signed JWT for the given subject (e.g. username).
 
-    Valid across restarts: the signing secret is stored in SQLite.
+    Valid across restarts: the signing secret is stored in SQLite. Callers that
+    already verified a credential pass ``secret`` so a rotation landing mid-request
+    cannot sign the token with the credential that just replaced it.
     """
     to_encode = {"sub": subject}
     if desktop:
@@ -69,7 +73,7 @@ def create_access_token(
     to_encode.update({"exp": expire})
     return jwt.encode(
         to_encode,
-        _get_secret_for_subject(subject),
+        secret if secret is not None else _get_secret_for_subject(subject),
         algorithm = ALGORITHM,
     )
 
@@ -96,15 +100,28 @@ def is_desktop_access_token(token: str) -> bool:
     return payload.get("sub") == subject and payload.get("desktop") is True
 
 
-def create_refresh_token(subject: str, *, desktop: bool = False) -> str:
+def create_refresh_token(
+    subject: str,
+    *,
+    desktop: bool = False,
+    secret: Optional[str] = None,
+) -> str:
     """
     Create a random refresh token, store its hash in SQLite, and return it.
 
     Refresh tokens are opaque (not JWTs); expire after REFRESH_TOKEN_EXPIRE_DAYS.
+    ``secret`` stamps the token with the credential version the caller verified,
+    so a rotation cannot leave a token minted from the replaced credential valid.
     """
     token = secrets.token_urlsafe(48)
     expires_at = datetime.now(timezone.utc) + timedelta(days = REFRESH_TOKEN_EXPIRE_DAYS)
-    save_refresh_token(token, subject, expires_at.isoformat(), is_desktop = desktop)
+    save_refresh_token(
+        token,
+        subject,
+        expires_at.isoformat(),
+        is_desktop = desktop,
+        secret_gen = credential_generation(secret) if secret is not None else None,
+    )
     return token
 
 
@@ -137,7 +154,22 @@ def reload_secret() -> None:
 
 async def get_current_subject(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
     """Validate JWT and require the password-change flow to be completed."""
-    return await _get_current_subject(
+    subject, _generation = await _get_current_credential(
+        credentials,
+        allow_password_change = False,
+    )
+    return subject
+
+
+async def get_current_credential(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> Tuple[str, Optional[str]]:
+    """As get_current_subject, but also returns the credential generation.
+
+    For routes that persist a new credential and must not do so on behalf of one
+    a concurrent reset has revoked.
+    """
+    return await _get_current_credential(
         credentials,
         allow_password_change = False,
     )
@@ -154,14 +186,26 @@ async def authenticated_via_api_key(
     return bool(credentials and credentials.credentials.startswith(API_KEY_PREFIX))
 
 
+async def authenticated_via_desktop_jwt(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> bool:
+    """True when the caller is the local desktop app, not a browser session or API key.
+
+    Lets routes treat the desktop as an authority of its own: it authenticates
+    with a local secret rather than the account password.
+    """
+    return is_desktop_access_token(credentials.credentials)
+
+
 async def get_current_subject_allow_password_change(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> str:
     """Validate JWT but allow access to the password-change endpoint."""
-    return await _get_current_subject(
+    subject, _generation = await _get_current_credential(
         credentials,
         allow_password_change = True,
     )
+    return subject
 
 
 # The literal the examples ship with; pasted unedited more often than a revoked key.
@@ -179,21 +223,27 @@ def _invalid_api_key_detail(token: str) -> str:
     return "Invalid or expired API key"
 
 
-async def _get_current_subject(
+async def _get_current_credential(
     credentials: HTTPAuthorizationCredentials, *, allow_password_change: bool
-) -> str:
-    """FastAPI dependency: validate the JWT and return the subject. Use on protected routes."""
+) -> Tuple[str, Optional[str]]:
+    """Validate the bearer and return ``(subject, credential generation)``.
+
+    The generation is the credential version this request actually authenticated
+    against. Routes that persist new credentials must bind their write to it, or
+    a reset landing mid-request would bless what it just revoked.
+    """
     token = credentials.credentials
 
     # --- API key path (sk-unsloth-...) ---
     if token.startswith(API_KEY_PREFIX):
-        username = validate_api_key(token)
-        if username is None:
+        verified = validate_api_key_with_credential(token)
+        if verified is None:
             raise HTTPException(
                 status_code = status.HTTP_401_UNAUTHORIZED,
                 detail = _invalid_api_key_detail(token),
             )
-        return username
+        username, secret = verified
+        return username, credential_generation(secret)
 
     # --- JWT path ---
     subject = _decode_subject_without_verification(token)
@@ -224,7 +274,7 @@ async def _get_current_subject(
                 status_code = status.HTTP_403_FORBIDDEN,
                 detail = "Password change required",
             )
-        return subject
+        return subject, credential_generation(jwt_secret)
     except jwt.InvalidTokenError:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,

@@ -5,6 +5,7 @@
 
 import {
   Sheet,
+  SheetCloseButton,
   SheetContent,
   SheetDescription,
   SheetHeader,
@@ -18,9 +19,9 @@ import {
   useExternalProvidersStore,
 } from "@/features/chat";
 import { cn } from "@/lib/utils";
+import { useMessage, useMessageTiming } from "@assistant-ui/react";
 import { HelpCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMessage, useMessageTiming } from "@assistant-ui/react";
 import type { FC, ReactNode } from "react";
 
 type ResponseDetailsMetadata = {
@@ -337,16 +338,25 @@ export const MessageResponseDetailsSheet: FC<{
       <SheetContent
         side="right"
         className="w-[min(28rem,100vw)] p-0 sm:max-w-[28rem]"
+        showCloseButton={false}
+        // Clear the desktop window controls; 0px in the browser and on macOS.
+        style={{
+          height: "calc(100% - var(--studio-custom-titlebar-height, 0px))",
+          marginTop: "var(--studio-custom-titlebar-height, 0px)",
+        }}
       >
         <SheetHeader className="border-b p-4">
-          <SheetTitle className="flex items-center gap-2 pr-10 font-heading text-base">
-            <HugeiconsIcon
-              icon={HelpCircleIcon}
-              strokeWidth={1.75}
-              className="size-icon text-chat-icon-fg"
-            />
-            Response details
-          </SheetTitle>
+          <div className="relative">
+            <SheetTitle className="flex items-center gap-2 pr-10 font-heading text-base">
+              <HugeiconsIcon
+                icon={HelpCircleIcon}
+                strokeWidth={1.75}
+                className="size-icon text-chat-icon-fg"
+              />
+              Response details
+            </SheetTitle>
+            <SheetCloseButton className="absolute top-1/2 right-0 -translate-y-1/2" />
+          </div>
           <SheetDescription className="sr-only">
             Timing, model, token, and tool details for this response.
           </SheetDescription>

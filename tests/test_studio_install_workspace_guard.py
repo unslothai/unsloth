@@ -253,7 +253,9 @@ def test_setup_ps1_prebuilt_llama_cpp_has_ownership_guard():
 
 def test_setup_ps1_adopts_existing_whisper_prebuilt_marker():
     text = SETUP_PS1.read_text(encoding = "utf-8")
-    helper_start = text.index("function Test-StudioOwnedAdoptable")
+    # The marker scan lives in Get-StudioAdoptableState; Test-StudioOwnedAdoptable
+    # is the boolean view of it.
+    helper_start = text.index("function Get-StudioAdoptableState")
     helper_end = text.index("function Assert-StudioOwnedOrAbsent", helper_start)
     helper = text[helper_start:helper_end]
     assert "UNSLOTH_WHISPER_PREBUILT_INFO.json" in helper
@@ -367,7 +369,9 @@ def test_setup_helpers_gate_on_canonical_custom_root():
 
     ps_src = SETUP_PS1.read_text(encoding = "utf-8")
     ps_idx = ps_src.index("function Assert-StudioOwnedOrAbsent")
-    ps_func = ps_src[ps_idx : ps_idx + 800]
+    # To the end of the function, not a fixed width, which a new parameter or
+    # comment would push the assertions below out of.
+    ps_func = ps_src[ps_idx:].split("\nfunction ", 1)[0]
     assert (
         "$StudioHomeIsCustom -and" in ps_func
     ), "setup.ps1 Assert-StudioOwnedOrAbsent must gate on $StudioHomeIsCustom"
@@ -379,7 +383,8 @@ def test_setup_helpers_gate_on_canonical_custom_root():
 def test_setup_ps1_inplace_git_sync_marks_studio_owned():
     """setup.ps1 in-place git-sync branch must Mark-StudioOwned after a successful sync."""
     src = SETUP_PS1.read_text(encoding = "utf-8")
-    inplace_idx = src.index('Test-Path -LiteralPath (Join-Path $LlamaCppDir ".git")')
+    # Three-state probe so an ACL-denied tree stops instead of cloning over it.
+    inplace_idx = src.index('if ($llamaGitState -eq "Present") {')
     # The in-place branch ends just before the temp-dir clone branch.
     clone_idx = src.index("Cloning llama.cpp @", inplace_idx)
     inplace_block = src[inplace_idx:clone_idx]
@@ -394,7 +399,8 @@ def test_setup_ps1_inplace_git_sync_marks_studio_owned():
 def test_setup_ps1_inplace_git_sync_asserts_studio_owned_before_mutation():
     """setup.ps1 in-place git-sync must Assert-StudioOwnedOrAbsent before any destructive git op."""
     src = SETUP_PS1.read_text(encoding = "utf-8")
-    inplace_idx = src.index('Test-Path -LiteralPath (Join-Path $LlamaCppDir ".git")')
+    # Three-state probe so an ACL-denied tree stops instead of cloning over it.
+    inplace_idx = src.index('if ($llamaGitState -eq "Present") {')
     clone_idx = src.index("Cloning llama.cpp @", inplace_idx)
     inplace_block = src[inplace_idx:clone_idx]
     assert (

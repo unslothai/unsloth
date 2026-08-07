@@ -33,6 +33,7 @@ import re
 import subprocess
 import sys
 import threading
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Optional
 
@@ -121,7 +122,14 @@ def _installed_build_number(binary: Optional[str]) -> Optional[int]:
     if not binary:
         return None
     try:
-        proc = subprocess.run([binary, "--version"], capture_output = True, text = True, timeout = 20)
+        proc = subprocess.run(
+            [binary, "--version"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 20,
+        )
     except Exception:  # pragma: no cover - defensive
         return None
     m = re.search(r"version:\s*(\d+)", (proc.stderr or "") + (proc.stdout or ""))
@@ -414,6 +422,7 @@ def _run_llama_phase(
     of letting it re-resolve "latest" itself (see start_update for why)."""
     backend = None
     model_was_active = False
+    mtmd_guard = ExitStack()
     try:
         # Block loads and free the binary while the installer swaps it.
         try:
@@ -435,6 +444,11 @@ def _run_llama_phase(
                         backend.unload_model()
             except Exception as exc:
                 logger.debug("llama update: load coordination failed", error = str(exc))
+
+        # The mtmd dictation sidecar serves Qwen3-ASR from this same llama-server
+        # out of this same tree, so a live one locks the exe on Windows and a
+        # concurrent load would start against a half-swapped install.
+        model_was_active = _block_mtmd_sidecar(mtmd_guard) or model_was_active
 
         cmd = [
             sys.executable,
@@ -463,7 +477,7 @@ def _run_llama_phase(
         # otherwise re-route and silently replace it. Re-assert via setup's env/CLI flags.
         if llama_backend == "vulkan" or (asset and "vulkan" in asset.lower()):
             env["UNSLOTH_FORCE_VULKAN"] = "1"
-            env["UNSLOTH_LLAMA_BACKEND"] = "vulkan"
+            env["UNSLOTH_LLAMA_CPP_BACKEND"] = "vulkan"
         _flow.stream_installer(
             cmd,
             env,
@@ -515,11 +529,27 @@ def _run_llama_phase(
         raise
     finally:
         # Always clear maintenance state.
+        mtmd_guard.close()
         if backend is not None:
             try:
                 backend._llama_update_in_progress = False
             except Exception:  # pragma: no cover - defensive
                 pass
+
+
+def _block_mtmd_sidecar(stack: ExitStack) -> bool:
+    """Hold the mtmd sidecar's maintenance guard for the install, if it exists.
+
+    Unlike whisper.cpp this is not fail-closed: llama.cpp updates predate this
+    sidecar and must keep working where dictation cannot even be imported.
+    Returns whether a warm dictation server had to be unloaded.
+    """
+    try:
+        from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
+        return stack.enter_context(get_mtmd_stt_sidecar().update_maintenance())
+    except Exception as exc:  # noqa: BLE001 - the update proceeds without it
+        logger.debug("llama update: mtmd coordination failed", error = str(exc))
+        return False
 
 
 # Combined-job progress split when both phases run (download sizes: the llama

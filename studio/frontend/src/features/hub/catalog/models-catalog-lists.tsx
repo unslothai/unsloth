@@ -14,7 +14,8 @@ import {
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { RefObject } from "react";
+import type { Ref } from "react";
+import type { HubFailure } from "@/features/hub/lib/network";
 import { useLayoutEffect, useMemo, useState } from "react";
 import {
   inventoryRowMatches,
@@ -96,6 +97,7 @@ export function DiscoverList({
   suppressEmptyState = false,
   sentinelRef,
   searchError,
+  searchFailure,
   online,
   isDataset,
   deviceType,
@@ -118,8 +120,9 @@ export function DiscoverList({
   scrollElement: HTMLDivElement | null;
   scrollMargin?: number;
   suppressEmptyState?: boolean;
-  sentinelRef: RefObject<HTMLDivElement | null>;
+  sentinelRef: Ref<HTMLDivElement>;
   searchError: string | null;
+  searchFailure?: HubFailure | null;
   online: boolean;
   isDataset: boolean;
   deviceType: string | null;
@@ -133,8 +136,7 @@ export function DiscoverList({
   onSwitchDevice?: () => void;
   view: AllModelsView;
 }) {
-  // "two" = two cards per row; "grid" = compact table rows; "split" = one card
-  // per row in the master pane alongside an inline detail view.
+  // "two" = two cards per row; "grid" = compact table rows; "split" = one card per row.
   const isSplit = view === "split";
   const isCardLike = view === "two" || view === "split";
   const rowHeight = isSplit
@@ -151,7 +153,8 @@ export function DiscoverList({
 
   return (
     <>
-      {online ? (
+      {/* Keep fetched results on screen when the Hub becomes unreachable. */}
+      {online || discoverRows.length > 0 ? (
         discoverRows.length > 0 ? (
           <>
             <VirtualRows
@@ -188,11 +191,22 @@ export function DiscoverList({
                 )
               }
             />
-            {hasMore && (
+            {/* searchFailure, not `online`: that is the backoff TTL, which
+                lapses on a timer, so the notice and its Retry vanished before
+                anything had proved recovery. The cause clears on success. It
+                covers the avatar and card case too, which marks the same origin
+                without the listing ever failing. */}
+            {(hasMore || searchError || searchFailure) && (
               <DiscoverFetchMoreFooter
                 hasActiveFilters={hasActiveFilters}
                 isLoadingMore={isLoadingMore}
                 onFetchMore={onFetchMore}
+                // searchFailure too: the footer is retained over an outage the
+                // listing never saw, and useHubInfiniteScroll is gated on
+                // reachability, so the button was visible and inert meanwhile.
+                failed={Boolean(searchError || searchFailure)}
+                failureText={searchFailure?.message ?? searchError ?? ""}
+                onRetry={onRetry}
               />
             )}
           </>
@@ -200,6 +214,7 @@ export function DiscoverList({
           <NetworkErrorState
             online={online}
             message={searchError}
+            failure={searchFailure}
             onRetry={onRetry}
             resourceLabel={isDataset ? "datasets" : "models"}
           />
@@ -231,7 +246,10 @@ export function DiscoverList({
       ) : suppressEmptyState ? null : (
         <NetworkErrorState
           online={online}
-          message="Discovery is unavailable while offline."
+          // The classified failure supplies the wording; the raw SDK error
+          // appends the request URL, which carries the query.
+          message={searchFailure ? "" : (searchError ?? "")}
+          failure={searchFailure}
           onRetry={onRetry}
           onSwitchDevice={onSwitchDevice}
           resourceLabel={isDataset ? "datasets" : "models"}
@@ -263,6 +281,7 @@ export function DownloadedList({
   compact = false,
   sort,
   onInventoryChange,
+  onOpenModelSettings,
 }: {
   cachedRows: CachedInventoryRow[];
   localRows: LocalInventoryRow[];
@@ -284,9 +303,9 @@ export function DownloadedList({
   compact?: boolean;
   sort: InventorySort;
   onInventoryChange?: () => void;
+  onOpenModelSettings?: (row: CachedInventoryRow | LocalInventoryRow) => void;
 }) {
-  // Pinned repos surface first regardless of the active sort; the chosen sort
-  // still orders rows within the pinned and unpinned groups.
+  // Pinned repos surface first regardless of the active sort, which still orders within groups.
   const pinnedIds = usePinnedModelsStore((s) => s.pinned);
   const pinnedSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
   const inventoryItems = useMemo<InventoryItem[]>(() => {
@@ -294,8 +313,7 @@ export function DownloadedList({
       ...cachedRows.map((row) => ({ variant: "cached" as const, row })),
       ...localRows.map((row) => ({ variant: "local" as const, row })),
     ];
-    // Pinned rows order by pin recency (newest pin first), not the active
-    // sort, so "Pin to top" puts the row exactly where the user expects.
+    // Pinned rows order by pin recency, not the active sort, so "Pin to top" lands where expected.
     const rank = makePinRank(pinnedIds);
     const pinRank = (item: InventoryItem) =>
       item.row.repoId ? rank(pinKey(item.row.repoId)) : Number.MAX_SAFE_INTEGER;
@@ -335,8 +353,7 @@ export function DownloadedList({
       .map((entry) => entry.item);
   }, [cachedRows, localRows, inventoryTokens, sort, pinnedIds]);
   const hasInventoryRows = cachedRows.length > 0 || localRows.length > 0;
-  // Pinned repos get their own labelled section so it's clear why they lead
-  // the list; inventoryItems already sorts them first, so this is a prefix.
+  // Pinned repos get their own labelled section; inventoryItems already sorts them first.
   const pinnedCount = useMemo(
     () =>
       inventoryItems.filter(
@@ -383,6 +400,7 @@ export function DownloadedList({
       compact={compact}
       onSelect={onSelect}
       onChange={onInventoryChange}
+      onOpenSettings={onOpenModelSettings}
     />
   );
 

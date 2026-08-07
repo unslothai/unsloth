@@ -36,6 +36,33 @@ on:
   schedule:
     - cron: '37 7 * * 1'
   workflow_dispatch:
+  # This workflow's cache saves are gated to refs/heads/main, and unlike the
+  # other ten workflows in that change it had no main-ref trigger at all, so
+  # main's copy of the 4.6GB GGUF could only ever be written by the Monday
+  # cron. That is a poor match for a 7-day unused-cache retention on a repo
+  # that is over the 10GB budget: once LRU evicts main's copy, every PR
+  # re-downloads until the next cron repairs it. Seed it on merge instead,
+  # behind the same paths filter as the pull_request trigger below so this
+  # only runs when the guarded sources actually change.
+  push:
+    branches: [main]
+    paths:
+      - 'unsloth_cli/**'
+      - 'studio/backend/routes/**'
+      - 'studio/backend/main.py'
+      - 'studio/backend/core/inference/llama_cpp.py'
+      - 'studio/backend/models/**'
+      - 'install.sh'
+      - '.github/workflows/local-agent-guides-ci.yml'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
+      - '.github/scripts/serve-unsloth-run.sh'
+      - '.github/scripts/assert-prompt-cache.sh'
+      - '.github/scripts/agent-guides-install.sh'
+      - '.github/scripts/agent-guides-drive.sh'
+      - '.github/scripts/ci-connect-prompt.txt'
+      - '.github/scripts/ci-min-system-prompt.txt'
   pull_request:
     paths:
       - 'unsloth_cli/**'
@@ -48,6 +75,7 @@ on:
       - 'studio/backend/models/**'
       - 'install.sh'
       - '.github/workflows/local-agent-guides-ci.yml'
+      - '.github/actions/install-unsloth-local/action.yml'
       - '.github/scripts/serve-unsloth-run.sh'
       - '.github/scripts/assert-prompt-cache.sh'
       - '.github/scripts/agent-guides-install.sh'
@@ -148,26 +176,35 @@ jobs:
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache
 
       - name: Save GGUF model file
-        if: always() && steps.download-gguf.outcome == 'success'
+        # Save on main only. Caches created on a PR ref are scoped to that
+        # merge ref -- per GitHub's docs they "can only be restored by re-runs
+        # of the pull request" -- while every PR *can* restore from the default
+        # branch. So a PR-scoped save helps almost nothing and competes for the
+        # 10GB per-repo budget, and when that budget is exceeded GitHub evicts
+        # by least-recently-used, which deletes main's copies that all PRs share.
+        # This repo was measured at 33.3GB across 30 caches, 3.3x over, with the
+        # same 4.6GB model held four times on four different PR refs and no copy
+        # on main at all. That is the thrash loop: PR misses -> downloads ->
+        # saves its own copy -> evicts main's -> next PR misses.
+        if: always() && github.ref == 'refs/heads/main' && steps.download-gguf.outcome == 'success'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: gguf-cache
           key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
 
       - name: Install Unsloth (--local, --no-torch)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
           # Gated off PR (see note above); public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
       # ── boot the server under test (factored helper) ──────────────────
       - name: Serve unsloth run --disable-tools (gemma-4-E4B)
         run: |
-          unsloth studio reset-password
+          # Wipe, not reset-password: since #7573 the reset rotates in place and
+          # prints the new passphrase, which would land unmasked in the job log.
+          rm -rf ~/.unsloth/studio/auth
           bash .github/scripts/serve-unsloth-run.sh \
             --gguf-file "$GITHUB_WORKSPACE/gguf-cache/${GGUF_FILE}" \
             --port "$STUDIO_PORT" --log-dir logs \
@@ -286,7 +323,14 @@ jobs:
   # ═════════════════════════════════════════════════════════════════════
   file-edit:
     name: file-edit (${{ matrix.agent }})
-    if: github.event_name != 'pull_request'
+    # Weekly / dispatch only, stated explicitly rather than as "not a PR".
+    # The main push trigger above exists solely to seed the cache that the
+    # save steps are now gated to main for, and `connection` already writes
+    # the identical key (same GGUF_REPO and GGUF_FILE), so this job seeds
+    # nothing new. Left as `!= 'pull_request'` a push would newly start its
+    # 2-job matrix at 60 minutes each, which is runtime the seeding does not
+    # need and which this job was never meant to spend outside its cron.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     # hermes and openclaw drive a multi-turn tool loop that a CPU-only runner
@@ -353,25 +397,22 @@ jobs:
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache
 
       - name: Save GGUF model file
-        if: always() && steps.download-gguf.outcome == 'success'
+        if: always() && github.ref == 'refs/heads/main' && steps.download-gguf.outcome == 'success'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: gguf-cache
           key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
 
       - name: Install Unsloth (--local, --no-torch)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
           # Gated off PR (see note above); public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
       - name: Serve unsloth run --disable-tools (gemma-4-E4B)
         run: |
-          unsloth studio reset-password
+          rm -rf ~/.unsloth/studio/auth
           bash .github/scripts/serve-unsloth-run.sh \
             --gguf-file "$GITHUB_WORKSPACE/gguf-cache/${GGUF_FILE}" \
             --port "$STUDIO_PORT" --log-dir logs \
@@ -537,24 +578,21 @@ jobs:
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache
 
       - name: Save GGUF model file
-        if: always() && steps.download-gguf.outcome == 'success'
+        if: always() && github.ref == 'refs/heads/main' && steps.download-gguf.outcome == 'success'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: gguf-cache
           key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
 
       - name: Install Unsloth (--local, --no-torch)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
+          hf-token: ${{ secrets.HF_TOKEN }}
 
       - name: Serve unsloth run --disable-tools (gemma-4-E4B)
         run: |
-          unsloth studio reset-password
+          rm -rf ~/.unsloth/studio/auth
           bash .github/scripts/serve-unsloth-run.sh \
             --gguf-file "$GITHUB_WORKSPACE/gguf-cache/${GGUF_FILE}" \
             --port "$STUDIO_PORT" --log-dir logs \
@@ -700,25 +738,22 @@ jobs:
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }}
-        if: always() && steps.prime-hf.outcome == 'success'
+        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
           key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
       - name: Install Unsloth (--local, --no-torch)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
           # Gated off PR (see note above); public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
       - name: Serve unsloth run --disable-tools (gemma-3-270m)
         run: |
-          unsloth studio reset-password
+          rm -rf ~/.unsloth/studio/auth
           bash .github/scripts/serve-unsloth-run.sh \
             --model "$GGUF_REPO" --gguf-variant "$GGUF_VARIANT" \
             --port "$STUDIO_PORT" --log-dir logs \

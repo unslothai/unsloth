@@ -61,6 +61,7 @@ import {
 } from "@/features/hub/download-manager";
 import {
   type NativeIntent,
+  NativeAttachmentTargetContext,
   NativeModelChip,
   NativeModelDropOverlay,
   useChooseNativeModel,
@@ -87,6 +88,7 @@ import {
   MoreVerticalIcon,
   PinIcon,
   PinOffIcon,
+  PencilEdit02Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -185,18 +187,19 @@ import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { syncExternalProvidersFromBackend } from "./sync-external-providers";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
+import { clearNewChatDraft } from "./utils/composer-draft";
 import {
   getStoredChatThread,
   isExpectedBackgroundChatStorageError,
   listStoredChatMessages,
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
+import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import {
   consumeProjectSourcesPending,
   hasProjectSourcesPending,
 } from "@/features/rag/components/project-source-dropzone";
-
 
 const ProjectSourcesPanel = lazy(() =>
   import("@/features/rag/components/project-sources-panel").then((module) => ({
@@ -494,6 +497,7 @@ type CompareModelSelection = {
   id: string;
   isLora: boolean;
   ggufVariant?: string;
+  isDiffusion?: boolean;
   config?: PerModelConfig;
 };
 
@@ -781,6 +785,7 @@ function GeneralCompareHeader({
   // Controlled so the body-portaled popover can't linger over another tab off-route.
   const active = useChatActive();
   const [selectorOpen, setSelectorOpen] = useState(false);
+
   const { pinned } = useSidebar();
   return (
     <div
@@ -841,6 +846,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
 
   const globalCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const globalGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const globalIsDiffusion = useChatRuntimeStore((s) => s.loadedIsDiffusion);
   const active = useChatActive();
   const compareRunning = useChatRuntimeStore(
     (s) => Object.keys(s.runningByThreadId).length > 0,
@@ -849,6 +855,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     id: globalCheckpoint || "",
     isLora: false,
     ggufVariant: globalGgufVariant ?? undefined,
+    isDiffusion: globalIsDiffusion,
   });
   const [model2, setModel2] = useState<CompareModelSelection>({
     id: "",
@@ -934,6 +941,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                   id,
                   isLora: meta.isLora,
                   ggufVariant: meta.ggufVariant,
+                  isDiffusion: meta.isDiffusion,
                   config: meta.config,
                 })
               }
@@ -964,6 +972,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                   id,
                   isLora: meta.isLora,
                   ggufVariant: meta.ggufVariant,
+                  isDiffusion: meta.isDiffusion,
                   config: meta.config,
                 })
               }
@@ -1809,6 +1818,7 @@ export function ChatPage({
     : "Turn on temporary chat";
   const toggleIncognito = useCallback(() => {
     const store = useChatRuntimeStore.getState();
+    const wasIncognito = store.incognito;
     store.setIncognito(!store.incognito);
     // On an empty scratch chat there's nothing to abandon, so flip in
     // place: navigating would remount the thread and bounce the composer
@@ -1820,6 +1830,9 @@ export function ChatPage({
       !search.compare &&
       !search.project &&
       store.activeThreadId == null;
+    if (wasIncognito) {
+      requestTemporaryPromptQueueStop();
+    }
     if (onEmptyScratchChat) return;
     // setActiveThreadId already clears contextUsage.
     store.setActiveThreadId(null);
@@ -1944,6 +1957,20 @@ export function ChatPage({
     },
     [navigate],
   );
+
+  const handleDesktopNewChat = useCallback(() => {
+    clearNewChatDraft();
+    const runtime = useChatRuntimeStore.getState();
+    runtime.setActiveThreadId(null);
+    runtime.setActiveProjectId(currentProjectId);
+    runtime.setIncognito(false);
+    navigate({
+      to: "/chat",
+      search: currentProjectId
+        ? { project: currentProjectId }
+        : { new: crypto.randomUUID() },
+    });
+  }, [currentProjectId, navigate]);
   const openProjectsList = useCallback(() => {
     navigate({ to: "/projects" });
   }, [navigate]);
@@ -2015,6 +2042,9 @@ export function ChatPage({
   } = useActiveModelConfig();
   const activeModelIsGguf =
     runtimeCheckpoint != null && !isExternalModel && runtimeModelIsGguf;
+  const activeModelIsDiffusion = useChatRuntimeStore(
+    (s) => s.loadedIsDiffusion,
+  );
   const activeModelIsLora = useMemo(() => {
     const checkpoint = inferenceParams.checkpoint;
     if (!checkpoint || isExternalModel) return false;
@@ -2316,6 +2346,11 @@ export function ChatPage({
         ? `compare:${view.pairId}`
         : `project:${view.projectId}`;
 
+  const attachmentScope =
+    view.mode === "single" && !search.thread && !search.new && !search.project
+      ? "single:implicit"
+      : artifactViewKey;
+
   useEffect(() => {
     clearAutoOpenedArtifacts();
     closeArtifactSurface();
@@ -2415,12 +2450,11 @@ export function ChatPage({
       const previousConfig = currentRuntimePerModelConfig({
         includeMaxSeqLength: true,
       });
-      const hasAppliedConfig = applyModelLoadConfigToRuntime(
-        selection.config ?? rememberedConfigFor(selection),
-      );
+      const loadConfig =
+        selection.config ?? rememberedConfigFor(selection);
       await selectModel({
         ...selection,
-        ...(hasAppliedConfig ? { keepSpeculative: true } : {}),
+        ...(loadConfig ? { config: loadConfig, keepSpeculative: true } : {}),
         previousConfig,
       });
     },
@@ -2556,12 +2590,22 @@ export function ChatPage({
     shouldAutoLoad: canAutoLoadPickedNativeModel,
     onAutoLoad: handleNativeModelPickerAutoLoad,
   });
+  // Dropped documents go to the thread bar, which owns the RAG upload and can
+  // materialize a thread id for a chat that hasn't been sent to yet.
+  const handleNativeAttachmentDrop = useCallback(
+    (intents: NativeIntent[]) => {
+      useNativeIntentStore.getState().addAttachments(artifactViewKey, intents);
+    },
+    [artifactViewKey],
+  );
   const nativeModelDropState = useNativeModelDrop({
     enabled: active && view.mode === "single",
+    attachmentScope,
     nativePathLeasesSupported,
     hasActiveModel,
     isModelLoading: Boolean(loadingModel) || modelLoading,
     onAutoLoad: handleNativeModelDropAutoLoad,
+    onAttach: handleNativeAttachmentDrop,
   });
 
   const handleCheckpointChange = useCallback(
@@ -2682,9 +2726,10 @@ export function ChatPage({
           ggufNativeContextLength: null,
           activeNativePathToken: null,
           activeNativePathExpiresAtMs: null,
-          // Clear previous-model counters, else the relaxed external-provider
-          // render gate shows stale stats until the next completion.
+          // Clear previous-model counters, else the relaxed external-provider render gate shows
+          // stale stats. The per-thread copies go too, so a switch back cannot re-apply.
           contextUsage: null,
+          contextUsageByThreadId: {},
           supportsReasoning: reasoningCaps.supportsReasoning,
           reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
           reasoningStyle: reasoningCaps.reasoningStyle,
@@ -2750,12 +2795,14 @@ export function ChatPage({
         }
         const selection = {
           id: value,
+          loadId: meta?.loadId,
           source: meta?.source,
           isLora: meta?.isLora,
           ggufVariant: meta?.ggufVariant,
           isDownloaded: meta?.isDownloaded || isSameLoadedModel,
           expectedBytes: meta?.expectedBytes,
           isGguf: meta?.isGguf,
+          isDiffusion: meta?.isDiffusion,
           config: meta?.config,
           nativePathToken: meta?.nativePathToken,
           nativePathExpiresAtMs: meta?.nativePathExpiresAtMs,
@@ -2777,6 +2824,7 @@ export function ChatPage({
       const checkpoint = inferenceParams.checkpoint;
       if (!checkpoint) return;
       const runtime = useChatRuntimeStore.getState();
+      const activeLoadId = runtime.activeLoadId;
       const nativeToken = runtime.activeNativePathToken;
       const nativeExpiry = runtime.activeNativePathExpiresAtMs;
       // A file-picked GGUF is reachable only via its native path token, which
@@ -2792,12 +2840,15 @@ export function ChatPage({
       handleCheckpointChange(checkpoint, {
         source: "local",
         isLora: activeModelIsLora,
+        // The checkpoint is the id, so a pinned model reloads from that same snapshot.
+        loadId: activeLoadId,
         ggufVariant: activeGgufVariant ?? undefined,
         // Without the native token the reload validates the display label as a
         // repo and fails.
         nativePathToken: nativeToken ?? undefined,
         nativePathExpiresAtMs: nativeExpiry,
         isGguf: activeModelIsGguf,
+        isDiffusion: activeModelIsDiffusion,
         isDownloaded: true,
         config,
         forceReload: true,
@@ -2808,6 +2859,7 @@ export function ChatPage({
       activeGgufVariant,
       activeModelIsLora,
       activeModelIsGguf,
+      activeModelIsDiffusion,
       handleCheckpointChange,
     ],
   );
@@ -2906,7 +2958,13 @@ export function ChatPage({
           ) {
             return;
           }
-          store.setContextUsage(usage);
+          // Key by the thread this restore read, like the history loader: the await above can
+          // outlast a switch away, and an unkeyed write would file this thread's usage under
+          // the incoming one.
+          store.setThreadContextUsage(threadId, usage);
+          if (store.activeThreadId === threadId) {
+            store.setContextUsage(usage);
+          }
         })
         .catch((error) => {
           if (!isExpectedBackgroundChatStorageError(error)) {
@@ -3185,7 +3243,7 @@ export function ChatPage({
     // Provides `active` to ChatRuntimeProvider (drops the message views/composers
     // while off-route, keeping the runtime alive) and to the compare chrome.
     <ChatActiveContext.Provider value={active}>
-    <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-background overflow-hidden">
+    <div className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-hidden bg-background">
       {/* Portaled surfaces render to document.body, escaping the parent's hidden
           wrapper, so gate them on `active` to keep them off other tabs. */}
       {active && <GuidedTour {...tour.tourProps} />}
@@ -3212,12 +3270,31 @@ export function ChatPage({
               ? "pl-12"
               : pinned
                 ? "pl-2"
-                : "pl-[calc(0.5rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
+                : isTauri
+                  ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
+                  : "pl-[calc(0.5rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
             view.mode === "compare" &&
               "right-[10px] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
           <div className="pointer-events-auto flex items-center gap-1">
+            {isTauri && !isMobile && !pinned && view.mode !== "compare" && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                title="New chat"
+                aria-label="New chat"
+                onClick={handleDesktopNewChat}
+                className="!size-[30px] rounded-[10px] text-muted-foreground"
+              >
+                <HugeiconsIcon
+                  icon={PencilEdit02Icon}
+                  strokeWidth={1.75}
+                  className="size-icon"
+                />
+              </Button>
+            )}
             {view.mode !== "compare" && (
               <ModelSelector
                 models={models}
@@ -3241,16 +3318,6 @@ export function ChatPage({
                 showCloudIndicator={isExternalModel}
                 className="max-w-[62vw] !pr-3 sm:max-w-none !h-[var(--studio-chat-control-height,34px)]"
               />
-            )}
-            {incognito && view.mode === "single" && (
-              <div className="flex h-[var(--studio-chat-control-height,34px)] shrink-0 items-center gap-1.5 self-center rounded-full bg-primary/10 px-2.5 font-medium text-ui-13 text-primary">
-                <HugeiconsIcon
-                  icon={BubbleChatTemporaryIcon}
-                  strokeWidth={2}
-                  className="size-3.5"
-                />
-                <span>Temporary</span>
-              </div>
             )}
             {view.mode !== "compare" && currentProjectId && (
               <nav
@@ -3319,7 +3386,7 @@ export function ChatPage({
               </div>
             ) : null}
           </div>
-          <div className="pointer-events-auto ml-auto flex items-center gap-2">
+          <div className="pointer-events-auto ml-auto flex items-center gap-1">
             {view.mode === "single" && contextUsage ? (
               <ContextUsageBar
                 used={contextUsage.totalTokens}
@@ -3339,7 +3406,7 @@ export function ChatPage({
                     type="button"
                     onClick={toggleIncognito}
                     className={cn(
-                      "flex size-[var(--studio-chat-control-height,34px)] cursor-pointer items-center justify-center rounded-[12px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                      "flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                       incognito
                         ? "bg-primary/10 text-primary hover:bg-primary/15"
                         : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
@@ -3377,7 +3444,7 @@ export function ChatPage({
                       closeArtifactSurface();
                       openResearchPanel(latestResearchRun.id);
                     }}
-                    className="relative flex size-[var(--studio-chat-control-height,34px)] cursor-pointer items-center justify-center rounded-[12px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-white"
+                    className="relative flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-white"
                     aria-label="Open research activity"
                     aria-pressed={openResearchRunId === latestResearchRun.id}
                   >
@@ -3405,7 +3472,7 @@ export function ChatPage({
                       useResearchRunStore.getState().closePanel();
                       setSettingsOpen(true);
                     }}
-                    className="flex size-[var(--studio-chat-control-height,34px)] translate-x-[2px] cursor-pointer items-center justify-center rounded-[12px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    className="flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     aria-label="Open run settings"
                   >
                     <HugeiconsIcon
@@ -3441,15 +3508,17 @@ export function ChatPage({
           // alive thread's runtime mounted) instead of remounting the provider and cutting
           // it off; returning to that thread reattaches the live run rather than reloading
           // a half-saved one.
-          <SingleContent
-            key={view.projectId ?? "single"}
-            threadId={view.threadId}
-            newThreadNonce={view.newThreadNonce}
-            projectId={view.projectId}
-            artifact={selectedArtifact}
-            artifactSurface={artifactSurface}
-            onCloseArtifact={closeArtifactSurface}
-          />
+          <NativeAttachmentTargetContext.Provider value={artifactViewKey}>
+            <SingleContent
+              key={view.projectId ?? "single"}
+              threadId={view.threadId}
+              newThreadNonce={view.newThreadNonce}
+              projectId={view.projectId}
+              artifact={selectedArtifact}
+              artifactSurface={artifactSurface}
+              onCloseArtifact={closeArtifactSurface}
+            />
+          </NativeAttachmentTargetContext.Provider>
         ) : (
           <CompareContent
             key={view.pairId}
@@ -3487,6 +3556,7 @@ export function ChatPage({
               modelId={inferenceParams.checkpoint}
               ggufVariant={activeGgufVariant ?? null}
               isGguf={activeModelIsGguf}
+              isDiffusion={activeModelIsDiffusion}
               nativeContextLength={ggufNativeContextLength}
               loadedContextLength={ggufContextLength}
               loadedConfig={activeModelConfig}

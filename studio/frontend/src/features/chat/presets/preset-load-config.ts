@@ -11,11 +11,16 @@ import {
   DEFAULT_PER_MODEL_CONFIG,
   DEFAULT_MAX_SEQ_LENGTH,
   KV_CACHE_DTYPES,
-  MTP_SPECULATIVE_TYPES,
-  SPECULATIVE_TYPES,
+  MLX_KV_BITS,
+  N_PARALLEL_MAX,
+  N_PARALLEL_MIN,
   normalizeMaxSeqLength,
   type PerModelConfig,
 } from "@/features/model-picker/model-config/per-model-config";
+import {
+  DRAFT_N_MAX_SPEC_TYPES,
+  SPECULATIVE_TYPES,
+} from "@/lib/speculative-modes";
 import {
   GPU_LAYERS_AUTO,
   useChatRuntimeStore,
@@ -28,8 +33,10 @@ export type PresetLoadConfig = Pick<
   | "customContextLength"
   | "maxSeqLength"
   | "kvCacheDtype"
+  | "mlxKvBits"
   | "speculativeType"
   | "specDraftNMax"
+  | "nParallel"
   | "tensorParallel"
   | "gpuMemoryMode"
   | "gpuLayers"
@@ -43,8 +50,10 @@ export const EMPTY_PRESET_LOAD_CONFIG: PresetLoadConfig = {
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
+  mlxKvBits: null,
   speculativeType: null,
   specDraftNMax: null,
+  nParallel: null,
   tensorParallel: false,
 };
 
@@ -73,7 +82,7 @@ export function normalizePresetLoadConfig(
   const speculativeType = rawSpecType ?? null;
   const specDraftNMax =
     speculativeType != null &&
-    MTP_SPECULATIVE_TYPES.has(speculativeType) &&
+    DRAFT_N_MAX_SPEC_TYPES.has(speculativeType) &&
     typeof partial.specDraftNMax === "number" &&
     Number.isFinite(partial.specDraftNMax)
       ? Math.max(1, Math.min(16, Math.round(partial.specDraftNMax)))
@@ -97,6 +106,11 @@ export function normalizePresetLoadConfig(
         ? Math.max(CONTEXT_LENGTH_MIN, Math.floor(partial.customContextLength))
         : null,
     maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength as number | null),
+    mlxKvBits:
+      typeof partial.mlxKvBits === "number" &&
+      MLX_KV_BITS.includes(partial.mlxKvBits)
+        ? partial.mlxKvBits
+        : null,
     kvCacheDtype:
       typeof partial.kvCacheDtype === "string" &&
       VALID_KV_CACHE_DTYPES.has(partial.kvCacheDtype)
@@ -107,6 +121,14 @@ export function normalizePresetLoadConfig(
         ? speculativeType
         : null,
     specDraftNMax,
+    nParallel:
+      typeof partial.nParallel === "number" &&
+      Number.isFinite(partial.nParallel)
+        ? Math.max(
+            N_PARALLEL_MIN,
+            Math.min(N_PARALLEL_MAX, Math.round(partial.nParallel)),
+          )
+        : null,
     tensorParallel:
       typeof partial.tensorParallel === "boolean"
         ? partial.tensorParallel
@@ -116,7 +138,8 @@ export function normalizePresetLoadConfig(
     ...(nCpuMoe !== undefined ? { nCpuMoe } : {}),
   };
 
-  return hasPresetLoadConfig(normalized) ? normalized : undefined;
+  const coalesced = coalesceDefaultLoadKnobs(normalized);
+  return hasPresetLoadConfig(coalesced) ? coalesced : undefined;
 }
 
 export function hasPresetLoadConfig(
@@ -149,8 +172,10 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
     customContextLength: effectiveContextLength ?? null,
     maxSeqLength: normalizeMaxSeqLength(snapshot.maxSeqLength),
     kvCacheDtype: snapshot.kvCacheDtype ?? null,
+    mlxKvBits: snapshot.mlxKvBits ?? null,
     speculativeType: normalizeSpeculativeType(snapshot.speculativeType),
     specDraftNMax: snapshot.specDraftNMax ?? null,
+    nParallel: snapshot.nParallel ?? null,
     tensorParallel: snapshot.tensorParallel ?? false,
     ...(snapshot.gpuMemoryMode === "manual"
       ? { gpuMemoryMode: "manual" as const }
@@ -164,9 +189,8 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
       ? { nCpuMoe: snapshot.nCpuMoe }
       : {}),
   };
-  return hasPresetLoadConfig(coalesceDefaultLoadKnobs(captured))
-    ? coalesceDefaultLoadKnobs(captured)
-    : undefined;
+  const coalesced = coalesceDefaultLoadKnobs(captured);
+  return hasPresetLoadConfig(coalesced) ? coalesced : undefined;
 }
 
 function coalesceDefaultLoadKnobs(
@@ -204,14 +228,17 @@ export function applyPresetLoadConfig(
     maxSeqLength: normalizeMaxSeqLength(config.maxSeqLength) ?? DEFAULT_MAX_SEQ_LENGTH,
     customContextLength: config.customContextLength ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
+    mlxKvBits: config.mlxKvBits ?? null,
     speculativeType: config.speculativeType ?? null,
     specDraftNMax: config.specDraftNMax ?? null,
+    nParallel: config.nParallel ?? null,
     tensorParallel: config.tensorParallel ?? false,
     chatTemplateOverride: null,
     gpuMemoryMode: config.gpuMemoryMode,
     gpuLayers: config.gpuLayers,
     nCpuMoe: config.nCpuMoe,
     selectedGpuIds: store.selectedGpuIds,
+    selectedGpuIndexKind: store.selectedGpuIndexKind,
   });
 }
 
@@ -228,8 +255,14 @@ export function formatPresetLoadConfigSummary(
   if (config.kvCacheDtype) {
     parts.push(`KV ${config.kvCacheDtype}`);
   }
+  if (config.mlxKvBits) {
+    parts.push(`MLX KV ${config.mlxKvBits}-bit`);
+  }
   if (config.speculativeType && config.speculativeType !== "auto") {
     parts.push(`Spec ${config.speculativeType}`);
+  }
+  if (config.nParallel != null) {
+    parts.push(`${config.nParallel} slots`);
   }
   if (config.gpuMemoryMode === "manual") {
     parts.push("GPU manual");

@@ -208,6 +208,9 @@ tmp/
 **/node_modules/
 auth.db
 
+# Packaging snapshot of the root CHANGELOG.md (written by build.sh)
+studio/CHANGELOG.md
+
 # Tauri local build/generated output
 studio/src-tauri/target/
 studio/src-tauri/gen/
@@ -239,4 +242,8 @@ package-lock.json
 llama.cpp/
 # Stray "~" dir some tools create from a literal ~ TMPDIR; never part of the repo.
 ~/
-/temp/
+
+# Agent workspace runtime/scratch artifacts, never part of the repo.
+async_task_outputs/
+temp/
+logs/
