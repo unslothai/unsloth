@@ -4124,12 +4124,17 @@ def disable_openai_auto_switch_for_request(scope) -> None:
 def _automatic_model_load_may_run() -> bool:
     """True when a request can trigger an automatic load: either resolver-based
     auto-switch is on, or a standalone idle TTL can reload an idle-freed model. The
-    validate-before-switch guards key off this so an invalid request never loads."""
+    validate-before-switch guards key off this so an invalid request never loads.
+
+    Reads the configured setting, not the effective TTL: Model Memory residency
+    zeroes the latter, and a model the idle loop freed BEFORE residency was
+    enabled still has to be reloadable. Residency stops unloads, not reloads.
+    """
     from utils.openai_auto_switch_settings import (
         get_openai_auto_switch_enabled,
-        get_auto_unload_idle_seconds,
+        idle_unload_is_configured,
     )
-    return get_openai_auto_switch_enabled() or get_auto_unload_idle_seconds() > 0
+    return get_openai_auto_switch_enabled() or idle_unload_is_configured()
 
 
 def _no_model_loaded_detail(base: str) -> str:
@@ -4662,8 +4667,8 @@ async def _maybe_auto_switch_model(
     """
     from utils.openai_auto_switch_settings import (
         get_openai_auto_switch_enabled,
-        get_auto_unload_idle_seconds,
         get_model_override,
+        idle_unload_is_configured,
         model_override_load_kwargs,
     )
     from core.inference.local_model_resolver import resolve_local_gguf
@@ -4686,7 +4691,9 @@ async def _maybe_auto_switch_model(
     # standalone UNSLOTH_MODEL_IDLE_TTL with auto-switch off), so a model the idle
     # loop freed is restored on the next request. The resolver-based switch still
     # requires the auto-switch toggle.
-    if not auto_switch_on and get_auto_unload_idle_seconds() <= 0:
+    # Configured, not effective: residency zeroes the TTL, and the stash still
+    # has to be restorable after it is turned on.
+    if not auto_switch_on and not idle_unload_is_configured():
         # No switching to do, but a named model must still not be answered by another.
         await _reject_unservable_model(requested_model, fastapi_request)
         return

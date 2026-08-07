@@ -1978,3 +1978,107 @@ class TestTheGateDoesNotOverFire:
 
     def test_the_rocm_apu_probe_still_decides_off_vulkan(self, monkeypatch):
         assert TestHostMemoryGate._gate(monkeypatch, extra_args = ["-ngl", "-1"], amd = True) is True
+
+
+class TestResidencyDoesNotBlockReload:
+    """Residency stops UNLOADS, not reloads. A model the idle loop already freed
+    must still come back on the next request, and then stay resident."""
+
+    @pytest.fixture
+    def idle_env(self, monkeypatch):
+        """Standalone UNSLOTH_MODEL_IDLE_TTL with auto-switch off."""
+        import utils.openai_auto_switch_settings as aus
+
+        monkeypatch.setattr(aus, "_stored_idle_seconds", lambda: None)
+        monkeypatch.setattr(aus, "_env_idle_seconds", lambda: 300)
+        monkeypatch.setattr(aus, "get_openai_auto_switch_enabled", lambda: False)
+
+        def residency(on):
+            import utils.model_memory_settings as mm
+
+            monkeypatch.setattr(mm, "get_keep_resident", lambda: on)
+
+        return residency
+
+    def test_the_effective_ttl_is_still_vetoed(self, idle_env):
+        import utils.openai_auto_switch_settings as aus
+
+        idle_env(False)
+        assert aus.get_auto_unload_idle_seconds() == 300
+        idle_env(True)
+        assert aus.get_auto_unload_idle_seconds() == 0, "the veto must still apply"
+
+    def test_but_idle_unload_is_still_configured(self, idle_env):
+        import utils.openai_auto_switch_settings as aus
+
+        idle_env(True)
+        assert aus.idle_unload_is_configured() is True
+
+    def test_an_automatic_load_may_still_run_under_residency(self, idle_env):
+        """The regression: this gated on the effective TTL, so enabling residency
+        made the next request 400 instead of reloading the freed model."""
+        import routes.inference as ri
+
+        idle_env(False)
+        assert ri._automatic_model_load_may_run() is True
+        idle_env(True)
+        assert ri._automatic_model_load_may_run() is True
+
+    def test_turning_idle_unload_off_still_disables_the_reload_path(self, monkeypatch):
+        """The converse: no TTL and no auto-switch means no automatic load, with
+        or without residency, so this is not just always-true."""
+        import routes.inference as ri
+        import utils.model_memory_settings as mm
+        import utils.openai_auto_switch_settings as aus
+
+        monkeypatch.setattr(aus, "_stored_idle_seconds", lambda: None)
+        monkeypatch.setattr(aus, "_env_idle_seconds", lambda: None)
+        monkeypatch.setattr(aus, "get_openai_auto_switch_enabled", lambda: False)
+        for resident in (False, True):
+            monkeypatch.setattr(mm, "get_keep_resident", lambda: resident)
+            assert ri._automatic_model_load_may_run() is False
+
+    def test_a_stored_ttl_still_needs_auto_switch_on(self, monkeypatch):
+        """The configured reader keeps the same auto-switch gating as the
+        effective one, so swapping it in changes nothing but the veto."""
+        import utils.model_memory_settings as mm
+        import utils.openai_auto_switch_settings as aus
+
+        monkeypatch.setattr(aus, "_stored_idle_seconds", lambda: 300)
+        monkeypatch.setattr(aus, "_env_idle_seconds", lambda: None)
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
+        monkeypatch.setattr(aus, "get_openai_auto_switch_enabled", lambda: False)
+        assert aus.idle_unload_is_configured() is False
+        assert aus.get_auto_unload_idle_seconds() == 0
+        monkeypatch.setattr(aus, "get_openai_auto_switch_enabled", lambda: True)
+        assert aus.idle_unload_is_configured() is True
+        assert aus.get_auto_unload_idle_seconds() == 300
+
+    def test_the_two_readers_agree_except_on_residency(self, monkeypatch):
+        """Pins the substitution itself across the whole input space."""
+        import utils.model_memory_settings as mm
+        import utils.openai_auto_switch_settings as aus
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
+        for stored in (None, 0, 300):
+            for env in (None, 0, 300):
+                for switch in (False, True):
+                    monkeypatch.setattr(aus, "_stored_idle_seconds", lambda s = stored: s)
+                    monkeypatch.setattr(aus, "_env_idle_seconds", lambda e = env: e)
+                    monkeypatch.setattr(
+                        aus, "get_openai_auto_switch_enabled", lambda v = switch: v
+                    )
+                    assert aus.idle_unload_is_configured() == (
+                        aus.get_auto_unload_idle_seconds() > 0
+                    ), (stored, env, switch)
+
+    def test_the_idle_loop_itself_still_reads_the_vetoed_value(self):
+        """Scheduling keeps the veto; only the reload-capability checks moved."""
+        import inspect
+
+        from core.inference import llama_keepwarm
+
+        source = inspect.getsource(llama_keepwarm)
+        assert "get_auto_unload_idle_seconds" in source
+        assert "idle_unload_is_configured" not in source
+
