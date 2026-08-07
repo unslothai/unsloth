@@ -43,6 +43,20 @@ test("only a pasted wall of text is cut, and with a real ellipsis", () => {
   assert.ok(!title.includes("..."));
 });
 
+/** A high surrogate with no low after it, or a low with no high before it. */
+const UNPAIRED_SURROGATE =
+  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+test("the cap never splits an emoji into a lone surrogate", () => {
+  // A lone surrogate survives JSON.stringify but fails the backend's SQLite
+  // bind, so the title write would 500.
+  const line = "x".repeat(119) + "\u{1F600} tail";
+  assert.equal(UNPAIRED_SURROGATE.test(line.slice(0, 120)), true);
+  const title = fallbackTitleFromUserText(line);
+  assert.equal(UNPAIRED_SURROGATE.test(title), false);
+  assert.equal(title, "x".repeat(119) + "\u{1F600}" + "…");
+});
+
 test("a legacy title is recognised only against the text it was cut from", () => {
   const legacy = LONG.slice(0, 48) + "...";
   assert.equal(isLegacyClippedTitle(legacy, LONG), true);

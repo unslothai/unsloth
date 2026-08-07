@@ -21,8 +21,11 @@ function firstLineOf(text: string): string {
 export function fallbackTitleFromUserText(userText: string): string {
   const cleaned = firstLineOf(userText);
   if (!cleaned) return "New Chat";
-  if (cleaned.length <= FALLBACK_TITLE_MAX) return cleaned;
-  return cleaned.slice(0, FALLBACK_TITLE_MAX).trimEnd() + "…";
+  // Cut on code points: a UTF-16 cut can halve an emoji, and the lone
+  // surrogate that leaves fails the backend's SQLite bind.
+  const points = Array.from(cleaned);
+  if (points.length <= FALLBACK_TITLE_MAX) return cleaned;
+  return points.slice(0, FALLBACK_TITLE_MAX).join("").trimEnd() + "…";
 }
 
 /** Pre-filter on the title alone: only these are worth fetching messages for. */
