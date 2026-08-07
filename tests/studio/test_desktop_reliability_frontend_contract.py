@@ -3,6 +3,7 @@
 
 """Static contracts for focused packaged-desktop reliability behavior."""
 
+import re
 from pathlib import Path
 
 
@@ -556,6 +557,31 @@ def test_media_pages_clear_the_custom_titlebar():
     for page in (IMAGES_PAGE, VIDEO_PAGE):
         shell = page.read_text(encoding = "utf-8").split('"diffusion-surface', 1)[1].split(">", 1)[0]
         assert "pt-[var(--studio-content-top-inset,0px)]" in shell, page.name
+
+
+def test_media_page_headers_out_stack_the_mac_drag_region():
+    """macOS gives the media pages a 0px inset, so their 48px header lands on top of the
+    navbar's 34px drag strip. The band has to out-stack that strip yet stay click-through,
+    so its controls take clicks and its empty space still drags the window."""
+    navbar = NAVBAR.read_text(encoding = "utf-8")
+
+    # The strip the band has to beat: same z-40, but earlier in DOM order.
+    assert "pointer-events-none absolute inset-x-0 top-0 z-40 h-[48px]" in navbar
+    assert "data-tauri-drag-region" in navbar
+
+    for page in (IMAGES_PAGE, VIDEO_PAGE):
+        source = page.read_text(encoding = "utf-8")
+        before, marker, band = source.partition("h-[48px] shrink-0 items-start justify-between")
+        assert marker, page.name
+        opening = before.rsplit('<div className="', 1)[1]
+        for token in ("pointer-events-none", "relative", "z-40"):
+            assert token in opening, (page.name, token)
+
+        band = band.split("MediaPageLink", 1)[0]
+        groups = re.findall(r'<div className="([^"]*flex items-center gap-[^"]*)"', band)
+        assert len(groups) >= 2, (page.name, groups)
+        for group in groups:
+            assert "pointer-events-auto" in group, (page.name, group)
 
 
 def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():
