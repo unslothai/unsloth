@@ -277,27 +277,19 @@ _resolve_cuda_archs() {
     printf '%s' "$_archs"
 }
 
-# Reserved for the OS, and budgeted per compile job, both in MiB.
-#
-# Measured on llama.cpp at ggml-org/llama.cpp master with CUDA 13.1: the
-# heaviest translation units are the flash-attention template instances, which
-# peak at ~400 MiB of RSS each, flat in the number of CUDA archs (nvcc compiles
-# archs one after another, so only wall time scales). A full CUDA build at -j20
-# peaked at 8.2 GiB in aggregate, and -j20 produced ~30 concurrent compiler
-# processes, because nvcc forks cicc and ptxas under itself.
-#
-# 2048 is deliberately above that measurement rather than equal to it. It has to
-# cover the ~1.5x process fan-out, MSVC on Windows and hipcc on ROCm which are
-# not measured here, older CUDA toolkits which were much heavier on the same
-# files (ggml-org/llama.cpp#17844 reports a build climbing past 16 GiB and
-# taking the machine with it), and the link step at the end. Erring high costs
-# build time on a small machine; erring low costs the machine.
+# Reserved for the OS, and budgeted per compile job, both in MiB. Measured on
+# llama.cpp with CUDA 13.1, the heaviest translation units (flash-attention
+# template instances) peak at ~400 MiB RSS each, and -j20 peaked at 8.2 GiB
+# across ~30 processes, since nvcc forks cicc and ptxas. 2048 is deliberately
+# above that: it must also cover MSVC and hipcc, older and far heavier CUDA
+# toolkits (ggml-org/llama.cpp#17844 climbs past 16 GiB), and the link step.
+# Erring high costs build time; erring low costs the machine.
 _LLAMA_BUILD_RESERVE_MB=2048
 _LLAMA_BUILD_MB_PER_JOB=2048
 
 # Echo the cmake -j count. Args: core count, total RAM MiB ("" = unreadable,
 # which keeps the old core-count behaviour). UNSLOTH_LLAMA_BUILD_JOBS wins.
-# Pure so the tests can drive it without faking hardware.
+# Pure, so the tests can drive it without faking hardware.
 _llama_jobs_for() {
     local _cores=$1 _mem_mb=$2 _jobs
     if [[ "${UNSLOTH_LLAMA_BUILD_JOBS:-}" =~ ^[0-9]+$ ]] && [ "$UNSLOTH_LLAMA_BUILD_JOBS" -ge 1 ]; then
@@ -315,13 +307,11 @@ _llama_jobs_for() {
     printf '%s' "$_jobs"
 }
 
-# Echo the first line of $1 with whitespace stripped, or nothing. setup.sh runs
-# under `set -euo pipefail`, and this is a best-effort read on the install's
-# critical path, so it must not fail: `head | tr` took the whole install down
-# whenever the pipeline returned non-zero, which -r alone does not rule out (a
-# directory passes it, and a cgroup can be torn down between the test and the
-# open). The read is a builtin and the strip is an expansion, so there is no
-# pipeline and no subprocess left to fail.
+# Echo the first line of $1 with whitespace stripped, or nothing. A builtin read
+# plus an expansion, not `head | tr`: this is best-effort on the install's
+# critical path under `set -euo pipefail`, and a failing pipeline took the whole
+# install down. -r alone does not rule that out (a directory passes it, and a
+# cgroup can be torn down between the test and the open); -f does.
 _cg_read() {
     local _v=""
     [ -f "$1" ] && [ -r "$1" ] || return 0
@@ -331,22 +321,19 @@ _cg_read() {
 }
 
 # Echo $1 when it is a real limit. v2 writes "max"; v1 a near-2^63 sentinel.
-# Zero is a limit, not the absence of one: memory.high throttles rather than
-# killing (cgroup-v2.rst, "Going over the high limit never invokes the OOM
-# killer"), so a process runs happily under MemoryHigh=0 and must not then be
-# handed its full core count. Rejecting zero here budgeted from host memory
-# instead, which is the oversubscription this cap exists to remove, and it is
-# the same reading the Windows and macOS sides already keep.
+# Zero is a limit, not the absence of one: memory.high throttles and never
+# invokes the OOM killer (cgroup-v2.rst), so a process runs happily under
+# MemoryHigh=0 and must not then be handed its full core count.
 _cg_limit() {
     [[ "$1" =~ ^[0-9]+$ ]] || return 0
     [ "$1" -lt 4611686018427387904 ] && printf '%s' "$1"
     return 0
 }
 
-# Echo "$1/$2" and every ancestor up to $1, innermost first, NUL-delimited. A
-# mount point is an arbitrary directory and may contain a newline, so a
-# line-delimited list would split one path into two and none of them would
-# exist. dirname is inlined for the same reason: $() eats a trailing newline.
+# Echo "$1/$2" and every ancestor up to $1, innermost first, NUL-delimited: a
+# mount point may contain a newline, so a line-delimited list would split one
+# path into two. dirname is inlined for the same reason ($() eats a trailing
+# newline).
 _cg_dirs() {
     local _root=$1 _cur
     if [ -n "${2:-}" ] && [ "$2" != "/" ]; then
@@ -362,11 +349,10 @@ _cg_dirs() {
     printf '%s\0' "$_root"
 }
 
-# The mountinfo path decoder, as an awk function, in one place so its two
-# callers cannot drift. mountinfo escapes space, tab, newline and backslash in
-# paths as \040 and friends. strtonum is a gawk extension, so the octal
-# conversion is plain arithmetic that also runs under mawk and BSD awk, which
-# is what Debian and macOS give you.
+# The mountinfo path decoder as an awk function, in one place so its two callers
+# cannot drift. mountinfo escapes space, tab, newline and backslash as \040 and
+# friends; strtonum is a gawk extension, so the octal maths is done by hand to
+# also run under the mawk and BSD awk that Debian and macOS ship.
 _cg_unesc_prog() {
     cat <<'_CG_AWK_UNESC'
         function unesc(s,   out, i, c, o, v) {
@@ -384,24 +370,22 @@ _cg_unesc_prog() {
 _CG_AWK_UNESC
 }
 
-# Echo $1 with its mountinfo escapes decoded. Decoding is deliberately not done
-# where the fields are read: \011 and \012 decode to the very tab and newline
-# that delimit the records below, so a mount point containing either would
-# split one record into two and the binding cgroup would never be inspected. An
-# escaped path holds neither, so it travels intact and is decoded here, once a
-# single path is in hand.
+# Echo $1 with its mountinfo escapes decoded. Decoding is deliberately late:
+# \011 and \012 decode to the very tab and newline that delimit the records
+# below, so decoding at the read would split one record into two. An escaped
+# path holds neither, so it travels intact and is decoded here.
 _cg_unesc() {
     [ -n "$1" ] || return 0
     printf '%s\n' "$1" | awk "$(_cg_unesc_prog)"'{ printf "%s", unesc($0); exit }' || true
     return 0
 }
 
-# Echo every matching cgroup hierarchy as "<mount root><tab><mount point>",
-# both still escaped. $1 = a mountinfo file, $2 = "cgroup2" for the unified
-# mount or a v1 controller name. mountinfo is "... <root> <mountpoint> <opts>
-# [tags] - <fstype> <source> <superopts>", and a v1 hierarchy lists its
-# controllers in the super options, so a co-mounted or relocated one is found
-# by name instead of assumed to sit at <root>/<name>.
+# Echo every matching cgroup hierarchy as "<mount root><tab><mount point>", both
+# still escaped. $1 = a mountinfo file, $2 = "cgroup2" or a v1 controller name.
+# mountinfo is "... <root> <mountpoint> <opts> [tags] - <fstype> <source>
+# <superopts>", and a v1 hierarchy lists its controllers in the super options,
+# so a co-mounted or relocated one is found by name rather than assumed to sit
+# at <root>/<name>.
 _cg_mounts() {
     [ -r "$1" ] || return 0
     awk -v want="$2" '
@@ -420,11 +404,10 @@ _cg_mounts() {
 }
 
 # Echo the process's path within a mount, or nothing when the mount does not
-# expose it. Args: mount root, process cgroup path. A bind-mounted subtree
-# (Docker without a cgroup namespace, a systemd slice) shows a mount root like
-# /slice while /proc/self/cgroup still reports the host-absolute /slice/job, and
-# the files are then at <mountpoint>/job. Joining the two unmapped walks a path
-# that does not exist and settles on an outer limit instead of the binding one.
+# expose it. Args: mount root, process cgroup path. A bind-mounted subtree shows
+# a mount root like /slice while /proc/self/cgroup reports /slice/job and the
+# files sit at <mountpoint>/job, so joining the two unmapped walks a path that
+# does not exist and settles on an outer limit instead of the binding one.
 _cg_rel() {
     local _root=$1 _rel=$2
     [ -n "$_rel" ] || return 0
@@ -438,19 +421,13 @@ _cg_rel() {
     return 0
 }
 
-# Echo EVERY "<root><tab><point>" on stdin whose root contains the process
-# path, still escaped, one per line; or the first seen when none does.
-#
-# A hierarchy can be mounted more than once, and the two mounts can expose
-# different subtree roots of the same superblock -- rootless podman inside
-# rootless podman is the documented case, where a host-derived bind mount sits
-# alongside a namespace-scoped one. Taking the first would step past the binding
-# mount, but so would taking only the most specific: a limit above the narrower
-# mount's root is invisible through it and visible through the broader one.
-# Every mount whose root contains the path genuinely constrains this process, so
-# all of them are inspected and the smallest allowance wins. Order does not
-# matter, because a minimum is order-independent.
-# Args: process cgroup path.
+# Echo EVERY "<root><tab><point>" on stdin whose root contains the process path
+# ($1), still escaped, one per line; or the first seen when none does. A
+# hierarchy can be mounted twice with different subtree roots (rootless podman
+# inside rootless podman): taking the first steps past the binding mount, and
+# taking only the most specific hides a limit above the narrower mount's root.
+# So every containing mount is inspected and the smallest allowance wins, which
+# makes the answer order-independent.
 _cg_pick_mounts() {
     local _rel=$1 _root _point _droot _any="" _firstroot="" _firstpoint=""
     while IFS=$'\t' read -r _root _point; do
@@ -466,14 +443,14 @@ _cg_pick_mounts() {
     return 0
 }
 
-# Echo the memory free under the binding cgroup limit in MiB, or nothing.
-# Args: fallback cgroup root, /proc/self/cgroup path, /proc/self/mountinfo
-# path; all taken as arguments so the tests can drive a real tree. Mirrors unsloth/dataset_num_proc.py: reading the
-# hierarchy root alone only works in a container with a private cgroup
-# namespace, and under Slurm, systemd or --cgroupns=host the binding limit is
-# the process's own path or an ancestor's. Each limit pairs with the usage of
-# the directory that set it, because an ancestor's usage counts siblings this
-# process cannot see. The smallest remaining allowance wins.
+# Echo the memory free under the binding cgroup limit in MiB, or nothing. Args:
+# fallback cgroup root, /proc/self/cgroup path, /proc/self/mountinfo path; all
+# arguments so the tests can drive a real tree. Mirrors dataset_num_proc.py:
+# reading the hierarchy root alone only works with a private cgroup namespace,
+# and under Slurm, systemd or --cgroupns=host the binding limit is the process's
+# own path or an ancestor's. Each limit pairs with the usage of the directory
+# that set it, since an ancestor's usage counts siblings this process cannot
+# see, and the smallest remaining allowance wins.
 _cgroup_free_mb() {
     local _root=$1 _proc=$2 _mnt=${3:-} _rel _dir _used _limit _free _name _min=""
     local _v2rel _v1rel _v2mnts _v1mnts _mroot _mpoint
@@ -484,10 +461,9 @@ _cgroup_free_mb() {
         if [ -z "$_min" ] || [ "$_free" -lt "$_min" ]; then _min=$_free; fi
         return 0
     }
-    # Prefer the real mounts; fall back to the conventional layout. The process
-    # path is read first so the right mount can be chosen among several.
-    # Only the first two colons are delimiters: a systemd unit name may contain
-    # one, and -F: with $3 would truncate the path there.
+    # The process path is read first so the right mount can be chosen among
+    # several. Only the first two colons are delimiters: a systemd unit name may
+    # contain one, and -F: with $3 would truncate the path there.
     _v2rel=$(awk '/^0::/ { print substr($0, 4); exit }' "$_proc" 2>/dev/null || true)
     _v1rel=$(awk '
         {
@@ -505,9 +481,9 @@ _cgroup_free_mb() {
     # The v2 line is "0::<path>"; systemd hybrid mode adds v1 lines alongside.
     while IFS=$'\t' read -r _mroot _mpoint; do
         [ -n "$_mpoint" ] || continue
-        # Escapes survive the tab- and newline-delimited transport above; a
-        # single path is in hand now, so decode it before touching the
-        # filesystem. The sentinel keeps $() from eating a trailing newline.
+        # Decode now that a single path is in hand, after it survived the tab-
+        # and newline-delimited transport. The sentinel keeps $() from eating a
+        # trailing newline.
         _mroot=$(_cg_unesc "$_mroot"; printf X); _mroot=${_mroot%X}
         _mpoint=$(_cg_unesc "$_mpoint"; printf X); _mpoint=${_mpoint%X}
         [ -d "$_mpoint" ] || continue
@@ -539,27 +515,15 @@ _cgroup_free_mb() {
     return 0
 }
 
-# macOS available memory in MiB, read from vm_stat on stdin. free + inactive is
-# the reclaim-aware equivalent of MemAvailable; the page size comes from the
-# header rather than being assumed 4096, which is wrong on Apple Silicon. Empty
-# when the output does not parse.
-#
-# Only those two, because the other candidates are not disjoint from them and
-# adding either overstates what can be reclaimed, which buys back exactly the
-# oversubscription this cap removes:
-#
-#   speculative -- xnu osfmk/mach/vm_statistics.h says so outright: "NB:
-#     speculative pages are already accounted for in free_count, so
-#     speculative_count is the number of free pages that are used to hold data
-#     that was read speculatively from disk".
-#   purgeable   -- an attribute of a page, not a queue it sits on. A volatile
-#     page is still on the active or inactive queue, so it is already counted
-#     there. The disjoint partition is free + active + inactive + wired +
-#     throttled + compressor.
-#
-# Dropping them under-counts by the purgeable pages sitting on the ACTIVE queue,
-# which are reclaimable but not in either term. That is the safe direction for a
-# cap: it costs build time on a busy Mac rather than the machine.
+# macOS available memory in MiB, read from vm_stat on stdin; empty when the
+# output does not parse. free + inactive is the reclaim-aware equivalent of
+# MemAvailable, and the page size is read from the header rather than assumed to
+# be 4096, which is wrong on Apple Silicon. Only those two: xnu's
+# osfmk/mach/vm_statistics.h says speculative pages "are already accounted for
+# in free_count", and purgeable is an attribute of a page rather than a queue,
+# so a volatile page is already counted on active or inactive. Adding either
+# double-counts. Under-counting is the safe direction for a cap: it costs build
+# time on a busy Mac rather than the machine.
 _vm_stat_avail_mb() {
     awk '
         /page size of/ {
@@ -568,36 +532,33 @@ _vm_stat_avail_mb() {
         /^Pages (free|inactive)/ {
             gsub(/\./, "", $NF); pages += $NF
         }
-        # A zero page count is a reading, not a parse failure; a missing page
-        # size is the only thing that means the output did not parse.
+        # A zero page count is a reading; only a missing page size is a failure.
         END { if (ps > 0) printf "%d", pages * ps / 1048576 }' || true
     return 0
 }
 
-# Usable RAM in MiB; empty when it cannot be read. MemAvailable, not MemTotal:
-# a workstation with 8 GiB already resident cannot host a 14 GiB compile just
+# Usable RAM in MiB; empty when it cannot be read. MemAvailable, not MemTotal: a
+# workstation with 8 GiB already resident cannot host a 14 GiB compile just
 # because 16 GiB is fitted. /proc is not namespaced either, so a lower cgroup
-# allowance wins. macOS has no comparable reclaim-aware figure, so it keeps
-# installed RAM. $1 is the meminfo file, an argument like every other reader's
+# allowance wins. $1 is the meminfo file, an argument like every other reader's
 # path here so the tests can pin a number instead of racing the live one.
 _usable_ram_mb() {
     local _meminfo=${1:-/proc/meminfo} _bytes _mb="" _free _avail
     if [ -r "$_meminfo" ]; then
         # MemAvailable counts reclaimable page cache; MemFree does not. Absent
-        # before Linux 3.14, where MemTotal is the only thing to go on.
-        # `|| true` because bash applies errexit to a failing assignment in
-        # POSIX mode (POSIXLY_CORRECT in the environment, or bash invoked as
-        # sh), and an unreadable meminfo must cost the cap, not the install.
+        # before Linux 3.14, where MemTotal is the only thing to go on. `|| true`
+        # because bash applies errexit to a failing assignment in POSIX mode, and
+        # an unreadable meminfo must cost the cap, not the install.
         _mb=$(awk '/^MemAvailable:/ { printf "%d", $2 / 1024; exit }' "$_meminfo") || true
         [ -n "$_mb" ] || _mb=$(awk '/^MemTotal:/ { printf "%d", $2 / 1024; exit }' "$_meminfo") || true
     elif _bytes=$(sysctl -n hw.memsize 2>/dev/null); then
         [[ "$_bytes" =~ ^[0-9]+$ ]] && _mb=$(( _bytes / 1048576 ))
         # macOS has no MemAvailable, so hw.memsize is installed RAM and would
-        # hand a busy Mac a budget it cannot honour. vm_stat is the equivalent;
-        # installed RAM stays the fallback if the output does not parse.
+        # hand a busy Mac a budget it cannot honour; vm_stat is the equivalent,
+        # with installed RAM as the fallback when it does not parse. Zero is
+        # kept: a Mac with nothing reclaimable should build at 1 job, not take
+        # its full core count.
         _avail=$(vm_stat 2>/dev/null | _vm_stat_avail_mb || true)
-        # Zero included: a Mac with nothing reclaimable should build at 1 job,
-        # not fall back to installed RAM and take its full core count.
         if [[ "$_avail" =~ ^[0-9]+$ ]]; then _mb=$_avail; fi
     fi
     _free=$(_cgroup_free_mb /sys/fs/cgroup /proc/self/cgroup /proc/self/mountinfo)

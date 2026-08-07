@@ -599,20 +599,18 @@ function Get-NvccMaxArch {
     return $null
 }
 
-# Reserved for the OS, and budgeted per compile job, both in MB. The budget is
-# set above the measured per-translation-unit peak rather than equal to it; see
-# the derivation on _LLAMA_BUILD_* in setup.sh, which these must match and which
-# the shell test pins. MSVC is the compiler here rather than gcc, and it is the
-# platform the freeze was reported on, so the headroom matters more, not less.
+# Reserved for the OS, and budgeted per compile job, both in MB. The budget sits
+# above the measured per-translation-unit peak on purpose; see the derivation on
+# _LLAMA_BUILD_* in setup.sh, which these must match and which the shell test
+# pins. MSVC and Windows, where the freeze was reported, need that headroom more.
 $LlamaBuildReserveMb = 2048
 $LlamaBuildMbPerJob = 2048
 
-# The cmake -j count. A negative $TotalMb means RAM was unreadable, which keeps
-# the old core-count behaviour. Zero is a reading, not a failure: a box with no
-# memory left is the last one that should be handed its full core count, so it
-# falls through and floors at 1, as _llama_jobs_for does for a numeric 0.
-# UNSLOTH_LLAMA_BUILD_JOBS wins. Pure so the tests can drive it without faking
-# hardware.
+# The cmake -j count. A negative $TotalMb means RAM was unreadable and keeps the
+# old core-count behaviour. Zero is a reading, not a failure: a box with no
+# memory left is the last one that should get its full core count, so it falls
+# through and floors at 1, as _llama_jobs_for does for a numeric 0.
+# UNSLOTH_LLAMA_BUILD_JOBS wins. Pure, so the tests can drive it.
 function Get-LlamaJobsFor {
     param([int]$Cores, [long]$TotalMb)
 
@@ -633,11 +631,9 @@ function Get-LlamaJobsFor {
 # a box with 8 GB already resident cannot host a 14 GB compile just because
 # 16 GB is fitted. AvailableMBytes counts the standby list, which the Free
 # counters do not, and the raw perf class is not localized the way Get-Counter
-# paths are. Installed RAM stays as the fallback, which is the pre-cap
-# behaviour. A reading of 0 is returned as 0 rather than treated as unreadable:
-# under real memory pressure Windows does report it, and falling back to
-# installed RAM there would hand the machine its full core count at the one
-# moment it can least afford it.
+# paths are; installed RAM stays the fallback. A reading of 0 is returned as 0
+# rather than treated as unreadable, since falling back to installed RAM under
+# real pressure would hand the machine its full core count at the worst moment.
 function Get-UsableMemoryMb {
     try {
         $avail = (Get-CimInstance Win32_PerfRawData_PerfOS_Memory -ErrorAction Stop).AvailableMBytes

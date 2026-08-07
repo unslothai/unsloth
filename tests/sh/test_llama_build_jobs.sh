@@ -1,18 +1,15 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# _llama_jobs_for() from studio/setup.sh: the cmake -j count.
-#
-# A 20-thread 16 GB box used to build llama.cpp at -j20 and stopped responding.
-# A full CUDA build at -j20 measures ~8.2 GiB in aggregate, from ~30 concurrent
-# compiler processes, which a 16 GB machine with a desktop on it does not have.
-# The job count is now the smaller of the core count and what RAM can hold; see
-# _LLAMA_BUILD_* in setup.sh for where the per-job budget comes from.
+# _llama_jobs_for() from studio/setup.sh: the cmake -j count. A 20-thread 16 GB
+# box built llama.cpp at -j20 and stopped responding; that build measures
+# ~8.2 GiB across ~30 concurrent compiler processes, which such a machine does
+# not have. The count is now the smaller of the core count and what RAM can
+# hold; see _LLAMA_BUILD_* in setup.sh for the per-job budget.
 set -e
 
-# The override is a supported env var, so a developer or CI shell may export it.
-# Every assertion below that is not about the override must not see it;
-# run_jobs sets it explicitly per call, but the direct invocations do not.
+# The override is a supported env var, so a developer or CI shell may export it,
+# and nothing below but the override assertions may see it.
 unset UNSLOTH_LLAMA_BUILD_JOBS
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -76,9 +73,9 @@ assert_eq "junk override ignored" "7" "$(run_jobs 20 16384 "lots")"
 
 # ── Container and slice limits ──
 # /proc/meminfo is not namespaced, so it reports the host inside a container.
-# Reading only the hierarchy root works in a container with a private cgroup
-# namespace, but under Slurm, systemd or --cgroupns=host the binding limit is
-# the process's own path or an ancestor's, and a root-only read sees "max".
+# Reading only the hierarchy root works with a private cgroup namespace, but
+# under Slurm, systemd or --cgroupns=host the binding limit is the process's own
+# path or an ancestor's, and a root-only read sees "max".
 _CG_FILE=$(mktemp)
 for _fn in _cg_read _cg_limit _cg_dirs _cg_unesc_prog _cg_unesc _cg_mounts _cg_rel \
            _cg_pick_mounts _cgroup_free_mb; do
@@ -90,9 +87,9 @@ if [ ! -s "$_CG_FILE" ]; then
 fi
 
 _TMPD=$(mktemp -d)
-# $1 = fallback root, $2 = /proc/self/cgroup stand-in, $3 = mountinfo stand-in.
-# The mountinfo argument is always passed, and defaults to a path that does not
-# exist, so a Linux runner's real mounts cannot leak into these fixtures.
+# $1 = fallback root, $2 = /proc/self/cgroup stand-in, $3 = mountinfo stand-in,
+# always passed and defaulting to a path that does not exist, so a runner's real
+# mounts cannot leak into these fixtures.
 run_cgroup() {
     bash -c ". '$_CG_FILE'; _cgroup_free_mb \"\$1\" \"\$2\" \"\$3\"" \
         _ "$1" "$2" "${3:-$_TMPD/no-mountinfo}"
@@ -130,14 +127,12 @@ printf '2147483648\n' > "$_TMPD/anc/a/memory.high"
 assert_eq "memory.high counts, smallest wins" "2048" "$(run_cgroup "$_TMPD/anc" "$_TMPD/anc.proc")"
 rm -f "$_TMPD/anc/a/memory.high"
 
-# 5b) A zero limit is a limit. memory.high throttles rather than killing, so a
-#     process really does run under systemd's MemoryHigh=0, and treating that as
-#     "no limit" budgeted from host memory and took the full core count. Only
-#     memory.high is exercised: memory.max of 0 OOM-kills, so nothing is left
-#     running to read it.
-#     The fixture carries no other limit, so dropping the zero does not fall
-#     back to an ancestor's number, it falls back to host memory and the full
-#     core count -- which is the behaviour being pinned.
+# 5b) A zero limit is a limit: memory.high throttles rather than killing, so a
+#     process really does run under systemd's MemoryHigh=0, and calling that "no
+#     limit" budgeted from host memory and took the full core count. Only
+#     memory.high is exercised, since memory.max of 0 OOM-kills. The fixture
+#     carries no other limit, so dropping the zero falls back to host memory
+#     rather than to an ancestor's number.
 mkdir -p "$_TMPD/zh/leaf"
 printf 'max\n' > "$_TMPD/zh/memory.max"
 printf 'max\n' > "$_TMPD/zh/leaf/memory.max"
@@ -198,10 +193,10 @@ printf '%s\n' "43 30 0:38 / $_TMPD/hyb/unified rw - cgroup2 cgroup2 rw" > "$_TMP
 assert_eq "v2 found at a relocated unified mount" "1024" \
     "$(run_cgroup "$_TMPD/hyb" "$_TMPD/hyb.proc" "$_TMPD/hyb.mnt")"
 
-# 14) A bind-mounted subtree: mount root /slice at the mount point, while
-#     /proc/self/cgroup still reports the host-absolute /slice/job. The files
-#     are at <mountpoint>/job, so joining the two unmapped walks a path that
-#     does not exist and settles on the outer slice limit instead of the job's.
+# 14) A bind-mounted subtree: mount root /slice, while /proc/self/cgroup reports
+#     the host-absolute /slice/job and the files sit at <mountpoint>/job. Joining
+#     the two unmapped walks a path that does not exist and settles on the outer
+#     slice limit instead of the job's.
 mkdir -p "$_TMPD/bind/cg/job"
 printf '8589934592\n' > "$_TMPD/bind/cg/memory.max"
 printf '1073741824\n' > "$_TMPD/bind/cg/job/memory.max"
@@ -275,10 +270,9 @@ assert_eq "v1 picks the containing mount too" "2048" \
 
 # 21b) A limit ABOVE the narrower mount's root is invisible through that mount
 #      and visible through the broader one, so taking only the most specific
-#      hides it. The same hierarchy really is mounted twice with different
-#      subtree roots: rootless podman inside rootless podman leaves a
-#      host-derived bind mount beside a namespace-scoped one. Every containing
-#      mount is inspected and the smallest allowance wins.
+#      hides it. A hierarchy really is mounted twice with different subtree
+#      roots (rootless podman inside rootless podman), so every containing mount
+#      is inspected and the smallest allowance wins.
 mkdir -p "$_TMPD/anc2/broad/slice/job/task" "$_TMPD/anc2/narrow/task"
 printf 'max\n'        > "$_TMPD/anc2/broad/memory.max"
 printf '1073741824\n' > "$_TMPD/anc2/broad/slice/memory.max"
@@ -344,8 +338,8 @@ assert_eq "a lookalike controller is not matched" "" \
     "$(run_cgroup "$_TMPD/colon/v1" "$_TMPD/colonv1.bad")"
 
 # 27) \012 is a legal escape, and decoding it where the fields are read put a
-#     newline into the reader's own line-oriented output, splitting one mount
-#     record into two. The record has to travel escaped and be decoded once.
+#     newline into the reader's own line-oriented output, splitting one record
+#     into two. The record has to travel escaped and be decoded once.
 _NL=$'\n'
 mkdir -p "$_TMPD/esc/two${_NL}lines/job"
 printf '8589934592\n' > "$_TMPD/esc/two${_NL}lines/memory.max"
@@ -377,12 +371,12 @@ assert_eq "a trailing newline is not eaten" "1024" \
 
 # ── The shell options the real script runs under ──
 # Everything above sources into a plain `bash -c`, but studio/setup.sh:5 is
-# `set -euo pipefail`, and NCPU=$(_llama_build_jobs) sits on the install's
-# critical path. A helper returning non-zero there does not degrade the job
-# count, it aborts the install at the build step. `head | tr` inside _cg_read
-# did exactly that for any input where the pipeline failed, which -r alone does
-# not rule out: a directory passes it, and a cgroup can be torn down between the
-# test and the open. These drive the helpers with the real options on.
+# `set -euo pipefail` and NCPU=$(_llama_build_jobs) sits on the install's
+# critical path, so a helper returning non-zero aborts the install at the build
+# step rather than degrading the job count. `head | tr` inside _cg_read did
+# exactly that, which -r alone does not rule out: a directory passes it, and a
+# cgroup can be torn down between the test and the open. These use the real
+# options.
 _STRICT_FILE=$(mktemp)
 for _fn in _cg_read _cg_limit _cg_dirs _cg_unesc_prog _cg_unesc _cg_mounts \
            _cg_rel _cg_pick_mounts _cgroup_free_mb _vm_stat_avail_mb _usable_ram_mb; do
@@ -392,10 +386,9 @@ sed -n '/^_LLAMA_BUILD_RESERVE_MB=/,/^_LLAMA_BUILD_MB_PER_JOB=/p' "$SETUP_SH" >>
 sed -n '/^_llama_jobs_for()/,/^}/p' "$SETUP_SH" >> "$_STRICT_FILE"
 
 # _usable_ram_mb hardcodes /sys/fs/cgroup, so inside a memory-limited container
-# the assertions about HOST memory would receive the container's allowance
-# instead of the fixture. Anything below that is not testing the cgroup reader
-# itself stubs it out; the reader has its own assertions above, which pass it
-# real fixture trees.
+# the HOST-memory assertions would receive the container's allowance instead of
+# the fixture. Anything below not testing the cgroup reader itself stubs it out;
+# the reader has its own assertions above, against real fixture trees.
 _NO_CGROUP='_cgroup_free_mb() { :; }; '
 
 # Echoes the exit status of running $1 under the real options.
@@ -422,20 +415,19 @@ assert_eq "strict: _cg_unesc does not abort" "0" \
 
 # The -f guard is not only about failing: reading a FIFO blocks forever, and an
 # install that hangs is worse than one that stops. Nothing in cgroupfs is a
-# FIFO, but the guard is what makes that true of any path handed to the reader.
+# FIFO; the guard makes that true of any path handed to the reader.
 if mkfifo "$_TMPD/fifo" 2>/dev/null && command -v timeout >/dev/null 2>&1; then
     _fifo_rc=$(timeout 5 bash -c 'set -euo pipefail; . "$1"; _cg_read "$2" >/dev/null' \
                    _ "$_STRICT_FILE" "$_TMPD/fifo" >/dev/null 2>&1; printf '%s' "$?")
     assert_eq "strict: _cg_read on a FIFO returns instead of blocking" "0" "$_fifo_rc"
 else
-    # Stock macOS has mkfifo but ships no GNU timeout (it is gtimeout, from
-    # coreutils), and an unbounded read here would hang the suite rather than
-    # fail it.
+    # Stock macOS ships mkfifo but no GNU timeout (it is gtimeout, from
+    # coreutils), and an unbounded read would hang the suite rather than fail it.
     echo "  SKIP: mkfifo or timeout unavailable"
 fi
 
-# Whitespace really is stripped, rather than the trailing newline happening to
-# be eaten by read. A value with padding must still compare as a number.
+# Whitespace really is stripped, rather than the trailing newline happening to be
+# eaten by read: a padded value must still compare as a number.
 mkdir -p "$_TMPD/strict/pad"
 printf '  4294967296  \n' > "$_TMPD/strict/pad/memory.max"
 printf '0::/pad\n' > "$_TMPD/strictpad.proc"
@@ -476,13 +468,11 @@ assert_eq "strict: the job count still comes out" "7" \
     "$(bash -c 'set -euo pipefail; . "$1"; _llama_jobs_for 20 16384' _ "$_STRICT_FILE")"
 
 # POSIX mode is the strict end of the range: bash applies errexit to a failing
-# assignment there, which it does not do by default. A user with POSIXLY_CORRECT
-# exported, or bash invoked as sh, gets those semantics, and an unreadable file
-# must cost the cap rather than the install. This is what pins the `|| true` on
-# each read; without them the shell exits before the job count is ever printed.
-# The distinguishing form is the assignment: `v=$(reader)` propagates the
-# reader's failure, while passing it as an argument discards the status. The
-# real call site is NCPU=$(_llama_build_jobs), so pin the assignment form.
+# assignment there, which it does not do by default, and POSIXLY_CORRECT or bash
+# invoked as sh gets those semantics. This is what pins the `|| true` on each
+# read; without them the shell exits before the job count is ever printed. The
+# assignment is the distinguishing form -- `v=$(reader)` propagates the failure,
+# an argument discards it -- and the real call site is NCPU=$(_llama_build_jobs).
 # $1 = a PATH prefix, $2 = the expression to assign from, $3 = a prelude (used
 # to stub the cgroup reader out of the host-memory cases).
 run_posix_assign() {
@@ -524,9 +514,9 @@ assert_eq "POSIX mode: an unreadable meminfo keeps the core count" "20" \
 
 rm -f "$_STRICT_FILE"
 
-# The min() that ties it together. Drive _usable_ram_mb from a pinned meminfo
-# rather than the live one: MemAvailable moves between two reads, so comparing
-# a cached host figure against a second read is a race on any Linux runner.
+# The min() that ties it together. Drive _usable_ram_mb from a pinned meminfo:
+# MemAvailable moves between two reads, so comparing a cached host figure
+# against a second read of the live one races on any Linux runner.
 _RAM_FILE=$(mktemp)
 sed -n '/^_vm_stat_avail_mb()/,/^}/p;/^_usable_ram_mb()/,/^}/p' "$SETUP_SH" > "$_RAM_FILE"
 printf 'MemTotal:       16777216 kB\nMemAvailable:   12582912 kB\n' > "$_TMPD/meminfo"
@@ -549,11 +539,11 @@ assert_eq "pre-3.14 kernels fall back to MemTotal" "16384" \
     "$(bash -c '. "$1"; _cgroup_free_mb() { :; }; _usable_ram_mb "$2"' \
         _ "$_RAM_FILE" "$_TMPD/meminfo-old")"
 
-# macOS has no MemAvailable, so the reclaim-aware figure comes from vm_stat.
-# Fed synthetically: free 1024 + inactive 1024 at the 16 KiB Apple Silicon page
-# size is 32 MiB, and the page size is read rather than assumed to be 4096.
-# speculative and purgeable are deliberately NOT in the sum; the fixture carries
-# both so that adding either back is visible as a wrong number.
+# macOS has no MemAvailable, so the reclaim-aware figure comes from vm_stat. Fed
+# synthetically: free 1024 + inactive 1024 at the 16 KiB Apple Silicon page size
+# is 32 MiB, and the page size is read rather than assumed to be 4096. The
+# fixture carries speculative and purgeable, which are deliberately NOT in the
+# sum, so that adding either back is visible as a wrong number.
 _VM_SAMPLE=$(printf '%s\n' \
     "Mach Virtual Memory Statistics: (page size of 16384 bytes)" \
     "Pages free:                                    1024." \
@@ -569,9 +559,8 @@ assert_eq "vm_stat ignores active and wired" "32" \
     "$(printf '%s\n' "$_VM_SAMPLE" | sed 's/999999/1/' | run_vm_stat)"
 # speculative is a SUBSET of free, not a sibling of it: xnu's
 # osfmk/mach/vm_statistics.h states "speculative pages are already accounted for
-# in free_count". Adding it counts those pages twice and overstates what can be
-# reclaimed, which is the direction that hands the machine more jobs than it can
-# hold. Raising it alone must not move the answer.
+# in free_count", so adding it double-counts and hands the machine more jobs
+# than it can hold. Raising it alone must not move the answer.
 assert_eq "a larger speculative count does not change the answer" "32" \
     "$(printf '%s\n' "$_VM_SAMPLE" | sed 's/^Pages speculative:.*/Pages speculative:  99999./' | run_vm_stat)"
 # purgeable is an attribute of a page, not a queue: a volatile page still sits on
@@ -589,11 +578,9 @@ assert_eq "vm_stat reports a genuine zero" "0" \
     "$(printf '%s\n' "Mach Virtual Memory Statistics: (page size of 16384 bytes)" \
         "Pages active: 999999." | run_vm_stat)"
 
-# And _usable_ram_mb must consult it. An unreadable meminfo path forces the
-# branch that reads hw.memsize -- but that branch is an `elif` on sysctl
-# succeeding, and sysctl has no hw.memsize on Linux, so the branch was never
-# entered and this asserted nothing off a Mac. Stubbing sysctl is what makes it
-# run on a Linux runner, which is where CI actually is.
+# And _usable_ram_mb must consult it. An unreadable meminfo forces the hw.memsize
+# branch, but that is an `elif` on sysctl succeeding and Linux sysctl has no
+# hw.memsize, so stubbing sysctl is what makes this run on a Linux CI runner.
 assert_eq "_usable_ram_mb prefers vm_stat over hw.memsize" "777" \
     "$(bash -c '. "$1"
                 sysctl() { printf "17179869184"; }
@@ -601,8 +588,8 @@ assert_eq "_usable_ram_mb prefers vm_stat over hw.memsize" "777" \
                 _vm_stat_avail_mb() { printf "777"; }
                 _usable_ram_mb "$2"' \
         _ "$_RAM_FILE" "$_TMPD/no-meminfo")"
-# Zero is a reading and is kept. Falling back to 16 GiB of installed RAM on a
-# Mac with nothing reclaimable is exactly the oversubscription this PR removes.
+# Zero is a reading and is kept: falling back to 16 GiB of installed RAM on a
+# Mac with nothing reclaimable is the oversubscription this PR removes.
 assert_eq "_usable_ram_mb keeps a zero reading" "0" \
     "$(bash -c '. "$1"
                 sysctl() { printf "17179869184"; }
@@ -626,8 +613,7 @@ assert_eq "4 GB allowance floors at 1 job" "1" "$(run_jobs 20 "$(run_usable_ram 
 
 # Host memory comes from what is actually available, not what is installed: a
 # 16 GiB box with 8 GiB resident must not be handed a 14 GiB compile budget.
-# Match the awk field pattern, not the bare word, so prose about MemAvailable
-# cannot satisfy this on its own.
+# Match the awk field pattern, not the bare word, so prose cannot satisfy this.
 if grep -q '/\^MemAvailable:/' "$SETUP_SH"; then
     echo "  PASS: host memory reads MemAvailable"; PASS=$((PASS + 1))
 else
@@ -645,8 +631,8 @@ fi
 rm -rf "$_TMPD" "$_CG_FILE" "$_RAM_FILE"
 
 # ── Windows parity (static check) ──
-# setup.ps1 carries its own copy because it cannot source setup.sh. The user who
-# reported this was on Windows, so a cap that only lands on Unix fixes nothing.
+# setup.ps1 carries its own copy because it cannot source setup.sh, and the user
+# who reported this was on Windows, so a Unix-only cap fixes nothing.
 _check_ps1() {
     _label="$1"; _pattern="$2"
     if grep -qE "$_pattern" "$SETUP_PS1"; then
@@ -666,9 +652,9 @@ _check_ps1 "setup.ps1 per-job budget matches setup.sh" '^\$LlamaBuildMbPerJob = 
 _check_ps1 "setup.ps1 budgets from available memory" 'AvailableMBytes'
 _check_ps1 "setup.ps1 feeds it to the job count" 'Get-LlamaJobsFor .*-TotalMb \(Get-UsableMemoryMb\)'
 _check_ps1 "setup.ps1 keeps installed RAM as the fallback" 'TotalPhysicalMemory'
-# Zero available memory is a reading, not a failure. Treating it as unreadable
-# fell back to installed RAM and handed a machine with nothing left its full
-# core count, so only a negative value now means "could not read".
+# Zero available memory is a reading, not a failure: treating it as unreadable
+# fell back to installed RAM and handed an exhausted machine its full core
+# count, so only a negative value now means "could not read".
 _check_ps1 "setup.ps1 keeps a zero reading" '^[[:space:]]*if \(\$null -ne \$avail\) \{ return \[long\]\$avail \}$'
 _check_ps1 "setup.ps1 signals unreadable memory as -1" '^[[:space:]]*return -1$'
 _check_ps1 "setup.ps1 treats only a negative as unreadable" '^[[:space:]]*if \(\$TotalMb -lt 0\) \{ return \$Cores \}$'
