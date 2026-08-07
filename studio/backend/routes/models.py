@@ -1820,9 +1820,8 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
             )
             loaded_models.append(model_info)
 
-        # Include active GGUF model (loaded via llama-server). Only the label is cleaned,
-        # from the display id /api/inference/status publishes; the id stays the raw
-        # identifier that agents-tab's discoverGgufModels filters path-shaped ids on.
+        # Active GGUF model (llama-server), labelled from the display id
+        # /api/inference/status publishes; the id stays raw for agents-tab's path filter.
         from routes.inference import _llama_status_model_ids, get_llama_cpp_backend
 
         llama_backend = get_llama_cpp_backend()
