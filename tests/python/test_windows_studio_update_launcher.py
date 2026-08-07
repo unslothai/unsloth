@@ -492,3 +492,25 @@ def test_a_setup_exception_restores_a_runnable_launcher(monkeypatch, studio, tmp
         _update(studio)
 
     assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+
+
+def test_a_non_runnable_backup_falls_through_to_the_legacy_copy(monkeypatch, studio, tmp_path):
+    # An interrupted run can leave a PE-shaped but non-runnable backup while the
+    # legacy .deleteme or the PATH shim is still good. Accepting the backup on
+    # its MZ header alone and stopping there left the update failing forever
+    # with the broken bytes canonical.
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
+    bad_backup = b"MZ-unrunnable"
+    (scripts / "unsloth.exe.update-backup").write_bytes(bad_backup)
+    (scripts / "unsloth.exe.deleteme").write_bytes(ORIGINAL_LAUNCHER)
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+
+    def run(argv, **_kwargs):
+        current = Path(argv[0]).read_bytes()
+        return types.SimpleNamespace(returncode = 7 if current == bad_backup else 0)
+
+    monkeypatch.setattr(studio.subprocess, "run", run)
+
+    _update(studio)
+
+    assert launcher.read_bytes() == ORIGINAL_LAUNCHER

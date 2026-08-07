@@ -3308,9 +3308,18 @@ class _WindowsLauncherUpdateTransaction:
         """Copies that could stand in for the launcher, best first.
 
         The backup is the last launcher known to run; the moved-aside copy is
-        only this run's unvalidated canonical file.
+        only this run's unvalidated canonical file; the legacy .deleteme and the
+        PATH shim are what an install broken by the old updater still has. All
+        of them are kept, because passing the two-byte header check does not
+        make any one of them runnable and the next candidate has to be reachable.
         """
-        return [p for p in (self.backup, self.stale) if p is not None and self._is_valid_pe(p)]
+        seen: List[Path] = []
+        for path in (self.backup, self.stale, self.legacy_backup, self.shim):
+            if path is None or not self._is_valid_pe(path):
+                continue
+            if not any(os.path.normcase(str(path)) == os.path.normcase(str(p)) for p in seen):
+                seen.append(path)
+        return seen
 
     def _restore_from(self, source: Path) -> bool:
         assert self.launcher is not None
