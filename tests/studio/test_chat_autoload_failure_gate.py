@@ -1405,3 +1405,20 @@ def test_an_admitted_hf_cache_row_is_not_attempted_twice():
 
     assert _loaded_paths(out).count("org/dup") == 1
     assert _downloads_started(out) == []
+
+
+def test_a_safetensors_twin_survives_a_gguf_row_with_no_loadable_quant():
+    """One load target can appear in both cached lists. Dedupe keeps the GGUF row
+    because the backend probes GGUF first, but if that repo resolves no quant --
+    every variant big-endian, say -- the safetensors twin was already discarded
+    and a complete inventory fell through to downloading the default."""
+    out = _run(
+        "scenario({ ggufRepos: [{ ...GEMMA, repo_id: 'org/both', load_id: 'org/both' }],"
+        " variants: { 'org/both': [{ quant: 'Q4_K_M',"
+        " filename: 'gemma-4-26B-A4B-it-BE.Q4_K_M.gguf', downloaded: true,"
+        " size_bytes: 900000000 }] },"
+        " modelRepos: [{ repo_id: 'org/both', load_id: 'org/both', size_bytes: 2000000000 }] })"
+    )
+
+    assert _loaded_paths(out) == ["org/both"]
+    assert _downloads_started(out) == []

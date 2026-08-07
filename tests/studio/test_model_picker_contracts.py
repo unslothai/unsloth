@@ -2599,16 +2599,27 @@ def test_local_safetensors_chat_capability_is_classified_not_assumed():
 def test_sources_dedupe_on_the_load_target_alone():
     """A repo holding both GGUF and safetensors yields a row in each cached
     list, but the backend resolves one target to one model and probes GGUF
-    first, so keeping both spends a second attempt on the same files."""
+    first, so keeping both spends a second attempt on the same files.
+
+    Skipped in the cascade rather than dropped while ordering: dropping the twin
+    outright lost a loadable safetensors row whenever its GGUF twin resolved no
+    quant, so the skip has to wait until a candidate actually came back.
+    """
     src = _read("features/chat/api/chat-adapter.ts")
     key = src.split("function autoLoadSourceKey", 1)[1].split("\n}", 1)[0]
     assert "return normalizeTarget(source.loadId);" in key
     assert "source.kind" not in key
+    # Ordering keeps every row; the sort alone decides which twin is reached first.
     order = src.split("function orderAutoLoadSources", 1)[1].split("\n}\n", 1)[0]
-    # Ordered first, so the survivor is the row the cascade would have reached.
-    assert order.index("const ordered = [...sources].sort(") < order.index(
-        "const seen = new Set<string>()"
+    assert "[...sources].sort(" in order
+    assert "filter(" not in order
+    # The skip is keyed on a candidate having been resolved, not on merely visiting.
+    body = src.split("const candidateResolvedFor = new Set<string>();", 1)[1]
+    body = body.split("\n    // Cap also gates", 1)[0]
+    assert body.index("if (candidateResolvedFor.has(sourceKey)) continue;") < body.index(
+        "candidateResolvedFor.add(sourceKey);"
     )
+    assert "if (!candidate) break;\n          candidateResolvedFor.add(sourceKey);" in body
 
 
 def test_variant_scans_take_the_run_signal():

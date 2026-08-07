@@ -2089,18 +2089,11 @@ function orderAutoLoadSources(
   // Unknown sizes sort last so a sizeless row cannot shadow a real one.
   const size = (source: AutoLoadSource): number =>
     source.sizeBytes > 0 ? source.sizeBytes : Number.MAX_SAFE_INTEGER;
-  const ordered = [...sources].sort(
-    (a, b) => rank(a) - rank(b) || size(a) - size(b),
-  );
-  // Deduped after ordering, so the row kept is the one the cascade would have
-  // reached first rather than whichever inventory happened to be listed first.
-  const seen = new Set<string>();
-  return ordered.filter((source) => {
-    const key = autoLoadSourceKey(source);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  // Same-target twins are kept, ordered behind the one the cascade would reach
+  // first. Dropping them here discarded a loadable safetensors row whenever its
+  // GGUF twin resolved no quant, so the cascade skips a twin at run time instead,
+  // and only once the preferred row has actually produced a candidate.
+  return [...sources].sort((a, b) => rank(a) - rank(b) || size(a) - size(b));
 }
 
 /**
@@ -2843,8 +2836,15 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       lastLoaded,
     );
 
+    // One load target can appear in both cached lists. The backend resolves it to
+    // one model, so once a row for it has produced a candidate its twin is the
+    // same files and must not spend a second attempt. A twin is only reached when
+    // the preferred row resolved nothing at all.
+    const candidateResolvedFor = new Set<string>();
     for (const source of sources) {
       if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
+      const sourceKey = autoLoadSourceKey(source);
+      if (candidateResolvedFor.has(sourceKey)) continue;
       const isRemembered = lastLoaded
         ? isRememberedSource(source, lastLoaded)
         : false;
@@ -2868,6 +2868,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           );
           options?.abortSignal?.throwIfAborted();
           if (!candidate) break;
+          candidateResolvedFor.add(sourceKey);
           updateAutoLoadToast(
             isRemembered ? "Loading last used model…" : "Loading a model…",
             candidate.ggufVariant
