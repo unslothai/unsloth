@@ -385,6 +385,59 @@ jobs:
           sleep 2
 
       # ---------------------------------------------------------------
+      # Tab-capability phase. Needs its own boot on a cold port: the assertion is
+      # that Train and Video SPIN rather than grey out while the hardware verdict
+      # is still unmeasured, and that window only exists on a backend that has not
+      # warmed yet. Reusing 18897 would measure a settled verdict and pass
+      # vacuously.
+      #
+      # Deliberately no "wait for healthy" step before it. Every other phase waits,
+      # which is right for them and wrong here: waiting is how you miss the warm
+      # window. The script does its own /api/health wait, and health answers
+      # provisionally (hardware_detecting: true) inside a 1s budget, so it gets in
+      # while the warm is still running.
+      # ---------------------------------------------------------------
+      - name: Reset auth + boot Unsloth for the tab-capability smoke (port 18893)
+        run: |
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port 18893 --log logs/studio_tabs.log --pid-var STUDIO_TABS_PID
+
+      - name: Pass bootstrap pw for the tab-capability smoke
+        run: |
+          # Wait for the password file, not for health: health is the thing under test.
+          for i in $(seq 1 180); do
+            [ -f ~/.unsloth/studio/auth/.bootstrap_password ] && break
+            sleep 1
+          done
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          echo "::add-mask::$OLD"
+          echo "STUDIO_TABS_OLD_PW=$OLD" >> "$GITHUB_ENV"
+
+      - name: Drive the Train/Video capability gate with Playwright
+        env:
+          BASE_URL: http://127.0.0.1:18893
+          STUDIO_OLD_PW: ${{ env.STUDIO_TABS_OLD_PW }}
+          PW_ART_DIR: logs/playwright_mac_tabs
+          # The default 330s outlives the launcher's 300s startup grace, which is the
+          # point when a Tauri shell is driving the backend. Nothing here runs that
+          # watchdog (this phase boots `unsloth studio` directly), so the full window
+          # would spend five macOS-runner minutes proving something this job cannot
+          # observe. The watchdog itself is covered by the Rust tests in
+          # studio/src-tauri/src/commands.rs. What is unique to this phase is the
+          # first-paint tab assertion, so keep the liveness poll just long enough to
+          # cover the warm and the tab walk.
+          STUDIO_MAC_SURVIVAL_S: '120'
+        run: |
+          mkdir -p logs/playwright_mac_tabs
+          python tests/studio/playwright_mac_tab_capabilities.py
+
+      - name: Stop tab-capability Unsloth
+        if: always()
+        run: |
+          kill "${STUDIO_TABS_PID}" 2>/dev/null || true
+          sleep 2
+
+      # ---------------------------------------------------------------
       # API + auth phase, absorbed from studio-mac-api-smoke.yml.
       # Runs on 18894: 18896 and 18897 were used by the UI phases above and
       # 18895 by the permission-browser script, so a fresh port keeps this
