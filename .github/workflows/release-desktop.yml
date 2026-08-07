@@ -982,8 +982,32 @@ jobs:
           Update-MpSignature -UpdateSource MicrosoftUpdateServer -ErrorAction Continue
           & $mp -SignatureUpdate 2>&1 | Write-Host
 
-          $status = Get-MpComputerStatus
-          $pref = Get-MpPreference
+          # Read these defensively. A runner can come up with the Defender WMI
+          # provider dead ("Provider load failure") and the service RPC endpoint
+          # down (0x800106ba), which is how the platform incident on 2026-08-06
+          # presented: the cmdlets throw, $status/$pref land null, and every check
+          # below then reads as a misconfiguration it is not.
+          $status = $null
+          $pref = $null
+          $unavailable = @()
+          try { $status = Get-MpComputerStatus -ErrorAction Stop }
+          catch { $unavailable += "Get-MpComputerStatus: $($_.Exception.Message)" }
+          try { $pref = Get-MpPreference -ErrorAction Stop }
+          catch { $unavailable += "Get-MpPreference: $($_.Exception.Message)" }
+          if (-not $unavailable -and -not $status) { $unavailable += 'Get-MpComputerStatus returned nothing' }
+          if (-not $unavailable -and -not $pref)   { $unavailable += 'Get-MpPreference returned nothing' }
+
+          # Absent scanner vs. bad verdict. Everything below this point assumes a
+          # Defender that answers; when it does not answer at all there is no scan
+          # to interpret, so skip instead of failing closed. This is deliberately
+          # narrow: it triggers only when the cmdlets themselves fail, which is an
+          # unavailable engine. A Defender that IS present but misconfigured still
+          # fails below, and an actual detection still fails the job.
+          if ($unavailable) {
+            Write-Host "::warning::Defender is unavailable on this runner ($($unavailable -join '; ')); skipping the bundle scan. This is a missing scanner, not a clean verdict - these bundles were not scanned."
+            exit 0
+          }
+
           Write-Host "engine $($status.AMEngineVersion), signatures $($status.AntivirusSignatureVersion) ($($status.AntivirusSignatureLastUpdated))"
 
           # Set-MpPreference can return cleanly and still be ignored, so verify.

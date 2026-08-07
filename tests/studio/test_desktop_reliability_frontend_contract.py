@@ -3,6 +3,7 @@
 
 """Static contracts for focused packaged-desktop reliability behavior."""
 
+import re
 from pathlib import Path
 
 
@@ -425,7 +426,12 @@ def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
     sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
     header = sidebar.split("<SidebarHeader", 1)[1].split("</SidebarHeader>", 1)[0]
 
-    assert 'import { ArrowLeft, ArrowRight } from "lucide-react";' in titlebar
+    # The names, not the whole import list: #8025 added Minus/Square/X to the
+    # same line for the window controls and this went red on every open PR.
+    lucide = re.search(r"import \{([^}]*)\} from \"lucide-react\";", titlebar)
+    assert lucide is not None, "titlebar no longer imports from lucide-react"
+    icons = {name.strip() for name in lucide.group(1).split(",")}
+    assert {"ArrowLeft", "ArrowRight"} <= icons, icons
     assert "<ArrowLeft" in titlebar
     assert "<ArrowRight" in titlebar
     assert "window.history.back()" in titlebar
