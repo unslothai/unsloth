@@ -742,7 +742,7 @@ def test_cached_inventory_discards_a_scan_that_raced_an_invalidation(
     def scan(**_kwargs):
         scans.append(1)
         if len(scans) == 1:
-            epoch[0] += 1          # a deletion completes while this walk runs
+            epoch[0] += 1  # a deletion completes while this walk runs
             return [{"repo_id": "Org/Deleted"}]
         return [{"repo_id": "Org/Kept"}]
 
@@ -767,7 +767,7 @@ def test_cached_inventory_scan_stops_retrying_under_constant_invalidation(monkey
 
     def scan(**_kwargs):
         scans.append(1)
-        epoch[0] += 1              # every walk is superseded before it returns
+        epoch[0] += 1  # every walk is superseded before it returns
         return [{"repo_id": "Org/Model"}]
 
     monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: [])
