@@ -2723,7 +2723,7 @@ export function AppSidebar() {
                         {displayTitle}
                       </span>
                       <span className="truncate text-ui-11p5 tracking-nav text-muted-foreground">
-                        Unsloth
+                        Rag Platform
                       </span>
                     </div>
                   </SidebarMenuButton>

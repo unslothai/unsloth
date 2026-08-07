@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 /** Run `task` over `items`, at most `limit` at a time, in order. */
 export async function runWithConcurrency<T>(

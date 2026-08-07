@@ -3220,12 +3220,7 @@ function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
 
-// Fallback timeout for stuck IME composition. With Chrome on Windows against
-// a WSL-hosted Unsloth (issue #5546), `compositionend` never fires after the
-// candidate commits, so `composingRef` stays true and Send stays disabled.
-// Every compositionupdate / non-composing input resets the timer; only a true
-// gap-after-commit lets it fire. 2500ms is above a normal candidate-window
-// pause but short enough to recover before the user notices Send is stuck.
+
 const IME_STUCK_TIMEOUT_MS = 2500;
 
 function useImeComposerInputHandlers({

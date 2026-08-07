@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-
 // How a sidebar nav row renders once its pending state is folded in. Its own import-free
 // module so it is testable: app-sidebar.tsx pulls in the whole shell.
 

@@ -1,5 +1,4 @@
 
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 /**
  * Render a FastAPI error response body into a human-readable string.

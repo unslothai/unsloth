@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 import { takeSseFrame } from "../api/sse-framing.ts";
 import type { TrainingProgressPayload } from "../types/runtime";
