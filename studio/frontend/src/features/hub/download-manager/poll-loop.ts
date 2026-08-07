@@ -7,11 +7,12 @@ import { bumpInventoryVersion } from "../stores/inventory-events";
 import { toast } from "@/lib/toast";
 import { appendSample, computeTransferStats } from "@/lib/transfer-stats";
 import {
+  getActiveDatasetDownloads,
   getActiveModelDownloads,
-  getDatasetDownloadStatus,
   type ActiveModelDownload,
   type DownloadJobState,
 } from "./api";
+import { cancelExternalJob, isExternalJob } from "./external-jobs";
 import {
   CANCELLED_LINGER_MS,
   CANCEL_WATCHDOG_MS,
@@ -36,7 +37,12 @@ import {
   DOWNLOAD_KIND,
   TRANSPORT,
   type DownloadKind,
+  type ResolvedTransport,
   type TransportMode,
+  adoptedTransports,
+  isResolvedTransport,
+  probeDescribesCurrentRun,
+  transportAfterStart,
 } from "./constants";
 import {
   apiCancel,
@@ -586,6 +592,8 @@ export async function startJob(
     useXet?: boolean;
     generation?: number;
     state?: DownloadJobState;
+    transport?: ResolvedTransport;
+    cancelTransport?: ResolvedTransport | null;
   } = {},
 ): Promise<void> {
   const key = jobKeyOf(req.kind, req.repoId, req.variant);
@@ -625,11 +633,16 @@ export async function startJob(
 
   const expected = Math.max(existing?.expectedBytes ?? 0, req.expectedBytes);
   const hfToken = getHfToken() || null;
-  const requestedUseXet = opts.useXet ?? (getTransportMode() === TRANSPORT.XET);
-  const requestedMode: TransportMode = requestedUseXet
-    ? TRANSPORT.XET
-    : TRANSPORT.HTTP;
-  let mode: TransportMode;
+  // An explicit opts.useXet (a retry pinning a transport) wins; otherwise carry the stored
+  // preference UNRESOLVED so "auto" survives to effectiveTransportMode(). Collapsing it to a
+  // boolean here would read "auto" as "not xet" and send every download over HTTP.
+  const requestedMode: TransportMode =
+    opts.useXet === undefined
+      ? getTransportMode()
+      : opts.useXet
+        ? TRANSPORT.XET
+        : TRANSPORT.HTTP;
+  let mode: ResolvedTransport;
   try {
     mode = opts.adopt
       ? TRANSPORT.HTTP
@@ -648,6 +661,15 @@ export async function startJob(
       ? opts.generation
       : existing?.serverGeneration
     : undefined;
+  // An adopted job prefers what the backend just reported and falls back to
+  // the persisted value, for the transport and its cancel marker alike.
+  const adopted = opts.adopt
+    ? adoptedTransports(
+        { transport: opts.transport, cancelTransport: opts.cancelTransport },
+        existing,
+      )
+    : { transport: mode, cancelTransport: undefined };
+  const activeTransport = adopted.transport;
   if (!opts.adopt && hasActiveRepoPeer(req.kind, req.repoId, key, req.variant)) {
     teardownRuntime(key);
     return;
@@ -666,9 +688,23 @@ export async function startJob(
     bytesPerSec: 0,
     error: null,
     startedAt: opts.adopt ? (existing?.startedAt ?? Date.now()) : Date.now(),
+    // An adopted job prefers the backend's live transport, then a persisted
+    // value. It never claims the HTTP placeholder used to skip resolution.
+    ...(activeTransport ? { transport: activeTransport } : {}),
+    // A fallback run's cancel marker. Only an adopted job can have one: the
+    // fallback happens long after a start.
+    ...(adopted.cancelTransport
+      ? { cancelTransport: adopted.cancelTransport }
+      : {}),
     ...(Number.isSafeInteger(seedGeneration)
       ? { serverGeneration: seedGeneration }
       : {}),
+    // Recorded so a later start for the same scope slot can tell whether this running job is fetching its files or a different quant's. An adopted job keeps the existing record.
+    ...(req.files && req.files.length > 0
+      ? { scopedFiles: [...req.files] }
+      : opts.adopt && existing?.scopedFiles
+        ? { scopedFiles: existing.scopedFiles }
+        : {}),
   });
 
   if (!opts.adopt) {
@@ -694,6 +730,13 @@ export async function startJob(
     }
     if (Number.isSafeInteger(result.generation)) {
       patchJob(key, { serverGeneration: result.generation });
+    }
+    const started = transportAfterStart(mode, result.transport);
+    if (started !== activeTransport) patchJob(key, { transport: started });
+    // An adopted job can already have fallen back from Xet to HTTP, which
+    // keeps its original cancel marker and so its stop control.
+    if (isResolvedTransport(result.cancel_transport)) {
+      patchJob(key, { cancelTransport: result.cancel_transport });
     }
   }
 
@@ -829,6 +872,11 @@ async function probeCancelOutcome(
 export async function cancelJob(key: string): Promise<void> {
   const job = getState().jobs[key];
   if (!job) return;
+  // Another subsystem owns this transfer; it does the cancelling.
+  if (isExternalJob(key)) {
+    await cancelExternalJob(key);
+    return;
+  }
   const rt = runtimeRegistry.runtimes.get(key);
   const cancelEpoch = rt?.epoch ?? 0;
   if (rt) rt.cancelRequested = true;
@@ -878,10 +926,36 @@ export function adoptJob(
   req: DownloadRequest,
   generation?: number,
   state?: DownloadJobState,
+  transport?: ResolvedTransport,
+  // null is the backend reporting no marker, which must clear a stored one;
+  // undefined is a caller that cannot report one at all.
+  cancelTransport?: ResolvedTransport | null,
 ): void {
   const key = jobKeyOf(req.kind, req.repoId, req.variant);
-  if (runtimeRegistry.runtimes.get(key)?.pollingStarted) return;
-  void startJob(req, { adopt: true, generation, state });
+  if (runtimeRegistry.runtimes.get(key)?.pollingStarted) {
+    // Persistence hydration and the backend-active probe run concurrently, so a
+    // late backend response must still replace a missing or stale stored value.
+    // Only for the run it described, though: a cancel and restart in between
+    // makes this a different job, possibly on the other transport.
+    const known = getState().jobs[key]?.serverGeneration;
+    if (transport && probeDescribesCurrentRun(known, generation)) {
+      patchJob(key, {
+        transport,
+        ...(cancelTransport === undefined
+          ? {}
+          : { cancelTransport: cancelTransport ?? undefined }),
+        ...(Number.isSafeInteger(known) ? {} : { serverGeneration: generation }),
+      });
+    }
+    return;
+  }
+  void startJob(req, {
+    adopt: true,
+    generation,
+    state,
+    ...(transport ? { transport } : {}),
+    ...(cancelTransport === undefined ? {} : { cancelTransport }),
+  });
 }
 
 type ProbeAndAdoptOptions = {
@@ -910,21 +984,44 @@ export async function probeAndAdopt(
       for (const active of activeDownloads) {
         options.onModelAdopt?.(active);
         adoptJob(
-          { kind, repoId, variant: active.variant, expectedBytes: 0 },
+          {
+            kind,
+            repoId,
+            variant: active.variant,
+            expectedBytes: 0,
+            // Carry the live job's own file list so the adopted record can be matched against a later start for the same slot.
+            // Without it the adopted job had an unknown set and any sibling checkpoint's request read as "already started".
+            ...(active.files && active.files.length > 0 ? { files: [...active.files] } : {}),
+          },
           active.generation,
           active.state,
+          isResolvedTransport(active.transport) ? active.transport : undefined,
+          isResolvedTransport(active.cancel_transport)
+            ? active.cancel_transport
+            : null,
         );
       }
       return;
     }
 
-    const status = await getDatasetDownloadStatus(repoId, signal);
+    // The active-downloads list, not download-status: only the list reports the
+    // transport, without which an adopted HTTP dataset shows Cancel for a
+    // transfer that would have resumed.
+    const datasets = await getActiveDatasetDownloads(signal, repoId);
     if (signal.aborted) return;
-    if (status.state === "running" || status.state === "cancelling") {
+    // No repo compare here: the endpoint resolves the cached casing before it
+    // filters, so an exact match against the card's spelling would drop the
+    // very row it just asked for.
+    for (const active of datasets) {
+      if (active.state !== "running" && active.state !== "cancelling") continue;
       adoptJob(
         { kind, repoId, variant: null, expectedBytes: 0 },
-        status.generation,
-        status.state,
+        active.generation,
+        active.state,
+        isResolvedTransport(active.transport) ? active.transport : undefined,
+        isResolvedTransport(active.cancel_transport)
+          ? active.cancel_transport
+          : null,
       );
     }
   } catch (error) {

@@ -79,6 +79,21 @@ def test_gpu_memory_mode_option_is_registered_with_auto_default():
     assert getattr(opt, "rich_help_panel", None) == "Model"
 
 
+def test_speculative_options_are_registered():
+    studio_mod = _load_run_command()
+    import inspect
+
+    sig = inspect.signature(studio_mod.run)
+    spec_type = sig.parameters["speculative_type"].default
+    draft_n = sig.parameters["spec_draft_n_max"].default
+    assert set(getattr(spec_type, "param_decls", None) or []) == {"--speculative-type"}
+    assert getattr(spec_type, "default", "missing") is None
+    assert set(getattr(draft_n, "param_decls", None) or []) == {"--spec-draft-n-max"}
+    assert getattr(draft_n, "default", "missing") is None
+    assert getattr(draft_n, "min", None) == 1
+    assert getattr(draft_n, "max", None) == 16
+
+
 def test_parallel_default_is_four():
     """Default must stay at 4 so plain `unsloth studio run` is unchanged."""
     studio_mod = _load_run_command()
@@ -418,6 +433,39 @@ def test_reexec_omits_default_gpu_memory_mode(monkeypatch):
     assert "--gpu-memory-mode" not in captured[0]["argv"]
 
 
+def test_reexec_forwards_speculative_options(monkeypatch):
+    result, captured = _invoke_run(
+        monkeypatch,
+        _BASE + ["--speculative-type", "dspark", "--spec-draft-n-max", "3"],
+    )
+    assert len(captured) == 1, result.output
+    argv = captured[0]["argv"]
+    assert _value_after(argv, "--speculative-type") == "dspark", argv
+    assert _value_after(argv, "--spec-draft-n-max") == "3", argv
+
+
+def test_reexec_omits_unset_speculative_options(monkeypatch):
+    result, captured = _invoke_run(monkeypatch, _BASE)
+    assert len(captured) == 1, result.output
+    argv = captured[0]["argv"]
+    assert "--speculative-type" not in argv
+    assert "--spec-draft-n-max" not in argv
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--speculative-type", "invalid"],
+        ["--spec-draft-n-max", "0"],
+        ["--spec-draft-n-max", "17"],
+    ],
+)
+def test_run_rejects_invalid_speculative_options(monkeypatch, args):
+    result, captured = _invoke_run(monkeypatch, _BASE + args)
+    assert result.exit_code != 0
+    assert captured == []
+
+
 def test_run_rejects_invalid_gpu_memory_mode(monkeypatch):
     result, captured = _invoke_run(
         monkeypatch,
@@ -467,6 +515,31 @@ def test_load_model_http_payload_for_gpu_memory_mode(monkeypatch, mode, expected
     assert result == {"model": "owner/model-GGUF"}
     assert json.loads(captured["request"].data) == expected
     assert captured["request"].get_header("Authorization") == "Bearer sk-test"
+
+
+def test_load_model_http_payload_for_dspark(monkeypatch):
+    studio_mod = _load_run_command()
+    captured = {}
+
+    def urlopen(request, timeout):
+        captured["request"] = request
+        return BytesIO(b'{"model": "owner/model-GGUF"}')
+
+    monkeypatch.setattr(studio_mod.urllib.request, "urlopen", urlopen)
+    studio_mod._load_model_via_http(
+        port = 8888,
+        api_key = "sk-test",
+        model = "owner/model-GGUF",
+        gguf_variant = None,
+        max_seq_length = 8192,
+        load_in_4bit = True,
+        speculative_type = "dspark",
+        spec_draft_n_max = 3,
+    )
+
+    payload = json.loads(captured["request"].data)
+    assert payload["speculative_type"] == "dspark"
+    assert payload["spec_draft_n_max"] == 3
 
 
 def test_load_model_http_fails_on_a_deferred_error(monkeypatch):

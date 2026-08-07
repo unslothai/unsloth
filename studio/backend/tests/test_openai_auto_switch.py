@@ -8,7 +8,9 @@ tests/test_gguf_completion_usage.py.
 """
 
 import asyncio
+import json
 import os
+import threading
 
 import pytest
 from fastapi import HTTPException
@@ -958,6 +960,7 @@ def test_count_tokens_is_tracked_as_inference_path():
 
     assert _is_inference_path("/v1/messages/count_tokens") is True
     assert _is_inference_path("/api/inference/messages/count_tokens") is True
+    assert _is_inference_path("/api/inference/chat/count_tokens") is True
     assert _is_inference_path("/v1/messages") is True
 
 
@@ -3180,6 +3183,1035 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
     with pytest.raises(_Reached):
         asyncio.run(inference_route.anthropic_count_tokens(payload, object(), "tester"))
     assert captured["require_vision"] is True
+
+
+# ── /chat/count_tokens: what the recount prices ───────────────────
+
+
+def _count_tokens_backend(
+    monkeypatch,
+    loaded_id = "org/A-GGUF",
+    count = 10,
+    *,
+    supports_tools = False,
+    reasoning_style = "enable_thinking",
+):
+    """A loaded GGUF backend wired into the count endpoint, as ``(switched, counted)``: auto-switch
+    attempts, and the messages/system/tools/template kwargs the route hands to the tokenizer."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = _FakeBackend(loaded_id)
+    backend.supports_tools = supports_tools
+    # The real kwargs builder, so this pins the route against the completion path's mapping.
+    backend._supports_reasoning = True
+    backend._reasoning_always_on = False
+    backend._reasoning_style = reasoning_style
+    backend._reasoning_effort_levels = ["high", "max"]
+    backend._supports_preserve_thinking = True
+    backend._architecture = None
+    backend._request_reasoning_kwargs = LlamaCppBackend._request_reasoning_kwargs.__get__(
+        backend, type(backend)
+    )
+    switched: list = []
+    counted: dict = {}
+
+    def _count(
+        messages,
+        system,
+        tools,
+        strict = False,
+        chat_template_kwargs = None,
+        should_abort = None,
+    ):
+        counted.update(
+            messages = messages,
+            system = system,
+            tools = tools,
+            strict = strict,
+            chat_template_kwargs = chat_template_kwargs,
+        )
+        return count
+
+    async def _switch(*args, **kwargs):
+        switched.append(True)
+        return None
+
+    backend.count_chat_tokens = _count
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _switch)
+    return switched, counted
+
+
+def _count_request(
+    messages,
+    model = "org/A-GGUF",
+    **fields,
+):
+    """A /chat/count_tokens payload built from plain message dicts."""
+    from models.inference import ChatCountTokensRequest, ChatMessage
+    return ChatCountTokensRequest(
+        model = model,
+        messages = [ChatMessage(**message) for message in messages],
+        **fields,
+    )
+
+
+def _counted_body(payload):
+    """Run the count endpoint and return its decoded JSON body."""
+    response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    return json.loads(response.body)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param("hello", id = "plain_string"),
+        # Control for the image guard below: a text-only parts array is unaffected.
+        pytest.param([{"type": "text", "text": "hello"}], id = "text_parts"),
+    ],
+)
+def test_chat_count_tokens_prices_the_loaded_model_without_switching(monkeypatch, content):
+    # The recount has no abort signal, so a stale payload naming A must not drag the backend back.
+    switched, _counted = _count_tokens_backend(monkeypatch, "org/B-GGUF", count = 42)
+    payload = _count_request([{"role": "user", "content": content}])
+    # The reply names B, the tokenizer that produced the total, not the A asked for.
+    assert _counted_body(payload) == {"input_tokens": 42, "model": "org/B-GGUF"}
+    assert switched == []
+
+
+def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
+    # Schemas and the nudge are a large share of the prompt: price the completion's own selection.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
+    gate = {}
+
+    async def _select(payload, *, tools_on, mcp_allowed):
+        gate.update(tools_on = tools_on, mcp_allowed = mcp_allowed)
+        return [{"type": "function", "function": {"name": "web_search"}}]
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
+    payload = _count_request(
+        [{"role": "user", "content": "hello"}],
+        enable_tools = True,
+        enabled_tools = ["web_search"],
+    )
+    assert _counted_body(payload) == {"input_tokens": 99, "model": "org/A-GGUF"}
+    assert gate.get("tools_on") is True
+    assert [t.get("function", {}).get("name") for t in counted.get("tools") or []] == ["web_search"]
+    assert any(
+        message.get("role") == "system" and "web_search" in str(message.get("content", ""))
+        for message in counted.get("messages") or []
+    )
+
+
+# A leaked tool call in a replayed turn, plus an example naming a NOT-enabled tool the gate keeps.
+_LEAKED_TOOL_HISTORY = [
+    {"role": "user", "content": "weather?"},
+    {
+        "role": "assistant",
+        "content": 'sunny <tool_call>{"name": "web_search", "arguments": {"q": "weather"}}'
+        "</tool_call> and call it as offline_tool[ARGS]{}",
+    },
+    {"role": "user", "content": "and tomorrow?"},
+]
+
+
+@pytest.mark.parametrize(
+    ("fields", "expect_markup"),
+    [
+        # Auto-Heal on (default): the tool path strips before rendering, so raw markup reads high.
+        pytest.param({}, False, id = "auto_heal_default_on"),
+        pytest.param({"auto_heal_tool_calls": True}, False, id = "auto_heal_on"),
+        # Off leaves the markup in the real prompt, so the count has to keep it as well.
+        pytest.param({"auto_heal_tool_calls": False}, True, id = "auto_heal_off"),
+    ],
+)
+def test_chat_count_tokens_strips_replayed_tool_markup(monkeypatch, fields, expect_markup):
+    """The GGUF tool path strips stale tool-call XML out of replayed assistant turns before
+    rendering, so a count that keeps it prices text the completion removes."""
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
+
+    async def _select(_payload, *, tools_on, mcp_allowed):
+        return [{"type": "function", "function": {"name": "web_search"}}]
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
+    payload = _count_request(
+        _LEAKED_TOOL_HISTORY,
+        enable_tools = True,
+        enabled_tools = ["web_search"],
+        **fields,
+    )
+    assert _counted_body(payload)["input_tokens"] == 99
+    assistant = [m for m in counted["messages"] if m.get("role") == "assistant"]
+    assert len(assistant) == 1
+    content = str(assistant[0].get("content", ""))
+    assert (
+        "<tool_call>" in content
+    ) is expect_markup, "the count must render the same replayed history the completion does"
+    assert (
+        "offline_tool[ARGS]" in content
+    ), "an inactive tool name is prose in the real prompt, so the count keeps it too"
+
+
+_PASSTHROUGH_CATALOG = [
+    {"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}
+]
+_PASSTHROUGH_TOOL_HISTORY = [
+    {"role": "user", "content": "weather?"},
+    {
+        "role": "assistant",
+        "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}
+        ],
+    },
+    {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+]
+_PASSTHROUGH_PLAIN = [{"role": "user", "content": "hi"}]
+
+
+@pytest.mark.parametrize(
+    ("cli_policy", "messages", "fields", "priced_tools"),
+    [
+        # The reported shape: `unsloth run --enable-tools` sets the process policy without asking
+        # for the tool loop, so tool history still goes to llama-server verbatim, bare.
+        pytest.param(
+            True,
+            _PASSTHROUGH_TOOL_HISTORY,
+            {},
+            None,
+            id = "cli_policy_does_not_price_a_passthrough_prompt",
+        ),
+        # Negative control: with no tool history the same policy takes the ordinary GGUF loop.
+        pytest.param(
+            True,
+            _PASSTHROUGH_PLAIN,
+            {},
+            ["web_search"],
+            id = "cli_policy_prices_an_ordinary_chat",
+        ),
+        # The passthrough is the one route that forwards the caller's own catalog.
+        pytest.param(
+            None,
+            _PASSTHROUGH_PLAIN,
+            {"tools": _PASSTHROUGH_CATALOG},
+            ["get_weather"],
+            id = "client_catalog_is_priced_verbatim",
+        ),
+        # tool_choice "none" withdraws the catalog, leaving the request on the ordinary path.
+        pytest.param(
+            None,
+            _PASSTHROUGH_PLAIN,
+            {"tools": _PASSTHROUGH_CATALOG, "tool_choice": "none"},
+            None,
+            id = "withdrawn_catalog_is_not_priced",
+        ),
+        # ... unless tool history needs those schemas to replay, keeping it on the passthrough.
+        pytest.param(
+            None,
+            _PASSTHROUGH_TOOL_HISTORY,
+            {"tools": _PASSTHROUGH_CATALOG, "tool_choice": "none"},
+            ["get_weather"],
+            id = "withdrawn_catalog_with_tool_history_is_priced",
+        ),
+        # It withdraws the process policy's own catalog too, as _client_disabled_tool_calls does.
+        pytest.param(
+            True,
+            _PASSTHROUGH_PLAIN,
+            {"tool_choice": "none"},
+            None,
+            id = "withdrawn_catalog_beats_the_cli_policy",
+        ),
+    ],
+)
+def test_chat_count_tokens_prices_the_route_the_completion_takes(
+    monkeypatch, cli_policy, messages, fields, priced_tools
+):
+    """The count must describe the request the completion actually sends (#7453).
+
+    Applying the process tool policy without first asking which route the request takes prices a
+    built-in catalog plus the action nudge, while the completion forwards verbatim and sends neither.
+    """
+    import state.tool_policy as _tp
+
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
+
+    async def _select(payload, *, tools_on, mcp_allowed):
+        return [{"type": "function", "function": {"name": "web_search"}}]
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
+    monkeypatch.setattr(_tp, "get_tool_policy", lambda: cli_policy)
+
+    assert _counted_body(_count_request(messages, **fields))["input_tokens"] == 99
+    assert [(tool.get("function") or {}).get("name") for tool in counted.get("tools") or []] == (
+        priced_tools or []
+    )
+    # The nudge rides with the built-in selection, so it must follow the same verdict.
+    nudged = any(
+        message.get("role") == "system" and "web_search" in str(message.get("content", ""))
+        for message in counted.get("messages") or []
+    )
+    assert nudged is (priced_tools == ["web_search"])
+
+
+def test_chat_count_tokens_keeps_adjacent_user_turns_on_the_passthrough(monkeypatch):
+    """Coalescing is an ordinary-GGUF-path step, so it has to follow the routing.
+
+    ``_openai_messages_for_passthrough`` drops the empty assistant sentinel but keeps the two user
+    turns around it (a stopped response's shape), so merging prices a prompt that route never sends.
+    """
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
+    sentinel_thread = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": ""},
+        {"role": "user", "content": "second"},
+    ]
+
+    _counted_body(_count_request(sentinel_thread, tools = _PASSTHROUGH_CATALOG))
+    assert [message.get("content") for message in counted.get("messages") or []] == [
+        "first",
+        "second",
+    ]
+
+    # Negative control: off the passthrough the same thread merges, so no two user turns in a row.
+    _counted_body(_count_request(sentinel_thread))
+    assert [message.get("content") for message in counted.get("messages") or []] == [
+        "first\n\nsecond"
+    ]
+
+
+def _in_flight_generation():
+    """One registered generation, as the completion path registers it."""
+    from state import active_generations
+    return active_generations.ActiveGeneration(threading.Event(), thread_id = "t1")
+
+
+def test_chat_count_tokens_refuses_while_a_generation_is_in_flight(monkeypatch):
+    # The whole point of the endpoint's cost budget: a count must never share llama-server with a
+    # decode. The frontend gate only covers our own tab, so the refusal has to live here too.
+    switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    # Reached only after the tool selection and message rewriting, so it doubles as proof that the
+    # refusal happens on entry rather than after the handler has already done that work.
+    reached: list = []
+    real = inference_route._llama_status_checkpoint_id
+    monkeypatch.setattr(
+        inference_route,
+        "_llama_status_checkpoint_id",
+        lambda backend: (reached.append(1), real(backend))[1],
+    )
+    payload = _count_request([{"role": "user", "content": "hello"}])
+    with _in_flight_generation():
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert excinfo.value.status_code == 503
+    assert "generation" in str(excinfo.value.detail).lower()
+    assert reached == [], "the handler must decline before doing any of the count's work"
+    assert counted == {}, "the tokenizer must not be reached"
+    assert switched == [], "and neither must the auto-switch hook"
+
+
+def test_chat_count_tokens_counts_again_once_the_generation_ends(monkeypatch):
+    # Control: the refusal keys on a live generation, not on the request, and it does not latch.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    payload = _count_request([{"role": "user", "content": "hello"}])
+    with _in_flight_generation():
+        with pytest.raises(HTTPException):
+            asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    body = _counted_body(payload)
+    assert body["input_tokens"] == 1234
+    assert counted != {}, "the tokenizer must be reached once nothing is decoding"
+
+
+def test_chat_count_tokens_refuses_a_generation_that_starts_mid_count(monkeypatch):
+    # Everything between the entry guard and the tokenizer awaits, so a run can begin in the gap.
+    # _llama_status_checkpoint_id is the last call before the second guard: start a generation
+    # from inside it and the count must abandon rather than proceed with what it already built.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    started: list = []
+    real = inference_route._llama_status_checkpoint_id
+
+    def _start_a_run(backend):
+        if not started:
+            handle = _in_flight_generation()
+            handle.__enter__()
+            started.append(handle)
+        return real(backend)
+
+    monkeypatch.setattr(inference_route, "_llama_status_checkpoint_id", _start_a_run)
+    payload = _count_request([{"role": "user", "content": "hello"}])
+    try:
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    finally:
+        for handle in started:
+            handle.__exit__(None, None, None)
+    assert started, "the hook must have fired, or the test proves nothing"
+    assert excinfo.value.status_code == 503
+    assert "generation" in str(excinfo.value.detail).lower()
+    assert counted == {}, "the tokenizer must not be reached"
+
+
+def _enabled_mcp_server(
+    tmp_path,
+    monkeypatch,
+    *,
+    cached = None,
+    cooloff = False,
+):
+    """One enabled MCP server, with its discovery cache in a known state.
+
+    Both cache dicts are module globals shared across the whole test session, so they are
+    replaced rather than mutated: a leftover entry would make an "undiscovered" case look
+    discovered and quietly pass.
+    """
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+    from storage import mcp_servers_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(tools_mod, "stdio_mcp_enabled", lambda: True)
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "S", url = "http://mcp.test/sse", is_enabled = True
+    )
+    if cached is not None:
+        mcp_client.cache_tools("s1", cached)
+    if cooloff:
+        mcp_client.record_probe_failure("s1")
+
+    # Any probe at all is a failure of the whole design: a count must not reach the network.
+    async def _no_probes(**_kwargs):
+        raise AssertionError("a count must never probe an MCP server")
+
+    monkeypatch.setattr(tools_mod, "list_tools_async", _no_probes)
+
+
+MCP_TOOL_PAYLOAD = [{"name": "lookup", "description": "d", "inputSchema": {"type": "object"}}]
+
+
+def test_cached_mcp_tools_reads_the_cache_without_probing(tmp_path, monkeypatch):
+    from core.inference.tools import cached_mcp_tools
+
+    _enabled_mcp_server(tmp_path, monkeypatch, cached = MCP_TOOL_PAYLOAD)
+    specs, complete = cached_mcp_tools()
+    assert complete is True
+    assert [spec["function"]["name"] for spec in specs] == ["mcp__s1__lookup"]
+
+
+def test_cached_mcp_tools_reports_an_undiscovered_server_as_incomplete(tmp_path, monkeypatch):
+    from core.inference.tools import cached_mcp_tools
+
+    _enabled_mcp_server(tmp_path, monkeypatch)
+    specs, complete = cached_mcp_tools()
+    assert specs == []
+    assert complete is False, (
+        "a completion would probe this server and render its schemas, so a count that skips "
+        "them is short, not exact"
+    )
+
+
+def test_cached_mcp_tools_counts_a_cooloff_server_as_complete(tmp_path, monkeypatch):
+    # The completion renders nothing for a cool-off server either, so skipping it is exact rather
+    # than short. Declining here would blank the bar over an agreement.
+    from core.inference.tools import cached_mcp_tools
+
+    _enabled_mcp_server(tmp_path, monkeypatch, cooloff = True)
+    specs, complete = cached_mcp_tools()
+    assert specs == []
+    assert complete is True
+
+
+def test_chat_count_tokens_declines_an_undiscovered_mcp_server(tmp_path, monkeypatch):
+    # Undercounting is the dangerous direction: it tells the user room exists that the next
+    # request will not find. Discovery is not an option on this path, so decline instead.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234, supports_tools = True)
+    _enabled_mcp_server(tmp_path, monkeypatch)
+    payload = _count_request([{"role": "user", "content": "hello"}], mcp_enabled = True)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert excinfo.value.status_code == 503
+    assert "mcp" in str(excinfo.value.detail).lower()
+    assert counted == {}, "the tokenizer must not be reached with a short tool list"
+
+
+def test_chat_count_tokens_prices_cached_mcp_schemas(tmp_path, monkeypatch):
+    # MCP alone turns tools on for the completion, so the count has to render them even with the
+    # built-in tools off, or the bar is short by a whole catalog.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234, supports_tools = True)
+    _enabled_mcp_server(tmp_path, monkeypatch, cached = MCP_TOOL_PAYLOAD)
+    payload = _count_request(
+        [{"role": "user", "content": "hello"}], mcp_enabled = True, enabled_tools = []
+    )
+    body = _counted_body(payload)
+    assert body["input_tokens"] == 1234
+    names = [tool["function"]["name"] for tool in (counted.get("tools") or [])]
+    assert (
+        "mcp__s1__lookup" in names
+    ), "a cached MCP schema is in the completion's prompt, so it must be in the count"
+
+
+def test_chat_count_tokens_ignores_an_mcp_server_the_request_did_not_enable(tmp_path, monkeypatch):
+    # Control: the decline keys on the request asking for MCP, not on a server merely existing.
+    # tool_choice "none" would NOT be a control here: _explicit_studio_tool_loop_requested treats
+    # mcp_enabled as an explicit ask, so the completion still renders the catalog.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234, supports_tools = True)
+    _enabled_mcp_server(tmp_path, monkeypatch)
+    body = _counted_body(_count_request([{"role": "user", "content": "hello"}]))
+    assert body["input_tokens"] == 1234
+    assert counted != {}, "the tokenizer must still be reached"
+
+
+def test_a_count_admitted_while_idle_stands_down_if_a_run_starts(monkeypatch):
+    """Admission and the work are separate steps. A run that registers in between cannot be
+    prevented without a lock in front of generation startup, so the count abandons at the
+    checkpoint between /apply-template and /tokenize instead of spending the second trip."""
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    payload = _count_request([{"role": "user", "content": "hello"}])
+    started: list = []
+
+    def _count(
+        messages,
+        system,
+        tools,
+        strict = False,
+        chat_template_kwargs = None,
+        should_abort = None,
+    ):
+        # Stand in for /apply-template returning: the run lands, then the checkpoint is polled.
+        handle = _in_flight_generation()
+        handle.__enter__()
+        started.append(handle)
+        assert should_abort is not None, "the route must give the tokenizer a way to stand down"
+        if should_abort():
+            from core.inference.llama_cpp import CountAborted
+            raise CountAborted()
+        counted.update(messages = messages)
+        return 1234
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = inference_route.get_llama_cpp_backend()
+    monkeypatch.setattr(backend, "count_chat_tokens", _count)
+    assert LlamaCppBackend is not None
+    try:
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    finally:
+        for handle in started:
+            handle.__exit__(None, None, None)
+    assert started, "the hook must have fired, or the test proves nothing"
+    assert excinfo.value.status_code == 503
+    assert "generation" in str(excinfo.value.detail).lower()
+    assert counted == {}, "the second round trip must not happen"
+
+
+def test_a_count_that_stays_idle_is_not_aborted(monkeypatch):
+    # Control: the checkpoint fires on a live run, not on every count.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    seen: list = []
+
+    def _count(
+        messages,
+        system,
+        tools,
+        strict = False,
+        chat_template_kwargs = None,
+        should_abort = None,
+    ):
+        seen.append(should_abort() if should_abort else None)
+        counted.update(messages = messages)
+        return 1234
+
+    backend = inference_route.get_llama_cpp_backend()
+    monkeypatch.setattr(backend, "count_chat_tokens", _count)
+    body = _counted_body(_count_request([{"role": "user", "content": "hello"}]))
+    assert body["input_tokens"] == 1234
+    assert seen == [False], "an idle server must report nothing to stand down for"
+
+
+@pytest.mark.parametrize(
+    ("abort", "expect_tokenize"),
+    [(True, False), (False, True)],
+    ids = ["run_started", "still_idle"],
+)
+def test_count_chat_tokens_stands_down_before_tokenizing(monkeypatch, abort, expect_tokenize):
+    """The abort has to escape the template except-block. Swallowed, it would set
+    apply_template_failed and the text fallback would tokenize anyway, which is the work
+    being declined. The control shows the poll alone does not stop an idle count."""
+    from core.inference import llama_cpp as llama_cpp_mod
+    from core.inference.llama_cpp import CountAborted, LlamaCppBackend
+
+    posted: list = []
+
+    class _FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def post(
+            self,
+            url,
+            json = None,
+        ):
+            posted.append(url)
+            if url.endswith("/apply-template"):
+                return _FakeResponse({"prompt": "user hi"})
+            return _FakeResponse({"tokens": [1, 2]})
+
+    class _CountBackend(LlamaCppBackend):
+        is_loaded = True
+        base_url = "http://127.0.0.1:1"
+        _auth_headers = None
+
+        def __init__(self):
+            pass
+
+    monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _FakeClient)
+    call = lambda: _CountBackend().count_chat_tokens(
+        [{"role": "user", "content": "hi"}],
+        strict = True,
+        should_abort = lambda: abort,
+    )
+    if abort:
+        with pytest.raises(CountAborted):
+            call()
+    else:
+        assert call() == 2
+    assert any(u.endswith("/tokenize") for u in posted) is expect_tokenize
+
+
+def test_chat_count_tokens_refuses_image_messages(monkeypatch):
+    # Images become a short /apply-template marker: refuse rather than undercount, before the switch.
+    switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    payload = _count_request(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="},
+                    },
+                ],
+            }
+        ]
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert excinfo.value.status_code == 503
+    assert counted == {}, "the tokenizer must not be reached"
+    assert switched == [], "and neither must the auto-switch hook"
+
+
+def test_chat_count_tokens_refuses_audio_messages(monkeypatch):
+    # extra = "allow", so without this guard audio_base64 is accepted, dropped and undercounted.
+    switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    payload = _count_request(
+        [{"role": "user", "content": "what did I just say"}],
+        audio_base64 = "UklGRiQAAABXQVZF",
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert excinfo.value.status_code == 503
+    assert "audio" in str(excinfo.value.detail).lower()
+    assert counted == {}, "the tokenizer must not be reached"
+    assert switched == [], "and neither must the auto-switch hook"
+
+
+def test_chat_count_tokens_still_counts_without_audio(monkeypatch):
+    # Control: the refusal keys on the audio, not on the shape of the request.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    body = _counted_body(_count_request([{"role": "user", "content": "what did I just say"}]))
+    assert body["input_tokens"] == 1234
+    assert counted != {}, "the tokenizer must be reached"
+
+
+# Shapes the recount sends for a thread with documents in scope. Only a PENDING turn is answered
+# from these exact messages, and the tool loop opens it by splicing in what RAG retrieves.
+_PENDING_USER_TURN = [{"role": "user", "content": "what does the contract say"}]
+_PENDING_TOOL_TURN = [
+    {"role": "user", "content": "what does the contract say"},
+    {"role": "assistant", "content": "checking"},
+    {"role": "tool", "content": "{}", "tool_call_id": "call_1"},
+]
+_SETTLED_TURN = [
+    {"role": "user", "content": "what does the contract say"},
+    {"role": "assistant", "content": "it renews yearly"},
+]
+
+
+@pytest.mark.parametrize(
+    ("messages", "rag_scope", "expected_total"),
+    [
+        # Retrieval splices passages in front of this turn, so counting alone says it fits.
+        pytest.param(_PENDING_USER_TURN, {"thread_id": "t1"}, None, id = "pending_user_turn"),
+        # An interrupted loop's unanswered tool result is the same pending shape.
+        pytest.param(_PENDING_TOOL_TURN, {"project_id": "p1"}, None, id = "pending_tool_turn"),
+        # Ends on an assistant turn: retrieval has no user message yet, so nothing is omitted.
+        pytest.param(_SETTLED_TURN, {"thread_id": "t1"}, 4242, id = "settled_turn_still_counts"),
+        # No documents in scope means no injection to miss, pending turn or not.
+        pytest.param(_PENDING_USER_TURN, None, 4242, id = "no_rag_scope_still_counts"),
+    ],
+)
+def test_chat_count_tokens_declines_a_pending_turn_that_would_retrieve(
+    monkeypatch, messages, rag_scope, expected_total
+):
+    """A recount that omits RAG injection under-reports, the one direction the context bar must
+    never be wrong in. Decline as the image case does and leave the usage the bar already had."""
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 4242)
+    payload = _count_request(
+        messages,
+        **({"rag_scope": rag_scope} if rag_scope else {}),
+    )
+    try:
+        total = _counted_body(payload).get("input_tokens")
+    except HTTPException as exc:
+        if exc.status_code != 503:
+            raise
+        total = None
+
+    assert total == expected_total, (
+        "a pending turn whose generation would retrieve documents must be declined, "
+        "not priced without them"
+    )
+    if expected_total is None:
+        assert counted == {}, "the tokenizer must not be reached for a declined count"
+
+
+def test_chat_count_tokens_declines_when_the_model_changes_mid_count(monkeypatch):
+    """A load landing while the tokenizer runs leaves a total attributable to neither model, and
+    the caller's checkpoint guard never moved, so either identity would have it trust the number."""
+    _switched, counted = _count_tokens_backend(monkeypatch, "org/A-GGUF", count = 555)
+    backend = inference_route.get_llama_cpp_backend()
+    inner = backend.count_chat_tokens
+
+    def _count_then_swap(*args, **kwargs):
+        result = inner(*args, **kwargs)
+        # Another tab finishes loading B while this count is in the worker thread.
+        backend.model_identifier = "org/B-GGUF"
+        return result
+
+    backend.count_chat_tokens = _count_then_swap
+    payload = _count_request([{"role": "user", "content": "hello"}])
+    try:
+        total = _counted_body(payload).get("input_tokens")
+    except HTTPException as exc:
+        if exc.status_code != 503:
+            raise
+        total = None
+
+    assert (
+        total is None
+    ), "a total counted across a model change must not be published as either model's"
+    assert counted.get("messages"), "the tokenizer still ran; only its result is dropped"
+
+
+def test_chat_count_tokens_collapses_system_turns(monkeypatch):
+    # The completion path joins every system/developer turn into one; the count renders that.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 13)
+    payload = _count_request(
+        [
+            {"role": "system", "content": "Runtime rules."},
+            {"role": "system", "content": "Studio prompt."},
+            {"role": "user", "content": "hello"},
+        ]
+    )
+    asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    messages = counted.get("messages") or []
+    systems = [m for m in messages if m.get("role") in ("system", "developer")]
+    assert len(systems) == 1, messages
+    assert "Runtime rules." in systems[0].get("content", "")
+    assert "Studio prompt." in systems[0].get("content", "")
+
+
+@pytest.mark.parametrize(
+    ("reasoning_style", "fields", "expected"),
+    [
+        # Qwen3-style gate: with Thinking off the completion sends enable_thinking=false and the
+        # template prefills an empty <think> block; without it, the LOADED mode renders.
+        pytest.param(
+            "enable_thinking",
+            {"enable_thinking": False},
+            {"enable_thinking": False},
+            id = "thinking_turned_off",
+        ),
+        # gpt-oss-style: the effort level is rendered into the system turn.
+        pytest.param(
+            "reasoning_effort",
+            {"reasoning_effort": "low"},
+            {"reasoning_effort": "low"},
+            id = "effort_level",
+        ),
+        # preserve_thinking decides whether past <think> blocks stay: a short count or the history.
+        pytest.param(
+            "enable_thinking",
+            {"enable_thinking": True, "preserve_thinking": True},
+            {"enable_thinking": True, "preserve_thinking": True},
+            id = "preserve_thinking",
+        ),
+        # Nothing selected: send nothing, so llama-server keeps its load-time defaults.
+        pytest.param("enable_thinking", {}, None, id = "template_default"),
+    ],
+)
+def test_chat_count_tokens_renders_the_requested_reasoning_mode(
+    monkeypatch, reasoning_style, fields, expected
+):
+    # llama-server layers request kwargs over the load-time ones: omitting them prices LOAD mode.
+    _switched, counted = _count_tokens_backend(
+        monkeypatch, count = 7, reasoning_style = reasoning_style
+    )
+    payload = _count_request([{"role": "user", "content": "hello"}], **fields)
+    assert _counted_body(payload) == {"input_tokens": 7, "model": "org/A-GGUF"}
+    assert counted.get("chat_template_kwargs") == expected
+
+
+@pytest.mark.parametrize(
+    ("template_kwargs", "expected_tokens"),
+    [
+        # Thinking off: the template prefills an empty <think></think> pair the completion pays for.
+        pytest.param({"enable_thinking": False}, 5, id = "thinking_off"),
+        pytest.param(None, 3, id = "template_default"),
+    ],
+)
+def test_count_chat_tokens_renders_with_the_requested_template_kwargs(
+    monkeypatch, template_kwargs, expected_tokens
+):
+    """The kwargs have to reach llama-server itself: /apply-template runs the same parser
+    as /v1/chat/completions, so the rendered prompt only moves when they are in the body."""
+    from core.inference import llama_cpp as llama_cpp_mod
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    class _FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def post(
+            self,
+            url,
+            json = None,
+        ):
+            body = json or {}
+            if not url.endswith("/apply-template"):
+                return _FakeResponse({"tokens": str(body.get("content", "")).split()})
+            # A Qwen3-style template: thinking off prefills an empty reasoning block.
+            kwargs = body.get("chat_template_kwargs") or {}
+            prefill = "" if kwargs.get("enable_thinking", True) else " <think> </think>"
+            return _FakeResponse({"prompt": "user hi assistant" + prefill})
+
+    class _CountBackend(LlamaCppBackend):
+        is_loaded = True
+        base_url = "http://127.0.0.1:1"
+        _auth_headers = None
+
+        def __init__(self):
+            pass
+
+    monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _FakeClient)
+    assert (
+        _CountBackend().count_chat_tokens(
+            [{"role": "user", "content": "hi"}],
+            strict = True,
+            chat_template_kwargs = template_kwargs,
+        )
+        == expected_tokens
+    )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        # A minja template that cannot render this history, or a build without the endpoint.
+        pytest.param("status", id = "apply_template_rejects"),
+        # The template call times out while the tokenizer answers.
+        pytest.param("raise", id = "apply_template_unreachable"),
+    ],
+)
+def test_strict_count_refuses_a_text_only_template_fallback(monkeypatch, failure):
+    """/apply-template failing on a TEXT-ONLY prompt used to fall through to concatenating message
+    text, dropping every role marker, special token and tool schema (~30% of a six-turn two-tool
+    prompt). Strict callers publish what they get, so it must be an error, not an estimate."""
+    from core.inference import llama_cpp as llama_cpp_mod
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    class _FakeResponse:
+        def __init__(
+            self,
+            payload,
+            status_code = 200,
+        ):
+            self._payload = payload
+            self.status_code = status_code
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def post(
+            self,
+            url,
+            json = None,
+        ):
+            body = json or {}
+            if url.endswith("/apply-template"):
+                if failure == "raise":
+                    raise RuntimeError("timed out")
+                return _FakeResponse({"error": "template error"}, status_code = 500)
+            return _FakeResponse({"tokens": str(body.get("content", "")).split()})
+
+    class _CountBackend(LlamaCppBackend):
+        is_loaded = True
+        base_url = "http://127.0.0.1:1"
+        _auth_headers = None
+
+        def __init__(self):
+            pass
+
+    monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _FakeClient)
+    messages = [{"role": "user", "content": "hi there"}]
+    tools = [{"type": "function", "function": {"name": "web_search"}}]
+    with pytest.raises(RuntimeError):
+        _CountBackend().count_chat_tokens(messages, None, tools, strict = True)
+    # Non-strict callers keep the best-effort approximation they have always had.
+    assert _CountBackend().count_chat_tokens(messages, None, tools) > 0
+
+
+def test_an_empty_chat_sends_the_empty_list_unchanged(monkeypatch):
+    """A fresh New Chat has no messages and, by default, no system prompt. The count must
+    forward that empty list as-is rather than inventing a turn to make the template happy.
+
+    Templates that index ``messages[0]`` look like they must reject an empty list, and under
+    python jinja2 they do. llama-server renders through minja, where that yields undefined
+    instead of raising, so the real engine returns the bare preamble. Checked against the
+    shipped templates for Llama-3.2-1B-Instruct, Qwen3-8B, Phi-4, gemma-3-270m-it and
+    mistral-7b-instruct-v0.3 driven through llama-server with --jinja: all five render.
+    Injecting a placeholder system turn would add a system block to the count for Qwen3
+    (+30 chars) and Phi-4 (+38), overcounting the empty chat the bar exists to show."""
+    from core.inference import llama_cpp as llama_cpp_mod
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    seen = {}
+
+    class _FakeResponse:
+        def __init__(
+            self,
+            payload,
+            status_code = 200,
+        ):
+            self._payload = payload
+            self.status_code = status_code
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def post(
+            self,
+            url,
+            json = None,
+        ):
+            body = json or {}
+            if url.endswith("/apply-template"):
+                seen["messages"] = body.get("messages")
+                # What minja does: no messages renders the preamble, it does not raise.
+                return _FakeResponse({"prompt": "<start_of_turn>model\n"})
+            return _FakeResponse({"tokens": str(body.get("content", "")).split()})
+
+    class _CountBackend(LlamaCppBackend):
+        is_loaded = True
+        base_url = "http://127.0.0.1:1"
+        _auth_headers = None
+
+        def __init__(self):
+            pass
+
+    monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _FakeClient)
+    count = _CountBackend().count_chat_tokens([], None, None, strict = True)
+    assert seen["messages"] == [], "the count must not invent a turn the caller never sent"
+    assert count > 0, "a fresh chat still prices the template preamble"
+
+
+def test_a_count_never_spawns_mcp_servers():
+    """get_enabled_mcp_tools starts stdio MCP server processes, writes cache and cooloff state,
+    and blocks for a whole probe timeout against a server that is down. A background recount
+    must not do host work the user's completion never asked for, so the count path pins
+    mcp_allowed False rather than deriving it from payload.mcp_enabled."""
+    import ast
+    import pathlib
+
+    src = pathlib.Path(__file__).resolve().parents[1] / "routes" / "inference.py"
+    tree = ast.parse(src.read_text(encoding = "utf-8"))
+    handler = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "chat_count_tokens"
+    )
+
+    # The only assignment to _mcp_allowed in the handler must be the constant False.
+    assigned = [
+        node.value
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "_mcp_allowed" for t in node.targets)
+    ]
+    assert assigned, "the count handler no longer pins _mcp_allowed; this test is stale"
+    assert all(
+        isinstance(v, ast.Constant) and v.value is False for v in assigned
+    ), "a count must never enable MCP discovery"
+
+    called = {
+        node.func.id
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "get_enabled_mcp_tools" not in called
 
 
 def test_audio_generate_is_reload_only(monkeypatch):
@@ -5810,3 +6842,21 @@ def test_two_spellings_of_one_cached_quant_do_not_delete_each_others_save(monkey
     stored = settings.get_model_overrides()
     assert list(stored) in ([repo], [snapshot]), stored
     assert stored[list(stored)[0]]["max_seq_length"] in (4096, 8192)
+
+
+def test_mlx_kv_bits_survives_the_whole_override_projection():
+    # Dropped here, an API auto-switch would load a remembered MLX model at full
+    # precision while the picker honored the width.
+    for bits in (8, 6, 5, 4, 3, 2):
+        assert settings.normalize_model_override({"mlx_kv_bits": bits}) == {"mlx_kv_bits": bits}
+
+    # A discrete set, so an in-range width can still be one mx.quantize rejects.
+    # bool is an int subclass, and a string width would reach LoadRequest untyped.
+    for rejected in (7, 1, 0, 9, True, False, "4", 4.5, None):
+        assert settings.normalize_model_override({"mlx_kv_bits": rejected}) == {}
+
+    # Ungated on is_gguf, matching the picker's own load payload.
+    for is_gguf in (True, False):
+        kwargs = settings.model_override_load_kwargs({"mlx_kv_bits": 4}, is_gguf = is_gguf)
+        assert kwargs["mlx_kv_bits"] == 4
+        assert LoadRequest(model_path = "unsloth/A", **kwargs).mlx_kv_bits == 4

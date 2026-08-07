@@ -15,6 +15,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import shutil
 import stat
 import tracemalloc
 from pathlib import Path
@@ -1499,6 +1500,14 @@ _BACKEND = Path(__file__).resolve().parents[1]
 _REPO_WIDE_HELPERS = frozenset(
     {
         "_cache_inventory_fields",
+        # The row's pipeline task. Repo-wide on purpose and NOT a snapshot signal: it answers "which
+        # model is this", which every revision of a repo agrees on. The non-GGUF classifier returns
+        # non-None only when detect_family(repo_id) does, and _repo_is_diffusers is True whenever
+        # that holds, so its newest-revision _repo_has_pipeline_index branch cannot change the
+        # answer; the GGUF one reads general.architecture, identical in every cached quant. Scoping
+        # it would only lose rows -- an unreadable header in the one pinned snapshot would drop the
+        # repo from the Images/Video pickers entirely.
+        "_cached_row_task",
         "_repo_gguf_last_modified",
         "_repo_gguf_payload_snapshots",
         "_repo_gguf_size_bytes",
@@ -3094,6 +3103,610 @@ def test_a_self_contained_snapshot_is_not_made_partial_by_a_second_one(
     assert [row["repo_id"] for row in rows] == ["Org/Model"]
     assert rows[0]["partial"] is False
     assert rows[0]["capabilities"]["can_chat"] is True
+
+
+def test_a_newer_companion_only_snapshot_does_not_make_the_ref_snapshot_partial(
+    tmp_path, monkeypatch
+):
+    """The pipeline signals must read the snapshot the row loads, not the newest one.
+
+    A GGUF image load leaves a companion-only prefetch (root ``model_index.json`` + VAE /
+    text-encoder, no ``transformer/``) in a NEW revision beside the complete pipeline that
+    ``refs/main`` still resolves to. huggingface_hub reads ``refs/main`` to turn ``main`` into a
+    commit, so ``from_pretrained(repo_id)`` opens the OLD, complete directory -- judging the row on
+    the newest revision instead marks a fully downloaded model partial and unchattable."""
+    from types import SimpleNamespace
+
+    from hub.services.models import cache_inventory
+
+    # No root config.json: real diffusers pipelines ship model_index.json and per-component
+    # configs only, and a fixture that adds one would pin a layout that does not occur.
+    pipeline = {
+        "model_index.json": b'{"_class_name":"FluxPipeline"}',
+        "transformer/config.json": b'{"_class_name":"FluxTransformer2DModel"}',
+        "vae/config.json": b'{"_class_name":"AutoencoderKL"}',
+        "text_encoder/model.safetensors": b"\0" * 256,
+        "transformer/diffusion_pytorch_model.safetensors": b"\0" * 256,
+        "vae/diffusion_pytorch_model.safetensors": b"\0" * 256,
+    }
+    companion_only = {name: blob for name, blob in pipeline.items() if "transformer/" not in name}
+    repo_dir = _repo_with(
+        tmp_path,
+        # SNAPSHOT is the companion-only prefetch, OLDER the complete pipeline refs/main names.
+        snapshots = {SNAPSHOT: companion_only, OLDER: pipeline},
+        refs = {"main": OLDER},
+    )
+    # The companion-only revision is unambiguously the newest, the shape the repo-wide check picks.
+    os.utime(repo_dir / "snapshots" / OLDER, (1_000_000, 1_000_000))
+    os.utime(repo_dir / "snapshots" / SNAPSHOT, (2_000_000, 2_000_000))
+
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = tmp_path),
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    try:
+        rows = cache_inventory._scan_cached_models()
+    finally:
+        inventory_scan.invalidate_hf_cache_scans()
+
+    assert [row["repo_id"] for row in rows] == ["Org/Model"]
+    # The row loads by repo id, so refs/main decides: the complete pipeline.
+    assert rows[0]["load_id"] == "Org/Model"
+    assert rows[0]["partial"] is False
+    assert rows[0]["capabilities"]["can_chat"] is True
+    # ... and that same directory carries the manifest, so it is not a single-file checkpoint.
+    assert rows[0]["single_file"] is False
+
+
+def _pipeline_snapshot(tmp_path, manifest: dict, files: dict) -> Path:
+    """A diffusers pipeline snapshot: root ``model_index.json`` plus component subdirs."""
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "model_index.json").write_bytes(json.dumps(manifest).encode())
+    for name, blob in files.items():
+        target = snapshot / name
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_bytes(blob)
+    return snapshot
+
+
+_FLUX_INDEX = {
+    "_class_name": "FluxPipeline",
+    "transformer": ["diffusers", "FluxTransformer2DModel"],
+    "vae": ["diffusers", "AutoencoderKL"],
+    "safety_checker": [None, None],
+}
+# Trimmed from the real manifests of CalamitousFelicitousness/Ideogram-4-bf16-Diffusers and
+# Wan-AI/Wan2.2-T2V-A14B-Diffusers, which each ship two denoiser directories.
+_IDEOGRAM_INDEX = {
+    "_class_name": "Ideogram4Pipeline",
+    "transformer": ["diffusers", "Ideogram4Transformer2DModel"],
+    "unconditional_transformer": ["diffusers", "Ideogram4Transformer2DModel"],
+    "vae": ["diffusers", "AutoencoderKLFlux2"],
+}
+_WAN_INDEX = {
+    "_class_name": "WanPipeline",
+    "transformer": ["diffusers", "WanTransformer3DModel"],
+    "transformer_2": ["diffusers", "WanTransformer3DModel"],
+    "vae": ["diffusers", "AutoencoderKLWan"],
+}
+# Wan-AI/Wan2.2-TI2V-5B-Diffusers declares transformer_2 as [null, null] and ships no such dir.
+_WAN_SINGLE_EXPERT_INDEX = dict(_WAN_INDEX, transformer_2 = [None, None])
+# Stable Cascade and friends call theirs "decoder"/"prior", so no key matches either fixed name.
+_CASCADE_INDEX = {
+    "_class_name": "StableCascadeDecoderPipeline",
+    "decoder": ["diffusers", "StableCascadeUNet"],
+    "text_encoder": ["transformers", "CLIPTextModelWithProjection"],
+    "vqgan": ["wuerstchen", "PaellaVQModel"],
+}
+
+
+def test_a_denoiser_missing_half_its_shards_is_not_a_present_denoiser(tmp_path):
+    """Shard 1 of 2 alone is not a present denoiser, and the last shard completes it."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors.index.json": json.dumps(
+                {
+                    "weight_map": {
+                        "a": "diffusion_pytorch_model-00001-of-00002.safetensors",
+                        "b": "diffusion_pytorch_model-00002-of-00002.safetensors",
+                    }
+                }
+            ).encode(),
+            "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": b"\0" * 256,
+            "vae/diffusion_pytorch_model.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+    (snapshot / "transformer" / "diffusion_pytorch_model-00002-of-00002.safetensors").write_bytes(
+        b"\0" * 256
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+def _dual_format_shard_index(fmt: str) -> bytes:
+    return json.dumps(
+        {
+            "weight_map": {
+                "a": f"diffusion_pytorch_model-00001-of-00002{fmt}",
+                "b": f"diffusion_pytorch_model-00002-of-00002{fmt}",
+            }
+        }
+    ).encode()
+
+
+def test_an_unused_alternate_format_index_does_not_tear_a_whole_snapshot(tmp_path):
+    """Each index is judged on its own shard set, so a whole safetensors set stays whole beside the
+    orphan ``.bin.index.json`` a dual-format repo leaves behind."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors.index.json": _dual_format_shard_index(
+                ".safetensors"
+            ),
+            "transformer/diffusion_pytorch_model.bin.index.json": _dual_format_shard_index(".bin"),
+            "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": b"\0" * 256,
+            "transformer/diffusion_pytorch_model-00002-of-00002.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+def test_neither_format_being_whole_is_still_torn(tmp_path):
+    """The other direction: any-index-SATISFIED, not any-index-present."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors.index.json": _dual_format_shard_index(
+                ".safetensors"
+            ),
+            "transformer/diffusion_pytorch_model.bin.index.json": _dual_format_shard_index(".bin"),
+            "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": b"\0" * 256,
+            "transformer/diffusion_pytorch_model-00001-of-00002.bin": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
+# diffusers' _add_variant inserts the variant before the LAST extension, so a bf16 shard index is
+# "...safetensors.index.bf16.json", not "...bf16.safetensors.index.json".
+_VARIANT_INDEX_NAME = "diffusion_pytorch_model.safetensors.index.bf16.json"
+
+
+@pytest.mark.parametrize(
+    "orphan_index, orphan_suffix",
+    [
+        ("diffusion_pytorch_model.bin.index.json", ".bin"),
+        (_VARIANT_INDEX_NAME, ".bf16.safetensors"),
+    ],
+)
+def test_an_orphan_variant_index_does_not_veto_the_default_weight(
+    orphan_index, orphan_suffix, tmp_path
+):
+    """An orphan variant index must not hide the unsharded default weight beside it."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors": b"\0" * 256,
+            f"transformer/{orphan_index}": _dual_format_shard_index(orphan_suffix),
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+def test_a_variant_only_component_is_missing_its_denoiser_whole_or_not(tmp_path):
+    """A dtype twin is not the weight a default load asks for, so a bf16 set does not make the
+    component readable -- not half landed, and not even whole.
+
+    ``from_pretrained`` without ``variant`` resolves the plain name and has no fallback to the
+    twin, raising ``Error no file named diffusion_pytorch_model.safetensors``. The download plan
+    skips those files for that reason, so a cache holding only them cannot serve this row.
+    """
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            f"transformer/{_VARIANT_INDEX_NAME}": _dual_format_shard_index(".bf16.safetensors"),
+            "transformer/diffusion_pytorch_model-00001-of-00002.bf16.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+    (
+        snapshot / "transformer" / "diffusion_pytorch_model-00002-of-00002.bf16.safetensors"
+    ).write_bytes(b"\0" * 256)
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
+@pytest.mark.parametrize("whole_suffix", [".safetensors", ".bin"])
+def test_a_corrupt_selected_index_hides_the_whole_weight_beside_it(whole_suffix, tmp_path):
+    """An unreadable selected index is the failure, not an absence of evidence.
+
+    ``is_sharded`` is set from that file merely existing, so the parse then raises with neither the
+    ``except IOError`` branch nor the pickle fallback reachable. The whole weight beside it is
+    never opened.
+    """
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors.index.json": b"{not json",
+            f"transformer/diffusion_pytorch_model{whole_suffix}": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
+def test_a_sharded_bin_set_is_not_what_a_default_load_resolves(tmp_path):
+    """``.bin`` shards behind their own index answer no default load: ``use_safetensors`` unset
+    coerces to True, so only the safetensors index name is built, and with none found the loader
+    asks for the UNSHARDED ``diffusion_pytorch_model.bin``, which a sharded set does not provide."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.bin.index.json": _dual_format_shard_index(".bin"),
+            "transformer/diffusion_pytorch_model-00001-of-00002.bin": b"\0" * 256,
+            "transformer/diffusion_pytorch_model-00002-of-00002.bin": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
+def test_the_legacy_variant_index_spelling_does_not_vouch_either(tmp_path):
+    """``_fetch_index_file_legacy`` spells the variant BEFORE ``.index``, so a deprecated fp16 set
+    ends in ``.index.json`` and a load passing no ``variant`` still never resolves it."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors.fp16.index.json": (
+                _dual_format_shard_index(".fp16.safetensors")
+            ),
+            "transformer/diffusion_pytorch_model-00001-of-00002.fp16.safetensors": b"\0" * 256,
+            "transformer/diffusion_pytorch_model-00002-of-00002.fp16.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
+def test_shards_whose_index_never_landed_do_not_stand_in_for_the_whole_weight(tmp_path):
+    """A numbered shard is only ever reached THROUGH an index, so a complete set whose index is
+    missing -- or, as here, a dangling blob symlink the cache already collected -- is wreckage
+    rather than a loose weight."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": b"\0" * 256,
+            "transformer/diffusion_pytorch_model-00002-of-00002.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+    dangling = snapshot / "transformer" / "diffusion_pytorch_model.safetensors.index.json"
+    dangling.symlink_to(tmp_path / "blobs" / "collected")
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
+@pytest.mark.parametrize(
+    "default_name", ["diffusion_pytorch_model.safetensors", "diffusion_pytorch_model.bin"]
+)
+def test_an_ignored_index_cannot_claim_the_default_weight(default_name, tmp_path):
+    """A map naming the file a default load opens does not hide it.
+
+    Every index that gets to claim shards here is one ``_fetch_index_file`` never builds, so a
+    stale or malformed ``.bin`` map naming the default weight would otherwise suppress the only
+    file ``_get_model_file`` asks for and report a loadable component torn.
+    """
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            f"transformer/{default_name}": b"\0" * 256,
+            "transformer/diffusion_pytorch_model.bin.index.json": json.dumps(
+                {"weight_map": {"a": default_name}}
+            ).encode(),
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+def test_a_weight_under_a_name_the_loader_never_asks_for_does_not_count(tmp_path):
+    """With no index the component is unsharded to the loader too, and ``_get_model_file`` is
+    handed ``diffusion_pytorch_model.safetensors`` and then the ``.bin`` under it and opens nothing
+    else. A transformers-style ``model.safetensors``, or an adapter sidecar, is never resolved."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/model.safetensors": b"\0" * 256,
+            "transformer/adapter_model.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+    (snapshot / "transformer" / "diffusion_pytorch_model.bin").write_bytes(b"\0" * 256)
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+def test_a_selected_index_naming_a_non_weight_file_is_not_a_checkpoint(tmp_path):
+    """The loader reads every mapped name as a checkpoint, so a map pointing at the ``config.json``
+    beside it fails at load however present that file is."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/config.json": b"{}",
+            "transformer/diffusion_pytorch_model.safetensors.index.json": json.dumps(
+                {"weight_map": {"a": "config.json"}}
+            ).encode(),
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
+def test_an_unsharded_dtype_twin_alone_is_not_the_default_weight(tmp_path):
+    """The same rule with no index in sight: the twin a ``variant = "fp16"`` load left behind is
+    the only weight here, and the default load this app issues cannot open it."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {"transformer/diffusion_pytorch_model.fp16.safetensors": b"\0" * 256},
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+    (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 256)
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+def test_a_pipeline_declaring_no_denoiser_key_is_not_hunted_for_one(tmp_path):
+    """Stable Cascade names its denoiser ``decoder``, so neither fixed name is in the manifest.
+    Nothing here can be proved absent, and the complete pipeline must not be hidden as partial."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _CASCADE_INDEX,
+        {
+            "decoder/diffusion_pytorch_model.safetensors": b"\0" * 256,
+            "vqgan/diffusion_pytorch_model.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+def test_a_manifest_entry_that_is_not_a_component_pair_is_left_to_the_loader(tmp_path):
+    """JaiDalmotra/ACE-STEP-Stereo-Finetuned maps "transformer" to a dict pointing at
+    ace_step_transformer/ and ships no transformer/ at all. An entry that is not a
+    [library, class] pair names no directory, so demanding one would hide the whole repo."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        {
+            "_class_name": "ACEStepPipeline",
+            "transformer": {
+                "_class_name": "ACEStepTransformer2DModel",
+                "config": "ace_step_transformer/config.json",
+            },
+        },
+        {"ace_step_transformer/diffusion_pytorch_model.safetensors": b"\0" * 256},
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+@pytest.mark.parametrize(
+    "denoisers",
+    [
+        # weizhou03/HunyuanVideo-1.5-Diffusers-1080p-2SR runs three.
+        ("transformer", "transformer_2", "transformer_3"),
+        # BoyuanJiang/FitDiT has no "transformer" key at all.
+        ("transformer_garm", "transformer_vton"),
+    ],
+)
+def test_the_manifest_keys_generalise_past_the_names_we_knew(denoisers, tmp_path):
+    """Reading the names off the manifest keeps this right for layouts no hardcoded list
+    anticipated, without another edit here."""
+    manifest = {"_class_name": "SomePipeline", "vae": ["diffusers", "AutoencoderKL"]}
+    manifest.update({name: ["diffusers", "SomeTransformer2DModel"] for name in denoisers})
+    files = {f"{name}/diffusion_pytorch_model.safetensors": b"\0" * 256 for name in denoisers}
+    snapshot = _pipeline_snapshot(tmp_path, manifest, files)
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+    shutil.rmtree(snapshot / denoisers[-1])
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
+def test_a_declared_but_null_second_expert_is_not_a_missing_denoiser(tmp_path):
+    """Wan 2.2's 5B sibling declares ``transformer_2`` as [null, null] and ships no such directory:
+    the manifest saying the slot is deliberately empty, not a torn download."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _WAN_SINGLE_EXPERT_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors": b"\0" * 256,
+            "vae/diffusion_pytorch_model.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+def test_a_half_landed_shard_set_is_not_rescued_by_the_loose_scan(tmp_path):
+    """The loose fallback skips claimed names, so shard 1 of 2 cannot pose as the whole set."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors.index.json": (
+                _dual_format_shard_index(".safetensors")
+            ),
+            "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
+@pytest.mark.parametrize("escape", ["../vae/diffusion_pytorch_model.safetensors", "/absolute"])
+def test_a_denoiser_index_naming_a_shard_outside_the_component_is_not_a_denoiser(escape, tmp_path):
+    """``component / shard`` follows ``..`` to a sibling and drops the component entirely for an
+    absolute name, so a corrupt map could be satisfied by the vae next door."""
+    outside = tmp_path / "outside.safetensors"
+    outside.write_bytes(b"\0" * 256)
+    shard = str(outside) if escape == "/absolute" else escape
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors.index.json": json.dumps(
+                {"weight_map": {"a": shard}}
+            ).encode(),
+            "vae/diffusion_pytorch_model.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "a directory called C: cannot exist on Windows")
+def test_a_drive_qualified_shard_name_is_outside_the_component_everywhere(tmp_path):
+    """The escape above, spelled the way a Windows-written index spells it.
+
+    ``PurePosixPath`` reads ``C:/pipe/...`` as a subdirectory literally called ``C:``, so without a
+    drive check the name resolves to a real file here, while on Windows the same join discards the
+    component and reaches the drive root. It has to read as the escape on both.
+    """
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors.index.json": json.dumps(
+                {"weight_map": {"a": "C:/pipe/diffusion_pytorch_model.safetensors"}}
+            ).encode(),
+            "transformer/C:/pipe/diffusion_pytorch_model.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
+def test_a_denoiser_index_short_of_the_total_its_shard_names_declare_is_torn(tmp_path):
+    """An index truncated to shard 1 of 2 satisfies every name it maps, but the loader opens the
+    map and nothing else, so the omitted half is dropped silently."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors.index.json": json.dumps(
+                {"weight_map": {"a": "diffusion_pytorch_model-00001-of-00002.safetensors"}}
+            ).encode(),
+            "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+    (snapshot / "transformer" / "diffusion_pytorch_model-00002-of-00002.safetensors").write_bytes(
+        b"\0" * 256
+    )
+    (snapshot / "transformer" / "diffusion_pytorch_model.safetensors.index.json").write_bytes(
+        _dual_format_shard_index(".safetensors")
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+def test_a_whole_bin_set_does_not_stand_in_for_the_selected_safetensors_index(tmp_path):
+    """Only diffusion_pytorch_model.safetensors.index.json is resolved here, and finding it makes
+    the component sharded, gating out the IOError handler and the pickle fallback below it. The
+    whole .bin set beside it is never opened, so it cannot vouch for the component."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors.index.json": (
+                _dual_format_shard_index(".safetensors")
+            ),
+            "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": b"\0" * 256,
+            "transformer/diffusion_pytorch_model.bin.index.json": _dual_format_shard_index(".bin"),
+            "transformer/diffusion_pytorch_model-00001-of-00002.bin": b"\0" * 256,
+            "transformer/diffusion_pytorch_model-00002-of-00002.bin": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
+def test_an_unsharded_denoiser_still_passes_on_presence_alone(tmp_path):
+    """No index, so nothing to be incomplete against: presence alone stands."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {"transformer/diffusion_pytorch_model.safetensors": b"\0" * 256},
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+@pytest.mark.parametrize(
+    "manifest, second",
+    [
+        (_IDEOGRAM_INDEX, "unconditional_transformer"),
+        (_WAN_INDEX, "transformer_2"),
+    ],
+)
+def test_a_multi_denoiser_pipeline_needs_every_denoiser_it_declares(manifest, second, tmp_path):
+    """Ideogram 4 and the dual-expert video pipelines declare two denoisers, so both must be on
+    disk before the snapshot reads as complete."""
+    files = {
+        "transformer/diffusion_pytorch_model.safetensors": b"\0" * 256,
+        "vae/diffusion_pytorch_model.safetensors": b"\0" * 256,
+    }
+    snapshot = _pipeline_snapshot(tmp_path, manifest, files)
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+    (snapshot / second).mkdir()
+    (snapshot / second / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 256)
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+@pytest.mark.parametrize(
+    "target, missing",
+    [
+        ("model_index.json", False),
+        ("transformer/diffusion_pytorch_model.safetensors.index.json", True),
+    ],
+)
+def test_json_too_deep_to_parse_is_contained_rather_than_raising(target, missing, tmp_path):
+    """json.load raises RecursionError, which is neither a ValueError nor an OSError, so an
+    unguarded parse would escape past the caller and drop the row from the scan entirely.
+
+    Contained is not ignored, and which one it is depends on the file. An unreadable MANIFEST
+    proves nothing about the denoiser, so the row stays. An unreadable SELECTED INDEX is the
+    failure itself, since the whole weight lying beside it is then never opened.
+    """
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors": b"\0" * 256,
+            target: b"[" * 20000 + b"]" * 20000,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is missing
+
+
+def test_an_unreadable_manifest_keeps_the_fixed_denoiser_pair(tmp_path):
+    """A corrupt manifest falls back to the fixed pair, rather than reading as a pipeline that
+    declares no denoiser and is complete by default."""
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "model_index.json").write_bytes(b"{not json")
+    (snapshot / "vae").mkdir()
+    (snapshot / "vae" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 256)
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+    (snapshot / "unet").mkdir()
+    (snapshot / "unet" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 256)
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
 
 
 def _snapshot_with(tmp_path, files: dict) -> Path:

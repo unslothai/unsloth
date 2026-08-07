@@ -7,6 +7,7 @@ import {
   type PinnableGpuContext,
   type ReconciledGpuSelection,
   type SystemGpuDevice,
+  pickLoadDevice,
   reconcileGpuSelection,
   resolveGpuSelectionContext,
 } from "./gpu-selection";
@@ -32,6 +33,10 @@ export interface GpuInfo {
   budgetKnown: boolean;
   name: string;
   memoryTotalGb: number;
+  /** Largest single device's VRAM. Image/video loads live on ONE device (no tensor split), so their fit math must use a single device, not the multi-GPU sum. */
+  maxDeviceMemoryGb: number;
+  /** VRAM of the device an image/video load actually lands on: the lowest visible ordinal, since resolve_diffusion_device_target() returns a bare "cuda" and torch places on the current device. On a heterogeneous host this is NOT maxDeviceMemoryGb, and sizing a pick against the larger card would recommend a checkpoint that OOMs the smaller one. */
+  loadDeviceMemoryGb: number;
   cpuCore: number;
   cpuThread: number;
   systemRamAvailableGb: number;
@@ -43,6 +48,8 @@ const DEFAULT_GPU: GpuInfo = {
   budgetKnown: false,
   name: "Unknown",
   memoryTotalGb: 0,
+  maxDeviceMemoryGb: 0,
+  loadDeviceMemoryGb: 0,
   cpuCore: 0,
   cpuThread: 0,
   systemRamAvailableGb: 0,
@@ -77,7 +84,11 @@ function toGpuInfo(
     available: true,
     budgetKnown: true,
     name: devices[0]?.name ?? "Unknown",
+    // Shared-memory (Vulkan iGPU) devices report the same system RAM pool, so they are counted once rather than summed.
     memoryTotalGb: aggregateGpuMemoryTotalGb(devices),
+    maxDeviceMemoryGb: devices.reduce((max, d) => Math.max(max, d.memory_total_gb ?? 0), 0),
+    // Lowest visible ordinal = torch's current device = where the pipeline lands.
+    loadDeviceMemoryGb: pickLoadDevice(devices)?.memory_total_gb ?? 0,
   };
 }
 

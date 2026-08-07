@@ -21,11 +21,15 @@ on:
       - 'tests/studio/test_sync_allow_scripts_pins.py'
       - '.github/workflows/studio-frontend-ci.yml'
   push:
-    branches: [main, pip]
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -130,6 +134,12 @@ jobs:
             --enumerate-dead
           python3 tests/studio/test_frontend_dep_removal.py
 
+      # A key added only to en.ts falls back to English at runtime, so nothing
+      # breaks and nothing complains -- which is how the overlays drifted 22
+      # keys behind, were repaired, then drifted 18 behind inside a day.
+      - name: Locale parity
+        run: npm run i18n:check:strict
+
       - name: Typecheck
         run: npm run typecheck
 
@@ -166,13 +176,20 @@ jobs:
         run: npm run biome:check
 
       - name: Upload built dist
-        # Always upload so a green run is reviewable too -- the dist
-        # output catches "tests passed but bundle changed unexpectedly"
-        # regressions that would be invisible if we only kept artifacts
-        # on failure.
-        if: always()
+        # Failures only. This uploads a whole build directory (~35MB), and
+        # keeping it from green runs too made it the second-largest artifact
+        # family in the repo at ~3.5GB. Actions storage is not free on public
+        # repos, and exceeding the account allowance silently stops GitHub
+        # scheduling jobs org-wide, so a build tree retained purely for review
+        # is not worth that risk.
+        #
+        # The "bundle changed unexpectedly" check this previously enabled is
+        # better served by asserting on the build inside the job -- the size
+        # gate in build.sh is the existing precedent -- rather than by keeping
+        # every green run's output for inspection.
+        if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: studio-frontend-dist
           path: studio/frontend/dist
-          retention-days: 3
+          retention-days: 1

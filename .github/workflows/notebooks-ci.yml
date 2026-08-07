@@ -50,7 +50,11 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -114,23 +118,26 @@ jobs:
             'nbformat>=5.10' 'nbconvert>=7.16' 'pyspellchecker>=0.8' \
             'huggingface_hub>=0.34' 'tqdm>=4.66'
 
-      - name: Refresh Colab pip-freeze (best-effort; falls back to snapshot)
-        run: |
-          python unsloth/scripts/notebook_validator.py refresh-colab \
-              --out unsloth/scripts/data/colab_pip_freeze.gpu.txt \
-            || echo "::warning::refresh-colab failed; using committed snapshot"
-
       - name: Diff Colab oracle vs committed snapshots (advisory)
         # Pulls pip-freeze.gpu.txt + apt-list-gpu.txt + os-info-gpu.txt
         # from googlecolab/backend-info and prints NEW / REMOVED /
         # CHANGED entries against scripts/data/colab_*.txt. Non-blocking
         # on PRs; the daily cron job below runs the same step with
         # --strict so upstream rotations surface within ~24h.
+        # MUST stay above the refresh below: that step overwrites the
+        # committed pip snapshot in place, so a diff after it compares
+        # upstream against a copy of itself and never reports pip drift.
         continue-on-error: true
         working-directory: ${{ github.workspace }}
         run: |
           python unsloth/scripts/notebook_validator.py colab-diff \
               --snapshot-dir unsloth/scripts/data
+
+      - name: Refresh Colab pip-freeze (best-effort; falls back to snapshot)
+        run: |
+          python unsloth/scripts/notebook_validator.py refresh-colab \
+              --out unsloth/scripts/data/colab_pip_freeze.gpu.txt \
+            || echo "::warning::refresh-colab failed; using committed snapshot"
 
       - name: Drift check (re-run update_all_notebooks.py + git diff)
         working-directory: ${{ github.workspace }}
@@ -211,19 +218,38 @@ jobs:
         with: { python-version: '3.12', cache: 'pip' }
       - name: Install
         run: pip install -U pip
-      - name: Refresh Colab oracle
-        run: |
-          python unsloth/scripts/notebook_validator.py refresh-colab \
-              --out unsloth/scripts/data/colab_pip_freeze.gpu.txt
       - name: Diff Colab oracle vs committed snapshots (--strict on cron)
         # Cron-only escalation of the advisory PR-time check. Fails if
-        # any of pip-freeze.gpu.txt / apt-list-gpu.txt / os-info-gpu.txt
-        # has drifted from scripts/data/colab_*.txt; refresh the
-        # snapshots in this repo to acknowledge.
+        # pip-freeze.gpu.txt has drifted from scripts/data/colab_*.txt --
+        # that is the oracle `lint --colab-pin` resolves R-INST-002/003/
+        # 004/005 against. apt-list / os-info drift is printed but does not
+        # fail: nothing reads them, so an Ubuntu security bump would only
+        # add noise. `refresh-colab --all` acknowledges a report.
+        # MUST stay above the refresh below, which overwrites the committed
+        # pip snapshot in place; diffing after it compares upstream with
+        # upstream and can never fail.
         run: |
           python unsloth/scripts/notebook_validator.py colab-diff \
               --snapshot-dir unsloth/scripts/data --strict
+      - name: Refresh Colab oracle
+        # `if: always()` so a strict-drift failure above does not skip this and
+        # the lint below. A Colab rotation is exactly when the live-metadata
+        # pass is worth having, and skipping it there would mean the job only
+        # ever lints on the days nothing changed. The strict step still decides
+        # the job's verdict.
+        if: always()
+        run: |
+          python unsloth/scripts/notebook_validator.py refresh-colab \
+              --out unsloth/scripts/data/colab_pip_freeze.gpu.txt
       - name: Lint with live PyPI metadata
+        if: always()
+        # Same backlog, same disposition as the PR-time `Lint` step above:
+        # these are pre-existing findings on unslothai/notebooks@main, not a
+        # regression this repo can fix, and dropping the resolver's --no-pypi
+        # only adds R-INST-002/005 rows on top of them. Hard-failing here kept
+        # the cron red for a backlog the PR job deliberately tolerates. Drop
+        # continue-on-error from both steps together once the count hits zero.
+        continue-on-error: true
         run: |
           python unsloth/scripts/notebook_validator.py lint \
               --notebooks-dir notebooks \
