@@ -5589,7 +5589,13 @@ def test_a_metadata_only_republish_does_not_re_advertise_the_gguf(monkeypatch, t
     pointer = snapshot / "x.gguf"
     pointer.symlink_to(blobs / content)
 
-    def probe(repo_id, filename, cache_dir = None, revision = None, repo_type = None):
+    def probe(
+        repo_id,
+        filename,
+        cache_dir = None,
+        revision = None,
+        repo_type = None,
+    ):
         # Unpinned resolves to the pre-republish snapshot; the new sha has no pointer yet.
         if cache_dir == live and revision is None:
             return str(pointer)
