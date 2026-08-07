@@ -51,9 +51,9 @@ export function orderByParentChain<T extends ParentChainMessage>(
   const result: T[] = [];
   let cur: string | null = null;
   while (childrenOf.has(cur)) {
-    const children = childrenOf.get(cur)!;
+    const children: T[] = childrenOf.get(cur)!;
     if (children.length === 0) break;
-    const next = children.reduce((a, b) =>
+    const next: T = children.reduce((a: T, b: T) =>
       (a.createdAt ?? 0) >= (b.createdAt ?? 0) ? a : b,
     );
     result.push(next);
