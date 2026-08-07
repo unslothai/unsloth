@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared CI-runner workarounds for the Studio Playwright tests (Chromium flags,
+"""Shared CI-runner workarounds for the Unsloth Playwright tests (Chromium flags,
 view-transition killer, page recovery, post-action response wait). Imported
 directly by the standalone scripts; does NOT depend on pytest.
 """
@@ -130,7 +130,7 @@ def wait_for_health(
             timeout = 3.0,
         )
         last_status, last_body = status, body
-        # Accept any 200 -- different Studio builds report status differently.
+        # Accept any 200 -- different Unsloth builds report status differently.
         if status == 200:
             if info is not None:
                 info(f"health pre-flight OK: status=200, body keys={list((body or {}).keys())}")

@@ -756,8 +756,15 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     try:
         return _patch_trl_rl_trainers_impl(trainer_file)
     except Exception as e:
-        logger.info(
-            f"Unsloth: Could not patch trl.trainer.{trainer_file}: " f"{type(e).__name__}: {e}"
+        # Warning, not info. The impl RETURNS for the benign case this swallow
+        # exists for (a trainer this TRL does not ship), so anything reaching
+        # here means the module imported and generation itself failed, and the
+        # run silently falls back to trl's trainer, losing Unsloth's
+        # compute_loss, bf16/fp16 fixup and dataset handling at once.
+        logger.warning_once(
+            f"Unsloth: Could not build the patched trl.trainer.{trainer_file}, "
+            f"so training will use trl's own trainer instead: "
+            f"{type(e).__name__}: {e}"
         )
         return
 
@@ -1049,6 +1056,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"
             "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'no'\n"
             "    # args.mixed_precision is a new argument which needs to be set now\n"
+            "elif use_bf16 or use_fp16:\n"
+            "    # transformers <5 exported this itself from fp16/bf16; 5.x dropped the write, so an\n"
+            "    # explicit flag left it unset and GRPO readers defaulted to 'fp16', wrapping a\n"
+            "    # bfloat16 model in a float16 autocast. See unslothai/unsloth#4891.\n"
+            "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'bf16' if use_bf16 else 'fp16'\n"
+            "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'bf16' if use_bf16 else 'fp16'\n"
             "\n"
         )
         extra_args += mixed_precision
@@ -1423,18 +1436,34 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         extra_args += saving_check
 
     # Edit dataset_num_proc
+    # The policy lives in unsloth_zoo.dataset_num_proc: it had drifted into four
+    # inline copies, two wrong (stdlib `multiprocessing` asked about a start
+    # method `datasets` takes from `multiprocess`, and `1` used as the serial
+    # sentinel when datasets >= 4.1 builds a Pool(1) for it). The zoo rather than
+    # unsloth, so generated source never imports back into its generator;
+    # unsloth.dataset_num_proc is the fallback for an older zoo, and the
+    # ladder is guarded so a stale generated file degrades to the caller's value.
+    # serial_as_none depends on who reads the value back. Only SFT has a
+    # downstream auto-sizer: unsloth_zoo.sft_prepare_dataset reads a config
+    # `None` as "auto-size me", so serial has to be written as `1` there and the
+    # map() call site (rl_replacements.py) turns it back into None. DPO, KTO,
+    # CPO, ORPO, Reward and PRM hand args.dataset_num_proc straight to
+    # Dataset.map, where nothing can inflate a None but a `1` is a Pool(1) on
+    # datasets >= 4.1 -- one worker with its own tokenizer copy, on a host the
+    # memory clamp had just declared too small for workers.
     if "dataset_num_proc" in call_args:
+        _serial_as_none = "False" if trainer_file == "sft_trainer" else "True"
         num_proc_check = (
-            "import multiprocessing as _mp\n"
-            "if dataset_num_proc is None:\n"
-            "    if _mp.get_start_method() != 'fork':\n"
-            "        dataset_num_proc = None\n"
-            "    else:\n"
-            "        import psutil\n"
-            "        dataset_num_proc = min(max((psutil.cpu_count() or 1)+4, 2), 64)\n"
-            "        memory_gb_left = psutil.virtual_memory().available / (1024**3)\n"
-            "        if memory_gb_left <= 2: dataset_num_proc = 1\n"
-            "        else: dataset_num_proc = min(dataset_num_proc, int(memory_gb_left))\n"
+            "try:\n"
+            "    from unsloth_zoo.dataset_num_proc import get_dataset_num_proc as _unsloth_get_dataset_num_proc\n"
+            "except Exception:\n"
+            "    try:\n"
+            "        from unsloth.dataset_num_proc import get_dataset_num_proc as _unsloth_get_dataset_num_proc\n"
+            "    except Exception:\n"
+            "        _unsloth_get_dataset_num_proc = None\n"
+            "if _unsloth_get_dataset_num_proc is not None:\n"
+            "    dataset_num_proc = _unsloth_get_dataset_num_proc("
+            f"dataset_num_proc, serial_as_none = {_serial_as_none})\n"
         )
         extra_args += num_proc_check
 
@@ -1651,7 +1680,36 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
         RLTrainer_source = re.sub(pattern, new_options, RLTrainer_source, flags = re.DOTALL)
 
-        if trl_version >= Version("0.27.0"):
+        if trl_version >= Version("1.4.0"):
+            # The `elif is_peft_model(model) and args.beta != 0.0:` ref-adapter block
+            # was introduced in TRL 1.4.0 and is used through 1.7.x. Remove only that
+            # block, anchored on the final ref_param copy so we do NOT also swallow the
+            # following gradient-checkpointing enable_input_require_grads() block.
+            peft_pattern = (
+                r"\s*elif is_peft_model\(model\) and args\.beta != 0\.0:"
+                r".*?"
+                r"ref_param\.data\.copy_\(param\.data\)"
+            )
+
+            replacement_comment = (
+                "\n        # PEFT initialization logic removed via script for trl >= 1.4.0\n"
+            )
+
+            RLTrainer_source = re.sub(
+                peft_pattern, replacement_comment, RLTrainer_source, flags = re.DOTALL
+            )
+
+            if trl_version >= Version("1.7.0"):
+                # router_aux_loss_coef / aux_loss_enabled were added in TRL 1.7.0. Unsloth's
+                # optimized GRPO forward cannot compute the MoE router aux loss, so reject
+                # explicit opt-in (router_aux_loss_coef > 0) at init rather than silently ignoring it.
+                RLTrainer_source = RLTrainer_source.replace(
+                    "self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0",
+                    "self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0\n"
+                    '        if self.aux_loss_enabled: raise NotImplementedError("Unsloth GRPO does not compute the MoE router auxiliary loss; set router_aux_loss_coef = 0 (the Unsloth default).")',
+                )
+
+        elif trl_version >= Version("0.27.0"):
             peft_pattern = (
                 r"\s*if is_peft_available\(\) and is_peft_model\(model\) and args\.beta != 0\.0:"
                 r".*?"
@@ -1687,6 +1745,11 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     # no-op for GRPO, whose peft init block is removed above).
     RLTrainer_source = RLTrainer_source.replace(
         'if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):',
+        "if False:",
+    )
+    # TRL >= 1.7.0 spells the same QLoRA bf16 cast as `if _is_quantized_model:`.
+    RLTrainer_source = RLTrainer_source.replace(
+        "if _is_quantized_model:",
         "if False:",
     )
 

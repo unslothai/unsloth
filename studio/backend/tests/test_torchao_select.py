@@ -32,16 +32,23 @@ def _load_module(monkeypatch):
 @pytest.mark.parametrize(
     "torch_version, expected",
     [
-        # torch 2.10 (the reported bug: cu130 resolves 2.10.0) -> 0.16.0,
-        # independent of the local +cuXXX/+rocm/+cpu suffix or patch level.
-        ("2.10.0+cu130", "torchao==0.16.0"),
+        # torch 2.10 on CUDA <= 12 -> 0.16.0 (its cpp is built for torch 2.10.0 and
+        # loads against the CUDA-12 PyPI wheel). Independent of patch level.
+        ("2.10.0+cu128", "torchao==0.16.0"),
+        ("2.10.0+cu126", "torchao==0.16.0"),
         ("2.10.0+rocm6.4", "torchao==0.16.0"),
         ("2.10.0+cpu", "torchao==0.16.0"),
         ("2.10.1", "torchao==0.16.0"),
         ("2.10.0", "torchao==0.16.0"),
-        # Pre-release / dev / rc builds: the minor is cleaned of non-digits.
+        # torch 2.10 on CUDA >= 13 (Blackwell / cu130): 0.16.0's CUDA-12 cpp can't
+        # load against a CUDA-13 torch (libcudart.so.12 error), so use 0.17.0.
+        ("2.10.0+cu130", "torchao==0.17.0"),
+        ("2.10.0+cu140", "torchao==0.17.0"),
+        # Pre-release / dev / rc builds: the minor is cleaned of non-digits; the
+        # CUDA tag still decides 0.16.0 vs 0.17.0.
         ("2.10.0rc1", "torchao==0.16.0"),
-        ("2.10.0.dev20250804+cu130", "torchao==0.16.0"),
+        ("2.10.0.dev20250804+cu130", "torchao==0.17.0"),
+        ("2.10.0.dev20250804+cu128", "torchao==0.16.0"),
         ("2.10rc1", "torchao==0.16.0"),
         # torch 2.11 (reachable via ROCm rocm7.2) and forward -> 0.17.0.
         ("2.11.0+cu130", "torchao==0.17.0"),

@@ -5,6 +5,7 @@
 
 import {
   Sheet,
+  SheetCloseButton,
   SheetContent,
   SheetDescription,
   SheetHeader,
@@ -18,9 +19,9 @@ import {
   useExternalProvidersStore,
 } from "@/features/chat";
 import { cn } from "@/lib/utils";
-import { FileDatabaseIcon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import { useMessage, useMessageTiming } from "@assistant-ui/react";
+import { HelpCircleIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import type { FC, ReactNode } from "react";
 
 type ResponseDetailsMetadata = {
@@ -207,7 +208,7 @@ function DetailRow({
 }) {
   if (value == null || value === "") return null;
   return (
-    <div className="grid grid-cols-[8.5rem_minmax(0,1fr)] items-start gap-3 text-[13px]">
+    <div className="grid grid-cols-[8.5rem_minmax(0,1fr)] items-start gap-3 text-ui-13">
       <span className="text-muted-foreground">{label}</span>
       <span
         className={cn(
@@ -288,7 +289,7 @@ export const MessageResponseModelBadge: FC<{ className?: string }> = ({
   return (
     <span
       className={cn(
-        "aui-response-model-badge inline-flex min-h-5 max-w-full items-center text-muted-foreground/80 text-xs font-medium leading-5 opacity-0 transition-opacity duration-150 group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:opacity-100",
+        "aui-response-model-badge pointer-events-none relative inline-flex min-h-5 max-w-full cursor-text select-text items-center text-muted-foreground/80 text-xs font-medium leading-5 opacity-0 transition-opacity duration-150 after:absolute after:inset-x-0 after:top-full after:h-1 after:content-[''] hover:opacity-100 group-hover/assistant-message:pointer-events-auto group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:pointer-events-auto group-focus-within/assistant-message:opacity-100",
         className,
       )}
       title={providerLabel ? `${modelLabel} - ${providerLabel}` : modelLabel}
@@ -337,16 +338,25 @@ export const MessageResponseDetailsSheet: FC<{
       <SheetContent
         side="right"
         className="w-[min(28rem,100vw)] p-0 sm:max-w-[28rem]"
+        showCloseButton={false}
+        // Clear the desktop window controls; 0px in the browser and on macOS.
+        style={{
+          height: "calc(100% - var(--studio-custom-titlebar-height, 0px))",
+          marginTop: "var(--studio-custom-titlebar-height, 0px)",
+        }}
       >
         <SheetHeader className="border-b p-4">
-          <SheetTitle className="flex items-center gap-2 pr-10 font-heading text-base">
-            <HugeiconsIcon
-              icon={FileDatabaseIcon}
-              strokeWidth={1.75}
-              className="size-icon text-chat-icon-fg"
-            />
-            Response details
-          </SheetTitle>
+          <div className="relative">
+            <SheetTitle className="flex items-center gap-2 pr-10 font-heading text-base">
+              <HugeiconsIcon
+                icon={HelpCircleIcon}
+                strokeWidth={1.75}
+                className="size-icon text-chat-icon-fg"
+              />
+              Response details
+            </SheetTitle>
+            <SheetCloseButton className="absolute top-1/2 right-0 -translate-y-1/2" />
+          </div>
           <SheetDescription className="sr-only">
             Timing, model, token, and tool details for this response.
           </SheetDescription>

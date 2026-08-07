@@ -5,9 +5,10 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import "./index.css";
-import { fetchDeviceType } from "./config/env";
 import { App } from "./app/app";
+import { fetchDeviceType } from "./config/env";
 import { initializeLocale } from "./i18n";
+import { isTauri } from "./lib/api-base";
 
 const globalCrypto = globalThis.crypto as Crypto | undefined;
 
@@ -36,10 +37,21 @@ if (!rootElement) {
 
 initializeLocale();
 
-fetchDeviceType().then(() => {
-  createRoot(rootElement).render(
-    <StrictMode>
-      <App />
-    </StrictMode>,
-  );
-});
+if (isTauri) {
+  document.documentElement.classList.add("tauri");
+}
+
+// Rasterization follows the browser OS, not the potentially remote server.
+// This adjustment is calibrated for desktop Linux, so exclude Android.
+const uaLower = navigator.userAgent.toLowerCase();
+if (uaLower.includes("linux") && !uaLower.includes("android")) {
+  document.documentElement.classList.add("render-linux");
+}
+
+createRoot(rootElement).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+);
+
+fetchDeviceType().catch(() => undefined);

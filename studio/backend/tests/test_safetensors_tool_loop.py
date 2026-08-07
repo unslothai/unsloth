@@ -24,6 +24,7 @@ from core.inference.safetensors_agentic import (
     strip_tool_markup_streaming,
 )
 from core.inference.tool_call_parser import (
+    NUDGE_TOOL_CALLS_STATUS,
     RAG_MAX_SEARCHES_PER_TURN,
     has_tool_signal,
     parse_tool_calls_from_text,
@@ -120,10 +121,7 @@ class TestParser:
 
         # Only the wrapping newline is trimmed; code-argument indentation survives.
         text = (
-            "<function=python><parameter=code>\n"
-            "    indented = 1\n"
-            "    more\n"
-            "</parameter></function>"
+            "<function=python><parameter=code>\n    indented = 1\n    more\n</parameter></function>"
         )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
@@ -157,10 +155,7 @@ class TestParser:
     def test_xml_param_preserves_leading_indentation(self):
         # Only the wrapping newline is trimmed, so code-argument indentation survives (str.strip() destroyed it).
         text = (
-            "<function=python><parameter=code>\n"
-            "    indented = 1\n"
-            "    more\n"
-            "</parameter></function>"
+            "<function=python><parameter=code>\n    indented = 1\n    more\n</parameter></function>"
         )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
@@ -310,20 +305,18 @@ class TestParser:
         tag has not arrived yet, so the strip regex has to accept
         end-of-string as a terminator. Regression for the Gemini
         high-severity flag on this PR."""
-        text = (
-            "<think>I should call web_search[ARGS]" '{"query":"weather"} next to find the answer.'
-        )
+        text = '<think>I should call web_search[ARGS]{"query":"weather"} next to find the answer.'
         result = parse_tool_calls_from_text(text)
         # Inside an unclosed think block no calls are yielded.
         assert result == []
 
     def test_rehearsal_inside_unclosed_bracket_think_is_ignored(self):
-        text = "[THINK]planning to use python[ARGS]" '{"code":"print(1)"} but not yet.'
+        text = '[THINK]planning to use python[ARGS]{"code":"print(1)"} but not yet.'
         result = parse_tool_calls_from_text(text)
         assert result == []
 
     def test_rehearsal_after_closed_think_still_parsed(self):
-        text = "<think>planning</think>" 'python[ARGS]{"code":"print(1)"}'
+        text = '<think>planning</think>python[ARGS]{"code":"print(1)"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "python"
@@ -365,7 +358,7 @@ class TestParser:
 
     def test_mistral_bracket_nested_json(self):
         # Brace-balance scan handles nested objects and braces inside string literals.
-        text = "[TOOL_CALLS]web_search" '{"query":"a {nested} brace","opts":{"limit":5}}'
+        text = '[TOOL_CALLS]web_search{"query":"a {nested} brace","opts":{"limit":5}}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         import json as _json
@@ -376,11 +369,7 @@ class TestParser:
 
     def test_mistral_bracket_with_prose(self):
         # Bracket-tag surrounded by prose is still recognised.
-        text = (
-            "Sure, I will look that up.\n"
-            '[TOOL_CALLS]web_search{"query":"weather"}\n'
-            "Calling now."
-        )
+        text = 'Sure, I will look that up.\n[TOOL_CALLS]web_search{"query":"weather"}\nCalling now.'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "web_search"
@@ -408,7 +397,7 @@ class TestParser:
         assert "print(1)" in result[0]["function"]["arguments"]
 
     def test_rehearsal_with_prose(self):
-        text = "I should call the python tool. Like this: " 'python[ARGS]{"code":"x = 1"}'
+        text = 'I should call the python tool. Like this: python[ARGS]{"code":"x = 1"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "python"
@@ -489,16 +478,14 @@ class TestParser:
         assert result[0]["function"]["name"] == "web_search"
 
     def test_think_block_stripped_before_bracket_tag(self):
-        text = (
-            "<think>Let me search for that.</think>\n" '[TOOL_CALLS]web_search{"query":"weather"}'
-        )
+        text = '<think>Let me search for that.</think>\n[TOOL_CALLS]web_search{"query":"weather"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "web_search"
 
     def test_uppercase_think_tag_stripped(self):
         # Some templates use [THINK]...[/THINK] instead of <think>.
-        text = "[THINK]planning my next call[/THINK]" '[TOOL_CALLS]python{"code":"print(1)"}'
+        text = '[THINK]planning my next call[/THINK][TOOL_CALLS]python{"code":"print(1)"}'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "python"
@@ -544,8 +531,7 @@ class TestParser:
     def test_xml_wins_over_bracket(self):
         # When a model emits both forms in one message, the XML form is canonical and wins.
         text = (
-            '<tool_call>{"name":"primary","arguments":{}}</tool_call>'
-            '[TOOL_CALLS]secondary{"k":"v"}'
+            '<tool_call>{"name":"primary","arguments":{}}</tool_call>[TOOL_CALLS]secondary{"k":"v"}'
         )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
@@ -728,7 +714,7 @@ class TestParserMultiFormat:
     def test_llama3_python_tag_dot_call_multi_arg(self):
         import json
 
-        text = "<|python_tag|>get_weather.call(" 'location="Tokyo", units="celsius", days=5)'
+        text = '<|python_tag|>get_weather.call(location="Tokyo", units="celsius", days=5)'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         args = json.loads(result[0]["function"]["arguments"])
@@ -1179,6 +1165,7 @@ class FakeExecuteTool:
         cancel_event = None,
         timeout = None,
         session_id = None,
+        thread_id = None,
         rag_scope = None,
         disable_sandbox = False,
     ):
@@ -1329,12 +1316,7 @@ class TestParserDeepSeek:
     def test_v3_1_strict_rejects_unclosed_envelope(self):
         # Envelope truncated mid-stream (no <｜tool▁calls▁end｜>): healed by
         # default, rejected with Auto-Heal off.
-        text = (
-            "<｜tool▁calls▁begin｜>"
-            "<｜tool▁call▁begin｜>get_time"
-            "<｜tool▁sep｜>"
-            '{"city": "Tokyo"}'
-        )
+        text = '<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>get_time<｜tool▁sep｜>{"city": "Tokyo"}'
         assert len(parse_tool_calls_from_text(text)) == 1
         assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
 
@@ -1764,9 +1746,9 @@ class TestParserCrossFormatRouting:
         for label, text, expected_name in cases:
             result = parse_tool_calls_from_text(text)
             assert len(result) == 1, f"{label}: parser missed the call"
-            assert result[0]["function"]["name"] == expected_name, (
-                f"{label}: got {result[0]['function']['name']!r}, " f"expected {expected_name!r}"
-            )
+            assert (
+                result[0]["function"]["name"] == expected_name
+            ), f"{label}: got {result[0]['function']['name']!r}, expected {expected_name!r}"
 
     def test_all_new_markers_in_tool_xml_signals(self):
         # The safetensors / MLX streaming buffer must wake on every supported emission marker --
@@ -2229,8 +2211,8 @@ def _reprompt_loop(*, auto_heal_tool_calls):
             tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
             execute_tool = exec_fn,
             auto_heal_tool_calls = auto_heal_tool_calls,
-            # Studio always nudges (always-on for the Studio inference paths); the
-            # API opts in per request. Model the Studio caller here.
+            # Unsloth always nudges (always-on for the Unsloth inference paths); the
+            # API opts in per request. Model the Unsloth caller here.
             nudge_tool_calls = True,
             max_tool_iterations = 3,
         )
@@ -2248,6 +2230,51 @@ def test_reprompt_names_only_active_tools_not_hardcoded():
     assert "search_knowledge_base" in reprompt["content"]
     assert "web_search" not in reprompt["content"]
     assert "python" not in reprompt["content"]
+
+
+def test_reprompt_stops_when_the_retry_restates_the_stall():
+    """A nudge answered with the same text has not worked; do not spend the budget."""
+
+    captured: list[list] = []
+    stall = "I'll search for that now."
+
+    def fake_single_turn(messages, active_tools = None):
+        captured.append(list(messages))
+        yield stall  # same forward-looking intent every time
+
+    exec_fn = FakeExecuteTool([])
+    _events = _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = fake_single_turn,
+            messages = [{"role": "user", "content": "find X"}],
+            tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
+            execute_tool = exec_fn,
+            auto_heal_tool_calls = True,
+            nudge_tool_calls = True,
+            max_tool_iterations = 3,
+        )
+    )
+
+    # One nudge, then the repeat guard stops it: two generations, not MAX_ACT_REPROMPTS + 1.
+    assert len(captured) == 2, captured
+
+
+def test_reprompt_is_announced_on_the_status_channel():
+    # The re-prompted turn is hidden, so the badge is the only sign of life.
+    # Blank still comes first: the route resets its text cursor only on that.
+    _captured, events = _reprompt_loop(auto_heal_tool_calls = True)
+    statuses = [e["text"] for e in events if e["type"] == "status"]
+    assert NUDGE_TOOL_CALLS_STATUS in statuses
+    index = statuses.index(NUDGE_TOOL_CALLS_STATUS)
+    # index > 0 matters: at 0, statuses[-1] wraps to the terminal clear.
+    assert index > 0 and statuses[index - 1] == ""
+    assert statuses[-1] == ""
+
+
+def test_reprompt_status_absent_without_a_nudge():
+    _captured, events = _reprompt_loop(auto_heal_tool_calls = False)
+    statuses = [e["text"] for e in events if e["type"] == "status"]
+    assert NUDGE_TOOL_CALLS_STATUS not in statuses
 
 
 def test_reprompt_suppressed_when_auto_heal_disabled():
@@ -2537,6 +2564,9 @@ class TestLoopBasic:
             tools = [{"type": "function", "function": {"name": "render_html"}}],
             execute_tool = exec_fn,
             confirm_tool_calls = True,
+            # Unset defaults to "auto", which only gates render_html when it
+            # reaches the network, so this static canvas would not prompt.
+            permission_mode = "ask",
             session_id = "sess",
             max_tool_iterations = 3,
         )
@@ -2590,6 +2620,50 @@ class TestLoopBasic:
         assert len(tool_starts) == 2
         assert tool_starts[0]["arguments"] == {}
         assert "<!doctype html>" in tool_starts[1]["arguments"]["code"]
+
+    def test_render_html_auto_mode_static_runs_without_prompt(self):
+        """permission_mode="auto" ships confirm_tool_calls=true. render_html is no
+        longer unconditionally safe (a networked canvas must ask), so its early
+        provisional card is suppressed under the confirm gate; a static canvas is
+        still classified safe and runs without an approval prompt."""
+        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
+        turn_iter = iter(
+            [
+                [
+                    "<function=render_html>",
+                    "<parameter=code><!doctype html><html>",
+                    "<body>Hi</body></html></parameter></function>",
+                ],
+                ["Done."],
+            ]
+        )
+
+        def _gen(_messages):
+            chunks = next(turn_iter)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        loop = run_safetensors_tool_loop(
+            single_turn = _gen,
+            messages = [{"role": "user", "content": "make html"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            execute_tool = exec_fn,
+            confirm_tool_calls = True,
+            permission_mode = "auto",
+            session_id = "sess",
+            max_tool_iterations = 3,
+        )
+        events = _collect_events(loop)
+        tool_starts = [e for e in events if e["type"] == "tool_start"]
+
+        # No early provisional card under the auto confirm gate; just the real call.
+        assert len(tool_starts) == 1
+        assert tool_starts[0]["tool_name"] == "render_html"
+        assert "<!doctype html>" in tool_starts[0]["arguments"]["code"]
+        # A static canvas is classified safe, so it runs without an approval gate.
+        assert tool_starts[0].get("awaiting_confirmation") in (False, None)
 
     def test_render_html_provisional_card_closed_on_generator_exception(self):
         """If the model generator raises mid-stream after a provisional render_html
@@ -2797,6 +2871,61 @@ class TestLoopBehaviour:
             and "already completed successfully" in message.get("content", "")
         ]
         assert len(duplicate_nudges) == 1
+
+    def test_same_turn_duplicate_does_not_drop_later_parallel_call(self):
+        # Turn 1 runs search(x). Turn 2's batch is [search(x) duplicate, python]:
+        # the duplicate is a no-op, but python after it must still run, and the
+        # no-op nudge must land after python's result rather than splitting it.
+        captured_messages: list[list[dict]] = []
+        turns = iter(
+            [
+                ['<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'],
+                [
+                    '<tool_call>{"name":"web_search","arguments":{"query":"x"}}</tool_call>'
+                    '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+                ],
+                ["final"],
+            ]
+        )
+
+        def fake_single_turn(messages, active_tools = None):
+            captured_messages.append([dict(m) for m in messages])
+            chunks = next(turns)
+            acc = ""
+            for chunk in chunks:
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["search-x", "py-result"])
+        _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "hi"}],
+                tools = [
+                    {"type": "function", "function": {"name": "web_search"}},
+                    {"type": "function", "function": {"name": "python"}},
+                ],
+                execute_tool = exec_fn,
+                max_tool_iterations = 4,
+            )
+        )
+
+        # Turn-1 search and turn-2 python both ran; the turn-2 duplicate search did not.
+        assert exec_fn.calls == [
+            ("web_search", {"query": "x"}),
+            ("python", {"code": "print(1)"}),
+        ]
+
+        conv = captured_messages[-1]
+        turn2 = [m for m in conv if m.get("role") == "assistant" and m.get("tool_calls")][-1]
+        assert [tc["function"]["name"] for tc in turn2["tool_calls"]] == ["python"]
+        after = conv[conv.index(turn2) + 1 :]
+        assert after[0]["role"] == "tool" and after[0]["content"] == "py-result"
+        assert after[1]["role"] == "user"  # deferred duplicate nudge, after the result
+        assert after[1]["content"].startswith(
+            "One earlier request to call tool 'web_search' in this batch was not executed"
+        )
+        assert "previous tool request" not in after[1]["content"].lower()
 
     def test_duplicate_tool_call_internal_noop_allows_distinct_followup_tool(self):
         captured_messages: list[list[dict]] = []
@@ -3103,7 +3232,197 @@ class TestLoopBehaviour:
 
 
 class TestLoopRePrompt:
-    """Plan-without-action re-prompt parity with GGUF: nudge instead of terminating, up to ``MAX_ACT_REPROMPTS`` extra slots. Studio always nudges, so these drive the loop with ``nudge_tool_calls=True``."""
+    """Plan-without-action re-prompt parity with GGUF: nudge instead of terminating, up to ``MAX_ACT_REPROMPTS`` extra slots. Unsloth always nudges, so these drive the loop with ``nudge_tool_calls=True``."""
+
+    def test_reasoning_intent_does_not_reprompt_a_visible_answer(self):
+        generations = 0
+
+        def _gen(_messages, active_tools = None):
+            nonlocal generations
+            generations += 1
+            yield (
+                "<think>Let me prepare the requested summary carefully.</think>"
+                "This is the final visible answer."
+            )
+
+        exec_fn = FakeExecuteTool([])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = _gen,
+                messages = [{"role": "user", "content": "summarize this"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                nudge_tool_calls = True,
+            )
+        )
+
+        assert generations == 1
+        assert exec_fn.calls == []
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1].endswith("This is the final visible answer.")
+
+    def test_prefilled_reasoning_intent_does_not_reprompt_a_visible_answer(self):
+        generations = 0
+
+        def _gen(_messages, active_tools = None):
+            nonlocal generations
+            generations += 1
+            yield "Let me prepare the requested summary carefully.</think>This is the final visible answer."
+
+        exec_fn = FakeExecuteTool([])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = _gen,
+                messages = [{"role": "user", "content": "summarize this"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                nudge_tool_calls = True,
+                reasoning_prefilled = True,
+            )
+        )
+
+        assert generations == 1
+        assert exec_fn.calls == []
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1].endswith("This is the final visible answer.")
+
+    def test_prefilled_reasoning_with_reemitted_think_does_not_reprompt(self):
+        generations = 0
+
+        def _gen(_messages, active_tools = None):
+            nonlocal generations
+            generations += 1
+            yield (
+                "Let me prepare the requested summary carefully."
+                "<think>more private planning</think>This is the final visible answer."
+            )
+
+        exec_fn = FakeExecuteTool([])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = _gen,
+                messages = [{"role": "user", "content": "summarize this"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                nudge_tool_calls = True,
+                reasoning_prefilled = True,
+            )
+        )
+
+        assert generations == 1
+        assert exec_fn.calls == []
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1].endswith("This is the final visible answer.")
+
+    def test_prefilled_reasoning_with_later_think_does_not_reprompt(self):
+        generations = 0
+
+        def _gen(_messages, active_tools = None):
+            nonlocal generations
+            generations += 1
+            yield (
+                "private prefilled planning</think>"
+                "<think>Let me prepare the requested summary carefully.</think>"
+                "This is the final visible answer."
+            )
+
+        exec_fn = FakeExecuteTool([])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = _gen,
+                messages = [{"role": "user", "content": "summarize this"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                nudge_tool_calls = True,
+                reasoning_prefilled = True,
+            )
+        )
+
+        assert generations == 1
+        assert exec_fn.calls == []
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1].endswith("This is the final visible answer.")
+
+    def test_reasoning_only_intent_still_reprompts_and_uses_a_tool(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["<think>Let me search for that.</think>"],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'],
+                ["Here is the answer."],
+            ],
+            exec_results = ["result"],
+            nudge_tool_calls = True,
+        )
+
+        events = _collect_events(loop)
+
+        assert exec_fn.calls == [("web_search", {"query": "cats"})]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1] == "Here is the answer."
+
+    def test_prefilled_no_close_reasoning_intent_still_reprompts(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["I need more context.<think>Let me search for that."],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'],
+                ["Here is the answer."],
+            ],
+            exec_results = ["result"],
+            nudge_tool_calls = True,
+            reasoning_prefilled = True,
+        )
+
+        events = _collect_events(loop)
+
+        assert exec_fn.calls == [("web_search", {"query": "cats"})]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1] == "Here is the answer."
+
+    def test_prefilled_reasoning_prefix_is_kept_for_reasoning_only_reprompt(self):
+        loop, exec_fn = _make_loop(
+            turns = [
+                ["Let me search for that.</think><think>checking details</think>"],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'],
+                ["Here is the answer."],
+            ],
+            exec_results = ["result"],
+            nudge_tool_calls = True,
+            reasoning_prefilled = True,
+        )
+
+        events = _collect_events(loop)
+
+        assert exec_fn.calls == [("web_search", {"query": "cats"})]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1] == "Here is the answer."
+
+    def test_reprompt_history_uses_visible_intent_text(self):
+        captured: list[list[dict]] = []
+
+        def _gen(messages, active_tools = None):
+            captured.append([dict(message) for message in messages])
+            if len(captured) == 1:
+                yield "<think>private planning details</think>Let me search for that."
+            elif len(captured) == 2:
+                yield '<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>'
+            else:
+                yield "Here is the answer."
+
+        exec_fn = FakeExecuteTool(["result"])
+        events = _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = _gen,
+                messages = [{"role": "user", "content": "find cats"}],
+                tools = [{"type": "function", "function": {"name": "web_search"}}],
+                execute_tool = exec_fn,
+                nudge_tool_calls = True,
+            )
+        )
+
+        assert exec_fn.calls == [("web_search", {"query": "cats"})]
+        assert captured[1][1] == {"role": "assistant", "content": "Let me search for that."}
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert contents[-1] == "Here is the answer."
 
     def test_intent_signal_triggers_reprompt(self):
         # Turn 1: intent signal, no tool call.
@@ -3112,10 +3431,7 @@ class TestLoopRePrompt:
         loop, exec_fn = _make_loop(
             turns = [
                 ["Let me search for that."],
-                [
-                    '<tool_call>{"name":"web_search","arguments":'
-                    '{"query":"sky color"}}</tool_call>'
-                ],
+                ['<tool_call>{"name":"web_search","arguments":{"query":"sky color"}}</tool_call>'],
                 ["The sky is blue."],
             ],
             exec_results = ["Blue (Rayleigh scattering)"],
@@ -3223,7 +3539,7 @@ class TestLoopCanonicalHealKey:
     def test_python_bare_string_heals_to_code(self):
         loop, exec_fn = _make_loop(
             turns = [
-                ['<tool_call>{"name":"python","arguments":"print(1)"}' "</tool_call>"],
+                ['<tool_call>{"name":"python","arguments":"print(1)"}</tool_call>'],
                 ["done"],
             ],
             exec_results = ["1\n"],
@@ -3236,7 +3552,7 @@ class TestLoopCanonicalHealKey:
     def test_terminal_bare_string_heals_to_command(self):
         loop, exec_fn = _make_loop(
             turns = [
-                ['<tool_call>{"name":"terminal","arguments":"ls -la"}' "</tool_call>"],
+                ['<tool_call>{"name":"terminal","arguments":"ls -la"}</tool_call>'],
                 ["done"],
             ],
             exec_results = ["..."],
@@ -3247,7 +3563,7 @@ class TestLoopCanonicalHealKey:
     def test_unknown_tool_bare_string_heals_to_query(self):
         loop, exec_fn = _make_loop(
             turns = [
-                ['<tool_call>{"name":"web_search","arguments":"hello"}' "</tool_call>"],
+                ['<tool_call>{"name":"web_search","arguments":"hello"}</tool_call>'],
                 ["ok"],
             ],
             exec_results = ["..."],
@@ -3335,8 +3651,22 @@ class TestGGUFSafetensorsHealingParity:
             "Let me check",
             "I am going to call the tool",
             "First, I will explore",
+            "First, let's search the web",
+            "First, let us search the web",
+            # Imperative plans carry no pronoun; an action verb is enough.
+            "First, search the web for the latest release notes.",
+            "First, check the documentation.",
+            "First, analyze the attached data",
+            "The first step is to search the web",
+            "First, my plan is to search the web.",
+            "First: search the web for release notes.",
+            "First - search the web for release notes.",
+            "First \u2013 search the web for release notes.",
+            "First, our approach is to check the docs.",
             "Here's my plan",
             "Now I need to call web_search",
+            # The "let me know" exemption is scoped to "let me", not all direct intent.
+            "I will know the answer after I search the web",
         ):
             assert shared_re.search(phrase), f"missed {phrase!r}"
             assert shared_fn(phrase), f"helper missed {phrase!r}"
@@ -3352,6 +3682,18 @@ class TestGGUFSafetensorsHealingParity:
             # force a tool-call re-prompt on it.
             "I will not search the web for that.",
             "I'll never call that tool.",
+            # Hands control back rather than announcing an action.
+            "Let me know if you need anything else.",
+            "First, the answer is 42",
+            "First, the result is 3.",
+            "First, it is 42",
+            "First, my answer is 42",
+            "The first line is blank.",
+            # Ordinal prose, not a plan.
+            "First place went to Alice",
+            "First class is available",
+            # Advice to the user, not work for this turn.
+            "First, install the package.",
         ):
             assert not shared_re.search(plain), f"wrongly fired on {plain!r}"
             assert not shared_fn(plain), f"helper wrongly fired on {plain!r}"
@@ -3363,6 +3705,98 @@ class TestGGUFSafetensorsHealingParity:
         from core.inference.tool_call_parser import MAX_ACT_REPROMPTS as shared_cap
 
         assert gguf_cap == sf_cap == shared_cap
+
+    def test_reprompt_repeat_keeps_punctuation_bearing_terms(self):
+        # Stripping all non-word chars collapsed "C++" and "C#" to "c", so different
+        # plans compared equal and the retry lost its nudge.
+        from core.inference.tool_call_parser import is_reprompt_repeat
+        assert not is_reprompt_repeat("I will search for C#.", "I will search for C++.")
+        # A leading mark is part of the term too.
+        assert not is_reprompt_repeat("I will search for .NET", "I will search for NET")
+
+    def test_reprompt_repeat_respects_word_order(self):
+        # Set overlap scores a reordered query as identical, so the comparison is
+        # sequence-based.
+        from core.inference.tool_call_parser import is_reprompt_repeat
+
+        assert not is_reprompt_repeat(
+            "I will search for dogs not cats", "I will search for cats not dogs"
+        )
+        assert is_reprompt_repeat(
+            "I will search for cats not dogs", "I will search for cats not dogs"
+        )
+        assert is_reprompt_repeat("I will search for C++!", "I will search for C++.")
+
+    def test_reprompt_repeat_keeps_a_changed_query_token(self):
+        # One corrected token in a long plan is a new attempt; at the old 0.85 bar it
+        # scored ~0.87 and cost the model its remaining nudge.
+        from core.inference.tool_call_parser import is_reprompt_repeat
+
+        before = "I will search the web for the latest CUDA version 12.4 driver release notes"
+        after = "I will search the web for the latest CUDA version 12.5 driver release notes"
+        assert not is_reprompt_repeat(after, before)
+        assert is_reprompt_repeat(before, before)
+
+    def test_reprompt_repeat_keeps_standalone_operator_tokens(self):
+        # A marks-only token stripped to nothing, so a bounded correction compared
+        # equal to the unbounded original.
+        from core.inference.tool_call_parser import is_reprompt_repeat, is_reprompt_restatement
+
+        loose = "Now I think the value is 5"
+        bounded = "Now I think the value is < 5"
+        assert not is_reprompt_repeat(bounded, loose)
+        assert not is_reprompt_restatement(bounded, loose)
+
+    def test_reprompt_repeat_keeps_a_changed_token_in_a_long_plan(self):
+        # Every similarity ratio is length-dependent: one changed token scored 0.98
+        # across 54 tokens, so long corrected plans lost their nudge.
+        from core.inference.tool_call_parser import is_reprompt_repeat
+
+        words = [f"token{index}" for index in range(54)]
+        corrected = list(words)
+        corrected[20] = "revised"
+        assert not is_reprompt_repeat(" ".join(corrected), " ".join(words))
+        assert is_reprompt_repeat(" ".join(words), " ".join(words))
+
+    def test_reprompt_repeat_keeps_articles_that_name_a_target(self):
+        # "The Who" and "Who" are different searches, so articles are not filler.
+        from core.inference.tool_call_parser import is_reprompt_repeat
+        assert not is_reprompt_repeat(
+            "I will search for The Who discography",
+            "I will search for Who discography",
+        )
+
+    def test_reprompt_repeat_keeps_filler_words_that_name_a_target(self):
+        # No word is reliably filler: dropping "ok"/"the" to absorb rewording also
+        # absorbed the search target. Reordered filler now reads as a new attempt,
+        # which costs one nudge out of the cap and never strands a plan.
+        from core.inference.tool_call_parser import is_reprompt_repeat
+        assert not is_reprompt_repeat(
+            "I will search for OK Go discography",
+            "I will search for Go discography",
+        )
+        assert not is_reprompt_repeat(
+            "I will now summarize the findings",
+            "I will summarize the findings now",
+        )
+
+    def test_reprompt_repeat_detects_restated_answers(self):
+        # A nudge answered with the same text again has not worked; stop there.
+        from core.inference.tool_call_parser import is_reprompt_repeat
+
+        same = "I will summarize what I found."
+        assert is_reprompt_repeat(same, same)
+        assert is_reprompt_repeat("I WILL summarize what I found!", same)
+        assert is_reprompt_repeat(
+            "The summary is ready, please let me know if you need anything else",
+            "The summary is ready. Please let me know if you need anything else!",
+        )
+
+        # No previous text, or genuinely different progress, keeps the nudge.
+        assert not is_reprompt_repeat(same, "")
+        assert not is_reprompt_repeat("Tokyo is 18C and cloudy right now.", same)
+        # Short texts must not collide on incidental word overlap.
+        assert not is_reprompt_repeat("Let me check.", "Let me search.")
 
 
 class TestLoopControl:
@@ -3637,6 +4071,8 @@ class TestGuardrails:
             turns = [['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>']],
             exec_results = ["OK"],
             confirm_tool_calls = True,
+            # Unset defaults to "auto", which would not prompt this safe call.
+            permission_mode = "ask",
             session_id = "sess",
             max_tool_iterations = 1,
         )
@@ -3667,11 +4103,34 @@ class TestGuardrails:
         loop, exec_fn = _make_loop(
             turns = [["plain answer"]],
             confirm_tool_calls = True,
+            # "ask" gates every call so autoinject waits; the companion test
+            # below covers "auto", where the safe retrieval never gates.
+            permission_mode = "ask",
             rag_scope = {"thread_id": "t1"},
         )
         events = _collect_events(loop)
         assert any(e.get("type") == "content" and e.get("text") == "plain answer" for e in events)
         assert exec_fn.calls == []
+
+    def test_auto_mode_still_runs_rag_autoinject(self, monkeypatch):
+        # "auto" sends confirm_tool_calls=true so unsafe calls gate, but the
+        # safe search_knowledge_base retrieval never gates, so autoinject must
+        # still run (unlike ask mode above).
+        ran = {"called": False}
+
+        def fake_autoinject(*_args, **_kwargs):
+            ran["called"] = True
+            return None
+
+        monkeypatch.setattr("core.inference.tools.build_rag_autoinject", fake_autoinject)
+        loop, _exec_fn = _make_loop(
+            turns = [["plain answer"]],
+            confirm_tool_calls = True,
+            permission_mode = "auto",
+            rag_scope = {"thread_id": "t1"},
+        )
+        _collect_events(loop)
+        assert ran["called"] is True
 
     def test_auto_heal_disabled_preserves_xml_on_final_no_tools_pass(self):
         turns = iter(
@@ -3868,9 +4327,11 @@ class TestPlanWithoutActionReprompt:
         # final answer and no further turn is generated.
         from core.inference.tool_call_parser import MAX_ACT_REPROMPTS
 
-        stall = "Let me look into it first."
+        # Distinct stalls: identical ones stop at the repeat guard, never reaching the cap.
+        stalls = [f"Let me look into detail {i} first." for i in range(MAX_ACT_REPROMPTS)]
+        stall = stalls[-1]
         turns = [["I'll search the web for that."]]
-        turns += [[stall]] * MAX_ACT_REPROMPTS
+        turns += [[s] for s in stalls]
         turns += [["SHOULD NOT APPEAR"]]
 
         generations = {"count": 0}
@@ -3948,7 +4409,7 @@ class TestPlanWithoutActionReprompt:
 
     def test_omitted_nudge_flag_is_not_reprompted(self):
         # The retry is new on this loop: API callers who do not send the flag
-        # must keep today's behavior. Studio opts in explicitly.
+        # must keep today's behavior. Unsloth opts in explicitly.
         loop, exec_fn = _make_loop(
             turns = [
                 ["I'll search the web for that."],
@@ -4003,6 +4464,8 @@ class TestPlanWithoutActionReprompt:
                 ["SHOULD NOT APPEAR"],
             ],
             confirm_tool_calls = True,
+            # Only "ask" gates the always-safe web_search, so the deny path runs.
+            permission_mode = "ask",
             session_id = "sess",
             nudge_tool_calls = True,
         )
@@ -4057,20 +4520,18 @@ class TestRoutesPythonTagStrip:
     def test_python_tag_multiline_with_less_than(self):
         # Combined: multi-line code AND literal ``<`` in code.
         text = (
-            '<|python_tag|>python.call(code="for i in range(10):\n'
-            "    if i < 5:\n"
-            '        print(i)")'
+            '<|python_tag|>python.call(code="for i in range(10):\n    if i < 5:\n        print(i)")'
         )
         assert self._strip(text) == ""
 
     def test_python_tag_stops_at_eom_sentinel(self):
         # Strip stops at the next Llama-3 ``<|`` sentinel so any
         # trailing assistant content survives.
-        text = '<|python_tag|>python.call(code="multi\nline")' "<|eom_id|>final answer text"
+        text = '<|python_tag|>python.call(code="multi\nline")<|eom_id|>final answer text'
         assert self._strip(text) == "<|eom_id|>final answer text"
 
     def test_python_tag_stops_at_eot_sentinel(self):
-        text = '<|python_tag|>brave_search.call(query="x")' "<|eot_id|>after"
+        text = '<|python_tag|>brave_search.call(query="x")<|eot_id|>after'
         assert self._strip(text) == "<|eot_id|>after"
 
     def test_python_tag_json_form_multiline_stripped(self):
@@ -4100,7 +4561,7 @@ class TestParserRobustness:
         # too. Was extracting name only and silently dropping the args.
         import json
 
-        text = "<tool_call>\n" '{"name": "search", "parameters": {"q": "ramen"}}\n' "</tool_call>"
+        text = '<tool_call>\n{"name": "search", "parameters": {"q": "ramen"}}\n</tool_call>'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "search"
@@ -4111,7 +4572,7 @@ class TestParserRobustness:
         # ``<function name="..."><param name="...">v</param></function>``.
         import json
 
-        text = '<function name="get_weather">' '<param name="city">Tokyo</param>' "</function>"
+        text = '<function name="get_weather"><param name="city">Tokyo</param></function>'
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "get_weather"
@@ -4756,3 +5217,27 @@ class TestFalseAlarmMarkerProse:
         assert [c[0] for c in exec_fn.calls] == ["web_search", "python"]
         assistant = next(m for m in convs[1] if m["role"] == "assistant")
         assert '"python"' not in (assistant.get("content") or "")
+
+
+def test_both_tool_loops_say_they_are_waiting_for_approval():
+    """A gated call must not report "Running" in either loop.
+
+    The GGUF loop was fixed first and the safetensors one was missed, so the
+    badge counted up "Running ..." against a prompt nobody had answered yet.
+    Asserted on the source so the two paths cannot drift apart again.
+    """
+    import ast
+    import os
+
+    backend = os.path.join(os.path.dirname(__file__), "..")
+    for name in ("core/inference/safetensors_agentic.py", "core/inference/llama_cpp.py"):
+        with open(os.path.join(backend, name), encoding = "utf-8") as f:
+            tree = ast.parse(f.read())
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "awaiting_approval_status"
+        ]
+        assert calls, f"{name} still announces a gated tool call as running"

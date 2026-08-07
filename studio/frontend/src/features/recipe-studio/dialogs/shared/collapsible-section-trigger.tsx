@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
-import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  forwardRef,
   type ButtonHTMLAttributes,
   type ReactElement,
+  forwardRef,
 } from "react";
 
 type CollapsibleSectionTriggerProps = {
@@ -42,7 +42,7 @@ export const CollapsibleSectionTriggerButton = forwardRef<
     >
       <span className="flex min-w-0 items-center gap-2">
         <HugeiconsIcon
-          icon={ArrowDown01Icon}
+          icon={ChevronDownStandardIcon}
           className={cn(
             "size-3.5 shrink-0 transition-transform",
             open && "rotate-180",

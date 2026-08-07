@@ -1,14 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-from typing import Literal, Optional
+import functools
+import re
+import threading
+from typing import Any, Literal, Optional
 from urllib.parse import unquote, urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from auth.storage import rotate_preview_link_secret
+from core.rag.config import default_gguf_repo, effective_gguf_repo
 from loggers import get_logger
 from utils.utils import safe_error_detail, log_and_http_error
 from utils.personalization_settings import (
@@ -32,13 +36,24 @@ from utils.helper_precache_settings import (
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
 )
+from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
+from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
 from utils.openai_auto_switch_settings import (
-    DEFAULT_AUTO_UNLOAD_IDLE_SECONDS,
+    DEFAULT_AUTO_UNLOAD_KEEP_KV,
+    DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED,
     DEFAULT_OPENAI_AUTO_SWITCH_ENABLED,
+    MAX_GPU_ID,
+    PARALLEL_SLOTS_MAX,
+    PARALLEL_SLOTS_MIN,
+    cached_repo_alias_keys,
     get_auto_unload_idle_seconds,
+    get_auto_unload_keep_kv,
     get_model_overrides,
     get_openai_auto_switch_enabled,
+    resolve_model_override_key,
+    resolve_model_override_keys,
     get_stored_auto_unload_idle_seconds,
+    get_stored_openai_auto_download_enabled,
     set_model_override,
     set_openai_auto_switch,
 )
@@ -46,6 +61,13 @@ from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
     get_preview_sharing_enabled,
     set_preview_sharing_enabled,
+)
+from utils.remote_access_settings import (
+    DEFAULT_REMOTE_ACCESS_AUTO_START,
+    remote_access_status,
+    set_remote_access_auto_start,
+    start_remote_access,
+    stop_remote_access,
 )
 from utils.embedding_model_settings import (
     MAX_EMBEDDING_MODEL_LENGTH,
@@ -56,6 +78,7 @@ from utils.embedding_model_settings import (
     set_rag_embedding_model,
     validate_embedding_model,
 )
+from utils.hf_cache_settings import cache_status, get_hf_cache_paths, set_hf_cache_home
 
 router = APIRouter()
 
@@ -85,9 +108,29 @@ class HelperPrecacheResponse(BaseModel):
     disabled_by_env: bool
 
 
+class HuggingFaceCachePayload(BaseModel):
+    cache_home: Optional[str] = Field(default = None, max_length = 4096)
+
+
+class HuggingFaceCacheResponse(BaseModel):
+    cache_home: str
+    hub_cache: str
+    xet_cache: str
+    source: Literal["default", "studio", "environment"]
+    editable: bool
+    is_custom: bool
+    available: bool
+    writable: bool
+    free_bytes: Optional[int] = None
+    environment_variable: Optional[str] = None
+
+
 class OpenAIAutoSwitchPayload(BaseModel):
     enabled: bool
-    auto_unload_idle_seconds: int = Field(default = DEFAULT_AUTO_UNLOAD_IDLE_SECONDS, ge = 0)
+    # None leaves the stored value untouched (partial updates can't clobber it).
+    auto_unload_idle_seconds: Optional[int] = Field(default = None, ge = 0)
+    auto_unload_keep_kv: Optional[bool] = None
+    auto_download_model: Optional[bool] = None
 
 
 class OpenAIAutoSwitchResponse(BaseModel):
@@ -98,14 +141,95 @@ class OpenAIAutoSwitchResponse(BaseModel):
     # UNSLOTH_MODEL_IDLE_TTL set and nothing stored, this is true even while enabled
     # is false, so the UI can show idle-unload as active instead of "needs enable".
     idle_unload_active: bool = False
+    auto_unload_keep_kv: bool = DEFAULT_AUTO_UNLOAD_KEEP_KV
+    # Stored, not effective: the UI must round-trip the saved value across an auto-switch toggle.
+    auto_download_model: bool = DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED
+
+
+# A quant suffix, as modelOverrideKey builds it. Matched against the loader's quant pattern,
+# not a length heuristic: a POSIX path may hold a colon and inherit another model's flags.
+_MAX_VARIANT_SUFFIX_LEN = 64
+
+# A local id is a path plus an optional quant suffix, and LoadRequest.model_path is unbounded.
+# A limit under PATH_MAX would 422 the server sync while the local save succeeded.
+MAX_MODEL_OVERRIDE_KEY_LEN = 4096 + 1 + _MAX_VARIANT_SUFFIX_LEN
+
+# A list longer than MAX_GPU_ID cannot name a device the normalizer would store, so bound it
+# here and reject an oversized array at the boundary instead of walking it.
+MAX_GPU_IDS = MAX_GPU_ID + 1
 
 
 class ModelOverridePayload(BaseModel):
-    model_id: str = Field(..., min_length = 1)
-    llama_extra_args: list[str] = Field(default_factory = list)
-    # ge=1: 0 is not a valid sequence length, and the setter drops a falsy value,
-    # so reject it at the boundary instead of accepting then silently discarding it.
+    """One model's saved launch config, applied when the API loads that model.
+
+    Everything past ``model_id`` is optional and omitted means "app default", so a
+    payload carrying only ``model_id`` clears the entry. The bounds here mirror
+    ``LoadRequest`` so a bad value is rejected at the boundary instead of being
+    silently dropped by the normalizer; the enum-ish fields (KV dtype, speculative
+    mode) are left to it, since their valid sets follow the llama.cpp build.
+    """
+
+    model_id: str = Field(..., min_length = 1, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
+    # None leaves the stored value alone (the UI has no control for flags); [] clears them.
+    llama_extra_args: Optional[list[str]] = None
+    # ge=1: the setter drops a falsy value, so reject 0 here instead of discarding it silently.
     max_seq_length: Optional[int] = Field(default = None, ge = 1, le = 1048576)
+    custom_context_length: Optional[int] = Field(default = None, ge = 1, le = 1048576)
+    kv_cache_dtype: Optional[str] = Field(default = None, max_length = 32)
+    # A discrete set, enforced by the normalizer; these bounds only block absurd values.
+    mlx_kv_bits: Optional[int] = Field(default = None, ge = 2, le = 8)
+    speculative_type: Optional[str] = Field(default = None, max_length = 32)
+    spec_draft_n_max: Optional[int] = Field(default = None, ge = 1, le = 16)
+    # Parallel decode slots (llama-server --parallel), GGUF-only; None follows the server default.
+    n_parallel: Optional[int] = Field(default = None, ge = PARALLEL_SLOTS_MIN, le = PARALLEL_SLOTS_MAX)
+    tensor_parallel: bool = False
+    # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
+    chat_template_override: Optional[str] = None
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
+    # -1 is Auto (llama.cpp --fit sizes the offload); the normalizer treats it as unset.
+    gpu_layers: Optional[int] = Field(default = None, ge = -1, le = 1024)
+    n_cpu_moe: Optional[int] = Field(default = None, ge = 0, le = 1024)
+    gpu_ids: Optional[list[int]] = Field(default = None, max_length = MAX_GPU_IDS)
+    # An all-default save carries no fields, like a forget; None keeps the legacy contract.
+    remove: Optional[bool] = None
+    # Fill in, don't replace: the backfill reads the map once then writes each model, so another
+    # tab's save was overwritten by this browser's older copy. Field level, not entry level: a
+    # legacy entry holds only some fields, and skipping it would strand the rest.
+    fill_absent_fields: bool = False
+
+    @field_validator("chat_template_override")
+    @classmethod
+    def _limit_chat_template_bytes(cls, value: Optional[str]) -> Optional[str]:
+        # Mirrors LoadRequest.normalize_blank_chat_template_override.
+        if value is None:
+            return None
+        size = chat_template_byte_length(value)
+        if size is None:
+            raise ValueError("Chat template contains unpaired surrogate characters.")
+        if size > MAX_CHAT_TEMPLATE_BYTES:
+            raise ValueError(f"Chat template exceeds the {MAX_CHAT_TEMPLATE_BYTES}-byte limit.")
+        return value
+
+    @field_validator(
+        "max_seq_length",
+        "custom_context_length",
+        "spec_draft_n_max",
+        "n_parallel",
+        "gpu_layers",
+        "n_cpu_moe",
+        "gpu_ids",
+        mode = "before",
+    )
+    @classmethod
+    def _no_booleans(cls, value: Any) -> Any:
+        # bool subclasses int and pydantic parses non-strictly, so `true` arrives as 1: a
+        # payload could pin GPU 1 or set a one-token context. _bounded_int rejects bools but
+        # never sees one, since coercion happens here first. Only bools, so lax parsing stays.
+        if isinstance(value, bool):
+            raise ValueError("Expected a number, got a boolean.")
+        if isinstance(value, list) and any(isinstance(item, bool) for item in value):
+            raise ValueError("Expected numbers, got a boolean.")
+        return value
 
 
 class ModelOverridesResponse(BaseModel):
@@ -126,6 +250,30 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
         enabled = get_helper_precache_enabled() if enabled is None else enabled,
         disabled_by_env = helper_model_disabled_by_env(),
     )
+
+
+def _hugging_face_cache_response() -> HuggingFaceCacheResponse:
+    return HuggingFaceCacheResponse(**cache_status(get_hf_cache_paths()))
+
+
+@router.get("/hugging-face-cache", response_model = HuggingFaceCacheResponse)
+def get_hugging_face_cache(
+    current_subject: str = Depends(get_current_subject),
+) -> HuggingFaceCacheResponse:
+    return _hugging_face_cache_response()
+
+
+@router.put("/hugging-face-cache", response_model = HuggingFaceCacheResponse)
+def update_hugging_face_cache(
+    payload: HuggingFaceCachePayload, current_subject: str = Depends(get_current_subject)
+) -> HuggingFaceCacheResponse:
+    try:
+        set_hf_cache_home(payload.cache_home)
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return _hugging_face_cache_response()
 
 
 @router.get("/upload-limit", response_model = UploadLimitResponse)
@@ -174,6 +322,19 @@ def update_helper_precache(
     return _helper_precache_response(enabled)
 
 
+class CodingAgentsResponse(BaseModel):
+    # All agents `unsloth start` supports, in the CLI's declared order.
+    agents: tuple[str, ...] = CODING_AGENTS
+    # Subset of `agents` whose CLI binary was found on PATH; the frontend uses
+    # this to default the API-keys panel to a command the user can run as-is.
+    detected: list[str]
+
+
+@router.get("/coding-agents", response_model = CodingAgentsResponse)
+def get_coding_agents(current_subject: str = Depends(get_current_subject)) -> CodingAgentsResponse:
+    return CodingAgentsResponse(detected = detect_installed_coding_agents())
+
+
 @router.get("/openai-auto-switch", response_model = OpenAIAutoSwitchResponse)
 def get_openai_auto_switch(
     current_subject: str = Depends(get_current_subject),
@@ -182,6 +343,8 @@ def get_openai_auto_switch(
         enabled = get_openai_auto_switch_enabled(),
         auto_unload_idle_seconds = get_stored_auto_unload_idle_seconds(),
         idle_unload_active = get_auto_unload_idle_seconds() > 0,
+        auto_unload_keep_kv = get_auto_unload_keep_kv(),
+        auto_download_model = get_stored_openai_auto_download_enabled(),
     )
 
 
@@ -190,8 +353,11 @@ def update_openai_auto_switch(
     payload: OpenAIAutoSwitchPayload, current_subject: str = Depends(get_current_subject)
 ) -> OpenAIAutoSwitchResponse:
     try:
-        enabled, idle_seconds = set_openai_auto_switch(
-            payload.enabled, payload.auto_unload_idle_seconds
+        enabled, idle_seconds, keep_kv, auto_download = set_openai_auto_switch(
+            payload.enabled,
+            payload.auto_unload_idle_seconds,
+            payload.auto_unload_keep_kv,
+            payload.auto_download_model,
         )
     except ValueError as exc:
         raise log_and_http_error(
@@ -201,10 +367,17 @@ def update_openai_auto_switch(
             event = "settings.update_openai_auto_switch_failed",
             log = logger,
         ) from exc
+    idle_unload_active = get_auto_unload_idle_seconds() > 0
+    if not keep_kv or not idle_unload_active:
+        # Keep-KV off or idle unload disabled: drop already-saved chat context too.
+        from core.inference.llama_keepwarm import purge_kv_resume
+        purge_kv_resume()
     return OpenAIAutoSwitchResponse(
         enabled = enabled,
         auto_unload_idle_seconds = idle_seconds,
-        idle_unload_active = get_auto_unload_idle_seconds() > 0,
+        idle_unload_active = idle_unload_active,
+        auto_unload_keep_kv = keep_kv,
+        auto_download_model = auto_download,
     )
 
 
@@ -215,18 +388,248 @@ def get_openai_auto_switch_overrides(
     return ModelOverridesResponse(overrides = get_model_overrides())
 
 
+def _bare_model_id(model_id: str) -> Optional[str]:
+    """``repo`` for a ``repo:QUANT`` key, or None when there is no quant suffix."""
+    from utils.openai_auto_switch_settings import split_quant_suffix
+
+    # Must look like a quant, not a short path segment; a bpw modifier and stem label both count.
+    split = split_quant_suffix(model_id)
+    return split[0] if split is not None else None
+
+
+def _other_quants_remain(bare_id: str, removed_ids: list[str]) -> bool:
+    """Whether a quant of ``bare_id`` other than the ones being removed still has an entry.
+
+    Such a quant has its own settings and never reads the bare fallback, so this is not
+    "is anyone inheriting" but "is this forget the last one for the model". If it is not,
+    the bare entry stays: an inheriting quant is exactly what it is there for.
+    """
+    from utils.openai_auto_switch_settings import split_quant_suffix
+
+    removed = {key.strip().lower() for key in removed_ids}
+    prefix = bare_id.strip().lower()
+    for key, entry in get_model_overrides().items():
+        if not isinstance(entry, dict) or key.strip().lower() in removed:
+            continue
+        split = split_quant_suffix(key)
+        if split is not None and split[0].strip().lower() == prefix:
+            return True
+    return False
+
+
+def _legacy_standalone_gguf_key(model_id: str) -> Optional[str]:
+    """The stored ``<path>:LABEL`` entry for a bare standalone .gguf path, if any.
+
+    A loose file has no quant to choose between, so it is keyed by the bare path,
+    but the label derived from its filename is never empty and that is how the
+    picker keyed the same file before, so an upgraded install carries entries
+    under it. The auto-switch loader reads that spelling after the bare path
+    misses; resolve_model_override_key does not, since folding a POSIX path only
+    touches an existing suffix. None for an id that already names a quant, for a
+    repo id, and when nothing is stored under the derived key.
+    """
+    import os
+
+    if not model_id.lower().endswith(".gguf"):
+        return None
+    # Already qualified, so the caller named the entry it meant, as the loader does.
+    if _bare_model_id(model_id) is not None:
+        return None
+    from hub.utils.gguf import extract_quant_label
+
+    label = extract_quant_label(os.path.basename(model_id))
+    if not label:
+        return None
+    # Through the resolver: the browser lowercases the variant, and an ambiguous fold misses.
+    return resolve_model_override_key(f"{model_id}:{label}")
+
+
+def _fill_target_id(target_id: str) -> str:
+    """Where a one-time backfill write for ``target_id`` has to land.
+
+    A fill only adds, so unlike a save it cannot retire the other spelling of a cached
+    repo. Creating the snapshot-path key while the server already holds the repo id
+    would leave two entries for one quant, and the loader reads the load path before the
+    advertised id, so an upgraded browser's pre-upgrade copy would shadow the newer
+    server config on every API load. Fill into the entry already there instead: nothing
+    outranks it, and the fields it lacks still arrive.
+
+    Only in that direction. A repo-id key never outranks an existing path entry, and two
+    snapshot paths name two caches, neither of which is knowably the one loaded here.
+    """
+    from core.inference.model_ids import hf_cache_repo_id
+    from utils.openai_auto_switch_settings import split_quant_suffix
+
+    # Already stored, so this write creates no second key to outrank anything.
+    if isinstance(get_model_overrides().get(target_id), dict):
+        return target_id
+    split = split_quant_suffix(target_id)
+    # A bare id backs every quant and is read last, and only a cache path outranks.
+    if split is None or hf_cache_repo_id(split[0]) is None:
+        return target_id
+    for alias_id in cached_repo_alias_keys(target_id):
+        alias_split = split_quant_suffix(alias_id)
+        if alias_split is not None and hf_cache_repo_id(alias_split[0]) is None:
+            return alias_id
+    return target_id
+
+
+# One override write at a time. A save stores its target key and then reads the map back to
+# retire the other spelling of the same cached repo, and a remove clears up to four keys, each
+# its own transaction: atomic on their own, but not as a sequence. This route is a plain `def`,
+# so FastAPI runs it in a threadpool, and two clients saving one quant under both spellings (the
+# repo id the picker sends and the snapshot path an upgraded install still holds) could each
+# write before either cleanup ran and then retire the other's row, leaving no override at all
+# from two saves that both returned 200. Serialize the whole handler instead: overrides are
+# written by a settings edit, never on a hot path, and the server runs one process.
+_override_write_lock = threading.Lock()
+
+
+def _serialized_override_write(func):
+    """Run ``func`` under _override_write_lock, keeping the handler body as it reads.
+
+    functools.wraps carries __wrapped__, which inspect.signature follows, so FastAPI still
+    sees the endpoint's own parameters and dependencies.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        with _override_write_lock:
+            return func(*args, **kwargs)
+
+    return wrapper
+
+
 @router.put("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
+@_serialized_override_write
 def update_openai_auto_switch_override(
     payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)
 ) -> ModelOverridesResponse:
     from core.inference.llama_server_args import validate_extra_args
+    from utils.openai_auto_switch_settings import get_model_override
+
     try:
-        extra_args = validate_extra_args(payload.llama_extra_args)
-        set_model_override(
-            payload.model_id,
-            llama_extra_args = extra_args,
-            max_seq_length = payload.max_seq_length,
+        if payload.fill_absent_fields and payload.remove is True:
+            # A fill that is also a delete has no meaning; picking one loses or resurrects.
+            raise ValueError("fill_absent_fields cannot be combined with remove.")
+        # Only model_id is the documented "remove"; otherwise omitted flags carry over.
+        requested_extra_args = payload.llama_extra_args
+        # fill_absent_fields is a write mode, not a saved field: leaving it in would make
+        # every payload look non-empty and break the legacy "no fields means remove".
+        saved_fields = payload.model_dump(
+            exclude = {"model_id", "llama_extra_args", "remove", "fill_absent_fields"},
+            exclude_none = True,
         )
+        if payload.remove is not None:
+            is_removal = payload.remove
+        else:
+            is_removal = not payload.tensor_parallel and not {
+                key: value for key, value in saved_fields.items() if key != "tensor_parallel"
+            }
+        if requested_extra_args is None and not is_removal:
+            stored = get_model_override(payload.model_id)
+            # A fill keeps the stored flags without echoing them back through validation: one
+            # denylisted since it was saved would 400 the migration, which then retries forever.
+            if not (payload.fill_absent_fields and stored):
+                requested_extra_args = stored.get("llama_extra_args")
+                if requested_extra_args is None:
+                    # First per-quant save for flags under the bare repo id; carry them over.
+                    bare_id = _bare_model_id(payload.model_id)
+                    if bare_id:
+                        requested_extra_args = get_model_override(bare_id).get("llama_extra_args")
+                if requested_extra_args is None:
+                    # And for a standalone .gguf upgraded from the build that keyed it by its
+                    # filename label: the bare path written here is read before that key, so
+                    # its flags would go dark with no page able to show or restore them.
+                    legacy_id = _legacy_standalone_gguf_key(payload.model_id)
+                    if legacy_id:
+                        requested_extra_args = get_model_override(legacy_id).get("llama_extra_args")
+                if requested_extra_args is None:
+                    # Same for the other spelling of a cached repo, which this save retires
+                    # below: its flags have nowhere else to live, and the page cannot show them.
+                    for alias_id in cached_repo_alias_keys(payload.model_id):
+                        requested_extra_args = get_model_override(alias_id).get("llama_extra_args")
+                        if requested_extra_args is not None:
+                            break
+        # Not validated on an explicit remove: a 400 would only leave the override in place.
+        extra_args = [] if payload.remove is True else validate_extra_args(requested_extra_args)
+        if payload.remove is True:
+            # An explicit remove wins over any other field. Remove the key a load resolves to,
+            # not the literal one sent (the browser normalizes casing), and every spelling:
+            # clearing one of two leaves the survivor as the sole fold match.
+            target_ids = resolve_model_override_keys(payload.model_id) or [
+                payload.model_id,
+            ]
+            for target_id in target_ids:
+                set_model_override(target_id, llama_extra_args = [], max_seq_length = None)
+            # A standalone .gguf is keyed by its bare path now, but a load also reads the
+            # filename-derived <path>:LABEL an upgraded install holds, which would outlive this.
+            legacy_id = _legacy_standalone_gguf_key(payload.model_id)
+            if legacy_id and legacy_id not in target_ids:
+                set_model_override(
+                    legacy_id,
+                    llama_extra_args = [],
+                    max_seq_length = None,
+                )
+            # The mirror image of the carry-over above: a save under repo:QUANT copies the
+            # flags off a legacy bare `repo` entry and leaves it in place, and the loader falls
+            # back to it when the qualified key misses, so clearing only the qualified key hands
+            # the same flags straight back and the forget does nothing. Nothing in the UI can
+            # reach that bare entry. Only once it is nobody else's fallback, though: it backs
+            # every quant with no entry of its own, so forgetting Q4 must not strip Q8.
+            bare_id = _bare_model_id(payload.model_id)
+            if (
+                bare_id
+                and bare_id not in target_ids
+                and not _other_quants_remain(
+                    bare_id,
+                    target_ids,
+                )
+            ):
+                set_model_override(
+                    bare_id,
+                    llama_extra_args = [],
+                    max_seq_length = None,
+                )
+            # And the other spelling of a cached repo: the loader reads the load path before
+            # the advertised id, so clearing only the id leaves the path entry still applying.
+            for alias_id in cached_repo_alias_keys(payload.model_id):
+                set_model_override(alias_id, llama_extra_args = [], max_seq_length = None)
+        else:
+            # Save under the key a load resolves to, as the removal branch does: the literal
+            # id would leave two keys for one model, making every other casing ambiguous.
+            target_id = resolve_model_override_key(payload.model_id) or payload.model_id
+            if payload.fill_absent_fields:
+                # A fill retires nothing below, so it must not create the higher-priority
+                # spelling of a row the server already holds.
+                target_id = _fill_target_id(target_id)
+            set_model_override(
+                target_id,
+                llama_extra_args = extra_args,
+                max_seq_length = payload.max_seq_length,
+                custom_context_length = payload.custom_context_length,
+                kv_cache_dtype = payload.kv_cache_dtype,
+                mlx_kv_bits = payload.mlx_kv_bits,
+                speculative_type = payload.speculative_type,
+                spec_draft_n_max = payload.spec_draft_n_max,
+                n_parallel = payload.n_parallel,
+                tensor_parallel = payload.tensor_parallel,
+                chat_template_override = payload.chat_template_override,
+                gpu_memory_mode = payload.gpu_memory_mode,
+                gpu_layers = payload.gpu_layers,
+                n_cpu_moe = payload.n_cpu_moe,
+                gpu_ids = payload.gpu_ids,
+                fill_absent_fields = payload.fill_absent_fields,
+            )
+            # A repo cached outside the active HF cache is keyed here by its repo id, while the
+            # loader reads the snapshot path first and an older release keyed the row by that
+            # path, so an upgrade can hold both. Retire the spelling this save supersedes (its
+            # flags were carried over above), or the leftover outranks the key just written.
+            # After the write, so a rejected save deletes nothing. Not on a fill: that pass only
+            # adds, and the migration mirroring both spellings must not delete either.
+            if not payload.fill_absent_fields:
+                for alias_id in cached_repo_alias_keys(target_id):
+                    set_model_override(alias_id, llama_extra_args = [], max_seq_length = None)
     except ValueError as exc:
         raise log_and_http_error(
             exc,
@@ -248,14 +651,18 @@ class EmbeddingModelPayload(BaseModel):
 
 class EmbeddingModelResponse(BaseModel):
     embedding_model: str
+    embedding_gguf_repo: str
     default_embedding_model: str
+    default_embedding_gguf_repo: str
     is_custom: bool
 
 
 def _embedding_model_response() -> EmbeddingModelResponse:
     return EmbeddingModelResponse(
         embedding_model = get_rag_embedding_model(),
+        embedding_gguf_repo = effective_gguf_repo(),
         default_embedding_model = default_embedding_model(),
+        default_embedding_gguf_repo = default_gguf_repo(),
         is_custom = get_stored_embedding_model() is not None,
     )
 
@@ -385,6 +792,11 @@ def update_embedding_model(
             log = logger,
         ) from exc
     hf_token = (payload.hf_token or "").strip() or None
+    from utils.utils import hf_env_offline
+
+    # Offline, both the Hub malware scan and the is-embedding check are unreachable and degrade
+    # to the local cache below; capture the state once.
+    local_only_load = hf_env_offline()
     # The env/default model needs no verification; saving it is a no-op override.
     # A local GGUF on the llama-server backend is accepted as-is: it is exactly
     # what the backend loads, and HF metadata cannot verify a local path.
@@ -408,26 +820,41 @@ def update_embedding_model(
         # Fall back to the loader's own token so a gated/private repo is actually scanned
         # (a token-less scan fails open for exactly the repo that would still load).
         scan_token = hf_token or _ambient_hf_token()
-        # Include the ST module dirs (0_Transformer/) so a flagged pickle directly under
-        # one blocks instead of passing as an unreferenced nested shard.
-        load_subdirs = tuple(
-            dict.fromkeys(
-                (
-                    *security_load_subdirs(model, scan_token),
-                    *_st_module_subdirs(model, scan_token),
+        # Offline: subdir probes would hit the network and hang; the offline gate walks the
+        # whole cached snapshot, so no load-subdir hints are needed.
+        if local_only_load:
+            load_subdirs = ()
+        else:
+            # Include ST module dirs (0_Transformer/) so a flagged pickle directly under one
+            # blocks instead of passing as an unreferenced nested shard.
+            load_subdirs = tuple(
+                dict.fromkeys(
+                    (
+                        *security_load_subdirs(model, scan_token),
+                        *_st_module_subdirs(model, scan_token),
+                    )
                 )
             )
-        )
-        if evaluate_file_security(model, hf_token = scan_token, load_subdirs = load_subdirs).blocked:
+        if evaluate_file_security(
+            model,
+            hf_token = scan_token,
+            load_subdirs = load_subdirs,
+            local_only_load = local_only_load,
+        ).blocked:
             # 403, not 409: the client routes every 409 into the forceable "save anyway"
             # flow, but this block is a hard, non-forceable security refusal.
-            raise HTTPException(
-                status_code = 403,
+            if local_only_load:
+                detail = (
+                    f"{model!r} has cached pickle weights that cannot be security-scanned "
+                    "offline and no safetensors alternative, so it cannot be used as the "
+                    "embedding model. Re-download it with safetensors weights while online."
+                )
+            else:
                 detail = (
                     f"{model!r} is flagged as unsafe by Hugging Face's security scan and "
                     "cannot be used as the embedding model."
-                ),
-            )
+                )
+            raise HTTPException(status_code = 403, detail = detail)
     if model != default_embedding_model() and not payload.force and not is_local_gguf:
         from core.rag import config as rag_config
 
@@ -437,15 +864,28 @@ def update_embedding_model(
         # which would wrongly 409 a valid online GGUF embedder.
         gguf_named = _llama_backend_active() and rag_config._names_gguf(model)
         if not gguf_named and not is_embedding_model(model, hf_token = hf_token):
-            raise HTTPException(
-                status_code = 409,
-                detail = (
-                    f"Could not verify {model!r} as an embedding model on "
-                    "Hugging Face (it may be the wrong model type, gated, or "
-                    "you may be offline)."
-                ),
-            )
-        gguf_error = _local_gguf_backend_error(model) or _hf_gguf_backend_error(model, hf_token)
+            # Offline, is_embedding_model can only confirm the ST layout (modules.json); a
+            # transformers-native embedder (e.g. gte-modernbert) is unverifiable without Hub
+            # metadata. If already cached and loadable, accept it rather than raising a 409 that
+            # online would not (ST can load any cached encoder). Uncached -> 409.
+            from utils.utils import hf_cache_snapshot_is_loadable
+
+            # Require a genuinely loadable cache (config + weights), not just a resolved refs/main,
+            # so a metadata-only partial cache still gets the forceable 409.
+            offline_cached = local_only_load and hf_cache_snapshot_is_loadable(model)
+            if not offline_cached:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        f"Could not verify {model!r} as an embedding model on "
+                        "Hugging Face (it may be the wrong model type, gated, or "
+                        "you may be offline)."
+                    ),
+                )
+        # The Hub GGUF probe (list_repo_files) can hang offline; skip it. Local check stays.
+        gguf_error = _local_gguf_backend_error(model)
+        if gguf_error is None and not local_only_load:
+            gguf_error = _hf_gguf_backend_error(model, hf_token)
         if gguf_error:
             raise HTTPException(status_code = 409, detail = gguf_error)
     set_rag_embedding_model(model)
@@ -489,6 +929,98 @@ class PreviewSharingPayload(BaseModel):
 class PreviewSharingResponse(BaseModel):
     enabled: bool
     default_enabled: bool = DEFAULT_PREVIEW_SHARING_ENABLED
+
+
+class RemoteAccessAutoStartPayload(BaseModel):
+    enabled: StrictBool
+
+
+class RemoteAccessResponse(BaseModel):
+    state: Literal["off", "starting", "online", "stopping", "error"]
+    url: Optional[str] = None
+    error: Optional[str] = None
+    auto_start: bool
+    default_auto_start: bool = DEFAULT_REMOTE_ACCESS_AUTO_START
+    available: bool
+    managed_by: Optional[Literal["launch", "settings", "colab"]] = None
+    can_start: bool
+    can_stop: bool
+    block_reason: Optional[str] = None
+    password_pending: bool = False
+    streaming_supported: bool = True
+
+
+def _require_ui_session(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
+    if via_api_key:
+        raise HTTPException(status_code = 403, detail = "Remote access requires a UI session.")
+
+
+def _remote_access_response(request: Request) -> RemoteAccessResponse:
+    return RemoteAccessResponse(**remote_access_status(request.app.state))
+
+
+@router.get("/remote-access", response_model = RemoteAccessResponse)
+def get_remote_access(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> RemoteAccessResponse:
+    return _remote_access_response(request)
+
+
+@router.post("/remote-access/start", response_model = RemoteAccessResponse)
+def start_remote_access_route(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> RemoteAccessResponse:
+    try:
+        response = RemoteAccessResponse(**start_remote_access(request.app.state))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info("settings.remote_access_start_requested subject=%s", current_subject)
+    return response
+
+
+@router.post("/remote-access/stop", response_model = RemoteAccessResponse)
+def stop_remote_access_route(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> RemoteAccessResponse:
+    try:
+        status = stop_remote_access(request.app.state)
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    status.update(
+        state = "off",
+        url = None,
+        error = None,
+        managed_by = None,
+        can_start = False,
+        can_stop = False,
+    )
+    response = RemoteAccessResponse(**status)
+    logger.info("settings.remote_access_stop_requested subject=%s", current_subject)
+    return response
+
+
+@router.put("/remote-access/auto-start", response_model = RemoteAccessResponse)
+def update_remote_access_auto_start(
+    request: Request,
+    payload: RemoteAccessAutoStartPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> RemoteAccessResponse:
+    if bool(getattr(request.app.state, "remote_access_is_colab", False)):
+        raise HTTPException(status_code = 409, detail = "colab")
+    set_remote_access_auto_start(payload.enabled)
+    logger.info(
+        "settings.remote_access_auto_start_updated subject=%s enabled=%s",
+        current_subject,
+        payload.enabled,
+    )
+    return _remote_access_response(request)
 
 
 @router.get("/preview-sharing", response_model = PreviewSharingResponse)
@@ -537,6 +1069,7 @@ class PersonalizationProfile(BaseModel):
     nickname: str = Field("", max_length = 200)
     avatarDataUrl: Optional[str] = Field(None, max_length = MAX_AVATAR_DATA_URL_BYTES)
     avatarShape: Literal["circle", "rounded"] = "circle"
+    showGreetingSloth: bool = True
 
     @field_validator("avatarDataUrl")
     @classmethod
@@ -548,11 +1081,238 @@ class PersonalizationProfile(BaseModel):
         return value
 
 
+class PersonalizationCustomColors(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    accent: Optional[str] = Field(None, pattern = r"^#[0-9a-fA-F]{6}$")
+    background: Optional[str] = Field(None, pattern = r"^#[0-9a-fA-F]{6}$")
+    foreground: Optional[str] = Field(None, pattern = r"^#[0-9a-fA-F]{6}$")
+
+
+class PersonalizationCustomColorModes(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    light: PersonalizationCustomColors = Field(default_factory = PersonalizationCustomColors)
+    dark: PersonalizationCustomColors = Field(default_factory = PersonalizationCustomColors)
+
+
+MAX_IMPORTED_FONTS = 3
+# ~1.5 MB font file as base64; matches MAX_IMPORTED_FONT_DATA_URL_LENGTH in
+# the frontend appearance-custom-store.
+MAX_FONT_DATA_URL_LENGTH = 2_200_000
+# Aggregate cap across all imported fonts; matches
+# MAX_TOTAL_IMPORTED_FONT_DATA_URL_LENGTH in the frontend so a synced payload
+# always fits the browser's localStorage quota.
+MAX_TOTAL_FONT_DATA_URL_LENGTH = 4_400_000
+
+# Characters that could terminate a CSS declaration, escape the quoted
+# font-family value (backslash), or smuggle extra fallbacks/comments (comma,
+# slash) if a stored name ever reached a stylesheet. The server is the
+# authoritative gate; the frontend strips the same set before use.
+_FONT_NAME_FORBIDDEN = set(";{}()<>\"'\\/,`")
+
+
+def _check_font_name(value: str) -> str:
+    if any(c in _FONT_NAME_FORBIDDEN or ord(c) < 0x20 for c in value):
+        raise ValueError("Font name contains invalid characters.")
+    return value
+
+
+# Matches FONT_DATA_URL_PATTERN in the frontend appearance-custom-store.
+_FONT_DATA_URL_PATTERN = re.compile(
+    r"^data:(?:font/(?:woff2?|ttf|otf|sfnt)"
+    r"|application/(?:octet-stream|x-font-\w+|font-\w+));base64,[A-Za-z0-9+/=]+$"
+)
+
+
+class PersonalizationImportedFont(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    name: str = Field(..., min_length = 1, max_length = 100)
+    dataUrl: str = Field(..., max_length = MAX_FONT_DATA_URL_LENGTH)
+
+    @field_validator("name")
+    @classmethod
+    def _validate_font_name(cls, value: str) -> str:
+        return _check_font_name(value)
+
+    @field_validator("dataUrl")
+    @classmethod
+    def _validate_font_data_url(cls, value: str) -> str:
+        # fullmatch, not match: re's ``$`` also matches just before a trailing
+        # newline, so ``match`` would accept "data:font/woff2;base64,AAAA\n",
+        # which the frontend's JS pattern (``$`` = end of string) rejects.
+        if not _FONT_DATA_URL_PATTERN.fullmatch(value):
+            raise ValueError("dataUrl must be a base64 font data URL.")
+        return value
+
+
+# Optional user-menu items; the boolean is each id's default visibility.
+# Settings-tab shortcuts ship hidden.
+SIDEBAR_MENU_ITEM_DEFAULTS = {
+    "api": True,
+    "darkMode": True,
+    "guidedTour": True,
+    "profile": False,
+    "appearance": False,
+    "resources": False,
+    "chat": False,
+    "connections": False,
+}
+
+# Navigable sidebar rows the user can pin/reorder; the boolean is each id's default pin state.
+# Order and pin state MUST match the frontend's shipped layout (SIDEBAR_NAV_ITEM_IDS /
+# SIDEBAR_NAV_DEFAULT_PINNED in features/settings/stores/appearance-custom-store.ts): the client
+# sends every id on each save, so a missing id 422s the whole personalization PUT, and a legacy
+# record that predates sidebarNav is served this default as if it were an explicit remote choice.
+SIDEBAR_NAV_ITEM_DEFAULTS = {
+    "hub": True,
+    "projects": True,
+    "images": True,
+    "video": False,
+    "train": True,
+    "recipes": False,
+    "export": False,
+    "api": False,
+}
+
+MAX_SIDEBAR_NAV_INPUT_ITEMS = 4 * len(SIDEBAR_NAV_ITEM_DEFAULTS)
+
+# The sidebarMenu validator below dedupes ids and re-fills any missing ones, so
+# the stored list is always exactly one entry per id. Cap the *incoming* list at
+# a generous multiple rather than len(defaults): a stale or duplicated payload
+# (more items than distinct ids) must reach the validator so it can normalize,
+# instead of being rejected by the length constraint before dedupe runs. A
+# pathologically long list is still refused.
+MAX_SIDEBAR_MENU_INPUT_ITEMS = 4 * len(SIDEBAR_MENU_ITEM_DEFAULTS)
+
+
+class PersonalizationSidebarMenuItem(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    id: Literal[
+        "api",
+        "darkMode",
+        "guidedTour",
+        "profile",
+        "appearance",
+        "resources",
+        "chat",
+        "connections",
+    ]
+    visible: bool = True
+
+
+def _default_sidebar_menu() -> "list[PersonalizationSidebarMenuItem]":
+    return [
+        PersonalizationSidebarMenuItem(id = item_id, visible = visible)
+        for item_id, visible in SIDEBAR_MENU_ITEM_DEFAULTS.items()
+    ]
+
+
+class PersonalizationSidebarNavItem(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    id: Literal[
+        "hub",
+        "projects",
+        "images",
+        "video",
+        "train",
+        "recipes",
+        "export",
+        "api",
+    ]
+    pinned: bool = True
+
+
+def _default_sidebar_nav() -> "list[PersonalizationSidebarNavItem]":
+    return [
+        PersonalizationSidebarNavItem(id = item_id, pinned = pinned)
+        for item_id, pinned in SIDEBAR_NAV_ITEM_DEFAULTS.items()
+    ]
+
+
+class PersonalizationCustomization(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    colors: PersonalizationCustomColorModes = Field(default_factory = PersonalizationCustomColorModes)
+    uiFont: Optional[str] = Field(None, max_length = 200)
+    headingFont: Optional[str] = Field(None, max_length = 200)
+    chatFont: Optional[str] = Field(None, max_length = 200)
+    codeFont: Optional[str] = Field(None, max_length = 200)
+    importedFonts: list[PersonalizationImportedFont] = Field(
+        default_factory = list, max_length = MAX_IMPORTED_FONTS
+    )
+
+    @field_validator("importedFonts")
+    @classmethod
+    def _validate_total_font_size(
+        cls, value: list[PersonalizationImportedFont]
+    ) -> list[PersonalizationImportedFont]:
+        if sum(len(f.dataUrl) for f in value) > MAX_TOTAL_FONT_DATA_URL_LENGTH:
+            raise ValueError("Imported fonts exceed the total size limit.")
+        return value
+
+    @field_validator("uiFont", "headingFont", "chatFont", "codeFont")
+    @classmethod
+    def _validate_selected_fonts(cls, value: Optional[str]) -> Optional[str]:
+        # Selected font names reach CSS the same way imported names do.
+        return value if value is None else _check_font_name(value)
+
+    uiFontSize: Optional[int] = Field(None, ge = 12, le = 20)
+    codeFontSize: Optional[int] = Field(None, ge = 10, le = 20)
+    contrast: int = Field(50, ge = 0, le = 100)
+    pointerCursors: bool = False
+    reduceMotion: Literal["system", "on", "off"] = "system"
+    fontSmoothing: bool = True
+    sidebarMenu: list[PersonalizationSidebarMenuItem] = Field(
+        default_factory = _default_sidebar_menu,
+        max_length = MAX_SIDEBAR_MENU_INPUT_ITEMS,
+    )
+    # Order is the sidebar's render order, so the validator keeps the client's.
+    sidebarNav: list[PersonalizationSidebarNavItem] = Field(
+        default_factory = _default_sidebar_nav,
+        max_length = MAX_SIDEBAR_NAV_INPUT_ITEMS,
+    )
+
+    @field_validator("sidebarMenu")
+    @classmethod
+    def _validate_sidebar_menu(
+        cls, value: list[PersonalizationSidebarMenuItem]
+    ) -> list[PersonalizationSidebarMenuItem]:
+        # Drop duplicate ids (keep the first) and re-append any missing ids so
+        # the stored list always covers every optional menu item exactly once.
+        seen: set[str] = set()
+        items = [item for item in value if not (item.id in seen or seen.add(item.id))]
+        for item_id, visible in SIDEBAR_MENU_ITEM_DEFAULTS.items():
+            if item_id not in seen:
+                items.append(PersonalizationSidebarMenuItem(id = item_id, visible = visible))
+        return items
+
+    @field_validator("sidebarNav")
+    @classmethod
+    def _validate_sidebar_nav(
+        cls, value: list[PersonalizationSidebarNavItem]
+    ) -> list[PersonalizationSidebarNavItem]:
+        # Like sidebarMenu, but order is preserved: dedupe, then append missing.
+        seen: set[str] = set()
+        items = [item for item in value if not (item.id in seen or seen.add(item.id))]
+        for item_id, pinned in SIDEBAR_NAV_ITEM_DEFAULTS.items():
+            if item_id not in seen:
+                items.append(PersonalizationSidebarNavItem(id = item_id, pinned = pinned))
+        return items
+
+
 class PersonalizationAppearance(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
     theme: Literal["light", "dark", "system"] = "system"
+    palette: Literal["standard", "classic", "minimal"] = "standard"
     language: Optional[str] = Field(None, max_length = 20)
+    customization: PersonalizationCustomization = Field(
+        default_factory = PersonalizationCustomization
+    )
 
 
 class PersonalizationPayload(BaseModel):
@@ -565,6 +1325,11 @@ class PersonalizationPayload(BaseModel):
 
 class PersonalizationResponse(PersonalizationPayload):
     saved: bool = False
+    # False when the stored record predates a field, so the client keeps local
+    # overrides instead of treating a server-filled default as an explicit value.
+    customizationSaved: bool = False
+    paletteSaved: bool = False
+    greetingSlothSaved: bool = False
 
 
 @router.get("/personalization", response_model = PersonalizationResponse)
@@ -574,7 +1339,26 @@ def get_personalization_settings(
     stored = get_personalization()
     response = PersonalizationResponse.model_validate(stored or {})
     response.saved = bool(stored)
+    appearance = stored.get("appearance") if isinstance(stored, dict) else None
+    profile = stored.get("profile") if isinstance(stored, dict) else None
+    response.customizationSaved = isinstance(appearance, dict) and "customization" in appearance
+    response.paletteSaved = isinstance(appearance, dict) and "palette" in appearance
+    response.greetingSlothSaved = isinstance(profile, dict) and "showGreetingSloth" in profile
     return response
+
+
+def _merge_personalization(base: dict, overlay: dict) -> dict:
+    # Recursively overlay only the request's set fields onto the stored record,
+    # so a stale client that omits newer keys (palette, customization) does not
+    # materialize their defaults and defeat the *Saved legacy detection.
+    merged = dict(base)
+    for key, value in overlay.items():
+        existing = merged.get(key)
+        if isinstance(value, dict) and isinstance(existing, dict):
+            merged[key] = _merge_personalization(existing, value)
+        else:
+            merged[key] = value
+    return merged
 
 
 @router.put("/personalization", response_model = PersonalizationPayload)
@@ -582,7 +1366,11 @@ def update_personalization_settings(
     payload: PersonalizationPayload, current_subject: str = Depends(get_current_subject)
 ) -> PersonalizationPayload:
     try:
-        set_personalization(payload.model_dump())
+        # exclude_unset so absent fields are not persisted as defaults; merge so
+        # fields the request omits keep whatever the record already stored.
+        incoming = payload.model_dump(exclude_unset = True)
+        merged = _merge_personalization(get_personalization(), incoming)
+        set_personalization(merged)
     except ValueError as exc:
         raise log_and_http_error(
             exc,
@@ -591,4 +1379,6 @@ def update_personalization_settings(
             event = "settings.update_personalization_failed",
             log = logger,
         ) from exc
-    return payload
+    # Return the stored record, not the defaults-filled request, so the response
+    # matches storage (and the next GET) for fields the client omitted.
+    return PersonalizationPayload.model_validate(merged)

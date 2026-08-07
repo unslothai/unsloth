@@ -9,7 +9,7 @@
 # export is validated separately. No GPU / model / llama.cpp: the tests mock the probes and block
 # torch/unsloth, so the job installs only a CPU PyTorch plus import deps.
 
-name: Studio export capability
+name: Unsloth export capability
 
 on:
   pull_request:
@@ -44,7 +44,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # No macOS leg on purpose. The only command this job runs is
+        # `pytest tests/test_export_capability.py`, and every test in that file
+        # goes through `_patch()`, which monkeypatches `_has_torch`,
+        # `get_device` and `is_apple_silicon`. Nothing in it touches Metal, MLX
+        # or any Apple binary, so a real Mac proves nothing a Linux runner does
+        # not already prove -- and studio-backend-ci.yml runs the same file on
+        # ubuntu-latest as part of `pytest tests/`. macOS concurrency is capped
+        # at 5 account-wide, so a leg that buys no signal is worth reclaiming.
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     env:

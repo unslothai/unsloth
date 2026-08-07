@@ -16,6 +16,7 @@ import sys
 import tarfile
 import types
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -319,6 +320,66 @@ def test_stop_terminates_process():
     t.stop()
 
 
+def test_runtime_callback_covers_process_start_through_stop(monkeypatch):
+    events = []
+    starts_admitted = []
+    ct.set_studio_tunnel_runtime_callback(events.append)
+
+    class _ObservedPopen(_FakePopen):
+        stdout = None
+        block_termination = True
+
+        def terminate(self):
+            assert events[-1] is True
+            if self.block_termination:
+                ct.start_studio_tunnel(8081, managed_by = "settings")
+                raise OSError("termination unavailable")
+            super().terminate()
+
+    fake = _ObservedPopen()
+
+    def fake_popen(*_args, **_kwargs):
+        assert events[-1] is True
+        return fake
+
+    class _NoReaderThread:
+        def __init__(self, **_kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(ct.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(ct.threading, "Thread", _NoReaderThread)
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: starts_admitted.append(True))
+    try:
+        tunnel = ct.CloudflareTunnel(8080, "/bin/cloudflared")
+        tunnel.start()
+        assert events[-1] is True
+        ct._active_tunnel = tunnel
+        ct._tunnel_state = "online"
+        ct._tunnel_owner = "settings"
+        ct._tunnel_port = 8080
+        ct._tunnel_state = "stopping"
+        ct._active_tunnel_exited(tunnel)
+        assert ct.get_studio_tunnel_status()["state"] == "stopping"
+        ct._tunnel_state = "online"
+        ct._active_tunnel_exited(tunnel)
+        assert events[-1] is True
+        assert starts_admitted == []
+        assert ct._active_tunnel is tunnel
+        assert ct.get_studio_tunnel_status()["state"] == "error"
+        assert ct.get_studio_tunnel_status()["stop_pending"] is True
+        fake.block_termination = False
+        ct.stop_studio_tunnel()
+        assert events[-1] is False
+        assert ct.get_studio_tunnel_status()["state"] == "off"
+        ct._retain_studio_tunnel_for_stop(tunnel)
+        assert ct._tunnels_pending_stop_snapshot() == ()
+    finally:
+        ct.set_studio_tunnel_runtime_callback(None)
+
+
 def test_start_after_stop_does_not_spawn(monkeypatch):
     # If stop() lands before start() (a concurrent shutdown in the caller's
     # register->start window), start() must NOT spawn a cloudflared process --
@@ -350,6 +411,8 @@ def _fake_proc(text):
 
 def test_reader_captures_url_and_registration():
     t = ct.CloudflareTunnel(8080, "/bin/cloudflared")
+    exited = []
+    t.set_on_exit(exited.append)
     t._reader(
         _fake_proc(
             "INF Requesting new quick Tunnel on trycloudflare.com...\n"
@@ -360,7 +423,8 @@ def test_reader_captures_url_and_registration():
     assert t.url == "https://words-here-abc.trycloudflare.com"
     assert t.ready is True
     assert t.wait_for_ready(0) == t.url
-    assert t.error is None  # a fully-registered tunnel records no error
+    assert t.error == "cloudflared exited"
+    assert exited == [t]
 
 
 def test_reader_url_without_registration_is_not_ready():
@@ -403,9 +467,506 @@ def test_reader_ignores_api_endpoint_failure_line():
     assert t.error == "cloudflared exited before emitting a tunnel URL"
 
 
+# ── public reachability probe ────────────────────────────────────────
+
+
+class _FakeResponse:
+    def __init__(self, body):
+        self._body = body
+
+    def read(self, size = -1):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _patch_urlopen(monkeypatch, handler):
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = None: handler(req))
+
+
+@pytest.fixture(autouse = True)
+def _stub_remote_lookups(monkeypatch, request):
+    if request.node.name.startswith("test_verify_public_url"):
+        monkeypatch.setattr(ct, "_wait_for_dns", lambda *a, **kw: None)
+        monkeypatch.setattr(ct, "_edge_addresses", list)
+
+
+def test_wait_for_dns_polls_until_answer(monkeypatch):
+    calls = []
+
+    def handler(req):
+        calls.append(req.full_url)
+        if len(calls) < 3:
+            return _FakeResponse(b'{"Status":3}')
+        return _FakeResponse(b'{"Status":0,"Answer":[{"data":"104.16.0.1"}]}')
+
+    _patch_urlopen(monkeypatch, handler)
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
+    ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 5)
+    assert len(calls) == 3
+    assert "name=words.trycloudflare.com" in calls[0]
+    # The tunnel provider already knows the hostname it just issued; no one else does.
+    assert all("cloudflare-dns.com" in call for call in calls)
+
+
+def test_wait_for_dns_gives_up_at_deadline(monkeypatch):
+    _patch_urlopen(monkeypatch, lambda req: _FakeResponse(b'{"Status":3}'))
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
+    ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 0.05)
+
+
+def test_wait_for_dns_retries_transient_doh_error(monkeypatch):
+    calls = []
+
+    def handler(req):
+        calls.append(req.full_url)
+        if len(calls) < 3:
+            raise OSError("transient")
+        return _FakeResponse(b'{"Status":0,"Answer":[{"data":"104.16.0.1"}]}')
+
+    _patch_urlopen(monkeypatch, handler)
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
+    ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 5)
+    assert len(calls) == 3
+
+
+def test_wait_for_dns_bails_on_persistent_doh_errors(monkeypatch):
+    calls = []
+
+    def handler(req):
+        calls.append(req.full_url)
+        raise OSError("blocked")
+
+    _patch_urlopen(monkeypatch, handler)
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
+    ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 5)
+    assert len(calls) == ct._DNS_MAX_DOH_ERRORS
+
+
+def test_wait_for_dns_delays_first_query(monkeypatch):
+    order = []
+
+    def handler(req):
+        order.append("query")
+        return _FakeResponse(b'{"Status":0,"Answer":[{"data":"104.16.0.1"}]}')
+
+    _patch_urlopen(monkeypatch, handler)
+    monkeypatch.setattr(ct.time, "sleep", lambda s: order.append(("sleep", s)))
+    ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 30)
+    # a token hold-off would not outlast the propagation that makes the first query miss
+    assert ct._DNS_INITIAL_GRACE >= 1.0
+    assert order[0] == ("sleep", ct._DNS_INITIAL_GRACE)
+    assert order[1] == "query"
+
+
+def test_wait_for_dns_is_capped_below_the_probe_deadline(monkeypatch):
+    clock = [0.0]
+    calls = []
+
+    def handler(req):
+        calls.append(req.full_url)
+        return _FakeResponse(b'{"Status":3}')
+
+    _patch_urlopen(monkeypatch, handler)
+    monkeypatch.setattr(ct.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(ct.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    ct._wait_for_dns("words.trycloudflare.com", 300.0)
+    assert calls
+    assert clock[0] <= ct._DNS_WAIT_MAX + ct._DNS_POLL_DELAY
+    # The probe shares one deadline with the wait and needs most of it.
+    assert clock[0] < ct._PUBLIC_PROBE_TIMEOUT / 2
+
+
+def test_verify_public_url_accepts_studio_marker(monkeypatch):
+    seen = {}
+
+    def handler(req):
+        seen["url"] = req.full_url
+        return _FakeResponse(b'{"status":"healthy","service":"Unsloth UI Backend"}')
+
+    _patch_urlopen(monkeypatch, handler)
+    assert ct.verify_public_url("https://words.trycloudflare.com") is True
+    assert seen["url"] == "https://words.trycloudflare.com/api/health"
+
+
+def test_verify_public_url_waits_for_dns_before_probing_the_hostname(monkeypatch):
+    order = []
+    monkeypatch.setattr(ct, "_wait_for_dns", lambda host, deadline: order.append(("dns", host)))
+
+    def handler(req):
+        order.append(("probe", req.full_url))
+        return _FakeResponse(b'{"service":"Unsloth UI Backend"}')
+
+    _patch_urlopen(monkeypatch, handler)
+    assert ct.verify_public_url("https://words.trycloudflare.com") is True
+    assert order[0] == ("dns", "words.trycloudflare.com")
+    assert order[1][0] == "probe"
+
+
+def test_verify_public_url_dns_wait_and_probe_share_deadline(monkeypatch):
+    # An exhausted DNS wait leaves the probe a single attempt, not a fresh window.
+    calls = []
+    monkeypatch.setattr(ct, "_wait_for_dns", lambda host, deadline: None)
+
+    def handler(req):
+        calls.append(req.full_url)
+        raise OSError("unreachable")
+
+    _patch_urlopen(monkeypatch, handler)
+    assert ct.verify_public_url("https://words.trycloudflare.com", timeout = 0) is False
+    assert len(calls) == 1
+
+
+def test_verify_public_url_retries_then_succeeds(monkeypatch):
+    calls = []
+
+    def handler(req):
+        calls.append(req.full_url)
+        if len(calls) < 3:
+            raise OSError("Name or service not known")
+        return _FakeResponse(b'{"service":"Unsloth UI Backend"}')
+
+    _patch_urlopen(monkeypatch, handler)
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
+    assert ct.verify_public_url("https://words.trycloudflare.com") is True
+    assert len(calls) == 3
+
+
+def test_verify_public_url_rejects_unreachable_host(monkeypatch):
+    def handler(req):
+        raise OSError("Name or service not known")
+
+    _patch_urlopen(monkeypatch, handler)
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
+    assert ct.verify_public_url("https://words.trycloudflare.com", timeout = 0.05) is False
+
+
+def test_verify_public_url_rejects_foreign_responder(monkeypatch):
+    # e.g. a Cloudflare error page: no service marker in the body.
+    _patch_urlopen(monkeypatch, lambda req: _FakeResponse(b"<html>error 1033</html>"))
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
+    assert ct.verify_public_url("https://words.trycloudflare.com", timeout = 0.05) is False
+
+
+def _fake_edge(
+    monkeypatch,
+    payload: bytes,
+    connect_error: Optional[str] = None,
+) -> dict:
+    """Stand in for the TLS hop so the probe's own parsing is under test."""
+    import socket as socket_module
+    import ssl as ssl_module
+
+    seen: dict = {}
+
+    class _Closeable:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    class _Tls(_Closeable):
+        def sendall(self, data):
+            seen["request"] = data
+
+        def makefile(self, *_a, **_kw):
+            return io.BytesIO(payload)
+
+    class _Context:
+        # A default context verifies the chain and matches it against the SNI
+        # name; the probe dials a bare address, so that match is the only thing
+        # binding the answer to the tunnel.
+        check_hostname = True
+        verify_mode = ssl_module.CERT_REQUIRED
+
+        def wrap_socket(
+            self,
+            _raw,
+            server_hostname = None,
+        ):
+            seen["sni"] = server_hostname
+            seen["verified"] = self.check_hostname and self.verify_mode == ssl_module.CERT_REQUIRED
+            return _Tls()
+
+    def connect(address, timeout = None):
+        seen["timeout"] = timeout
+        if connect_error is not None:
+            raise OSError(connect_error)
+        seen["address"] = address
+        return _Closeable()
+
+    monkeypatch.setattr(socket_module, "create_connection", connect)
+    monkeypatch.setattr(ssl_module, "create_default_context", _Context)
+    return seen
+
+
+def _edge_response(status: bytes, body: bytes) -> bytes:
+    return b"HTTP/1.1 %s\r\nContent-Length: %d\r\n\r\n%s" % (status, len(body), body)
+
+
+def test_edge_probe_selects_the_tunnel_by_sni(monkeypatch):
+    seen = _fake_edge(monkeypatch, _edge_response(b"200 OK", b'{"service":"Unsloth UI Backend"}'))
+    assert ct._probe_edge("104.16.0.1", "words.trycloudflare.com") is True
+    assert seen["address"] == ("104.16.0.1", 443)
+    # Cloudflare picks the tunnel from SNI and the Host header, not the address.
+    assert seen["sni"] == "words.trycloudflare.com"
+    assert seen["verified"] is True
+    assert seen["timeout"] == ct._PUBLIC_PROBE_ATTEMPT_TIMEOUT
+    assert seen["request"].startswith(f"GET {ct._PUBLIC_PROBE_PATH} HTTP/1.1\r\n".encode())
+    assert b"Host: words.trycloudflare.com\r\n" in seen["request"]
+
+
+def test_edge_probe_rejects_the_cloudflare_error_page(monkeypatch):
+    _fake_edge(monkeypatch, _edge_response(b"530 ", b"<html>error 1033</html>"))
+    assert ct._probe_edge("104.16.0.1", "words.trycloudflare.com") is False
+
+
+def test_edge_probe_rejects_a_foreign_responder(monkeypatch):
+    # Well-formed JSON from something that is not this backend, e.g. a proxy.
+    _fake_edge(monkeypatch, _edge_response(b"200 OK", b'{"service":"something else"}'))
+    assert ct._probe_edge("104.16.0.1", "words.trycloudflare.com") is False
+
+
+def test_edge_addresses_keep_one_entry_per_frontend(monkeypatch):
+    import socket as socket_module
+
+    # macOS reports the A records mapped into IPv6; both forms are one frontend.
+    resolved = [
+        (socket_module.AF_INET, 1, 6, "", ("104.16.230.132", 443)),
+        (socket_module.AF_INET6, 1, 6, "", ("::ffff:104.16.230.132", 443, 0, 0)),
+        (socket_module.AF_INET6, 1, 6, "", ("2606:4700::6810:e684", 443, 0, 0)),
+    ]
+    monkeypatch.setattr(socket_module, "getaddrinfo", lambda *_a, **_kw: resolved)
+    assert ct._edge_addresses() == ["104.16.230.132", "2606:4700::6810:e684"]
+
+
+def test_edge_probe_reports_an_unreachable_edge_apart_from_a_wrong_answer(monkeypatch):
+    _fake_edge(monkeypatch, b"", connect_error = "blocked")
+    assert ct._probe_edge("104.16.0.1", "words.trycloudflare.com") is None
+
+
+def test_edge_verification_skips_the_hostname_entirely(monkeypatch):
+    seen = {}
+
+    def probe(
+        address,
+        host,
+        _timeout = None,
+    ):
+        seen["probe"] = (address, host)
+        return True
+
+    def resolve(*_a, **_kw):
+        seen["dns"] = True
+
+    monkeypatch.setattr(ct, "_edge_addresses", lambda: ["104.16.0.1"])
+    monkeypatch.setattr(ct, "_probe_edge", probe)
+    monkeypatch.setattr(ct, "_wait_for_dns", resolve)
+    _patch_urlopen(monkeypatch, lambda req: pytest.fail("probed the hostname"))
+    assert ct.verify_public_url("https://words.trycloudflare.com") is True
+    assert seen["probe"] == ("104.16.0.1", "words.trycloudflare.com")
+    assert "dns" not in seen
+
+
+def test_edge_verification_polls_until_the_tunnel_answers(monkeypatch):
+    # Error 1033 and a proxy's own page answer, so a reply without the marker is
+    # not an unreachable edge and must not count towards giving up.
+    answers = [False, None, False, None, True]
+    monkeypatch.setattr(ct, "_edge_addresses", lambda: ["104.16.0.1"])
+    monkeypatch.setattr(ct, "_probe_edge", lambda *_a: answers.pop(0))
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
+    assert ct._verify_through_edge("words.trycloudflare.com", ct.time.monotonic() + 5) is True
+    assert not answers
+
+
+def test_edge_verification_stops_at_the_deadline_mid_pass(monkeypatch):
+    clock = [0.0]
+    timeouts = []
+
+    def probe(_address, _host, timeout):
+        timeouts.append(timeout)
+        clock[0] += 6.0
+        return False
+
+    monkeypatch.setattr(ct, "_edge_addresses", lambda: ["104.16.0.1", "104.16.0.2"])
+    monkeypatch.setattr(ct, "_probe_edge", probe)
+    monkeypatch.setattr(ct.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(ct.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    assert ct._verify_through_edge("words.trycloudflare.com", 3.0) is False
+    # One attempt, given only the time the deadline leaves: the second address is
+    # already past it, and a whole pass must not outlive the caller's budget.
+    assert timeouts == [3.0]
+
+
+def test_edge_verification_leaves_the_fallback_room_in_the_deadline(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(ct, "_edge_addresses", lambda: ["104.16.0.1"])
+    monkeypatch.setattr(ct, "_probe_edge", lambda *_a: False)
+    monkeypatch.setattr(ct.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(ct.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    assert ct._verify_through_edge("words.trycloudflare.com", 300.0) is False
+    assert clock[0] <= ct._EDGE_WAIT_MAX + ct._EDGE_PROBE_RETRY_DELAY
+    # What the cap is for: the hostname fallback still needs its DNS wait and
+    # several attempts of its own out of the one shared deadline.
+    left = ct._PUBLIC_PROBE_TIMEOUT - ct._EDGE_WAIT_MAX - ct._DNS_WAIT_MAX
+    assert left >= 5 * ct._PUBLIC_PROBE_RETRY_DELAY
+
+
+def test_blocked_edge_falls_back_to_the_hostname(monkeypatch):
+    order = []
+
+    def probe(*_a):
+        order.append("edge")
+        return None
+
+    def handler(_req):
+        order.append("hostname")
+        return _FakeResponse(b'{"service":"Unsloth UI Backend"}')
+
+    monkeypatch.setattr(ct, "_edge_addresses", lambda: ["104.16.0.1"])
+    monkeypatch.setattr(ct, "_probe_edge", probe)
+    monkeypatch.setattr(ct, "_wait_for_dns", lambda *_a: order.append("dns"))
+    _patch_urlopen(monkeypatch, handler)
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
+    assert ct.verify_public_url("https://words.trycloudflare.com") is True
+    assert order == ["edge"] * ct._EDGE_MAX_UNREACHABLE + ["dns", "hostname"]
+
+
+@pytest.fixture(autouse = True)
+def _stub_public_probe(monkeypatch, request):
+    # start_studio_tunnel tests use fake hostnames; keep them off the network.
+    if not request.node.name.startswith("test_start_studio_tunnel"):
+        return
+    monkeypatch.setattr(ct, "verify_public_url", lambda url, **kw: True)
+
+
 def test_start_studio_tunnel_no_binary(monkeypatch):
     monkeypatch.setattr(ct, "ensure_cloudflared", lambda: None)
     assert ct.start_studio_tunnel(8080) is None
+
+
+def test_start_studio_tunnel_drops_url_that_is_not_publicly_reachable(monkeypatch):
+    attempts = []
+
+    class _Stub:
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+        ):
+            self.url = None
+            attempts.append(protocol)
+
+        def start(self):
+            self.url = "https://words.trycloudflare.com"
+
+        def wait_for_ready(self, timeout):
+            return self.url
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
+    monkeypatch.setattr(ct, "verify_public_url", lambda url, **kw: False)
+    assert ct.start_studio_tunnel(8080) is None
+    assert attempts == [None]
+    assert ct._active_tunnel is None
+
+
+def test_start_studio_tunnel_returns_url_once_probe_passes(monkeypatch):
+    probed = []
+
+    class _Stub:
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+        ):
+            self.url = None
+            self.protocol = protocol
+
+        def start(self):
+            self.url = "https://words.trycloudflare.com"
+
+        def wait_for_ready(self, timeout):
+            return self.url
+
+        def stop(self):
+            pass
+
+    def _probe(url, **kw):
+        probed.append(url)
+        return True
+
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
+    monkeypatch.setattr(ct, "verify_public_url", _probe)
+    try:
+        assert ct.start_studio_tunnel(8080) == "https://words.trycloudflare.com"
+        assert probed == ["https://words.trycloudflare.com"]
+    finally:
+        ct.stop_studio_tunnel()
+
+
+def test_tunnel_status_tracks_owner_and_post_ready_exit(monkeypatch):
+    instances = []
+
+    class _Stub:
+        late_exit = False
+
+        def __init__(self, *_args, **_kwargs):
+            self.url = "https://words.trycloudflare.com"
+            self.error = None
+            instances.append(self)
+
+        start = stop = lambda self: None
+        wait_for_ready = lambda self, timeout: self.url
+
+        def set_on_exit(self, callback):
+            self.on_exit = callback
+            if self.late_exit:
+                self.error = "cloudflared exited"
+
+        def _publish_if_running(self, callback):
+            if self.late_exit:
+                return False
+            callback()
+            return True
+
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
+    monkeypatch.setattr(ct, "verify_public_url", lambda url, **kw: True)
+    published = []
+    ct.set_studio_tunnel_url_callback(published.append)
+    assert ct.start_studio_tunnel(8087, managed_by = "settings") == instances[0].url
+    status = ct.get_studio_tunnel_status()
+    assert status["state"] == "online"
+    assert status["managed_by"] == "settings"
+    assert status["url"] == instances[0].url
+    assert status["port"] == 8087
+    instances[0].error = "cloudflared exited"
+    instances[0].on_exit(instances[0])
+    status = ct.get_studio_tunnel_status()
+    assert status["state"] == "error"
+    assert status["url"] is None
+    assert status["error"] == "cloudflared exited"
+    assert published[-1] is None
+    ct.stop_studio_tunnel()
+    _Stub.late_exit = True
+    published.clear()
+    assert ct.start_studio_tunnel(8087, managed_by = "settings") is None
+    assert instances[-1].url not in published
+    assert ct.get_studio_tunnel_status()["state"] == "error"
+    ct.set_studio_tunnel_url_callback(None)
 
 
 def test_start_studio_tunnel_registers_before_wait(monkeypatch):
@@ -691,17 +1252,18 @@ def _argparse_default(source, option):
     return None
 
 
-def test_run_server_cloudflare_default_true():
-    defaults = _func_param_defaults(_RUN_PY.read_text(), "run_server")
-    assert defaults.get("cloudflare") is True
+def test_run_server_cloudflare_default_off():
+    defaults = _func_param_defaults(_RUN_PY.read_text(encoding = "utf-8"), "run_server")
+    assert "cloudflare" in defaults
+    assert defaults["cloudflare"] is None
 
 
-def test_argparse_cloudflare_default_true():
-    assert _argparse_default(_RUN_PY.read_text(), "--cloudflare") is True
+def test_argparse_cloudflare_default_off():
+    assert _argparse_default(_RUN_PY.read_text(encoding = "utf-8"), "--cloudflare") is None
 
 
 def test_verify_global_reachability_marks_private_address_unreachable():
-    src = _RUN_PY.read_text()
+    src = _RUN_PY.read_text(encoding = "utf-8")
     tree = ast.parse(src)
     func_src = next(
         ast.get_source_segment(src, n)
@@ -725,8 +1287,8 @@ def test_verify_global_reachability_marks_private_address_unreachable():
 def test_run_server_registers_tunnel_atexit_backstop():
     # An abnormal exit (exception after startup -> sys.exit) bypasses
     # _graceful_shutdown; an atexit backstop must still stop the tunnel.
-    src = _RUN_PY.read_text()
-    assert "atexit.register(stop_studio_tunnel)" in src
+    src = _RUN_PY.read_text(encoding = "utf-8")
+    assert "atexit.register(close_studio_tunnel_lifecycle)" in src
 
 
 def _run_print_cloudflare_line(
@@ -741,7 +1303,7 @@ def _run_print_cloudflare_line(
     color = False,
 ):
     """Exec _print_cloudflare_line without importing run.py's heavy deps."""
-    src = _RUN_PY.read_text()
+    src = _RUN_PY.read_text(encoding = "utf-8")
     tree = ast.parse(src)
     func_src = next(
         ast.get_source_segment(src, n)
@@ -830,6 +1392,31 @@ def test_cloudflare_line_states_disabled_when_off(monkeypatch):
     )
     assert "Cloudflare tunnel: OFF" in out
     assert "local network only" in out
+
+
+def test_cloudflare_line_labels_unset_as_default(monkeypatch):
+    # None = off by default (no flag) -> banner says "(default)", not "(--no-cloudflare)".
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = None,
+        public_reachable = False,
+        cloudflare_requested = False,
+        cloudflare_flag = None,
+    )
+    assert "Cloudflare tunnel: OFF (default)" in out
+    assert "--no-cloudflare" not in out
+
+
+def test_cloudflare_line_labels_explicit_no_cloudflare(monkeypatch):
+    # False = explicit --no-cloudflare -> banner says "(--no-cloudflare)".
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = None,
+        public_reachable = False,
+        cloudflare_requested = False,
+        cloudflare_flag = False,
+    )
+    assert "Cloudflare tunnel: OFF (--no-cloudflare)" in out
 
 
 def test_cloudflare_line_states_failed_when_requested_but_no_url(monkeypatch):

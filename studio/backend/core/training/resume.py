@@ -4,19 +4,28 @@
 """Helpers for validating resumable training outputs."""
 
 import json
-from pathlib import Path
+import pickletools
+import zipfile
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional
 
 from utils.paths import outputs_root, resolve_output_dir
 
 
+def _is_foreign_absolute_path(path_value: str) -> bool:
+    native = Path(path_value)
+    return not native.is_absolute() and (
+        PureWindowsPath(path_value).is_absolute() or PurePosixPath(path_value).is_absolute()
+    )
+
+
 def _is_under_outputs(path: Path) -> bool:
-    resolved = path.resolve(strict = False)
-    root = outputs_root().resolve(strict = False)
     try:
+        resolved = path.resolve(strict = False)
+        root = outputs_root().resolve(strict = False)
         resolved.relative_to(root)
         return True
-    except ValueError:
+    except (OSError, RuntimeError, ValueError):
         return False
 
 
@@ -33,31 +42,190 @@ def _checkpoint_step(path: Path) -> int:
         return -1
 
 
-def get_resume_checkpoint_path(path_value: str) -> Optional[str]:
-    path = resolve_output_dir(path_value)
+_MODEL_FILES = (
+    "adapter_model.safetensors",
+    "adapter_model.bin",
+    "model.safetensors",
+    "pytorch_model.bin",
+)
+_MODEL_INDEXES = ("model.safetensors.index.json", "pytorch_model.bin.index.json")
+
+
+def _valid_state_file(path: Path, require_tensor: bool = True) -> bool:
+    try:
+        if not path.is_file() or path.stat().st_size == 0:
+            return False
+        if path.suffix == ".safetensors":
+            try:
+                from safetensors import SafetensorError, safe_open
+            except ImportError:
+                return False
+            try:
+                with safe_open(str(path), framework = "np") as state:
+                    return bool(state.keys())
+            except SafetensorError:
+                return False
+        if path.suffix in {".bin", ".pt"}:
+            with zipfile.ZipFile(path) as state:
+                infos = state.infolist()
+                names = [info.filename for info in infos]
+                data_name = next(
+                    (name for name in names if name == "data.pkl" or name.endswith("/data.pkl")),
+                    None,
+                )
+                if data_name is None:
+                    return False
+                data_prefix = data_name.removesuffix("data.pkl") + "data/"
+                operations = list(pickletools.genops(state.read(data_name)))
+                if not operations or operations[-1][0].name != "STOP":
+                    return False
+                if not require_tensor:
+                    return True
+                # Require a non-empty tensor record; a zero-byte one fails torch.load.
+                return any(
+                    info.filename.startswith(data_prefix)
+                    and not info.is_dir()
+                    and info.file_size > 0
+                    for info in infos
+                )
+        # Unrecognized state-file formats are not usable resume state.
+        return False
+    except (OSError, ValueError, zipfile.BadZipFile):
+        return False
+
+
+def _checkpoint_state(path: Path) -> Optional[int]:
+    try:
+        state = json.loads((path / "trainer_state.json").read_text(encoding = "utf-8"))
+        step = state.get("global_step") if isinstance(state, dict) else None
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if isinstance(step, bool) or not isinstance(step, int) or step < 0:
+        return None
+    directory_step = _checkpoint_step(path)
+    return step if directory_step < 0 or step == directory_step else None
+
+
+_INDEX_SHARD_SUFFIX = {
+    "model.safetensors.index.json": ".safetensors",
+    "pytorch_model.bin.index.json": ".bin",
+}
+
+
+def _valid_indexed_shard(checkpoint: Path, shard: object, expected_suffix: str) -> bool:
+    # Shard must be a relative, in-format path contained in the checkpoint dir.
+    if not isinstance(shard, str) or not shard:
+        return False
+    if Path(shard).is_absolute() or Path(shard).suffix != expected_suffix:
+        return False
+    try:
+        root = checkpoint.resolve(strict = True)
+        candidate = (checkpoint / shard).resolve(strict = True)
+        candidate.relative_to(root)
+    except (OSError, ValueError):
+        return False
+    return _valid_state_file(candidate)
+
+
+def _has_model_state(path: Path) -> bool:
+    if any(_valid_state_file(path / name) for name in _MODEL_FILES):
+        return True
+    for name in _MODEL_INDEXES:
+        try:
+            index = json.loads((path / name).read_text(encoding = "utf-8"))
+            shards = set(index["weight_map"].values())
+        except (
+            AttributeError,
+            OSError,
+            KeyError,
+            TypeError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+        ):
+            continue
+        expected_suffix = _INDEX_SHARD_SUFFIX[name]
+        if shards and all(_valid_indexed_shard(path, shard, expected_suffix) for shard in shards):
+            return True
+    return False
+
+
+def is_resume_checkpoint_valid(
+    path: Path,
+    expected_step: Optional[int] = None,
+    backend: Optional[str] = None,
+) -> bool:
+    step = _checkpoint_state(path) if path.is_dir() else None
+    step_valid = step is not None and (expected_step is None or step == expected_step)
+    if backend == "mlx":
+        valid_bundle = _valid_state_file(path / "adapters.safetensors") and _valid_state_file(
+            path / "optimizer_state.safetensors"
+        )
+    else:
+        valid_bundle = (
+            _has_model_state(path)
+            # optimizer/scheduler state can be validly tensor-free (e.g. SGD without momentum).
+            and _valid_state_file(path / "optimizer.pt", require_tensor = False)
+            and _valid_state_file(path / "scheduler.pt", require_tensor = False)
+        )
+        if backend is None and not valid_bundle:
+            valid_bundle = _valid_state_file(path / "adapters.safetensors") and _valid_state_file(
+                path / "optimizer_state.safetensors"
+            )
+    return step_valid and valid_bundle
+
+
+def artifacts_present(path_value: Optional[str]) -> bool:
+    if not path_value:
+        return False
+    if _is_foreign_absolute_path(path_value):
+        return False
+    try:
+        path = resolve_output_dir(path_value)
+        return _is_under_outputs(path) and path.is_dir()
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def get_resume_checkpoint_path(
+    path_value: str, expected_step: Optional[int] = None
+) -> Optional[str]:
+    if _is_foreign_absolute_path(path_value):
+        return None
+    try:
+        path = resolve_output_dir(path_value)
+    except (OSError, RuntimeError, ValueError):
+        return None
     if not _is_under_outputs(path) or not path.is_dir():
         return None
-    if (path / "trainer_state.json").is_file():
+    if is_resume_checkpoint_valid(path, expected_step):
         return str(path)
 
-    checkpoints = [
-        child
-        for child in path.glob("checkpoint-*")
-        if child.is_dir() and (child / "trainer_state.json").is_file()
-    ]
-    if not checkpoints:
-        return None
-    return str(max(checkpoints, key = _checkpoint_step))
+    checkpoints = sorted(path.glob("checkpoint-*"), key = _checkpoint_step, reverse = True)
+    return next(
+        (
+            str(checkpoint)
+            for checkpoint in checkpoints
+            if _checkpoint_step(checkpoint) >= 0
+            and is_resume_checkpoint_valid(checkpoint, expected_step)
+        ),
+        None,
+    )
 
 
 def normalize_resume_output_dir(path_value: str) -> str:
-    path = resolve_output_dir(path_value)
+    if _is_foreign_absolute_path(path_value):
+        raise ValueError("Resume checkpoint uses a path from a different operating system.")
+    try:
+        path = resolve_output_dir(path_value)
+        path.resolve(strict = True)
+    except (OSError, RuntimeError) as error:
+        raise ValueError("Resume checkpoint path could not be resolved.") from error
     if not _is_under_outputs(path):
-        raise ValueError("Resume checkpoint must be inside Studio outputs.")
+        raise ValueError("Resume checkpoint must be inside Unsloth outputs.")
     return str(path)
 
 
-def _run_config(run: dict) -> dict:
+def training_run_config(run: dict) -> dict:
     raw_config = run.get("config_json")
     if isinstance(raw_config, dict):
         return raw_config
@@ -71,26 +239,77 @@ def _run_config(run: dict) -> dict:
 
 
 def _uses_s3_dataset(run: dict) -> bool:
-    config = _run_config(run)
+    config = training_run_config(run)
     return config.get("dataset_source") == "s3" or "s3_dataset" in config
 
 
-def can_resume_run(run: dict) -> bool:
+def _resource_resume_cache_key(config: dict) -> Optional[str]:
+    marker = config.get("resource_provenance")
+    if isinstance(marker, dict):
+        marker = {
+            key: marker.get(key)
+            for key in (
+                "version",
+                "status",
+                "model_status",
+                "model_load_mode",
+                "dataset_status",
+            )
+        }
+    values = {
+        "resource_provenance": marker,
+        "model_name": config.get("model_name"),
+        "actual_model_repo_id": config.get("actual_model_repo_id"),
+        "model_snapshot_path": config.get("model_snapshot_path"),
+        "load_in_4bit": config.get("load_in_4bit"),
+        "hf_dataset": config.get("hf_dataset"),
+        "dataset_snapshot_path": config.get("dataset_snapshot_path"),
+    }
+    try:
+        return json.dumps(
+            values,
+            sort_keys = True,
+            separators = (",", ":"),
+            ensure_ascii = False,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def can_resume_run(run: dict, *, resource_cache: Optional[dict[str, bool]] = None) -> bool:
     if run.get("resumed_later"):
+        return False
+    # Set when a stop-and-save failed to write a current-step checkpoint.
+    if run.get("resume_blocked"):
         return False
     if _uses_s3_dataset(run):
         return False
 
-    final_step = run.get("final_step")
-    total_steps = run.get("total_steps")
-    has_remaining_steps = (
-        not isinstance(final_step, int)
-        or not isinstance(total_steps, int)
-        or total_steps <= 0
-        or final_step < total_steps
-    )
-    return (
-        run.get("status") == "stopped"
-        and has_remaining_steps
-        and has_resume_state(run.get("output_dir"))
-    )
+    status = run.get("status")
+    if status == "error":
+        # A save-time crash can report final_step == total_steps with no artifacts; checkpoint state alone decides resumability.
+        resume_state_available = has_resume_state(run.get("output_dir"))
+    else:
+        final_step = run.get("final_step")
+        total_steps = run.get("total_steps")
+        has_remaining_steps = (
+            not isinstance(final_step, int)
+            or not isinstance(total_steps, int)
+            or total_steps <= 0
+            or final_step < total_steps
+        )
+        resume_state_available = (
+            status == "stopped" and has_remaining_steps and has_resume_state(run.get("output_dir"))
+        )
+    if not resume_state_available:
+        return False
+
+    from core.training.provenance import resource_provenance_allows_resume
+
+    config = training_run_config(run)
+    cache_key = _resource_resume_cache_key(config)
+    if resource_cache is None or cache_key is None:
+        return resource_provenance_allows_resume(config)
+    if cache_key not in resource_cache:
+        resource_cache[cache_key] = resource_provenance_allows_resume(config)
+    return resource_cache[cache_key]

@@ -62,7 +62,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # Hard caps (deliberately conservative; npm tarballs in this repo are
 # all well under these limits, so a packaging spike is noticeable).
 # ─────────────────────────────────────────────────────────────────────
-# Caps calibrated against the real Studio frontend transitive closure:
+# Caps calibrated against the real Unsloth frontend transitive closure:
 #   - typescript.js is 9.1 MB (TS compiler bundled into one file)
 #   - mermaid 11.x dist/mermaid.js.map is ~12 MB (sourcemap)
 #   - lightningcss-linux-x64-{gnu,musl}.node is 10 MB

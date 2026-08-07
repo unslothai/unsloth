@@ -276,17 +276,13 @@ def dpo_trainer_vision_signature_columns(function_name, function):
     _extra_columns = "".join(f'                "{_k}",\n' for _k in _DPO_VISION_KEYS)
     new_function = function.replace(
         '                "image_sizes",\n                "token_type_ids",\n',
-        f'                "image_sizes",\n'
-        f"{_extra_columns}"
-        f'                "token_type_ids",\n',
+        f'                "image_sizes",\n{_extra_columns}                "token_type_ids",\n',
     )
     if new_function != function:
         return new_function
     return function.replace(
         '                "image_sizes",\n                "ref_chosen_logps",\n',
-        f'                "image_sizes",\n'
-        f"{_extra_columns}"
-        f'                "ref_chosen_logps",\n',
+        f'                "image_sizes",\n{_extra_columns}                "ref_chosen_logps",\n',
     )
 
 
@@ -441,6 +437,118 @@ RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_compute_loss_liger)
 RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_data_collator_vision_keys)
 
 
+_WRAPPED_PACKING_SETUP = (
+    "    import inspect as _inspect\n"
+    "    try:\n"
+    '        _unsloth_pack_has_strategy = "strategy" in _inspect.signature(pack_dataset).parameters\n'
+    "    except Exception:\n"
+    "        _unsloth_pack_has_strategy = True\n"
+    "    _unsloth_wrapped_packing = packing and (\n"
+    '        getattr(args, "packing_strategy", None) == "wrapped"\n'
+    "        or not _unsloth_pack_has_strategy\n"
+    "    )\n"
+)
+
+_WARNED_MISSING_ANCHORS = set()
+
+
+def _warn_once(where, message):
+    if where in _WARNED_MISSING_ANCHORS:
+        return
+    _WARNED_MISSING_ANCHORS.add(where)
+    logger.warning(message)
+
+
+def _require_replace(
+    function,
+    old,
+    new,
+    *,
+    count = 1,
+    required = True,
+    where = "",
+):
+    """str.replace that never silently no-ops a load-bearing source edit.
+
+    Plain str.replace returns the source unchanged when the anchor is absent, so a
+    drifted anchor in a newer TRL / unsloth_zoo would skip the edit while later edits
+    still reference helper variables it should have introduced (NameError at runtime).
+    Fail loudly for a required edit, warn once and skip for an optional one, so a
+    drifted source can never corrupt the patched function silently.
+    """
+    if old not in function:
+        detail = f" ({where})" if where else ""
+        if required:
+            raise RuntimeError(
+                f"Unsloth: source anchor not found{detail}; the patched function is out "
+                "of sync with this TRL / unsloth_zoo version. Please file a bug report."
+            )
+        _warn_once(
+            where,
+            f"Unsloth: skipped an optional source edit{detail} (anchor not found).",
+        )
+        return function
+    return function.replace(old, new, count)
+
+
+# The one line every unsloth_zoo revision of sft_prepare_dataset ends its worker
+# count on, as a regex so a renamed right-hand side still matches and the
+# indentation is carried into the replacement. `git log -S` on the Zoo says this
+# line last changed in Aug 2025 (#257) and has survived 24 later commits to
+# dataset_utils.py, while the block around it was rewritten three times in 2026
+# alone (#473, #553, #733) -- which is why it is the fallback rather than the
+# primary anchor.
+_ZOO_MAP_NUM_PROC_ASSIGNMENT = re.compile(
+    r"^(?P<indent>[ \t]*)map_kwargs\[\"num_proc\"\][ \t]*=[ \t]*[^\n]+$",
+    flags = re.MULTILINE,
+)
+
+
+def _replace_or_fallback(
+    function,
+    old,
+    new,
+    *,
+    fallback_pattern,
+    fallback_new,
+    where = "",
+):
+    """str.replace over a wide anchor, with a narrower anchor to fall back on.
+
+    One literal anchor is all-or-nothing, and neither outcome is acceptable here.
+    `required = True` hard-fails every SFT run on a Zoo whose text merely moved.
+    `required = False` leaves the un-rewritten Zoo logic in place, and for the
+    worker count that is not the no-op it looks like: the config layer writes
+    "run in-process" as `args.dataset_num_proc = 1` (a config `None` means
+    "auto-size me" to the Zoo), the Zoo reads that `1` as an explicit count, and
+    `datasets` >= 4.1 builds a `Pool(1)` for it -- forking a tokenizer worker on
+    exactly the host, or the `UNSLOTH_DATASET_NUM_PROC=0`, that asked for none.
+
+    So: try the wide anchor, then a narrow one that survives more drift, and warn
+    only when both miss. `fallback_new` is an `re.sub` template, so it can carry
+    the matched indentation over with `\\g<indent>`.
+    """
+    if old in function:
+        return function.replace(old, new, 1)
+
+    function, applied = fallback_pattern.subn(fallback_new, function)
+    if applied:
+        _warn_once(
+            where,
+            f"Unsloth: the source block for {where} moved in this unsloth_zoo; "
+            "applied the narrower anchor instead. Please file a bug report.",
+        )
+        return function
+
+    _warn_once(
+        where,
+        f"Unsloth: skipped an optional source edit ({where}) (anchor not found); "
+        "dataset tokenization may fork a worker process this host asked it not "
+        "to. Please file a bug report.",
+    )
+    return function
+
+
 # Fix tokenizer double BOS
 def sft_trainer_prepare_dataset(function_name, function):
     if function_name != "_prepare_non_packed_dataloader" and function_name != "_prepare_dataset":
@@ -458,6 +566,137 @@ def sft_trainer_prepare_dataset(function_name, function):
         if matched:
             # Use fast version!
             function = inspect.getsource(fast_sft_prepare_dataset)
+            # why: anchor the wrapped-packing setup on the function signature -- a
+            # structural anchor that always exists -- not the unsloth_zoo license comment,
+            # which is only lower-bounded and a newer Zoo may move or drop. Anchoring there
+            # let the setup silently no-op while edits below referenced its variables,
+            # NameError-ing every SFT dataset prep. Fail loudly if the signature is missing.
+            function, _n_setup = re.subn(
+                r"(def sft_prepare_dataset\s*\(.*?\)\s*(?:->[^:\n]*)?:[ \t]*\n)",
+                lambda match: match.group(1) + _WRAPPED_PACKING_SETUP,
+                function,
+                count = 1,
+                flags = re.DOTALL,
+            )
+            if _n_setup != 1:
+                raise RuntimeError(
+                    "Unsloth: failed to install wrapped-packing support into "
+                    "sft_prepare_dataset (signature not found); please file a bug report."
+                )
+            # why: route each edit through _require_replace so a drifted anchor fails
+            # loudly instead of leaving a dangling reference to the setup variables.
+            function = _require_replace(
+                function,
+                "truncation = do_truncation,",
+                "truncation = do_truncation and not _unsloth_wrapped_packing,",
+                where = "sft_prepare_dataset truncation flag",
+            )
+            function = _require_replace(
+                function,
+                "if do_truncation and max_seq_length > 0:",
+                "if do_truncation and not _unsloth_wrapped_packing and max_seq_length > 0:",
+                where = "sft_prepare_dataset truncation guard",
+            )
+            # why: reuse the guarded _unsloth_pack_has_strategy from the setup instead of
+            # re-calling _inspect.signature(pack_dataset) here -- the setup wraps that call
+            # in try/except, so a non-introspectable pack_dataset must not crash here.
+            function = _require_replace(
+                function,
+                """dataset = pack_dataset(
+            dataset.select_columns(used_column_names),
+            max_seq_length,
+            getattr(args, "packing_strategy", "bfd"),
+            map_kwargs,
+        )""",
+                """_pack_kwargs = {"map_kwargs": map_kwargs}
+        if _unsloth_pack_has_strategy:
+            _pack_kwargs["strategy"] = getattr(args, "packing_strategy", "bfd")
+        dataset = pack_dataset(
+            dataset.select_columns(used_column_names),
+            max_seq_length,
+            **_pack_kwargs,
+        )""",
+                where = "sft_prepare_dataset pack_dataset call",
+            )
+            # why: the map() call site -- not the config -- is where the worker
+            # count must be made safe. The Zoo copy asks stdlib `multiprocessing`
+            # for a start method datasets takes from `multiprocess`, and its
+            # low-memory branch yields 1, which still builds a Pool(1) on
+            # datasets >= 4.1. The shared helper caps a config None instead of
+            # the Zoo's uncapped `cpu_count + 4 -> 64`. Imported from the Zoo so
+            # generated source never imports back into its generator;
+            # unsloth.dataset_num_proc is only the fallback for an older Zoo.
+            function = _replace_or_fallback(
+                function,
+                """if not isinstance(dataset, IterableDataset):
+            import multiprocessing as _mp
+            dataset_num_proc = getattr(args, "dataset_num_proc", None)
+            if dataset_num_proc is None:
+                if _mp.get_start_method() != 'fork':
+                    dataset_num_proc = None
+                else:
+                    import psutil
+                    dataset_num_proc = min(max((psutil.cpu_count() or 1)+4, 2), 64)
+                    memory_gb_left = psutil.virtual_memory().available / (1024**3)
+                    if memory_gb_left <= 2:
+                        dataset_num_proc = 1
+                    else:
+                        dataset_num_proc = min(dataset_num_proc, int(memory_gb_left))
+            map_kwargs["num_proc"] = dataset_num_proc""",
+                """if not isinstance(dataset, IterableDataset):
+            try:
+                from unsloth_zoo.dataset_num_proc import get_dataset_num_proc as _unsloth_get_dataset_num_proc
+            except ImportError:
+                from unsloth.dataset_num_proc import get_dataset_num_proc as _unsloth_get_dataset_num_proc
+            map_kwargs["num_proc"] = _unsloth_get_dataset_num_proc(
+                getattr(args, "dataset_num_proc", None)
+            )""",
+                # This block is the likeliest anchor in the file to drift -- the
+                # Zoo rewrote it three times in 2026 -- but its absence is not
+                # harmless, so it cannot simply be optional: the config layer
+                # encodes serial as `1` for this site to turn back into None, and
+                # an un-rewritten Zoo hands that `1` to Dataset.map. The fallback
+                # keys on the assignment the block ends with, which has not
+                # changed since Aug 2025, and reads args rather than the Zoo's
+                # own local so it is the same computation the block anchor above
+                # installs; the Zoo's now-dead sizing runs and is discarded.
+                # Hard-failing instead would break every install on a newer Zoo,
+                # which is a far larger blast radius than one worker.
+                fallback_pattern = _ZOO_MAP_NUM_PROC_ASSIGNMENT,
+                fallback_new = r"""\g<indent>try:
+\g<indent>    from unsloth_zoo.dataset_num_proc import get_dataset_num_proc as _unsloth_get_dataset_num_proc
+\g<indent>except ImportError:
+\g<indent>    from unsloth.dataset_num_proc import get_dataset_num_proc as _unsloth_get_dataset_num_proc
+\g<indent>map_kwargs["num_proc"] = _unsloth_get_dataset_num_proc(
+\g<indent>    getattr(args, "dataset_num_proc", None)
+\g<indent>)""",
+                where = "sft_prepare_dataset dataset_num_proc selection",
+            )
+            # why: datasets never reads the child's exit status, so every worker
+            # death -- OOM kill, segfault, real exception -- flattens into "One
+            # of the subprocesses has abruptly died during map operation". Wrap
+            # both tokenizing map() calls (count = 2: the prompt-completion and
+            # plain-text branches) so the user gets the worker count, start
+            # method and implied memory instead.
+            function = _require_replace(
+                function,
+                """            with _w.catch_warnings():
+                _w.filterwarnings("ignore", message=".*couldn't be hashed properly.*")""",
+                """            try:
+                from unsloth_zoo.dataset_num_proc import map_failure_diagnostics as _unsloth_map_diagnostics
+            except ImportError:
+                from unsloth.dataset_num_proc import map_failure_diagnostics as _unsloth_map_diagnostics
+            with _w.catch_warnings(), _unsloth_map_diagnostics(map_kwargs.get("num_proc")):
+                _w.filterwarnings("ignore", message=".*couldn't be hashed properly.*")""",
+                count = 2,
+                where = "sft_prepare_dataset tokenizing map() calls",
+                # required = False, like the selection above: this only improves the
+                # message a dead worker produces, and a diagnostic must not be able
+                # to fail a training run because a Zoo release moved the line it
+                # anchors on. test_zoo_sft_prepare_dataset_anchor_has_not_drifted is
+                # what notices, in CI rather than in someone's run.
+                required = False,
+            )
             function = function.split("\n")
             function = "\n".join(" " * 4 + x for x in function)
             function = function.replace("def sft_prepare_dataset", "def _prepare_dataset")
@@ -1203,6 +1442,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
                     self._autocast_dtype = torch.float16
 
+            compute_aux_loss = kwargs.get("compute_aux_loss", None)
+
             pixel_values, image_grid_thw = (
                 kwargs.get("pixel_values", None),
                 kwargs.get("image_grid_thw", None),
@@ -1846,7 +2087,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _extra_vision_kwargs["mm_token_type_ids"] = mm_token_type_ids_chunk
                     with torch.amp.autocast(device_type = "cuda", dtype = self._autocast_dtype):
                         if pixel_values is None:
-                            logits_chunk = unwrapped_model(
+                            outputs = unwrapped_model(
                                 input_ids = input_ids_chunk,
                                 attention_mask = attention_mask_chunk,
                                 pixel_values = pixel_values_chunk,
@@ -1854,7 +2095,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 pixel_attention_mask = pixel_attention_mask_chunk,
                                 image_sizes = image_sizes_chunk,
                                 **_extra_vision_kwargs,
-                            ).logits
+                            )
+
+                            logits_chunk = outputs.logits
+                            del outputs  # free hidden_states before chunked log-softmax
 
                             completion_input_ids_chunk = input_ids_chunk[
                                 :, -(logits_to_keep + max_left_pad) :
@@ -1876,7 +2120,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         else:
                             # Essentially, for VLMs we do not go via the optimized path in models/,
                             # so we don't encounter the Flash Attn left-padding issue.
-                            logits_chunk = unwrapped_model(
+                            outputs = unwrapped_model(
                                 input_ids = input_ids_chunk,
                                 attention_mask = attention_mask_chunk,
                                 pixel_values = pixel_values_chunk,
@@ -1885,7 +2129,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 image_sizes = image_sizes_chunk,
                                 logits_to_keep = logits_to_keep + 1,
                                 **_extra_vision_kwargs,
-                            ).logits
+                            )
+
+                            logits_chunk = outputs.logits
+                            del outputs  # free hidden_states before chunked log-softmax
 
                             logits_chunk = logits_chunk[:, :-1, :]
                             completion_input_ids_chunk = input_ids_chunk[:, -logits_to_keep:]
@@ -1914,11 +2161,15 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     all_logprobs_list.append(logprobs_chunk)
                 if logprobs is None:  # padded fallback when packing was not used
                     logprobs = torch.cat(all_logprobs_list, dim = 0)
+
                 entropies = None
 
             os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
-
-            return logprobs.detach(), entropies  # logps, entropies
+            # aux loss is unused: it is off by default (router_aux_loss_coef set to 0 in models/rl.py)
+            # and explicit opt-in is rejected at trainer init, so this is always None (kept in the
+            # return for TRL >= 1.7.0's 3-tuple contract).
+            aux_loss = None
+            return logprobs.detach(), entropies, aux_loss  # logps, entropies, aux_loss
             # input_ids = input_ids[:, -logits_to_keep:]
             # For transformers<=4.48, logits_to_keep argument isn't supported, so here we drop logits ourselves.
             # See https://github.com/huggingface/trl/issues/2770
@@ -1937,6 +2188,24 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             # return  logps #  compute logprobs for the input tokens
 
     function = inspect.getsource(_get_per_token_logps_and_entropies)
+    if trl_version < Version("1.7.0"):
+        # TRL < 1.7.0 unpacks (logps, entropies) at every call site; TRL >= 1.7.0
+        # always unpacks (logps, entropies, aux_loss). Drop the aux_loss element so
+        # the return arity matches the installed TRL. Regex tolerates comment /
+        # whitespace drift on the return line; fail loud if the anchor ever stops
+        # matching rather than silently shipping a 3-tuple to older TRL.
+        new_function, n = re.subn(
+            r"return (logprobs\.detach\(\), entropies), aux_loss[^\n]*",
+            r"return \1  # logps, entropies",
+            function,
+        )
+        if n != 1:
+            raise RuntimeError(
+                "Unsloth GRPO: could not downgrade the per-token-logps return to a "
+                f"2-tuple for TRL {trl_version} (matched {n} times, expected 1). The "
+                "return line changed; update the arity gate in rl_replacements.py."
+            )
+        function = new_function
     return function
 
 
@@ -2090,19 +2359,21 @@ def grpo_trainer_compute_loss(function_name, function):
             logits_to_keep,
             batch_size = None,
             compute_entropy = False,
-            compute_efficient = False: self._get_per_token_logps(
-                model, input_ids, attention_mask, logits_to_keep, compute_efficient
+            compute_efficient = False: (
+                self._get_per_token_logps(
+                    model, input_ids, attention_mask, logits_to_keep, compute_efficient
+                )
+                if hasattr(self, "_get_per_token_logps")
+                else self._get_per_token_logps_and_entropies(
+                    model,
+                    input_ids,
+                    attention_mask,
+                    logits_to_keep,
+                    batch_size,
+                    compute_entropy,
+                    compute_efficient,
+                )[0]
             )
-            if hasattr(self, "_get_per_token_logps")
-            else self._get_per_token_logps_and_entropies(
-                model,
-                input_ids,
-                attention_mask,
-                logits_to_keep,
-                batch_size,
-                compute_entropy,
-                compute_efficient,
-            )[0]
         )  # logps
 
         per_token_logps = get_logps_func(
