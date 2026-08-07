@@ -6688,6 +6688,10 @@ async def _load_model_impl(
                 backend.active_model_name
                 and backend.active_model_name.lower() == model_identifier.lower()
                 and _mlx_runtime_settings_match(backend, request)
+                and _resident_context_satisfies(
+                    backend.models.get(backend.active_model_name) or {},
+                    request.max_seq_length,
+                )
             ):
                 api_monitor.discard(_load_event)  # nothing loaded, no monitor row
                 logger.info(f"Model already loaded (Unsloth): {model_log_label}, skipping reload")
@@ -8487,6 +8491,11 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             context_length = _positive_int_or_none(model_info.get("context_length")),
             native_context_length = _positive_int_or_none(model_info.get("native_context_length")),
             max_context_length = _positive_int_or_none(model_info.get("max_context_length")),
+            # 0 is an answer -- the load asked the backend to size its own window --
+            # while None means this backend records no request at all.
+            requested_context_length = _non_negative_int_or_none(
+                model_info.get("requested_context_length")
+            ),
             chat_template = chat_template,
             llama_cpp_supports_mtp = _supports_mtp,
             llama_cpp_prebuilt_stale = _stale,
@@ -15926,6 +15935,28 @@ def _append_to_system_message(messages: list[dict], addition: str) -> list[dict]
             msg["content"] = content.rstrip() + "\n\n" + addition
             return copied
     return [{"role": "system", "content": addition}, *copied]
+
+
+def _non_negative_int_or_none(value: Any) -> Optional[int]:
+    """The value as a non-negative int, or None when it is not one. Keeps 0."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _resident_context_satisfies(model_info: dict, max_seq_length: Any) -> bool:
+    """Whether the resident model already serves the context this load asks for.
+
+    A change made while a chat generates skips the preliminary unload, so nothing else
+    forces the reload. Requests are compared rather than served windows, which cannot
+    distinguish asking for a length from letting the backend choose one.
+    """
+    recorded = _non_negative_int_or_none(model_info.get("requested_context_length"))
+    if recorded is None:
+        return True
+    return _positive_int_or_none(max_seq_length) == _positive_int_or_none(recorded)
 
 
 async def _mlx_count_chat_tokens(payload) -> Optional[JSONResponse]:

@@ -427,14 +427,13 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             _entry = (
                 _bm.get(mc.identifier) or _bm.get(getattr(backend, "active_model_name", None)) or {}
             )
-            # The whole context triple, not just what is being served: the
-            # parent reports the model's own window and this machine's ceiling
-            # too, and it has no way to recompute either once the worker holds
-            # the model.
+            # The whole group: the parent reports all four and can recompute none of
+            # them once the worker holds the model.
             for _ctx_field in (
                 "context_length",
                 "native_context_length",
                 "max_context_length",
+                "requested_context_length",
             ):
                 try:
                     _ctx_value = _entry.get(_ctx_field)

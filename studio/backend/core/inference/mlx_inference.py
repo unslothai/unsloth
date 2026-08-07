@@ -1363,6 +1363,11 @@ class MLXInferenceBackend:
             "audio_type": _audio_type,
             "has_audio_input": is_audio_input_type(_audio_type),
             "context_length": _served_ctx,
+            # Parity with llama.cpp's requested_n_ctx. The served window cannot answer
+            # it: a request of nothing and a request of exactly that length produce the
+            # same number, and the difference decides reuse and whether the UI calls it
+            # pinned.
+            "requested_context_length": _positive_int(max_seq_length) or 0,
             # Nothing here measures the machine, so the window and its ceiling are the
             # same number, and a request may exceed both.
             "native_context_length": _native_ctx,

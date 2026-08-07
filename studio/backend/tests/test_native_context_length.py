@@ -591,3 +591,21 @@ class TestCrossPlatform:
         json2 = resp.model_dump_json()
         assert json1 == json2
         assert '"native_context_length":131072' in json1
+
+
+def test_the_status_route_reports_what_a_self_sizing_load_asked_for():
+    """The UI re-seeds its context pin from it, because the resolved window cannot say
+    whether anyone chose that length; without it a pin is invisible after a refresh."""
+    route_src = (Path(__file__).resolve().parents[1] / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    assert "requested_context_length = llama_backend.requested_n_ctx" in route_src
+    # 0 is "size it yourself"; None is "records no request", and the UI tells them apart.
+    assert (
+        "requested_context_length = _non_negative_int_or_none(\n"
+        '                model_info.get("requested_context_length")\n'
+        "            )," in route_src
+    )
+    # The parent cannot recompute the group once the worker holds the model: it mirrors all.
+    src = (Path(__file__).resolve().parents[1] / "core/inference/worker.py").read_text("utf-8")
+    assert '"native_context_length",\n                "max_context_length",' in src

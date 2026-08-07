@@ -566,7 +566,12 @@ class _InferenceRuntimeFields(BaseModel):
         None, description = "Runtime context length in tokens for the loaded model"
     )
     max_context_length: Optional[int] = Field(
-        None, description = "Maximum context length currently available on this hardware"
+        None,
+        description = (
+            "The ceiling to show for this model: llama.cpp estimates what the machine "
+            "holds, while MLX reports the model's own window. Neither is a reservation, "
+            "and an explicit request is honored above it."
+        ),
     )
     native_context_length: Optional[int] = Field(
         None,
@@ -814,9 +819,11 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     requested_context_length: Optional[int] = Field(
         None,
         description = (
-            "The n_ctx the active GGUF load was invoked with (0 = Auto). Lets the "
-            "UI re-seed a Manual + Auto-layers context pin on hydration, where "
-            "context_length only exposes the resolved value. None for non-GGUF."
+            "The context length the active load was invoked with: 0 means it asked the "
+            "backend to choose, and None means the serving backend records no request at "
+            "all. Both local backends size their own window, so context_length exposes "
+            "only what was resolved and cannot say whether anyone chose it; this lets a "
+            "client re-seed the pin on hydration."
         ),
     )
     llama_cpp_supports_mtp: bool = Field(

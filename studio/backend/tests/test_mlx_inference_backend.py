@@ -2629,3 +2629,30 @@ def test_a_load_serves_the_request_or_the_window_the_model_was_trained_for():
     assert resolve(None, held, 0) == (4096, 262144, 262144)  # what the load attached wins
     assert resolve(None, blank, 0) == (None, None, None)
     assert resolve(None, blank, 8192) == (8192, None, None)
+
+
+def test_the_resident_context_gate_compares_requests_not_served_windows():
+    """Reuse on model identity alone leaves a context change with no reload to carry it, on
+    the path that skips the preliminary unload while a chat generates. Served windows cannot
+    answer it: auto-sized to 32768 and pinned at 32768 are the same number."""
+    backend_dir = str(Path(__file__).resolve().parent.parent)
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    from routes.inference import _resident_context_satisfies as gate
+
+    # Records nothing, absent or null: the parent's mirror always writes the key, so
+    # reading its presence would reload every transformers model on its own reuse path.
+    assert gate({}, 8192) is True
+    assert gate({"requested_context_length": None}, 8192) is True
+
+    # Same request, whichever spelling of "size it yourself" either side used.
+    assert gate({"requested_context_length": 8192}, 8192) is True
+    assert gate({"requested_context_length": 0}, 0) is True
+    assert gate({"requested_context_length": 0}, None) is True
+
+    # Different request: pinning and unpinning both reload.
+    assert gate({"requested_context_length": 0}, 8192) is False
+    assert gate({"requested_context_length": 8192}, 0) is False
+
+    # The served window is not the request and cannot stand in for it.
+    assert gate({"requested_context_length": 0, "context_length": 32768}, 32768) is False
