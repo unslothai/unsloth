@@ -758,7 +758,9 @@ export function ModelSelector({
     if (!selected) return undefined;
     const found = optionById.get(selected);
     // No catalog entry yet (just after a refresh) or never listed. A cached GGUF's
-    // checkpoint is its snapshot path, so shown raw it reads as a home dir.
+    // checkpoint is its snapshot path, so shown raw it reads as a home dir. The leaf,
+    // not the namespaced public id (#7966), so the label does not change once the
+    // catalog arrives and names the same model by its leaf.
     const fallbackName = modelDisplayName(selected);
     if (activeGgufVariant) {
       const desc = `GGUF · ${activeGgufVariant}`;
