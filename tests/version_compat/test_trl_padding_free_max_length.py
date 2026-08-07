@@ -2271,3 +2271,85 @@ def test_the_schema_read_distrusts_a_transform_and_an_unprobeable_stream():
     assert (
         refusal - block.index(guard) < 200
     ), "an unprobeable stream still claims preparation will truncate it"
+
+
+def test_a_none_valued_token_column_does_not_defeat_the_late_cap():
+    """The allow-list treated every token-shaped NAME as sliceable. An optional
+    column stored as `token_type_ids = None` made the late cap's `map` raise, and
+    the broad catch around it handed the caller its uncapped split straight back.
+    """
+    _, tok = _load_plain()
+    Stub, seen = _stub_with_stored_eval()
+    stub = Stub()
+    stub.args = _Args(_MODEL_SEQ := _MODEL_MAX_SEQ_LENGTH, None)
+    rows = _tokenized_dataset(tok).to_list()
+    for row in rows:
+        row["token_type_ids"] = None
+    from datasets import Dataset
+
+    stub.evaluate(Dataset.from_list(rows))
+
+    got = seen["ds"]
+    assert max(len(r) for r in got["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
+
+
+def test_a_two_dimensional_token_column_is_not_sliced():
+    """A 2-D `position_ids` is one vector per token, so `[:cap]` cuts it along
+    the wrong axis and leaves it misaligned with the truncated `input_ids`."""
+    _, tok = _load_plain()
+    Stub, seen = _stub_with_stored_eval()
+    stub = Stub()
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
+    rows = _tokenized_dataset(tok).to_list()
+    for row in rows:
+        row["position_ids"] = [[i, 0] for i in range(len(row["input_ids"]))]
+    from datasets import Dataset
+
+    stub.evaluate(Dataset.from_list(rows))
+
+    got = seen["ds"]
+    assert max(len(r) for r in got["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
+    # Untouched rather than cut on the wrong axis: nothing else reads it, and a
+    # silently misaligned column is worse than an uncut one.
+    assert len(got["position_ids"][0]) == len(rows[0]["position_ids"])
+
+
+@pytest.mark.parametrize("method, keyword", [
+    ("get_eval_dataloader", "eval_dataset"),
+    ("get_test_dataloader", "test_dataset"),
+])
+def test_the_dataloader_builders_cap_a_late_split_too(method, keyword):
+    """Both are public API and neither goes through `evaluate`/`predict`, so a
+    caller building a dataloader directly reached the padding-free collator with
+    `args.max_length` already cleared and nothing capping the split."""
+    from unsloth.models.rl import _wrap_sft_evaluate_cap
+
+    _, tok = _load_plain()
+    seen = {}
+
+    def _builder(self, split = None, **kw):
+        seen["ds"] = split
+
+    Stub = type("Stub", (), {method: _builder})
+    _wrap_sft_evaluate_cap(Stub)
+    assert getattr(getattr(Stub, method), "_unsloth_eval_cap_wrapped", False), \
+        f"{method} was never wrapped"
+
+    stub = Stub()
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
+    getattr(stub, method)(_tokenized_dataset(tok))
+
+    assert max(len(r) for r in seen["ds"]["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
+
+
+def test_the_pretokenized_probe_does_not_eat_a_one_shot_row():
+    """`next(iter(_ds))` on a single-pass stream is a row the run then trains
+    without: read raw it declares the split safe and training starts at row 2,
+    read tokenized it rejects a caller-owned stream it has already mutated."""
+    block = _padding_free_codegen_block()
+    start = block.index("def _unsloth_pretokenized")
+    body = block[start:start + 900]
+    assert "_probe is _ds or _probe is iter(_ds)" in body, \
+        "the pretokenized probe still reads a row off a one-shot stream"
+    assert body.index("column_names") < body.index("iter(_ds)"), \
+        "the schema is not consulted before a row is taken"

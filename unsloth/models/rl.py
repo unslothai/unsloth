@@ -728,6 +728,54 @@ def _is_stream(dataset):
     return not hasattr(dataset, "__len__") or not hasattr(dataset, "__getitem__")
 
 
+def _first_row_without_consuming(dataset):
+    """Row 0, or None when reading one would cost the caller that row."""
+    if not _is_stream(dataset):
+        try: return dataset[0]
+        except Exception: return None
+    # A stream whose `iter` hands back the same exhausting generator cannot
+    # spare a row, and nothing here chains it back.
+    probe = iter(dataset)
+    if probe is dataset or probe is iter(dataset): return None
+    return next(probe, None)
+
+
+def _sliceable_per_token(dataset, names, cap):
+    """The token columns whose VALUES can be sliced alongside `input_ids`.
+
+    Presence is not enough. An optional column stored as `token_type_ids = None`
+    makes the late cap's `map` raise, and the broad catch around it hands the
+    caller its uncapped split straight back; a 2-D `position_ids` slices on the
+    wrong axis and comes out misaligned with the truncated `input_ids`. Either
+    defeats the cap through one auxiliary column, so judge by a row rather than
+    by a name, the way the construction-time truncation already does.
+
+    A row that cannot be read without costing it leaves `input_ids` alone: the
+    column the cap exists for, and the one every other is measured against.
+    """
+    per_token = [c for c in names if c in _PER_TOKEN]
+    if len(per_token) < 2: return per_token
+    row = _first_row_without_consuming(dataset)
+    if not isinstance(row, dict):
+        return ["input_ids"] if "input_ids" in names else []
+    try:
+        width = len(row.get("input_ids"))
+    except Exception:
+        return per_token
+    kept = []
+    for name in per_token:
+        value = row.get(name)
+        try:
+            # As long as `input_ids`, and flat: a nested first element is a
+            # per-token vector that `[:cap]` would cut along the wrong axis.
+            if len(value) != width: continue
+            if len(value) and isinstance(value[0], (list, tuple)): continue
+        except Exception:
+            continue
+        kept.append(name)
+    return kept
+
+
 def _wrap_sft_evaluate_cap(trainer_cls):
     """Cap a pre-tokenized split handed to `evaluate()`/`predict()` later on.
 
@@ -809,7 +857,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             # half of every long row for callers whose completion sits at the tail.
             keep_end = getattr(args, "truncation_mode", "keep_start") == "keep_end"
             cut = slice(-cap, None) if keep_end else slice(None, cap)
-            per_token = [c for c in names if c in _PER_TOKEN]
+            per_token = _sliceable_per_token(dataset, names, cap)
             # Never on the predict path. Dropping rows is right for a loss, which
             # is meaningless over a row with no supervised token, and wrong for
             # `predict`, whose contract is one prediction per row IN ORDER: a
@@ -1008,9 +1056,18 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         return wrapped
 
     # `predict` keeps every row: its contract is one prediction per row in order.
+    #
+    # The two dataloader builders are public API and neither goes through
+    # `evaluate`/`predict`, so a caller doing `get_eval_dataloader(late)` reached
+    # the padding-free collator with `args.max_length` already cleared and
+    # nothing capping the split. Same wrapper, same argument position; the
+    # `drop_unsupervised` split follows the method it serves, since
+    # `get_test_dataloader` feeds `predict`.
     for name, keyword, drop_unsupervised in (
         ("evaluate", "eval_dataset", True),
         ("predict", "test_dataset", False),
+        ("get_eval_dataloader", "eval_dataset", True),
+        ("get_test_dataloader", "test_dataset", False),
     ):
         original = getattr(trainer_cls, name, None)
         if original is None or getattr(original, "_unsloth_eval_cap_wrapped", False):
@@ -1940,8 +1997,23 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # read -- so it keeps the old answer: hold `max_length` and turn
                     # padding-free off. Only a split we rewrote, or a raw one the tokenizer
                     # pass will cut, counts.
+                    # Schema first, and a row only when one is free. `next(iter(_ds))`
+                    # on a single-pass stream is a row the run then trains without:
+                    # if it reads raw the split is declared safe and training starts
+                    # at row 2, if it reads tokenized construction rejects a stream
+                    # the caller still owns and has already been mutated. The
+                    # `iter(x) is iter(x)` test is the one the cap scan and the
+                    # schema probe already use; an unprobeable stream answers True,
+                    # which holds `max_length` rather than clearing it on a guess.
                     "        def _unsloth_pretokenized(_ds):\n"
-                    "            try:    _row = next(iter(_ds), None)\n"
+                    "            try:\n"
+                    "                _cols = getattr(_ds, 'column_names', None)\n"
+                    "                if isinstance(_cols, dict):\n"
+                    "                    _cols = [_c for _v in _cols.values() for _c in (_v or [])]\n"
+                    "                if _cols is not None: return 'input_ids' in _cols\n"
+                    "                _probe = iter(_ds)\n"
+                    "                if _probe is _ds or _probe is iter(_ds): return True\n"
+                    "                _row = next(_probe, None)\n"
                     "            except Exception: return True\n"
                     "            return isinstance(_row, dict) and 'input_ids' in _row\n"
                     "        def _unsloth_cap_split(_ds):\n"
