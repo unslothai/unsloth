@@ -329,7 +329,7 @@ assert_eq "a trailing newline is not eaten" "1024" \
 # test and the open. These drive the helpers with the real options on.
 _STRICT_FILE=$(mktemp)
 for _fn in _cg_read _cg_limit _cg_dirs _cg_unesc_prog _cg_unesc _cg_mounts \
-           _cg_rel _cg_pick_mount _cgroup_free_mb _usable_ram_mb; do
+           _cg_rel _cg_pick_mount _cgroup_free_mb _vm_stat_avail_mb _usable_ram_mb; do
     sed -n "/^${_fn}()/,/^}/p" "$SETUP_SH" >> "$_STRICT_FILE"
 done
 sed -n '/^_LLAMA_BUILD_RESERVE_MB=/,/^_LLAMA_BUILD_MB_PER_JOB=/p' "$SETUP_SH" >> "$_STRICT_FILE"
@@ -430,6 +430,21 @@ assert_eq "POSIX mode: a failing awk does not abort _cg_unesc" "SURVIVED[]" \
     "$(run_posix_assign "$_TMPD/noawk" '_cg_unesc /a/b')"
 assert_eq "POSIX mode: a failing awk does not abort _cg_mounts" "SURVIVED[]" \
     "$(run_posix_assign "$_TMPD/noawk" '_cg_mounts '"$_TMPD"'/strict.mnt cgroup2')"
+
+# The macOS branch: vm_stat does not exist on Linux, and _vm_stat_avail_mb is a
+# pipeline, so it has to survive both a missing binary and a failing awk.
+assert_eq "POSIX mode: a missing vm_stat does not abort _vm_stat_avail_mb" "SURVIVED[]" \
+    "$(run_posix_assign "$_TMPD/noawk" '_vm_stat_avail_mb </dev/null')"
+assert_eq "POSIX mode: a failing awk does not abort _vm_stat_avail_mb" "SURVIVED[]" \
+    "$(run_posix_assign "$_TMPD/noawk" 'printf "" | _vm_stat_avail_mb')"
+# The macOS path of _usable_ram_mb, reached by making the meminfo unreadable and
+# stubbing sysctl, must also survive a vm_stat that is absent or unparseable.
+assert_eq "POSIX mode: the macOS branch survives an unparseable vm_stat" "SURVIVED[16384]" \
+    "$(PATH="$_TMPD/noawk:$PATH" bash --posix -c \
+        'set -euo pipefail; . "$1"
+         sysctl() { printf "17179869184"; }
+         v=$(_usable_ram_mb "$2"); printf "SURVIVED[%s]" "$v"' \
+        _ "$_STRICT_FILE" "$_TMPD/nope" 2>/dev/null)"
 # And with a working awk the numbers are still right under POSIX rules.
 # 12288 MiB available -> (12288 - 2048) / 2048 = 5.
 assert_eq "POSIX mode: the normal path still produces the capped count" "5" \
@@ -485,9 +500,24 @@ assert_eq "vm_stat ignores active and wired" "48" \
 assert_eq "vm_stat gibberish yields nothing" "" "$(printf 'no stats here\n' | run_vm_stat)"
 
 # And _usable_ram_mb must consult it. An unreadable meminfo path forces the
-# branch that reads hw.memsize, so this runs on Linux runners too.
+# branch that reads hw.memsize -- but that branch is an `elif` on sysctl
+# succeeding, and sysctl has no hw.memsize on Linux, so the branch was never
+# entered and this asserted nothing off a Mac. Stubbing sysctl is what makes it
+# run on a Linux runner, which is where CI actually is.
 assert_eq "_usable_ram_mb prefers vm_stat over hw.memsize" "777" \
-    "$(bash -c '. "$1"; _cgroup_free_mb() { :; }; _vm_stat_avail_mb() { printf "777"; }; _usable_ram_mb "$2"' \
+    "$(bash -c '. "$1"
+                sysctl() { printf "17179869184"; }
+                _cgroup_free_mb() { :; }
+                _vm_stat_avail_mb() { printf "777"; }
+                _usable_ram_mb "$2"' \
+        _ "$_RAM_FILE" "$_TMPD/no-meminfo")"
+# And falls back to installed RAM when vm_stat gives nothing.
+assert_eq "_usable_ram_mb falls back to hw.memsize" "16384" \
+    "$(bash -c '. "$1"
+                sysctl() { printf "17179869184"; }
+                _cgroup_free_mb() { :; }
+                _vm_stat_avail_mb() { :; }
+                _usable_ram_mb "$2"' \
         _ "$_RAM_FILE" "$_TMPD/no-meminfo")"
 
 # End to end: a 4 GB allowance builds at -j1, not -j(cores).
