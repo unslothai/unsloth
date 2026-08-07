@@ -7024,7 +7024,14 @@ def test_codex_attach_check_defers_when_loopback_is_not_this_machine(monkeypatch
     monkeypatch.setattr(start, "verify_studio_identity", lambda base, **_kw: False)
     probes = []
 
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         probes.append(url)
         return {"variants": [{"quant": "Q4_K_M"}]}
 
