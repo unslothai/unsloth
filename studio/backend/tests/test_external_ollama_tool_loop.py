@@ -26,7 +26,12 @@ TOOL = {
 }
 
 
-def _chunk(*, delta = None, finish = None, usage = None):
+def _chunk(
+    *,
+    delta = None,
+    finish = None,
+    usage = None,
+):
     payload = {
         "id": "chatcmpl-test",
         "object": "chat.completion.chunk",
@@ -104,14 +109,10 @@ def test_executes_tool_continues_and_aggregates_usage(monkeypatch):
     )
     client = _Client(
         [
-            _tool_round(
-                usage = {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}
-            ),
+            _tool_round(usage = {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}),
             [
                 _chunk(delta = {"content": "24 C"}, finish = "stop"),
-                _chunk(
-                    usage = {"prompt_tokens": 7, "completion_tokens": 4, "total_tokens": 11}
-                ),
+                _chunk(usage = {"prompt_tokens": 7, "completion_tokens": 4, "total_tokens": 11}),
                 "data: [DONE]",
             ],
         ]
@@ -204,9 +205,7 @@ def test_usage_precedes_provider_error(monkeypatch):
     error = "data: " + json.dumps({"error": {"message": "upstream failed"}})
     client = _Client(
         [
-            _tool_round(
-                usage = {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
-            ),
+            _tool_round(usage = {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}),
             [error],
         ]
     )
