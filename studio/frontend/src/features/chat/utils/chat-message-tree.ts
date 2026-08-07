@@ -31,6 +31,29 @@ export function sortChatMessages<T extends ParentChainMessage>(
 }
 
 /**
+ * Legacy rows may still have null parentId on user turns. Infer those from the
+ * prior message before branch ordering so mixed threads keep their chain.
+ */
+export function inferSequentialParentIds<T extends ParentChainMessage>(
+  messages: T[],
+): T[] {
+  const sorted = sortChatMessages(messages);
+  let previousId: string | null = null;
+  return sorted.map((message) => {
+    if (message.parentId != null) {
+      previousId = message.id;
+      return message;
+    }
+    if (message.role === "assistant") {
+      return message;
+    }
+    const inferred = { ...message, parentId: previousId };
+    previousId = message.id;
+    return inferred;
+  });
+}
+
+/**
  * Order messages for tree import: walk the newest-child chain first, then
  * append abandoned sibling branches. Matches export/import expectations for
  * regeneration history (see #7732).
@@ -80,37 +103,65 @@ export function repairAssistantParentIds<T extends ParentChainMessage>(
     return sorted;
   }
 
-  const users = sorted.filter((m) => m.role === "user");
-  return sorted.map((message) => {
+  const parentForOrphanAssistant = (index: number): string | null => {
+    for (let i = index - 1; i >= 0; i--) {
+      const prev = sorted[i];
+      if (prev.role === "assistant" && prev.parentId) {
+        return prev.parentId;
+      }
+      if (prev.role === "user") {
+        return prev.id;
+      }
+    }
+    return null;
+  };
+
+  return sorted.map((message, index) => {
     if (message.role !== "assistant" || message.parentId != null) {
       return message;
     }
-    let parent: T | undefined;
-    for (const user of users) {
-      if ((user.createdAt ?? 0) <= (message.createdAt ?? 0)) {
-        parent = user;
-      } else {
-        break;
-      }
-    }
-    if (!parent) {
+    const parentId = parentForOrphanAssistant(index);
+    if (!parentId) {
       return message;
     }
-    return { ...message, parentId: parent.id };
+    return { ...message, parentId };
   });
 }
 
-/** Leaf of the newest-child chain; used as MessageRepository headId on import. */
+/** Leaf on the branch anchored by the latest user turn (active conversation). */
 export function resolveHeadMessageId(
-  messages: Array<Pick<ParentChainMessage, "id" | "parentId" | "createdAt">>,
+  messages: Array<
+    Pick<ParentChainMessage, "id" | "parentId" | "createdAt" | "role">
+  >,
 ): string | null {
-  const ordered = orderByParentChain(messages, { includeSiblings: false });
-  return ordered.at(-1)?.id ?? null;
+  if (messages.length === 0) return null;
+  const sorted = sortChatMessages(messages);
+  const childrenOf = new Map<string, ParentChainMessage[]>();
+  for (const message of messages) {
+    const parentId = message.parentId ?? null;
+    if (!childrenOf.has(parentId)) childrenOf.set(parentId, []);
+    childrenOf.get(parentId)!.push(message);
+  }
+
+  const users = sorted.filter((message) => message.role === "user");
+  const anchor =
+    users.length > 0 ? users[users.length - 1] : sorted[sorted.length - 1];
+
+  let currentId = anchor.id;
+  while (true) {
+    const children = childrenOf.get(currentId) ?? [];
+    if (children.length === 0) return currentId;
+    const next = children.reduce((a, b) =>
+      (a.createdAt ?? 0) >= (b.createdAt ?? 0) ? a : b,
+    );
+    currentId = next.id;
+  }
 }
 
 export function prepareBranchedMessagesForImport(
   messages: MessageRecord[],
 ): MessageRecord[] {
-  const repaired = repairAssistantParentIds(messages);
+  const sequential = inferSequentialParentIds(messages);
+  const repaired = repairAssistantParentIds(sequential);
   return orderByParentChain(repaired, { includeSiblings: true });
 }

@@ -38,13 +38,15 @@ def _require_node():
 def _ensure_harness():
     TEMP.mkdir(parents = True, exist_ok = True)
     (FRONTEND_DIR / "register.mjs").write_text(
-        "import { register } from 'node:module';\nregister('./loader.mjs', import.meta.url);\n"
+        "import { register } from 'node:module';\nregister('./loader.mjs', import.meta.url);\n",
+        encoding = "utf-8",
     )
     (FRONTEND_DIR / "loader.mjs").write_text(
         "export function resolve(specifier, context, next) {\n"
         "  if (specifier.endsWith('/types')) return next(specifier + '.ts', context);\n"
         "  return next(specifier, context);\n"
-        "}\n"
+        "}\n",
+        encoding = "utf-8",
     )
 
 
@@ -52,7 +54,7 @@ def _run(script: str) -> dict:
     _require_node()
     _ensure_harness()
     script_path = FRONTEND_DIR / "temp_chat_message_tree_run.mts"
-    script_path.write_text(script)
+    script_path.write_text(script, encoding = "utf-8")
     env = dict(os.environ, NODE_NO_WARNINGS = "1")
     result = subprocess.run(
         [
@@ -159,3 +161,45 @@ def test_partial_db_loss_still_reports_two_when_only_ends_remain():
         )
     )
     assert out["branchCount"] == 2
+
+
+def test_resolve_head_prefers_continued_branch_over_newer_regen_sibling():
+    rel = _tree_path()
+    out = _run(
+        textwrap.dedent(
+            f"""
+            import {{ prepareBranchedMessagesForImport, resolveHeadMessageId }} from '{rel}';
+            import {{ MessageRepository }} from '@assistant-ui/core/internal';
+
+            const userId = 'user-1';
+            const stored = [
+              {{ id: userId, role: 'user', parentId: null, createdAt: 1000 }},
+              {{ id: 'asst-1', role: 'assistant', parentId: userId, createdAt: 1100 }},
+              {{ id: 'asst-2', role: 'assistant', parentId: userId, createdAt: 1500 }},
+              {{ id: 'user-2', role: 'user', parentId: 'asst-1', createdAt: 1200 }},
+              {{ id: 'asst-3', role: 'assistant', parentId: 'user-2', createdAt: 1300 }},
+            ];
+            const prepared = prepareBranchedMessagesForImport(stored);
+            const headId = resolveHeadMessageId(prepared);
+            const repo = new MessageRepository();
+            repo.import({{
+              headId,
+              messages: prepared.map((m) => ({{
+                parentId: m.parentId ?? null,
+                message: {{
+                  id: m.id,
+                  role: m.role,
+                  content: [{{ type: 'text', text: m.id }}],
+                  status: {{ type: 'complete', reason: 'unknown' }},
+                  metadata: {{ custom: {{}} }},
+                  createdAt: new Date(m.createdAt),
+                  attachments: [],
+                }},
+              }})),
+            }});
+            console.log(JSON.stringify({{ headId, active: repo.getHeadId() }}));
+            """
+        )
+    )
+    assert out["headId"] == "asst-3"
+    assert out["active"] == "asst-3"
