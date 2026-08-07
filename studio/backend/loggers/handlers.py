@@ -8,12 +8,19 @@ filter_sensitive_data (structlog processor for sanitization), and
 get_logger (factory for structured loggers).
 """
 
+from __future__ import annotations
+
 import os
 import re
 import time
+from typing import TYPE_CHECKING
 
 import structlog
-from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+# Annotations only: a runtime import makes the ASGI stack a hard dependency of
+# every CLI command.
+if TYPE_CHECKING:
+    from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from utils.native_path_leases import redact_native_paths
 
@@ -34,6 +41,9 @@ _ACCESS_LOG_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS", 300)
 # Liveness/UI polls whose line means only "still polling"; collapse to a longer
 # heartbeat. First hit and errors still log. 0 = off.
 _QUIET_POLL_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS", 10000)
+# Both windows off is what --verbose sets; the drop-the-2xx suppressor below has no
+# window of its own, so it must read the same signal to honour --verbose.
+_VERBOSE_ACCESS_LOG = _ACCESS_LOG_DEDUP_MS <= 0 and _QUIET_POLL_DEDUP_MS <= 0
 _QUIET_POLL_PATHS = {
     "/api/health",
     "/api/auth/status",
@@ -48,6 +58,16 @@ _QUIET_POLL_PATHS = {
     "/api/models/download-progress",
     "/api/models/gguf-download-progress",
     "/api/datasets/download-progress",
+    # Generation is fire-and-forget: its outcome only reaches the UI via these polls.
+    "/api/inference/images/generate-progress",
+    "/api/inference/video/generate-progress",
+    # Polled every 1.5s while the train UI is open.
+    "/api/train/diffusion/status",
+    # Unlike /api/inference/load-progress, these handlers log nothing and
+    # diffusion.loaded / video.loaded are terminal, so a minutes-long load would
+    # otherwise emit nothing at all.
+    "/api/inference/images/load-progress",
+    "/api/inference/video/load-progress",
 }
 _DEDUP_MAP_MAX = 4096
 _NATIVE_PATH_LEASE_RE = re.compile(
@@ -103,8 +123,8 @@ def _is_quiet_success(method: str, path: str, status_code: int, pre_auth: bool) 
     """GET-only. Suppress a 2xx poll line that carries no signal, plus a chat list
     poll's transient pre-auth 401 (only in the bootstrap window before the first
     successful token refresh). Mutations, real (post-refresh) auth failures, and
-    all other errors always log."""
-    if method != "GET":
+    all other errors always log. --verbose disables the whole suppressor."""
+    if _VERBOSE_ACCESS_LOG or method != "GET":
         return False
     if 200 <= status_code < 300:
         return path in _QUIET_SUCCESS_PATHS or path in _CHAT_LIST_PATHS

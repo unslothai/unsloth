@@ -11,7 +11,13 @@ export type ResearchRunStatus =
   | "completed"
   | "failed";
 
-export type ResearchPhase = "planning" | "decision" | "synthesis" | "unknown";
+export type ResearchPhase =
+  | "planning"
+  | "decision"
+  | "synthesis_audit"
+  | "synthesis"
+  | "synthesis_recovery"
+  | "unknown";
 export type ResearchAction = "search" | "fetch";
 
 export interface ResearchPlanStep {

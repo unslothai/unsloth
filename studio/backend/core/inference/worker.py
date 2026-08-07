@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 logger = get_logger(__name__)
-from utils.hardware import apply_gpu_ids
+from utils.hardware import apply_gpu_ids, is_apple_silicon
 
 _SHARE_OBJECT_MAX_BYTES = 1 << 20
 _SHARE_OBJECT_ERROR_SIZE = -1
@@ -38,6 +38,43 @@ _BACKEND_PATH = str(Path(__file__).resolve().parent.parent.parent)
 def _ensure_backend_on_path() -> None:
     if _BACKEND_PATH not in sys.path:
         sys.path.insert(0, _BACKEND_PATH)
+
+
+def _recorded_local_base(model_name) -> "tuple[str | None, bool]":
+    """``(base, needs_hub)`` for the base this checkpoint records on disk.
+
+    Delegates to the resolver's own disk reads so the gate cannot drift from what
+    activation later resolves. Fail closed: an unavailable reader counts as needing the
+    Hub, since skipping a needed probe costs the retry backoff the probe exists to avoid.
+    """
+    try:
+        _ensure_backend_on_path()
+        from utils.transformers_version import recorded_local_base
+        return recorded_local_base(model_name)
+    except Exception:
+        return None, True
+
+
+def _hub_targets_are_local(*targets) -> bool:
+    """True when every non-empty target is a local path, so nothing here needs the Hub.
+
+    Fail closed: an unresolvable target, or an unavailable is_local_path, counts as remote,
+    since skipping a needed probe costs the retry backoff it exists to avoid.
+    """
+    try:
+        _ensure_backend_on_path()
+        from utils.paths import is_local_path
+    except Exception:
+        return False
+    for target in targets:
+        if not target:
+            continue
+        try:
+            if not (isinstance(target, str) and is_local_path(target)):
+                return False
+        except Exception:
+            return False
+    return True
 
 
 def _activate_transformers_version(model_name: str, hf_token: str | None = None) -> None:
@@ -151,7 +188,7 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     import json
 
     try:
-        with open(adapter_cfg_path, encoding = "utf-8") as f:
+        with open(adapter_cfg_path, encoding = "utf-8-sig") as f:
             adapter_cfg = json.load(f)
         training_method = adapter_cfg.get("unsloth_training_method")
         if training_method == "lora" and load_in_4bit:
@@ -367,6 +404,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             if getattr(backend, "device", None) == "mlx":
                 load_kwargs["parallel_mode"] = config.get("mlx_parallel_mode")
                 load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
+                load_kwargs["kv_bits"] = config.get("mlx_kv_bits")
+                load_kwargs["chat_template_override"] = config.get("chat_template_override")
             success = backend.load_model(**load_kwargs)
         finally:
             heartbeat_stop.set()
@@ -394,6 +433,26 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     model_info["context_length"] = int(_context_length)
             except Exception as _ctx_exc:
                 logger.warning("context_length forward failed: %s", _ctx_exc)
+            # Backend post-load audio classification outranks pre-load config.
+            model_info.update(
+                {k: _entry[k] for k in ("is_audio", "audio_type", "has_audio_input") if k in _entry}
+            )
+            # Resolved MLX runtime knobs; only the backend knows what it honored.
+            model_info.update(
+                {
+                    k: _entry[k]
+                    for k in (
+                        "mlx_kv_bits",
+                        "mlx_kv_bits_requested",
+                        "mlx_kv_quant_eligibility",
+                        "mlx_kv_quant_reason",
+                        "mlx_kv_quant_note",
+                        "chat_template_override_requested",
+                        "chat_template_override_reason",
+                    )
+                    if k in _entry
+                }
+            )
             # Forward chat_template_info so the parent can classify capabilities.
             try:
                 _tpl_info = _entry.get("chat_template_info")
@@ -672,23 +731,31 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
         audio_type = cmd.get("audio_type")
 
         if audio_type == "whisper":
+            if not hasattr(backend, "generate_whisper_response"):
+                # MLX has no ASR path; report it instead of a raw AttributeError.
+                raise RuntimeError("Whisper transcription is not supported on the MLX backend yet.")
             generator = backend.generate_whisper_response(
                 audio_array = audio_array,
                 cancel_event = cancel_event,
             )
         else:
-            generator = backend.generate_audio_input_response(
-                messages = cmd.get("messages", []),
-                system_prompt = cmd.get("system_prompt", ""),
-                audio_array = audio_array,
-                temperature = cmd.get("temperature", 0.7),
-                top_p = cmd.get("top_p", 0.9),
-                top_k = cmd.get("top_k", 40),
-                min_p = cmd.get("min_p", 0.0),
-                max_new_tokens = cmd.get("max_new_tokens", 512),
-                repetition_penalty = cmd.get("repetition_penalty", 1.0),
-                cancel_event = cancel_event,
-            )
+            audio_kwargs = {
+                "messages": cmd.get("messages", []),
+                "system_prompt": cmd.get("system_prompt", ""),
+                "audio_array": audio_array,
+                "temperature": cmd.get("temperature", 0.7),
+                "top_p": cmd.get("top_p", 0.9),
+                "top_k": cmd.get("top_k", 40),
+                "min_p": cmd.get("min_p", 0.0),
+                "max_new_tokens": cmd.get("max_new_tokens", 512),
+                "repetition_penalty": cmd.get("repetition_penalty", 1.0),
+                "cancel_event": cancel_event,
+            }
+            # Forward only when present, as the "generate" branch does.
+            use_adapter = cmd.get("use_adapter")
+            if use_adapter is not None:
+                audio_kwargs["use_adapter"] = use_adapter
+            generator = backend.generate_audio_input_response(**audio_kwargs)
 
         logger.info("Starting audio input generation for request_id=%s", request_id)
 
@@ -783,6 +850,46 @@ def run_inference_process(
         os.environ["HF_HUB_DISABLE_XET"] = "1"
         logger.info("Xet transport disabled (HF_HUB_DISABLE_XET=1)")
 
+    # Offline auto-detect, as the training and export workers already do. The parent's
+    # guard is scoped, so child_env deliberately scrubs it rather than turning a
+    # per-request flag into a lifetime one; without a probe of its own this worker would
+    # then walk back into the retry paths the parent already ruled out, in
+    # _remote_lora_base and in tier activation below. Runs before any HF import, so env
+    # alone is enough.
+    # Skip it entirely for a filesystem-only load: a local checkpoint whose recorded base
+    # (an adapter's, or a full checkpoint's config.json one, both of which activation
+    # resolves and reads Hub metadata for) is local too never reaches the Hub, so probing
+    # would spend seconds before a load that has no Hub dependency.
+    _probe_model = config["model_name"]
+    _probe_base, _probe_needs_hub = _recorded_local_base(_probe_model)
+    if "HF_HUB_OFFLINE" not in os.environ and (
+        _probe_needs_hub or not _hub_targets_are_local(_probe_model, _probe_base)
+    ):
+        try:
+            _ensure_backend_on_path()
+            from utils.utils import hf_dns_dead, hf_env_offline, hf_probe_disabled
+
+            _offline = hf_env_offline()
+            if not _offline:
+                _offline = hf_dns_dead()
+            if not _offline and not hf_probe_disabled():
+                from utils.transformers_version import hf_endpoint_unreachable
+
+                # Lifetime flags, so only a definite no-egress answer counts: a momentary
+                # 502 or a slow proxy must not strand the worker offline.
+                _offline = hf_endpoint_unreachable(
+                    gateway_errors_offline = False,
+                    proxy_timeouts_offline = False,
+                )
+            if _offline:
+                os.environ["HF_HUB_OFFLINE"] = "1"
+                os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+                logger.warning(
+                    "Hugging Face endpoint unreachable; HF_HUB_OFFLINE=1 for this worker."
+                )
+        except Exception:
+            pass  # fail open: the load decides as it does today
+
     import warnings
     from loggers.config import LogConfig
 
@@ -801,10 +908,7 @@ def run_inference_process(
     # ── 0. MLX fast-path — skip torch/transformers ──
     _ensure_backend_on_path()
 
-    from utils.hardware import hardware as _hw
-
-    _hw.detect_hardware()
-    if _hw.DEVICE == _hw.DeviceType.MLX:
+    if is_apple_silicon():
         # Non-fatal: fall through with the installed version, but log the cause
         # instead of swallowing it (issue #6103).
         try:
@@ -816,6 +920,11 @@ def run_inference_process(
                 model_name,
                 exc,
             )
+
+    from utils.hardware import hardware as _hw
+
+    _hw.detect_hardware()
+    if _hw.DEVICE == _hw.DeviceType.MLX:
         try:
             from core.inference.mlx_inference import MLXInferenceBackend, _init_mlx_distributed
 
@@ -881,6 +990,25 @@ def run_inference_process(
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
                         continue
                     _handle_generate(backend, cmd, resp_queue, cancel_event)
+                elif cmd_type == "generate_audio_input":
+                    # Drain discipline as in "generate" (see that branch).
+                    if _drain_skip_generate(cmd, resp_queue, drain_event):
+                        continue
+                    cancel_event.clear()
+                    if _drain_skip_generate(cmd, resp_queue, drain_event):
+                        continue
+                    _handle_generate_audio_input(backend, cmd, resp_queue, cancel_event)
+                elif cmd_type == "generate_audio":
+                    # No TTS here, but codec checkpoints still reach this loop
+                    # (dispatch is by device). Answer, or the parent waits 120s.
+                    _send_response(
+                        resp_queue,
+                        {
+                            "type": "audio_error",
+                            "request_id": cmd.get("request_id"),
+                            "error": "Text-to-speech is not supported on the MLX backend yet.",
+                        },
+                    )
                 elif cmd_type == "share_object":
                     _handle_share_object(backend, cmd, resp_queue)
                 elif cmd_type == "load":
@@ -910,6 +1038,18 @@ def run_inference_process(
                     )
                 elif cmd_type == "shutdown":
                     return
+                else:
+                    # As in the GPU loop: dropping a command silently costs the
+                    # caller its whole timeout.
+                    logger.warning("Unknown MLX command type: %s", cmd_type)
+                    _send_response(
+                        resp_queue,
+                        {
+                            "type": "error",
+                            "request_id": cmd.get("request_id"),
+                            "error": f"Unknown command type: {cmd_type}",
+                        },
+                    )
             except Exception as exc:
                 logger.error("MLX command error (%s): %s", cmd_type, exc)
                 _send_response(
@@ -961,7 +1101,7 @@ def run_inference_process(
     if _local_adapter_cfg.is_file():
         try:
             _lora_base = (
-                _json.loads(_local_adapter_cfg.read_text(encoding = "utf-8")).get(
+                _json.loads(_local_adapter_cfg.read_text(encoding = "utf-8-sig")).get(
                     "base_model_name_or_path"
                 )
                 or None

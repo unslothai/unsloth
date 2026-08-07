@@ -971,7 +971,12 @@ def test_code_tool_descriptions_mention_relative_paths():
     for tool in (PYTHON_TOOL, TERMINAL_TOOL):
         description = tool["function"]["description"]
         assert "relative paths" in description
-        assert "/mnt/data" in description
+        if sys.platform == "win32":
+            # Naming POSIX-only paths there reads as "you are on Linux", and
+            # models then decline to run Windows programs that do exist.
+            assert "Windows" in description
+        else:
+            assert "/mnt/data" in description
 
 
 def test_python_exec_mnt_data_open_is_remapped_into_workdir():

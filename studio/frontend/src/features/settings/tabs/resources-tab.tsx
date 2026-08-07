@@ -29,6 +29,7 @@ import {
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
+import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import { CopyIcon, FolderOpenIcon, LayersIcon } from "lucide-react";
 
 const POLL_MS = 3000;
@@ -72,7 +73,10 @@ function formatBytes(value: number | null): string | null {
 function formatGiB(value: number | null | undefined): string {
   const safe = isFiniteNumber(value) ? Math.max(0, value) : 0;
   const digits = safe >= 10 ? 1 : 2;
-  return `${safe.toFixed(digits)} GiB`;
+  // digits is never 0, so toFixed always leaves a decimal point and trimming
+  // trailing zeros cannot reach an integer digit. "64.0" reads as "64".
+  const text = safe.toFixed(digits).replace(/\.?0+$/, "");
+  return `${text} GiB`;
 }
 
 function formatMb(value: number | null | undefined): string {
@@ -116,7 +120,7 @@ function MetricTile({
   const percentKnown = isFiniteNumber(percent);
   const safePercent = clampPercent(percent);
   return (
-    <div className="flex min-w-0 flex-col gap-2 rounded-md border border-border/60 bg-muted/20 p-3">
+    <div className="flex min-w-0 flex-col gap-2.5 rounded-xl border border-border/60 bg-muted/20 p-4 dark:border-transparent dark:bg-white/[0.06]">
       <div className="flex items-center justify-between gap-3">
         <span className="truncate text-ui-11 font-semibold uppercase tracking-[0.08em] text-muted-foreground">
           {label}
@@ -124,7 +128,9 @@ function MetricTile({
         <span
           className={cn(
             "shrink-0 font-mono text-xs tabular-nums",
-            percentKnown ? usageTextClass(safePercent) : "text-muted-foreground",
+            percentKnown
+              ? usageTextClass(safePercent)
+              : "text-muted-foreground",
           )}
         >
           {percentKnown ? formatPercent(safePercent) : "--"}
@@ -141,7 +147,7 @@ function MetricTile({
       <Progress
         value={percentKnown ? safePercent : 0}
         aria-label={label}
-        className="h-1.5 rounded-full bg-muted"
+        className="h-1.5 rounded-full bg-muted dark:bg-black/40"
         indicatorClassName={usageIndicatorClass(safePercent)}
       />
     </div>
@@ -178,10 +184,14 @@ function deviceOrdinal(device: GpuDevice): number | undefined {
 
 export function ResourcesTab() {
   const t = useT();
-  const [liveUpdates, setLiveUpdates] = useState(true);
+  const liveUpdates = useSettingsPanelPrefsStore((s) => s.resourcesLiveUpdates);
+  const setLiveUpdates = useSettingsPanelPrefsStore(
+    (s) => s.setResourcesLiveUpdates,
+  );
   const { isOpen, setIsOpen } = useMonitorOverlayStore();
+  // always fetch once: the switch is persisted now, so gating the hook on it
+  // would leave a session that opens with it off reading zeros forever.
   const systemInfo = useSystemInfo({
-    enabled: liveUpdates,
     pollMs: liveUpdates ? POLL_MS : undefined,
   });
   const [hfCache, setHfCache] = useState<HuggingFaceCacheSettings | null>(null);
@@ -327,7 +337,9 @@ export function ResourcesTab() {
   const hasGpu =
     (displayedGpu?.available ?? false) && metrics.devices.length > 0;
   const backendLabel = (
-    displayedGpu?.backend ?? systemInfo.device_backend ?? "cpu"
+    displayedGpu?.backend ??
+    systemInfo.device_backend ??
+    "cpu"
   ).toUpperCase();
   const modelsFolderPath = hfCache
     ? hfCache.cacheHome
@@ -441,14 +453,16 @@ export function ResourcesTab() {
       <SettingsSection title={t("settings.resources.gpu.title")}>
         {separateInferenceGpu && (
           <div className="flex items-center justify-between gap-4 border-b border-border/60 py-3 text-sm">
-            <span className="text-muted-foreground">GGUF inference</span>
+            <span className="text-muted-foreground">
+              {t("settings.resources.gpu.ggufInference")}
+            </span>
             <span className="text-right font-mono text-xs uppercase text-foreground">
               {separateInferenceGpu.backend ?? "GPU"}
               {separateInferenceGpu.available
                 ? inferenceVramTotal
                   ? ` · ${formatGiB(inferenceVramTotal)}`
                   : ""
-                : " · unavailable"}
+                : ` · ${t("settings.resources.gpu.unavailable")}`}
             </span>
           </div>
         )}
@@ -483,54 +497,66 @@ export function ResourcesTab() {
               ? formatPercent(safePercent)
               : unknownLabel;
             return (
+              // Name over backend on the left, figures over the meter on the
+              // right. The meter tracks the figures' width rather than the
+              // pane's, so it reads as one device's usage, not a rule.
               <div
                 key={`${device.index ?? index}-${device.name ?? "gpu"}`}
-                className="flex min-w-0 flex-col gap-2 py-3"
+                className="flex min-w-0 items-center justify-between gap-x-4 gap-y-2 py-3 max-[992px]:flex-col max-[992px]:items-stretch"
               >
-                <div className="flex min-w-0 items-start justify-between gap-4">
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium text-foreground">
-                      {device.name ??
-                        t("settings.resources.gpu.unknownDevice")}
-                    </div>
-                    <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium text-foreground">
+                    {device.name ?? t("settings.resources.gpu.unknownDevice")}
+                  </div>
+                  <div className="mt-1 flex min-w-0 items-center gap-2">
+                    <span className="truncate text-xs text-muted-foreground">
                       {ordinal === undefined
                         ? backendLabel
                         : `${t("settings.resources.gpu.deviceWithIndex", {
                             index: ordinal,
                           })}, ${backendLabel}`}
-                    </div>
-                  </div>
-                  <div className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
-                    <span>
+                    </span>
+                    {/* Same accent pill as the New tags, which stays legible
+                        on the light background. */}
+                    <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
                       {percentText}{" "}
                       {t("settings.resources.gpu.vramUtilization")}
                     </span>
                   </div>
                 </div>
-                <div className="grid gap-1 text-xs text-muted-foreground sm:grid-cols-3 sm:gap-2">
-                  <span className="min-w-0 truncate font-mono tabular-nums">
-                    {t("settings.resources.gpu.used", {
-                      value: usedText,
-                    })}
-                  </span>
-                  <span className="min-w-0 truncate font-mono tabular-nums sm:text-center">
-                    {t("settings.resources.gpu.free", {
-                      value: freeText,
-                    })}
-                  </span>
-                  <span className="min-w-0 truncate font-mono tabular-nums sm:text-right">
-                    {t("settings.resources.gpu.total", {
-                      value: totalText,
-                    })}
-                  </span>
+                {/* Meter under the figures, so it spans their width instead of
+                    being squeezed into the gap beside them. Same 392px as the
+                    Model downloads control, so both blocks start on one edge.
+                    Below 992px the dialog stops filling its 960px cap and the
+                    device name would truncate, so the row stacks instead. */}
+                <div className="flex w-[392px] shrink-0 flex-col items-stretch gap-2.5 max-[992px]:w-full">
+                  {/* Ruled between the three readings: run together they are
+                      easy to misread as one number. */}
+                  {/* min-w-0 on each reading, or truncate cannot fire: a flex
+                      item defaults to min-width:auto and the longest locales
+                      would push past the block instead of ellipsizing. */}
+                  <div className="flex items-center justify-between gap-3 font-mono text-ui-11 tabular-nums text-muted-foreground">
+                    <span className="min-w-0 truncate">
+                      {t("settings.resources.gpu.used", { value: usedText })}
+                    </span>
+                    <span aria-hidden className="h-3 w-px shrink-0 bg-border" />
+                    <span className="min-w-0 truncate">
+                      {t("settings.resources.gpu.free", { value: freeText })}
+                    </span>
+                    <span aria-hidden className="h-3 w-px shrink-0 bg-border" />
+                    <span className="min-w-0 truncate">
+                      {t("settings.resources.gpu.total", {
+                        value: totalText,
+                      })}
+                    </span>
+                  </div>
+                  <Progress
+                    value={safePercent}
+                    aria-label={device.name ?? "GPU"}
+                    className="h-1.5 w-full rounded-full bg-muted dark:bg-black/40"
+                    indicatorClassName={usageIndicatorClass(safePercent)}
+                  />
                 </div>
-                <Progress
-                  value={safePercent}
-                  aria-label={device.name ?? "GPU"}
-                  className="h-1.5 rounded-full bg-muted"
-                  indicatorClassName={usageIndicatorClass(safePercent)}
-                />
               </div>
             );
           })

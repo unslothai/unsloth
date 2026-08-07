@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Default capabilities for Unsloth Studio",
+  "description": "Default capabilities for Unsloth",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -16,10 +16,13 @@
     "core:window:allow-start-dragging",
     "core:window:allow-start-resize-dragging",
     "core:window:allow-minimize",
+    "core:window:allow-unminimize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
+    "core:window:allow-set-theme",
     "core:tray:default",
     "process:default",
+    "deep-link:default",
     "notification:allow-is-permission-granted",
     "notification:allow-request-permission",
     "notification:allow-notify",
@@ -29,6 +32,7 @@
     },
     "updater:default",
     "clipboard-manager:allow-write-text",
+    "clipboard-manager:allow-read-image",
     "window-state:default"
   ]
 }

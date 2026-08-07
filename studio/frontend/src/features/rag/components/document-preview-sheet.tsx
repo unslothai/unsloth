@@ -16,6 +16,7 @@ import { Spinner } from "@/components/ui/spinner";
 
 import {
   Sheet,
+  SheetCloseButton,
   SheetContent,
   SheetHeader,
   SheetTitle,
@@ -407,11 +408,18 @@ export function DocumentPreviewSheet() {
     <Sheet open={open} onOpenChange={(o) => !o && closePreview()}>
       <SheetContent
         side="right"
-        style={{ width: previewWidth, maxWidth: "95vw" }}
+        // Clear the desktop window controls; 0px in the browser and on macOS.
+        style={{
+          width: previewWidth,
+          maxWidth: "95vw",
+          height: "calc(100% - var(--studio-custom-titlebar-height, 0px))",
+          marginTop: "var(--studio-custom-titlebar-height, 0px)",
+        }}
         className={cn(
           "flex w-full flex-col gap-0 p-0",
           resizing && "select-none",
         )}
+        showCloseButton={false}
       >
         {/* Drag the left edge to widen the preview; double-click to reset. */}
         <div
@@ -429,16 +437,18 @@ export function DocumentPreviewSheet() {
           )}
         />
         <SheetHeader className="gap-1 border-b p-4">
-          {/* pr-10 reserves room for the absolute close button. */}
-          <SheetTitle className="flex items-center gap-2 pr-10 text-sm">
-            <FileTextIcon className="size-4 shrink-0" />
-            <span className="min-w-0 truncate">{headerName}</span>
-            {headerPage != null && (
-              <span className="shrink-0 text-muted-foreground">
-                · page {headerPage}
-              </span>
-            )}
-          </SheetTitle>
+          <div className="relative">
+            <SheetTitle className="flex items-center gap-2 pr-10 text-sm">
+              <FileTextIcon className="size-4 shrink-0" />
+              <span className="min-w-0 truncate">{headerName}</span>
+              {headerPage != null && (
+                <span className="shrink-0 text-muted-foreground">
+                  · page {headerPage}
+                </span>
+              )}
+            </SheetTitle>
+            <SheetCloseButton className="absolute top-1/2 right-0 -translate-y-1/2" />
+          </div>
         </SheetHeader>
 
         <div className="min-h-0 flex-1">

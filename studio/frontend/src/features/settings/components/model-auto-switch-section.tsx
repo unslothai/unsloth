@@ -162,7 +162,9 @@ export function ModelAutoSwitchSection() {
                 min={0}
                 step={1}
                 value={draftIdleSeconds}
-                aria-label="Idle auto-unload seconds"
+                aria-label={t(
+                  "settings.general.modelAutoSwitch.idleSecondsAriaLabel",
+                )}
                 disabled={!settings?.enabled || isSaving}
                 onChange={(event) => setDraftIdleSeconds(event.target.value)}
                 className="h-8 w-24"

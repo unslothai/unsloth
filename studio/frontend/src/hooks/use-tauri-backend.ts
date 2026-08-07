@@ -11,6 +11,12 @@ import {
   clearTauriAuthFailure,
   getTauriAuthFailure,
 } from "@/features/auth";
+import {
+  INITIAL_STARTUP_MESSAGE,
+  SERVER_STARTUP_MESSAGE,
+  startupMessageFromLog,
+  type StartupMessage,
+} from "@/components/tauri/startup-messages";
 
 export type BackendStatus =
   | "checking"
@@ -105,9 +111,18 @@ export function useTauriBackend() {
   const mountedRef = useRef(false);
   // Track the discovered port from server-port event
   const portRef = useRef<number | null>(null);
+  // Set once server-start-timeout has reported a stalled startup. commands.rs's
+  // health watchdog kills that same portless backend ~30 s later and emits a
+  // payload-free server-crashed, so without this the log tail the timeout carried
+  // is replaced by "Server stopped unexpectedly" on an unattended error screen.
+  // Cleared whenever a start attempt begins or a validated port arrives.
+  const startTimedOutRef = useRef(false);
   const [currentStepIndex, setCurrentStepIndex] = useState(-1);
   const [elevationPackages, setElevationPackages] = useState<string[]>([]);
   const [progressDetail, setProgressDetail] = useState<string | null>(null);
+  const [startupMessage, setStartupMessage] = useState<StartupMessage>(
+    INITIAL_STARTUP_MESSAGE,
+  );
   // Track seen step names to deduplicate (Strict Mode, event replay, etc.)
   const seenStepsRef = useRef(new Set<string>());
   // True when we attached to a server we didn't spawn (can't stop it)
@@ -209,6 +224,7 @@ export function useTauriBackend() {
           setApiBase(preflight.port);
           portRef.current = preflight.port;
           setIsExternalServer(true);
+          setStartupMessage(SERVER_STARTUP_MESSAGE);
           setRunningStatus();
           startExternalServerPoll(preflight.port);
           return;
@@ -222,6 +238,7 @@ export function useTauriBackend() {
           portRef.current = preflight.port;
           setIsExternalServer(false);
           stopExternalServerPoll();
+          setStartupMessage(SERVER_STARTUP_MESSAGE);
           setRunningStatus();
           return;
         case "managed_ready":
@@ -264,7 +281,9 @@ export function useTauriBackend() {
       return;
     }
     startingRef.current = true;
+    setStartupMessage(INITIAL_STARTUP_MESSAGE);
     portRef.current = null;
+    startTimedOutRef.current = false;
 
     try {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -384,6 +403,7 @@ export function useTauriBackend() {
     setLogs([]);
     startingRef.current = false;
     portRef.current = null;
+    startTimedOutRef.current = false;
     setCurrentStepIndex(-1);
     setProgressDetail(null);
     setElevationPackages([]);
@@ -548,16 +568,32 @@ export function useTauriBackend() {
 
       register<number>("server-port", (e) => {
         portRef.current = e.payload;
+        // A validated port means startup finished after all, so a later crash is
+        // a real crash and deserves the generic message.
+        startTimedOutRef.current = false;
         setApiBase(e.payload);
       });
 
       register<void>("server-crashed", () => {
         startingRef.current = false;
+        // Startup already timed out and left a message naming the backend's last
+        // output. That is strictly more actionable than this one, and the kill it
+        // reports is the timeout's own consequence, so keep the detail.
+        if (startTimedOutRef.current) return;
         setBackendError("Server stopped unexpectedly");
+      });
+
+      // A backend that hangs never closes stdout, so server-crashed never fires and the
+      // startup screen would otherwise spin forever. Payload carries the backend's tail.
+      register<string>("server-start-timeout", (e) => {
+        startingRef.current = false;
+        startTimedOutRef.current = true;
+        setBackendError(e.payload || "The Unsloth backend did not start in time");
       });
 
       register<string>("server-log", (e) => {
         setLogs((prev) => [...prev.slice(-499), e.payload]);
+        setStartupMessage((current) => startupMessageFromLog(current, e.payload));
       });
 
       register<void>("tray-toggle-server", () => {
@@ -605,7 +641,7 @@ export function useTauriBackend() {
 
   return {
     status, logs, error, isExternalServer,
-    currentStepIndex, progressDetail, elevationPackages,
+    currentStepIndex, progressDetail, startupMessage, elevationPackages,
     startServer, stopServer, startInstall,
     retry, retryInstall, approveElevation, copyDiagnostics,
   };

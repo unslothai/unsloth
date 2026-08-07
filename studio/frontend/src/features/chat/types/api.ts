@@ -35,6 +35,11 @@ export interface ListLorasResponse {
 
 export interface LoadModelRequest {
   model_path: string;
+  /**
+     * Stop any chats still generating instead of getting a 409: a load replaces the single
+     * llama-server they all decode on. Set only after the user confirms.
+     */
+  force_cancel_active?: boolean;
   nativePathLease?: string | null;
   hf_token: string | null;
   max_seq_length: number;
@@ -47,19 +52,26 @@ export interface LoadModelRequest {
   approved_remote_code_fingerprint?: string | null;
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
+  mlx_kv_bits?: number | null;
   /**
    * Speculative decoding mode for GGUF models. Canonical values: "auto"
    * (platform-aware: MTP on MTP GGUFs, ngram-mod fallback for sub-3B), "mtp"
-   * (force draft-mtp), "ngram" (force ngram-mod), "mtp+ngram" (ngram-mod +
+   * (force draft-mtp), "dspark" (force draft-dspark with a sidecar),
+   * "ngram" (force ngram-mod), "mtp+ngram" (ngram-mod +
    * draft-mtp chain), "off". Legacy "default"/"draft-mtp"/"ngram-mod"/
    * "ngram-simple" are still accepted by the backend.
    */
   speculative_type?: string | null;
   /**
    * Override --spec-draft-n-max for MTP speculative decoding. Applied only
-   * when speculative_type resolves to "mtp" or "mtp+ngram".
+   * when speculative_type resolves to "mtp", "mtp+ngram", or "dspark".
    */
   spec_draft_n_max?: number | null;
+  /**
+   * Parallel decode slots for llama-server (--parallel), 1..64. Omit/null =
+   * the launch default. The VRAM fitter may launch fewer to stay on GPU.
+   */
+  n_parallel?: number | null;
   /**
    * Split the model across GPUs by tensor (--split-mode tensor) instead
    * of by layer for GGUF models. Multi-GPU only; no effect on a single GPU.
@@ -75,7 +87,7 @@ export interface LoadModelRequest {
   n_cpu_moe?: number;
   /** Manual mode: relative model share per GPU (--tensor-split), in GPU order. */
   tensor_split?: number[] | null;
-  /** Picked physical GPU indices (omit/empty = automatic). */
+  /** Picked CUDA/ROCm physical IDs or Vulkan ordinals (omit/empty = automatic). */
   gpu_ids?: number[];
 }
 
@@ -85,6 +97,10 @@ export interface ValidateModelResponse {
   identifier?: string | null;
   display_name?: string | null;
   is_gguf?: boolean;
+  is_diffusion?: boolean;
+  /** The diffusion check was inconclusive, so `is_diffusion: false` above means
+   *  "not known to be diffusion", not "known to be ordinary". */
+  diffusion_unknown?: boolean;
   is_lora?: boolean;
   is_vision?: boolean;
   requires_trust_remote_code?: boolean;
@@ -148,13 +164,19 @@ export function isMultimodalResponse(
 }
 
 export interface LoadModelResponse {
+  is_mlx?: boolean;
   status: string;
   model: string;
   display_name: string;
   is_vision: boolean;
   is_lora: boolean;
   is_gguf?: boolean;
+  is_local_model?: boolean;
   is_diffusion?: boolean;
+  /** GPU-layer count the diffusion runner was ASKED for, when it differs from what
+   *  it applied: a shim without --ngl runs Auto, so gpu_layers reports -1 while
+   *  this carries the standing request. */
+  diffusion_requested_ngl?: number | null;
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
@@ -180,6 +202,12 @@ export interface LoadModelResponse {
   supports_preserve_thinking?: boolean;
   supports_tools?: boolean;
   cache_type_kv?: string | null;
+  mlx_kv_bits?: number | null;
+  mlx_kv_bits_requested?: number | null;
+  mlx_kv_quant_eligibility?: string | null;
+  mlx_kv_quant_reason?: string | null;
+  chat_template_override_reason?: string | null;
+  mlx_kv_quant_note?: string | null;
   chat_template?: string | null;
   /** Canonical UI-facing mode the load request resolved to. See LoadModelRequest. */
   speculative_type?: string | null;
@@ -197,18 +225,33 @@ export interface LoadModelResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
+  /** Slots the load was invoked with (else the --parallel default). Null for
+   * non-GGUF loads. */
+  requested_parallel_slots?: number | null;
+  /** Slots llama-server actually runs, after any fit-time reduction. Null for
+   * non-GGUF loads. */
+  parallel_slots?: number | null;
 }
 
 export interface UnloadModelRequest {
   model_path: string;
+  /** Stop any chats still generating instead of getting a 409: the unload takes down the
+   * llama-server they all decode on. */
+  force_cancel_active?: boolean;
 }
 
 export interface InferenceStatusResponse {
+  is_mlx?: boolean;
   active_model: string | null;
   model_identifier?: string | null;
   is_vision: boolean;
   is_gguf?: boolean;
+  is_local_model?: boolean;
   is_diffusion?: boolean;
+  /** GPU-layer count the diffusion runner was ASKED for, when it differs from what
+   *  it applied: a shim without --ngl runs Auto, so gpu_layers reports -1 while
+   *  this carries the standing request. */
+  diffusion_requested_ngl?: number | null;
   gguf_variant?: string | null;
   is_audio?: boolean;
   audio_type?: string | null;
@@ -238,6 +281,12 @@ export interface InferenceStatusResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   cache_type_kv?: string | null;
+  mlx_kv_bits?: number | null;
+  mlx_kv_bits_requested?: number | null;
+  mlx_kv_quant_eligibility?: string | null;
+  mlx_kv_quant_reason?: string | null;
+  chat_template_override_reason?: string | null;
+  mlx_kv_quant_note?: string | null;
   chat_template_override?: string | null;
   /** Canonical UI-facing mode currently active. See LoadModelRequest. */
   speculative_type?: string | null;
@@ -255,17 +304,30 @@ export interface InferenceStatusResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
+  /** Slots the active load was invoked with (else the --parallel default).
+   * Null when no GGUF model is loaded. */
+  requested_parallel_slots?: number | null;
+  /** Slots llama-server actually runs, after any fit-time reduction. Null when
+   * no GGUF model is loaded. */
+  parallel_slots?: number | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;
   /**
-   * Why MTP was disabled on the loaded model despite being requested.
+   * Why a speculative drafter was disabled despite being requested.
    * "binary_no_mtp" / "binary_outdated" -> updating llama.cpp would re-enable
    * it; "runtime_error" -> the current build could not run it;
+   * "drafter_not_found" -> its MTP or DSpark sidecar was unavailable;
    * "mla_mtp_disabled" -> an Auto-mode policy downgrade for MLA models
    * (GLM-5.2 et al.) whose llama.cpp MTP path is slower than no speculation
    * (updating won't help; choose MTP in Settings to force it). Null otherwise.
    */
+  /**
+   * Which drafter the resolution was about, "mtp" or "dspark". Auto resolves the
+   * kind itself, so speculative_type still reads "auto", and a fallback leaves
+   * the engaged type at "default": neither names the file to fix.
+   */
+  spec_drafter_kind?: string | null;
   spec_fallback_reason?: string | null;
 }
 
@@ -276,6 +338,8 @@ export interface ApiMonitorEntry {
   model: string;
   prompt?: string;
   reply?: string;
+  // True for API-key callers, not UI sessions: the panel auto-opens off this.
+  via_api_key: boolean;
   prompt_preview: string;
   reply_preview: string;
   prompt_truncated: boolean;
@@ -301,9 +365,14 @@ export interface ApiMonitorEntry {
 
 export interface ApiMonitorResponse {
   status: "idle" | "ready" | "generating";
+  // Server wall clock (seconds) at snapshot, so started_at can be dated without trusting
+  // the browser's clock. Absent on a backend older than the field.
+  server_time?: number;
   active_model?: string | null;
   context_length?: number | null;
   active_requests: number;
+  /** Absent on older backends -- treat only an explicit `false` as disabled. */
+  logging_enabled?: boolean;
   entries: ApiMonitorEntry[];
 }
 

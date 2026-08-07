@@ -30,7 +30,7 @@ import { Streamdown } from "streamdown";
 import { ArtifactHtmlFrame, type ArtifactViewMode } from "./html-frame";
 import { useChatArtifactsStore } from "./store";
 import type { ChatArtifact } from "./types";
-import { getArtifactFilename } from "./types";
+import { buildArtifactSourceKey, getArtifactFilename } from "./types";
 
 const COPY_RESET_MS = 2000;
 const artifactSourceCodePlugin = createCodePlugin({
@@ -196,7 +196,7 @@ export function ArtifactSurface({
         "relative flex min-h-0 flex-col bg-background",
         variant === "panel"
           ? "artifact-panel-shell mx-2 mt-[90px] mb-8 h-[calc(100%_-_122px)] overflow-visible rounded-[28px] border-t border-border/70 bg-card/95"
-          : "h-[min(92vh,900px)] w-[min(96vw,1200px)] overflow-hidden rounded-2xl border border-border shadow-xl",
+          : "h-[min(92dvh,900px)] w-[min(96vw,1200px)] overflow-hidden rounded-2xl border border-border shadow-xl",
       )}
       aria-label={`${artifact.title} canvas`}
     >
@@ -338,6 +338,8 @@ export function ArtifactSurface({
         ) : (
           <div className="h-full overflow-auto text-xs leading-relaxed [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
             <Streamdown
+              // Only computed when the source view is actually on screen.
+              key={buildArtifactSourceKey(artifact)}
               mode="streaming"
               plugins={{ code: artifactSourceCodePlugin }}
               controls={{ code: false }}

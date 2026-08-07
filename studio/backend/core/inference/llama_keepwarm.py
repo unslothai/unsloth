@@ -60,10 +60,17 @@ _INFERENCE_SUFFIXES = (
     "/completions",
     "/messages",
     "/messages/count_tokens",  # counts via the loaded tokenizer; protect like /messages
+    "/chat/count_tokens",
     "/embeddings",
     "/responses",
     "/generate/stream",  # Unsloth's own streaming route on the same llama-server
     "/audio/generate",  # direct GGUF TTS; can outlive the idle TTL
+    # Image generation holds a multi-GB pipeline for the whole request; tracking it lets other_inference_request_count() see
+    # an in-flight generation so an API-key training start is refused (409). endswith avoids matching *-progress / */cancel.
+    "/images/generate",  # /api/inference/images/generate
+    "/images/generations",  # /v1/images/generations (+ /api/inference/images/generations)
+    # Video runs as a background job (the POST returns at once), so this covers only the brief accept; the training-start guards also probe generate-progress.
+    "/video/generate",  # /api/inference/video/generate
 )
 
 

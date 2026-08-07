@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ProfilePersonalizationPanel } from "@/features/profile";
+import {
+  ProfilePersonalizationPanel,
+  ProfileStatsPanel,
+} from "@/features/profile";
 import { useT } from "@/i18n";
 
 export function ProfileTab() {
@@ -25,6 +28,7 @@ export function ProfileTab() {
       </header>
 
       <ProfilePersonalizationPanel />
+      <ProfileStatsPanel />
     </div>
   );
 }
