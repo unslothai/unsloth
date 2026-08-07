@@ -1079,9 +1079,7 @@ async def _shared_compat_local_inventory_scan(
     requested_sources = sources
 
     async def collect(
-        expected_epoch: int,
-        custom_folders: List[dict],
-        scan_sources: _CompatLocalInventorySources,
+        expected_epoch: int, custom_folders: List[dict], scan_sources: _CompatLocalInventorySources
     ) -> List[LocalModelInfo]:
         models = await asyncio.to_thread(
             collect_local_models,
