@@ -13,6 +13,10 @@ Every ``import diffusers`` in the diffusion modules is lazy, so a module-scope i
 what puts the stubs in place first; asserting module scope is what stops a later edit from
 tucking one inside a function that a load path can skip.
 
+The diffusion modules are not enough on their own: a stub only seeds names nothing has
+imported yet, and by the time the server imports a diffusion module it has already pulled
+torchao in through the route tree. So run.py installs both before its own first import too.
+
 CPU-only: source is parsed with ``ast``, and the behaviour tests fake the platform probe.
 """
 
@@ -44,6 +48,25 @@ _DIFFUSION_MODULES = [
     _CORE / "training" / "diffusion_train_common.py",
 ]
 
+_ENTRY_POINT = _BACKEND / "run.py"
+_STUB_MODULE = "core._torchao_stub"
+_ML_ROOTS = frozenset({"diffusers", "peft", "torch", "torchao", "transformers", "xformers"})
+
+
+def _import_roots(node) -> set[str]:
+    """Top-level package names a module-scope import statement pulls in."""
+    if isinstance(node, ast.Import):
+        return {alias.name.split(".")[0] for alias in node.names}
+    if isinstance(node, ast.ImportFrom) and node.module and node.module != _STUB_MODULE:
+        return {node.module.split(".")[0]}
+    return set()
+
+
+def _reaches_torch(root: str) -> bool:
+    # Anything in the backend tree can, transitively; probing the tree keeps this honest as
+    # modules come and go. stdlib roots fall through both checks.
+    return root in _ML_ROOTS or (_BACKEND / root).is_dir() or (_BACKEND / f"{root}.py").is_file()
+
 
 def _module_level_installs(tree) -> set[str]:
     """Names of the stub installers called as bare module-scope statements."""
@@ -65,6 +88,25 @@ def test_diffusion_modules_install_both_stubs_at_module_scope(path):
         f"{path.relative_to(_BACKEND)} must call both stub installers at module scope, before the "
         "lazy `import diffusers` calls below them."
     )
+
+
+def test_the_entry_point_installs_both_stubs_before_its_first_heavy_import():
+    installed: set[str] = set()
+    for node in ast.parse(_ENTRY_POINT.read_text(encoding = "utf-8")).body:
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            func = node.value.func
+            if isinstance(func, ast.Name) and func.id in _INSTALLS:
+                installed.add(func.id)
+            continue
+        for root in _import_roots(node):
+            if _reaches_torch(root):
+                assert installed == _INSTALLS, (
+                    f"run.py:{node.lineno} imports {root} before installing "
+                    f"{sorted(_INSTALLS - installed)}; a stub set after the first import that "
+                    "reaches torchao or xformers is a no-op."
+                )
+
+    assert installed == _INSTALLS, "run.py must call both stub installers at module scope"
 
 
 @pytest.fixture

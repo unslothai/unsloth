@@ -125,6 +125,18 @@ backend_dir = Path(__file__).parent
 if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
 
+# Windows ROCm ships no distributed backend, so torchao and the CUDA-only xformers
+# both die on import and take anything that touches diffusers/transformers with them.
+# Both stubs only seed sys.modules for a name nothing has imported yet, so they have to
+# run before the first import below reaches either package. No-op on other runtimes.
+from core._torchao_stub import (
+    install_torchao_windows_rocm_stub,
+    install_xformers_windows_rocm_stub,
+)
+
+install_xformers_windows_rocm_stub()
+install_torchao_windows_rocm_stub()
+
 from utils.cpu_threads import configure_cpu_threads
 
 try:
