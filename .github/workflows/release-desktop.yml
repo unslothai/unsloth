@@ -52,6 +52,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Ask the sweeper to stand scheduled CI down while this release builds. Same
+  # repository, so this needs no secret: the job's own GITHUB_TOKEN with
+  # actions: write is enough, and there is no credential to rotate or leak.
+  #
+  # Deliberately not a `needs:` of anything. Freeing capacity is an
+  # optimisation, so a failure here must never hold up or fail a release, and
+  # the build must not wait on it either.
+  #
+  # ci-capacity.yml ships inert. Until CI_PREEMPT_ENABLED is set on this
+  # repository it resolves what it would have cancelled, prints that to the job
+  # summary, and touches nothing. That is the intended state for now: this wires
+  # the request up so the dry-run summary shows what a real sweep would free.
+  free-capacity:
+    name: Ask CI to free runner capacity
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch the capacity sweeper
+        # A release must never fail because the request did not land.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh workflow run ci-capacity.yml --repo "$GITHUB_REPOSITORY" --ref main \
+            -f mode=sweep \
+            -f events=schedule \
+            -f classes=linux,windows \
+            -f reason="release-desktop run ${GITHUB_RUN_ID}"
+
   prepare-version:
     name: Prepare release versions
     runs-on: ubuntu-latest
@@ -754,7 +785,14 @@ jobs:
         env:
           ARTIFACT_PATHS: ${{ steps.build_linux.outputs.artifactPaths }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # The signing key is not password protected, and no secret of this name
+          # exists, so this expression has always resolved to the empty string.
+          # Stated literally rather than left pointing at a secret that is not
+          # there: the value is unchanged, but it no longer reads as configuration
+          # someone forgot to set. Empty is not the same as unset here -- tauri
+          # prompts for a password when the variable is absent, which would hang
+          # the job, so the line stays.
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         run: |
           set -euo pipefail
           deb_path="$(
@@ -803,7 +841,14 @@ jobs:
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # The signing key is not password protected, and no secret of this name
+          # exists, so this expression has always resolved to the empty string.
+          # Stated literally rather than left pointing at a secret that is not
+          # there: the value is unchanged, but it no longer reads as configuration
+          # someone forgot to set. Empty is not the same as unset here -- tauri
+          # prompts for a password when the variable is absent, which would hang
+          # the job, so the line stays.
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -961,7 +1006,14 @@ jobs:
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # The signing key is not password protected, and no secret of this name
+          # exists, so this expression has always resolved to the empty string.
+          # Stated literally rather than left pointing at a secret that is not
+          # there: the value is unchanged, but it no longer reads as configuration
+          # someone forgot to set. Empty is not the same as unset here -- tauri
+          # prompts for a password when the variable is absent, which would hang
+          # the job, so the line stays.
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
