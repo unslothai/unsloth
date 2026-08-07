@@ -210,10 +210,7 @@ def resolve_dense_quant_candidate(
                 # root and this would still call it uncached and re-apply the gate. Imported from
                 # utils rather than diffusion.hub_cache_dir, which would be a circular import.
                 from utils.hf_cache_settings import active_hf_hub_cache
-
-                prequant_cached = prequant_checkpoint_cached(
-                    src, cache_dir = active_hf_hub_cache()
-                )
+                prequant_cached = prequant_checkpoint_cached(src, cache_dir = active_hf_hub_cache())
         except Exception:  # noqa: BLE001 -- prequant probing must never sink the candidate
             prequant_available = False
             prequant_cached = False
