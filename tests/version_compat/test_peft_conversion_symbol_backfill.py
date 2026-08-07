@@ -122,18 +122,21 @@ def _peft_converter_source():
     to the installed copy, which is absent in that job, so the guard would go
     quiet exactly when upstream churn is highest.
     `test_peft_pinned_symbols.py` already probes the same pair.
+
+    A package `__init__.py` that only re-exports would then report no transformers
+    imports at all, so the submodules it pulls in at import time are fetched too
+    and appended. Importing the package runs them, so an unlisted symbol in one
+    breaks startup exactly as it would in the flat file.
     """
     import os
     import urllib.error
     import urllib.request
 
     base = "https://raw.githubusercontent.com/huggingface/peft/main/src/peft/utils/"
-    urls = [
-        base + "transformers_weight_conversion.py",
-        base + "transformers_weight_conversion/__init__.py",
-    ]
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    for url in urls:
+
+    def fetch(url):
+        """The file's text, None on a 404, skip on anything else."""
         request = urllib.request.Request(url)
         if token:
             request.add_header("Authorization", f"Bearer {token}")
@@ -143,9 +146,26 @@ def _peft_converter_source():
         except urllib.error.HTTPError as exc:
             if exc.code != 404:
                 pytest.skip(f"GitHub fetch failed ({exc.code}) for {url}")
-            # 404 means "not this layout": try the other one before giving up.
+            return None
         except (urllib.error.URLError, TimeoutError) as exc:
             pytest.skip(f"GitHub fetch failed ({exc}) for {url}")
+
+    flat = fetch(base + "transformers_weight_conversion.py")
+    if flat is not None:
+        return flat
+
+    pkg = base + "transformers_weight_conversion/"
+    init = fetch(pkg + "__init__.py")
+    if init is not None:
+        sources = [init]
+        for child in _relative_import_targets(init):
+            path = child.replace(".", "/")
+            for candidate in (f"{pkg}{path}.py", f"{pkg}{path}/__init__.py"):
+                text = fetch(candidate)
+                if text is not None:
+                    sources.append(text)
+                    break
+        return "\n\n".join(src if src.endswith("\n") else src + "\n" for src in sources)
 
     module = "peft.utils.transformers_weight_conversion"
     if importlib.util.find_spec("peft") is None:
@@ -157,6 +177,26 @@ def _peft_converter_source():
         if (exc.name or "") in (module, "peft.utils", "peft"):
             pytest.skip("this peft has no weight converter")
         raise
+
+
+def _relative_import_targets(src):
+    """Submodule names a package `__init__.py` imports relatively, at import time.
+
+    `from .core import X` and `from . import core` both name `core`. Only the
+    modules the package actually pulls in are followed, so a package that
+    re-exports one implementation file costs one extra fetch.
+    """
+    import ast
+
+    targets = []
+    for node in ast.parse(src).body:
+        if not isinstance(node, ast.ImportFrom) or not node.level:
+            continue
+        if node.module:
+            targets.append(node.module)
+        else:  # `from . import a, b`
+            targets.extend(alias.name for alias in node.names)
+    return list(dict.fromkeys(targets))
 
 
 def _is_type_checking(test) -> bool:
@@ -185,8 +225,10 @@ def _transformers_imports(src):
     backfill exists to absorb; requiring it in the table would fail
     `daily-fresh-fetch` over a type annotation. So descend only through
     statements that execute at module load: `if`/`try`/`with`/loop bodies yes,
-    typing-only branches and function or class bodies no. A conditional
-    module-level import still counts -- it can run, and that is the bar.
+    typing-only branches and function bodies no. A class body is NOT a function
+    body: it executes the moment the module defines the class, so an import
+    inside one can break startup and is collected. A conditional module-level
+    import counts too -- it can run, and that is the bar.
     """
     import ast
 
@@ -197,7 +239,7 @@ def _transformers_imports(src):
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("transformers"):
                 out.setdefault(node.module, set()).update(a.name for a in node.names)
                 continue
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import)):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Import)):
                 continue
             if isinstance(node, ast.If) and _is_type_checking(node.test):
                 # `if TYPE_CHECKING:` never runs; `if not TYPE_CHECKING:` runs the OTHER branch.
@@ -254,14 +296,19 @@ def test_only_imports_that_run_at_module_load_are_collected():
         "    from transformers.fallback import Instead\n"
         "def later():\n"
         "    from transformers.lazy import NotAtImport\n"
+        "    class Inner:\n"
+        "        from transformers.innerclass import NorThis\n"
         "class Holder:\n"
-        "    from transformers.classbody import NotEither\n"
+        "    from transformers.classbody import AtClassCreation\n"
     )
     assert _transformers_imports(src) == {
         "transformers.core_model_loading": {"ConversionOps"},
         "transformers.runtime": {"AtRuntime"},
         "transformers.optional": {"MaybeThere"},
         "transformers.fallback": {"Instead"},
+        # A module-level class body runs the moment the class is defined, so an import in one
+        # can break the very import this backfill absorbs. A class inside a function does not.
+        "transformers.classbody": {"AtClassCreation"},
     }
 
 
@@ -289,6 +336,40 @@ def test_the_package_layout_is_fetched_when_the_module_layout_is_gone(monkeypatc
     src = _peft_converter_source()
     assert "ConversionOps" in src
     assert len(tried) == 2 and tried[1].endswith("transformers_weight_conversion/__init__.py")
+
+
+def test_a_re_exporting_package_is_followed_to_its_implementation(monkeypatch):
+    """A package `__init__.py` that only re-exports imports nothing from transformers.
+
+    Reading it alone reports an empty import set, so the authority check passes while the
+    implementation module it pulls in can still break startup on an unlisted symbol. Importing the
+    package runs that module, so the guard has to read it.
+    """
+    import io
+    import urllib.error
+    import urllib.request
+
+    pages = {
+        "transformers_weight_conversion/__init__.py": (
+            "from .core import build_peft_weight_mapping\nfrom . import ops\n"
+        ),
+        "transformers_weight_conversion/core.py": (
+            "from transformers.core_model_loading import ConversionOps\n"
+        ),
+        "transformers_weight_conversion/ops.py": "from transformers.utils import logging\n",
+    }
+
+    def fake_urlopen(request, timeout = None):
+        for suffix, body in pages.items():
+            if request.full_url.endswith(suffix):
+                return io.BytesIO(body.encode())
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", None, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert _transformers_imports(_peft_converter_source()) == {
+        "transformers.core_model_loading": {"ConversionOps"},
+        "transformers.utils": {"logging"},
+    }
 
 
 def test_the_symbol_list_matches_what_peft_imports():
