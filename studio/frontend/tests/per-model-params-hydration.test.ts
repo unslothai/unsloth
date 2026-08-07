@@ -34,11 +34,12 @@ const LLAMA = "unsloth/Llama-4-8B";
 const EXTERNAL = "external::anthropic::claude-opus-5";
 const TUNED = { temperature: 0.2, maxTokens: 4096, systemPrompt: "Be terse." };
 
+const STATUS_CONTEXT_LENGTH = 131072;
 /** A status response for a resident GGUF, recommending its own sampling. */
 const STATUS = {
   inference: { temperature: 0.9, top_p: 0.5 },
   is_gguf: true,
-  context_length: 131072,
+  context_length: STATUS_CONTEXT_LENGTH,
 } as never;
 
 /** applyActiveModelStatusToStore's update, which the last test pins. */
@@ -50,6 +51,7 @@ function applyStatus(modelId: string) {
       response: STATUS,
       modelId,
       presetSource: store.activePresetSource,
+      loadedContextLength: STATUS_CONTEXT_LENGTH,
     }),
     { fromModelDefaults: true },
   );
@@ -487,14 +489,16 @@ test("a remembered budget is clamped to the context just loaded", () => {
 // values without changing the checkpoint, so each has to ask for the replay;
 // they pull in the chat UI, so this reads them rather than importing them.
 test("every site that re-applies model defaults asks for the replay", () => {
+  // Wide enough for the window each call now records alongside the merge, and
+  // still far short of the next fromModelDefaults site in either file.
   const sites: [string, RegExp][] = [
     [
       "../src/features/chat/lib/apply-inference-status-to-store.ts",
-      /mergeBackendRecommendedInference\([\s\S]{0,500}?fromModelDefaults: true/,
+      /mergeBackendRecommendedInference\([\s\S]{0,1200}?fromModelDefaults: true/,
     ],
     [
       "../src/features/chat/hooks/use-chat-model-runtime.ts",
-      /mergeBackendRecommendedInference\([\s\S]{0,500}?fromModelDefaults: true/,
+      /mergeBackendRecommendedInference\([\s\S]{0,1200}?fromModelDefaults: true/,
     ],
     [
       // The Qwen3 thinking-mode params applied after a load.
@@ -561,9 +565,11 @@ test("a remembered budget is capped by a non-GGUF load", () => {
     "utf8",
   );
   // One cap for both sites: the load response and the Qwen3 thinking defaults.
+  // The reported window leads, and the request stands in only for a backend that
+  // sizes nothing -- a self-sizing one is sent the auto-size sentinel.
   assert.match(
     runtime,
-    /const loadedContextCap = loadResponse\.is_gguf\s*\?\s*\(loadResponse\.context_length \?\? undefined\)\s*:\s*effectiveMaxSeqLength;/,
+    /const loadedContextCap =\s*loadedFields\.loadedContextLength \?\?\s*\(!loadResponse\.is_gguf && effectiveMaxSeqLength > 0\s*\? effectiveMaxSeqLength\s*: undefined\);/,
   );
   assert.equal(
     runtime.match(/maxTokensCap: loadedContextCap/g)?.length,
@@ -577,7 +583,7 @@ test("a remembered budget is capped by a non-GGUF load", () => {
   );
   assert.match(
     adapter,
-    /\? \(loadResp\.context_length \?\? undefined\)\s*: effectiveMaxSeqLength,/,
+    /\? \(loadedContextFields\(loadResp\)\.loadedContextLength \?\? undefined\)\s*: loadedWindow,/,
   );
 
   const status = readFileSync(

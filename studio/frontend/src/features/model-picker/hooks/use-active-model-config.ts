@@ -2,8 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isExternalModelId, useChatRuntimeStore } from "@/features/chat";
-import { useMemo } from "react";
 import { usePlatformStore } from "@/config/env";
+import { useMemo } from "react";
 import {
   type PerModelConfig,
   isServedByLlamaCpp,
@@ -59,6 +59,12 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     activeNativePathToken,
     checkpoint,
   });
+  const platform = usePlatformStore();
+  const isMlx = isServedByMlx(
+    isGguf,
+    platform.deviceType,
+    platform.chatOnlyReason,
+  );
 
   // Off-backend this stays null, or the model compares unequal to its own defaults
   // over a field it cannot show.
@@ -72,7 +78,10 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     }
     const base: PerModelConfig = {
       customContextLength: customContextLength ?? null,
-      maxSeqLength: isGguf ? null : maxSeqLength,
+      // A self-sizing backend carries no pin here, exactly as the GGUF path does: this
+      // is the runtime's resolved length, and reading it back as the user's choice would
+      // pin every reload to whatever the first load happened to get.
+      maxSeqLength: isGguf || isMlx ? null : maxSeqLength,
       kvCacheDtype: kvCacheDtype ?? null,
       mlxKvBits: effectiveMlxKvBits,
       speculativeType: speculativeType ?? "auto",
@@ -102,6 +111,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   }, [
     checkpoint,
     isGguf,
+    isMlx,
     maxSeqLength,
     customContextLength,
     kvCacheDtype,

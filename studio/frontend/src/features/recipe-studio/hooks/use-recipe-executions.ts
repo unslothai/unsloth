@@ -2,6 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getInferenceStatus, loadModel } from "@/features/chat";
+import { unpinnedLoadContext } from "@/features/chat/presets/preset-policy";
+import { usePlatformStore } from "@/config/env";
+import {
+  DEFAULT_MAX_SEQ_LENGTH,
+  isServedByMlx,
+} from "@/features/model-picker";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { toastError } from "@/shared/toast";
 import { useCallback, useEffect, useState } from "react";
@@ -68,6 +74,9 @@ type LocalModelSelection = {
   target: string;
   ggufVariant: string;
   aliases: string[];
+  /** The context that model's own load asked for, for a selection captured to be
+   *  restored. Absent for a recipe's own target, which pins nothing. */
+  requestedContextLength?: number | null;
 };
 
 type LocalModelLoadPlan =
@@ -236,7 +245,7 @@ async function isLocalModelAlreadyLoaded(
 async function loadLocalModelSelection(
   selection: LocalModelSelection,
 ): Promise<string | null> {
-  const { target, ggufVariant } = selection;
+  const { target, ggufVariant, requestedContextLength } = selection;
   const modelLabel = ggufVariant ? `${target} (${ggufVariant})` : target;
   let loadToastDismissed = false;
   const toastId = toast.message(`Loading ${modelLabel}...`, {
@@ -250,13 +259,22 @@ async function loadLocalModelSelection(
   });
   try {
     const isGguf = GGUF_MODEL_PATTERN.test(target) || Boolean(ggufVariant);
+    // A recipe's own target loads the way an unpinned chat model does; restoring the
+    // model it displaced replays what that model's own load asked for.
+    const platform = usePlatformStore.getState();
     await loadModel({
       // biome-ignore lint/style/useNamingConvention: api schema
       model_path: target,
       // biome-ignore lint/style/useNamingConvention: api schema
       hf_token: null,
       // biome-ignore lint/style/useNamingConvention: api schema
-      max_seq_length: isGguf ? 0 : 4096,
+      max_seq_length:
+        requestedContextLength ??
+        unpinnedLoadContext(
+          isGguf,
+          isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason),
+          DEFAULT_MAX_SEQ_LENGTH,
+        ),
       // biome-ignore lint/style/useNamingConvention: api schema
       load_in_4bit: true,
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -314,6 +332,7 @@ async function getActiveLocalModelSelection(): Promise<LocalModelSelection | nul
       target,
       ggufVariant: status.gguf_variant?.trim() ?? "",
       aliases: ["previous Chat model"],
+      requestedContextLength: status.requested_context_length ?? null,
     };
   } catch {
     return null;
@@ -338,6 +357,7 @@ async function getRestorableActiveLocalModelSelection(): Promise<RestorableLocal
         target,
         ggufVariant: status.gguf_variant?.trim() ?? "",
         aliases: ["previous Chat model"],
+        requestedContextLength: status.requested_context_length ?? null,
       },
       unrestorableLabel: null,
     };

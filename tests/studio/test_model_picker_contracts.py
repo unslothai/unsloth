@@ -380,6 +380,17 @@ def test_chat_autoload_toast_is_persistent_and_dismissible():
     assert "duration: Infinity" in explicit_load
 
 
+def test_a_recipe_restores_the_previous_model_at_the_context_it_asked_for():
+    """A recipe pins nothing, so restoring the model it displaced replays what it asked for."""
+    src = _read("features/recipe-studio/hooks/use-recipe-executions.ts")
+    assert src.count("requestedContextLength: status.requested_context_length ?? null,") == 2, src
+    assert (
+        "      max_seq_length:\n"
+        "        requestedContextLength ??\n"
+        "        unpinnedLoadContext(" in src
+    ), src
+
+
 def test_recipe_model_load_toast_is_persistent_and_dismissible():
     """Recipe model loading uses the same dismissible persistent lifecycle as
     chat loading because both call the non-abortable loadModel API."""
@@ -2128,9 +2139,13 @@ def test_adopting_a_resident_model_reseeds_the_slot_and_batch_controls():
     assert "loadedNParallel: status.requested_parallel_slots," in status
     # The batch pair is told the same thing, from the same local, so the two cannot drift.
     assert "modelChanged: slotsModelChanged," in status
-    # And the reseed re-reads this model's remembered config rather than blanking.
+    # And the reseed re-reads this model's remembered config rather than blanking. The
+    # slot conditions are GGUF's alone; a backend with no slot fields goes by whether
+    # the poll is hydrating a model already on screen.
     assert (
-        "status.is_gguf && (slotsUnseeded || batchesUnseeded || slotsModelChanged) "
+        "const remembered = (status.is_gguf "
+        "? slotsUnseeded || batchesUnseeded || slotsModelChanged "
+        ": hydratingExistingModel) "
         "? resolveResidentInitialConfig(checkpointId, status.gguf_variant ?? null)" in status
     ), "the model-change reseed must feed the remembered lookup, or it discards the saved config"
 
@@ -2182,8 +2197,12 @@ def test_hydration_restores_a_remembered_slot_override():
         "prevState.nParallel === null;" in status
     )
     assert (
-        "status.is_gguf && (slotsUnseeded || batchesUnseeded || slotsModelChanged)" in status
+        "(status.is_gguf ? slotsUnseeded || batchesUnseeded || slotsModelChanged "
+        ": hydratingExistingModel)" in status
     ), "storage is read on a fresh store or a model change, never on a steady poll"
+    assert (
+        "const rememberedNParallel = status.is_gguf && remembered?.remembered" in status
+    ), "slots are a llama.cpp knob; reading MLX's record must not seed one"
     assert (
         "...(seedLoadParams && (slotsUnseeded || slotsModelChanged) &&" in status
     ), "the seed fires in both cases the clear leaves the control blank"

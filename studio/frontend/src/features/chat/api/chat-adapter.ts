@@ -23,6 +23,7 @@ import {
 } from "@/features/hub/inventory/api";
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
 import {
+  isServedByMlx,
   loadedContextFields,
   resolveInitialConfig,
 } from "@/features/model-picker";
@@ -156,8 +157,12 @@ import {
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import {
+  loadedContextForParams,
+  localMaxTokensCeiling,
+  unreportedWindowMaxTokens,
   resolveFitMaxSeqLength,
   resolveExplicitCtxPin,
+  retainedContextPin,
 } from "../presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
@@ -3076,6 +3081,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       candidate.id,
       candidate.ggufVariant,
     );
+    const platform = usePlatformStore.getState();
     const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
       modelId: candidate.id,
       ggufVariant: candidate.ggufVariant,
@@ -3084,7 +3090,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       loadedContextLength: null,
       currentCheckpoint: currentStore.params.checkpoint,
       activeGgufVariant: currentStore.activeGgufVariant,
-      maxSeqLength: config.maxSeqLength ?? candidate.maxSeqLength,
+      isMlx: isServedByMlx(
+        candidate.kind === "gguf",
+        platform.deviceType,
+        platform.chatOnlyReason,
+      ),
+      pinnedMaxSeqLength: config.maxSeqLength,
+      defaultMaxSeqLength: candidate.maxSeqLength,
       presetSource: currentStore.activePresetSource,
     });
     // The GPU knobs are per-model, so read them from the same per-model config
@@ -3264,6 +3276,18 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       );
       return false;
     }
+    const autoLoadPin = retainedContextPin({
+      isGguf: candidate.kind === "gguf",
+      isMlx: isServedByMlx(
+        candidate.kind === "gguf",
+        platform.deviceType,
+        platform.chatOnlyReason,
+      ),
+      gpuMemoryMode: effectiveGpuMemoryMode,
+      gpuLayers: effectiveGpuLayers,
+      // What the load asked for, so a pin carried in either field is kept.
+      requestedContextLength: fitMaxSeqLength,
+    });
     loadAttempts += 1;
     options?.abortSignal?.throwIfAborted();
     const loadResp = await loadModel({
@@ -3341,30 +3365,35 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       store.setModelRequiresTrustRemoteCode(
         loadResp.requires_trust_remote_code ?? false,
       );
+      // The window the model serves. Neither backend's own request will do: when it
+      // sizes its own window that request is the auto-size sentinel.
+      const loadedWindow = loadedContextForParams(
+        loadedContextFields(loadResp).loadedContextLength,
+        effectiveMaxSeqLength,
+        store.params.maxSeqLength,
+      );
       store.setParams(
         {
           ...store.params,
-          ...(candidate.kind === "gguf"
-            ? {}
-            : { maxSeqLength: effectiveMaxSeqLength }),
-          // A window the response did not report leaves Max Tokens on the ceiling the
-          // settings sheet gives it, so the value and its slider agree. Not the load's
-          // own max_seq_length: for a GGUF that is the backend's auto-size sentinel 0,
-          // which is below the control's minimum and rejected as a generation limit.
-          maxTokens:
-            candidate.kind === "gguf"
-              ? (loadResp.context_length ?? store.params.maxSeqLength)
-              : effectiveMaxSeqLength,
+          ...(candidate.kind === "gguf" ? {} : { maxSeqLength: loadedWindow }),
+          // Through the ceiling, so the value and its slider agree at both ends. The app
+          // default would halve Max Tokens for a model whose record carries a longer one.
+          maxTokens: localMaxTokensCeiling(
+            loadedContextFields(loadResp).loadedContextLength,
+            loadedWindow,
+          ),
         },
         {
           persist: !options?.preserveVisibleSettings,
           trackQueuedSettings: !options?.preserveVisibleSettings,
           fromModelDefaults: true,
-          // A budget remembered from a larger context does not fit this load.
+          // A budget remembered from a larger context does not fit this load. The
+          // window, not the request: a backend that sizes its own was sent the
+          // auto-size sentinel, which as a budget is zero.
           maxTokensCap:
             candidate.kind === "gguf"
-              ? (loadResp.context_length ?? undefined)
-              : effectiveMaxSeqLength,
+              ? (loadedContextFields(loadResp).loadedContextLength ?? undefined)
+              : loadedWindow,
         },
       );
       // Upsert: a pre-load catalog entry has no backend-derived audio
@@ -3481,11 +3510,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           defaultChatTemplate: loadResp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
-          customContextLength: null,
-          // Replace the whole of the previous model's serving state, not just the
-          // window: a retained lease token still reads as a GGUF pick, and a retained
-          // pin would be resent for a model that never had it.
-          loadedCustomContextLength: null,
+          // The whole of the previous model's serving state, not just the window: a
+          // retained lease token still reads as a GGUF pick. This model's own pin is
+          // kept, though -- clearing it would reload it auto-sized next time.
+          customContextLength: autoLoadPin,
+          loadedCustomContextLength: autoLoadPin,
           ...loadedContextFields(loadResp),
           activeNativePathToken: null,
           activeNativePathExpiresAtMs: null,
@@ -3758,13 +3787,17 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         store.setParams(
           {
             ...store.params,
-            maxTokens: loadResp.context_length ?? store.params.maxSeqLength,
+            maxTokens: localMaxTokensCeiling(
+              loadedContextFields(loadResp).loadedContextLength,
+              unreportedWindowMaxTokens(loadResp.is_gguf ?? false, store.params.maxTokens),
+            ),
           },
           {
             persist: !options?.preserveVisibleSettings,
             trackQueuedSettings: !options?.preserveVisibleSettings,
             fromModelDefaults: true,
-            maxTokensCap: loadResp.context_length ?? undefined,
+            maxTokensCap:
+              loadedContextFields(loadResp).loadedContextLength ?? undefined,
           },
         );
         const defaultModel: ChatModelRow = {
