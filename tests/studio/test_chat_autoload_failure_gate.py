@@ -1367,3 +1367,18 @@ def test_an_hf_cache_row_stays_excluded_when_both_lookups_answer():
 
     assert LOCAL_GGUF_PATH not in _loaded_paths(out)
     assert _loaded_paths(out) == [DEFAULT_MODEL]
+
+
+def test_an_admitted_hf_cache_row_is_not_attempted_twice():
+    """Only one of the two cached lookups failed, so the surviving list may name
+    the same model the admitted hf_cache row does. The load target dedupe has to
+    collapse them or the pair spends two of the three attempts on one model."""
+    row = "{ ...LOCAL_GGUF, source: 'hf_cache', load_id: 'org/dup', path: 'org/dup', id: 'org/dup' }"
+    out = _run(
+        "scenario({ ggufRepos: 'throw',"
+        " modelRepos: [{ repo_id: 'org/dup', load_id: 'org/dup', size_bytes: 1 }],"
+        f" localModels: [{row}] }})"
+    )
+
+    assert _loaded_paths(out).count("org/dup") == 1
+    assert _downloads_started(out) == []
