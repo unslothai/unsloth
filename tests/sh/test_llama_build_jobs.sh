@@ -307,6 +307,16 @@ printf '0::/slice/outer/inner\n' > "$_TMPD/escnl2.proc"
 assert_eq "a newline survives the ancestor walk" "2048" \
     "$(run_cgroup "$_TMPD/esc" "$_TMPD/escnl2.proc" "$_TMPD/escnl.mnt")"
 
+# 29) A trailing newline is the one $() silently eats, so the decode carries a
+#     sentinel. Without it the path loses its last character and does not exist.
+mkdir -p "$_TMPD/esc/trail${_NL}/job"
+printf '1073741824\n' > "$_TMPD/esc/trail${_NL}/job/memory.max"
+printf '0::/slice/job\n' > "$_TMPD/esctrail.proc"
+printf '%s\n' "74 30 0:64 /slice $_TMPD/esc/trail\\012 rw - cgroup2 cgroup2 rw" \
+    > "$_TMPD/esctrail.mnt"
+assert_eq "a trailing newline is not eaten" "1024" \
+    "$(run_cgroup "$_TMPD/esc" "$_TMPD/esctrail.proc" "$_TMPD/esctrail.mnt")"
+
 # The min() that ties it together. Drive _usable_ram_mb from a pinned meminfo
 # rather than the live one: MemAvailable moves between two reads, so comparing
 # a cached host figure against a second read is a race on any Linux runner.
