@@ -319,6 +319,14 @@ def _relative_import_targets(src):
             if isinstance(node, ast.ImportFrom) and node.level:
                 if node.module:
                     targets.append((node.level, node.module))
+                    # `from .sub import core` imports `pkg.sub.core` when `core`
+                    # is a module, whether or not `sub/__init__.py` re-exports
+                    # it, and queueing only `sub` read the shim and none of the
+                    # transformers imports in the file that actually has them.
+                    # A name that turns out to be a symbol is simply a fetch
+                    # that finds nothing, which the caller already skips.
+                    targets.extend((node.level, f"{node.module}.{alias.name}")
+                                   for alias in node.names if alias.name != "*")
                 else:  # `from . import a, b`
                     targets.extend((node.level, alias.name) for alias in node.names)
                 continue
@@ -384,7 +392,16 @@ def _transformers_imports(src):
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("transformers"):
                 out.setdefault(node.module, set()).update(a.name for a in node.names)
                 continue
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Import)):
+            # `import transformers.x` raises the same startup ModuleNotFoundError
+            # as the `from` form, and skipping it let a newly required submodule
+            # break the converter with this check still green. It binds no
+            # symbols, so the module is recorded with an empty set.
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("transformers"):
+                        out.setdefault(alias.name, set())
+                continue
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             if isinstance(node, ast.If) and _is_type_checking(node.test):
                 # `if TYPE_CHECKING:` never runs; `if not TYPE_CHECKING:` runs the OTHER branch.
@@ -1118,3 +1135,43 @@ def test_the_fused_snapshot_matches_upstream():
         pytest.skip("upstream map shape changed")
     missing = fused - set(F._PEFT_MOE_CONVERSION_PATTERNS)
     assert not missing, f"fused MoE types missing from the snapshot: {sorted(missing)}"
+
+
+def test_a_fromlist_child_module_is_queued_too():
+    """`from .sub import core` imports `pkg.sub.core` when `core` is a module.
+
+    Queueing only `sub` fetched the package shim, whose `__init__.py` may
+    re-export nothing, so the transformers imports in the file that actually has
+    them were never read and the drift check could not fail.
+    """
+    targets = _relative_import_targets("from .sub import core, HELPER\n")
+    assert (1, "sub") in targets, "the package itself is still followed"
+    assert (1, "sub.core") in targets, "the child module was never queued"
+    assert (1, "sub.HELPER") in targets, "a symbol costs one fetch that finds nothing"
+
+
+def test_a_star_import_queues_only_the_package():
+    """`from .sub import *` names no child, so there is nothing extra to fetch."""
+    assert _relative_import_targets("from .sub import *\n") == [(1, "sub")]
+
+
+def test_a_module_form_transformers_import_is_a_dependency():
+    """`import transformers.x` raises the same startup ModuleNotFoundError as the
+    `from` form, so skipping every `ast.Import` let a newly required submodule
+    break the converter with this check still green. It binds no symbols."""
+    imports = _transformers_imports(
+        "import transformers.core_model_loading\n"
+        "import os\n"
+        "import transformers.utils as tu\n"
+    )
+    assert imports == {
+        "transformers.core_model_loading": set(),
+        "transformers.utils": set(),
+    }
+
+
+def test_a_module_form_import_inside_a_function_is_still_ignored():
+    """The control: it never runs at import time, so it cannot break startup."""
+    assert _transformers_imports(
+        "def f():\n    import transformers.core_model_loading\n"
+    ) == {}
