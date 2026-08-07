@@ -337,7 +337,7 @@ jobs:
       # (Qwen3.5-2B at Q4_K_XL = ~1.28 GiB). Caching HF_HOME would
       # store xet chunks + blobs + snapshots = ~4 GiB compressed --
       # 4-5x file-size inflation, dominated by xet chunks. Use main's
-      # `--local-dir gguf-cache` pattern to cache the flat .gguf only.
+      # `--local-dir` pattern to cache the flat .gguf only.
       # Unsloth's /api/inference/load accepts either a HF repo (which
       # uses HF_HOME) or an absolute file path; passing the absolute
       # path keeps the test off HF_HOME entirely so the cache size
@@ -369,13 +369,21 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
+      # Cross-OS shared entry with the mac and Windows tool-calling phases:
+      # same repo, same file, same flat --local-dir payload, byte-identical on
+      # all three runners. The directory is renamed gguf-cache -> gguf-cache-tools
+      # to match them, and the key version is bumped in the SAME commit because
+      # actions/cache identifies an entry by key AND a hash of `path` -- moving
+      # the path without bumping the key gives a permanent restore miss plus a
+      # refused save ("Unable to reserve cache with key ...").
       - name: Restore GGUF model file
         id: cache-gguf
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         continue-on-error: true
         with:
-          path: gguf-cache
-          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
+          path: gguf-cache-tools
+          key: gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v3
+          enableCrossOsArchive: true
 
       - name: Download GGUF if cache miss
         id: download-gguf
@@ -385,15 +393,16 @@ jobs:
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
-          mkdir -p gguf-cache
-          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache
+          mkdir -p gguf-cache-tools
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache-tools
 
       - name: Save GGUF model file
-        if: always() && github.ref == 'refs/heads/main' && steps.download-gguf.outcome == 'success'
+        if: always() && github.ref == 'refs/heads/main' && steps.download-gguf.outcome == 'success' && hashFiles('gguf-cache-tools/**/*.gguf') != ''
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
-          path: gguf-cache
-          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
+          path: gguf-cache-tools
+          key: gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v3
+          enableCrossOsArchive: true
 
       - name: Install Unsloth (--local, --no-torch)
         uses: ./.github/actions/install-unsloth-local
@@ -437,7 +446,7 @@ jobs:
             -H 'content-type: application/json' \
             -d "{\"username\":\"unsloth\",\"password\":\"$NEW\"}" | jq -r .access_token)
           echo "API_KEY=$TOKEN" >> "$GITHUB_ENV"
-          GGUF_PATH="$GITHUB_WORKSPACE/gguf-cache/${GGUF_FILE}"
+          GGUF_PATH="$GITHUB_WORKSPACE/gguf-cache-tools/${GGUF_FILE}"
           ls -lh "$GGUF_PATH"
           curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
             -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
