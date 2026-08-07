@@ -1623,6 +1623,34 @@ if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     Write-Host "  $Rule" -ForegroundColor DarkGray
 }
 
+# ── How this run was launched ──
+# install.ps1 (SKIP_STUDIO_BASE=1) already reported this for the install it
+# drives; this covers direct 'unsloth studio setup', 'update', and desktop
+# repair. Keep in step with the copies in install.ps1.
+if ($env:SKIP_STUDIO_BASE -ne "1") {
+    $ElevationState = "unknown"
+    try {
+        $_identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        $_principal = New-Object System.Security.Principal.WindowsPrincipal($_identity)
+        $ElevationState = if ($_principal.IsInRole(
+                [System.Security.Principal.WindowsBuiltInRole]::Administrator)) { "true" } else { "false" }
+    } catch { }
+    if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or
+        (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) {
+        [Console]::Out.WriteLine("[TAURI:DIAG] elevated=$ElevationState")
+        [Console]::Out.Flush()
+    }
+    if ($ElevationState -eq "true") {
+        Write-Host ""
+        Write-Host "  [WARNING] Running as administrator. Unsloth does not need this." -ForegroundColor Yellow
+        Write-Host "            Everything written to $env:USERPROFILE\.unsloth will be owned by" -ForegroundColor Yellow
+        Write-Host "            Administrators, and your normal account will not be able to read it." -ForegroundColor Yellow
+        Write-Host "            That folder outlives an uninstall, so a later install, setup or" -ForegroundColor Yellow
+        Write-Host "            update from a normal shell fails on it." -ForegroundColor Yellow
+        Write-Host "            Close this window and re-run from a normal PowerShell instead." -ForegroundColor Yellow
+    }
+}
+
 # Back up User PATH under HKCU\Software\Unsloth before any modifications.
 try {
     $envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false)
@@ -6016,8 +6044,13 @@ if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -eq "1") {
     # footer just said complete. [TAURI:PROGRESS] (not [TAURI:STEP], which would
     # push the frontend step counter past the seven INSTALL_STEPS entries) reaches
     # the user as install-progress-detail text.
+    #
+    # DIAG as well: progress detail is cleared by the next install-step and is gone
+    # once the install screen closes, so it cannot answer "why is GGUF missing"
+    # afterwards. record_diag_marker keeps this in the support report.
     if (@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) {
         [Console]::Out.WriteLine("[TAURI:PROGRESS] llama.cpp unavailable; GGUF inference is disabled until 'unsloth studio update' succeeds")
+        [Console]::Out.WriteLine("[TAURI:DIAG] llama_cpp=unavailable")
         [Console]::Out.Flush()
     } else {
         Exit-SetupFailure "llama.cpp setup did not produce a usable server"

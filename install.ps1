@@ -392,6 +392,44 @@ function Install-UnslothStudio {
     }
     Write-Host ""
 
+    # ── How this run was launched ──
+    # "true", "false", or "unknown" when the token cannot be read. An elevated
+    # run writes %USERPROFILE%\.unsloth as Administrators, so the same account
+    # cannot read it back from a normal shell. Keep in step with studio/setup.ps1.
+    function Get-ElevationState {
+        try {
+            $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+            $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+            if ($principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+                return "true"
+            }
+            return "false"
+        } catch {
+            return "unknown"
+        }
+    }
+
+    # Record it either way, and warn only when it will cause the problem. The
+    # marker reaches the desktop support report via install.rs record_diag_marker.
+    function Write-ElevationNotice {
+        param([Parameter(Mandatory = $true)][string]$State)
+
+        if (@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) {
+            [Console]::Out.WriteLine("[TAURI:DIAG] elevated=$State")
+            [Console]::Out.Flush()
+        }
+        if ($State -ne "true") { return }
+        Write-Host "  [WARNING] Running as administrator. Unsloth does not need this." -ForegroundColor Yellow
+        Write-Host "            Everything written to $env:USERPROFILE\.unsloth will be owned by" -ForegroundColor Yellow
+        Write-Host "            Administrators, and your normal account will not be able to read it." -ForegroundColor Yellow
+        Write-Host "            That folder outlives an uninstall, so a later install, setup or" -ForegroundColor Yellow
+        Write-Host "            update from a normal shell fails on it." -ForegroundColor Yellow
+        Write-Host "            Close this window and re-run from a normal PowerShell instead." -ForegroundColor Yellow
+        Write-Host ""
+    }
+
+    Write-ElevationNotice -State (Get-ElevationState)
+
     # ── Helper: refresh PATH from registry (deduplicating entries) ──
     # Merge order: venv Scripts (if active) > Machine > User > current $env:Path.
     # Dedup compares both raw and expanded forms (%VAR% vs literal).

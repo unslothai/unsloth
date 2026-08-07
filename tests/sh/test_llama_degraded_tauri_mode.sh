@@ -46,6 +46,9 @@ echo "=== llama.cpp degraded verdict ==="
 # The fix: a transient prebuilt failure must not abort the desktop first-launch install.
 run_case "tauri mode reports instead of aborting" true 1 1 0 "[TAURI:PROGRESS]"
 run_case "tauri mode names the recovery command" true 1 true 0 "unsloth studio update"
+# Progress detail is cleared by the next install-step and discarded when the
+# install screen closes, so the verdict also has to reach the support report.
+run_case "tauri mode records the verdict"        true 1 1 0 "[TAURI:DIAG] llama_cpp=unavailable"
 # The half that must not regress: install.sh still needs the non-zero exit.
 run_case "shell install still fails"             true 1 0 1 "SETUP_FAIL"
 run_case "unset tauri mode still fails"          true 1 "" 1 "SETUP_FAIL"
@@ -82,6 +85,12 @@ else
             echo "  PASS: setup.ps1 degrades in Tauri mode and still fails elsewhere"; PASS=$((PASS + 1)) ;;
         *)
             echo "  FAIL: setup.ps1 does not mirror the Tauri degraded handling"; FAIL=$((FAIL + 1)) ;;
+    esac
+    case "$_PS_BLOCK" in
+        *'[TAURI:DIAG] llama_cpp=unavailable'*)
+            echo "  PASS: setup.ps1 records the verdict too"; PASS=$((PASS + 1)) ;;
+        *)
+            echo "  FAIL: setup.ps1 does not record the degraded verdict"; FAIL=$((FAIL + 1)) ;;
     esac
 fi
 
