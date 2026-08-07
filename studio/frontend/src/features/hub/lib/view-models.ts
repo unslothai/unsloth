@@ -7,19 +7,18 @@ import type {
   CachedInventoryRow,
   LocalInventoryRow,
 } from "@/features/hub/inventory/types";
+import { ownerOf, repoOf } from "@/features/hub/lib/format";
 import type {
   CapabilityFilter,
   DiscoverRow,
-  GpuFitFilter,
   ModelFormatFilter,
 } from "../types";
+import { estimateSizeFromDtypes, isGgufLike } from "./hf-model-meta";
 import {
+  type CapabilityKey,
   detectBaseModel,
   detectCapabilities,
-  type CapabilityKey,
 } from "./model-capabilities";
-import { ownerOf, repoOf } from "@/features/hub/lib/format";
-import { estimateSizeFromDtypes, isGgufLike } from "./hf-model-meta";
 export {
   detectResultFormat,
   isUnslothFinetunable,
@@ -40,6 +39,7 @@ export const CAPABILITY_FILTER_OPTIONS: ReadonlyArray<{
   { value: "vision", label: "Vision" },
   { value: "audio", label: "Audio" },
   { value: "embedding", label: "Embeddings" },
+  { value: "diffusion", label: "Image generation" },
 ];
 
 export const FORMAT_FILTER_OPTIONS: ReadonlyArray<{
@@ -50,15 +50,6 @@ export const FORMAT_FILTER_OPTIONS: ReadonlyArray<{
   { value: "gguf", label: "GGUF" },
   { value: "checkpoint", label: "Safetensors" },
   { value: "mlx", label: "MLX" },
-];
-
-export const GPU_FIT_FILTER_OPTIONS: ReadonlyArray<{
-  value: GpuFitFilter;
-  label: string;
-}> = [
-  { value: "all", label: "All sizes" },
-  { value: "fits", label: "Fits GPU" },
-  { value: "comfortable", label: "Comfortable" },
 ];
 
 const BILLION = 1_000_000_000;

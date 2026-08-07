@@ -28,8 +28,8 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub the heavy module-level imports of core/training/training.py so it imports
-# under CPU-only/no-network, then restore them (see the restore loop below).
+# Stub the heavy module-level imports of core/training/training.py so it imports under
+# CPU-only/no-network, then restore them (see the restore loop below).
 _SAVED: dict = {}
 
 
@@ -49,6 +49,7 @@ _mpl.pyplot = _plt
 _stub("matplotlib", _mpl)
 _stub("matplotlib.pyplot", _plt)
 _hw = _types.ModuleType("utils.hardware")
+_hw.get_device = lambda: _types.SimpleNamespace(value = "cpu")
 _hw.prepare_gpu_selection = lambda *a, **k: (None, None)
 _stub("utils.hardware", _hw)
 _npl = _types.ModuleType("utils.native_path_leases")
@@ -56,11 +57,11 @@ _npl.native_path_secret_removed_for_child_start = lambda: contextlib.nullcontext
 _npl.run_without_native_path_secret = lambda fn: fn
 _stub("utils.native_path_leases", _npl)
 _pth = _types.ModuleType("utils.paths")
+_pth.is_local_path = lambda *a, **k: False
 _pth.outputs_root = lambda *a, **k: "/tmp/outputs"
 _stub("utils.paths", _pth)
 
-# Whether core.training.training was already imported before this file ran; only
-# evict it below if we were the one to create the (stub-bound) module instance.
+# Was core.training.training already imported? Only evict it below if we created it.
 _TRAINING_PRE_IMPORTED = "core.training.training" in sys.modules
 
 from core.training.training import TrainingBackend
@@ -81,9 +82,8 @@ for _name in (
     else:
         sys.modules[_name] = _prev
 
-# training imported its helpers while the stubs were active, binding them to stubs.
-# If we created the cached module, evict it (and its parent) so a later test
-# re-imports the real one.
+# training imported its helpers while the stubs were active, binding them to stubs. If we
+# created the cached module, evict it (and its parent) so a later test re-imports the real one.
 if not _TRAINING_PRE_IMPORTED:
     sys.modules.pop("core.training.training", None)
     sys.modules.pop("core.training", None)
@@ -158,9 +158,7 @@ def _wait_until(predicate, timeout = 5.0):
     return predicate()
 
 
-# ----------------------------------------------------------------------------
 # Guarantee 1: a single bad event/queue error cannot kill the pump.
-# ----------------------------------------------------------------------------
 
 
 def test_pump_survives_handler_exception_and_keeps_processing(monkeypatch):
@@ -209,15 +207,13 @@ def test_read_queue_narrow_contract():
     for exc in (queue.Empty(), EOFError(), OSError(), ValueError()):
         assert TrainingBackend._read_queue(_Q(exc), 0.01) is None
 
-    # Anything unexpected propagates on purpose to _pump_loop's guarded block,
-    # which logs and backs off instead of swallowing it into a hot loop.
+    # Anything unexpected propagates on purpose to _pump_loop's guarded block, which backs off.
     with pytest.raises(RuntimeError):
         TrainingBackend._read_queue(_Q(RuntimeError("boom")), 0.01)
 
 
 def test_pump_survives_queue_read_exception_and_recovers(monkeypatch):
-    # _read_queue raising an unexpected error must be caught by the pump's outer
-    # guard (log + backoff), not kill the pump; once reads recover it processes.
+    # An unexpected _read_queue error must hit the pump's outer guard (log + backoff), not kill it.
     b = TrainingBackend()
     _silence_db(monkeypatch, b)
     handled: list = []
@@ -255,8 +251,7 @@ def test_pump_survives_queue_read_exception_and_recovers(monkeypatch):
 
 
 def test_pump_finalizes_when_drain_queue_raises_unexpected_error(monkeypatch):
-    # Worker has exited; the final drain hits an unexpected error. The run must
-    # still be finalized (not wedged "active" with a dead worker).
+    # Worker has exited; the final drain hits an unexpected error, but the run must still finalize.
     b = TrainingBackend()
     finalized: dict = {}
     monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
@@ -283,8 +278,7 @@ def test_pump_finalizes_when_drain_queue_raises_unexpected_error(monkeypatch):
 
 
 def test_pump_finalizes_when_read_keeps_raising_on_dead_worker(monkeypatch):
-    # An unexpected error escapes _read_queue to the pump's outer guard; if it
-    # keeps raising after worker exit, the loop must still finalize, not spin.
+    # If an escaped error keeps raising after worker exit, the loop must still finalize, not spin.
     b = TrainingBackend()
     finalized: dict = {}
     monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
@@ -310,26 +304,94 @@ def test_pump_finalizes_when_read_keeps_raising_on_dead_worker(monkeypatch):
     assert b._pump_running is False
 
 
+def test_interrupted_cancel_clears_in_memory_output_dir(monkeypatch):
+    # Stop-without-save interrupted before its complete event: /status must not serve the cleared output_dir.
+    b = TrainingBackend()
+    finalized: dict = {}
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.update(kw))
+
+    b._proc = _FakeProc(alive = False)
+    b._event_queue = _IdleQueue()
+    b._progress.is_training = True
+    b._should_stop = True
+    b._cancel_requested = True
+    b._output_dir = "/out/x"
+
+    b._pump_loop()
+
+    assert b._output_dir is None
+    assert finalized.get("status") == "stopped"
+    assert finalized.get("output_dir") is None
+    assert finalized.get("clear_output_dir") is True
+
+
+def test_worker_exit_reuses_terminal_stop_save_error(monkeypatch):
+    b = TrainingBackend()
+    finalized: dict = {}
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.update(kw))
+
+    b._proc = _FakeProc(alive = False)
+    b._event_queue = _IdleQueue()
+    b._progress.is_training = True
+    b._should_stop = True
+    b._cancel_requested = False
+    b._output_dir = "/out/x"
+    b.current_job_id = "job-x"
+    b._terminal_finalize_payload = {
+        "status": "error",
+        "error_message": "checkpoint failed",
+        "output_dir": "/out/x",
+        "clear_output_dir": False,
+        "resume_blocked": True,
+        "expected_job_id": "job-x",
+    }
+
+    b._pump_loop()
+
+    assert b._output_dir == "/out/x"
+    assert finalized.get("status") == "error"
+    assert finalized.get("output_dir") == "/out/x"
+    assert finalized.get("clear_output_dir") is False
+    assert finalized.get("resume_blocked") is True
+
+
+def test_dead_worker_crash_preserves_output_dir(monkeypatch):
+    # A crash (no stop requested) after output_dir was emitted must keep the dir: checkpoints may exist.
+    b = TrainingBackend()
+    finalized: dict = {}
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.update(kw))
+
+    b._proc = _FakeProc(alive = False)
+    b._event_queue = _IdleQueue()
+    b._progress.is_training = True
+    b._output_dir = "/out/x"
+
+    b._pump_loop()
+
+    assert finalized.get("status") == "error"
+    assert finalized.get("output_dir") == "/out/x"
+    assert finalized.get("clear_output_dir") is False
+
+
 def test_start_training_clears_stale_pump_running_flag():
-    # A prior pump that died abnormally leaves _pump_running True. The next
-    # start_training must clear it during reset so the start-time watchdog can't
-    # treat the fresh setup as a recoverable crash and spawn a duplicate pump.
+    # A prior pump that died abnormally leaves _pump_running True. The next start_training must
+    # clear it during reset so the watchdog can't treat the fresh setup as a crash and duplicate.
     b = TrainingBackend()
     b._pump_running = True
     b._pump_thread = None
     b._proc = None
 
-    # No model_name -> start_training bails at kwargs["model_name"] (KeyError),
-    # but only AFTER the reset block that clears the stale flag.
+    # No model_name -> start_training bails with KeyError, but only AFTER the reset block.
     with pytest.raises(KeyError):
         b.start_training("job_stale_flag_test")
 
     assert b._pump_running is False
 
 
-# ----------------------------------------------------------------------------
 # Guarantee 2: a pump that dies while the worker runs is detected + restarted.
-# ----------------------------------------------------------------------------
 
 
 def test_ensure_pump_alive_restarts_crashed_pump(monkeypatch):
@@ -368,9 +430,8 @@ def test_ensure_pump_alive_noop_when_pump_alive():
 
 
 def test_ensure_pump_alive_revives_crashed_pump_after_worker_exit(monkeypatch):
-    # True _pump_running + dead thread = a crash (the loop clears the flag on
-    # intended exits). The queue may still hold terminal events, so the pump must
-    # restart to drain and finalize, else the run is stuck "running" forever.
+    # True _pump_running + dead thread = a crash (the loop clears the flag on intended exits). The
+    # queue may still hold terminal events, so the pump must restart to drain and finalize.
     b = TrainingBackend()
     _silence_db(monkeypatch, b)
     b._proc = _FakeProc(alive = False)
@@ -389,8 +450,7 @@ def test_ensure_pump_alive_revives_crashed_pump_after_worker_exit(monkeypatch):
 
 
 def test_ensure_pump_alive_noop_during_setup():
-    # _pump_running is False between state-reset and the first pump actually
-    # running; the watchdog must not race in and spawn a rogue pump.
+    # _pump_running is False between state-reset and the first pump running; no rogue pump may spawn.
     b = TrainingBackend()
     b._proc = _FakeProc(alive = True)
     b._event_queue = _IdleQueue()
@@ -409,8 +469,7 @@ def test_is_training_active_revives_dead_pump(monkeypatch):
     dead = _dead_thread()
     b._pump_thread = dead
 
-    # The status poll the SSE stream makes every second both reports activity
-    # and heals the dead pump as a side effect.
+    # The per-second status poll both reports activity and heals the dead pump as a side effect.
     assert b.is_training_active() is True
     try:
         assert b._pump_thread is not dead
@@ -420,9 +479,7 @@ def test_is_training_active_revives_dead_pump(monkeypatch):
         b._pump_thread.join(timeout = 5)
 
 
-# ----------------------------------------------------------------------------
 # Guarantee 3: the DB run row exists before the pump consumes any event.
-# ----------------------------------------------------------------------------
 
 
 def _stub_spawn(monkeypatch):
@@ -445,9 +502,8 @@ def _stub_spawn(monkeypatch):
         def Process(self, **k):
             return _SpawnProc()
 
-    # _CTX / prepare_gpu_selection resolve from the module globals; patch the
-    # function's own globals so the eviction of core.training.training (done at
-    # this test module's import for isolation) can't hand us a different copy.
+    # _CTX / prepare_gpu_selection resolve from the module globals; patch the function's own
+    # globals so this module's eviction of core.training.training can't hand us a different copy.
     monkeypatch.setitem(g, "_CTX", _Ctx())
     monkeypatch.setitem(g, "prepare_gpu_selection", lambda *a, **k: (None, None))
 
@@ -466,9 +522,8 @@ def _stub_spawn(monkeypatch):
 
 
 def test_db_run_created_before_pump_consumes_events(monkeypatch):
-    # A fast terminal worker must not race the pump into creating the DB row: by
-    # the time the pump runs, start_training has already created it. The create
-    # sleep widens the window so the ordering is observed, not luck.
+    # A fast terminal worker must not race the pump into creating the DB row. The create sleep
+    # widens the window so the ordering is observed, not luck.
     b = TrainingBackend()
     _stub_spawn(monkeypatch)
 
@@ -489,6 +544,34 @@ def test_db_run_created_before_pump_consumes_events(monkeypatch):
     if b._pump_thread is not None:
         b._pump_thread.join(timeout = 2.0)
 
-    # The pump observed an already-created run; it would be False if the pump
-    # were started before the eager create.
+    # The pump observed an already-created run; it would be False if started before the eager create.
     assert seen["db_created"] is True
+
+
+def test_startup_flag_reports_training_active_before_proc():
+    # Between freeing VRAM and _proc going live, a concurrent STT load must see training as active.
+    b = TrainingBackend()
+    b._spawn_in_progress = True
+    assert b.is_training_active() is True
+
+
+def test_before_spawn_runs_inside_active_window(monkeypatch):
+    # The VRAM-freeing hook must run while training already counts as active, else an STT load races it.
+    b = TrainingBackend()
+    _stub_spawn(monkeypatch)
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+    monkeypatch.setattr(b, "_pump_loop", lambda: setattr(b, "_pump_running", False))
+
+    active_during_free = {}
+
+    def before_spawn():
+        active_during_free["value"] = b.is_training_active()
+
+    assert b.start_training("job_active_window", model_name = "m", before_spawn = before_spawn) is True
+    if b._pump_thread is not None:
+        b._pump_thread.join(timeout = 2.0)
+
+    assert active_during_free["value"] is True
+    # The transient flag clears, but the live proc keeps training active.
+    assert b._spawn_in_progress is False
+    assert b.is_training_active() is True

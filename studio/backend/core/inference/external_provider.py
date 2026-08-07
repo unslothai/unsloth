@@ -19,6 +19,18 @@ from urllib.parse import urlparse
 import httpx
 import structlog
 
+# Local servers, not hosted APIs: each applies the model's own chat template on the way
+# in, so a prompt built here is templated just like an in-process one (#7066). "custom" is
+# a user-supplied OpenAI-compatible base_url (routes/providers.py:207-213), i.e. how a
+# self-hosted vLLM or llama.cpp registers without its preset. Unknown endpoint means assume
+# a template applies: sweeping a hosted API costs a space in delimiter-like text, not
+# sweeping a local one costs a forged turn.
+_TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom"})
+
+# The subset documenting "continue_final_message" + "add_generation_prompt" on
+# /v1/chat/completions.
+_CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
+
 # structlog so INFO diagnostics reach the backend's JSON log stream (the
 # stdlib root logger defaults to WARNING with no handlers). It accepts the
 # existing printf-style positional args.
@@ -473,7 +485,7 @@ def _apply_mistral_reasoning_controls(
 # handles every provider without storing credentials.
 def _create_shared_http_client() -> httpx.AsyncClient:
     # Unsupported env proxy schemes (socks:// etc) raise at construction and
-    # would crash Studio startup (#6090); retry ignoring env proxies instead.
+    # would crash Unsloth startup (#6090); retry ignoring env proxies instead.
     try:
         return httpx.AsyncClient()
     except (ImportError, ValueError) as exc:
@@ -833,6 +845,7 @@ class ExternalProviderClient:
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
         fast_mode: Optional[bool] = None,
+        continue_final_message: Optional[bool] = None,
         stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """
@@ -858,7 +871,7 @@ class ExternalProviderClient:
         if not self._is_openai_compatible():
             # Gemini speaks its own native REST shape (contents/parts);
             # `_stream_gemini` translates request/response into the OpenAI
-            # Chat Completions chunk format the rest of Studio expects.
+            # Chat Completions chunk format the rest of Unsloth expects.
             # API ref: https://ai.google.dev/gemini-api/docs
             if self.provider_type == "gemini":
                 async for line in self._stream_gemini(
@@ -946,6 +959,36 @@ class ExternalProviderClient:
                 yield line
             return
 
+        # A self-hosted server templates client text just like the in-process paths, so the
+        # same "</think>" or turn marker forges a turn (#7066). Hosted APIs are left alone:
+        # their prompt assembly is not this repo's template and not ours to rewrite.
+        if self.provider_type in _TEMPLATE_APPLYING_PROVIDERS:
+            from core.inference.chat_template_helpers import (
+                neutralize_control_markup_in_messages,
+                neutralize_tool_descriptions,
+                reconciled_tool_choice,
+            )
+            messages = neutralize_control_markup_in_messages(messages)
+            if tools:
+                safe_tools = neutralize_tool_descriptions(tools)
+                # A mixed catalog keeps safe_tools non-empty while dropping the one tool the
+                # client forced, so an empty check is not enough: without the passthrough
+                # builder's per-name reconciliation the body names an unadvertised function.
+                tool_choice = reconciled_tool_choice(tool_choice, tools, safe_tools)
+                if not safe_tools:
+                    tool_choice = None
+                tools = safe_tools
+
+        # Both are set because a server rejects continuing while a generation prompt is
+        # still asked for. Sent only to the two documenting the pair: "custom" is any
+        # user-supplied base_url, and a strict endpoint 400s on an unknown field, so it
+        # keeps the trailing assistant turn on its own as before.
+        _continue_body = (
+            {"continue_final_message": True, "add_generation_prompt": False}
+            if continue_final_message and self.provider_type in _CONTINUATION_FLAG_PROVIDERS
+            else {}
+        )
+
         body: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -953,6 +996,7 @@ class ExternalProviderClient:
             "temperature": temperature,
             "top_p": top_p,
             "presence_penalty": presence_penalty,
+            **_continue_body,
         }
         if max_tokens is not None:
             # Newer OpenAI models (gpt-4o, gpt-5.x) reject max_tokens
@@ -1706,7 +1750,7 @@ class ExternalProviderClient:
                 # Translate OpenAI multimodal parts -> Anthropic native shapes.
                 # - `image_url`     -> `{type:"image", source:...}`
                 # - `input_document` -> `{type:"document", source:...}`
-                #   (Studio extension; mirrors Anthropic's document block,
+                #   (Unsloth extension; mirrors Anthropic's document block,
                 #   which supports PDFs as base64 or URL per
                 #   https://platform.claude.com/docs/en/build-with-claude/vision)
                 anthropic_parts: list[dict[str, Any]] = []
@@ -1749,7 +1793,7 @@ class ExternalProviderClient:
                                 }
                             )
                     elif part.get("type") == "input_document":
-                        # Studio's normalised PDF/doc type (file_data data-URI or
+                        # Unsloth's normalised PDF/doc type (file_data data-URI or
                         # file_url) -> Anthropic's native `document` block.
                         url = part.get("file_url") or ""
                         data_uri = part.get("file_data") or ""
@@ -4704,7 +4748,7 @@ class ExternalProviderClient:
                                 {"type": "image_generation_call", "id": call_id}
                             )
                     elif part_type == "input_document":
-                        # Map Studio's `input_document` onto Responses' `input_file`.
+                        # Map Unsloth's `input_document` onto Responses' `input_file`.
                         # https://developers.openai.com/api/docs/guides/images-vision
                         file_url = part.get("file_url")
                         file_data = part.get("file_data")
@@ -6010,7 +6054,7 @@ class ExternalProviderClient:
             if not models and self.provider_type == "ollama":
                 models = await self._list_ollama_native_models()
             # Gemini's native /v1beta/models uses a different shape; repackage
-            # into the OpenAI-compatible one Studio expects.
+            # into the OpenAI-compatible one Unsloth expects.
             if not models and self.provider_type == "gemini":
                 models = self._parse_gemini_models(data)
             return models
@@ -6213,7 +6257,7 @@ def _friendly_provider_error_text(
     *,
     model: str | None = None,
 ) -> str:
-    """Rewrite common provider errors into actionable Studio copy."""
+    """Rewrite common provider errors into actionable Unsloth copy."""
     if status_code == 404 and model:
         lowered = raw_message.lower()
         if "not found" in lowered or "not_found" in lowered:

@@ -62,7 +62,7 @@ export function redactDiagnosticsText(text: string): string {
     "$1$2<redacted>",
   );
 
-  // Redact Studio paths before broader home-directory paths.
+  // Redact Unsloth paths before broader home-directory paths.
   redacted = redacted.replace(
     /(?:\/Users|\/home)\/[^\s/]+\/\.unsloth\/studio/gi,
     "<studio_home>",
@@ -142,26 +142,10 @@ async function collectDiagnosticsReport(
   }
 }
 
-async function copyWithTauriClipboard(text: string): Promise<boolean> {
-  if (!isTauri) return false;
-  try {
-    const { writeText } = await import("@tauri-apps/plugin-clipboard-manager");
-    await writeText(text);
-    return true;
-  } catch (error) {
-    console.warn("Tauri clipboard-manager writeText failed", error);
-    return false;
-  }
-}
-
 export async function copySupportDiagnostics(
   snapshot: FrontendSupportSnapshot,
 ): Promise<CopySupportDiagnosticsResult> {
   const { report, source } = await collectDiagnosticsReport(snapshot);
-
-  if (await copyWithTauriClipboard(report)) {
-    return { ok: true, report, source };
-  }
 
   if (await copyToClipboard(report)) {
     return { ok: true, report, source };

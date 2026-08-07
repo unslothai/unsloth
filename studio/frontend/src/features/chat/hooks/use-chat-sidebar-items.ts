@@ -6,8 +6,8 @@ import {
   CHAT_HISTORY_UPDATED_EVENT,
   notifyChatHistoryUpdated,
 } from "../api/chat-api";
-import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { useChatArtifactsStore } from "../artifacts/store";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ThreadRecord } from "../types";
 import {
   deleteStoredChatThreads,
@@ -17,18 +17,27 @@ import {
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
 import { clearComposerDraft } from "../utils/composer-draft";
+import { stopChatThread } from "../utils/stop-chat-thread";
 import {
   markChatThreadsDeleted,
   removeChatThreadTombstones,
 } from "../utils/chat-thread-tombstones";
+import { requestPromptQueueStop } from "../utils/prompt-queue-boundary";
 
 export interface SidebarItem {
   type: "single" | "compare";
   id: string;
+  /** The pane threads behind this row id; `runningByThreadId` is keyed per pane thread. */
+  threadIds?: string[];
   title: string;
   createdAt: number;
+  updatedAt: number;
   isFork?: boolean;
   projectId?: string | null;
+}
+
+function lastActivityAt(thread: ThreadRecord): number {
+  return thread.updatedAt ?? thread.createdAt;
 }
 
 export function groupThreads(
@@ -36,11 +45,11 @@ export function groupThreads(
   archived = false,
 ): SidebarItem[] {
   const items: SidebarItem[] = [];
-  const seenPairs = new Set<string>();
+  const pairItems = new Map<string, SidebarItem>();
 
   for (const t of threads) {
     // Coerce archived to a boolean before comparing. Legacy threads (from the
-    // older browser-only Studio, or any record predating the archived field)
+    // older browser-only Unsloth, or any record predating the archived field)
     // can have archived === undefined or null; a raw `!== archived` comparison
     // would drop those from BOTH the Recents (archived=false) and Archived
     // (archived=true) lists, hiding existing chats. Treat missing as false.
@@ -48,30 +57,39 @@ export function groupThreads(
       continue;
     }
     if (t.pairId) {
-      if (seenPairs.has(t.pairId)) {
+      const existing = pairItems.get(t.pairId);
+      if (existing) {
+        existing.createdAt = Math.max(existing.createdAt, t.createdAt);
+        existing.updatedAt = Math.max(existing.updatedAt, lastActivityAt(t));
+        existing.threadIds?.push(t.id);
         continue;
       }
-      seenPairs.add(t.pairId);
-      items.push({
+      const item: SidebarItem = {
         type: "compare",
         id: t.pairId,
+        threadIds: [t.id],
         title: t.title,
         createdAt: t.createdAt,
+        updatedAt: lastActivityAt(t),
         projectId: t.projectId ?? null,
-      });
+      };
+      pairItems.set(t.pairId, item);
+      items.push(item);
     } else if (!t.pairId) {
       items.push({
         type: "single",
         id: t.id,
+        threadIds: [t.id],
         title: t.title,
         createdAt: t.createdAt,
+        updatedAt: lastActivityAt(t),
         isFork: Boolean(t.forkedFromThreadId),
         projectId: t.projectId ?? null,
       });
     }
   }
 
-  return items.sort((a, b) => b.createdAt - a.createdAt);
+  return items.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 // Streaming fires CHAT_HISTORY_UPDATED_EVENT per chunk. Debounce so each quiet
@@ -84,6 +102,7 @@ export function useChatSidebarItems(options?: {
   requireMessages?: boolean;
 }) {
   const [allThreads, setAllThreads] = useState<ThreadRecord[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const enabled = options?.enabled ?? true;
   const requireMessages = options?.requireMessages ?? true;
 
@@ -111,6 +130,7 @@ export function useChatSidebarItems(options?: {
         // were in flight, or if the effect was torn down.
         if (cancelled || seq !== requestSeq) return;
         setAllThreads(threads);
+        setLoaded(true);
       } catch (error) {
         if (isExpectedBackgroundChatStorageError(error)) {
           return;
@@ -144,14 +164,13 @@ export function useChatSidebarItems(options?: {
   const archivedItems = groupThreads(allThreads ?? [], true);
   const canCompare = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));
 
-  return { items, archivedItems, canCompare };
+  return { items, archivedItems, canCompare, loaded };
 }
 
 function cancelIfRunning(threadId: string): void {
-  const { runningByThreadId, cancelByThreadId } =
-    useChatRuntimeStore.getState();
-  if (!runningByThreadId[threadId]) return;
-  cancelByThreadId[threadId]?.();
+  // Reaches a background thread, which cancelByThreadId cannot: a deleted chat must stop,
+  // or the run keeps writing to a conversation that is gone.
+  stopChatThread(threadId);
 }
 
 export async function renameChatItem(
@@ -191,7 +210,11 @@ export async function archiveChatItem(
           })
         ).map((t) => t.id);
 
-  for (const id of threadIds) cancelIfRunning(id);
+  requestPromptQueueStop(threadIds);
+
+  for (const id of threadIds) {
+    cancelIfRunning(id);
+  }
 
   await Promise.all(
     threadIds.map((id) => updateStoredChatThread(id, { archived: true })),
@@ -203,6 +226,41 @@ export async function archiveChatItem(
   }
 
   notifyChatHistoryUpdated();
+}
+
+export async function archiveAllChatItems(
+  activeId?: string,
+  onSelect?: (view: { mode: "single"; newThreadNonce: string }) => void,
+): Promise<number> {
+  const threads = await listStoredChatThreads({ includeArchived: true });
+  // Boolean() mirrors groupThreads: legacy records may have archived
+  // undefined/null, which must count as "not archived".
+  const toArchive = threads.filter((t) => !t.archived);
+  if (toArchive.length === 0) return 0;
+
+  requestPromptQueueStop(toArchive.map((thread) => thread.id));
+  for (const t of toArchive) cancelIfRunning(t.id);
+
+  await Promise.all(
+    toArchive.map((t) => updateStoredChatThread(t.id, { archived: true })),
+  );
+
+  // Reset only when this action archived the active single thread or compare
+  // pair. An already-archived chat opened from the archive is not in
+  // toArchive and must stay open.
+  const archivedActive =
+    activeId !== undefined &&
+    toArchive.some(
+      (thread) => thread.id === activeId || thread.pairId === activeId,
+    );
+  if (archivedActive) {
+    useChatRuntimeStore.getState().setActiveThreadId(null);
+    onSelect?.({ mode: "single", newThreadNonce: crypto.randomUUID() });
+  }
+
+  notifyChatHistoryUpdated();
+  // Report sidebar items, not raw threads: a compare pair reads as one chat.
+  return groupThreads(toArchive).length;
 }
 
 export async function unarchiveChatItem(item: SidebarItem): Promise<void> {
@@ -233,9 +291,12 @@ export async function deleteChatItem(
       ? [item.id]
       : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
 
-  // Stop any in-flight streams before deleting, so the model doesn't keep
-  // generating against a thread that no longer exists.
-  for (const id of threadIds) cancelIfRunning(id);
+  // Stop queued prompts and in-flight streams before deleting.
+  requestPromptQueueStop(threadIds);
+
+  for (const id of threadIds) {
+    cancelIfRunning(id);
+  }
 
   // Drop saved composer drafts so deleted threads leave no orphan keys.
   for (const id of threadIds) clearComposerDraft(id);

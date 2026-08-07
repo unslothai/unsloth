@@ -1,9 +1,12 @@
 use super::types::BackendProbe;
 use super::version::{
-    backend_version_stale_reason, DESKTOP_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
+    backend_version_stale_reason, DESKTOP_BACKEND_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
 };
 use serde::{Deserialize, Serialize};
+
+use log::info;
 use std::time::Duration;
+use std::time::Instant;
 
 #[derive(Debug, Deserialize)]
 struct DesktopOwnerHealth {
@@ -24,6 +27,7 @@ pub(super) struct BackendHealth {
 }
 
 pub(super) async fn backend_health(client: &reqwest::Client, port: u16) -> Option<BackendHealth> {
+    let started = Instant::now();
     let url = format!("http://127.0.0.1:{port}/api/health");
     let response = client.get(url).send().await.ok()?;
     if !response.status().is_success() {
@@ -40,6 +44,14 @@ pub(super) async fn backend_health(client: &reqwest::Client, port: u16) -> Optio
         .and_then(|v| v.as_str())
         .map(|s| s == "Unsloth UI Backend")
         .unwrap_or(false);
+    info!(
+        "Desktop preflight: health probe on port {} healthy={} service={} in {}ms",
+        port,
+        healthy,
+        service,
+        started.elapsed().as_millis()
+    );
+
     if !healthy || !service {
         return None;
     }
@@ -137,15 +149,14 @@ fn backend_capability_stale_reason(health: &BackendHealth) -> Option<String> {
             .clone()
             .or_else(|| Some("desktop_auth_unsupported".to_string()));
     }
-    if health.desktop_manageability_version.unwrap_or(0) < DESKTOP_MANAGEABILITY_VERSION {
+    if health.desktop_manageability_version.unwrap_or(0) < DESKTOP_BACKEND_MANAGEABILITY_VERSION {
         return Some("desktop_manageability_unsupported".to_string());
     }
     if health.supports_desktop_backend_ownership != Some(true) {
         return Some("desktop_backend_ownership_unsupported".to_string());
     }
-    // Unauthenticated /api/health gates `version` behind a bearer; capability bits
-    // (protocol/manageability/auth/ownership) above are only set by backends >=
-    // MIN_DESKTOP_BACKEND_VERSION, so missing version means "auth-gated", not "old".
+    // Unauthenticated /api/health gates `version` behind a bearer, and the bits
+    // above predate the floor, so no version means "auth-gated", not "old".
     match health.version.as_deref() {
         Some(version) if !version.is_empty() => backend_version_stale_reason(Some(version)),
         _ => None,
@@ -158,10 +169,7 @@ struct DesktopLoginProbe<'a> {
 }
 
 pub(super) async fn probe_ownerless_spawned_backend(port: u16) -> BackendProbe {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-    {
+    let client = match crate::loopback_http::client(Duration::from_secs(2)) {
         Ok(client) => client,
         Err(_) => return BackendProbe::Missing,
     };
@@ -282,10 +290,7 @@ pub(super) async fn backend_desktop_auth_status(
 }
 
 pub(super) async fn probe_existing_backends(ignored_ports: &[u16]) -> BackendProbe {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-    {
+    let client = match crate::loopback_http::client(Duration::from_secs(2)) {
         Ok(client) => client,
         Err(_) => return BackendProbe::Missing,
     };

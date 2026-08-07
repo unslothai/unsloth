@@ -6,7 +6,7 @@
 # them when run in WSL/Linux (e.g. `set -e` -> "set: Illegal option -").
 *.sh text eol=lf
 
-# Normalize Studio frontend sources to LF. Scoped to the frontend tree (rather
+# Normalize Unsloth frontend sources to LF. Scoped to the frontend tree (rather
 # than repo-wide *.ts/*.tsx/... rules) so the policy can't force LF on files
 # elsewhere. text=auto lets Git detect and leave binary assets (logos, fonts)
 # untouched while text files (.ts/.tsx/.json/.html/.svg/...) are stored as LF.

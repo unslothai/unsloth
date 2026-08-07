@@ -8,8 +8,9 @@
 #
 # Piped installs take options as env vars after the pipe (a bare `| sh --no-torch`
 # makes sh reject --no-torch as its own option). Flags still work via ./install.sh:
-#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh    # skip PyTorch (GGUF-only)
-#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_PYTHON=3.12 sh   # pin Python version
+#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh       # skip PyTorch (GGUF-only)
+#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_SKIP_AUTOSTART=1 sh # do not prompt to launch
+#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_PYTHON=3.12 sh      # pin Python version
 #   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_STUDIO_HOME=/abs/path sh
 # Equivalent flags: ./install.sh --no-torch --python 3.12  (or pipe them: sh -s -- --no-torch)
 #
@@ -18,6 +19,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 set -e
+# ── Why the installer lives in a function ──
+# Under `curl ... | sh`, sh is the pipe READER. This file is ~150KB, so a top-level
+# `exit` left most of it unread, the write end failed, and curl tacked
+# "(56) Failure writing output to destination" onto our own error message. Wrapping
+# the body forces sh to parse to the closing brace first, so the pipe always drains
+# (install.ps1 has always had this shape).
+#
+# Body is deliberately NOT reindented: reflowing 4000+ lines would bury the change,
+# and `exit` still exits the shell from inside a function. Do not add
+# `exec < /dev/null`: for a piped shell that closes the script's own source.
+_unsloth_main() {
 
 # ── Output style (aligned with studio/setup.sh) ──
 RULE=""
@@ -49,10 +61,16 @@ PACKAGE_NAME="unsloth"
 TAURI_MODE=false
 _USER_PYTHON=""
 _NO_TORCH_FLAG=false
+_SKIP_AUTOSTART=false
 _VERBOSE=false
 _SHORTCUTS_ONLY=false
 _next_is_package=false
 _next_is_python=false
+_next_is_llama_cpp_dir=false
+# Seed from the environment so a caller who exports UNSLOTH_LOCAL_LLAMA_CPP_DIR
+# (the documented piped-install style) is honored; the --with-llama-cpp-dir
+# flag below overrides it when given.
+_WITH_LLAMA_CPP_DIR="${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}"
 for arg in "$@"; do
     if [ "$_next_is_package" = true ]; then
         PACKAGE_NAME="$arg"
@@ -64,6 +82,11 @@ for arg in "$@"; do
         _next_is_python=false
         continue
     fi
+    if [ "$_next_is_llama_cpp_dir" = true ]; then
+        _WITH_LLAMA_CPP_DIR="$arg"
+        _next_is_llama_cpp_dir=false
+        continue
+    fi
     case "$arg" in
         --local) STUDIO_LOCAL_INSTALL=true ;;
         --package) _next_is_package=true ;;
@@ -72,18 +95,20 @@ for arg in "$@"; do
         --no-torch) _NO_TORCH_FLAG=true ;;
         --verbose|-v) _VERBOSE=true ;;
         --shortcuts-only) _SHORTCUTS_ONLY=true ;;
+        --with-llama-cpp-dir) _next_is_llama_cpp_dir=true ;;
     esac
 done
 
 # Env-var equivalents for piped installs; an explicit flag still wins.
 case "${UNSLOTH_NO_TORCH:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_TORCH_FLAG=true ;; esac
+case "${UNSLOTH_SKIP_AUTOSTART:-}" in 1|true|TRUE|yes|YES|on|ON) _SKIP_AUTOSTART=true ;; esac
 [ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
 
 if [ "$_VERBOSE" = true ]; then
     export UNSLOTH_VERBOSE=1
 fi
 
-# Custom Studio roots are not supported with --tauri (desktop app still
+# Custom Unsloth roots are not supported with --tauri (desktop app still
 # resolves ~/.unsloth/studio). Pass through if the override == legacy default.
 if [ "$TAURI_MODE" = true ]; then
     _tauri_override_var=""
@@ -145,20 +170,85 @@ run_maybe_quiet() {
     fi
 }
 
+# Trim trailing slashes from the URL PATH only, preserving ?query / #fragment: a whole-URL
+# strip corrupts a token ending in "/", a single strip leaves .../cu128// empty. Shared.
+_trim_index_path_slashes() {
+    _tips_v="$1"
+    case "$_tips_v" in
+        *[?#]*)
+            _tips_head="${_tips_v%%[?#]*}"
+            _tips_tail="${_tips_v#"$_tips_head"}"
+            ;;
+        *)
+            _tips_head="$_tips_v"
+            _tips_tail=""
+            ;;
+    esac
+    while [ -n "$_tips_head" ] && [ "${_tips_head%/}" != "$_tips_head" ]; do
+        _tips_head="${_tips_head%/}"
+    done
+    printf '%s%s' "$_tips_head" "$_tips_tail"
+}
+
+# Redact index-URL credentials (userinfo + ?query= + #fragment) from captured installer
+# output before printing on failure; uv/pip errors echo the failing --index-url verbatim.
+# Mirrors the other installers. Verbose mode streams uncaptured, so it isn't redacted.
+_redact_install_output() {
+    sed -E \
+        -e 's#(https?://)[^/@[:space:]`]+@#\1<redacted>@#g' \
+        -e 's#([?&][^=[:space:]&`]+)=[^&#[:space:]`]+#\1=<redacted>#g' \
+        -e 's|(https?://[^[:space:]`#]+)#[^[:space:]`]+|\1#<redacted>|g' \
+        "$@"
+}
+
 run_install_cmd() {
     _label="$1"
     shift
+    # Installer-pinned index installs (torch) must beat an inherited uv mirror (#6898):
+    # for --default-index, neutralize the uv index/backend/config vars (UV_TORCH_BACKEND
+    # redirects torch; UV_NO_CONFIG=1 + dropping UV_CONFIG_FILE stops a uv.toml/pyproject
+    # index outranking the CLI pin, uv 0.10).
+    case " $* " in
+        *" --default-index "*) set -- env -u UV_DEFAULT_INDEX -u UV_INDEX_URL -u UV_INDEX -u UV_EXTRA_INDEX_URL -u UV_TORCH_BACKEND -u UV_FIND_LINKS -u UV_CONFIG_FILE UV_NO_CONFIG=1 "$@" ;;
+    esac
     if _is_verbose; then
-        "$@" && return 0
-        _rc=$?
+        # Stream through the redactor: uv echoes index URLs (credentials and
+        # all) in its errors, and verbose mode previously bypassed the
+        # redaction the quiet path applies. The rc file preserves the
+        # command's exit code across the pipe without relying on pipefail
+        # (this script runs under plain sh).
+        _rcf=$(mktemp)
+        tauri_stream_log stdout "OUTPUT_CLEAR" "$_label"
+        {
+            if "$@" 2>&1; then
+                _cmd_rc=0
+            else
+                _cmd_rc=$?
+            fi
+            printf '%s' "$_cmd_rc" > "$_rcf"
+        } | _redact_install_output
+        _rc=$(cat "$_rcf" 2>/dev/null || echo 1)
+        rm -f "$_rcf"
+        _rc=${_rc:-1}
+        if [ "$_rc" -eq 0 ] 2>/dev/null; then
+            tauri_clear_install_error "$_label recovered"
+            return 0
+        fi
+        tauri_stream_log stdout "ERROR_OUTPUT" "$_label failed (exit code $_rc)"
         step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
         return "$_rc"
     fi
     _log=$(mktemp)
-    "$@" >"$_log" 2>&1 && { rm -f "$_log"; return 0; }
+    tauri_stream_log stderr "OUTPUT_CLEAR" "$_label"
+    "$@" >"$_log" 2>&1 && {
+        rm -f "$_log"
+        tauri_clear_install_error "$_label recovered"
+        return 0
+    }
     _rc=$?
     step "error" "$_label failed (exit code $_rc)" "$C_ERR" >&2
-    cat "$_log" >&2
+    _redact_install_output "$_log" >&2
+    tauri_stream_log stderr "ERROR_OUTPUT" "$_label failed (exit code $_rc)"
     rm -f "$_log"
     return $_rc
 }
@@ -197,10 +287,73 @@ run_install_cmd_retry() {
     done
 }
 
-# Install bitsandbytes on AMD ROCm hosts. Uses the continuous-release_main
-# wheel for the ROCm 4-bit GEMV fix (bnb PR #1887, post-0.49.2); bnb <= 0.49.2
-# NaNs at decode shape on every AMD GPU. Falls back to PyPI >=0.49.1 if the
-# pre-release URL is unreachable. Drop the pin once bnb 0.50+ ships on PyPI.
+# True when the runtime target is gfx906 (MI50/Radeon VII): the prebuilt AMD
+# bitsandbytes wheel carries no gfx906 kernels, and force-reinstalling it would
+# clobber a user's source-built bnb (the only 4-bit path on this arch) on every
+# `studio update`. So skip the auto-install and leave whatever bnb is present.
+# _gfx906_target is set during torch-index resolution; also honor an explicit
+# UNSLOTH_ROCM_GFX_ARCH so a pinned-index install still skips. The override is
+# normalized (gfx906:sramecc-:xnack- -> gfx906) so a copied HIP gcnArchName counts.
+_is_gfx906_bnb_skip() {
+    [ "${_gfx906_target:-false}" = true ] && return 0
+    _bnb_gfx_env=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+    _bnb_gfx_env=${_bnb_gfx_env%%:*}
+    [ "$_bnb_gfx_env" = "gfx906" ] && return 0
+    # A pinned index (UNSLOTH_TORCH_INDEX_URL/_FAMILY) skips the reroute block that
+    # sets _gfx906_target, so a real gfx906 host with a pinned rocm6.3 index and no
+    # UNSLOTH_ROCM_GFX_ARCH would otherwise clobber a source-built bnb. Probe here
+    # in that gap; skip only when gfx906 is the SOLE distinct arch (mixed hosts
+    # opt in via the env var, mirroring the reroute block's de-dup rule).
+    if [ -z "$_bnb_gfx_env" ] && [ "${_torch_index_pinned:-false}" = true ]; then
+        _bnb_gfx_probe=$(_probe_amd_gfx_arch | awk 'NF && !seen[$0]++')
+        [ "$_bnb_gfx_probe" = "gfx906" ] && return 0
+    fi
+    return 1
+}
+
+# `pip install unsloth` resolves its unconditional bitsandbytes dep to a generic
+# CUDA wheel (no gfx906 kernels) once we skip the prebuilt one. Snapshot bnb before
+# the unsloth install, then drop a freshly pulled wheel afterwards while leaving a
+# pre-existing source build in place.
+_gfx906_bnb_installed() {
+    "$_VENV_PY" -c "import importlib.util as u, sys; sys.exit(0 if u.find_spec('bitsandbytes') else 1)" >/dev/null 2>&1
+}
+_gfx906_bnb_snapshot() {
+    _gfx906_bnb_absent_before=false
+    _is_gfx906_bnb_skip || return 0
+    _gfx906_bnb_installed || _gfx906_bnb_absent_before=true
+}
+_gfx906_bnb_prune() {
+    _is_gfx906_bnb_skip || return 0
+    [ "${_gfx906_bnb_absent_before:-false}" = true ] || return 0
+    _gfx906_bnb_installed || return 0
+    substep "gfx906: removing generic bitsandbytes pulled in as a dependency (no gfx906 kernels; build from source for 4-bit QLoRA)" "$C_WARN"
+    uv pip uninstall --python "$_VENV_PY" bitsandbytes >/dev/null 2>&1 \
+        || "$_VENV_PY" -m pip uninstall -y bitsandbytes >/dev/null 2>&1 || true
+}
+
+# Install bitsandbytes on AMD ROCm hosts. bnb <= 0.49.2 NaNs at 4-bit decode
+# shape on every AMD GPU; the fix (bnb #1887) ships in continuous-release_main
+# and, on PyPI, first in 0.50.0. Keep this floor in step with the amd extra in
+# pyproject.toml and studio/install_python_stack.py.
+_BNB_ROCM_PYPI_FALLBACK="bitsandbytes>=0.50.0"
+# Intel XPU: separate constant, same floor by coincidence. 0.50.0 manylinux is the first with
+# libbitsandbytes_xpu2025.so / _xpu2026.so; studio/setup.ps1's XPU pass uses the same floor.
+_BNB_XPU_SPEC="bitsandbytes>=0.50.0"
+# bitsandbytes ships no ROCm binary in its aarch64 wheel at any version: the PyPI
+# 0.50.0 and continuous-release_main aarch64 wheels both carry only
+# libbitsandbytes_cpu.so plus CUDA variants. So neither install path below gives
+# aarch64 a 4-bit backend, and the messages must not claim one. Cf. gfx906.
+_bnb_rocm_arch_has_binary() {
+    case "$_ARCH" in
+        aarch64|arm64) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+_warn_bnb_no_rocm_binary() {
+    _bnb_rocm_arch_has_binary && return 0
+    substep "[WARN] aarch64: bitsandbytes ships no ROCm kernels on this arch; 4-bit QLoRA needs a source build -- https://docs.unsloth.ai/get-started/install-and-update/amd" "$C_WARN"
+}
 _install_bnb_rocm() {
     _label="$1"
     _venv_py="$2"
@@ -215,9 +368,8 @@ _install_bnb_rocm() {
             _bnb_whl_url=""
             ;;
     esac
-    # uv rejects the continuous-release_main bitsandbytes wheel because the
-    # filename version (1.33.7rc0) does not match the embedded metadata version
-    # (0.50.0.dev0). pip accepts the mismatch, so bootstrap pip and use it.
+    # uv rejects the pre-release wheel: filename version (1.33.7rc0) does not
+    # match metadata (0.50.x.dev0). pip accepts it, so bootstrap pip and use it.
     if ! "$_venv_py" -m pip --version >/dev/null 2>&1; then
         if ! run_maybe_quiet "$_venv_py" -m ensurepip --upgrade; then
             run_maybe_quiet uv pip install --python "$_venv_py" pip || \
@@ -233,18 +385,26 @@ _install_bnb_rocm() {
             --retries 8 --timeout 90 \
             "$_bnb_whl_url" >"$_bnb_log" 2>&1; then
             rm -f "$_bnb_log"
+            _warn_bnb_no_rocm_binary
             return 0
         fi
         _bnb_rc=$?
         if _is_verbose; then
-            cat "$_bnb_log" >&2
+            _redact_install_output "$_bnb_log" >&2
         fi
         rm -f "$_bnb_log"
         step "warning" "$_label (pre-release) failed (exit code $_bnb_rc)" "$C_WARN" >&2
-        substep "[WARN] bnb pre-release install failed; falling back to PyPI (4-bit decode broken on ROCm)" "$C_WARN"
+        if _bnb_rocm_arch_has_binary; then
+            substep "[WARN] bnb pre-release install failed; falling back to PyPI $_BNB_ROCM_PYPI_FALLBACK, which carries the ROCm 4-bit fix" "$C_WARN"
+        else
+            substep "[WARN] bnb pre-release install failed; falling back to PyPI $_BNB_ROCM_PYPI_FALLBACK" "$C_WARN"
+        fi
     fi
     run_install_cmd "$_label (pypi fallback)" "$_venv_py" -m pip install \
-        --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.49.1"
+        --force-reinstall --no-cache-dir --no-deps "$_BNB_ROCM_PYPI_FALLBACK"
+    _bnb_pypi_rc=$?
+    _warn_bnb_no_rocm_binary
+    return $_bnb_pypi_rc
 }
 
 if [ "$_next_is_package" = true ]; then
@@ -253,6 +413,10 @@ if [ "$_next_is_package" = true ]; then
 fi
 if [ "$_next_is_python" = true ]; then
     echo "❌ ERROR: --python requires a version argument (e.g. --python 3.12)." >&2
+    exit 1
+fi
+if [ "$_next_is_llama_cpp_dir" = true ]; then
+    echo "❌ ERROR: --with-llama-cpp-dir requires a path argument." >&2
     exit 1
 fi
 
@@ -274,6 +438,34 @@ tauri_log() {
     fi
 }
 
+tauri_stream_log() {
+    _tsl_stream="$1"
+    _tsl_tag="$2"
+    shift 2
+    if [ "$TAURI_MODE" = true ]; then
+        if [ "$_tsl_stream" = stderr ]; then
+            printf '[TAURI:%s] %s\n' "$_tsl_tag" "$*" >&2
+        else
+            printf '[TAURI:%s] %s\n' "$_tsl_tag" "$*"
+        fi
+    fi
+}
+
+rollback_substep() {
+    if [ "$TAURI_MODE" = true ]; then
+        tauri_log "PROGRESS" "$1"
+    else
+        substep "$@"
+    fi
+}
+
+tauri_clear_install_error() {
+    if [ "$TAURI_MODE" = true ]; then
+        tauri_log "ERROR_CLEAR" "$1"
+        printf '[TAURI:ERROR_CLEAR] %s\n' "$1" >&2
+    fi
+}
+
 tauri_diag_marker() {
     _diag_gpu_branch="${1:-unknown}"
     _diag_torch_index_family="${2:-none}"
@@ -286,6 +478,11 @@ _tauri_torch_index_family() {
         return
     fi
     _diag_url="${1:-}"
+    # Strip query/fragment AND a trailing slash before classifying (like _torch_index_url_leaf):
+    # a token isn't echoed into [TAURI:DIAG], and .../cu128/?token=x still classifies as cu128.
+    _diag_url="${_diag_url%%\?*}"
+    _diag_url="${_diag_url%%#*}"
+    _diag_url="${_diag_url%/}"
     case "$_diag_url" in
         */cu118) echo "cu118" ;;
         */cu124) echo "cu124" ;;
@@ -293,6 +490,7 @@ _tauri_torch_index_family() {
         */cu128) echo "cu128" ;;
         */cu130) echo "cu130" ;;
         */cpu) echo "cpu" ;;
+        */xpu) echo "xpu" ;;
         */rocm[0-9]*.[0-9]*)
             _diag_family=${_diag_url##*/}
             case "$_diag_family" in
@@ -319,7 +517,8 @@ _tauri_gpu_branch() {
         return
     fi
     case "$_diag_family" in
-        cu*) echo "cuda" ;;
+        # Require a digit after cu so /current or /custom isn't branded CUDA (parity ^cu[0-9]).
+        cu[0-9]*) echo "cuda" ;;
         rocm*)
             if [ "$_diag_radeon" = true ]; then
                 echo "rocm_radeon"
@@ -327,6 +526,7 @@ _tauri_gpu_branch() {
                 echo "rocm"
             fi ;;
         radeon) echo "rocm_radeon" ;;
+        xpu) echo "xpu" ;;
         cpu) echo "cpu" ;;
         none) echo "no_torch" ;;
         *) echo "unknown" ;;
@@ -405,15 +605,38 @@ _start_studio_venv_replacement() {
     _stamp=$(date +%Y%m%d%H%M%S 2>/dev/null || echo "time")
     _candidate="$STUDIO_HOME/unsloth_studio.rollback.$_stamp.$$"
     _suffix=0
-    while [ -e "$_candidate" ]; do
+    while [ -e "$_candidate" ] || [ -L "$_candidate" ]; do
         _suffix=$((_suffix + 1))
         _candidate="$STUDIO_HOME/unsloth_studio.rollback.$_stamp.$$.$_suffix"
     done
-    mv "$_existing_dir" "$_candidate"
     _VENV_ROLLBACK_DIR="$_candidate"
     _VENV_ROLLBACK_TARGET="$_existing_dir"
     _VENV_ROLLBACK_ACTIVE=true
+    # Publish the rollback state before the atomic rename so a signal cannot
+    # land after mv but before the exit handlers know where the old venv went.
+    if ! mv "$_existing_dir" "$_candidate"; then
+        _VENV_ROLLBACK_ACTIVE=false
+        _VENV_ROLLBACK_DIR=""
+        return 1
+    fi
     substep "previous environment preserved for rollback"
+}
+
+# Clear $VENV_DIR for a recreate without ever destroying the only copy. The
+# legacy-layout migration below moves $STUDIO_HOME/.venv straight into $VENV_DIR
+# without going through _start_studio_venv_replacement, so a plain `rm -rf` there
+# is unrecoverable: if the `uv venv` that follows cannot resolve an interpreter
+# (offline, or a uv whose managed-Python manifest predates the patch being asked
+# for) the user is left with no environment at all. Move it aside instead and let
+# the exit/signal traps put it back. When a replacement is already in flight the
+# rollback copy holds the user's real environment and $VENV_DIR is this run's own
+# work, so plain removal stays correct.
+_discard_venv_for_recreate() {  # venv dir
+    if [ "$_VENV_ROLLBACK_ACTIVE" != true ] && [ -d "$1" ] \
+       && _start_studio_venv_replacement "$1"; then
+        return 0
+    fi
+    rm -rf "$1"
 }
 
 _restore_studio_venv_replacement() {
@@ -422,10 +645,10 @@ _restore_studio_venv_replacement() {
         _VENV_ROLLBACK_ACTIVE=false
         return 0
     }
-    substep "restoring previous environment after failed install..." "$C_WARN"
+    rollback_substep "restoring previous environment after failed install..." "$C_WARN"
     rm -rf "$_VENV_ROLLBACK_TARGET"
     if mv "$_VENV_ROLLBACK_DIR" "$_VENV_ROLLBACK_TARGET"; then
-        substep "restored previous environment"
+        rollback_substep "restored previous environment"
         _VENV_ROLLBACK_ACTIVE=false
         _VENV_ROLLBACK_DIR=""
     else
@@ -433,13 +656,68 @@ _restore_studio_venv_replacement() {
     fi
 }
 
-_commit_studio_venv_replacement() {
-    [ "$_VENV_ROLLBACK_ACTIVE" = true ] || return 0
-    if [ -n "$_VENV_ROLLBACK_DIR" ] && [ -d "$_VENV_ROLLBACK_DIR" ]; then
-        rm -rf "$_VENV_ROLLBACK_DIR" || true
+_studio_venv_rollback_must_be_preserved() {
+    _rollback_name=${1##*/}
+    _rollback_metadata=${_rollback_name#unsloth_studio.rollback.}
+    _rollback_stamp=${_rollback_metadata%%.*}
+    _rollback_process=${_rollback_metadata#*.}
+    # Preserve anything outside the installer's timestamp.PID[.suffix] format.
+    [ "$_rollback_process" != "$_rollback_metadata" ] || return 0
+    case "$_rollback_stamp" in
+        time) ;;
+        ''|*[!0-9]*) return 0 ;;
+        *) [ "${#_rollback_stamp}" -eq 14 ] || return 0 ;;
+    esac
+    _rollback_pid=${_rollback_process%%.*}
+    case "$_rollback_pid" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    _rollback_suffix=${_rollback_process#*.}
+    if [ "$_rollback_suffix" != "$_rollback_process" ]; then
+        case "$_rollback_suffix" in ''|*[!0-9]*) return 0 ;; esac
     fi
-    _VENV_ROLLBACK_ACTIVE=false
-    _VENV_ROLLBACK_DIR=""
+    kill -0 "$_rollback_pid" 2>/dev/null
+}
+
+_prune_stale_studio_venv_rollbacks() {
+    for _stale_rollback in "$STUDIO_HOME"/unsloth_studio.rollback.*; do
+        [ -d "$_stale_rollback" ] || continue
+        if [ -L "$_stale_rollback" ]; then
+            echo "⚠️  Refusing to remove rollback symlink $_stale_rollback" >&2
+            continue
+        fi
+        # A concurrent installer may have moved its live venv aside. The PID in
+        # the generated name keeps this successful run from deleting its rescue copy.
+        _studio_venv_rollback_must_be_preserved "$_stale_rollback" && continue
+        if rm -rf "$_stale_rollback"; then
+            substep "removed stale environment rollback ${_stale_rollback##*/}"
+        else
+            echo "⚠️  Could not remove stale environment rollback $_stale_rollback" >&2
+        fi
+    done
+}
+
+_commit_studio_venv_replacement() {
+    if [ "$_VENV_ROLLBACK_ACTIVE" = true ]; then
+        _rollback_to_remove="$_VENV_ROLLBACK_DIR"
+        # The new environment is already committed. Clear the restore state
+        # before deletion so an interrupt cannot replace it with a half-deleted backup.
+        _VENV_ROLLBACK_ACTIVE=false
+        _VENV_ROLLBACK_DIR=""
+        if [ -n "$_rollback_to_remove" ] && [ -d "$_rollback_to_remove" ]; then
+            if ! rm -rf "$_rollback_to_remove"; then
+                echo "⚠️  Could not remove environment rollback $_rollback_to_remove" >&2
+            fi
+        fi
+    fi
+    # Only prune older orphaned copies after the replacement has succeeded, so
+    # an interrupted install never discards the last known-good environment.
+    _prune_stale_studio_venv_rollbacks
+}
+
+_cleanup_install_temporaries() {
+    [ -n "${_UV_OVERRIDE_TMPDIR:-}" ] && rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
+    [ -n "${_UNSLOTH_TORCH_OVERRIDES:-}" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES" 2>/dev/null || true
 }
 
 _on_install_exit() {
@@ -447,13 +725,28 @@ _on_install_exit() {
     if [ "$_status" -ne 0 ]; then
         _restore_studio_venv_replacement
     fi
-    [ -n "${_UV_OVERRIDE_TMPDIR:-}" ] && rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
+    _cleanup_install_temporaries
     exit "$_status"
 }
-# Empty so an inherited value can never reach the trap's rm; only a temp dir
-# this script creates below (Apple Silicon, spaced path) is ever removed.
+
+_on_install_signal() {
+    _signal_status="$1"
+    # EXIT is disabled to avoid a second cleanup pass. Ignore further termination
+    # signals until the old environment is back in place.
+    trap - EXIT
+    trap '' HUP INT TERM
+    _restore_studio_venv_replacement
+    _cleanup_install_temporaries
+    exit "$_signal_status"
+}
+# Empty so an inherited value never reaches the trap's rm; only temp paths this
+# script creates below (spaced-path dir, torch-trio overrides) are removed.
 _UV_OVERRIDE_TMPDIR=""
+_UNSLOTH_TORCH_OVERRIDES=""
 trap _on_install_exit EXIT
+trap '_on_install_signal 129' HUP
+trap '_on_install_signal 130' INT
+trap '_on_install_signal 143' TERM
 
 # ── Helper: download a URL to a file (supports curl and wget) ──
 download() {
@@ -479,6 +772,45 @@ _is_pkg_installed() {
     esac
 }
 
+# ── Helper: human-readable apt distro label for the sudo package prompt (#6207) ──
+# Reads /etc/os-release so the Accept? prompt can say which distro we detected and
+# that packages come from that distro's official apt repos (not a tarball).
+_apt_distro_description() {
+    # Plain ( ... ) subshell — not $() — so case/;; stays bash-3.2-safe on macOS.
+    # Bash 3.2 misparses case arms inside command substitution and errors on `;;`.
+    (
+        if [ ! -r /etc/os-release ]; then
+            printf 'a debian-like system'
+            exit 0
+        fi
+        # shellcheck disable=SC1091
+        . /etc/os-release 2>/dev/null || true
+        if [ -n "${NAME:-}" ] && [ -n "${VERSION_ID:-}" ]; then
+            _ad_label="$NAME $VERSION_ID"
+        elif [ -n "${PRETTY_NAME:-}" ]; then
+            _ad_label="$PRETTY_NAME"
+        elif [ -n "${NAME:-}" ]; then
+            _ad_label="$NAME"
+        else
+            printf 'a debian-like system'
+            exit 0
+        fi
+        case " ${ID:-} ${ID_LIKE:-} " in
+            *" debian "*|*" ubuntu "*) _ad_label="${_ad_label} (debian-like)" ;;
+        esac
+        printf '%s' "$_ad_label"
+    )
+}
+
+# ── Helper: can the controlling terminal actually be opened for reading? ──
+# `test -r` only checks permission bits, which look fine in containers and
+# systemd units where open() then fails with ENXIO. Probe with a real open.
+# The subshell is required: in dash a failed redirection on the special
+# builtin `:` exits the whole script.
+_can_read_tty() {
+    ( : </dev/tty ) >/dev/null 2>&1
+}
+
 # ── Helper: install packages via apt, escalating to sudo only if needed ──
 # Usage: _smart_apt_install pkg1 pkg2 pkg3 ...
 _smart_apt_install() {
@@ -501,39 +833,90 @@ _smart_apt_install() {
         return 0
     fi
 
-    # In Tauri mode, report needed packages and exit — Rust handles elevation
+    # Optional callers never elevate, in any mode: nothing on the consumer path
+    # builds anything, so neither the terminal sudo prompt below nor the Tauri
+    # NEED_SUDO dialog (whose Cancel leaves the user not installed) may gate the
+    # run over unused tools. The caller falls through to prebuilt llama.cpp.
+    # Required packages such as curl still escalate.
+    if [ "${_SMART_APT_OPTIONAL:-false}" = true ]; then
+        return 2
+    fi
+
     if [ "$TAURI_MODE" = true ]; then
+        # Report needed packages and exit — Rust handles elevation.
         tauri_log "NEED_SUDO" "$_STILL_MISSING"
         exit 2
     fi
 
     # Step 3: Escalate -- need elevated permissions for remaining packages
     if command -v sudo >/dev/null 2>&1; then
+        _ad_desc="$(_apt_distro_description)"
         echo ""
         echo "    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
         echo "    WARNING: We require sudo elevated permissions to install:"
         echo "    $_STILL_MISSING"
-        echo "    If you accept, we'll run sudo now, and it'll prompt your password."
+        echo "    Detected ${_ad_desc}."
+        echo "    If you accept, we'll run sudo apt-get to install these packages"
+        echo "    from your distro's official repositories (not a third-party tarball)."
         echo "    !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
         echo ""
-        printf "    Accept? [Y/n] "
-        if [ -r /dev/tty ]; then
-            read -r REPLY </dev/tty || REPLY="y"
-        else
-            REPLY="y"
-        fi
-        case "$REPLY" in
-            [nN]*)
+        if _can_read_tty; then
+            printf "    Accept? [Y/n] "
+            # The device opened, so a failed read is EOF, not consent: decline,
+            # as the autostart prompt below does. Enter is still yes (a
+            # successful read of an empty line).
+            read -r REPLY </dev/tty || REPLY="n"
+            case "$REPLY" in
+                [nN]*)
+                    echo ""
+                    echo "    Please install these packages first, then re-run Unsloth Studio setup:"
+                    echo "    sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+                    exit 1
+                    ;;
+            esac
+            # Mirror the headless branch: on a sudoers denial, a wrong password
+            # or an apt error, say what to run by hand instead of letting set -e
+            # abort on a bare sudo/apt message.
+            if sudo apt-get update -y </dev/null &&
+                sudo apt-get install -y $_STILL_MISSING </dev/null; then
+                :
+            else
                 echo ""
-                echo "    Please install these packages first, then re-run Unsloth Studio setup:"
+                echo "    Could not install these packages: $_STILL_MISSING"
+                echo "    See the error above."
+                echo "    Please install them first, then re-run Unsloth Studio setup:"
                 echo "    sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
                 exit 1
-                ;;
-            *)
-                sudo apt-get update -y </dev/null
-                sudo apt-get install -y $_STILL_MISSING </dev/null
-                ;;
-        esac
+            fi
+        else
+            # Nobody can answer a prompt or type a password here. -n makes sudo
+            # refuse rather than prompt into a closed stdin, which is how #7307
+            # died. Probe with the real commands: `sudo -l` answers whether they
+            # are *authorized*, not whether running them needs authentication.
+            # -k ignores any cached timestamp, so only a real NOPASSWD rule gets
+            # through, not someone's sudo in another shell minutes ago. Per
+            # sudo(8), -k alongside a command ignores the cached credentials and
+            # "will not update" them, so other sessions keep theirs.
+            echo "    No terminal to confirm on; trying passwordless sudo."
+            if sudo -n -k apt-get update -y </dev/null &&
+                sudo -n -k apt-get install -y $_STILL_MISSING </dev/null; then
+                echo "    Installed with passwordless sudo."
+            else
+                echo ""
+                echo "    Could not install these packages: $_STILL_MISSING"
+                echo "    Detected ${_ad_desc}."
+                # Either sudo refused, or apt failed on a bad repo, dpkg lock or
+                # network outage. sudo exits 1 on an auth/config problem and
+                # when the command cannot be executed, but otherwise passes the
+                # command's own status through, so state both causes.
+                echo "    Either sudo needs a password here, or apt-get itself"
+                echo "    failed; see the error above. With no terminal to"
+                echo "    authenticate on, this cannot be done unattended."
+                echo "    Please install them first, then re-run Unsloth Studio setup:"
+                echo "    sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+                exit 1
+            fi
+        fi
     else
         echo ""
         echo "    sudo is not available on this system."
@@ -639,7 +1022,7 @@ POLL_INTERVAL_SEC=0.25
 LOG_FILE="$DATA_DIR/studio.log"
 # why: in env-override mode multiple installs share an OS user; namespace the
 # lock and remember our own healthy port so we never attach to an unrelated
-# Studio listening on the global 8888..8908 range.
+# Unsloth listening on the global 8888..8908 range.
 LOCK_DIR="${XDG_RUNTIME_DIR:-/tmp}/unsloth-studio-launcher-$(id -u).lock"
 PORT_FILE=""
 # why: gate on the install-time mode (baked above) instead of the runtime env
@@ -710,7 +1093,7 @@ _candidate_ports() {
 _find_healthy_port() {
     if [ -n "$PORT_FILE" ] && [ -f "$PORT_FILE" ]; then
         # why: env-mode installs only attach to a port we previously launched
-        # ourselves; never to a sibling Studio that happens to be healthy.
+        # ourselves; never to a sibling Unsloth that happens to be healthy.
         _p=$(cat "$PORT_FILE" 2>/dev/null || true)
         case "$_p" in
             ''|*[!0-9]*) ;;
@@ -877,7 +1260,7 @@ _acquire_lock() {
     # Lock dir exists -- check if owner is still alive
     _old_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
     if [ -n "$_old_pid" ] && kill -0 "$_old_pid" 2>/dev/null; then
-        # Another launcher is running; wait for it to bring Studio up
+        # Another launcher is running; wait for it to bring Unsloth up
         _deadline=$(($(date +%s) + TIMEOUT_SEC))
         while [ "$(date +%s)" -lt "$_deadline" ]; do
             _port=$(_find_healthy_port) && {
@@ -1070,6 +1453,32 @@ LAUNCHER_EOF
         rm -f "$_css_gem_png"
     fi
 
+    # Also try to find the pre-built Tauri icon.icns (1024×1024, professionally
+    # built with all required sizes).  Prefer it over the sips-generated icon
+    # for the macOS .app bundle — it ships in the pip package at
+    # studio/src-tauri/icons/icon.icns and is higher quality with @2x variants.
+    _css_tauri_icns=""
+    for _sp in "$_css_venv_dir"/lib/python*/site-packages/studio/src-tauri/icons; do
+        if [ -f "$_sp/icon.icns" ]; then
+            _css_tauri_icns="$_sp/icon.icns"
+        fi
+    done
+    if [ -z "$_css_tauri_icns" ] && [ -n "$_css_script_dir" ] && [ -f "$_css_script_dir/studio/src-tauri/icons/icon.icns" ]; then
+        _css_tauri_icns="$_css_script_dir/studio/src-tauri/icons/icon.icns"
+    fi
+
+    # Also look for the higher-resolution Tauri icon.png (1024×1024) for
+    # the Linux .desktop icon — better than the 512px rounded variant.
+    _css_tauri_png=""
+    for _sp in "$_css_venv_dir"/lib/python*/site-packages/studio/src-tauri/icons; do
+        if [ -f "$_sp/icon.png" ]; then
+            _css_tauri_png="$_sp/icon.png"
+        fi
+    done
+    if [ -z "$_css_tauri_png" ] && [ -n "$_css_script_dir" ] && [ -f "$_css_script_dir/studio/src-tauri/icons/icon.png" ]; then
+        _css_tauri_png="$_css_script_dir/studio/src-tauri/icons/icon.png"
+    fi
+
     # ── Platform-specific shortcuts ──
     # Env-mode installs are workspace-scoped: skip persistent desktop /
     # Start-Menu / dock launchers that may point at a deleted workspace.
@@ -1089,7 +1498,19 @@ LAUNCHER_EOF
         _css_desktop="$_css_app_dir/unsloth-studio.desktop"
         # Escape backslashes and double-quotes for .desktop Exec= field
         _css_exec_escaped=$(printf '%s' "$_css_launcher" | sed 's/\\/\\\\/g; s/"/\\"/g')
-        _css_icon_escaped=$(printf '%s' "$_css_icon_png" | sed 's/\\/\\\\/g; s/"/\\"/g')
+        # Prefer the higher-resolution Tauri icon.png, but persist it under the
+        # installed data directory so local-checkout shortcuts survive repo moves.
+        _css_desktop_icon="$_css_icon_png"
+        if [ -f "$_css_tauri_png" ]; then
+            _css_desktop_icon_tmp="${_css_icon_png}.tmp"
+            if cp "$_css_tauri_png" "$_css_desktop_icon_tmp" 2>/dev/null \
+                && mv "$_css_desktop_icon_tmp" "$_css_icon_png" 2>/dev/null; then
+                :
+            else
+                rm -f "$_css_desktop_icon_tmp"
+            fi
+        fi
+        _css_icon_escaped=$(printf '%s' "$_css_desktop_icon" | sed 's/\\/\\\\/g; s/"/\\"/g')
         cat > "$_css_desktop" << DESKTOP_EOF
 [Desktop Entry]
 Version=1.0
@@ -1181,8 +1602,14 @@ STUB_EOF
             && mv "$_css_macos_dir/launch-studio.tmp" "$_css_macos_dir/launch-studio"
         chmod +x "$_css_macos_dir/launch-studio"
 
-        # Build AppIcon.icns from unsloth-gem.png (2240x2240)
-        if [ -f "$_css_gem_png" ] && command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then
+        # ── AppIcon ──
+        # Prefer the pre-built Tauri icon.icns (1024×1024, professionally built
+        # with all sizes).  Fall back to generating one from the gem PNG via
+        # sips+iconutil, then to a plain PNG copy.
+        if [ -f "$_css_tauri_icns" ] \
+            && cp "$_css_tauri_icns" "$_css_res_dir/AppIcon.icns" 2>/dev/null; then
+            :
+        elif [ -f "$_css_gem_png" ] && command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then
             _css_tmpdir=$(mktemp -d 2>/dev/null)
             if [ -d "$_css_tmpdir" ]; then
                 _css_iconset="$_css_tmpdir/AppIcon.iconset"
@@ -1199,7 +1626,7 @@ STUB_EOF
                 rm -rf "$_css_tmpdir"
             fi
         fi
-        # Fallback: copy PNG as icon
+        # Last-resort fallback: copy PNG as icon
         if [ ! -f "$_css_res_dir/AppIcon.icns" ] && [ -f "$_css_icon_png" ]; then
             cp "$_css_icon_png" "$_css_res_dir/AppIcon.icns" 2>/dev/null || true
         fi
@@ -1347,7 +1774,7 @@ WSLPS1_EOF
         # shortcut wasn't created; tell the user how to launch / re-enable it.
         if [ "$_css_created" -ne 1 ]; then
             substep "Couldn't create the Windows shortcut (WSL interop may be disabled)." "$C_WARN"
-            substep "  Launch Studio from Windows:  wsl -d \"$_css_distro\" -- bash -lc 'unsloth studio'" "$C_WARN"
+            substep "  Launch Unsloth from Windows:  wsl -d \"$_css_distro\" -- bash -lc 'unsloth studio'" "$C_WARN"
             substep "  (re-enable shortcuts: turn WSL interop back on, e.g. run 'wsl --shutdown' then reopen WSL.)" "$C_WARN"
         fi
     fi
@@ -1415,7 +1842,7 @@ if [ "$MAC_INTEL" = true ]; then
     echo ""
     echo "  NOTE: Intel Mac (x86_64) detected."
     echo "  PyTorch is unavailable for this platform (dropped Jan 2024)."
-    echo "  Studio will install in GGUF-only mode."
+    echo "  Unsloth will install in GGUF-only mode."
     echo "  Chat, inference via GGUF, and data recipes will work."
     echo "  Training requires Apple Silicon or Linux with GPU."
     echo ""
@@ -1462,480 +1889,24 @@ elif [ "$OS" = "macos" ]; then
 fi
 tauri_diag_marker "$_TAURI_INITIAL_GPU_BRANCH" "none"
 
-# Strix Halo ROCm-on-WSL only targets Ubuntu 24.04. On a newer distro (e.g. 26.04)
-# with a 24.04 distro present, re-run the install there and stop; else fall through
-# to CPU + the `wsl --install` hint below (never auto-create a distro). Runs before
-# the STUDIO_HOME mkdir/venv so the origin distro is untouched.
-_maybe_reroute_strixhalo_to_2404() {
-    [ "${OS:-}" = "wsl" ] || return 0
-    [ "${SKIP_TORCH:-false}" = "false" ] || return 0
-    [ "${UNSLOTH_SKIP_ROCM_WSL_SETUP:-0}" = "1" ] && return 0
-    [ "${UNSLOTH_WSL_REROUTED:-0}" = "1" ] && return 0
-    [ -e /dev/dxg ] || return 0
-    grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null || return 0
-    # Already ROCm-on-WSL? leave a working GPU alone, whatever the version.
-    if [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ]; then
-        return 0
+# AMD GPU name from the Windows host via WMI, or empty. Discrete cards aren't in
+# /proc/cpuinfo, so ask Windows. Cached ("-" = negative), self-contained, bounded
+# to 10s. Defined here so the reroute below can use it before _run_bounded exists.
+_WSL_AMD_GPU_NAME_CACHE=""
+_wsl_amd_gpu_name() {
+    if [ -n "$_WSL_AMD_GPU_NAME_CACHE" ]; then
+        [ "$_WSL_AMD_GPU_NAME_CACHE" = "-" ] && return 1
+        printf '%s' "$_WSL_AMD_GPU_NAME_CACHE"; return 0
     fi
-    _rr_ver=""
-    [ -r /etc/os-release ] && _rr_ver=$(. /etc/os-release 2>/dev/null; printf '%s' "${VERSION_ID:-}")
-    # The bootstrap (scripts/install_rocm_wsl_strixhalo.sh) dies on any VERSION_ID but
-    # 24.04 and pins the noble repo, so 24.04 is the sole GPU-supported target; leave a
-    # 24.04 user alone. (Working ROCm on other versions was caught by librocdxg above.)
-    case "$_rr_ver" in 24.04) return 0 ;; esac
-    # Distro is now unsupported. If we can't reroute to a 24.04 target, stay CPU-only
-    # AND skip the later origin-distro ROCm bootstrap (it ignores distro version, so it
-    # would otherwise install ROCm into 26.04 etc.).
-    command -v wsl.exe >/dev/null 2>&1 || { UNSLOTH_SKIP_ROCM_WSL_SETUP=1; return 0; }
-    # Route only to an installed Ubuntu-24.04 (bootstrap's only target). Match the whole
-    # line (one distro per line from wsl.exe -l -q), not a substring, so "Ubuntu-24.04-test"
-    # can't masquerade as it and then fail `wsl -d`.
-    # || true: no match is expected, not an error (script runs under set -e).
-    _rr_distros=$(wsl.exe -l -q 2>/dev/null | tr -d '\000\r')
-    _rr_target=$(printf '%s\n' "$_rr_distros" | grep -ixF "Ubuntu-24.04" | head -n1) || true
-    [ -n "$_rr_target" ] || {
-        substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
-        substep "No Ubuntu-24.04 WSL distro found; staying CPU-only. Install Ubuntu-24.04 and re-run there for GPU." "$C_WARN"
-        UNSLOTH_SKIP_ROCM_WSL_SETUP=1
-        return 0
-    }
-
-    echo ""
-    substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
-    substep "Found an existing $_rr_target distro -- continuing the GPU install there." "$C_OK"
-    # A --local checkout can't be replayed via curl|sh (the repo isn't in the target
-    # distro), so tell the user to re-run there rather than silently run a different install.
-    if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        substep "This is a --local install; re-run it from $_rr_target instead:" "$C_WARN"
-        substep "  wsl -d $_rr_target -- bash -lc 'cd <your checkout> && ./install.sh --local'" "$C_WARN"
-        substep "Continuing CPU-only in Ubuntu ${_rr_ver:-this distro} for now." "$C_WARN"
-        # Unsupported distro, can't reroute a --local checkout: skip the origin ROCm bootstrap.
-        UNSLOTH_SKIP_ROCM_WSL_SETUP=1
-        return 0
-    fi
-    # Forward the caller's options/env (custom package/python/home) so the rerouted
-    # install matches what was asked for, not a default install.
-    _rr_q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
-    _rr_exports="set -o pipefail; export UNSLOTH_WSL_REROUTED=1"
-    [ "$_STUDIO_HOME_REDIRECT" = "env" ] && _rr_exports="$_rr_exports; export UNSLOTH_STUDIO_HOME=$(_rr_q "$STUDIO_HOME")"
-    # Forward explicit ROCm-bootstrap consent (e.g. Tauri) so the child auto-enables the
-    # GPU instead of falling back to the desktop-app prompt path.
-    [ "${UNSLOTH_ROCM_WSL_AUTO:-0}" = "1" ] && _rr_exports="$_rr_exports; export UNSLOTH_ROCM_WSL_AUTO=1"
-    _rr_args=""
-    [ "$PACKAGE_NAME" != "unsloth" ] && _rr_args="$_rr_args --package $(_rr_q "$PACKAGE_NAME")"
-    [ -n "$_USER_PYTHON" ] && _rr_args="$_rr_args --python $(_rr_q "$_USER_PYTHON")"
-    [ "$_VERBOSE" = true ] && _rr_args="$_rr_args --verbose"
-    [ "$TAURI_MODE" = true ] && _rr_args="$_rr_args --tauri"
-    if [ -n "${UNSLOTH_WSL_REROUTE_CMD:-}" ]; then
-        _rr_cmd="$UNSLOTH_WSL_REROUTE_CMD"               # user took full control
-    elif [ -n "$_rr_args" ]; then
-        _rr_cmd="curl -fsSL https://unsloth.ai/install.sh | sh -s --$_rr_args"
+    command -v powershell.exe >/dev/null 2>&1 || { _WSL_AMD_GPU_NAME_CACHE="-"; return 1; }
+    _wag_ps="(Get-CimInstance Win32_VideoController | Where-Object { \$_.Name -match 'AMD|Radeon' } | Select-Object -First 1).Name"
+    if command -v timeout >/dev/null 2>&1; then
+        _wag_n="$(timeout 10 powershell.exe -NoProfile -Command "$_wag_ps" 2>/dev/null | tr -d '\r\n\000')"
     else
-        _rr_cmd="curl -fsSL https://unsloth.ai/install.sh | sh"
+        _wag_n="$(powershell.exe -NoProfile -Command "$_wag_ps" 2>/dev/null | tr -d '\r\n\000')"
     fi
-    # pipefail so a failed curl in `curl | sh` isn't masked by sh exiting 0 on empty
-    # input (which would wrongly report success and exit 0 the parent installer).
-    _rr_rc=0
-    wsl.exe -d "$_rr_target" -- bash -lc "$_rr_exports; $_rr_cmd" || _rr_rc=$?
-    if [ "$_rr_rc" -eq 0 ]; then
-        exit 0
-    fi
-    # In Tauri mode the child uses exit 2 ([TAURI:NEED_SUDO]) to ask the desktop app to
-    # elevate for the target distro; the child already printed the NEED_SUDO line, so
-    # propagate the code instead of masking it as a reroute failure and dropping to CPU.
-    if [ "$TAURI_MODE" = true ] && [ "$_rr_rc" -eq 2 ]; then
-        exit 2
-    fi
-    substep "Could not auto-continue in $_rr_target; run it yourself:" "$C_WARN"
-    substep "  wsl -d $_rr_target -- bash -lc 'curl -fsSL https://unsloth.ai/install.sh | sh'"
-    substep "Continuing CPU-only in Ubuntu ${_rr_ver:-this distro} for now." "$C_WARN"
-    # Reroute failed; don't let the later bootstrap install ROCm into this unsupported
-    # distro -- stay CPU-only.
-    UNSLOTH_SKIP_ROCM_WSL_SETUP=1
-    return 0
-}
-_maybe_reroute_strixhalo_to_2404 || true
-
-# ── Check system dependencies ──
-# cmake/git are only needed to *build* llama.cpp from source. Studio downloads a
-# prebuilt by default, and setup.sh self-skips the source build when they're
-# absent -- so macOS doesn't block on cmake (requiring it would force a manual
-# Homebrew install). Linux keeps requiring them; its package manager has them.
-tauri_log "STEP" "Checking system dependencies"
-
-case "$OS" in
-    macos)
-        # Xcode Command Line Tools provide the C/C++ compiler and git.
-        if ! xcode-select -p >/dev/null 2>&1; then
-            echo ""
-            echo "==> Xcode Command Line Tools are required."
-            echo "    Installing (a system dialog will appear)..."
-            xcode-select --install </dev/null 2>/dev/null || true
-            echo "    After the installation completes, please re-run this script."
-            exit 1
-        fi
-        # cmake is only needed for a source build; the default prebuilt path
-        # doesn't use it, so its absence is not fatal -- no Homebrew prerequisite.
-        if command -v cmake >/dev/null 2>&1; then
-            step "deps" "all system dependencies found"
-        else
-            step "deps" "using prebuilt llama.cpp (cmake not found)" "$C_WARN"
-            substep "Install cmake only if you want a source build: brew install cmake"
-        fi
-        ;;
-    linux|wsl)
-        MISSING=""
-        command -v cmake >/dev/null 2>&1 || MISSING="$MISSING cmake"
-        command -v git   >/dev/null 2>&1 || MISSING="$MISSING git"
-        # curl or wget is needed for downloads; check both
-        if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
-            MISSING="$MISSING curl"
-        fi
-        command -v gcc  >/dev/null 2>&1 || MISSING="$MISSING build-essential"
-        # libcurl dev headers for llama.cpp HTTPS support
-        command -v curl-config >/dev/null 2>&1 || MISSING="$MISSING libcurl4-openssl-dev"
-
-        MISSING=$(echo "$MISSING" | sed 's/^ *//')
-        if [ -n "$MISSING" ]; then
-            echo ""
-            step "deps" "missing: $MISSING" "$C_WARN"
-            substep "These are needed to build the GGUF inference engine."
-            if command -v apt-get >/dev/null 2>&1; then
-                _smart_apt_install $MISSING
-            else
-                echo "    Automatic system package installation is supported on apt-based"
-                echo "    Linux distributions (Ubuntu/Debian) only. Please install the"
-                echo "    missing dependencies with your package manager, then re-run setup:"
-                echo "    $MISSING"
-                echo ""
-                echo "    Examples:"
-                echo "      Fedora/RHEL: sudo dnf install cmake git gcc gcc-c++ make libcurl-devel"
-                echo "      Arch:       sudo pacman -S --needed cmake git base-devel curl"
-                echo "      openSUSE:   sudo zypper install cmake git gcc gcc-c++ make libcurl-devel"
-                exit 1
-            fi
-            echo ""
-        else
-            step "deps" "all system dependencies found"
-        fi
-        ;;
-esac
-
-# ── Install uv ──
-tauri_log "STEP" "Installing uv package manager"
-UV_MIN_VERSION="0.8.16"
-
-# When bytecode compilation is enabled, large installs can exceed uv's 60s default on slow machines. Default to 180s, preserving overrides ("0" disables).
-: "${UV_COMPILE_BYTECODE_TIMEOUT:=180}"
-export UV_COMPILE_BYTECODE_TIMEOUT
-
-# uv >= 0.8.16 retries HTTP/2 streaming body errors; raise retries and read
-# timeout for large wheel downloads. ":=" preserves any user override.
-: "${UV_HTTP_RETRIES:=5}"
-export UV_HTTP_RETRIES
-: "${UV_HTTP_TIMEOUT:=180}"
-export UV_HTTP_TIMEOUT
-
-# macOS: trust the system Keychain so uv uses SecureTransport instead of rustls.
-# Required behind TLS-inspecting proxies (Cisco Umbrella, Zscaler, etc.) which
-# present their own CA certificate. rustls (uv's default) ignores the Keychain
-# and rejects intercepted connections with "invalid peer certificate: UnknownIssuer".
-# Set both vars: UV_SYSTEM_CERTS is the modern one (uv >= 0.11), UV_NATIVE_TLS the
-# legacy one understood by uv 0.8.16-0.10.x, which the installer keeps if already
-# present (UV_MIN_VERSION) and which ignores UV_SYSTEM_CERTS. Mirror the choice onto
-# both so it works on either uv. Opt out with UV_SYSTEM_CERTS=0.
-if [ "$OS" = "macos" ]; then
-    : "${UV_SYSTEM_CERTS:=1}"
-    : "${UV_NATIVE_TLS:=$UV_SYSTEM_CERTS}"
-fi
-[ -n "${UV_SYSTEM_CERTS:-}" ] && export UV_SYSTEM_CERTS
-[ -n "${UV_NATIVE_TLS:-}" ] && export UV_NATIVE_TLS
-
-version_ge() {
-    # returns 0 if $1 >= $2
-    _a=$1
-    _b=$2
-
-    while [ -n "$_a" ] || [ -n "$_b" ]; do
-        _a_part=${_a%%.*}
-        _b_part=${_b%%.*}
-
-        [ "$_a" = "$_a_part" ] && _a="" || _a=${_a#*.}
-        [ "$_b" = "$_b_part" ] && _b="" || _b=${_b#*.}
-
-        [ -z "$_a_part" ] && _a_part=0
-        [ -z "$_b_part" ] && _b_part=0
-
-        if [ "$_a_part" -gt "$_b_part" ]; then
-            return 0
-        fi
-        if [ "$_a_part" -lt "$_b_part" ]; then
-            return 1
-        fi
-    done
-
-    return 0
-}
-
-_uv_version_ok() {
-    _raw=$("$1" --version 2>/dev/null | awk '{print $2}') || return 1
-    [ -n "$_raw" ] || return 1
-    _ver=${_raw%%[-+]*}
-    case "$_ver" in
-        ''|*[!0-9.]*) return 1 ;;
-    esac
-    version_ge "$_ver" "$UV_MIN_VERSION" || return 1
-    # Prerelease of the exact minimum (e.g. 0.7.14-rc1) is still below stable 0.7.14
-    [ "$_ver" = "$UV_MIN_VERSION" ] && [ "$_raw" != "$_ver" ] && return 1
-    return 0
-}
-
-if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
-    substep "installing uv package manager..."
-    _uv_tmp=$(mktemp)
-    download "https://astral.sh/uv/install.sh" "$_uv_tmp"
-    run_maybe_quiet sh "$_uv_tmp" </dev/null
-    rm -f "$_uv_tmp"
-    if [ -f "$HOME/.local/bin/env" ]; then
-        . "$HOME/.local/bin/env"
-    fi
-    export PATH="$HOME/.local/bin:$PATH"
-fi
-
-# ── Create venv (migrate old layout if possible, otherwise fresh) ──
-tauri_log "STEP" "Creating virtual environment"
-mkdir -p "$STUDIO_HOME"
-
-_MIGRATED=false
-
-if [ -x "$VENV_DIR/bin/python" ]; then
-    # why: matching guard to the .venv branch below -- in env-mode
-    # $STUDIO_HOME is a user-chosen workspace, so refuse to nuke an
-    # existing $STUDIO_HOME/unsloth_studio that lacks Studio sentinels.
-    # Accept the in-VENV ownership marker so partial-install retries are
-    # not blocked. Sentinels must be regular files: -f follows symlinks
-    # to files (the legitimate ln -s shim shape) but rejects directories
-    # and broken/dir-targeted symlinks.
-    if [ "$_STUDIO_HOME_REDIRECT" = "env" ] \
-       && [ ! -f "$VENV_DIR/.unsloth-studio-owned" ] \
-       && [ ! -f "$STUDIO_HOME/share/studio.conf" ] \
-       && [ ! -f "$STUDIO_HOME/bin/unsloth" ]; then
-        echo "ERROR: $VENV_DIR already exists but does not look like an Unsloth Studio install." >&2
-        echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME." >&2
-        exit 1
-    fi
-    # New layout already exists — replace only after preserving rollback copy.
-    substep "preserving existing environment for rollback..."
-    _start_studio_venv_replacement "$VENV_DIR"
-elif [ "$_STUDIO_HOME_REDIRECT" != "env" ] && [ -x "$STUDIO_HOME/.venv/bin/python" ]; then
-    # Old layout exists — validate before migrating.
-    # Skip in env-mode so we don't rm -rf an unrelated .venv at the
-    # workspace root (e.g. user's existing project Python venv).
-    # In no-torch mode, a missing torch package is expected; validate Python only.
-    substep "found legacy Studio environment, validating..."
-    _legacy_ok=false
-    if [ "$SKIP_TORCH" = true ]; then
-        if "$STUDIO_HOME/.venv/bin/python" -c "import sys; print(sys.executable)" >/dev/null 2>&1; then
-            _legacy_ok=true
-        fi
-    elif "$STUDIO_HOME/.venv/bin/python" -c "
-import torch
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-A = torch.ones((10, 10), device=device)
-B = torch.ones((10, 10), device=device)
-C = torch.ones((10, 10), device=device)
-D = A + B
-E = D @ C
-torch.testing.assert_close(torch.unique(E), torch.tensor((20,), device=E.device, dtype=E.dtype))
-" >/dev/null 2>&1; then
-        _legacy_ok=true
-    fi
-    if [ "$_legacy_ok" = true ]; then
-        echo "✅ Legacy environment is healthy — migrating..."
-        mv "$STUDIO_HOME/.venv" "$VENV_DIR"
-        echo "   Moved ~/.unsloth/studio/.venv → $VENV_DIR"
-        _MIGRATED=true
-    else
-        echo "⚠️  Legacy environment failed validation — creating fresh environment"
-        _invalid_venv="$STUDIO_HOME/.venv.invalid.$(date +%Y%m%d%H%M%S 2>/dev/null || echo time).$$"
-        mv "$STUDIO_HOME/.venv" "$_invalid_venv" 2>/dev/null || true
-    fi
-fi
-
-# If an Intel Mac has a stale 3.13 venv from a previous failed install, recreate
-# (skip when the user explicitly chose a version via --python)
-if [ "$SKIP_TORCH" = true ] && [ "$MAC_INTEL" = true ] && [ -z "$_USER_PYTHON" ] && [ -x "$VENV_DIR/bin/python" ]; then
-    _PY_MM=$("$VENV_DIR/bin/python" -c \
-        "import sys; print('{}.{}'.format(*sys.version_info[:2]))" 2>/dev/null || echo "")
-    if [ "$_PY_MM" != "3.12" ]; then
-        echo "  Recreating Intel Mac environment with Python 3.12 (was $_PY_MM)..."
-        rm -rf "$VENV_DIR"
-    fi
-fi
-
-if [ ! -x "$VENV_DIR/bin/python" ]; then
-    step "venv" "creating Python ${PYTHON_VERSION} virtual environment"
-    substep "$VENV_DIR"
-    if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ] && [ -z "$_USER_PYTHON" ]; then
-        # Apple Silicon: request an arch-explicit arm64 CPython so uv cannot
-        # reuse a cached x86_64 (Rosetta) build. torch ships no macOS x86_64
-        # wheels since 2.2.2, so an x86_64 venv makes the torch install
-        # unresolvable. The arm64 guard below is kept as a backstop for
-        # migrated / pre-existing venvs.
-        run_install_cmd "create venv" uv venv "$VENV_DIR" \
-            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
-    else
-        run_install_cmd "create venv" uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
-    fi
-fi
-
-# Mark the freshly-created venv as Studio-owned so a partial install can be
-# repaired by re-running install.sh; the env-mode deletion guard above accepts
-# this marker as the primary sentinel.
-if [ -x "$VENV_DIR/bin/python" ]; then
-    : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
-fi
-
-# Guard against two independent Apple Silicon venv problems, in order:
-#   1. uv may create the venv from a cached x86_64 (Rosetta) Python when a
-#      same-version x86_64 build is already cached (often because uv itself
-#      is an x86_64 build). That venv reports x86_64 to wheel resolvers, and
-#      PyTorch ships no macOS wheels on the CPU index for any architecture,
-#      so the torch install can never resolve. Recreate it with an
-#      arch-explicit arm64 CPython.
-#   2. Python 3.13.8 has a known torch import bug.
-# The two are independent: a venv may be x86_64 and, once recreated, still
-# land on 3.13.8. So we re-inspect the interpreter between the checks instead
-# of chaining them with elif, guaranteeing both invariants hold on whatever
-# venv we end up with. Skip both when the user explicitly chose an interpreter
-# via --python.
-if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
-    _inspect_venv() {
-        "$VENV_DIR/bin/python" -c \
-            "import platform, sys; print(platform.machine(), '{}.{}.{}'.format(*sys.version_info[:3]))" \
-            2>/dev/null || echo " "
-    }
-    _info=$(_inspect_venv)
-    _VENV_ARCH=${_info%% *}
-    _PY_VER=${_info##* }
-    # If the interpreter could not be executed (an x86_64 venv python on a Mac
-    # without Rosetta installed), the probe above yields an empty arch. Fall
-    # back to reading the binary's Mach-O arch statically so the x86_64
-    # recreate below still triggers instead of letting uv fail later.
-    if [ -z "$_VENV_ARCH" ] && [ -x "$VENV_DIR/bin/python" ]; then
-        # uv symlinks bin/python to the base interpreter, so dereference with
-        # file -L (lipo already follows the link). Trailing || true keeps the
-        # installer alive under set -e when neither tool is present.
-        _archs=$(lipo -archs "$VENV_DIR/bin/python" 2>/dev/null \
-            || file -L "$VENV_DIR/bin/python" 2>/dev/null || true)
-        case "$_archs" in
-            *arm64*)  _VENV_ARCH=arm64 ;;
-            *x86_64*) _VENV_ARCH=x86_64 ;;
-        esac
-    fi
-
-    if [ "$_VENV_ARCH" = "x86_64" ]; then
-        echo "  WARNING: venv was created with an x86_64 (Rosetta) Python on Apple Silicon."
-        echo "  Recreating venv with native arm64 Python ${PYTHON_VERSION}..."
-        rm -rf "$VENV_DIR"
-        run_install_cmd "recreate venv (arm64)" uv venv "$VENV_DIR" \
-            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
-        if [ -x "$VENV_DIR/bin/python" ]; then
-            : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
-        fi
-        # Re-inspect: the recreated arm64 venv may still be 3.13.8.
-        _info=$(_inspect_venv)
-        _VENV_ARCH=${_info%% *}
-        _PY_VER=${_info##* }
-    fi
-
-    if [ "$_PY_VER" = "3.13.8" ]; then
-        echo "  WARNING: Python 3.13.8 has a known torch import bug."
-        echo "  Recreating venv with Python 3.12..."
-        rm -rf "$VENV_DIR"
-        PYTHON_VERSION="3.12"
-        run_install_cmd "recreate venv" uv venv "$VENV_DIR" \
-            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
-        if [ -x "$VENV_DIR/bin/python" ]; then
-            : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
-        fi
-    fi
-fi
-
-if [ -x "$VENV_DIR/bin/python" ]; then
-    step "venv" "using environment"
-    substep "${VENV_DIR}"
-fi
-
-# Default torch constraint -- tightened for Python 3.13+ on arm64 macOS
-# (torch <2.6 has no cp313 macOS arm64 wheels)
-TORCH_CONSTRAINT="torch>=2.4,<2.11.0"
-if [ "$SKIP_TORCH" = false ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
-    _PY_MINOR=$("$VENV_DIR/bin/python" -c \
-        "import sys; print(sys.version_info.minor)" 2>/dev/null || echo "0")
-    if [ "$_PY_MINOR" -ge 13 ] 2>/dev/null; then
-        TORCH_CONSTRAINT="torch>=2.6,<2.11.0"
-    fi
-fi
-
-# ── Resolve repo root (for --local installs) ──
-_REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
-
-# ── Helper: find no-torch-runtime.txt (local repo or site-packages) ──
-_find_no_torch_runtime() {
-    # Check local repo first (for --local installs)
-    if [ -f "$_REPO_ROOT/studio/backend/requirements/no-torch-runtime.txt" ]; then
-        echo "$_REPO_ROOT/studio/backend/requirements/no-torch-runtime.txt"
-        return
-    fi
-    # Check inside installed package
-    _rt=$(find "$VENV_DIR" -path "*/studio/backend/requirements/no-torch-runtime.txt" -print -quit 2>/dev/null || echo "")
-    if [ -n "$_rt" ]; then
-        echo "$_rt"
-        return
-    fi
-}
-
-# ── AMD ROCm GPU detection helper ──
-# WSL2 ROCDXG: the system rocminfo enumerates the GPU over /dev/dxg only when
-# HSA_ENABLE_DXG_DETECTION=1 (a no-op on bare metal), and /opt/rocm/bin can be
-# off PATH outside login shells (the profile.d drop-in). Seed both before any
-# rocminfo probe or a ROCDXG WSL host is misdetected as CPU-only.
-_ensure_rocm_probe_env() {
-    export HSA_ENABLE_DXG_DETECTION="${HSA_ENABLE_DXG_DETECTION:-1}"
-    if ! command -v rocminfo >/dev/null 2>&1 && [ -x /opt/rocm/bin/rocminfo ]; then
-        PATH="$PATH:/opt/rocm/bin"
-    fi
-}
-
-# Returns 0 if an AMD GPU is present. Checks rocminfo, amd-smi, then sysfs
-# KFD topology (env-var-independent fallback for when HIP/ROCR_VISIBLE_DEVICES hides devices).
-# Always returns 1 (false) when an NVIDIA GPU is present: blocks every
-# detection path (rocminfo, amd-smi, KFD sysfs) from producing a false
-# positive on NVIDIA-only or NVIDIA-primary hosts, even when ROCm tools
-# are co-installed.
-_has_amd_rocm_gpu() {
-    _ensure_rocm_probe_env
-    if _has_usable_nvidia_gpu; then
-        return 1
-    fi
-    if command -v rocminfo >/dev/null 2>&1 && \
-       rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
-        return 0
-    elif command -v amd-smi >/dev/null 2>&1 && \
-         amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
-        return 0
-    elif [ -e /dev/kfd ] && \
-         awk 'FNR==1{ gpu=0; amd=0 } /gpu_id/{ gpu=($2+0>0) } /vendor_id/{ amd=($2==4098) } \
-              gpu && amd { found=1 } END{ exit !found }' \
-             /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
-        # vendor_id 4098 = 0x1002 (AMD). NVIDIA open kernel module (driver
-        # 560+) can register KFD topology nodes with non-zero gpu_id but
-        # vendor_id 4318 (0x10DE). Require AMD vendor to avoid misrouting
-        # NVIDIA-only hosts to the ROCm install path.
-        return 0
-    fi
-    return 1
+    if [ -n "$_wag_n" ]; then _WSL_AMD_GPU_NAME_CACHE="$_wag_n"; printf '%s' "$_wag_n"; return 0; fi
+    _WSL_AMD_GPU_NAME_CACHE="-"; return 1
 }
 
 # ── Bounded command runner ──
@@ -1993,6 +1964,909 @@ _has_usable_nvidia_gpu() {
     return 1
 }
 
+# Strix Halo ROCm-on-WSL only targets Ubuntu 24.04. On a newer distro (e.g. 26.04)
+# with a 24.04 distro present, re-run the install there and stop; else fall through
+# to CPU + the `wsl --install` hint below (never auto-create a distro). Runs before
+# the STUDIO_HOME mkdir/venv so the origin distro is untouched.
+_maybe_reroute_strixhalo_to_2404() {
+    [ "${OS:-}" = "wsl" ] || return 0
+    # An explicit index pin skips every GPU-driven reroute (same contract as
+    # the later Radeon/Strix guard): the pin is honored in THIS distro rather
+    # than probing the GPU and switching distributions. Whitespace-only
+    # overrides do not gate (parity with get_torch_index_url).
+    _rr_pin=$(printf '%s' "${UNSLOTH_TORCH_INDEX_URL:-}${UNSLOTH_TORCH_INDEX_FAMILY:-}" | tr -d '[:space:]')
+    [ -n "$_rr_pin" ] && return 0
+    [ "${SKIP_TORCH:-false}" = "false" ] || return 0
+    [ "${UNSLOTH_SKIP_ROCM_WSL_SETUP:-0}" = "1" ] && return 0
+    [ "${UNSLOTH_WSL_REROUTED:-0}" = "1" ] && return 0
+    [ -e /dev/dxg ] || return 0
+    # A usable NVIDIA GPU (common on hybrid AMD+NVIDIA hosts) means the CUDA path works on
+    # this distro, so don't reroute for AMD. _has_usable_nvidia_gpu (moved above) honors
+    # CUDA_VISIBLE_DEVICES=""/-1 and the /proc/driver/nvidia fallback for PATH/timeout gaps.
+    if _has_usable_nvidia_gpu; then return 0; fi
+    # Strix APUs show in /proc/cpuinfo; discrete cards don't, so also try WMI. Either reroutes.
+    if ! grep -qiE 'Ryzen AI Max|Radeon 80[0-9][05]S|Strix Halo' /proc/cpuinfo 2>/dev/null \
+       && ! _wsl_amd_gpu_name >/dev/null 2>&1; then
+        return 0
+    fi
+    # Already ROCm-on-WSL? leave a working GPU alone, whatever the version.
+    if [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ]; then
+        return 0
+    fi
+    _rr_ver=""
+    [ -r /etc/os-release ] && _rr_ver=$(. /etc/os-release 2>/dev/null; printf '%s' "${VERSION_ID:-}")
+    # The bootstrap (scripts/install_rocm_wsl_strixhalo.sh) dies on any VERSION_ID but
+    # 24.04 and pins the noble repo, so 24.04 is the sole GPU-supported target; leave a
+    # 24.04 user alone. (Working ROCm on other versions was caught by librocdxg above.)
+    case "$_rr_ver" in 24.04) return 0 ;; esac
+    # Distro is now unsupported. If we can't reroute to a 24.04 target, stay CPU-only
+    # AND skip the later origin-distro ROCm bootstrap (it ignores distro version, so it
+    # would otherwise install ROCm into 26.04 etc.).
+    command -v wsl.exe >/dev/null 2>&1 || { UNSLOTH_SKIP_ROCM_WSL_SETUP=1; return 0; }
+    # Route only to an installed Ubuntu-24.04 (bootstrap's only target). Match the whole
+    # line (one distro per line from wsl.exe -l -q), not a substring, so "Ubuntu-24.04-test"
+    # can't masquerade as it and then fail `wsl -d`.
+    # || true: no match is expected, not an error (script runs under set -e).
+    _rr_distros=$(wsl.exe -l -q 2>/dev/null | tr -d '\000\r')
+    _rr_target=$(printf '%s\n' "$_rr_distros" | grep -ixF "Ubuntu-24.04" | head -n1) || true
+    [ -n "$_rr_target" ] || {
+        substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
+        substep "No Ubuntu-24.04 WSL distro found; staying CPU-only. Install Ubuntu-24.04 and re-run there for GPU." "$C_WARN"
+        UNSLOTH_SKIP_ROCM_WSL_SETUP=1
+        return 0
+    }
+
+    echo ""
+    substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
+    substep "Found an existing $_rr_target distro -- continuing the GPU install there." "$C_OK"
+    # A --local checkout can't be replayed via curl|sh (the repo isn't in the target
+    # distro), so tell the user to re-run there rather than silently run a different install.
+    if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+        substep "This is a --local install; re-run it from $_rr_target instead:" "$C_WARN"
+        substep "  wsl -d $_rr_target -- bash -lc 'cd <your checkout> && ./install.sh --local'" "$C_WARN"
+        substep "Continuing CPU-only in Ubuntu ${_rr_ver:-this distro} for now." "$C_WARN"
+        # Unsupported distro, can't reroute a --local checkout: skip the origin ROCm bootstrap.
+        UNSLOTH_SKIP_ROCM_WSL_SETUP=1
+        return 0
+    fi
+    # Forward the caller's options/env (custom package/python/home) so the rerouted
+    # install matches what was asked for, not a default install.
+    _rr_q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+    _rr_exports="set -o pipefail; export UNSLOTH_WSL_REROUTED=1"
+    [ "$_STUDIO_HOME_REDIRECT" = "env" ] && _rr_exports="$_rr_exports; export UNSLOTH_STUDIO_HOME=$(_rr_q "$STUDIO_HOME")"
+    # Forward explicit ROCm-bootstrap consent (e.g. Tauri) so the child auto-enables the
+    # GPU instead of falling back to the desktop-app prompt path.
+    [ "${UNSLOTH_ROCM_WSL_AUTO:-0}" = "1" ] && _rr_exports="$_rr_exports; export UNSLOTH_ROCM_WSL_AUTO=1"
+    # Forward a pinned torch index into the rerouted distro; dropping it would
+    # silently revert the child install to auto-detection.
+    [ -n "${UNSLOTH_TORCH_INDEX_URL:-}" ] && _rr_exports="$_rr_exports; export UNSLOTH_TORCH_INDEX_URL=$(_rr_q "$UNSLOTH_TORCH_INDEX_URL")"
+    [ -n "${UNSLOTH_TORCH_INDEX_FAMILY:-}" ] && _rr_exports="$_rr_exports; export UNSLOTH_TORCH_INDEX_FAMILY=$(_rr_q "$UNSLOTH_TORCH_INDEX_FAMILY")"
+    [ "$_SKIP_AUTOSTART" = true ] && _rr_exports="$_rr_exports; export UNSLOTH_SKIP_AUTOSTART=1"
+    _rr_args=""
+    [ "$PACKAGE_NAME" != "unsloth" ] && _rr_args="$_rr_args --package $(_rr_q "$PACKAGE_NAME")"
+    [ -n "$_USER_PYTHON" ] && _rr_args="$_rr_args --python $(_rr_q "$_USER_PYTHON")"
+    [ "$_VERBOSE" = true ] && _rr_args="$_rr_args --verbose"
+    [ "$TAURI_MODE" = true ] && _rr_args="$_rr_args --tauri"
+    if [ -n "${UNSLOTH_WSL_REROUTE_CMD:-}" ]; then
+        _rr_cmd="$UNSLOTH_WSL_REROUTE_CMD"               # user took full control
+    elif [ -n "$_rr_args" ]; then
+        _rr_cmd="curl -fsSL https://unsloth.ai/install.sh | sh -s --$_rr_args"
+    else
+        _rr_cmd="curl -fsSL https://unsloth.ai/install.sh | sh"
+    fi
+    # pipefail so a failed curl in `curl | sh` isn't masked by sh exiting 0 on empty
+    # input (which would wrongly report success and exit 0 the parent installer).
+    _rr_rc=0
+    wsl.exe -d "$_rr_target" -- bash -lc "$_rr_exports; $_rr_cmd" || _rr_rc=$?
+    if [ "$_rr_rc" -eq 0 ]; then
+        exit 0
+    fi
+    # In Tauri mode the child uses exit 2 ([TAURI:NEED_SUDO]) to ask the desktop app to
+    # elevate for the target distro; the child already printed the NEED_SUDO line, so
+    # propagate the code instead of masking it as a reroute failure and dropping to CPU.
+    if [ "$TAURI_MODE" = true ] && [ "$_rr_rc" -eq 2 ]; then
+        exit 2
+    fi
+    substep "Could not auto-continue in $_rr_target; run it yourself:" "$C_WARN"
+    substep "  wsl -d $_rr_target -- bash -lc 'curl -fsSL https://unsloth.ai/install.sh | sh'"
+    substep "Continuing CPU-only in Ubuntu ${_rr_ver:-this distro} for now." "$C_WARN"
+    # Reroute failed; don't let the later bootstrap install ROCm into this unsupported
+    # distro -- stay CPU-only.
+    UNSLOTH_SKIP_ROCM_WSL_SETUP=1
+    return 0
+}
+_maybe_reroute_strixhalo_to_2404 || true
+
+# ── Check system dependencies ──
+tauri_log "STEP" "Checking system dependencies"
+
+# Without the Xcode CLT, macOS still ships /usr/bin/git as a stub that errors and pops
+# a GUI dialog, so `command -v git` is not enough -- only running it tells the truth.
+_has_working_git() {
+    command -v git >/dev/null 2>&1 || return 1
+    git --version >/dev/null 2>&1
+}
+
+# macOS system-dependency check. A function so tests/sh can sed-extract it; the old
+# inline form was untestable, which is why this gate shipped broken.
+#
+# The consumer install needs no developer toolchain: uv is a prebuilt binary, CPython
+# is uv-managed, llama.cpp/whisper.cpp/Node are prebuilt downloads, and triton is
+# skipped on macOS. Only `--local` needs git, for the unsloth-zoo git+https URL.
+_check_macos_deps() {
+    _clt_missing=false
+    xcode-select -p >/dev/null 2>&1 || _clt_missing=true
+
+    if [ "$STUDIO_LOCAL_INSTALL" = true ] && ! _has_working_git; then
+        echo ""
+        step "deps" "git is required for --local installs" "$C_ERR"
+        substep "--local installs unsloth-zoo from git+https://github.com/unslothai/unsloth-zoo,"
+        substep "which needs a working git. Install the Xcode Command Line Tools:"
+        substep "  xcode-select --install"
+        substep "Then re-run this script. A normal (non---local) install needs no compiler"
+        substep "and no git -- it uses prebuilt binaries and wheels only."
+        tauri_log "NEED_XCODE_CLT" "git"
+        return 1
+    fi
+
+    if [ "$_clt_missing" = true ]; then
+        # Not fatal, and no GUI dialog: firing xcode-select --install and exiting is
+        # what stranded clean Macs.
+        step "deps" "no Xcode Command Line Tools (not required)" "$C_WARN"
+        substep "Unsloth installs prebuilt binaries and wheels, so no compiler is needed."
+        substep "Install them only for a llama.cpp source build: xcode-select --install"
+    elif command -v cmake >/dev/null 2>&1; then
+        step "deps" "all system dependencies found"
+    else
+        # cmake is only for a source build, so its absence is not fatal.
+        step "deps" "using prebuilt llama.cpp (cmake not found)" "$C_WARN"
+        substep "Install cmake only if you want a source build: brew install cmake"
+    fi
+    return 0
+}
+
+# Linux/WSL system-dependency check. Same split as macOS, and a function for the same
+# reason: tests/sh can extract it.
+#
+# Only a download transport is required. cmake, gcc and the libcurl headers exist
+# solely for a llama.cpp source build the consumer path never does -- unslothai/
+# llama.cpp publishes linux-x64/arm64 prebuilts for cpu, cuda12, cuda13, rocm and
+# vulkan. Requiring them turned every non-apt distro into a hard exit 1 over unused
+# tooling. git follows macOS: --local only.
+_check_linux_deps() {
+    _transport_missing=false
+    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+        _transport_missing=true
+    fi
+
+    # Wanted, never required: git fetches the triton_kernels git+https requirement (a
+    # training speedup), the rest serve the optional source build. Warn, never stop.
+    _optional_missing=""
+    command -v cmake       >/dev/null 2>&1 || _optional_missing="$_optional_missing cmake"
+    _has_working_git                       || _optional_missing="$_optional_missing git"
+    command -v gcc         >/dev/null 2>&1 || _optional_missing="$_optional_missing build-essential"
+    command -v curl-config >/dev/null 2>&1 || _optional_missing="$_optional_missing libcurl4-openssl-dev"
+    # Parameter expansion, not `sed`: sed may be absent on a minimal image, and a
+    # failed `$(... | sed ...)` yields "" -- "all found" on a machine that has none.
+    _optional_missing="${_optional_missing# }"
+
+    if [ "$STUDIO_LOCAL_INSTALL" = true ] && ! _has_working_git; then
+        echo ""
+        step "deps" "git is required for --local installs" "$C_ERR"
+        substep "--local installs unsloth-zoo from git+https://github.com/unslothai/unsloth-zoo,"
+        substep "which needs git. Install it with your package manager, then re-run."
+        substep "A normal (non---local) install needs no git and no compiler."
+        return 1
+    fi
+
+    # The one fatal case: nothing can be downloaded. apt is the only distro family we
+    # can drive unattended.
+    if [ "$_transport_missing" = true ]; then
+        if command -v apt-get >/dev/null 2>&1; then
+            echo ""
+            step "deps" "missing: curl" "$C_WARN"
+            substep "Needed to download uv, Python and the prebuilt inference engine."
+            _smart_apt_install curl
+            echo ""
+        else
+            echo ""
+            step "deps" "missing: curl (or wget)" "$C_ERR"
+            substep "Unsloth needs one of them to download uv, Python and the prebuilt"
+            substep "inference engine. Install one, then re-run setup:"
+            substep "  Fedora/RHEL: sudo dnf install curl"
+            substep "  Arch:        sudo pacman -S --needed curl"
+            substep "  openSUSE:    sudo zypper install curl"
+            return 1
+        fi
+    fi
+
+    # Try apt for the optional set too; failing only costs the features warned about
+    # below.
+    if [ -n "$_optional_missing" ] && command -v apt-get >/dev/null 2>&1; then
+        step "deps" "installing optional build tools: $_optional_missing" "$C_DIM"
+        # Subshell because _smart_apt_install exits rather than returns, so `|| true`
+        # alone would not catch it. _SMART_APT_OPTIONAL suppresses every escalation
+        # path, so no install hinges on a prompt for tools nothing here needs.
+        ( _SMART_APT_OPTIONAL=true; _smart_apt_install $_optional_missing ) || true
+        _optional_missing=""
+        command -v cmake       >/dev/null 2>&1 || _optional_missing="$_optional_missing cmake"
+        _has_working_git                       || _optional_missing="$_optional_missing git"
+        command -v gcc         >/dev/null 2>&1 || _optional_missing="$_optional_missing build-essential"
+        command -v curl-config >/dev/null 2>&1 || _optional_missing="$_optional_missing libcurl4-openssl-dev"
+        _optional_missing="${_optional_missing# }"
+    fi
+
+    if [ -n "$_optional_missing" ]; then
+        step "deps" "using prebuilt llama.cpp (missing: $_optional_missing)" "$C_WARN"
+        substep "Not required to run: Unsloth downloads a prebuilt inference engine."
+        case " $_optional_missing " in
+            *" git "*) substep "Without git the triton kernels training speedup is skipped." ;;
+        esac
+    else
+        step "deps" "all system dependencies found"
+    fi
+    return 0
+}
+
+case "$OS" in
+    macos)
+        _check_macos_deps || exit 1
+        ;;
+    linux|wsl)
+        _check_linux_deps || exit 1
+        ;;
+esac
+
+# ── Install uv ──
+tauri_log "STEP" "Installing uv package manager"
+# 0.9.3 is the first uv whose managed-Python manifest carries CPython 3.13.9.
+# Anything older tops out at 3.13.8, which cannot import torch (see PYTHON_SKIP),
+# so a bare "3.13" request on an older uv resolves straight to the broken patch.
+UV_MIN_VERSION="0.9.3"
+# The floor before this raised it. An offline host may keep a uv between the two,
+# since those installs worked without touching the network; below it the
+# installer rejected the uv outright and still has to, or it proceeds on a uv
+# missing flags it is about to be handed (--default-index, --torch-backend).
+UV_OFFLINE_MIN_VERSION="0.8.16"
+
+# When bytecode compilation is enabled, large installs can exceed uv's 60s default on slow machines. Default to 180s, preserving overrides ("0" disables).
+: "${UV_COMPILE_BYTECODE_TIMEOUT:=180}"
+export UV_COMPILE_BYTECODE_TIMEOUT
+
+# uv >= 0.8.16 retries HTTP/2 streaming body errors; raise retries and read
+# timeout for large wheel downloads. ":=" preserves any user override.
+: "${UV_HTTP_RETRIES:=5}"
+export UV_HTTP_RETRIES
+: "${UV_HTTP_TIMEOUT:=180}"
+export UV_HTTP_TIMEOUT
+
+# macOS: trust the system Keychain so uv uses SecureTransport instead of rustls.
+# Required behind TLS-inspecting proxies (Cisco Umbrella, Zscaler, etc.) which
+# present their own CA certificate. rustls (uv's default) ignores the Keychain
+# and rejects intercepted connections with "invalid peer certificate: UnknownIssuer".
+# Set both vars: UV_SYSTEM_CERTS is the modern one (uv >= 0.11), UV_NATIVE_TLS the
+# legacy one understood by uv 0.8.16-0.10.x, which the installer keeps if already
+# present (UV_MIN_VERSION) and which ignores UV_SYSTEM_CERTS. Mirror the choice onto
+# both so it works on either uv. Opt out with UV_SYSTEM_CERTS=0.
+if [ "$OS" = "macos" ]; then
+    : "${UV_SYSTEM_CERTS:=1}"
+    : "${UV_NATIVE_TLS:=$UV_SYSTEM_CERTS}"
+fi
+[ -n "${UV_SYSTEM_CERTS:-}" ] && export UV_SYSTEM_CERTS
+[ -n "${UV_NATIVE_TLS:-}" ] && export UV_NATIVE_TLS
+
+version_ge() {
+    # returns 0 if $1 >= $2
+    _a=$1
+    _b=$2
+
+    while [ -n "$_a" ] || [ -n "$_b" ]; do
+        _a_part=${_a%%.*}
+        _b_part=${_b%%.*}
+
+        [ "$_a" = "$_a_part" ] && _a="" || _a=${_a#*.}
+        [ "$_b" = "$_b_part" ] && _b="" || _b=${_b#*.}
+
+        [ -z "$_a_part" ] && _a_part=0
+        [ -z "$_b_part" ] && _b_part=0
+
+        if [ "$_a_part" -gt "$_b_part" ]; then
+            return 0
+        fi
+        if [ "$_a_part" -lt "$_b_part" ]; then
+            return 1
+        fi
+    done
+
+    return 0
+}
+
+# Patch releases the stack cannot run, space separated.
+#   3.13.8: python/cpython#139783 makes inspect.getsourcelines() drop a function
+#   body when a decorator is followed by a comment, which is the shape torch
+#   2.11's nn/modules/rnn.py has, and _overload_method reads its own source at
+#   import time -- so `import torch` dies with IndentationError. 3.13.9 was an
+#   expedited release carrying only that fix.
+PYTHON_SKIP="3.13.8"
+
+# Every entry above is skipped for one reason: it cannot `import torch`. A
+# --no-torch install never imports it, so refusing the interpreter there would
+# fail a GGUF-only setup on a locked-down host over a package it will not
+# install. SKIP_TORCH is set well before any of this runs.
+_python_skip_applies() {
+    [ "$SKIP_TORCH" != true ]
+}
+
+_python_is_skipped() {  # full x.y.z version
+    _python_skip_applies || return 1
+    for _bad in $PYTHON_SKIP; do
+        [ "$1" = "$_bad" ] && return 0
+    done
+    return 1
+}
+
+# uv picks the patch itself for a bare "3.13", so name a range it cannot satisfy
+# with a skipped release rather than checking afterwards. uv accepts a PEP 440
+# specifier as a python request, and the exclusions come straight from
+# PYTHON_SKIP so there is one list to maintain.
+#
+# The exclusion is spelled "!=3.13.8" rather than ">=3.13.9" on purpose: a host
+# that is offline, or whose uv is too old to know 3.13.9, may still have a
+# perfectly good cached 3.13.7, and a floor would refuse it and fail the install
+# outright. Measured against uv 0.10.7 with only 3.13.7 and 3.13.8 installed and
+# --offline: "3.13" gives 3.13.8, ">=3.13.9,<3.14" errors, ">=3.13,<3.14,!=3.13.8"
+# gives 3.13.7.
+_python_request() {  # requested version -> what uv is asked for
+    _python_skip_applies || { echo "$1"; return 0; }
+    case "$1" in
+        # An explicit patch is the caller's own choice, and a path or a uv
+        # download name is not a version at all. Pass those through untouched.
+        [0-9]*.[0-9]*.*|*/*|*\\*) echo "$1"; return 0 ;;
+        [0-9]*.[0-9]*) ;;
+        *) echo "$1"; return 0 ;;
+    esac
+    _req_minor=${1#*.}
+    # Only a plain X.Y gets a range. "3.13rc1", or a relative path like
+    # "3.13/bin/python" that slipped past the globs above, would otherwise reach
+    # the arithmetic below, and dash aborts the whole install on "Illegal number".
+    case "$_req_minor" in
+        ''|*[!0-9]*) echo "$1"; return 0 ;;
+    esac
+    _req=">=$1,<${1%%.*}.$((_req_minor + 1))"
+    for _bad in $PYTHON_SKIP; do
+        case "$_bad" in
+            "$1".*) _req="$_req,!=$_bad" ;;
+        esac
+    done
+    echo "$_req"
+}
+
+_uv_version_ok() {  # uv command, floor (defaults to UV_MIN_VERSION)
+    _floor=${2:-$UV_MIN_VERSION}
+    _raw=$("$1" --version 2>/dev/null | awk '{print $2}') || return 1
+    [ -n "$_raw" ] || return 1
+    _ver=${_raw%%[-+]*}
+    case "$_ver" in
+        ''|*[!0-9.]*) return 1 ;;
+    esac
+    version_ge "$_ver" "$_floor" || return 1
+    # Prerelease of the exact minimum (e.g. 0.7.14-rc1) is still below stable 0.7.14
+    [ "$_ver" = "$_floor" ] && [ "$_raw" != "$_ver" ] && return 1
+    return 0
+}
+
+if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
+    # Raising the floor pulled every 0.8.16-0.9.2 host into this block, and those
+    # installs used to succeed without touching the network, so a download
+    # failure must not be fatal for them. An unreadable version counts as
+    # present: that is a minimal image without awk, not an old uv.
+    _uv_present_before=false
+    if command -v uv >/dev/null 2>&1; then
+        # `|| _uv_prev_ver=`: on an image with no awk the pipeline exits 127 and
+        # set -e would kill the install here, which is exactly the host this
+        # block exists to keep working.
+        _uv_prev_ver=$(uv --version 2>/dev/null | awk '{print $2}' 2>/dev/null) \
+            || _uv_prev_ver=""
+        if [ -z "$_uv_prev_ver" ] || _uv_version_ok uv "$UV_OFFLINE_MIN_VERSION"; then
+            _uv_present_before=true
+        fi
+    fi
+    substep "installing uv package manager..."
+    _uv_refreshed=true
+    # download() exits the shell outright when neither curl nor wget is present,
+    # which an `if` cannot catch, so probe first: a minimal image with uv copied
+    # in but no downloader must keep the install it had before the floor moved.
+    if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
+        _uv_tmp=$(mktemp)
+        if download "https://astral.sh/uv/install.sh" "$_uv_tmp"; then
+            run_maybe_quiet sh "$_uv_tmp" </dev/null || _uv_refreshed=false
+        else
+            _uv_refreshed=false
+        fi
+        rm -f "$_uv_tmp"
+    else
+        _uv_refreshed=false
+    fi
+    if [ "$_uv_refreshed" = false ] && [ "$_uv_present_before" = false ]; then
+        tauri_log "ERROR" "Could not install uv"
+        step "error" "could not download uv, and none is installed" "$C_ERR"
+        substep "Check the network, or install uv manually: https://docs.astral.sh/uv/"
+        exit 1
+    fi
+    if [ -f "$HOME/.local/bin/env" ]; then
+        . "$HOME/.local/bin/env"
+    fi
+    export PATH="$HOME/.local/bin:$PATH"
+fi
+
+# ── Create venv (migrate old layout if possible, otherwise fresh) ──
+tauri_log "STEP" "Creating virtual environment"
+mkdir -p "$STUDIO_HOME"
+
+_MIGRATED=false
+# Empty so an inherited value can never masquerade as a probed torch version.
+_PREV_TORCH_VER=""
+
+if [ -x "$VENV_DIR/bin/python" ]; then
+    # why: matching guard to the .venv branch below -- in env-mode
+    # $STUDIO_HOME is a user-chosen workspace, so refuse to nuke an
+    # existing $STUDIO_HOME/unsloth_studio that lacks Unsloth sentinels.
+    # Accept the in-VENV ownership marker so partial-install retries are
+    # not blocked. Sentinels must be regular files: -f follows symlinks
+    # to files (the legitimate ln -s shim shape) but rejects directories
+    # and broken/dir-targeted symlinks.
+    if [ "$_STUDIO_HOME_REDIRECT" = "env" ] \
+       && [ ! -f "$VENV_DIR/.unsloth-studio-owned" ] \
+       && [ ! -f "$STUDIO_HOME/share/studio.conf" ] \
+       && [ ! -f "$STUDIO_HOME/bin/unsloth" ]; then
+        echo "ERROR: $VENV_DIR already exists but does not look like an Unsloth Studio install." >&2
+        echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME." >&2
+        exit 1
+    fi
+    # Record the existing venv's torch BEFORE the replacement moves it aside: a re-run
+    # rebuilds the venv for clean state, but must keep the torch release the user
+    # already has (see _previous_torch_pin below). Last line only: sitecustomize or
+    # import-hook noise on stdout must not corrupt the version.
+    # Disk first, no interpreter: `import torch` can block forever on a wedged Intel driver,
+    # and this runs before setup.sh's bounded probes. version.py carries the same label; the
+    # interpreter stays as the fallback for a layout without one.
+    _PREV_TORCH_VER=""
+    for _prev_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+        [ -f "$_prev_tv" ] || continue
+        _PREV_TORCH_VER=$(sed -n "s/^__version__ = '\([^']*\)'.*/\1/p" "$_prev_tv" | head -n 1)
+        break
+    done
+    [ -n "$_PREV_TORCH_VER" ] || _PREV_TORCH_VER=$("$VENV_DIR/bin/python" -c \
+        "import torch; print(torch.__version__)" 2>/dev/null | tail -n 1 || true)
+    # New layout already exists — replace only after preserving rollback copy.
+    substep "preserving existing environment for rollback..."
+    _start_studio_venv_replacement "$VENV_DIR"
+elif [ "$_STUDIO_HOME_REDIRECT" != "env" ] && [ -x "$STUDIO_HOME/.venv/bin/python" ]; then
+    # Old layout exists — validate before migrating.
+    # Skip in env-mode so we don't rm -rf an unrelated .venv at the
+    # workspace root (e.g. user's existing project Python venv).
+    # In no-torch mode, a missing torch package is expected; validate Python only.
+    substep "found legacy Unsloth environment, validating..."
+    _legacy_ok=false
+    if [ "$SKIP_TORCH" = true ]; then
+        if "$STUDIO_HOME/.venv/bin/python" -c "import sys; print(sys.executable)" >/dev/null 2>&1; then
+            _legacy_ok=true
+        fi
+    elif "$STUDIO_HOME/.venv/bin/python" -c "
+import torch
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+A = torch.ones((10, 10), device=device)
+B = torch.ones((10, 10), device=device)
+C = torch.ones((10, 10), device=device)
+D = A + B
+E = D @ C
+torch.testing.assert_close(torch.unique(E), torch.tensor((20,), device=E.device, dtype=E.dtype))
+" >/dev/null 2>&1; then
+        _legacy_ok=true
+    fi
+    if [ "$_legacy_ok" = true ]; then
+        echo "✅ Legacy environment is healthy — migrating..."
+        mv "$STUDIO_HOME/.venv" "$VENV_DIR"
+        echo "   Moved ~/.unsloth/studio/.venv → $VENV_DIR"
+        _MIGRATED=true
+    else
+        echo "⚠️  Legacy environment failed validation — creating fresh environment"
+        _invalid_venv="$STUDIO_HOME/.venv.invalid.$(date +%Y%m%d%H%M%S 2>/dev/null || echo time).$$"
+        mv "$STUDIO_HOME/.venv" "$_invalid_venv" 2>/dev/null || true
+    fi
+fi
+
+# If an Intel Mac has a stale 3.13 venv from a previous failed install, recreate
+# (skip when the user explicitly chose a version via --python)
+if [ "$SKIP_TORCH" = true ] && [ "$MAC_INTEL" = true ] && [ -z "$_USER_PYTHON" ] && [ -x "$VENV_DIR/bin/python" ]; then
+    _PY_MM=$("$VENV_DIR/bin/python" -c \
+        "import sys; print('{}.{}'.format(*sys.version_info[:2]))" 2>/dev/null || echo "")
+    if [ "$_PY_MM" != "3.12" ]; then
+        echo "  Recreating Intel Mac environment with Python 3.12 (was $_PY_MM)..."
+        rm -rf "$VENV_DIR"
+    fi
+fi
+
+if [ ! -x "$VENV_DIR/bin/python" ]; then
+    step "venv" "creating Python ${PYTHON_VERSION} virtual environment"
+    substep "$VENV_DIR"
+    if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ] && [ -z "$_USER_PYTHON" ]; then
+        # Apple Silicon: request an arch-explicit arm64 CPython so uv cannot
+        # reuse a cached x86_64 (Rosetta) build. torch ships no macOS x86_64
+        # wheels since 2.2.2, so an x86_64 venv makes the torch install
+        # unresolvable. The arm64 guard below is kept as a backstop for
+        # migrated / pre-existing venvs.
+        run_install_cmd "create venv" uv venv "$VENV_DIR" \
+            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+    else
+        run_install_cmd "create venv" uv venv "$VENV_DIR" \
+            --python "$(_python_request "$PYTHON_VERSION")"
+    fi
+fi
+
+# Mark the freshly-created venv as Unsloth-owned so a partial install can be
+# repaired by re-running install.sh; the env-mode deletion guard above accepts
+# this marker as the primary sentinel.
+if [ -x "$VENV_DIR/bin/python" ]; then
+    : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
+fi
+
+# Guard against two independent Apple Silicon venv problems, in order:
+#   1. uv may create the venv from a cached x86_64 (Rosetta) Python when a
+#      same-version x86_64 build is already cached (often because uv itself
+#      is an x86_64 build). That venv reports x86_64 to wheel resolvers, and
+#      PyTorch ships no macOS wheels on the CPU index for any architecture,
+#      so the torch install can never resolve. Recreate it with an
+#      arch-explicit arm64 CPython.
+#   2. Python 3.13.8 has a known torch import bug.
+# The two are independent: a venv may be x86_64 and, once recreated, still
+# land on 3.13.8. So we re-inspect the interpreter between the checks instead
+# of chaining them with elif, guaranteeing both invariants hold on whatever
+# venv we end up with. Skip both when the user explicitly chose an interpreter
+# via --python.
+if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
+    _inspect_venv() {
+        "$VENV_DIR/bin/python" -c \
+            "import platform, sys; print(platform.machine(), '{}.{}.{}'.format(*sys.version_info[:3]))" \
+            2>/dev/null || echo " "
+    }
+    _info=$(_inspect_venv)
+    _VENV_ARCH=${_info%% *}
+    _PY_VER=${_info##* }
+    # If the interpreter could not be executed (an x86_64 venv python on a Mac
+    # without Rosetta installed), the probe above yields an empty arch. Fall
+    # back to reading the binary's Mach-O arch statically so the x86_64
+    # recreate below still triggers instead of letting uv fail later.
+    if [ -z "$_VENV_ARCH" ] && [ -x "$VENV_DIR/bin/python" ]; then
+        # uv symlinks bin/python to the base interpreter, so dereference with
+        # file -L (lipo already follows the link). Trailing || true keeps the
+        # installer alive under set -e when neither tool is present.
+        _archs=$(lipo -archs "$VENV_DIR/bin/python" 2>/dev/null \
+            || file -L "$VENV_DIR/bin/python" 2>/dev/null || true)
+        case "$_archs" in
+            *arm64*)  _VENV_ARCH=arm64 ;;
+            *x86_64*) _VENV_ARCH=x86_64 ;;
+        esac
+    fi
+
+    if [ "$_VENV_ARCH" = "x86_64" ]; then
+        echo "  WARNING: venv was created with an x86_64 (Rosetta) Python on Apple Silicon."
+        echo "  Recreating venv with native arm64 Python ${PYTHON_VERSION}..."
+        _discard_venv_for_recreate "$VENV_DIR"
+        run_install_cmd "recreate venv (arm64)" uv venv "$VENV_DIR" \
+            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+        if [ -x "$VENV_DIR/bin/python" ]; then
+            : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
+        fi
+        # Re-inspect: the recreated arm64 venv may still be 3.13.8.
+        _info=$(_inspect_venv)
+        _VENV_ARCH=${_info%% *}
+        _PY_VER=${_info##* }
+    fi
+
+    if _python_is_skipped "$_PY_VER"; then
+        echo "  WARNING: Python $_PY_VER cannot import torch."
+        echo "  Recreating venv with Python 3.12..."
+        _discard_venv_for_recreate "$VENV_DIR"
+        PYTHON_VERSION="3.12"
+        run_install_cmd "recreate venv" uv venv "$VENV_DIR" \
+            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+        if [ -x "$VENV_DIR/bin/python" ]; then
+            : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
+        fi
+    fi
+fi
+
+# The request above only decides what a *new* venv gets. A venv from an earlier
+# run, on any platform, can still hold a skipped interpreter, and reusing it is
+# how the reported installs stayed broken across re-runs. Honour --python.
+if [ -z "$_USER_PYTHON" ] && [ -x "$VENV_DIR/bin/python" ]; then
+    _PY_VER=$("$VENV_DIR/bin/python" -c \
+        'import sys; print("{}.{}.{}".format(*sys.version_info[:3]))' 2>/dev/null || echo "")
+    if _python_is_skipped "$_PY_VER"; then
+        echo "  WARNING: Python $_PY_VER cannot import torch."
+        echo "  Recreating venv..."
+        _discard_venv_for_recreate "$VENV_DIR"
+        run_install_cmd "recreate venv" uv venv "$VENV_DIR" \
+            --python "$(_python_request "$PYTHON_VERSION")"
+        if [ -x "$VENV_DIR/bin/python" ]; then
+            : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
+        fi
+    fi
+fi
+
+if [ -x "$VENV_DIR/bin/python" ]; then
+    step "venv" "using environment"
+    substep "${VENV_DIR}"
+fi
+
+# Default torch constraint -- tightened for Python 3.13+ on arm64 macOS
+# (torch <2.6 has no cp313 macOS arm64 wheels)
+TORCH_CONSTRAINT="torch>=2.4,<2.11.0"
+if [ "$SKIP_TORCH" = false ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
+    _PY_MINOR=$("$VENV_DIR/bin/python" -c \
+        "import sys; print(sys.version_info.minor)" 2>/dev/null || echo "0")
+    if [ "$_PY_MINOR" -ge 13 ] 2>/dev/null; then
+        TORCH_CONSTRAINT="torch>=2.6,<2.11.0"
+    fi
+fi
+# Companion (torchvision/torchaudio) constraints, bounded to torch's window.
+# torchaudio 2.11 dropped its exact torch pin, so a bare companion next to a
+# <2.11-capped torch resolves torchaudio 2.11 (verified: cpu leaf installed
+# torch 2.10.0+cpu with torchaudio 2.11.0+cpu). torchvision still exact-pins
+# torch and self-corrects, but is bounded for symmetry. Widened alongside the
+# cu* torch window below; the torch-2.11 AMD paths (rocm7.2 / per-gfx / Strix)
+# pin their own trio.
+TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.26.0"
+TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"
+
+# ── Resolve repo root (for --local installs) ──
+_REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
+
+# ── Helper: find no-torch-runtime.txt (local repo or site-packages) ──
+_find_no_torch_runtime() {
+    # Check local repo first (for --local installs)
+    if [ -f "$_REPO_ROOT/studio/backend/requirements/no-torch-runtime.txt" ]; then
+        echo "$_REPO_ROOT/studio/backend/requirements/no-torch-runtime.txt"
+        return
+    fi
+    # Check inside installed package
+    _rt=$(find "$VENV_DIR" -path "*/studio/backend/requirements/no-torch-runtime.txt" -print -quit 2>/dev/null || echo "")
+    if [ -n "$_rt" ]; then
+        echo "$_rt"
+        return
+    fi
+}
+
+# ── AMD ROCm GPU detection helper ──
+# WSL2 ROCDXG: the system rocminfo enumerates the GPU over /dev/dxg only when
+# HSA_ENABLE_DXG_DETECTION=1 (a no-op on bare metal), and /opt/rocm/bin can be
+# off PATH outside login shells (the profile.d drop-in). Seed both before any
+# rocminfo probe or a ROCDXG WSL host is misdetected as CPU-only.
+_ensure_rocm_probe_env() {
+    export HSA_ENABLE_DXG_DETECTION="${HSA_ENABLE_DXG_DETECTION:-1}"
+    if ! command -v rocminfo >/dev/null 2>&1 && [ -x /opt/rocm/bin/rocminfo ]; then
+        PATH="$PATH:/opt/rocm/bin"
+    fi
+}
+
+# Returns 0 if an AMD GPU is present. Checks rocminfo, amd-smi, then sysfs
+# KFD topology (env-var-independent fallback for when HIP/ROCR_VISIBLE_DEVICES hides devices).
+# Always returns 1 (false) when an NVIDIA GPU is present: blocks every
+# detection path (rocminfo, amd-smi, KFD sysfs) from producing a false
+# positive on NVIDIA-only or NVIDIA-primary hosts, even when ROCm tools
+# are co-installed.
+_has_amd_rocm_gpu() {
+    _ensure_rocm_probe_env
+    if _has_usable_nvidia_gpu; then
+        return 1
+    fi
+    if command -v rocminfo >/dev/null 2>&1 && \
+       rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
+        return 0
+    elif command -v amd-smi >/dev/null 2>&1 && \
+         amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
+        return 0
+    elif [ -e /dev/kfd ] && \
+         awk '/vendor_id/ && $2 == 4098 { found = 1 } END { exit !found }' \
+             /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
+        # vendor_id 4098 = 0x1002 (AMD) marks a GPU node: the KFD CPU node
+        # reports vendor_id 0, so any 4098 node is an AMD GPU. NVIDIA's open
+        # kernel module (driver 560+) registers KFD nodes as vendor_id 4318
+        # (0x10DE), so this never false-positives on NVIDIA-only hosts.
+        # The prior check also required a gpu_id line, but gpu_id is a SIBLING
+        # sysfs file, not a line in properties -- it never matched, so the
+        # fallback silently missed every ROCm-less AMD host (issue: fresh
+        # Arch/CachyOS boxes reporting "no GPU detected").
+        return 0
+    fi
+    return 1
+}
+
+# Returns 0 if an AMD display GPU is on the PCI bus even when ROCm can't use it
+# (e.g. a Strix Halo iGPU with no /dev/kfd). Only sharpens the "no GPU detected"
+# hint. vendor 0x1002 = AMD/ATI; class 0x03* = display controller.
+_amd_gpu_present_via_pci() {
+    [ -d /sys/bus/pci/devices ] || return 1
+    for _pci_vendor in /sys/bus/pci/devices/*/vendor; do
+        [ -r "$_pci_vendor" ] || continue
+        read -r _v < "$_pci_vendor" 2>/dev/null || continue
+        [ "$_v" = "0x1002" ] || continue
+        _cls="${_pci_vendor%vendor}class"
+        [ -r "$_cls" ] || continue
+        read -r _c < "$_cls" 2>/dev/null || continue
+        case "$_c" in 0x03*) return 0 ;; esac
+    done
+    return 1
+}
+
+# Map a gfx arch to the AMD pip index family (mirrors install.ps1 $archFamilyMap).
+_amd_arch_index_family_for_gfx() {
+    case "$1" in
+        gfx1201|gfx1200) echo gfx120X-all ;;
+        gfx1151) echo gfx1151 ;;
+        gfx1150) echo gfx1150 ;;
+        gfx1152) echo gfx1152 ;;
+        gfx1103|gfx1102|gfx1101|gfx1100) echo gfx110X-all ;;
+        gfx1036|gfx1035|gfx1034|gfx1033|gfx1032|gfx1031|gfx1030) echo gfx103X-all ;;
+        gfx90a) echo gfx90a ;;
+        gfx908) echo gfx908 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Map a GPU marketing name to gfx arch (kept in sync with install.ps1 nameArchTable).
+_infer_amd_gfx_arch_from_gpu_name() {
+    case "$1" in
+        *9070*|*9080*) echo gfx1201 ;;
+        *9060*) echo gfx1200 ;;
+        *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) echo gfx1151 ;;
+        *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*) echo gfx1150 ;;
+        *"860M"*|*"840M"*|*"Krackan"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) echo gfx1152 ;;
+        *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*) echo gfx1102 ;;
+        *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*) echo gfx1101 ;;
+        *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*) echo gfx1100 ;;
+        *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*) echo gfx1103 ;;
+        *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*) echo gfx1030 ;;
+        *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*) echo gfx1032 ;;
+        *"RX 6500"*|*"RX 6400"*|*"RX 6300"*|*"PRO W6400"*|*"PRO W6500"*) echo gfx1034 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Best-effort gfx inference when ROCm tools can't see the GPU (unslothai#7301).
+# Mirrors install.ps1 arch resolution on Windows ($HasROCm false, $ROCmGfxArch set).
+_infer_linux_amd_gfx_arch() {
+    if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
+        printf '%s\n' "$(printf '%s' "$UNSLOTH_ROCM_GFX_ARCH" | tr '[:upper:]' '[:lower:]')"
+        return 0
+    fi
+    # On WSL /proc/cpuinfo and lspci still report the host APU, but without the
+    # ROCDXG bridge (librocdxg over /dev/dxg) the AMD wheels can't reach the GPU;
+    # keep the CPU fallback there unless that runtime is present (the explicit
+    # override above still wins). Mirrors install_python_stack.py.
+    _gpu_evidence=""
+    if [ -e /dev/dxg ] || grep -qi microsoft /proc/version 2>/dev/null; then
+        for _d in /opt/rocm/lib /opt/rocm/lib64 /opt/rocm-*/lib /opt/rocm-*/lib64; do
+            { [ -e "$_d/librocdxg.so" ] || [ -e "$_d/librocdxg.so.1" ]; } && _rocdxg=1 && break
+        done
+        [ -n "${_rocdxg:-}" ] || return 1
+        # WSL enumerates no PCI display device; /dev/dxg + librocdxg IS the
+        # GPU evidence there.
+        _gpu_evidence=1
+    elif _amd_gpu_present_via_pci; then
+        _gpu_evidence=1
+    fi
+    # /proc/cpuinfo leaks the HOST CPU model into VMs/containers that received
+    # no AMD GPU, so the CPU-model text alone is not GPU evidence: require an
+    # AMD display device (PCI vendor 0x1002, class 0x03*) before trusting it.
+    # The lspci fallback below needs no gate; an AMD display line IS evidence.
+    if [ -n "$_gpu_evidence" ] && grep -qiE 'Ryzen AI Max|Radeon 80[0-9][05]S|Strix Halo' /proc/cpuinfo 2>/dev/null; then
+        echo gfx1151
+        return 0
+    fi
+    if [ -n "$_gpu_evidence" ] && grep -qiE '890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]' /proc/cpuinfo 2>/dev/null; then
+        echo gfx1150
+        return 0
+    fi
+    if [ -n "$_gpu_evidence" ] && grep -qiE '860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33' /proc/cpuinfo 2>/dev/null; then
+        echo gfx1152
+        return 0
+    fi
+    if command -v lspci >/dev/null 2>&1; then
+        # A non-AMD controller can enumerate first (Intel/ASPEED before an AMD
+        # dGPU), so scan every display-class line and take the first AMD one
+        # that maps. The vendor guard is case-SENSITIVE (a -i "ATI" would match
+        # "CorporATIon" on every Intel/NVIDIA line); whole-line matching also
+        # survives the 0000: PCI domain prefix. Mirrors install_python_stack.py.
+        _amd_disp=$(lspci -nn 2>/dev/null | grep -E 'VGA compatible controller|3D controller|Display controller' | grep -E 'AMD|ATI' || true)
+        while IFS= read -r _ln; do
+            [ -n "$_ln" ] || continue
+            if _gfx=$(_infer_amd_gfx_arch_from_gpu_name "$_ln"); then
+                echo "$_gfx"
+                return 0
+            fi
+        done <<EOF
+$_amd_disp
+EOF
+    fi
+    return 1
+}
+
+# Reads the AMD gfx arch for wheel-index decisions: a user-set
+# UNSLOTH_ROCM_GFX_ARCH is authoritative (lowercased), else rocminfo, then
+# amd-smi. rocminfo/amd-smi honor ROCR/HIP_VISIBLE_DEVICES, so a container mask
+# (e.g. ROCR_VISIBLE_DEVICES=-1) would hide a GPU that the env-independent KFD
+# detection still sees -- the tool probes run with the masks cleared. Prints the
+# gfx token(s) or nothing when unreadable, and always returns 0 (a failing probe
+# as the last command would trip set -e in callers' assignments). Shared by
+# get_torch_index_url's gfx gate and the runtime-less reroute gate so the two
+# can never disagree on what "readable" means.
+_probe_amd_gfx_arch() {
+    _ensure_rocm_probe_env
+    _pg=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
+    if [ -z "$_pg" ] && command -v rocminfo >/dev/null 2>&1; then
+        _pg=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+    fi
+    if [ -z "$_pg" ] && command -v amd-smi >/dev/null 2>&1; then
+        _pg=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi list 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        if [ -z "$_pg" ]; then
+            _pg=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        fi
+    fi
+    printf '%s\n' "$_pg"
+}
+
+# Classify the physical NVIDIA inventory for a cu126 fallback: "cu126" when it covers
+# every GPU, "uncovered" for an incompatible mix, empty when no fallback is needed or the
+# inventory is unreadable. CUDA_VISIBLE_DEVICES is ignored because the wheel must support
+# the host. Shared decision with install.ps1 / setup.ps1 / install_python_stack.py.
+_nvidia_cu126_verdict() {
+    [ -n "$1" ] || return 0
+    _ncv_caps=$(_run_bounded "$1" --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null) || return 0
+    printf '%s\n' "$_ncv_caps" | awk '
+        { gsub(/^[[:space:]]+|[[:space:]]+$/, "") }   # match the .Trim()/.strip() siblings
+        /^[0-9]+\.[0-9]+$/ {
+            split($0, _sm, ".")
+            _n = (_sm[1] * 10) + _sm[2]
+            seen = 1
+            if (_n < 75) legacy = 1
+            if (_n < 50 || _n > 90) outside_cu126 = 1
+            next
+        }
+        /./ { unreadable = 1 }
+        END {
+            if (!seen || unreadable || !legacy) exit
+            print outside_cu126 ? "uncovered" : "cu126"
+        }
+    '
+}
+
+# Cap cu128/cu130 at cu126 when it covers every physical GPU: PyTorch 2.11's cu128/cu130
+# start at sm_75, cu126 spans sm_50-90. Non-x86_64 keeps driver-only selection.
+_cap_cuda_family_for_pre_turing() {
+    case "$_ARCH" in
+        x86_64|amd64) ;;
+        *) printf '%s\n' "$1"; return ;;
+    esac
+    case "$1" in
+        cu128|cu130) ;;
+        *) printf '%s\n' "$1"; return ;;
+    esac
+    case "$(_nvidia_cu126_verdict "$2")" in
+        cu126)
+            echo "[WARN] Pre-Turing NVIDIA GPUs (sm_<75) are present -- selecting cu126, because PyTorch 2.11's $1 wheels start at sm_75." >&2
+            printf '%s\n' "cu126"
+            return
+            ;;
+        uncovered)
+            echo "[WARN] This host mixes pre-Turing NVIDIA GPUs with GPUs that cu126 cannot serve; no PyTorch 2.11 CUDA family covers both." >&2
+            echo "[WARN] Keeping $1, so the pre-Turing GPUs will be unusable. Set UNSLOTH_TORCH_INDEX_FAMILY=cu126 to choose the other way." >&2
+            ;;
+    esac
+    printf '%s\n' "$1"
+}
+
 # ── Detect GPU and choose PyTorch index URL ──
 # Mirrors Get-TorchIndexUrl in install.ps1.
 # On CPU-only machines this returns the cpu index, avoiding the solver
@@ -2000,6 +2874,24 @@ _has_usable_nvidia_gpu() {
 get_torch_index_url() {
     _base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
     _base="${_base%/}"
+    # Explicit override -- skip ALL GPU probing (headless / container / CI / cross-install).
+    # UNSLOTH_TORCH_INDEX_URL wins (full URL, verbatim); _FAMILY is the leaf (cpu, cu128, ...)
+    # appended to the mirror base. Trim whitespace so a whitespace-only value is unset.
+    _url="${UNSLOTH_TORCH_INDEX_URL:-}"
+    _url="${_url#"${_url%%[![:space:]]*}"}"; _url="${_url%"${_url##*[![:space:]]}"}"
+    if [ -n "$_url" ]; then
+        # Trim trailing PATH slashes (a multi-slash path 404s on strict pip proxies) while
+        # preserving a ?query/#fragment token (a whole-URL strip would eat a "/"-ending token).
+        _url=$(_trim_index_path_slashes "$_url")
+        echo "$_url"; return
+    fi
+    _family="${UNSLOTH_TORCH_INDEX_FAMILY:-}"
+    _family="${_family#"${_family%%[![:space:]]*}"}"; _family="${_family%"${_family##*[![:space:]]}"}"
+    if [ -n "$_family" ]; then
+        while [ "${_family#/}" != "$_family" ]; do _family="${_family#/}"; done
+        while [ "${_family%/}" != "$_family" ]; do _family="${_family%/}"; done
+        echo "$_base/$_family"; return
+    fi
     # macOS: always CPU (no CUDA support)
     case "$(uname -s)" in Darwin) echo "$_base/cpu"; return ;; esac
     # Try nvidia-smi -- require the binary to actually list a usable GPU.
@@ -2028,6 +2920,29 @@ get_torch_index_url() {
         if ! _has_amd_rocm_gpu; then
             echo "$_base/cpu"; return
         fi
+        # A generic rocm index is only safe when the gfx arch is readable: the
+        # Strix reroute (gfx1150/1151 -> arch-specific index) learns gfx from
+        # rocminfo/amd-smi, so if those are missing OR do not enumerate the GPU, an
+        # unknown-arch box might be Strix and would get the broken _grouped_mm
+        # wheels. Probe via the shared helper (override first, then rocminfo/amd-smi
+        # with visibility masks cleared); if the arch is unreadable, never guess a
+        # rocm index. A KFD-only host whose arch is still inferable from hardware
+        # IDs (PCI/cpuinfo/lspci) returns the cpu index and lets the runtime-less
+        # reroute below upgrade it to AMD per-arch wheels -- the reroute gate uses
+        # this same probe, so the handoff can't misfire. Only when inference fails
+        # too is CPU final, with the actionable warning.
+        _amd_gfx_probe=$(_probe_amd_gfx_arch)
+        if [ -z "$_amd_gfx_probe" ]; then
+            if _amd_inferred_gfx=$(_infer_linux_amd_gfx_arch 2>/dev/null) && \
+               [ -n "$_amd_inferred_gfx" ] && \
+               _amd_arch_index_family_for_gfx "$_amd_inferred_gfx" >/dev/null 2>&1; then
+                echo "[WARN] AMD GPU detected but rocminfo/amd-smi can't read its gfx arch -- inferring $_amd_inferred_gfx from hardware IDs." >&2
+                echo "$_base/cpu"; return
+            fi
+            echo "[WARN] AMD GPU detected but its gfx arch can't be read (rocminfo/amd-smi missing or not enumerating the GPU) -- installing CPU-only PyTorch." >&2
+            echo "[WARN] For GPU PyTorch, install or repair rocminfo/amd-smi (e.g. sudo pacman -S rocm-hip-sdk) and re-run this installer." >&2
+            echo "$_base/cpu"; return
+        fi
         # AMD GPU confirmed -- detect ROCm version
         _rocm_tag=""
         _rocm_tag=$({ command -v amd-smi >/dev/null 2>&1 && \
@@ -2044,7 +2959,11 @@ get_torch_index_url() {
             { command -v rpm >/dev/null 2>&1 && \
                 ver="$(rpm -q --qf '%{VERSION}\n' rocm-core 2>/dev/null)" && \
                 [ -n "$ver" ] && \
-                printf '%s\n' "$ver" | awk -F'[.-]' '{print "rocm"$1"."$2; exit}'; }) 2>/dev/null
+                printf '%s\n' "$ver" | awk -F'[.-]' '{print "rocm"$1"."$2; exit}'; }) 2>/dev/null || _rocm_tag=""
+        # ^ || guard: when EVERY version source is missing (e.g. rocminfo present
+        # but rocm-core not installed, so dpkg-query/rpm exit 1), the whole ||
+        # chain fails and set -e would kill the installer BEFORE the actionable
+        # no-version WARN below -- exactly the fresh-install case it exists for.
         # Validate _rocm_tag: must match "rocmX.Y" with major >= 1
         case "$_rocm_tag" in
             rocm[1-9]*.[0-9]*) : ;;  # valid (major >= 1)
@@ -2080,12 +2999,27 @@ get_torch_index_url() {
             esac
             return
         fi
-        # AMD GPU confirmed by rocminfo/amd-smi but ROCm version could not be
-        # read from any source (amd-smi, /opt/rocm/.info/version, hipconfig,
-        # dpkg, rpm).  Warn explicitly rather than silently installing CPU PyTorch.
-        echo "[WARN] AMD GPU detected but ROCm version could not be determined -- falling back to CPU-only PyTorch" >&2
-        echo "[WARN] Ensure one of the following is accessible: amd-smi, hipconfig, /opt/rocm/.info/version, rocm-core package" >&2
-        echo "[WARN] To install ROCm: https://rocm.docs.amd.com/en/latest/deploy/linux/index.html" >&2
+        # AMD GPU confirmed (rocminfo/amd-smi or the KFD topology fallback) but
+        # no ROCm/HIP install was found to read the version from (amd-smi,
+        # /opt/rocm/.info/version, hipconfig, dpkg, rpm). This is the common
+        # fresh-install case: the GPU is real, but with no ROCm userspace the
+        # correct PyTorch build can't be selected. Warn with an actionable fix
+        # rather than silently installing CPU PyTorch.
+        # A user-set UNSLOTH_ROCM_GFX_ARCH seeded the probe above, so rocminfo/
+        # amd-smi may still be unable to see the GPU; when the named arch maps to
+        # a wheel family, the runtime-less reroute (gated on the override) will
+        # install the AMD per-arch wheels -- a CPU-only warning here would be
+        # false for that path. Defer like the inferable-arch branch does.
+        if [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && \
+           _amd_arch_index_family_for_gfx "$_amd_gfx_probe" >/dev/null 2>&1; then
+            echo "[WARN] AMD GPU detected with no readable ROCm version, but UNSLOTH_ROCM_GFX_ARCH=$_amd_gfx_probe is set -- routing to AMD per-arch wheels." >&2
+            echo "$_base/cpu"; return
+        fi
+        echo "[WARN] AMD GPU detected, but no ROCm/HIP install was found to select the matching GPU PyTorch build -- falling back to CPU-only PyTorch." >&2
+        echo "[WARN] Install the ROCm/HIP SDK, then re-run this installer:" >&2
+        echo "[WARN]   Arch / CachyOS : sudo pacman -S rocm-hip-sdk" >&2
+        echo "[WARN]   other distros  : https://rocm.docs.amd.com/en/latest/deploy/linux/index.html" >&2
+        echo "[WARN] Minimum required for version detection: amd-smi, hipconfig, /opt/rocm/.info/version, or the rocm-core package." >&2
         echo "$_base/cpu"; return
     fi
     # Parse CUDA version from nvidia-smi output (POSIX-safe, no grep -P).
@@ -2108,51 +3042,241 @@ get_torch_index_url() {
     fi
     _major=${_cuda_ver%%.*}
     _minor=${_cuda_ver#*.}
-    if [ "$_major" -ge 13 ]; then echo "$_base/cu130"
-    elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 8 ]; then echo "$_base/cu128"
-    elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 6 ]; then echo "$_base/cu126"
-    elif [ "$_major" -ge 12 ]; then echo "$_base/cu124"
-    elif [ "$_major" -ge 11 ]; then echo "$_base/cu118"
-    else echo "$_base/cpu"; fi
+    if [ "$_major" -ge 13 ]; then _cuda_tag=cu130
+    elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 8 ]; then _cuda_tag=cu128
+    elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 6 ]; then _cuda_tag=cu126
+    elif [ "$_major" -ge 12 ]; then _cuda_tag=cu124
+    elif [ "$_major" -ge 11 ]; then _cuda_tag=cu118
+    else echo "$_base/cpu"; return; fi
+    echo "$_base/$(_cap_cuda_family_for_pre_turing "$_cuda_tag" "$_smi")"
 }
 
 # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
-# torch.__version__ ($1) -> flavor tag (cuXXX / rocm / cpu); untagged wheel = cpu.
+# torch.__version__ ($1) -> flavor tag (cuXXX / rocm / xpu / cpu); untagged wheel = cpu.
+# The xpu arm is load-bearing: without it a +xpu wheel reads as "cpu" and is force-reinstalled
+# on every run. Parity with the ps1 side.
 _torch_flavor_tag() {
     case "$1" in
         *+cu[0-9]*) printf '%s\n' "$1" | sed -n 's/.*+\(cu[0-9][0-9]*\).*/\1/p' ;;
         *+rocm*)    echo "rocm" ;;
+        *+xpu*)     echo "xpu" ;;
         *+cpu*)     echo "cpu" ;;
         "")         echo "" ;;
         *)          echo "cpu" ;;
     esac
 }
 
-# Expected tag from the index leaf ($1): cuXXX / cpu / rocm (rocmX.Y and gfx* ->
-# rocm). Empty on an unknown leaf (odd mirror) so the repair safely no-ops.
-_expected_torch_flavor_tag() {
-    _u="${1%/}"
-    _leaf="${_u##*/}"
-    case "$_leaf" in
-        cu[0-9]*)   echo "$_leaf" ;;
-        cpu)        echo "cpu" ;;
-        rocm*|gfx*) echo "rocm" ;;
-        *)          echo "" ;;
+# Final path segment of a wheel index URL ($1), lowercased, query/fragment stripped first
+# so a token-authenticated pin (.../cu128?token=x) classifies as cu128 (else it reinstalls
+# every update). Classification only. Shared with the py / ps1 leaf extractors.
+_torch_index_url_leaf() {
+    _tl_u="${1%%\?*}"
+    _tl_u="${_tl_u%%#*}"
+    # Strip ALL trailing slashes, not one: .../rocm7.2// must yield rocm7.2, not an empty leaf.
+    while [ -n "$_tl_u" ] && [ "${_tl_u%/}" != "$_tl_u" ]; do
+        _tl_u="${_tl_u%/}"
+    done
+    printf '%s' "${_tl_u##*/}" | tr '[:upper:]' '[:lower:]'
+}
+
+# True (exit 0) when a lowercased leaf is an EXACT pip ROCm family: rocm<digits>[.<digits>]
+# or a gfx ARCHITECTURE leaf (gfx followed by a digit: gfx90a, gfx1151, gfx120x-all). A leaf
+# that merely starts with rocm/gfx (rocm7.2-private, gfx-private) is a custom verbatim pin.
+# Matches the py / ps1 sides.
+_is_pip_rocm_family_leaf() {
+    case "$1" in
+        gfx[0-9]*) return 0 ;;
+        rocm[0-9]*)
+            # Exact rocm<digits>[.<digits>]: both major and minor must be non-empty all-digits
+            # (rocm7., rocm7.2.1, rocm7.2-private are all custom pins, not a family).
+            _rocm_rest="${1#rocm}"
+            case "$_rocm_rest" in
+                *.*.*) return 1 ;;
+                *.*)
+                    _rocm_minor="${_rocm_rest#*.}"
+                    case "${_rocm_rest%%.*}" in "" | *[!0-9]*) return 1 ;; esac
+                    case "$_rocm_minor" in "" | *[!0-9]*) return 1 ;; esac
+                    ;;
+                *[!0-9]*) return 1 ;;
+            esac
+            return 0
+            ;;
+        *) return 1 ;;
     esac
 }
 
-# Whether index ($1) supports a plain --index-url reinstall. pytorch.org cuXXX /
-# rocmX.Y AND the repo.amd.com gfx* indexes are all PEP 503 simple indexes that uv
-# resolves (torch + every transitive dep) via --index-url -- the same URLs the
+# Whether release base $1 (X.Y[.Z...]) falls inside constraint window $2
+# ("torch>=A.B[.C],<D.E.F"). Compares at major.minor granularity, which is exact
+# for the windows this script uses (ceilings are always X.Y.0); a non-.0 ceiling
+# would only make this conservative (excludes the whole ceiling minor). Anything
+# unparseable answers "no" so the caller fails toward the supported range.
+_torch_release_in_window() {
+    _trw_con="$2"
+    case "$_trw_con" in
+        "torch>="*",<"*) ;;
+        *) echo "no"; return ;;
+    esac
+    _trw_floor="${_trw_con#torch>=}"; _trw_floor="${_trw_floor%%,*}"
+    _trw_ceil="${_trw_con##*,<}"
+    _v_maj="${1%%.*}";          _v_rest="${1#*.}";          _v_min="${_v_rest%%.*}"
+    _f_maj="${_trw_floor%%.*}"; _f_rest="${_trw_floor#*.}"; _f_min="${_f_rest%%.*}"
+    _c_maj="${_trw_ceil%%.*}";  _c_rest="${_trw_ceil#*.}";  _c_min="${_c_rest%%.*}"
+    for _trw_n in "$_v_maj" "$_v_min" "$_f_maj" "$_f_min" "$_c_maj" "$_c_min"; do
+        case "$_trw_n" in ''|*[!0-9]*) echo "no"; return ;; esac
+    done
+    if [ "$_v_maj" -gt "$_f_maj" ] || { [ "$_v_maj" -eq "$_f_maj" ] && [ "$_v_min" -ge "$_f_min" ]; }; then
+        if [ "$_v_maj" -lt "$_c_maj" ] || { [ "$_v_maj" -eq "$_c_maj" ] && [ "$_v_min" -lt "$_c_min" ]; }; then
+            echo "yes"
+            return
+        fi
+    fi
+    echo "no"
+}
+
+# Keep the previous venv's torch on a re-run: echo "torch==X.Y.Z" when the probed
+# version ($1) is inside the active constraint window ($2), else "". The RELEASE is kept
+# regardless of flavor tag; the pin installs from the freshly chosen index, so flavor
+# follows the machine (cpu <-> cuda, cu126 -> cu130, PyPI bare -> +cu130) while the
+# release follows the user. Gating on flavor was wrong: a PyPI torch reports a BARE
+# version (on Linux the PyPI wheel IS CUDA), misclassified "cpu", so a healthy 2.10 on a
+# cu130 host was moved to 2.11. Per-leaf floors still win (rocm7.2 / gfx >=2.11 for the
+# Strix _grouped_mm fix, out-of-window manual installs) and are never pinned; the caller's
+# _PREV_FALLBACK_CONSTRAINT installs the newest supported release when the index lacks the
+# exact one. Opt out with UNSLOTH_TORCH_UPGRADE=1.
+_previous_torch_pin() {
+    _ptp_ver="$1"
+    _ptp_con="$2"
+    [ -n "$_ptp_ver" ] || { echo ""; return; }
+    [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ] && { echo ""; return; }
+    _ptp_base="${_ptp_ver%%+*}"
+    # Base must be a plain numeric release (X.Y[.Z]); probe noise and
+    # nightly/dev/source builds (2.11.0.dev20250704, 2.9.0a0) must never
+    # become a pin -- no stable index carries them, so pinning would only
+    # print "keeping it" and then burn a doomed resolve before falling back.
+    case "$_ptp_base" in
+        *[!0-9.]* | *..* | .* | *.) echo ""; return ;;
+        [0-9]*.[0-9]*) ;;
+        *) echo ""; return ;;
+    esac
+    [ "$(_torch_release_in_window "$_ptp_base" "$_ptp_con")" = "yes" ] || { echo ""; return; }
+    echo "torch==$_ptp_base"
+}
+
+# Install torch from TORCH_INDEX_URL honoring a kept-release pin: with _PREV_TORCH_PIN
+# set, TORCH_CONSTRAINT is the exact previous release; fall back to the supported range
+# if the index lacks it (pruned mirror) rather than failing. Used by every --default-index
+# path (NVIDIA cu*, AMD rocm/gfx fallbacks, cpu/mac, ROCm repairs) so preservation is
+# uniform. Extra args (e.g. --force-reinstall) are passed through to uv.
+_install_torch_default_index() {
+    if [ -n "$_PREV_TORCH_PIN" ]; then
+        # Pair the companions with the kept torch minor: torchaudio no longer
+        # exact-pins torch in its metadata, so leaving it unconstrained resolves
+        # a newer mismatched build (a kept torch 2.9.0 pulled torchaudio 2.11.0).
+        _itdi_base="${_PREV_TORCH_PIN#torch==}"
+        _itdi_minor="${_itdi_base#*.}"
+        _itdi_minor="${_itdi_minor%%.*}"
+        _itdi_tv="torchvision"
+        _itdi_ta="torchaudio"
+        case "$_itdi_base" in
+            2.*)
+                _itdi_tv="torchvision==0.$((_itdi_minor + 15)).*"
+                _itdi_ta="torchaudio==2.${_itdi_minor}.*"
+                ;;
+        esac
+        if ! run_install_cmd_retry "install PyTorch (kept release)" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$_itdi_tv" "$_itdi_ta" \
+            --default-index "$TORCH_INDEX_URL" "$@"; then
+            substep "[WARN] $_PREV_TORCH_PIN is not installable from $(_strip_index_url_credentials "$TORCH_INDEX_URL") -- installing the newest supported release instead" "$C_WARN"
+            TORCH_CONSTRAINT="$_PREV_FALLBACK_CONSTRAINT"
+            _PREV_TORCH_PIN=""
+            run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
+                --default-index "$TORCH_INDEX_URL" "$@"
+        fi
+    else
+        run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" "$TORCHVISION_CONSTRAINT" "$TORCHAUDIO_CONSTRAINT" \
+            --default-index "$TORCH_INDEX_URL" "$@"
+    fi
+}
+
+# Expected tag from the index leaf ($1): cuXXX / cpu / xpu / rocm (rocmX.Y and gfx* ->
+# rocm). Empty on an unknown leaf (odd mirror) so the repair safely no-ops.
+_expected_torch_flavor_tag() {
+    _leaf=$(_torch_index_url_leaf "$1")
+    case "$_leaf" in
+        cu[0-9]*)
+            # Exact cu + digits only; a cu*-suffixed leaf (cu128-private) -> "" (custom),
+            # else a correct +cu128 wheel is force-reinstalled every run.
+            case "${_leaf#cu}" in
+                *[!0-9]*) echo "" ;;
+                *)        echo "$_leaf" ;;
+            esac
+            ;;
+        cpu)          echo "cpu" ;;
+        # Intel XPU (SYCL) is a GPU flavor, so a pinned xpu index repairs a stale CPU wheel.
+        xpu)          echo "xpu" ;;
+        # Exact rocm/gfx families only; a custom rocm*-suffixed leaf -> "" (custom).
+        *)
+            if _is_pip_rocm_family_leaf "$_leaf"; then echo "rocm"; else echo ""; fi
+            ;;
+    esac
+}
+
+# Installed torch's version label, for expected-flavor tag $1. The xpu path reads it off disk
+# (as setup.sh's fast-path escape does): `import torch` can block forever on a wedged Intel
+# driver. Other families keep the interpreter read.
+_installed_torch_version_for_tag() {
+    if [ "$1" = "xpu" ]; then
+        for _itv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+            [ -f "$_itv" ] || continue
+            sed -n "s/^__version__ = '\([^']*\)'.*/\1/p" "$_itv" | head -n 1
+            return
+        done
+        return
+    fi
+    "$_VENV_PY" -c "import torch; print(torch.__version__)" 2>/dev/null || true
+}
+
+# Whether index ($1) supports a plain --default-index reinstall. pytorch.org cuXXX /
+# xpu / rocmX.Y AND the repo.amd.com gfx* indexes are all PEP 503 simple indexes that uv
+# resolves (torch + every transitive dep) via --default-index -- the same URLs the
 # fresh-install paths above already use -- so a stale wheel is auto-repairable.
 # Unknown/odd-mirror leaves -> no, so we warn rather than risk a wrong reinstall.
 _torch_index_repairable() {
-    _u="${1%/}"
-    _leaf="${_u##*/}"
+    _leaf=$(_torch_index_url_leaf "$1")
     case "$_leaf" in
-        cu[0-9]*|rocm[0-9]*|gfx*) echo "yes" ;;
-        *)                        echo "no" ;;
+        cu[0-9]*) echo "yes" ;;
+        # /whl/xpu is a plain PEP 503 index (oneAPI runtime and triton-xpu are ordinary deps).
+        xpu)      echo "yes" ;;
+        # Only EXACT rocm/gfx families resolve via --default-index; a suffixed leaf is verbatim.
+        *)
+            if _is_pip_rocm_family_leaf "$_leaf"; then echo "yes"; else echo "no"; fi
+            ;;
     esac
+}
+
+# Remove credentials from a wheel index URL ($1) so an authenticated pin never leaks:
+# drops userinfo AND query/fragment; scheme/host/path stay exact. Shared with py / ps1.
+_strip_index_url_credentials() {
+    _sic_url="$1"
+    case "$_sic_url" in
+        *://*) ;;
+        *) printf '%s' "$_sic_url"; return ;;
+    esac
+    _sic_scheme="${_sic_url%%://*}"
+    _sic_rest="${_sic_url#*://}"
+    # Drop query / fragment (may hold auth tokens).
+    _sic_rest="${_sic_rest%%\?*}"
+    _sic_rest="${_sic_rest%%#*}"
+    _sic_auth="${_sic_rest%%/*}"
+    # Drop user:pass@ userinfo if present.
+    case "$_sic_auth" in
+        *@*) _sic_host="${_sic_auth##*@}" ;;
+        *)   _sic_host="$_sic_auth" ;;
+    esac
+    if [ "$_sic_auth" = "$_sic_rest" ]; then
+        printf '%s://%s' "$_sic_scheme" "$_sic_host"
+    else
+        printf '%s://%s/%s' "$_sic_scheme" "$_sic_host" "${_sic_rest#*/}"
+    fi
 }
 
 get_radeon_wheel_url() {
@@ -2276,7 +3400,7 @@ _pick_radeon_wheel() {
 # the installer -- always returns 0. Runs the idempotent helper (ROCm 7.2 +
 # librocdxg), then sources the env it persisted so detection finds the GPU.
 # Export the ROCm-on-WSL env into this process and persist it to /etc/profile.d
-# so non-login Studio/llama launches inherit it. Idempotent (writes only when
+# so non-login Unsloth/llama launches inherit it. Idempotent (writes only when
 # the drop-in is missing); no-op without librocdxg, so never fires off WSL.
 # /etc/profile.d is root-owned -- sudo-tee when not root, else ROCm vanishes
 # after this shell on a non-root reinstall. Best-effort either way.
@@ -2306,31 +3430,34 @@ _persist_rocm_wsl_dropin() {
     fi
 }
 
+# _wsl_amd_gpu_name is defined earlier so both the reroute and this bootstrap can use it.
 _maybe_bootstrap_rocm_wsl() {
     [ "${OS:-}" = "wsl" ] || return 0
     [ "${SKIP_TORCH:-false}" = "false" ] || return 0
     [ "${UNSLOTH_SKIP_ROCM_WSL_SETUP:-0}" = "1" ] && return 0
     # Leave any already-usable GPU completely alone (NVIDIA, or working ROCm).
     if _has_usable_nvidia_gpu; then return 0; fi
-    # "Usable ROCm" here = rocminfo enumerates the gfx1151 agent. Don't use the
-    # generic _has_amd_rocm_gpu: its broad gfx match accepts "gfx11-generic" and
-    # would skip this bootstrap while the real GPU is still unusable. awk consumes
-    # all input, so rocminfo isn't SIGPIPE'd like `grep -q` would under pipefail.
+    # Usable ROCm = rocminfo enumerates a real GPU agent: gfx[1-9] (excludes gfx000,
+    # the CPU agent) and not the "gfx11-generic" fallback. awk consumes all input so
+    # rocminfo isn't SIGPIPE'd like `grep -q` under pipefail.
     _ensure_rocm_probe_env
     if command -v rocminfo >/dev/null 2>&1 && \
-       rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx1151/{found=1} END{exit !found}'; then
+       rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9]/ && !/generic/{found=1} END{exit !found}'; then
         # rocminfo may work only via the transient env _ensure_rocm_probe_env
         # just set, which dies with the installer. Persist the drop-in so login
-        # shells (Studio, llama.cpp) inherit it -- else a reinstall over an
+        # shells (Unsloth, llama.cpp) inherit it -- else a reinstall over an
         # existing /opt/rocm (uninstall keeps ROCm but drops it) loses the GPU.
         _persist_rocm_wsl_dropin
         return 0
     fi
     # WSL GPU passthrough device must exist (present on any WSL2 GPU host).
     [ -e /dev/dxg ] || return 0
-    # Only Strix Halo (gfx1151): rocminfo can't tell us the arch yet, so match
-    # the CPU model string WSL exposes (e.g. "AMD Ryzen AI Max+ ... Radeon 8060S").
-    grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null || return 0
+    # Strix APUs show in /proc/cpuinfo (the CPU model); discrete cards don't, so also
+    # ask the Windows host. Either signal suffices; the bootstrap detects arch from rocminfo.
+    if ! grep -qiE 'Ryzen AI Max|Radeon 80[0-9][05]S|Strix Halo' /proc/cpuinfo 2>/dev/null \
+       && ! _wsl_amd_gpu_name >/dev/null 2>&1; then
+        return 0
+    fi
     command -v bash >/dev/null 2>&1 || return 0
 
     # Fast path: already configured (librocdxg present) but launched from a
@@ -2340,7 +3467,7 @@ _maybe_bootstrap_rocm_wsl() {
             # shellcheck disable=SC1091
             . /etc/profile.d/unsloth-rocm-wsl.sh || true
         else
-            # librocdxg present but the env drop-in is gone (e.g. a Studio
+            # librocdxg present but the env drop-in is gone (e.g. an Unsloth
             # uninstall removed it while keeping shared ROCm). Restore the env.
             _persist_rocm_wsl_dropin
         fi
@@ -2348,7 +3475,8 @@ _maybe_bootstrap_rocm_wsl() {
     fi
 
     echo ""
-    substep "Detected AMD Strix Halo (Radeon 8000S) in WSL with no ROCm runtime yet." "$C_WARN"
+    _rw_gpu="$(_wsl_amd_gpu_name 2>/dev/null || true)"; [ -n "$_rw_gpu" ] || _rw_gpu="an AMD GPU"
+    substep "Detected ${_rw_gpu} in WSL with no ROCm runtime yet." "$C_WARN"
     substep "Setting up ROCm-on-WSL (ROCm 7.2 + librocdxg) automatically to enable this GPU."
     substep "One-time, uses sudo and a large download. (skip: re-run with UNSLOTH_SKIP_ROCM_WSL_SETUP=1)"
 
@@ -2396,9 +3524,87 @@ _maybe_bootstrap_rocm_wsl() {
     [ -n "$_rw_tmp" ] && rm -f "$_rw_tmp"
     return 0
 }
-_maybe_bootstrap_rocm_wsl || true
+# When the caller pins the wheel index (UNSLOTH_TORCH_INDEX_URL / _FAMILY), honour it
+# everywhere: skip the WSL ROCm bootstrap and the Radeon/Strix reroute below (which would
+# re-probe the GPU and overwrite the pin). Trim whitespace first (parity with
+# get_torch_index_url): a whitespace-only override is unset there, so must not flip this true.
+_torch_index_pinned=false
+_ti_url_trim="${UNSLOTH_TORCH_INDEX_URL:-}"
+_ti_url_trim="${_ti_url_trim#"${_ti_url_trim%%[![:space:]]*}"}"; _ti_url_trim="${_ti_url_trim%"${_ti_url_trim##*[![:space:]]}"}"
+_ti_family_trim="${UNSLOTH_TORCH_INDEX_FAMILY:-}"
+_ti_family_trim="${_ti_family_trim#"${_ti_family_trim%%[![:space:]]*}"}"; _ti_family_trim="${_ti_family_trim%"${_ti_family_trim##*[![:space:]]}"}"
+if [ -n "$_ti_url_trim" ] || [ -n "$_ti_family_trim" ]; then
+    _torch_index_pinned=true
+fi
+[ "$_torch_index_pinned" = true ] || _maybe_bootstrap_rocm_wsl || true
 
 TORCH_INDEX_URL=$(get_torch_index_url)
+
+# Linux: ROCm runtime missing but a supported AMD gfx arch is inferable (Strix Halo
+# in /proc/cpuinfo, lspci marketing name, UNSLOTH_ROCM_GFX_ARCH). Route to AMD's
+# per-arch wheels like install.ps1 does on Windows (unslothai#7301).
+# Gated on the runtime probes NOT naming a gfx: either no AMD GPU is detected at
+# all (_has_amd_rocm_gpu false), or the GPU is visible only through the
+# env-independent KFD topology while rocminfo/amd-smi can't read its arch
+# (KFD-only host, unslothai#7314 -- before the KFD detection fix these hosts
+# reached this reroute via the false branch, so the empty-probe condition
+# preserves that routing). A */cpu index chosen WITH a readable gfx
+# (unsupported/unreadable ROCm version, after its own warning) is a deliberate
+# fallback -- rerouting it would contradict that decision, and stays excluded
+# because the shared probe returns its gfx. An explicit UNSLOTH_ROCM_GFX_ARCH
+# override stays authoritative either way.
+if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
+   ! _has_usable_nvidia_gpu && \
+   { [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ] || ! _has_amd_rocm_gpu || \
+     [ -z "$(_probe_amd_gfx_arch)" ]; } && \
+   case "$(uname -s)" in Linux) true ;; *) false ;; esac && \
+   case "$_ARCH" in x86_64|amd64) true ;; *) false ;; esac; then
+    # ROCm torch wheels are x86_64-only; get_torch_index_url returns CPU on other
+    # arches, so an inferred/overridden gfx must not reroute arm64 to AMD wheels.
+    case "$TORCH_INDEX_URL" in
+        */cpu)
+            _linux_inferred_gfx=$(_infer_linux_amd_gfx_arch 2>/dev/null || true)
+            if [ -n "$_linux_inferred_gfx" ]; then
+                _amd_family=$(_amd_arch_index_family_for_gfx "$_linux_inferred_gfx") || _amd_family=""
+                if [ -n "$_amd_family" ]; then
+                    _amd_mirror="${UNSLOTH_AMD_ROCM_MIRROR:-https://repo.amd.com/rocm/whl}"
+                    while [ "${_amd_mirror%/}" != "$_amd_mirror" ]; do
+                        _amd_mirror="${_amd_mirror%/}"
+                    done
+                    TORCH_INDEX_URL="${_amd_mirror}/${_amd_family}/"
+                    # Hand the inferred arch to setup.sh (llama.cpp): it re-probes
+                    # ROCm on its own, and on these runtime-less hosts its probes
+                    # find nothing, so without this it classifies the box as
+                    # non-ROCm and installs the CPU prebuilt while torch just got
+                    # AMD per-arch wheels. setup.sh and install_llama_prebuilt.py
+                    # both honor UNSLOTH_ROCM_GFX_ARCH, so exporting it is the
+                    # whole handoff (a user-set override re-exports unchanged).
+                    export UNSLOTH_ROCM_GFX_ARCH="$_linux_inferred_gfx"
+                    case "$_linux_inferred_gfx" in
+                        gfx1201|gfx1200|gfx1151|gfx1150|gfx1152)
+                            TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
+                            TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
+                            TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
+                            ;;
+                    esac
+                    echo "" >&2
+                    # KFD-only hosts reach this reroute with /dev/kfd present
+                    # (that's what detected them), so don't claim it's missing.
+                    if _has_amd_rocm_gpu; then
+                        echo "  [WARN] AMD GPU visible via the kernel driver (KFD) but rocminfo/amd-smi can't read its gfx arch; using $_linux_inferred_gfx." >&2
+                    else
+                        echo "  [WARN] ROCm runtime not visible (/dev/kfd, rocminfo, amd-smi) but $_linux_inferred_gfx inferred." >&2
+                    fi
+                    echo "  [WARN] Routing to AMD arch-specific wheels ($(_strip_index_url_credentials "$TORCH_INDEX_URL"))." >&2
+                    echo "  [WARN] These wheels bundle their own ROCm runtime; install the kernel stack for native compute:" >&2
+                    echo "  [WARN]   https://docs.unsloth.ai/get-started/install-and-update/amd" >&2
+                    echo "  [WARN] Tip: set UNSLOTH_ROCM_GFX_ARCH=$_linux_inferred_gfx to skip inference next time." >&2
+                    echo "" >&2
+                fi
+            fi
+            ;;
+    esac
+fi
 
 # Export the resolved torch backend ("cuda", "rocm", or "cpu") so that
 # downstream scripts (setup.sh -> install_python_stack.py) know what was
@@ -2407,24 +3613,82 @@ TORCH_INDEX_URL=$(get_torch_index_url)
 # whose base path happens to contain "rocm" or "gfx" must not mislabel a
 # cu*/cpu index as ROCm (radeon repo URLs end in rocm-rel-X.Y/, Strix
 # overrides in gfxNNNN/, so the trailing slash is stripped first).
-_torch_index_leaf="${TORCH_INDEX_URL%/}"
+# Lowercase the leaf so every gfx*/rocm*/cu* arm matches regardless of case (canonical AMD
+# RDNA4 leaf is gfx120X-all). CUDA is branded only on a real cu[0-9]* leaf, so a mirror
+# leaf (/current) does NOT commit a CUDA backend; an unknown leaf leaves the var unset so
+# the stack probes the GPU. Query/fragment dropped first, then ALL trailing slashes (in
+# lockstep with the shared _torch_index_url_leaf extractor).
+_torch_index_leaf="${TORCH_INDEX_URL%%\?*}"
+_torch_index_leaf="${_torch_index_leaf%%#*}"
+# Strip ALL trailing slashes, not one: .../cu128// must yield cu128, not an empty leaf.
+while [ -n "$_torch_index_leaf" ] && [ "${_torch_index_leaf%/}" != "$_torch_index_leaf" ]; do
+    _torch_index_leaf="${_torch_index_leaf%/}"
+done
 _torch_index_leaf="${_torch_index_leaf##*/}"
+_torch_index_leaf=$(printf '%s' "$_torch_index_leaf" | tr '[:upper:]' '[:lower:]')
 case "$_torch_index_leaf" in
     rocm*|gfx*) export UNSLOTH_TORCH_BACKEND="rocm" ;;
     cpu)        export UNSLOTH_TORCH_BACKEND="cpu"  ;;
-    *)          export UNSLOTH_TORCH_BACKEND="cuda" ;;
+    cu[0-9]*)   export UNSLOTH_TORCH_BACKEND="cuda" ;;
+    # Unknown leaf (odd mirror, /current): unset so a stale inherited value can't leak and
+    # the stack probes the GPU.
+    *)          unset UNSLOTH_TORCH_BACKEND ;;
 esac
 
-# rocm7.2 ships torch 2.11.0 -- adjust the constraint to allow it.
-# All other ROCm tags and CUDA stay within <2.11.0.
-case "$TORCH_INDEX_URL" in
-    */rocm7.2) TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
+# Whether TORCH_INDEX_URL names an actual pip ROCm family (rocm<digit>* / gfx*), gating the
+# ROCm-only side effects below (AMD bitsandbytes, ROCm-torch repair). Digit-gated so a leaf
+# merely STARTING with "rocm" isn't force-repaired from the wrong path.
+if _is_pip_rocm_family_leaf "$_torch_index_leaf"; then
+    _torch_index_is_rocm_family=true
+else
+    _torch_index_is_rocm_family=false
+fi
+
+# rocm7.2 and the per-gfx indexes with the _grouped_mm <2.11 bug (gfx120X-all, gfx1151,
+# gfx1150) ship torch 2.11.0 -- raise the floor (also covers a pinned override that skipped
+# the Strix reroute). Pin the companions too: the per-gfx index publishes them independently
+# and a bare name can resolve a 2.12 ABI-mismatched wheel. Match on the FINAL leaf so a
+# custom mirror with a gfx/rocm7.2 path segment but a cu*/cpu family isn't forced.
+case "$_torch_index_leaf" in
+    rocm7.2|gfx120x-all|gfx1151|gfx1150|gfx1152)
+        TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
+        TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
+        TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
+        ;;
+    # CUDA cu12x/cu13x indexes ship torch 2.11.x: widen the ceiling to <2.12.0 (matches
+    # _CUDA_TORCH_PKG_SPEC) and widen the companions with it so the trio stays paired.
+    cu[0-9]*)
+        TORCH_CONSTRAINT="torch>=2.4,<2.12.0"
+        TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.27.0"
+        TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.12.0"
+        ;;
+    # Floor 2.6, not the generic 2.4: unsloth/models/_utils.py raises at import for an XPU
+    # device below it, so a mirror serving an older +xpu wheel would install something that
+    # cannot run. Reached only through an explicit pin (no Intel autodetect on this side).
+    xpu)
+        TORCH_CONSTRAINT="torch>=2.6,<2.11.0"
+        TORCHVISION_CONSTRAINT="torchvision>=0.21,<0.26.0"
+        TORCHAUDIO_CONSTRAINT="torchaudio>=2.6,<2.11.0"
+        ;;
 esac
+
+# A pinned custom/unknown-leaf index (/simple, /current, /cu128-private) has no curated
+# companion set, so bound torchvision/torchaudio to the same <2.11 range the Python path pins
+# (else a mirror with newer companions resolves a 2.12 ABI-mismatched wheel). Known families
+# keep their curated companions above (_expected_torch_flavor_tag returns "" only for custom).
+if [ "$_torch_index_pinned" = true ] && \
+   [ -z "$(_expected_torch_flavor_tag "$TORCH_INDEX_URL")" ]; then
+    TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.26.0"
+    TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"
+fi
 
 # Auto-detect GPU for AMD ROCm based
 # get_torch_index_url must have chosen */rocm*
 # (gfx in rocminfo or amd-smi list). Then require rocminfo "Marketing Name:.*Radeon".
+# Skipped when the index is pinned: an explicit override must not be rerouted to the
+# Radeon/Strix repos by GPU probing.
 _amd_gpu_radeon=false
+if [ "$_torch_index_pinned" = false ]; then
 case "$TORCH_INDEX_URL" in
     */rocm*)
         if _has_amd_rocm_gpu && command -v rocminfo >/dev/null 2>&1 && \
@@ -2433,29 +3697,64 @@ case "$TORCH_INDEX_URL" in
         fi
         ;;
 esac
-# ── Strix Halo / Strix Point: force rocm7.2 wheels, bypass Radeon repo ───────
-# gfx1151 (Strix Halo) and gfx1150 (Strix Point) have a ROCm 7.1 driver bug
-# that causes a segfault in torch._grouped_mm (moe_utils.py line 167).
-# The Radeon repo now ships cp313 wheels for rocm-rel-7.1, so when
-# _amd_gpu_radeon=true the installer silently lands on the broken combo.
-# Detect these GPUs when TORCH_INDEX_URL is rocm7.1 and override to rocm7.2.
-case "$TORCH_INDEX_URL" in
-    */rocm7.1|*/rocm7.1.*)
+# 0 when a rocmX.Y index leaf ($1, the final path segment) is older than floor
+# $2.$3 (int compare, so rocm7.2 < rocm7.13). Non-rocm leaves (gfx*, cu*, cpu) and
+# non-numeric versions return 1. Leaf-based (like $_torch_index_leaf) so a mirror
+# base holding its own rocm token compares the family leaf, not the base path.
+_rocm_leaf_below() {
+    case "$1" in rocm[0-9]*.[0-9]*) : ;; *) return 1 ;; esac
+    _rb=${1#rocm}; _maj=${_rb%%.*}; _min=${_rb#*.}; _min=${_min%%.*}
+    case "$_maj$_min" in *[!0-9]*) return 1 ;; esac
+    if [ "$_maj" -lt "$2" ]; then return 0; fi
+    if [ "$_maj" -eq "$2" ] && [ "$_min" -lt "$3" ]; then return 0; fi
+    return 1
+}
+# ── Strix Halo / Strix Point: route to the AMD arch-specific index ───────────
+# gfx1151/gfx1150 need torch 2.11+rocm7.13 from repo.amd.com/rocm/whl/gfx<arch>/,
+# which carries AMD's real fixes (the rocm7.1 _grouped_mm segfault, moe_utils.py:167,
+# and later Strix kernel bugs). Every generic pytorch.org index below rocm7.13 lacks
+# them (and the Radeon repo can be offline, unslothai#7264), so reroute a detected
+# Strix GPU whenever the picked index is older than the arch build -- covers today's
+# rocm6.0-7.2 and any future 7.x < 7.13; rocm7.13+ already has the fixes, so leave it.
+case "$_torch_index_leaf" in
+    rocm[0-9]*)
         # Collect every gfx token in rocminfo / amd-smi enumeration order
         # (skip duplicates), then index by HIP_VISIBLE_DEVICES /
         # ROCR_VISIBLE_DEVICES so a mixed Strix iGPU + non-Strix dGPU box
         # where the user selected the dGPU does NOT get rerouted to the
         # Strix per-gfx index.
-        _gfx_all=""
-        if command -v rocminfo >/dev/null 2>&1; then
-            _gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}')
+        # || true on each probe: no gfx match makes grep exit 1, which under
+        # set -euo pipefail would abort the installer before the next fallback
+        # runs (now that the case matches every rocm* index, not just rocm7.1).
+        # A user-supplied UNSLOTH_ROCM_GFX_ARCH overrides probing (mirrors setup.sh
+        # and the display block), so a Strix override still reaches the arch index.
+        _gfx_all=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]')
+        if [ -z "$_gfx_all" ] && command -v rocminfo >/dev/null 2>&1; then
+            _gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         fi
         if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
-            _gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}')
+            _gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
             # PowerShell paths also probe `amd-smi static --asic`; mirror it
             # so a host with hipinfo-less amd-smi reports the gfx target.
             if [ -z "$_gfx_all" ]; then
-                _gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}')
+                _gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+            fi
+        fi
+        # get_torch_index_url reads the arch with ROCR/HIP masks cleared, so a
+        # mask hiding every agent (e.g. ROCR_VISIBLE_DEVICES=-1) still lands
+        # here on a generic rocm index; re-probe unmasked or a masked-out Strix
+        # box keeps the broken generic wheels. Partial masks never get here
+        # (they enumerate at least one agent above) and keep their selection.
+        # ${VAR+x} (not :-): a SET-but-empty mask also hides every agent and
+        # must trigger the re-probe too.
+        if [ -z "$_gfx_all" ] && [ -n "${ROCR_VISIBLE_DEVICES+x}${HIP_VISIBLE_DEVICES+x}" ]; then
+            if command -v rocminfo >/dev/null 2>&1; then
+                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+            fi
+            if [ -z "$_gfx_all" ] && command -v amd-smi >/dev/null 2>&1; then
+                _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi list 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+                [ -z "$_gfx_all" ] && \
+                    _gfx_all=$( (unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; amd-smi static --asic 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
             fi
         fi
         _runtime_gfx=""
@@ -2476,17 +3775,28 @@ case "$TORCH_INDEX_URL" in
                     if (n > 0) print vals[idx]
                 }')
         fi
+        # An explicit UNSLOTH_ROCM_GFX_ARCH=gfx906 pins the runtime target to the
+        # MI50 / Radeon VII path and must win over Strix probe-order detection on a
+        # mixed Strix + MI50 host, so the Strix reroute is suppressed when it is set.
+        # Normalize a copied HIP gcnArchName (gfx906:sramecc-:xnack- -> gfx906) and
+        # trim whitespace (mirrors the Python .strip()) so the feature-flag suffix or
+        # a stray newline does not defeat the exact gfx906 comparisons below.
+        _gfx906_env=$(printf '%s' "${UNSLOTH_ROCM_GFX_ARCH:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+        _gfx906_env=${_gfx906_env%%:*}
         _strix_gfx=""
-        case "$_runtime_gfx" in
-            gfx1151|gfx1150) _strix_gfx="$_runtime_gfx" ;;
-        esac
-        if [ -n "$_strix_gfx" ]; then
+        if [ "$_gfx906_env" != "gfx906" ]; then
+            case "$_runtime_gfx" in
+                gfx1151|gfx1150|gfx1152) _strix_gfx="$_runtime_gfx" ;;
+            esac
+        fi
+        # Skip rocm7.13+ generic indexes: they already ship the fixes, so the
+        # arch build (rocm7.13) would be a downgrade rather than a rescue.
+        if [ -n "$_strix_gfx" ] && _rocm_leaf_below "$_torch_index_leaf" 7 13; then
             echo "" >&2
-            echo "  [WARN] $_strix_gfx (Strix) + ROCm 7.1 detected -- known _grouped_mm segfault" >&2
-            echo "  [WARN] ROCm 7.1 wheels are broken for gfx1150/gfx1151 (moe_utils.py:167)" >&2
-            echo "  [WARN] Routing to AMD arch-specific index (torch 2.11+rocm7.13 has the real fix)" >&2
-            echo "  [WARN] Upgrade ROCm to 7.2+ to use the standard index:" >&2
-            echo "  [WARN]   https://rocm.docs.amd.com/en/latest/deploy/linux/index.html" >&2
+            echo "  [WARN] $_strix_gfx (Strix) detected -- routing to the AMD arch-specific index" >&2
+            echo "  [WARN] torch 2.11+rocm7.13 has AMD's real gfx1150/gfx1151 fixes (the ROCm 7.1" >&2
+            echo "  [WARN] _grouped_mm segfault, moe_utils.py:167, and later Strix kernel bugs)," >&2
+            echo "  [WARN] and is more reliable than the rocm7.2 index or an offline Radeon repo." >&2
             echo "" >&2
             # AMD's arch-specific index serves torch 2.11.0+rocm7.13.0 which has AMD's
             # actual fix for the gfx1151/gfx1150 _grouped_mm kernel bug -- preferred
@@ -2501,10 +3811,82 @@ case "$TORCH_INDEX_URL" in
             done
             TORCH_INDEX_URL="${_amd_strix_base}/${_strix_gfx}/"
             TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0"
+            # Pin companions to 2.11 (per-gfx index publishes them independently).
+            TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
+            TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
             _amd_gpu_radeon=false
+        fi
+        # ── MI50 / Radeon VII (gfx906, Vega 20): legacy community-supported path ──
+        # Newer rocm wheel families bundle ROCm libraries whose Tensile kernels
+        # dropped gfx906 (rocBLAS "TensileLibrary.dat ... not read for gfx906",
+        # ROCm/TheRock#1844), so a rocm6.4+/7.x index installs a torch that fails
+        # at the first BLAS call. The rocm6.3 index is the last one whose wheels
+        # run on gfx906 (torch 2.7.0 verified on MI50 32GB; up to 2.9 in community
+        # use). Reroute any newer picked index; leave rocm6.0-6.3 alone.
+        #
+        # Target resolution: an explicit UNSLOTH_ROCM_GFX_ARCH wins (lets a host
+        # whose rocminfo/amd-smi emit no gfx token still opt in; _gfx906_env was
+        # lowercased above, before the Strix block it suppresses). Otherwise only
+        # treat gfx906 as the target when it is the SOLE distinct arch present:
+        # _gfx_all is de-duplicated by visible index, which loses per-device
+        # ordinals on a mixed host, so a non-gfx906 selection must never be
+        # downgraded to rocm6.3 -- such hosts set UNSLOTH_ROCM_GFX_ARCH to opt in.
+        _gfx906_target=false
+        if [ -n "$_gfx906_env" ]; then
+            [ "$_gfx906_env" = "gfx906" ] && _gfx906_target=true
+        elif [ -n "$_gfx_all" ]; then
+            _gfx906_uniq=$(printf '%s\n' "$_gfx_all" | awk 'NF && !seen[$0]++')
+            [ "$_gfx906_uniq" = "gfx906" ] && _gfx906_target=true
+        fi
+        # gfx906 always trains from the PyTorch rocm6.3 wheels, never the Radeon repo
+        # (repo.radeon.com wheels carry no gfx906 BLAS kernels). Clear the Radeon
+        # marketing-name flag as soon as gfx906 is the target -- even when the host
+        # already picks rocm6.0-6.3 and the reroute below is a no-op -- so a Radeon VII
+        # does not divert to the radeon branch on those versions.
+        if [ "$_gfx906_target" = true ]; then
+            _amd_gpu_radeon=false
+        fi
+        if [ "$_gfx906_target" = true ] && ! _rocm_leaf_below "$_torch_index_leaf" 6 4; then
+            echo "" >&2
+            echo "  [WARN] gfx906 (MI50 / Radeon VII / Vega 20) detected -- routing torch to the" >&2
+            echo "  [WARN] rocm6.3 index: it is the last wheel family that runs on gfx906 (newer" >&2
+            echo "  [WARN] rocm wheels ship without gfx906 BLAS kernels and fail at first use)." >&2
+            echo "  [WARN] gfx906 is a community-maintained legacy path: 16-bit LoRA and full" >&2
+            echo "  [WARN] finetuning work out of the box; bitsandbytes 4-bit QLoRA requires a" >&2
+            echo "  [WARN] source build of bitsandbytes for gfx906 (see docs.unsloth.ai/amd)." >&2
+            echo "" >&2
+            _amd_gfx906_base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
+            while [ "${_amd_gfx906_base%/}" != "$_amd_gfx906_base" ]; do
+                _amd_gfx906_base="${_amd_gfx906_base%/}"
+            done
+            TORCH_INDEX_URL="${_amd_gfx906_base}/rocm6.3"
+            # Reset to the default (<2.11) window: a rocm7.2 pick raised the floor
+            # to 2.11 above, which the rocm6.3 index (torch <= 2.9.x) cannot satisfy.
+            TORCH_CONSTRAINT="torch>=2.4,<2.11.0"
+            TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.26.0"
+            TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"
+            # (_amd_gpu_radeon already cleared above for every gfx906 target.)
         fi
         ;;
 esac
+fi  # _torch_index_pinned guard (Radeon + Strix reroute)
+# Re-run over an existing install: keep the previous venv's torch RELEASE; the fresh
+# index above supplies the right flavor for this machine. Evaluated HERE, after every
+# index/constraint decision including the Strix reroute, so the window checked is the
+# final one and a raised floor (rocm7.2 / Strix gfx) rejects an older release.
+# _PREV_FALLBACK_CONSTRAINT keeps the range so the install can fall back when the exact
+# release is not on the chosen index (mirrors may prune old wheels). Skipped for --no-torch.
+_PREV_TORCH_PIN=""
+_PREV_FALLBACK_CONSTRAINT="$TORCH_CONSTRAINT"
+if [ "$SKIP_TORCH" = false ]; then
+    _prev_pin=$(_previous_torch_pin "$_PREV_TORCH_VER" "$TORCH_CONSTRAINT")
+    if [ -n "$_prev_pin" ]; then
+        _PREV_TORCH_PIN="$_prev_pin"
+        TORCH_CONSTRAINT="$_prev_pin"
+        substep "existing install has torch $_PREV_TORCH_VER -- keeping it (set UNSLOTH_TORCH_UPGRADE=1 to get the newest release)"
+    fi
+fi
+
 _TAURI_TORCH_INDEX_FAMILY=$(_tauri_torch_index_family "$TORCH_INDEX_URL")
 if [ "$_amd_gpu_radeon" = true ] && [ "$SKIP_TORCH" = false ]; then
     _TAURI_TORCH_INDEX_FAMILY="radeon"
@@ -2552,12 +3934,14 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
         # gfx1102 matched BEFORE gfx1100 so the spaceless "RX 7700S" lands on
         # gfx1102 (bash case has no negative lookahead like the PS tables).
         case "$_gpu_disp_mkt" in
-            *"9070 XT"*|*9080*)                                                                            _gpu_disp_gfx="gfx1201" ;;  # RDNA 4
-            *9070*|*9060*)                                                                                 _gpu_disp_gfx="gfx1200" ;;  # RDNA 4
-            *"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _gpu_disp_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
-            *"890M"*|*"880M"*|*"860M"*|*"840M"*|*"Strix Point"*|*"Krackan"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _gpu_disp_gfx="gfx1150" ;;  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
-            *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*|*"PRO V710"*)                  _gpu_disp_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
-            *"RX 7900"*|*"RX 7800"*|*"RX 7700"*|*"PRO W7900"*|*"PRO W7800"*|*"PRO W7700"*)                  _gpu_disp_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
+            *9070*|*9080*)                                                                                 _gpu_disp_gfx="gfx1201" ;;  # RDNA 4 (Navi 48)
+            *9060*)                                                                                        _gpu_disp_gfx="gfx1200" ;;  # RDNA 4 (Navi 44)
+            *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _gpu_disp_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
+            *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*) _gpu_disp_gfx="gfx1150" ;;  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
+            *"860M"*|*"840M"*|*"Krackan"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _gpu_disp_gfx="gfx1152" ;;  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
+            *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*)                              _gpu_disp_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
+            *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*)                                            _gpu_disp_gfx="gfx1101" ;;  # RDNA 3 (Navi 32)
+            *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*)                                                       _gpu_disp_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
             *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _gpu_disp_gfx="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
             *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*)                    _gpu_disp_gfx="gfx1030" ;;  # RDNA 2 (Navi 21)
             *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _gpu_disp_gfx="gfx1032" ;;  # RDNA 2 (Navi 23)
@@ -2589,6 +3973,17 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
 elif [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
     # Apple Silicon: PyTorch gets Metal (MPS) acceleration over unified memory, so not CPU-only.
     step "gpu" "Apple Silicon (Metal, unified memory)"
+elif _has_amd_rocm_gpu; then
+    if [ "$_torch_index_pinned" = true ]; then
+        # An explicit UNSLOTH_TORCH_INDEX_URL/_FAMILY pin skipped all probing;
+        # do not claim ROCm is unusable when a CPU/other index was requested.
+        step "gpu" "AMD GPU (torch index pinned: $_torch_index_leaf)" "$C_WARN"
+    else
+        # AMD GPU visible to the kernel but the torch index stayed CPU: no usable
+        # ROCm userspace to pick a wheel. "none" would repeat the false diagnosis
+        # this installer used to give.
+        step "gpu" "AMD GPU (no usable ROCm -- CPU fallback)" "$C_WARN"
+    fi
 else
     step "gpu" "none (CPU-only)" "$C_WARN"
 fi
@@ -2597,8 +3992,17 @@ fi
 case "$TORCH_INDEX_URL" in
     */cpu)
         if [ "$SKIP_TORCH" = false ] && [ "$OS" != "macos" ]; then
-            substep "No GPU detected -- installing CPU-only PyTorch." "$C_WARN"
-            if [ "$OS" = "wsl" ]; then
+            if [ "$_torch_index_pinned" = true ]; then
+                # An explicit CPU pin is a request, not a detection failure:
+                # skip the SDK guidance (ROCm may be perfectly healthy here).
+                substep "CPU-only PyTorch (index pinned via UNSLOTH_TORCH_INDEX_URL / _FAMILY)."
+            elif _has_amd_rocm_gpu; then
+                substep "AMD GPU detected, but no usable ROCm/HIP install -- installing CPU-only PyTorch." "$C_WARN"
+                substep "Install the ROCm/HIP SDK and re-run this installer for GPU PyTorch." "$C_WARN"
+            else
+                substep "No GPU detected -- installing CPU-only PyTorch." "$C_WARN"
+            fi
+            if [ "$OS" = "wsl" ] && [ "$_torch_index_pinned" = false ]; then
                 # WSL + no GPU detected (detection above found nothing). Common
                 # cause: an AMD GPU whose ROCm-on-WSL runtime isn't exposed yet --
                 # /dev/dxg present (graphics) but no ROCm runtime.
@@ -2625,6 +4029,13 @@ case "$TORCH_INDEX_URL" in
                 substep "  driver is current; or run unsloth/scripts/install_rocm_wsl_strixhalo.sh yourself."
             else
                 substep "AMD ROCm users: see https://docs.unsloth.ai/get-started/install-and-update/amd"
+                # Only when ROCm truly can't see the GPU: a detected-but-too-old
+                # ROCm (rocminfo works, wheels need 6.0+) has its own guidance.
+                if ! _has_amd_rocm_gpu && _amd_gpu_present_via_pci; then
+                    substep "An AMD GPU is on the PCI bus but ROCm cannot see it (no /dev/kfd," "$C_WARN"
+                    substep "  rocminfo, or amd-smi). Install the ROCm kernel stack so /dev/kfd exists;"
+                    substep "  Strix Halo (gfx1151/gfx1150) needs a recent kernel (6.11+) and ROCm 7.x."
+                fi
             fi
             substep "Re-run with --no-torch for GGUF-only (faster, no PyTorch):"
             substep "  curl -fsSL https://unsloth.ai/install.sh | sh -s -- --no-torch"
@@ -2634,7 +4045,7 @@ case "$TORCH_INDEX_URL" in
         if [ "$_amd_gpu_radeon" = true ]; then
             substep "wheels: repo.radeon.com (Radeon)"
         else
-            substep "wheels: $TORCH_INDEX_URL"
+            substep "wheels: $(_strip_index_url_credentials "$TORCH_INDEX_URL")"
         fi
         ;;
 esac
@@ -2642,9 +4053,47 @@ esac
 # ── Install unsloth directly into the venv (no activation needed) ──
 tauri_log "STEP" "Installing PyTorch"
 _VENV_PY="$VENV_DIR/bin/python"
+
+# A released unsloth wheel can pin an older torch (unsloth 2026.7.2 declares
+# torch<2.11.0); a with-deps PyPI resolve then downgrades the whole trio,
+# swapping the pinned +cuXXX/+rocm build for PyPI's default. The flavor guard
+# below misses this (PyPI's torch 2.10 default is itself cu128-flavored), so
+# freeze the trio via uv --overrides (overrides replace dependency requirements
+# during resolution) while unsloth's other deps resolve normally. Sets
+# _UNSLOTH_TORCH_OVERRIDES from the trio in the venv; every with-deps unsloth
+# install (migrated and fresh) must call this before resolving and rm it after.
+_build_unsloth_torch_overrides() {
+    _UNSLOTH_TORCH_OVERRIDES=""
+    [ "$SKIP_TORCH" = false ] || return 0
+    _torch_trio_pins=$("$_VENV_PY" -c "
+from importlib.metadata import version, PackageNotFoundError
+for _p in ('torch', 'torchvision', 'torchaudio'):
+    try:
+        print(_p + '==' + version(_p))
+    except PackageNotFoundError:
+        pass
+" 2>/dev/null) || _torch_trio_pins=""
+    case "$_torch_trio_pins" in
+        torch==*)
+            _UNSLOTH_TORCH_OVERRIDES=$(mktemp)
+            printf '%s\n' "$_torch_trio_pins" > "$_UNSLOTH_TORCH_OVERRIDES"
+            # The CLI --overrides flag replaces any UV_OVERRIDE env file (same
+            # uv setting; macOS arm64 exports one here), so fold its pins in.
+            # awk, not cat: it drops inherited torch-trio lines (uv intersects
+            # duplicate overrides, so a conflicting pin would make resolution
+            # unsatisfiable) and newline-terminates the last line so an
+            # unterminated file cannot join two requirements into one.
+            for _ov_file in ${UV_OVERRIDE:-}; do
+                [ -f "$_ov_file" ] && awk '!/^[[:space:]]*torch(vision|audio)?([[:space:]<>=!~;@[]|$)/' "$_ov_file" >> "$_UNSLOTH_TORCH_OVERRIDES"
+            done
+            ;;
+    esac
+}
+
 if [ "$_MIGRATED" = true ]; then
-    # Migrated env: force-reinstall unsloth+unsloth-zoo to ensure clean state
-    # in the new venv location, while preserving existing torch/CUDA
+    # Migrated env: force-reinstall unsloth+unsloth-zoo for a clean state, preserving
+    # existing torch/CUDA unless the ROCm repair below fires.
+    _gfx906_bnb_snapshot
     substep "upgrading unsloth in migrated environment..."
     if [ "$SKIP_TORCH" = true ]; then
         # No-torch: install unsloth + unsloth-zoo with --no-deps (current
@@ -2653,7 +4102,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7"
+            "unsloth>=2026.8.7" "unsloth-zoo>=2026.8.5"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -2664,9 +4113,13 @@ if [ "$_MIGRATED" = true ]; then
             run_install_cmd_retry "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
         fi
     else
+        _build_unsloth_torch_overrides
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
+            ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7"
+            "unsloth>=2026.8.7" "unsloth-zoo>=2026.8.5"
+        [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
+        _UNSLOTH_TORCH_OVERRIDES=""
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
@@ -2679,21 +4132,19 @@ if [ "$_MIGRATED" = true ]; then
     # AMD ROCm: install bitsandbytes even in migrated environments so
     # existing ROCm installs gain the AMD bitsandbytes build without a
     # fresh reinstall.
-    if [ "$SKIP_TORCH" = false ]; then
-        case "$TORCH_INDEX_URL" in
-            */rocm*|*/gfx*)
-                _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
-                # Repair ROCm torch if overwritten during migrated install
-                _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
-                if [ -z "$_has_hip" ]; then
-                    substep "repairing ROCm torch (overwritten by dependency resolution)..."
-                    run_install_cmd_retry "repair ROCm torch" uv pip install --python "$_VENV_PY" \
-                        "$TORCH_CONSTRAINT" torchvision torchaudio \
-                        --index-url "$TORCH_INDEX_URL" \
-                        --force-reinstall
-                fi
-                ;;
-        esac
+    if [ "$SKIP_TORCH" = false ] && [ "$_torch_index_is_rocm_family" = true ]; then
+        if _is_gfx906_bnb_skip; then
+            substep "gfx906: skipping prebuilt bitsandbytes (no gfx906 kernels); build from source for 4-bit QLoRA -- https://docs.unsloth.ai/get-started/install-and-update/amd" "$C_WARN"
+        else
+            _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
+        fi
+        # Repair ROCm torch if overwritten during migrated install
+        _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
+        if [ -z "$_has_hip" ]; then
+            substep "repairing ROCm torch (overwritten by dependency resolution)..."
+            _install_torch_default_index --force-reinstall
+        fi
+        _gfx906_bnb_prune
     fi
 elif [ -n "$TORCH_INDEX_URL" ]; then
     # Fresh: Step 1 - install torch from explicit index (skip when --no-torch or Intel Mac)
@@ -2755,7 +4206,42 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 _ta_ver=$(_extract_version "$_ta_whl" "torchaudio")
 
                 _radeon_versions_match=false
-                if [ -n "$_torch_ver" ] && [ -n "$_tv_ver" ] && [ -n "$_ta_ver" ]; then
+                # Kept release (_PREV_TORCH_PIN) wins here too: pick its exact
+                # patch (else the newest patch of its minor) plus the paired
+                # vision/audio wheels. Any gap falls back to the newest-trio
+                # search below, mirroring _install_torch_default_index, so a
+                # rerun never drifts to another release nor below the kept one.
+                if [ -n "$_PREV_TORCH_PIN" ]; then
+                    _prev_kept_base="${_PREV_TORCH_PIN#torch==}"
+                    _prev_kept_minor="${_prev_kept_base#*.}"
+                    _prev_kept_minor="${_prev_kept_minor%%.*}"
+                    case "$_prev_kept_minor" in
+                        ''|*[!0-9]*) ;;
+                        *)
+                            _kept_torch=$(_pick_radeon_wheel "torch" "${_prev_kept_base}" 2>/dev/null) || _kept_torch=""
+                            [ -z "$_kept_torch" ] && { _kept_torch=$(_pick_radeon_wheel "torch" "2.${_prev_kept_minor}." 2>/dev/null) || _kept_torch=""; }
+                            _kept_tv=$(_pick_radeon_wheel "torchvision" "0.$((_prev_kept_minor + 15))." 2>/dev/null) || _kept_tv=""
+                            _kept_ta=$(_pick_radeon_wheel "torchaudio" "2.${_prev_kept_minor}." 2>/dev/null) || _kept_ta=""
+                            if [ -n "$_kept_torch" ] && [ -n "$_kept_tv" ] && [ -n "$_kept_ta" ]; then
+                                _torch_whl=$_kept_torch
+                                _tv_whl=$_kept_tv
+                                _ta_whl=$_kept_ta
+                                _tri_whl=""
+                                _radeon_versions_match=true
+                                # Say so when the listing pruned the exact patch
+                                # and a same-series build is installed instead.
+                                case "$(printf '%s' "${_kept_torch##*/}" | sed 's/%2[Bb]/+/g')" in
+                                    "torch-${_prev_kept_base}"[+-]*) ;;
+                                    *) substep "kept release ${_prev_kept_base} is not in the Radeon listing -- installing the closest 2.${_prev_kept_minor} series build instead" ;;
+                                esac
+                            else
+                                substep "[WARN] Radeon repo lacks a complete wheel set for kept $_PREV_TORCH_PIN -- installing the newest compatible set instead" "$C_WARN"
+                            fi
+                            ;;
+                    esac
+                fi
+                if [ "$_radeon_versions_match" != true ] && \
+                   [ -n "$_torch_ver" ] && [ -n "$_tv_ver" ] && [ -n "$_ta_ver" ]; then
                     _torch_minor=${_torch_ver#*.}
                     _ta_minor=${_ta_ver#*.}
                     _tv_minor=${_tv_ver#*.}
@@ -2812,10 +4298,8 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
 
                 if [ -z "$_torch_whl" ] || [ -z "$_tv_whl" ] || [ -z "$_ta_whl" ] || \
                    [ "$_radeon_versions_match" != true ]; then
-                    substep "[WARN] Radeon repo lacks a compatible wheel set for this Python; falling back to ROCm index ($TORCH_INDEX_URL)" "$C_WARN"
-                    run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" \
-                        "$TORCH_CONSTRAINT" torchvision torchaudio \
-                        --index-url "$TORCH_INDEX_URL"
+                    substep "[WARN] Radeon repo lacks a compatible wheel set for this Python; falling back to ROCm index ($(_strip_index_url_credentials "$TORCH_INDEX_URL"))" "$C_WARN"
+                    _install_torch_default_index
                 else
                     substep "installing PyTorch from Radeon repo (${_RADEON_BASE_URL})..."
                     # Pass explicit wheel URLs so the matched trio is
@@ -2835,42 +4319,39 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                     fi
                 fi
             else
-                substep "[WARN] Radeon repo unavailable; falling back to ROCm index ($TORCH_INDEX_URL)" "$C_WARN"
-                run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" \
-                    "$TORCH_CONSTRAINT" torchvision torchaudio \
-                    --index-url "$TORCH_INDEX_URL"
+                substep "[WARN] Radeon repo unavailable; falling back to ROCm index ($(_strip_index_url_credentials "$TORCH_INDEX_URL"))" "$C_WARN"
+                _install_torch_default_index
             fi
         else
             substep "[WARN] Radeon GPU detected but could not detect full ROCm version; falling back to ROCm index" "$C_WARN"
-            run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" \
-                "$TORCH_CONSTRAINT" torchvision torchaudio \
-                --index-url "$TORCH_INDEX_URL"
+            _install_torch_default_index
         fi
     else
-        substep "installing PyTorch ($TORCH_INDEX_URL)..."
-        run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
-            --index-url "$TORCH_INDEX_URL"
+        substep "installing PyTorch ($(_strip_index_url_credentials "$TORCH_INDEX_URL"))..."
+        _install_torch_default_index
     fi
     # AMD ROCm: install bitsandbytes (once, after torch, for all ROCm paths).
     # Gate on SKIP_TORCH=false so a user running with --no-torch on a ROCm
     # host stays in GGUF-only mode rather than pulling in bitsandbytes,
     # which is only useful once torch is present for training.
-    if [ "$SKIP_TORCH" = false ]; then
-        case "$TORCH_INDEX_URL" in
-            */rocm*|*/gfx*)
-                _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
-                ;;
-        esac
+    if [ "$SKIP_TORCH" = false ] && [ "$_torch_index_is_rocm_family" = true ]; then
+        if _is_gfx906_bnb_skip; then
+            substep "gfx906: skipping prebuilt bitsandbytes (no gfx906 kernels); build from source for 4-bit QLoRA -- https://docs.unsloth.ai/get-started/install-and-update/amd" "$C_WARN"
+        else
+            _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
+        fi
     fi
-    # Fresh: Step 2 - install unsloth, preserving pre-installed torch
+    _gfx906_bnb_snapshot
+    # Fresh: Step 2 - install unsloth, preserving the torch Step 1 installed
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
+    _build_unsloth_torch_overrides
     if [ "$SKIP_TORCH" = true ]; then
         # No-torch: install unsloth + unsloth-zoo with --no-deps, then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7"
+            "unsloth>=2026.8.7" "unsloth-zoo>=2026.8.5"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -2888,7 +4369,8 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7"
+            ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
+            --upgrade-package unsloth "unsloth>=2026.8.7" "unsloth-zoo>=2026.8.5"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -2897,30 +4379,27 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
             "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     else
         run_install_cmd_retry "install unsloth" uv pip install --python "$_VENV_PY" \
+            ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --upgrade-package unsloth -- "$PACKAGE_NAME"
     fi
+    [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
+    _UNSLOTH_TORCH_OVERRIDES=""
     # AMD ROCm: repair torch if the unsloth/unsloth-zoo install pulled in
     # CUDA torch from PyPI, overwriting the ROCm wheels installed in Step 1.
-    if [ "$SKIP_TORCH" = false ]; then
-        case "$TORCH_INDEX_URL" in
-            */rocm*|*/gfx*)
-                _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
-                if [ -z "$_has_hip" ]; then
-                    substep "repairing ROCm torch (overwritten by dependency resolution)..."
-                    run_install_cmd_retry "repair ROCm torch" uv pip install --python "$_VENV_PY" \
-                        "$TORCH_CONSTRAINT" torchvision torchaudio \
-                        --index-url "$TORCH_INDEX_URL" \
-                        --force-reinstall
-                fi
-                ;;
-        esac
+    if [ "$SKIP_TORCH" = false ] && [ "$_torch_index_is_rocm_family" = true ]; then
+        _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
+        if [ -z "$_has_hip" ]; then
+            substep "repairing ROCm torch (overwritten by dependency resolution)..."
+            _install_torch_default_index --force-reinstall
+        fi
+        _gfx906_bnb_prune
     fi
 else
     # Fallback: GPU detection failed to produce a URL -- let uv resolve torch
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.6.7" "unsloth>=2026.6.9" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.8.5" "unsloth>=2026.8.7" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -2932,6 +4411,15 @@ else
     fi
 fi
 
+_installed_package_version=$("$_VENV_PY" -c \
+    'from importlib.metadata import version; import sys; print(version(sys.argv[1]))' \
+    "$PACKAGE_NAME" 2>/dev/null || true)
+if [ -n "$_installed_package_version" ]; then
+    step "$PACKAGE_NAME" "$_installed_package_version installed"
+else
+    substep "[WARN] installed $PACKAGE_NAME version could not be determined" "$C_WARN"
+fi
+
 # ── Enforce the installed torch flavor matches the detected GPU build ──
 # PEP 440 ignores the +cpu/+cuXXX/+rocm local label in a version range, so uv
 # keeps a stale torch==X+cpu against a GPU index and the venv silently trains on
@@ -2941,19 +4429,17 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
     _expected_torch_tag=$(_expected_torch_flavor_tag "$TORCH_INDEX_URL")
     # Only act when a GPU build is expected (cuXXX / rocm); cpu and unknown skip.
     if [ -n "$_expected_torch_tag" ] && [ "$_expected_torch_tag" != "cpu" ]; then
-        _installed_torch_ver=$("$_VENV_PY" -c "import torch; print(torch.__version__)" 2>/dev/null || true)
+        _installed_torch_ver=$(_installed_torch_version_for_tag "$_expected_torch_tag")
         _installed_torch_tag=""
         [ -n "$_installed_torch_ver" ] && _installed_torch_tag=$(_torch_flavor_tag "$_installed_torch_ver")
-        # Repair when flavor is wrong AND the index is plain --index-url reinstallable
+        # Repair when flavor is wrong AND the index is plain --default-index reinstallable
         # (cuXXX / rocmX.Y / repo.amd.com gfx*); an unknown mirror leaf -> warn only.
         if [ -n "$_installed_torch_tag" ] && [ "$_installed_torch_tag" != "$_expected_torch_tag" ] \
            && [ "$(_torch_index_repairable "$TORCH_INDEX_URL")" = "yes" ]; then
             substep "PyTorch flavor mismatch (installed $_installed_torch_tag, need $_expected_torch_tag) -- reinstalling correct build..."
-            run_install_cmd "reinstall PyTorch ($_expected_torch_tag)" uv pip install --python "$_VENV_PY" \
-                "$TORCH_CONSTRAINT" torchvision torchaudio \
-                --index-url "$TORCH_INDEX_URL" \
+            _install_torch_default_index \
                 --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio
-            _installed_torch_ver=$("$_VENV_PY" -c "import torch; print(torch.__version__)" 2>/dev/null || true)
+            _installed_torch_ver=$(_installed_torch_version_for_tag "$_expected_torch_tag")
             _installed_torch_tag=""
             [ -n "$_installed_torch_ver" ] && _installed_torch_tag=$(_torch_flavor_tag "$_installed_torch_ver")
         fi
@@ -2962,13 +4448,51 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
             substep "[WARN] PyTorch is CPU-only but a $_expected_torch_tag GPU build was expected for this machine." "$C_WARN"
             substep "[WARN] Training and GPU inference will run on CPU until this is fixed." "$C_WARN"
             substep "[WARN] Re-run this installer, or reinstall the GPU build manually:" "$C_WARN"
-            substep "[WARN]   uv pip install --python \"$_VENV_PY\" \"$TORCH_CONSTRAINT\" torchvision torchaudio --index-url $TORCH_INDEX_URL --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio" "$C_WARN"
+            substep "[WARN]   uv pip install --python \"$_VENV_PY\" \"$TORCH_CONSTRAINT\" \"$TORCHVISION_CONSTRAINT\" \"$TORCHAUDIO_CONSTRAINT\" --default-index $(_strip_index_url_credentials "$TORCH_INDEX_URL") --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio" "$C_WARN"
         fi
     fi
 fi
 
+# ── Intel XPU: bitsandbytes with XPU kernels ──
+# manylinux 0.50.0 is the first with libbitsandbytes_xpu2025.so / _xpu2026.so, and nothing else
+# here touches bitsandbytes on this index (both ROCm passes are gated on that family), so a
+# migrated environment would keep a pre-XPU build and lose 4-bit QLoRA.
+# Out here rather than in the install branches above: those are mutually exclusive, so a copy in
+# the fresh arm never runs for a migrated env (which is how the ROCm passes ended up duplicated).
+# --no-deps: torch and numpy are already in. Best effort, like the Windows pass.
+if [ "$SKIP_TORCH" = false ] && [ "$(_torch_index_url_leaf "${TORCH_INDEX_URL:-}")" = "xpu" ]; then
+    substep "installing bitsandbytes with Intel XPU kernels..."
+    run_install_cmd "install bitsandbytes (xpu)" uv pip install --python "$_VENV_PY" \
+        --no-deps "$_BNB_XPU_SPEC" || \
+        substep "[WARN] could not install an XPU-capable bitsandbytes; 4-bit QLoRA may be unavailable." "$C_WARN"
+fi
+
+# ── CI only: overlay a source checkout over the package just installed ──
+# Not a consumer knob: no flag, absent from --help, ignored unless
+# UNSLOTH_CI_SOURCE_OVERLAY names a directory holding a pyproject.toml.
+#
+# The clean-machine legs run THIS script from a branch but install unsloth from PyPI,
+# the consumer path, so everything Python-side (studio/setup.sh, setup.ps1,
+# install_python_stack.py and every requirements/constraints file they reach via
+# Path(__file__)) would be the released wheel's and a branch could not be validated. An
+# editable overlay re-points `import studio` at the working tree, so the
+# importlib.resources lookup below finds this ref's setup.sh. NOT --local: that also
+# installs `unsloth-zoo @ git+https://...`, which genuinely needs the git these legs
+# remove; editable + --no-deps resolves and clones nothing, so it survives git, cmake
+# and the C/C++ compilers all being gone.
+if [ -n "${UNSLOTH_CI_SOURCE_OVERLAY:-}" ]; then
+    if [ ! -f "$UNSLOTH_CI_SOURCE_OVERLAY/pyproject.toml" ]; then
+        echo "[ERROR] UNSLOTH_CI_SOURCE_OVERLAY is set to '$UNSLOTH_CI_SOURCE_OVERLAY' but there is no pyproject.toml there." >&2
+        exit 1
+    fi
+    substep "CI: overlaying source checkout (editable, no deps): $UNSLOTH_CI_SOURCE_OVERLAY"
+    # Retry: the editable build fetches its backend from PyPI, same network risk.
+    run_install_cmd_retry "overlay CI source checkout" uv pip install --python "$_VENV_PY" \
+        --no-deps -e "$UNSLOTH_CI_SOURCE_OVERLAY"
+fi
+
 # ── Run studio setup ──
-tauri_log "STEP" "Running Studio setup"
+tauri_log "STEP" "Running Unsloth setup"
 # When --local, use the repo's own setup.sh directly.
 # Otherwise, find it inside the installed package.
 SETUP_SH=""
@@ -3001,6 +4525,7 @@ if [ -n "$VENV_ABS_BIN" ]; then
 fi
 
 if ! command -v bash >/dev/null 2>&1; then
+    tauri_log "ERROR" "bash is required to run studio setup"
     step "setup" "bash is required to run studio setup" "$C_ERR"
     substep "Please install bash and re-run install.sh"
     exit 1
@@ -3023,6 +4548,13 @@ _run_setup_with_studio_home() {
         "$@"
     fi
 }
+if [ -n "$_WITH_LLAMA_CPP_DIR" ]; then
+    if [ ! -d "$_WITH_LLAMA_CPP_DIR" ]; then
+        echo "[ERROR] --with-llama-cpp-dir path does not exist: $_WITH_LLAMA_CPP_DIR" >&2
+        exit 1
+    fi
+    _WITH_LLAMA_CPP_DIR="$(CDPATH= cd -P -- "$_WITH_LLAMA_CPP_DIR" && pwd -P)"
+fi
 if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     _run_setup_with_studio_home env \
     SKIP_STUDIO_BASE="$_SKIP_BASE" \
@@ -3031,6 +4563,8 @@ if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
     STUDIO_LOCAL_INSTALL=1 \
     STUDIO_LOCAL_REPO="$_REPO_ROOT" \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
+    UNSLOTH_LOCAL_LLAMA_CPP_DIR="$_WITH_LLAMA_CPP_DIR" \
+    UNSLOTH_TAURI_MODE="$TAURI_MODE" \
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
 else
     # Explicitly reset STUDIO_LOCAL_INSTALL / STUDIO_LOCAL_REPO so a stale
@@ -3045,7 +4579,13 @@ else
     STUDIO_LOCAL_INSTALL=0 \
     STUDIO_LOCAL_REPO= \
     UNSLOTH_NO_TORCH="$SKIP_TORCH" \
+    UNSLOTH_LOCAL_LLAMA_CPP_DIR="$_WITH_LLAMA_CPP_DIR" \
+    UNSLOTH_TAURI_MODE="$TAURI_MODE" \
     bash "$SETUP_SH" </dev/null || _SETUP_EXIT=$?
+fi
+
+if [ "$_SETUP_EXIT" -eq 0 ]; then
+    tauri_clear_install_error "studio setup completed"
 fi
 
 # ── Make 'unsloth' available via $_LOCAL_BIN (resolved earlier) ──
@@ -3103,7 +4643,11 @@ fi
 # PATH and shortcuts are already set up so the user can fix and retry.
 if [ "$_SETUP_EXIT" -ne 0 ]; then
     echo ""
-    step "error" "studio setup failed (exit code $_SETUP_EXIT)" "$C_ERR"
+    if [ "$TAURI_MODE" = true ]; then
+        tauri_log "ERROR_DEFAULT" "studio setup failed (exit code $_SETUP_EXIT)"
+    else
+        step "error" "studio setup failed (exit code $_SETUP_EXIT)" "$C_ERR"
+    fi
     echo ""
     exit "$_SETUP_EXIT"
 fi
@@ -3153,13 +4697,16 @@ printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
-# In interactive terminals, ask the user before starting Studio.
+# In interactive terminals, ask the user before starting Unsloth unless the
+# caller explicitly disabled the post-install prompt.
 # In non-interactive environments (Docker, CI, cloud-init) just print instructions.
-if [ -t 1 ]; then
+if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
     echo ""
-    printf "  Start Unsloth Studio now? [Y/n] "
     # No readable answer (closed/EOF tty) defaults to no; Enter is still yes.
-    if [ -r /dev/tty ]; then
+    # Prompt only when something can answer: `test -r` passes on the unopenable
+    # /dev/tty found in containers, leaving a dangling question in the log.
+    if _can_read_tty; then
+        printf "  Start Unsloth Studio now? [Y/n] "
         read -r _reply </dev/tty || _reply="n"
     else
         _reply="n"
@@ -3191,8 +4738,8 @@ if [ -t 1 ]; then
         *)
             step "launch" "to start later, run:"
             substep "unsloth studio -p 8888"
-            substep "(add -H 0.0.0.0 to allow network / cloud access)"
-            substep "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
+            substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
+            substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
             echo ""
             ;;
     esac
@@ -3213,7 +4760,12 @@ else
         substep "source $_li_act_q"
         substep "unsloth studio -p 8888"
     fi
-    substep "(add -H 0.0.0.0 to allow network / cloud access)"
-    substep "(add --secure for a public Cloudflare HTTPS link; anyone with the API key can run code)"
+    substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
+    substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
     echo ""
 fi
+
+}
+
+# Every byte above is parsed before this line runs, which is the point.
+_unsloth_main "$@"

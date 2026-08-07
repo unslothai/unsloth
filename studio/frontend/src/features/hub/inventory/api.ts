@@ -48,9 +48,11 @@ export interface CachedGgufRepo {
   capabilities?: BackendModelCapabilities | null;
   size_bytes: number;
   cache_path?: string;
+  last_modified?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
   pipeline_tag?: string | null;
+  task?: string | null;
   tags?: string[];
   library_name?: string | null;
 }
@@ -65,9 +67,11 @@ export interface CachedModelRepo {
   capabilities?: BackendModelCapabilities | null;
   size_bytes: number;
   cache_path?: string;
+  last_modified?: number | null;
   partial?: boolean;
   partial_transport?: string | null;
   pipeline_tag?: string | null;
+  task?: string | null;
   tags?: string[];
   library_name?: string | null;
   quant_method?: string | null;
@@ -86,6 +90,7 @@ export interface LocalModelInfo {
   capabilities?: BackendModelCapabilities | null;
   source: LocalSource;
   model_id?: string | null;
+  active_cache?: boolean | null;
   base_model?: string | null;
   base_model_source?: BaseModelSource | null;
   adapter_type?: string | null;
@@ -94,6 +99,7 @@ export interface LocalModelInfo {
   partial?: boolean;
   partial_transport?: string | null;
   pipeline_tag?: string | null;
+  task?: string | null;
   tags?: string[];
   library_name?: string | null;
   quant_method?: string | null;
@@ -111,6 +117,7 @@ export interface CachedDatasetRepo {
   repo_id: string;
   size_bytes: number;
   cache_path?: string;
+  load_cache_path?: string;
   partial?: boolean;
   partial_transport?: string | null;
 }
@@ -163,6 +170,7 @@ export interface GgufVariantDetail {
   size_bytes: number;
   download_size_bytes?: number;
   downloaded?: boolean;
+  update_available?: boolean;
   partial?: boolean;
   partial_transport?: string | null;
 }
@@ -255,11 +263,18 @@ export async function listCachedDatasets(): Promise<CachedDatasetRepo[]> {
   return data.cached;
 }
 
-export async function deleteCachedDataset(repoId: string): Promise<void> {
+export async function deleteCachedDataset(
+  repoId: string,
+  cachePath?: string | null,
+): Promise<void> {
+  const payload: Record<string, string> = { repo_id: repoId };
+  if (cachePath) {
+    payload.cache_path = cachePath;
+  }
   const response = await authFetch("/api/hub/datasets/cached", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ repo_id: repoId }),
+    body: JSON.stringify(payload),
   });
   await throwIfNotOk(response, `Failed to delete dataset (${response.status})`);
   bumpInventoryVersion();
@@ -269,10 +284,15 @@ export async function deleteCachedModel(
   repoId: string,
   variant?: string,
   hfToken?: string | null,
+  cachePath?: string | null,
 ): Promise<void> {
   const payload: Record<string, string> = { repo_id: repoId };
   if (variant) {
     payload.variant = variant;
+  }
+  // Scope the delete to this row's cache so copies in other caches survive.
+  if (cachePath) {
+    payload.cache_path = cachePath;
   }
   const response = await authFetch("/api/hub/delete-cached", {
     method: "DELETE",

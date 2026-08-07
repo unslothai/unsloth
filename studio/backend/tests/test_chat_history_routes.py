@@ -57,6 +57,29 @@ def test_replace_thread_messages_rejects_body_thread_mismatch(monkeypatch):
     assert called is False
 
 
+def test_replace_thread_messages_reports_protected_research_turn(monkeypatch):
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _thread_id: {"id": "thread-1"})
+
+    def reject_prune(*_args, **_kwargs):
+        raise chat_history.ChatMessageProtectedError(
+            "Research prompts and responses cannot be deleted from their original thread"
+        )
+
+    monkeypatch.setattr(chat_history, "sync_chat_messages", reject_prune)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            chat_history.replace_thread_messages(
+                "thread-1",
+                chat_history.ChatMessageSyncRequest(messages = [], pruneMissing = True),
+                current_subject = "test-user",
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "Research prompts and responses" in str(exc_info.value.detail)
+
+
 # ---------------------------------------------------------------------------
 # /api/chat/settings
 # ---------------------------------------------------------------------------
@@ -91,6 +114,64 @@ def test_chat_settings_payload_accepts_fast_mode_presets():
     assert dumped["customPresets"][0]["params"]["fastMode"] is True
 
 
+def test_chat_settings_payload_accepts_preset_load_config():
+    payload = chat_history.ChatSettingsPayload.model_validate(
+        {
+            "customPresets": [
+                {
+                    "name": "GGUF preset",
+                    "params": {"temperature": 0.7, "maxTokens": 512},
+                    "loadConfig": {
+                        "customContextLength": 256,
+                        "kvCacheDtype": "q8_0",
+                        "tensorParallel": False,
+                    },
+                },
+            ],
+        }
+    )
+
+    dumped = payload.model_dump(exclude_unset = True)
+    assert dumped["customPresets"][0]["loadConfig"]["customContextLength"] == 256
+    assert dumped["customPresets"][0]["loadConfig"]["kvCacheDtype"] == "q8_0"
+
+
+def test_chat_settings_payload_accepts_mlx_kv_bits():
+    from pydantic import ValidationError
+
+    # extra="forbid" rejects the whole settings write on an undeclared key.
+    payload = chat_history.ChatSettingsPayload.model_validate(
+        {
+            "customPresets": [
+                {
+                    "name": "MLX preset",
+                    "params": {"temperature": 0.7},
+                    "loadConfig": {"mlxKvBits": 8},
+                },
+            ],
+        }
+    )
+    dumped = payload.model_dump(exclude_unset = True)
+    assert dumped["customPresets"][0]["loadConfig"]["mlxKvBits"] == 8
+
+    for width in (4, None):
+        chat_history.ChatPresetLoadConfig.model_validate({"mlxKvBits": width})
+    # Only the widths MLX supports.
+    with pytest.raises(ValidationError):
+        chat_history.ChatPresetLoadConfig.model_validate({"mlxKvBits": 7})
+
+
+def test_chat_settings_payload_accepts_nudge_tool_calls():
+    # extra="forbid" 400s PUT /api/chat/settings on unknown keys, so the
+    # frontend's persisted nudgeToolCalls needs a payload field (like
+    # autoHealToolCalls).
+    payload = chat_history.ChatSettingsPayload.model_validate(
+        {"autoHealToolCalls": True, "nudgeToolCalls": False}
+    )
+    dumped = payload.model_dump(exclude_unset = True)
+    assert dumped == {"autoHealToolCalls": True, "nudgeToolCalls": False}
+
+
 def test_chat_inference_settings_covers_frontend_persisted_fields():
     # Drift guard: every InferenceParams field the UI persists (all but
     # checkpoint) must exist on ChatInferenceSettings, else extra="forbid"
@@ -114,9 +195,9 @@ def test_chat_inference_settings_covers_frontend_persisted_fields():
     persisted = set(re.findall(r"^\s*(\w+)\??:", block.group(1), re.M)) - {"checkpoint"}
 
     backend = set(chat_history.ChatInferenceSettings.model_fields)
-    assert persisted == backend, (
-        f"schema drift: frontend-only {persisted - backend}, " f"backend-only {backend - persisted}"
-    )
+    assert (
+        persisted == backend
+    ), f"schema drift: frontend-only {persisted - backend}, backend-only {backend - persisted}"
 
 
 # ---------------------------------------------------------------------------

@@ -118,15 +118,241 @@ def _runtime_for_format(model_format: ModelFormat) -> ModelRuntime:
     return "unknown"
 
 
+# Deliberately narrow: an unfamiliar class name must not read as non-chat.
+_GENERATIVE_ARCHITECTURE_SUFFIXES = (
+    "ForCausalLM",
+    "ForConditionalGeneration",
+    "ForSeq2SeqLM",
+    "LMHeadModel",
+)
+_NON_GENERATIVE_ARCHITECTURE_SUFFIXES = (
+    "ForAudioClassification",
+    "ForCTC",
+    "ForFeatureExtraction",
+    "ForImageClassification",
+    "ForImageTextRetrieval",
+    "ForMaskedLM",
+    "ForMultipleChoice",
+    "ForNextSentencePrediction",
+    "ForObjectDetection",
+    "ForPreTraining",
+    "ForQuestionAnswering",
+    "ForRetrieval",
+    "ForRewardModel",
+    "ForSemanticSegmentation",
+    "ForSequenceClassification",
+    "ForTextEncoding",
+    "ForTokenClassification",
+    "ForVideoClassification",
+    "ForZeroShotImageClassification",
+)
+# Generative, but not of a chat reply: they match a generative suffix below yet
+# cannot answer a text turn, and they are small enough to be tried first.
+_NON_CHAT_GENERATIVE_MODEL_TYPES = frozenset(
+    {
+        "blip",
+        "blip-2",
+        "blip_2",
+        "git",
+        "instructblip",
+        "musicgen",
+        "musicgen_melody",
+        "speech-encoder-decoder",
+        "speech_to_text",
+        "speech_to_text_2",
+        "trocr",
+        "vision-encoder-decoder",
+        "whisper",
+    }
+)
+_NON_CHAT_GENERATIVE_ARCHITECTURES = frozenset(
+    {
+        "Blip2ForConditionalGeneration",
+        "BlipForConditionalGeneration",
+        "GitForCausalLM",
+        "InstructBlipForConditionalGeneration",
+        "MusicgenForConditionalGeneration",
+        "SpeechEncoderDecoderModel",
+        "Speech2TextForConditionalGeneration",
+        "VisionEncoderDecoderModel",
+        "WhisperForConditionalGeneration",
+    }
+)
+_BARE_TEXT_BACKBONE_ARCHITECTURES = frozenset(
+    {
+        "BartModel",
+        "BloomModel",
+        "FalconModel",
+        "GPT2Model",
+        "GPTJModel",
+        "GPTNeoXModel",
+        "Gemma2Model",
+        "Gemma3Model",
+        "GemmaModel",
+        "LlamaModel",
+        "MistralModel",
+        "MixtralModel",
+        "MptModel",
+        "OPTModel",
+        "Phi3Model",
+        "PhiModel",
+        "Qwen2Model",
+        "Qwen3Model",
+        "T5Model",
+    }
+)
+_ENCODER_ONLY_MODEL_TYPES = frozenset(
+    {
+        "albert",
+        "bert",
+        "camembert",
+        "chinese_clip",
+        "clip",
+        "deberta",
+        "deberta-v2",
+        "distilbert",
+        "electra",
+        "funnel",
+        "ibert",
+        "layoutlm",
+        "layoutlmv2",
+        "layoutlmv3",
+        "longformer",
+        "megatron-bert",
+        "mobilebert",
+        "modernbert",
+        "mpnet",
+        "nystromformer",
+        "rembert",
+        "roberta",
+        "roformer",
+        "siglip",
+        "siglip2",
+        "squeezebert",
+        "vision-text-dual-encoder",
+        "xlm-roberta",
+        # Vision and audio backbones: their bare ``*Model`` names carry no task
+        # suffix, so only the model type identifies them.
+        "beit",
+        "convnext",
+        "convnextv2",
+        "data2vec-audio",
+        "data2vec-vision",
+        "deit",
+        "dinov2",
+        "dpt",
+        "efficientnet",
+        "hubert",
+        "mobilevit",
+        "regnet",
+        "resnet",
+        "segformer",
+        "swin",
+        "swinv2",
+        "videomae",
+        "vit",
+        "vit_mae",
+        "vit_msn",
+        "wav2vec2",
+        "wavlm",
+        "whisper",
+    }
+)
+
+
+# Real configs are a few KB; the cap keeps a huge or hostile file out of memory.
+_MAX_LOCAL_JSON_BYTES = 1 << 20
+
+
+def _read_local_json_object(path: Path) -> dict:
+    """Config metadata, or ``{}``. Never raises: one unreadable file must not
+    fail the whole scan."""
+    try:
+        # is_file() also skips a FIFO, whose read would block the scan forever.
+        if not path.is_file() or path.stat().st_size > _MAX_LOCAL_JSON_BYTES:
+            return {}
+        data = json.loads(path.read_text(encoding = "utf-8"))
+        return data if isinstance(data, dict) else {}
+    # ValueError covers JSONDecodeError and UnicodeDecodeError; deeply nested
+    # JSON raises RecursionError, which is neither.
+    except (ValueError, OSError, RecursionError):
+        return {}
+
+
+def _local_transformers_can_chat(path: Path) -> Optional[bool]:
+    """False for a locally identifiable non-generative Transformers row.
+
+    ``None`` means inconclusive and the format capability stands, so a custom
+    architecture is never hidden. Without this, an embedding export is
+    chat-capable on file format alone, and those are small enough that chat
+    auto-load spends its whole attempt budget on them.
+    """
+    if not _safe_is_dir(path):
+        return None
+
+    # SentenceTransformers exports carry this even when the config names a
+    # broadly reusable encoder class.
+    try:
+        if (path / "modules.json").is_file():
+            return False
+    except OSError:
+        return None
+
+    config = _read_local_json_object(path / "config.json")
+    if not config:
+        return None
+
+    auto_map = config.get("auto_map")
+    if isinstance(auto_map, dict) and any(
+        key in auto_map for key in ("AutoModelForCausalLM", "AutoModelForSeq2SeqLM")
+    ):
+        return True
+
+    architectures = config.get("architectures")
+    names = (
+        [name.strip() for name in architectures if isinstance(name, str) and name.strip()]
+        if isinstance(architectures, list)
+        else []
+    )
+    model_type_raw = config.get("model_type")
+    normalized_type = model_type_raw.strip().lower() if isinstance(model_type_raw, str) else ""
+    # Before the generative suffix: Whisper and friends end in
+    # ForConditionalGeneration but cannot answer a text turn.
+    if normalized_type in _NON_CHAT_GENERATIVE_MODEL_TYPES or any(
+        name in _NON_CHAT_GENERATIVE_ARCHITECTURES for name in names
+    ):
+        return False
+    if any(name.endswith(_GENERATIVE_ARCHITECTURE_SUFFIXES) for name in names):
+        return True
+    if names and all(name.endswith(_NON_GENERATIVE_ARCHITECTURE_SUFFIXES) for name in names):
+        return False
+    # AutoModel.save_pretrained on a chat family writes the backbone name, and a
+    # backbone has no LM head. Listed explicitly, not shape-matched, so an
+    # unfamiliar FooModel still fails open.
+    if names and all(name in _BARE_TEXT_BACKBONE_ARCHITECTURES for name in names):
+        return False
+
+    # The type alone decides: requiring the name shape too kept rows chat-capable
+    # when it did not fit, e.g. google/siglip2-* omits architectures entirely and
+    # CLIPTextModelWithProjection ends in neither Model nor a known suffix.
+    # Anything generative returned True above, so no chat row reaches here.
+    if normalized_type in _ENCODER_ONLY_MODEL_TYPES:
+        return False
+    return None
+
+
 def _capabilities_for_format(
     model_format: ModelFormat,
     source: str,
     *,
     partial: bool = False,
     requires_variant: bool = False,
+    can_chat_override: Optional[bool] = None,
 ) -> LocalModelCapabilities:
     is_complete = not partial
     can_chat = model_format in {"gguf", "safetensors", "adapter", "checkpoint"}
+    if can_chat_override is not None:
+        can_chat = can_chat and can_chat_override
     can_train = model_format in {"safetensors", "checkpoint"} and is_complete
     return LocalModelCapabilities(
         can_train = can_train,
@@ -150,7 +376,9 @@ def _prefer_complete_larger(
     return candidate_size_bytes > existing_size_bytes
 
 
-def _gguf_variant_state_summary(repo_id: str) -> tuple[bool, int]:
+def _gguf_variant_state_summary(
+    repo_id: str, *, hub_cache: Optional[str | Path] = None
+) -> tuple[bool, int]:
     """Whether GGUF variant-scoped state exists and its expected size; a cancelled/in-progress variant may have only manifests/markers/`.incomplete` blobs, which inventory needs to avoid a generic fallback row."""
     from hub.utils import download_manifest
 
@@ -159,10 +387,16 @@ def _gguf_variant_state_summary(repo_id: str) -> tuple[bool, int]:
     for variant, _path in download_manifest.iter_variant_manifests(
         "model",
         repo_id,
+        hub_cache = hub_cache,
     ):
         key = variant.lower()
         variant_keys.add(key)
-        manifest = download_manifest.read_manifest("model", repo_id, variant)
+        manifest = download_manifest.read_manifest(
+            "model",
+            repo_id,
+            variant,
+            hub_cache = hub_cache,
+        )
         if manifest is None:
             continue
         size_by_variant[key] = max(
@@ -172,6 +406,7 @@ def _gguf_variant_state_summary(repo_id: str) -> tuple[bool, int]:
     for variant, _path in download_manifest.iter_variant_markers(
         "model",
         repo_id,
+        hub_cache = hub_cache,
     ):
         variant_keys.add(variant.lower())
     return bool(variant_keys), sum(size_by_variant.values())
@@ -220,6 +455,22 @@ def _is_adapter_weight_name(name: str) -> bool:
     return lower.startswith("adapter_model") and lower.endswith((".safetensors", ".bin"))
 
 
+# Trainer state saved beside the weights, not the model. The .bin side is already an allow list.
+_TRAINING_ARTEFACT_PREFIXES = (
+    "optimizer",
+    "scheduler",
+    "rng_state",
+    "trainer_state",
+    "scaler",
+    "training_args",
+)
+
+
+def _is_training_artefact_name(name: str) -> bool:
+    """Whether *name* is trainer state rather than weights any row loads."""
+    return _weight_basename(name).startswith(_TRAINING_ARTEFACT_PREFIXES)
+
+
 def _is_transformers_safetensors_weight_name(name: str) -> bool:
     lower = _weight_basename(name)
     return lower.endswith(".safetensors") and lower.startswith(
@@ -239,6 +490,14 @@ def _is_checkpoint_weight_name(name: str) -> bool:
     if lower.endswith(".bin"):
         return _is_transformers_bin_weight_name(lower)
     return lower.endswith(_LOCAL_CHECKPOINT_EXTENSIONS)
+
+
+def _is_discoverable_ungrouped_weight_name(name: str) -> bool:
+    """Ungrouped payloads a runtime opens by name: diffusers components, single-file checkpoints."""
+    lower = _weight_basename(name)
+    if lower.endswith(".safetensors"):
+        return lower.startswith("diffusion_pytorch_model")
+    return _is_checkpoint_weight_name(lower)
 
 
 def _is_adapter_weight_file(path: Path) -> bool:
@@ -432,8 +691,14 @@ def _local_model_info(
     base_model_source: Optional[str] = None,
     adapter_type: Optional[str] = None,
     training_method: Optional[str] = None,
+    active_cache: Optional[bool] = None,
+    can_chat_override: Optional[bool] = None,
 ) -> LocalModelInfo:
-    load_id = model_id if source == "hf_cache" and model_id else str(load_path)
+    load_id = (
+        model_id
+        if source == "hf_cache" and model_id and active_cache is not False
+        else str(load_path)
+    )
     semantic_id = model_id or str(load_path)
     return LocalModelInfo(
         id = load_id,
@@ -445,6 +710,7 @@ def _local_model_info(
         ),
         load_id = load_id,
         model_id = model_id,
+        active_cache = active_cache if source == "hf_cache" else None,
         display_name = display_name or (scan_path.stem if scan_path.is_file() else scan_path.name),
         path = str(load_path),
         size_bytes = max(0, int(size_bytes or 0)),
@@ -463,6 +729,7 @@ def _local_model_info(
             source,
             partial = partial,
             requires_variant = requires_variant,
+            can_chat_override = can_chat_override,
         ),
     )
 
@@ -476,6 +743,7 @@ def _classify_local_path(
     model_id: Optional[str] = None,
     updated_at: Optional[float] = None,
     partial: bool = False,
+    active_cache: Optional[bool] = None,
 ) -> list[LocalModelInfo]:
     load_path = load_path or scan_path
     files = (
@@ -512,6 +780,7 @@ def _classify_local_path(
                 requires_variant = scan_path.is_dir(),
                 format_variant = variant,
                 size_bytes = gguf_size_bytes,
+                active_cache = active_cache,
             )
         )
 
@@ -574,6 +843,12 @@ def _classify_local_path(
                 ),
                 adapter_type = adapter_type if model_format == "adapter" else None,
                 training_method = training_method if model_format == "adapter" else None,
+                active_cache = active_cache,
+                can_chat_override = (
+                    _local_transformers_can_chat(scan_path)
+                    if model_format in {"safetensors", "checkpoint"}
+                    else None
+                ),
             )
         )
     elif not rows:
@@ -592,6 +867,7 @@ def _classify_local_path(
                 updated_at = updated_at,
                 partial = partial or trusted_hf_cache_repo,
                 size_bytes = size_bytes,
+                active_cache = active_cache,
             )
         )
 

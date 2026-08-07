@@ -423,8 +423,14 @@ def prepare_for_training_mode(f):
                 pass
         # Enable training mode
         _was_training = None
-        # Get gradient checkpointing setting from training arguments
-        use_gc = getattr(self.args, 'gradient_checkpointing', True)
+        # Restore the GC mode the model was configured with at setup; fall back to
+        # the training args only when it wasn't recorded (issue #4735). Use hasattr,
+        # not a None sentinel, so a deliberately-recorded None is restored verbatim.
+        _model = getattr(self, 'model', None)
+        if hasattr(_model, '_unsloth_gradient_checkpointing'):
+            use_gc = _model._unsloth_gradient_checkpointing
+        else:
+            use_gc = getattr(self.args, 'gradient_checkpointing', True)
         if hasattr(self, 'model') and hasattr(self.model, "training"):
             _was_training = self.model.training
         if hasattr(self, 'model') and hasattr(self.model, "for_training"):
@@ -532,7 +538,8 @@ class Unsloth{RLTrainer_name}(_Unsloth{RLTrainer_name}):
             if getattr(args, "_n_gpu", 1) != 1:
                 args._n_gpu = 1
         if "model" in locals() and hasattr(model, "for_training"):
-            model.for_training(use_gradient_checkpointing=getattr(args, 'gradient_checkpointing', True))
+            _use_gc = model._unsloth_gradient_checkpointing if hasattr(model, '_unsloth_gradient_checkpointing') else getattr(args, 'gradient_checkpointing', True)
+            model.for_training(use_gradient_checkpointing=_use_gc)
         super().__init__({RLTrainer_call_args}{RLTrainer_kwargs})
         if "model" in locals() and hasattr(model, "for_inference"):
             model.for_inference()
@@ -742,6 +749,49 @@ def _wrap_grpo_hidden_states_fallback(trainer_cls):
     trainer_cls.__init__ = wrapped_init
 
 
+def _backport_vision_dataset_gate(RLTrainer_source):
+    """Make TRL 0.22.x decide by DATASET, not by model, for SFT vision paths.
+
+    0.22.x keys "skip preparation" and "vision collator" off `_is_vlm` alone, so
+    a VLM fine-tuned on text-only data reaches transformers with no tokenized
+    columns: "No columns in the dataset match the model's forward method
+    signature". Merging the signature columns above is not enough, since skipped
+    preparation never creates those columns. Hit by
+    Magistral_(24B)-Reasoning-Conversational, which pins trl==0.22.2.
+
+    Back-ports TRL 0.24.0's `_is_vision_dataset` keying; no-op once TRL defines
+    the flag itself. Returns the source, patched or unchanged."""
+    if 'self._is_vision_dataset = "image" in dataset_sample' in RLTrainer_source:
+        return RLTrainer_source
+    anchor = "        dataset_sample = next(iter(train_dataset))\n"
+    if anchor not in RLTrainer_source:
+        return RLTrainer_source
+
+    RLTrainer_source = RLTrainer_source.replace(
+        anchor,
+        anchor + "        # Unsloth: back-port of TRL 0.24.0's dataset-based check, so a\n"
+        "        # text-only fine-tune of a VLM is prepared and collated as text.\n"
+        '        self._is_vision_dataset = "image" in dataset_sample or "images" in dataset_sample\n',
+        1,
+    )
+    # Text collator whenever the data is not actually vision data.
+    RLTrainer_source = RLTrainer_source.replace(
+        "if data_collator is None and not self._is_vlm:",
+        "if data_collator is None and not (self._is_vlm and self._is_vision_dataset):",
+    )
+    RLTrainer_source = RLTrainer_source.replace(
+        "elif data_collator is None and self._is_vlm:",
+        "elif data_collator is None and self._is_vlm and self._is_vision_dataset:",
+    )
+    # Tokenize it too: skipping preparation only saves image-processing cost.
+    RLTrainer_source = RLTrainer_source.replace(
+        'args.dataset_kwargs.get("skip_prepare_dataset", False) or self._is_vlm',
+        'args.dataset_kwargs.get("skip_prepare_dataset", False)'
+        " or (self._is_vlm and self._is_vision_dataset)",
+    )
+    return RLTrainer_source
+
+
 def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Defensive wrapper: matches patch_trl_rl_trainers()'s try/except so
     # direct callers don't see exceptions from the impl on TRL versions
@@ -749,8 +799,15 @@ def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     try:
         return _patch_trl_rl_trainers_impl(trainer_file)
     except Exception as e:
-        logger.info(
-            f"Unsloth: Could not patch trl.trainer.{trainer_file}: " f"{type(e).__name__}: {e}"
+        # Warning, not info. The impl RETURNS for the benign case this swallow
+        # exists for (a trainer this TRL does not ship), so anything reaching
+        # here means the module imported and generation itself failed, and the
+        # run silently falls back to trl's trainer, losing Unsloth's
+        # compute_loss, bf16/fp16 fixup and dataset handling at once.
+        logger.warning_once(
+            f"Unsloth: Could not build the patched trl.trainer.{trainer_file}, "
+            f"so training will use trl's own trainer instead: "
+            f"{type(e).__name__}: {e}"
         )
         return
 
@@ -994,8 +1051,18 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "use_fp16 = getattr(args, 'fp16', False)\n"
             "if type(use_fp16) is not bool: use_fp16 = False\n"
             "force_float32 = False\n"
+            # device-aware bf16 check (CUDA/XPU/HIP), so V100/T4 never pick bf16
+            # but AMD/Intel are unaffected; fall back on older unsloth_zoo.
+            "try:\n"
+            "    from unsloth_zoo.device_type import device_is_bf16_supported as _bf16_supported\n"
+            "except Exception:\n"
+            "    _bf16_supported = torch.cuda.is_bf16_supported\n"
+            # FORCE_FLOAT32 models (Gemma3, gpt_oss, ...) cannot use float16. On a GPU without
+            # bf16 (V100/T4) keep them in float32 so they never autocast to fp16. On a bf16 GPU,
+            # full finetuning can still use bf16 autocast (master weights stay float32), which is
+            # faster and uses less memory; LoRA/QLoRA keep float32 when forced.
             "full_finetuning = os.environ.get('UNSLOTH_ENABLE_FULL_FINETUNING', '0') == '1'\n"
-            "if not full_finetuning and (os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1'):\n"
+            "if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1' and not (full_finetuning and _bf16_supported()):\n"
             "    print('Unsloth: Switching to float32 training since model cannot work with float16')\n"
             "    force_float32 = True\n"
             "mixed_precision_dtype = os.environ.get('UNSLOTH_MIXED_PRECISION', 'float32')\n"
@@ -1004,8 +1071,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "from unsloth_zoo.utils import _get_dtype\n"
             "dtype = _get_dtype(dtype)\n"
             "float16 = dtype == torch.float16\n"
+            "bfloat16 = dtype == torch.bfloat16\n"
+            "if full_finetuning:\n"
+            "    if bfloat16 and use_fp16: use_fp16 = False\n"
+            "    if float16 and use_bf16: use_bf16 = False\n"
             "if not force_float32 and (float16 and use_bf16): raise TypeError('Unsloth: Model is in float16 precision but you want to use bfloat16 precision. Set fp16 to `True` and bf16 to `False`')\n"
-            "if not force_float32 and (not float16 and use_fp16): raise TypeError('Unsloth: Model is in bfloat16 precision but you want to use float16 precision. Set fp16 to `False` and bf16 to `True`')\n"
+            "if not force_float32 and (bfloat16 and use_fp16): raise TypeError('Unsloth: Model is in bfloat16 precision but you want to use float16 precision. Set fp16 to `False` and bf16 to `True`')\n"
             "if force_float32:\n"
             "    # Forced float32 training\n"
             "    args.fp16 = False\n"
@@ -1014,11 +1085,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'no'\n"
             "    # args.mixed_precision is a new argument which needs to be set now\n"
             "elif (not use_bf16 and not use_fp16) and mixed_precision_dtype == 'float32':\n"
-            "    # Mixed precision training\n"
-            "    args.fp16 = float16\n"
-            "    args.bf16 = not float16\n"
-            "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'fp16' if float16 else 'bf16'\n"
-            "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'fp16' if float16 else 'bf16'\n"
+            "    # Mixed precision training. bf16 only if the GPU supports it; V100/T4 use fp16.\n"
+            "    use_bf16_amp = (not float16) and _bf16_supported()\n"
+            "    args.fp16 = not use_bf16_amp\n"
+            "    args.bf16 = use_bf16_amp\n"
+            "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'bf16' if use_bf16_amp else 'fp16'\n"
+            "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'bf16' if use_bf16_amp else 'fp16'\n"
             "    # args.mixed_precision is a new argument which needs to be set now\n"
             "elif mixed_precision_dtype == 'bfloat16':\n"
             "    # Both False since bfloat16 full finetuning doesn't do any autocasting.\n"
@@ -1027,6 +1099,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"
             "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'no'\n"
             "    # args.mixed_precision is a new argument which needs to be set now\n"
+            "elif use_bf16 or use_fp16:\n"
+            "    # transformers <5 exported this itself from fp16/bf16; 5.x dropped the write, so an\n"
+            "    # explicit flag left it unset and GRPO readers defaulted to 'fp16', wrapping a\n"
+            "    # bfloat16 model in a float16 autocast. See unslothai/unsloth#4891.\n"
+            "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'bf16' if use_bf16 else 'fp16'\n"
+            "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'bf16' if use_bf16 else 'fp16'\n"
             "\n"
         )
         extra_args += mixed_precision
@@ -1150,7 +1228,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     if "model" in call_args:
         training_check = (
             "if model is not None and hasattr(model, 'for_training'):\n"
-            "    model.for_training(use_gradient_checkpointing=getattr(args, 'gradient_checkpointing', True))\n"
+            "    _use_gc = model._unsloth_gradient_checkpointing if hasattr(model, '_unsloth_gradient_checkpointing') else getattr(args, 'gradient_checkpointing', True)\n"
+            "    model.for_training(use_gradient_checkpointing=_use_gc)\n"
             "if 'tokenizer' in locals() and hasattr(tokenizer, 'padding_side'): tokenizer.padding_side = 'right'\n"
             "if 'processing_class' in locals():\n"
             "    if hasattr(processing_class, 'padding_side'): processing_class.padding_side = 'right'\n"
@@ -1347,6 +1426,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             # [TODO] See https://fengyao.notion.site/off-policy-rl
             # https://github.com/huggingface/trl/pull/3867 (August 7th)
             "vllm_importance_sampling_correction": False,
+            # TRL >= 1.7.0 enables the MoE router aux loss by default (0.001); the optimized
+            # GRPO forward does not compute it, so default off. Opt in via router_aux_loss_coef > 0.
+            "router_aux_loss_coef": 0.0,
         }
         for k, v in replacements.items():
             x = f"{k}( = [^,\n]{{1,}})?,\n"
@@ -1397,18 +1479,34 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         extra_args += saving_check
 
     # Edit dataset_num_proc
+    # The policy lives in unsloth_zoo.dataset_num_proc: it had drifted into four
+    # inline copies, two wrong (stdlib `multiprocessing` asked about a start
+    # method `datasets` takes from `multiprocess`, and `1` used as the serial
+    # sentinel when datasets >= 4.1 builds a Pool(1) for it). The zoo rather than
+    # unsloth, so generated source never imports back into its generator;
+    # unsloth.dataset_num_proc is the fallback for an older zoo, and the
+    # ladder is guarded so a stale generated file degrades to the caller's value.
+    # serial_as_none depends on who reads the value back. Only SFT has a
+    # downstream auto-sizer: unsloth_zoo.sft_prepare_dataset reads a config
+    # `None` as "auto-size me", so serial has to be written as `1` there and the
+    # map() call site (rl_replacements.py) turns it back into None. DPO, KTO,
+    # CPO, ORPO, Reward and PRM hand args.dataset_num_proc straight to
+    # Dataset.map, where nothing can inflate a None but a `1` is a Pool(1) on
+    # datasets >= 4.1 -- one worker with its own tokenizer copy, on a host the
+    # memory clamp had just declared too small for workers.
     if "dataset_num_proc" in call_args:
+        _serial_as_none = "False" if trainer_file == "sft_trainer" else "True"
         num_proc_check = (
-            "import multiprocessing as _mp\n"
-            "if dataset_num_proc is None:\n"
-            "    if _mp.get_start_method() != 'fork':\n"
-            "        dataset_num_proc = None\n"
-            "    else:\n"
-            "        import psutil\n"
-            "        dataset_num_proc = min(max((psutil.cpu_count() or 1)+4, 2), 64)\n"
-            "        memory_gb_left = psutil.virtual_memory().available / (1024**3)\n"
-            "        if memory_gb_left <= 2: dataset_num_proc = 1\n"
-            "        else: dataset_num_proc = min(dataset_num_proc, int(memory_gb_left))\n"
+            "try:\n"
+            "    from unsloth_zoo.dataset_num_proc import get_dataset_num_proc as _unsloth_get_dataset_num_proc\n"
+            "except Exception:\n"
+            "    try:\n"
+            "        from unsloth.dataset_num_proc import get_dataset_num_proc as _unsloth_get_dataset_num_proc\n"
+            "    except Exception:\n"
+            "        _unsloth_get_dataset_num_proc = None\n"
+            "if _unsloth_get_dataset_num_proc is not None:\n"
+            "    dataset_num_proc = _unsloth_get_dataset_num_proc("
+            f"dataset_num_proc, serial_as_none = {_serial_as_none})\n"
         )
         extra_args += num_proc_check
 
@@ -1625,7 +1723,36 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
         RLTrainer_source = re.sub(pattern, new_options, RLTrainer_source, flags = re.DOTALL)
 
-        if trl_version >= Version("0.27.0"):
+        if trl_version >= Version("1.4.0"):
+            # The `elif is_peft_model(model) and args.beta != 0.0:` ref-adapter block
+            # was introduced in TRL 1.4.0 and is used through 1.7.x. Remove only that
+            # block, anchored on the final ref_param copy so we do NOT also swallow the
+            # following gradient-checkpointing enable_input_require_grads() block.
+            peft_pattern = (
+                r"\s*elif is_peft_model\(model\) and args\.beta != 0\.0:"
+                r".*?"
+                r"ref_param\.data\.copy_\(param\.data\)"
+            )
+
+            replacement_comment = (
+                "\n        # PEFT initialization logic removed via script for trl >= 1.4.0\n"
+            )
+
+            RLTrainer_source = re.sub(
+                peft_pattern, replacement_comment, RLTrainer_source, flags = re.DOTALL
+            )
+
+            if trl_version >= Version("1.7.0"):
+                # router_aux_loss_coef / aux_loss_enabled were added in TRL 1.7.0. Unsloth's
+                # optimized GRPO forward cannot compute the MoE router aux loss, so reject
+                # explicit opt-in (router_aux_loss_coef > 0) at init rather than silently ignoring it.
+                RLTrainer_source = RLTrainer_source.replace(
+                    "self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0",
+                    "self.aux_loss_enabled = is_moe and args.router_aux_loss_coef != 0.0\n"
+                    '        if self.aux_loss_enabled: raise NotImplementedError("Unsloth GRPO does not compute the MoE router auxiliary loss; set router_aux_loss_coef = 0 (the Unsloth default).")',
+                )
+
+        elif trl_version >= Version("0.27.0"):
             peft_pattern = (
                 r"\s*if is_peft_available\(\) and is_peft_model\(model\) and args\.beta != 0\.0:"
                 r".*?"
@@ -1663,6 +1790,11 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         'if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):',
         "if False:",
     )
+    # TRL >= 1.7.0 spells the same QLoRA bf16 cast as `if _is_quantized_model:`.
+    RLTrainer_source = RLTrainer_source.replace(
+        "if _is_quantized_model:",
+        "if False:",
+    )
 
     if RLTrainer_name == "SFTTrainer":
         original_text = (
@@ -1696,17 +1828,17 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         if _vlm_check_original in RLTrainer_source:
             RLTrainer_source = RLTrainer_source.replace(_vlm_check_original, _vlm_check_patched)
 
-        # Fix TRL 0.22.x: VLM models with text-only datasets. It checks _is_vlm
-        # (model type), not _is_vision_dataset (added in 0.25.1+); with
-        # _is_vlm=True the vision-only signature columns don't overlap tokenized
-        # text columns. Fix: merge both column sets into the VLM branch. Extra
-        # columns are ignored by _remove_unused_columns (raises only on zero match).
+        # TRL 0.22.x keys off _is_vlm, not _is_vision_dataset (0.24.0+), so the
+        # vision-only signature columns never overlap the tokenized ones. Merge
+        # both sets; _remove_unused_columns ignores extras.
         _sig_vlm_old = 'self._signature_columns = ["messages", "prompt", "completion", "images"]'
         _sig_vlm_new = (
             'self._signature_columns = ["messages", "prompt", "completion", "images",'
             ' "input_ids", "labels", "attention_mask", "seq_lengths", "completion_mask", "assistant_masks"]'
         )
         RLTrainer_source = RLTrainer_source.replace(_sig_vlm_old, _sig_vlm_new)
+
+        RLTrainer_source = _backport_vision_dataset_gate(RLTrainer_source)
 
         # Inject model reference before _prepare_dataset for dynamic
         # token_type_ids detection in sft_prepare_dataset
@@ -1993,7 +2125,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 sampling_params = re.sub(r"[\,][\s]{0,}\,", ",", sampling_params)
 
                 new_vllm_part = (
-                    f"\n{' ' * 8}if {args}.use_vllm:\n{sampling_params}" f"\n{' ' * 8}else:\n"
+                    f"\n{' ' * 8}if {args}.use_vllm:\n{sampling_params}\n{' ' * 8}else:\n"
                 )
 
         if trl_version >= Version("0.18.0"):

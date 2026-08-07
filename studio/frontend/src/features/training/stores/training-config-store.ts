@@ -1,358 +1,185 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { CPT_TARGET_MODULES, DEFAULT_HYPERPARAMS, LR_DEFAULT_CPT, LR_DEFAULT_FULL, LR_DEFAULT_LORA, STEPS, TARGET_MODULES } from "@/config/training";
-import { authFetch } from "@/features/auth";
+import {
+  DEFAULT_HYPERPARAMS,
+  LR_DEFAULT_FULL,
+  LR_DEFAULT_LORA,
+} from "@/config/training";
+import { getHfToken } from "@/features/hub";
+import { translate } from "@/i18n";
+import { toast } from "@/lib/toast";
 import { isAdapterMethod } from "@/types/training";
-import type { DatasetFormat } from "@/types/training";
-import type { ModelType, StepNumber, TrainingMethod } from "@/types/training";
-import { toast } from "sonner";
+import type { ModelType } from "@/types/training";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { checkDatasetFormat } from "../api/datasets-api";
+import { DatasetFormatError, checkDatasetFormat } from "../api/datasets-api";
 import { checkVisionModel, getModelConfig } from "../api/models-api";
-import { mapBackendModelConfigToTrainingPatch } from "../lib/model-defaults";
-import { isRawTextDatasetFormat } from "../lib/training-methods";
-import { validateS3Source } from "../lib/validation";
 import type { BackendModelConfig } from "../api/models-api";
-import type { TrainingConfigState, TrainingConfigStore } from "../types/config";
+import { cacheReferenceMatchesSelection } from "../lib/cache-reference";
+import {
+  createDatasetCacheUsabilityIdentity,
+  datasetCacheUsabilityIdentitiesEqual,
+  trainingDatasetCacheRejections,
+} from "../lib/dataset-cache-rejection";
+import {
+  claimDatasetCacheRecheck,
+  datasetCacheRecheckKey,
+} from "../lib/dataset-recheck-budget";
+import { resolveDeletedLocalDatasetSelection } from "../lib/dataset-selection";
+import { requiresExplicitCachedDatasetSplit } from "../lib/dataset-split-policy";
+import { isMissingLocalDatasetCacheError } from "../lib/local-cache-errors";
+import { mapBackendModelConfigToTrainingPatch } from "../lib/model-defaults";
+import { trainingConfigPatchTouchesModelDefaults } from "../lib/model-defaults-edit-policy";
+import {
+  inferTrainingModelTypeFromFlags,
+  resolveTrainingModelType,
+} from "../lib/model-type-capabilities";
+import { isRawTextDatasetFormat } from "../lib/training-methods";
+import type {
+  DatasetCacheReferenceOptions,
+  TrainingConfigState,
+  TrainingConfigStore,
+  TrainingModelSelectionOptions,
+} from "../types/config";
+import {
+  TRAINING_CONFIG_PERSISTENCE_NAME,
+  TRAINING_CONFIG_PERSISTENCE_VERSION,
+  mergeTrainingConfig,
+  migrateTrainingConfig,
+  partializeTrainingConfig,
+} from "./training-config-persistence";
+import {
+  canProceedForTrainingStep,
+  clampTrainingStep,
+  createHfBrowseDatasetSelection,
+  createUploadBrowseDatasetSelection,
+  datasetSelectionStreamingPatch,
+  datasetSourceInvariantPatch,
+  emptyManualMapping,
+  formatStreamingDisabledOptions,
+  hasSeparateStreamingEvalSplit,
+  initialTrainingConfigState,
+  resolveDeferredTrainOnCompletionsDefault,
+  streamingCompatiblePatch,
+} from "./training-config-policy";
+import { selectTrainingMethodForHardware } from "./training-method-hardware-policy";
+import {
+  buildTrainingMethodPatch,
+  getCptModelDefaultsPatch,
+} from "./training-method-transition";
 
-const MIN_STEP: StepNumber = 1;
-const MAX_STEP: StepNumber = STEPS.length as StepNumber;
-
-/**
- * Auto-select LoRA (16-bit) vs QLoRA (4-bit) by model size and GPU memory.
- * Use "lora" if model_size_gb * 1.5 * context_scale fits in free VRAM, else "qlora".
- * Context scale: <=8192 = 1.0, >8192 = 1.7, >=16384 = 2.0, >=32768 = 4.0
- */
-async function autoSelectTrainingMethod(
-  modelSizeBytes: number,
-  contextLength: number,
-): Promise<TrainingMethod | null> {
-  try {
-    const res = await authFetch("/api/system/hardware");
-    if (!res.ok) return null;
-    const data = await res.json();
-    const freeGb: number | null = data?.gpu?.vram_free_gb ?? null;
-    if (freeGb == null) return null;
-
-    const modelSizeGb = modelSizeBytes / (1024 ** 3);
-
-    let contextScale = 1.0;
-    if (contextLength >= 32768) contextScale = 4.0;
-    else if (contextLength >= 16384) contextScale = 2.0;
-    else if (contextLength > 8192) contextScale = 1.7;
-
-    const estimatedUsage = modelSizeGb * 1.5 * contextScale;
-    return estimatedUsage <= freeGb ? "lora" : "qlora";
-  } catch {
-    return null;
-  }
-}
-
-function emptyManualMapping(): TrainingConfigState["datasetManualMapping"] {
-  return {};
-}
-
-const initialState: TrainingConfigState = {
-  currentStep: MIN_STEP,
-  modelType: null,
-  selectedModel: null,
-  trainingMethod: "qlora",
-  hfToken: "",
-  datasetSource: "huggingface",
-  datasetFormat: "auto",
-  dataset: null,
-  datasetSubset: null,
-  datasetSplit: null,
-  datasetEvalSplit: null,
-  datasetStreaming: false,
-  datasetManualMapping: emptyManualMapping(),
-  datasetSystemPrompt: "",
-  datasetUserTemplate: "",
-  datasetAssistantTemplate: "",
-  datasetLabelMapping: {},
-  datasetAdvisorNotification: null,
-  datasetSliceStart: null,
-  datasetSliceEnd: null,
-  uploadedFile: null,
-  uploadedEvalFile: null,
-  isCheckingVision: false,
-  isVisionModel: false,
-  isEmbeddingModel: false,
-  isAudioModel: false,
-  isLoadingModelDefaults: false,
-  modelDefaultsError: null,
-  modelDefaultsAppliedFor: null,
-  isCheckingDataset: false,
-  isDatasetImage: null,
-  isDatasetAudio: false,
-  maxPositionEmbeddings: null,
-  ...DEFAULT_HYPERPARAMS,
-};
+export { hasSeparateStreamingEvalSplit } from "./training-config-policy";
 
 // AbortController for in-flight dataset multimodal checks.
 let _datasetCheckController: AbortController | null = null;
 
+
 // AbortController for in-flight model default loads.
 let _modelConfigController: AbortController | null = null;
 
-// Has the user manually toggled trainOnCompletions since the last auto-set
-// (model load or dataset change)?
+// Has the user manually toggled trainOnCompletions since the last auto-set?
 let _trainOnCompletionsManuallySet = false;
 
-// Has the user manually edited the LR since the last model load? When false,
-// switching method auto-sets LR to 2e-4 (LoRA/QLoRA) or 2e-5 (full fine-tune).
-let _learningRateManuallySet = false;
+let _trainingMethodEditGeneration = 0;
+let _modelDefaultsEditGeneration = 0;
+let _modelDefaultsEditBaseline: {
+  modelName: string;
+  editGeneration: number;
+} | null = null;
 
-// Stash the YAML learning rate so setTrainingMethod can restore it when
-// switching back from full to adapter.
-let _yamlLearningRate: number | undefined = undefined;
-
-// Track whether entering CPT auto-forced datasetFormat="raw" so that
-// leaving CPT can restore the prior user-visible format.
-let _datasetFormatBeforeCpt: DatasetFormat | null = null;
-let _datasetFormatAutoForcedByCpt = false;
-
-const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set([
-  "modelType",
-  "isCheckingVision",
-  "isEmbeddingModel",
-  "isAudioModel",
-  "isLoadingModelDefaults",
-  "modelDefaultsError",
-  "modelDefaultsAppliedFor",
-  "isCheckingDataset",
-  "isDatasetImage",
-  "isDatasetAudio",
-  "trainOnCompletions",
-  "maxPositionEmbeddings",
-  "isVisionModel",
-  "s3Config",
-]);
-
-function partializePersistedState(
-  state: TrainingConfigStore,
-): Partial<TrainingConfigStore> {
-  return Object.fromEntries(
-    Object.entries(state).filter(([key]) => {
-      const stateKey = key as keyof TrainingConfigState;
-      return !NON_PERSISTED_STATE_KEYS.has(stateKey);
-    }),
-  ) as Partial<TrainingConfigStore>;
+function canReapplyModelDefaults(modelName: string): boolean {
+  return (
+    _modelDefaultsEditBaseline?.modelName === modelName &&
+    _modelDefaultsEditBaseline.editGeneration === _modelDefaultsEditGeneration
+  );
 }
 
-function clampStep(step: number): StepNumber {
-  return Math.min(MAX_STEP, Math.max(MIN_STEP, step)) as StepNumber;
-}
-
-function canProceedForStep(state: TrainingConfigState): boolean {
-  switch (state.currentStep) {
-    case 1:
-      return state.modelType !== null;
-    case 2:
-      return state.selectedModel !== null;
-    case 3:
-      if (state.datasetSource === "upload") {
-        return state.uploadedFile !== null;
-      }
-      if (state.datasetSource === "s3") {
-        return validateS3Source(state).ok;
-      }
-      return state.dataset !== null;
-    case 4:
-    case 5:
-      return true;
-    default:
-      return false;
-  }
-}
-
-// Single source of truth for the "streaming + eval needs a distinct split"
-// rule. Shared between the store's compatibility patch and the UI gate
-// (DatasetSection) so the two never drift apart.
-export function hasSeparateStreamingEvalSplit(
-  state: Pick<
-    TrainingConfigState,
-    "evalSteps" | "datasetSplit" | "datasetEvalSplit"
-  >,
-): boolean {
-  if (state.evalSteps <= 0) return true;
-  const trainSplit = state.datasetSplit || "train";
-  return !!state.datasetEvalSplit && state.datasetEvalSplit !== trainSplit;
-}
-
-function streamingCompatiblePatch(
-  state: TrainingConfigState,
-): Partial<TrainingConfigState> {
-  const patch: Partial<TrainingConfigState> = {};
-
-  if (state.datasetStreaming && state.maxSteps <= 0) {
-    patch.datasetStreaming = false;
-  }
-
-  // Evaluate the remaining streaming constraints against the *post-patch*
-  // streaming value. If streaming is being turned off in this same patch
-  // (e.g. maxSteps dropped to 0), its other constraints are moot and we must
-  // NOT clobber unrelated user preferences like trainOnCompletions/evalSteps.
-  const willStream =
-    patch.datasetStreaming !== undefined
-      ? patch.datasetStreaming
-      : state.datasetStreaming;
-
-  if (willStream && state.trainOnCompletions) {
-    patch.trainOnCompletions = false;
-  }
-
-  if (willStream && !hasSeparateStreamingEvalSplit(state)) {
-    patch.evalSteps = 0;
-  }
-
-  return patch;
-}
-
-// streamingCompatiblePatch can silently flip streaming-coupled fields. Surface a
-// toast when it does, so the indirect setters (split / eval-split / max-steps /
-// eval-steps) match setDatasetStreaming's "tell the user what changed" behavior.
+// streamingCompatiblePatch can silently flip streaming-coupled fields, so toast when it does,
+// matching setDatasetStreaming's "tell the user what changed" behavior.
 function notifyStreamingCompat(patch: Partial<TrainingConfigState>): void {
   if (patch.datasetStreaming === false) {
-    toast.info("Streaming turned off: streaming needs a fixed Max Steps > 0.");
-    return;
-  }
-  const disabled = [
-    patch.trainOnCompletions === false && "assistant-completions-only",
-    patch.evalSteps === 0 && "evaluation (needs a separate eval split)",
-  ].filter(Boolean);
-  if (disabled.length > 0) {
     toast.info(
-      `Adjusted for streaming. Disabled incompatible options: ${disabled.join(", ")}.`,
+      translate("studio.dataset.streaming.notifications.turnedOffMaxSteps"),
     );
-  }
-}
-
-type TrainingMethodStatePatch = Partial<
-  Pick<
-    TrainingConfigState,
-    | "trainingMethod"
-    | "learningRate"
-    | "loraRank"
-    | "loraAlpha"
-    | "loraVariant"
-    | "targetModules"
-    | "datasetFormat"
-    | "trainOnCompletions"
-  >
->;
-
-function getCptTrainingPatch(): TrainingMethodStatePatch {
-  return {
-    loraRank: 128,
-    loraAlpha: 32,
-    loraVariant: "rslora",
-    targetModules: CPT_TARGET_MODULES,
-    datasetFormat: "raw",
-    trainOnCompletions: false,
-  };
-}
-
-function getCptModelDefaultsPatch(): TrainingMethodStatePatch {
-  return {
-    ...getCptTrainingPatch(),
-    learningRate: LR_DEFAULT_CPT,
-  };
-}
-
-function getRestoreFromCptPatch(): TrainingMethodStatePatch {
-  return {
-    loraRank: DEFAULT_HYPERPARAMS.loraRank,
-    loraAlpha: DEFAULT_HYPERPARAMS.loraAlpha,
-    loraVariant: DEFAULT_HYPERPARAMS.loraVariant,
-    targetModules: TARGET_MODULES,
-  };
-}
-
-function clearCptDatasetFormatTracking(): void {
-  _datasetFormatBeforeCpt = null;
-  _datasetFormatAutoForcedByCpt = false;
-}
-
-function recordCptDatasetFormatOverride(currentDatasetFormat: DatasetFormat): void {
-  if (isRawTextDatasetFormat(currentDatasetFormat)) {
-    clearCptDatasetFormatTracking();
     return;
   }
-  _datasetFormatBeforeCpt = currentDatasetFormat;
-  _datasetFormatAutoForcedByCpt = true;
-}
-
-function getRestoreDatasetFormatFromCptPatch(): TrainingMethodStatePatch {
-  if (!_datasetFormatAutoForcedByCpt || _datasetFormatBeforeCpt == null) {
-    clearCptDatasetFormatTracking();
-    return {};
-  }
-
-  const previousDatasetFormat = _datasetFormatBeforeCpt;
-  clearCptDatasetFormatTracking();
-  return { datasetFormat: previousDatasetFormat };
-}
-
-function resolveTrainingMethodLearningRate(
-  prevMethod: TrainingMethod,
-  nextMethod: TrainingMethod,
-): number | undefined {
-  if (_learningRateManuallySet) {
-    return undefined;
-  }
-
-  const wasCpt = prevMethod === "cpt";
-  const wasAdapter = isAdapterMethod(prevMethod);
-  const nowAdapter = isAdapterMethod(nextMethod);
-
-  if (nextMethod === "cpt") {
-    return LR_DEFAULT_CPT;
-  }
-  if (wasCpt && nowAdapter) {
-    return _yamlLearningRate ?? LR_DEFAULT_LORA;
-  }
-  if (wasAdapter && nowAdapter) {
-    return undefined;
-  }
-  return nowAdapter ? _yamlLearningRate ?? LR_DEFAULT_LORA : LR_DEFAULT_FULL;
-}
-
-function buildTrainingMethodPatch(
-  prevMethod: TrainingMethod,
-  nextMethod: TrainingMethod,
-  currentDatasetFormat: DatasetFormat,
-): TrainingMethodStatePatch {
-  const patch: TrainingMethodStatePatch = { trainingMethod: nextMethod };
-
-  if (prevMethod !== "cpt" && nextMethod === "cpt") {
-    recordCptDatasetFormatOverride(currentDatasetFormat);
-    Object.assign(patch, getCptTrainingPatch());
-  }
-  if (prevMethod === "cpt" && nextMethod !== "cpt") {
-    Object.assign(
-      patch,
-      getRestoreFromCptPatch(),
-      getRestoreDatasetFormatFromCptPatch(),
+  const options = formatStreamingDisabledOptions(
+    patch.trainOnCompletions === false,
+    patch.evalSteps === 0,
+  );
+  if (options) {
+    toast.info(
+      translate("studio.dataset.streaming.notifications.adjusted", {
+        options,
+      }),
     );
   }
-
-  const learningRate = resolveTrainingMethodLearningRate(prevMethod, nextMethod);
-  if (learningRate !== undefined) {
-    patch.learningRate = learningRate;
-  }
-
-  return patch;
 }
 
 export const useTrainingConfigStore = create<TrainingConfigStore>()(
   persist(
     (set, get) => {
-      const loadAndApplyModelDefaults = (modelName: string) => {
+      const setUserEdit = (
+        update:
+          | Partial<TrainingConfigState>
+          | ((state: TrainingConfigStore) => Partial<TrainingConfigState>),
+      ) => {
+        set((state) => {
+          const patch = typeof update === "function" ? update(state) : update;
+          const invariantPatch = datasetSourceInvariantPatch({
+            datasetSource: patch.datasetSource ?? state.datasetSource,
+            datasetStreaming:
+              patch.datasetStreaming ?? state.datasetStreaming,
+          });
+          const normalizedPatch = { ...patch, ...invariantPatch };
+          if (trainingConfigPatchTouchesModelDefaults(normalizedPatch)) {
+            _modelDefaultsEditGeneration += 1;
+          }
+          return {
+            ...normalizedPatch,
+            userEditRevision: state.userEditRevision + 1,
+          };
+        });
+      };
+
+      const loadAndApplyModelDefaults = (
+        modelName: string,
+        options?: { applyTrainingDefaults?: boolean },
+      ) => {
+        const applyTrainingDefaults = options?.applyTrainingDefaults ?? true;
         _modelConfigController?.abort();
         const controller = new AbortController();
+        const trainingMethodEditGeneration = _trainingMethodEditGeneration;
+        const requestState = get();
+        const requestedModelDefaultsEditGeneration =
+          _modelDefaultsEditGeneration;
+        if (applyTrainingDefaults) {
+          _modelDefaultsEditBaseline = {
+            modelName,
+            editGeneration: requestedModelDefaultsEditGeneration,
+          };
+        }
+        const requestedKnownCached =
+          requestState.selectedModel === modelName &&
+          requestState.modelKnownCached;
+        const requestedLocalPath =
+          requestState.selectedModel === modelName
+            ? requestState.modelLocalPath
+            : null;
+        const canApplyTrainingDefaults = () =>
+          applyTrainingDefaults &&
+          _modelDefaultsEditGeneration === requestedModelDefaultsEditGeneration;
+        const preferLocalCache =
+          requestedKnownCached && Boolean(requestedLocalPath?.trim());
+        const requestMatchesSelection = () => {
+          const state = get();
+          return (
+            state.selectedModel === modelName &&
+            state.modelKnownCached === requestedKnownCached &&
+            state.modelLocalPath === requestedLocalPath
+          );
+        };
         _modelConfigController = controller;
         set({
           isLoadingModelDefaults: true,
@@ -360,145 +187,305 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           modelDefaultsError: null,
         });
 
-        void getModelConfig(modelName, controller.signal, get().hfToken || undefined)
+        void getModelConfig(
+          modelName,
+          controller.signal,
+          getHfToken() || undefined,
+          {
+            preferLocalCache,
+            localPath: preferLocalCache ? requestedLocalPath : null,
+          },
+        )
           .then((modelDetails) => {
             if (controller.signal.aborted) return;
-            if (get().selectedModel !== modelName) return;
+            if (!requestMatchesSelection()) return;
 
-            _trainOnCompletionsManuallySet = false;
-            _learningRateManuallySet = false;
-            _yamlLearningRate = undefined;
-            const patch = mapBackendModelConfigToTrainingPatch(modelDetails.config);
+            const shouldApplyTrainingDefaults = canApplyTrainingDefaults();
+            if (shouldApplyTrainingDefaults) {
+              _trainOnCompletionsManuallySet = false;
+            }
 
-            // Treat a model-config LR as authoritative so async auto-select
-            // won't overwrite it.
-            const modelConfigHasLR = patch.learningRate !== undefined;
-            _yamlLearningRate = patch.learningRate;
+            if (modelDetails.is_lora) {
+              set({
+                ...(shouldApplyTrainingDefaults
+                  ? {
+                      trainingMethodProvenance: {
+                        ...get().trainingMethodProvenance,
+                        learningRateManuallySet: false,
+                        modelAdapterLearningRate: null,
+                      },
+                    }
+                  : {}),
+                modelType: null,
+                modelFormat: "adapter",
+                isVisionModel: false,
+                isEmbeddingModel: false,
+                isAudioModel: false,
+                isLoadingModelDefaults: false,
+                isCheckingVision: false,
+                modelDefaultsError: null,
+                modelDefaultsAppliedFor: modelName,
+                maxPositionEmbeddings: null,
+              });
+              toast.error(translate("studio.modelPicker.cantUseModel"), {
+                description: translate("studio.modelPicker.reasonAdapter"),
+              });
+              return;
+            }
 
-            // YAML LRs are tuned for adapters (LoRA/QLoRA); on full fine-tune,
-            // use the full-finetune default instead of the YAML adapter LR.
+            const modelDefaultsPatch = mapBackendModelConfigToTrainingPatch(
+              modelDetails.config,
+            );
+            const patch = shouldApplyTrainingDefaults ? modelDefaultsPatch : {};
+
+            // Treat a model-config LR as authoritative so async auto-select won't overwrite it.
+            const modelConfigHasLR =
+              modelDefaultsPatch.learningRate !== undefined;
+            const modelAdapterLearningRate =
+              modelDefaultsPatch.learningRate ?? null;
+
+            // YAML LRs are tuned for adapters (LoRA/QLoRA); full fine-tune uses its own default.
             if (modelConfigHasLR && !isAdapterMethod(get().trainingMethod)) {
-              patch.learningRate = LR_DEFAULT_FULL;
+              modelDefaultsPatch.learningRate = LR_DEFAULT_FULL;
             }
 
             // Vision model + known image dataset: force trainOnCompletions off.
             if (modelDetails.is_vision && get().isDatasetImage === true) {
-              patch.trainOnCompletions = false;
+              modelDefaultsPatch.trainOnCompletions = false;
             }
 
             const isAudio = !!modelDetails.is_audio;
             // Pure audio model -> always uncheck trainOnCompletions.
             if (isAudio && !modelDetails.is_vision) {
-              patch.trainOnCompletions = false;
+              modelDefaultsPatch.trainOnCompletions = false;
             }
             // Audio-capable vision model (e.g. gemma3n) + audio dataset -> uncheck.
             if (isAudio && modelDetails.is_vision && get().isDatasetAudio) {
-              patch.trainOnCompletions = false;
+              modelDefaultsPatch.trainOnCompletions = false;
             }
 
-            // Use backend model_type when available, else infer from flags.
             const isEmbedding = !!modelDetails.is_embedding;
-            const inferredModelType: ModelType = modelDetails.model_type
-              ?? (isEmbedding ? "embeddings" : modelDetails.is_vision ? "vision" : modelDetails.is_audio ? "audio" : "text");
+            const inferredModelType = resolveTrainingModelType({
+              modelType: modelDetails.model_type,
+              isEmbedding,
+              isVision: modelDetails.is_vision,
+              isAudio: modelDetails.is_audio,
+            });
 
-            // Auto-select LoRA vs QLoRA by model size vs GPU memory (see
-            // autoSelectTrainingMethod). Skip if the user chose CPT.
             const modelSizeBytes = modelDetails.model_size_bytes;
-            if (modelSizeBytes && modelSizeBytes > 0 && get().trainingMethod !== "cpt") {
-              void autoSelectTrainingMethod(modelSizeBytes, patch.contextLength ?? get().contextLength)
-                .then((method) => {
-                  if (get().selectedModel !== modelName) return;
-                  if (get().trainingMethod === "cpt") return;
-                  if (method) {
-                    const lrPatch = !_learningRateManuallySet && !modelConfigHasLR
-                      ? { learningRate: method === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA }
-                      : {};
-                    set({ trainingMethod: method, ...lrPatch });
-                  }
-                });
-            }
+            const autoSelectionPromise =
+              shouldApplyTrainingDefaults &&
+              typeof modelSizeBytes === "number" &&
+              modelSizeBytes > 0 &&
+              get().trainingMethod !== "cpt"
+                ? selectTrainingMethodForHardware(
+                    modelSizeBytes,
+                    patch.contextLength ?? get().contextLength,
+                    controller.signal,
+                  )
+                : null;
 
-            // Preserve CPT hyperparams: YAML adapter defaults (r/alpha/targets/LR)
-            // are tuned for standard LoRA and would clobber CPT settings.
+            // Preserve CPT hyperparams: YAML adapter defaults are tuned for standard LoRA.
             const cptOverrides =
-              get().trainingMethod === "cpt"
+              shouldApplyTrainingDefaults && get().trainingMethod === "cpt"
                 ? getCptModelDefaultsPatch()
+                : {};
+            const modelDefaultsBaseline = {
+              ...modelDefaultsPatch,
+              ...(get().trainingMethod === "cpt"
+                ? getCptModelDefaultsPatch()
+                : {}),
+            };
+            const advancedSettingsBaseline =
+              get().advancedSettingsBaseline ?? modelDefaultsBaseline;
+            const deferredCompletionDefault =
+              !shouldApplyTrainingDefaults &&
+              get().trainOnCompletionsDefaultPendingFor === modelName
+                ? {
+                    trainOnCompletions:
+                      resolveDeferredTrainOnCompletionsDefault({
+                        currentValue: get().trainOnCompletions,
+                        datasetFormat: get().datasetFormat,
+                        datasetStreaming: get().datasetStreaming,
+                        isEmbeddingModel: isEmbedding,
+                        modelDefault: modelDefaultsPatch.trainOnCompletions,
+                        trainingMethod: get().trainingMethod,
+                      }),
+                    trainOnCompletionsDefaultPendingFor: null,
+                  }
                 : {};
 
             set({
               ...patch,
               ...cptOverrides,
+              ...deferredCompletionDefault,
+              ...(shouldApplyTrainingDefaults
+                ? {
+                    trainingMethodProvenance: {
+                      ...get().trainingMethodProvenance,
+                      learningRateManuallySet: false,
+                      modelAdapterLearningRate,
+                    },
+                  }
+                : {}),
+              advancedSettingsBaseline: shouldApplyTrainingDefaults
+                ? modelDefaultsBaseline
+                : advancedSettingsBaseline,
               modelType: inferredModelType,
               isVisionModel: modelDetails.is_vision,
               isEmbeddingModel: isEmbedding,
               isAudioModel: isAudio,
-              isLoadingModelDefaults: false,
+              isLoadingModelDefaults: autoSelectionPromise !== null,
               isCheckingVision: false,
               modelDefaultsError: null,
               modelDefaultsAppliedFor: modelName,
-              maxPositionEmbeddings: modelDetails.max_position_embeddings ?? null,
+              ...(shouldApplyTrainingDefaults
+                ? { trainOnCompletionsDefaultPendingFor: null }
+                : {}),
+              maxPositionEmbeddings:
+                modelDetails.max_position_embeddings ?? null,
             });
+
+            if (autoSelectionPromise) {
+              void autoSelectionPromise.then((method) => {
+                if (controller.signal.aborted || !requestMatchesSelection()) {
+                  return;
+                }
+                const methodWasEdited =
+                  _trainingMethodEditGeneration !==
+                  trainingMethodEditGeneration;
+                if (
+                  !method ||
+                  methodWasEdited ||
+                  !canApplyTrainingDefaults() ||
+                  get().trainingMethod === "cpt"
+                ) {
+                  set({ isLoadingModelDefaults: false });
+                  return;
+                }
+                const lrPatch =
+                  !get().trainingMethodProvenance.learningRateManuallySet &&
+                  !modelConfigHasLR
+                    ? {
+                        learningRate:
+                          method === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA,
+                      }
+                    : {};
+                set({
+                  trainingMethod: method,
+                  ...lrPatch,
+                  isLoadingModelDefaults: false,
+                });
+              });
+            }
           })
           .catch((error) => {
             if (controller.signal.aborted) return;
-            if (get().selectedModel !== modelName) return;
+            if (!requestMatchesSelection()) return;
 
             set({
               isLoadingModelDefaults: false,
-              isEmbeddingModel: false,
-              isAudioModel: false,
               modelDefaultsError:
                 error instanceof Error
                   ? error.message
                   : "Failed to load model defaults",
-              // Defaults load failed; reset so no prior model's value lingers.
-              visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize,
+              ...(canApplyTrainingDefaults()
+                ? { visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize }
+                : {}),
             });
 
+            if (preferLocalCache) {
+              set({ isCheckingVision: false });
+              return;
+            }
+
             // Fallback vision check; pass the token so a gated/private VLM classifies right.
-            void checkVisionModel(modelName, get().hfToken || undefined)
+            void checkVisionModel(modelName, getHfToken() || undefined)
               .then((isVision) => {
-                if (get().selectedModel !== modelName) return;
+                if (controller.signal.aborted || !requestMatchesSelection()) {
+                  return;
+                }
+                const state = get();
                 set({
-                  modelType: isVision ? "vision" : "text",
+                  modelType: inferTrainingModelTypeFromFlags({
+                    isEmbedding: state.isEmbeddingModel,
+                    isAudio: state.isAudioModel,
+                    isVision,
+                  }),
                   isVisionModel: isVision,
-                  isEmbeddingModel: false,
-                  isAudioModel: false,
                   isCheckingVision: false,
                 });
               })
               .catch(() => {
-                if (get().selectedModel !== modelName) return;
-                set({ isCheckingVision: false, isEmbeddingModel: false, isAudioModel: false });
+                if (controller.signal.aborted || !requestMatchesSelection()) {
+                  return;
+                }
+                set({ isCheckingVision: false });
               });
           });
       };
 
-      const runDatasetCheck = (datasetName: string, split: string) => {
+      const runDatasetCheck = (
+        datasetName: string,
+        split: string,
+        options?: { preferLocalCache?: boolean },
+      ) => {
         _datasetCheckController?.abort();
         const controller = new AbortController();
         _datasetCheckController = controller;
         set({ isCheckingDataset: true });
 
         const state = get();
+        const isHfSelection =
+          state.datasetSource === "huggingface" &&
+          state.dataset === datasetName;
+        const requestedPreferLocalCache =
+          options?.preferLocalCache ??
+          (isHfSelection && state.datasetKnownCached);
+        const preferLocalCache =
+          requestedPreferLocalCache && !state.datasetStreaming;
+        const requestedCacheIdentity =
+          isHfSelection && preferLocalCache
+            ? createDatasetCacheUsabilityIdentity({
+                dataset: datasetName,
+                cachePath: state.datasetLocalPath,
+                subset: state.datasetSubset,
+                split,
+                streaming: state.datasetStreaming,
+              })
+            : null;
+        const requestedCacheValidation = requestedCacheIdentity
+          ? trainingDatasetCacheRejections.beginValidation(
+              requestedCacheIdentity,
+            )
+          : null;
         checkDatasetFormat({
           datasetName,
-          hfToken: state.hfToken.trim() || null,
+          hfToken: getHfToken() || null,
           subset: state.datasetSubset,
           split,
           isVlm: state.isVisionModel,
+          preferLocalCache,
+          localPath:
+            isHfSelection && preferLocalCache ? state.datasetLocalPath : null,
+          signal: controller.signal,
         })
           .then((res) => {
             if (controller.signal.aborted) return;
             const isImage = !!res.is_image;
             const isAudio = !!res.is_audio;
-            const updates: Record<string, unknown> = {
+            const current = get();
+            const streamingDisabled =
+              current.datasetStreaming && (isImage || isAudio);
+            const updates: Partial<TrainingConfigState> = {
               isDatasetImage: isImage,
               isDatasetAudio: isAudio,
               isCheckingDataset: false,
+              datasetCheckFailed: false,
+              ...(streamingDisabled ? { datasetStreaming: false } : {}),
             };
             if (!_trainOnCompletionsManuallySet) {
-              const { isVisionModel, isAudioModel } = get();
+              const { isVisionModel, isAudioModel } = current;
               if (isVisionModel && isImage) {
                 updates.trainOnCompletions = false;
               }
@@ -512,11 +499,118 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               }
             }
             set(updates);
+            if (streamingDisabled) {
+              toast.info(
+                translate(
+                  "studio.dataset.streaming.notifications.disabledForDetectedModality",
+                ),
+              );
+              recheckSelectedDatasetForStreamingMode(false);
+            }
           })
-          .catch(() => {
+          .catch((error) => {
             if (controller.signal.aborted) return;
-            set({ isDatasetImage: null, isCheckingDataset: false });
+            if (
+              requestedCacheIdentity &&
+              requestedCacheValidation &&
+              isMissingLocalDatasetCacheError(error)
+            ) {
+              const current = get();
+              const currentCacheIdentity =
+                current.datasetSource === "huggingface" &&
+                current.dataset === datasetName &&
+                current.datasetKnownCached
+                  ? createDatasetCacheUsabilityIdentity({
+                      dataset: datasetName,
+                      cachePath: current.datasetLocalPath,
+                      subset: current.datasetSubset,
+                      split: current.datasetSplit,
+                      streaming: current.datasetStreaming,
+                    })
+                  : null;
+              if (
+                !currentCacheIdentity ||
+                !datasetCacheUsabilityIdentitiesEqual(
+                  currentCacheIdentity,
+                  requestedCacheIdentity,
+                )
+              ) {
+                return;
+              }
+              if (
+                !trainingDatasetCacheRejections.rejectValidation(
+                  requestedCacheValidation,
+                )
+              ) {
+                if (
+                  _datasetCheckController === controller &&
+                  claimDatasetCacheRecheck(
+                    datasetCacheRecheckKey({
+                      dataset: datasetName,
+                      subset: requestedCacheIdentity.subset,
+                      split,
+                      streaming: requestedCacheIdentity.streaming,
+                    }),
+                  )
+                ) {
+                  runDatasetCheck(datasetName, split, {
+                    preferLocalCache: true,
+                  });
+                  return;
+                }
+                // Retry budget spent: resolve remotely rather than spin on a churning inventory cache.
+                set({
+                  datasetKnownCached: false,
+                  datasetLocalPath: null,
+                  browseDatasetSelection:
+                    createHfBrowseDatasetSelection(datasetName),
+                });
+                runDatasetCheck(datasetName, split, {
+                  preferLocalCache: false,
+                });
+                return;
+              }
+              set({
+                datasetKnownCached: false,
+                datasetLocalPath: null,
+                browseDatasetSelection:
+                  createHfBrowseDatasetSelection(datasetName),
+              });
+              runDatasetCheck(datasetName, split, {
+                preferLocalCache: false,
+              });
+              return;
+            }
+            if (
+              error instanceof DatasetFormatError &&
+              error.status === 404 &&
+              clearDeletedDataset(datasetName)
+            ) {
+              toast.error(error.message);
+              return;
+            }
+            set({
+              isDatasetImage: null,
+              isDatasetAudio: false,
+              isCheckingDataset: false,
+              datasetCheckFailed: true,
+            });
           });
+      };
+
+      const recheckSelectedDatasetForStreamingMode = (
+        datasetStreaming: boolean,
+      ) => {
+        const state = get();
+        if (state.datasetSource !== "huggingface" || !state.dataset) {
+          return;
+        }
+        if (requiresExplicitCachedDatasetSplit(state)) {
+          return;
+        }
+        runDatasetCheck(state.dataset, state.datasetSplit || "train", {
+          preferLocalCache: !datasetStreaming && state.datasetKnownCached,
+        });
       };
 
       const resetDatasetState = (): Partial<TrainingConfigStore> => ({
@@ -525,8 +619,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         datasetEvalSplit: null,
         datasetManualMapping: emptyManualMapping(),
         datasetSystemPrompt: "",
-        datasetUserTemplate: "",
-        datasetAssistantTemplate: "",
         datasetLabelMapping: {},
         datasetAdvisorNotification: null,
         datasetSliceStart: null,
@@ -535,20 +627,165 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         isDatasetImage: null,
         isDatasetAudio: false,
         isCheckingDataset: false,
+        datasetCheckFailed: false,
       });
 
-      return {
-        ...initialState,
-        setStep: (step) => set({ currentStep: step }),
-        nextStep: () => set({ currentStep: clampStep(get().currentStep + 1) }),
-        prevStep: () => set({ currentStep: clampStep(get().currentStep - 1) }),
-        setModelType: (modelType) => {
+      const selectHfDatasetInternal = (
+        dataset: string | null,
+        options?: DatasetCacheReferenceOptions,
+      ) => {
+        const datasetId = dataset?.trim() || null;
+        trainingDatasetCacheRejections.reset();
+        _datasetCheckController?.abort();
+        _datasetCheckController = null;
+        _trainOnCompletionsManuallySet = false;
+        const browseDatasetSelection = createHfBrowseDatasetSelection(
+          datasetId,
+          options,
+        );
+        setUserEdit({
+          datasetSource: "huggingface",
+          browseDatasetSelection,
+          dataset: datasetId,
+          uploadedFile: null,
+          ...resetDatasetState(),
+          datasetKnownCached: browseDatasetSelection.knownCached,
+          datasetLocalPath: browseDatasetSelection.localPath,
+          ...datasetSelectionStreamingPatch(browseDatasetSelection, options),
+        });
+        if (datasetId && !requiresExplicitCachedDatasetSplit(get())) {
+          runDatasetCheck(datasetId, "train");
+        }
+      };
+
+      const selectLocalDatasetInternal = (uploadedFile: string | null) => {
+        trainingDatasetCacheRejections.reset();
+        _datasetCheckController?.abort();
+        _datasetCheckController = null;
+        _trainOnCompletionsManuallySet = false;
+        setUserEdit({
+          datasetSource: "upload",
+          browseDatasetSelection:
+            createUploadBrowseDatasetSelection(uploadedFile),
+          dataset: null,
+          uploadedFile,
+          ...resetDatasetState(),
+          datasetKnownCached: false,
+          datasetLocalPath: null,
+        });
+        if (uploadedFile) {
+          runDatasetCheck(uploadedFile, "train");
+        }
+      };
+
+      const selectS3SourceInternal = () => {
+        trainingDatasetCacheRejections.reset();
+        _datasetCheckController?.abort();
+        _datasetCheckController = null;
+        _trainOnCompletionsManuallySet = false;
+        const state = get();
+        const browseDatasetSelection =
+          state.datasetSource === "s3"
+            ? state.browseDatasetSelection
+            : state.datasetSource === "upload"
+              ? createUploadBrowseDatasetSelection(state.uploadedFile)
+              : createHfBrowseDatasetSelection(state.dataset, {
+                  knownCached: state.datasetKnownCached,
+                  localPath: state.datasetLocalPath,
+                });
+        setUserEdit({
+          datasetSource: "s3",
+          browseDatasetSelection,
+          dataset: null,
+          uploadedFile: null,
+          ...resetDatasetState(),
+          datasetKnownCached: false,
+          datasetLocalPath: null,
+        });
+      };
+
+      const restoreBrowseDatasetSourceInternal = () => {
+        const selection = get().browseDatasetSelection;
+        if (selection.source === "upload") {
+          selectLocalDatasetInternal(selection.uploadedFile);
+          return;
+        }
+        selectHfDatasetInternal(selection.dataset, {
+          knownCached: selection.knownCached,
+          localPath: selection.localPath,
+        });
+      };
+
+      const selectModelInternal = (
+        selectedModel: string | null,
+        modelType: ModelType | null,
+        options?: TrainingModelSelectionOptions,
+      ) => {
+        const currentState = get();
+        const effectiveModelType = modelType ?? currentState.modelType;
+        const previousModel = currentState.selectedModel;
+        const nextKnownCached = selectedModel
+          ? (options?.knownCached ?? false)
+          : false;
+        const nextLocalPath = selectedModel
+          ? (options?.localPath ?? null)
+          : null;
+        const selectionChanged =
+          selectedModel !== previousModel ||
+          currentState.modelKnownCached !== nextKnownCached ||
+          currentState.modelLocalPath !== nextLocalPath;
+        const previousAdapterFormat =
+          !selectionChanged && currentState.modelFormat === "adapter"
+            ? currentState.modelFormat
+            : null;
+        const patch: {
+          selectedModel: string | null;
+          modelDefaultsError: null;
+          modelKnownCached: boolean;
+          modelLocalPath: string | null;
+          modelFormat: TrainingConfigState["modelFormat"];
+          modelType?: ModelType;
+          visionImageSize?: number | null;
+          trustRemoteCode?: boolean;
+          approvedRemoteCodeFingerprint?: string | null;
+          isVisionModel?: boolean;
+          isAudioModel?: boolean;
+          isEmbeddingModel?: boolean;
+          modelDefaultsAppliedFor?: string | null;
+          advancedSettingsBaseline?: null;
+          trainOnCompletionsDefaultPendingFor?: null;
+        } = {
+          selectedModel,
+          modelDefaultsError: null,
+          modelKnownCached: nextKnownCached,
+          modelLocalPath: nextLocalPath,
+          modelFormat: selectedModel
+            ? (options?.modelFormat ?? previousAdapterFormat)
+            : null,
+        };
+        if (effectiveModelType) {
+          patch.modelType = effectiveModelType;
+        }
+        if (selectionChanged) {
+          patch.visionImageSize = DEFAULT_HYPERPARAMS.visionImageSize;
+          patch.trustRemoteCode = false;
+          patch.approvedRemoteCodeFingerprint = null;
+          patch.isVisionModel =
+            options?.isVision ?? effectiveModelType === "vision";
+          patch.isAudioModel =
+            options?.isAudio ?? effectiveModelType === "audio";
+          patch.isEmbeddingModel =
+            options?.isEmbedding ?? effectiveModelType === "embeddings";
+          patch.modelDefaultsAppliedFor = null;
+          patch.advancedSettingsBaseline = null;
+          patch.trainOnCompletionsDefaultPendingFor = null;
+        }
+        setUserEdit(patch);
+
+        if (!selectedModel) {
           _modelConfigController?.abort();
           _modelConfigController = null;
-
           set({
-            modelType,
-            selectedModel: null,
             isCheckingVision: false,
             isVisionModel: false,
             isEmbeddingModel: false,
@@ -557,137 +794,247 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             isLoadingModelDefaults: false,
             modelDefaultsError: null,
             modelDefaultsAppliedFor: null,
+            advancedSettingsBaseline: null,
+            trainOnCompletionsDefaultPendingFor: null,
+          });
+          return;
+        }
+
+        const shouldLoadDefaults =
+          selectionChanged || get().modelDefaultsAppliedFor !== selectedModel;
+        if (shouldLoadDefaults) {
+          void loadAndApplyModelDefaults(selectedModel);
+        }
+      };
+
+      return {
+        ...initialTrainingConfigState,
+        setStep: (step) => set({ currentStep: step }),
+        nextStep: () =>
+          set({ currentStep: clampTrainingStep(get().currentStep + 1) }),
+        prevStep: () =>
+          set({ currentStep: clampTrainingStep(get().currentStep - 1) }),
+        setModelType: (modelType) => {
+          _modelConfigController?.abort();
+          _modelConfigController = null;
+
+          setUserEdit({
+            modelType,
+            selectedModel: null,
+            modelKnownCached: false,
+            modelLocalPath: null,
+            modelFormat: null,
+            isCheckingVision: false,
+            isVisionModel: false,
+            isEmbeddingModel: false,
+            isAudioModel: false,
+            isDatasetAudio: false,
+            isLoadingModelDefaults: false,
+            modelDefaultsError: null,
+            modelDefaultsAppliedFor: null,
+            advancedSettingsBaseline: null,
+            trainOnCompletionsDefaultPendingFor: null,
           });
         },
         setSelectedModel: (selectedModel) => {
-          const previousModel = get().selectedModel;
-          // Reset vision_image_size on a true switch only; same-model reloads
-          // go through the mapper, which preserves the user's choice.
-          const patch: {
-            selectedModel: string | null;
-            modelDefaultsError: null;
-            visionImageSize?: number | null;
-            trustRemoteCode?: boolean;
-            approvedRemoteCodeFingerprint?: string | null;
-          } = {
-            selectedModel,
-            modelDefaultsError: null,
-          };
-          if (selectedModel !== previousModel) {
-            patch.visionImageSize = DEFAULT_HYPERPARAMS.visionImageSize;
-            // Clear the prior model's approval so a clean model is not trained with a
-            // stale trust_remote_code=true (disables fused CE). Its own YAML default is
-            // re-applied below, and a custom-code model re-opens the dialog before start.
-            patch.trustRemoteCode = false;
-            patch.approvedRemoteCodeFingerprint = null;
-          }
-          set(patch);
-
-          if (!selectedModel) {
-            _modelConfigController?.abort();
-            _modelConfigController = null;
-            set({
-              isCheckingVision: false,
-              isVisionModel: false,
-              isEmbeddingModel: false,
-              isAudioModel: false,
-              isDatasetAudio: false,
-              isLoadingModelDefaults: false,
-              modelDefaultsError: null,
-              modelDefaultsAppliedFor: null,
+          selectModelInternal(selectedModel, null);
+        },
+        selectTrainingModel: (selectedModel, modelType, options) => {
+          selectModelInternal(selectedModel, modelType, options);
+        },
+        setSelectedModelCacheReference: (model, options) => {
+          const state = get();
+          if (state.selectedModel !== model) return;
+          const cacheReferenceChanged =
+            !state.modelKnownCached ||
+            state.modelLocalPath !== options.localPath;
+          set({
+            modelKnownCached: true,
+            modelLocalPath: options.localPath,
+            modelFormat: options.modelFormat,
+          });
+          if (cacheReferenceChanged) {
+            void loadAndApplyModelDefaults(model, {
+              applyTrainingDefaults: canReapplyModelDefaults(model),
             });
+          }
+        },
+        clearSelectedModelCacheReference: (model, localPath) => {
+          const state = get();
+          if (
+            !cacheReferenceMatchesSelection({
+              currentId: state.selectedModel,
+              expectedId: model,
+              knownCached: state.modelKnownCached,
+              currentLocalPath: state.modelLocalPath,
+              expectedLocalPath: localPath,
+            })
+          ) {
             return;
           }
-
-          const shouldLoadDefaults =
-            selectedModel !== previousModel ||
-            get().modelDefaultsAppliedFor !== selectedModel;
-          if (shouldLoadDefaults) {
-            void loadAndApplyModelDefaults(selectedModel);
+          set({
+            modelKnownCached: false,
+            modelLocalPath: null,
+            modelFormat: null,
+          });
+          void loadAndApplyModelDefaults(model, {
+            applyTrainingDefaults: canReapplyModelDefaults(model),
+          });
+        },
+        clearSelectedDatasetCacheReference: (dataset, localPath) => {
+          const state = get();
+          if (state.datasetSource !== "huggingface") return;
+          if (
+            !cacheReferenceMatchesSelection({
+              currentId: state.dataset,
+              expectedId: dataset,
+              knownCached: state.datasetKnownCached,
+              currentLocalPath: state.datasetLocalPath,
+              expectedLocalPath: localPath,
+            })
+          ) {
+            return;
+          }
+          set({
+            datasetKnownCached: false,
+            datasetLocalPath: null,
+            browseDatasetSelection: createHfBrowseDatasetSelection(dataset),
+          });
+          runDatasetCheck(dataset, get().datasetSplit || "train", {
+            preferLocalCache: false,
+          });
+        },
+        setSelectedDatasetCacheReference: (dataset, localPath) => {
+          const state = get();
+          if (
+            state.datasetSource !== "huggingface" ||
+            state.dataset !== dataset
+          ) {
+            return;
+          }
+          const cacheReferenceChanged =
+            !state.datasetKnownCached || state.datasetLocalPath !== localPath;
+          set({
+            datasetKnownCached: true,
+            datasetLocalPath: localPath,
+            browseDatasetSelection: createHfBrowseDatasetSelection(dataset, {
+              knownCached: true,
+              localPath,
+            }),
+            ...(cacheReferenceChanged && !state.datasetStreaming
+              ? {
+                  isDatasetImage: null,
+                  isDatasetAudio: false,
+                  datasetCheckFailed: false,
+                }
+              : {}),
+          });
+          if (cacheReferenceChanged && !state.datasetStreaming) {
+            recheckSelectedDatasetForStreamingMode(false);
           }
         },
         ensureModelDefaultsLoaded: () => {
           const state = get();
           if (!state.selectedModel) return;
           if (state.isLoadingModelDefaults) return;
-          if (state.modelDefaultsAppliedFor === state.selectedModel) return;
-          void loadAndApplyModelDefaults(state.selectedModel);
+          const defaultsAlreadyApplied =
+            state.modelDefaultsAppliedFor === state.selectedModel;
+          void loadAndApplyModelDefaults(state.selectedModel, {
+            applyTrainingDefaults:
+              !defaultsAlreadyApplied ||
+              canReapplyModelDefaults(state.selectedModel),
+          });
         },
+        setProjectName: (projectName) => setUserEdit({ projectName }),
         setTrainingMethod: (trainingMethod) => {
+          _trainingMethodEditGeneration += 1;
           const state = get();
-          set(
-            buildTrainingMethodPatch(
-              state.trainingMethod,
-              trainingMethod,
-              state.datasetFormat,
-            ),
-          );
-        },
-        setHfToken: (hfToken) =>
-          set({ hfToken: hfToken.trim().replace(/^["']+|["']+$/g, "") }),
-        setDatasetSource: (datasetSource) => set({ datasetSource }),
-        selectHfDataset: (dataset) => {
-          _datasetCheckController?.abort();
-          _datasetCheckController = null;
-          _trainOnCompletionsManuallySet = false;
-          set({
-            datasetSource: "huggingface",
-            dataset,
-            uploadedFile: null,
-            ...resetDatasetState(),
+          const patch = buildTrainingMethodPatch(state, trainingMethod);
+          setUserEdit({
+            ...patch,
+            ...(patch.trainOnCompletions !== undefined
+              ? { trainOnCompletionsDefaultPendingFor: null }
+              : {}),
           });
         },
-        selectLocalDataset: (uploadedFile) => {
-          _datasetCheckController?.abort();
-          _datasetCheckController = null;
-          _trainOnCompletionsManuallySet = false;
-          set({
-            datasetSource: "upload",
-            dataset: null,
-            uploadedFile,
-            ...resetDatasetState(),
-          });
-          if (uploadedFile) {
-            runDatasetCheck(uploadedFile, "train");
+        setDatasetSource: (datasetSource) => {
+          const state = get();
+          if (datasetSource === state.datasetSource) {
+            const invariantPatch = datasetSourceInvariantPatch(state);
+            if (invariantPatch.datasetStreaming !== undefined) {
+              set(invariantPatch);
+            }
+            return;
           }
+          if (datasetSource === "s3") {
+            selectS3SourceInternal();
+            return;
+          }
+          if (
+            state.datasetSource === "s3" &&
+            state.browseDatasetSelection.source === datasetSource
+          ) {
+            restoreBrowseDatasetSourceInternal();
+            return;
+          }
+          if (datasetSource === "upload") {
+            selectLocalDatasetInternal(null);
+            return;
+          }
+          selectHfDatasetInternal(null);
         },
-        selectS3Source: () => {
-          _datasetCheckController?.abort();
-          _datasetCheckController = null;
-          _trainOnCompletionsManuallySet = false;
-          set({
-            datasetSource: "s3",
-            dataset: null,
-            uploadedFile: null,
-            ...resetDatasetState(),
-          });
+        selectHfDataset: selectHfDatasetInternal,
+        selectLocalDataset: selectLocalDatasetInternal,
+        selectS3Source: selectS3SourceInternal,
+        restoreBrowseDatasetSource: () => {
+          if (get().datasetSource !== "s3") return;
+          restoreBrowseDatasetSourceInternal();
         },
         setDatasetFormat: (datasetFormat) =>
-          set((state) => {
+          setUserEdit((state) => {
             if (state.trainingMethod === "cpt") {
               if (isRawTextDatasetFormat(datasetFormat)) {
-                clearCptDatasetFormatTracking();
+                return {
+                  datasetFormat: "raw",
+                  trainOnCompletions: false,
+                  trainOnCompletionsDefaultPendingFor: null,
+                  trainingMethodProvenance: {
+                    ...state.trainingMethodProvenance,
+                    datasetFormatBeforeCpt: null,
+                  },
+                };
               }
               return {
                 datasetFormat: "raw",
                 trainOnCompletions: false,
+                trainOnCompletionsDefaultPendingFor: null,
               };
             }
 
             return {
               datasetFormat,
-              trainOnCompletions:
-                isRawTextDatasetFormat(datasetFormat)
-                  ? false
-                  : state.trainOnCompletions,
+              trainOnCompletions: isRawTextDatasetFormat(datasetFormat)
+                ? false
+                : state.trainOnCompletions,
+              ...(isRawTextDatasetFormat(datasetFormat)
+                ? { trainOnCompletionsDefaultPendingFor: null }
+                : {}),
             };
           }),
         setDataset: (dataset) => {
+          const datasetId = dataset?.trim() || null;
+          trainingDatasetCacheRejections.reset();
           _datasetCheckController?.abort();
           _datasetCheckController = null;
           _trainOnCompletionsManuallySet = false;
-          set({
-            dataset,
+          setUserEdit((state) => ({
+            dataset: datasetId,
+            datasetKnownCached: false,
+            datasetLocalPath: null,
+            browseDatasetSelection:
+              state.datasetSource === "huggingface"
+                ? createHfBrowseDatasetSelection(datasetId)
+                : state.browseDatasetSelection,
             datasetSubset: null,
             datasetSplit: null,
             datasetEvalSplit: null,
@@ -697,13 +1044,24 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             isDatasetImage: null,
             isDatasetAudio: false,
             isCheckingDataset: false,
-          });
+            datasetCheckFailed: false,
+          }));
+          if (datasetId) {
+            runDatasetCheck(datasetId, "train");
+          }
         },
         setDatasetSubset: (datasetSubset) => {
+          const state = get();
+          if (
+            state.datasetSubset !== datasetSubset ||
+            state.datasetSplit !== null
+          ) {
+            trainingDatasetCacheRejections.reset(state.dataset);
+          }
           _datasetCheckController?.abort();
           _datasetCheckController = null;
           _trainOnCompletionsManuallySet = false;
-          set({
+          setUserEdit({
             datasetSubset,
             datasetSplit: null,
             datasetEvalSplit: null,
@@ -715,9 +1073,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         setDatasetSplit: (datasetSplit) => {
           const state = get();
+          if (state.datasetSplit !== datasetSplit) {
+            trainingDatasetCacheRejections.reset(state.dataset);
+          }
           const nextState = { ...state, datasetSplit };
           const streamingPatch = streamingCompatiblePatch(nextState);
-          set({
+          setUserEdit({
             datasetSplit,
             datasetManualMapping: emptyManualMapping(),
             isDatasetImage: null,
@@ -732,6 +1093,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               ? state.dataset
               : state.uploadedFile;
           if (!datasetName) return;
+          if (requiresExplicitCachedDatasetSplit({ ...state, datasetSplit })) {
+            return;
+          }
 
           runDatasetCheck(datasetName, datasetSplit || "train");
         },
@@ -745,6 +1109,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               ? state.dataset
               : state.uploadedFile;
           if (!datasetName) return;
+          if (requiresExplicitCachedDatasetSplit(state)) {
+            return;
+          }
 
           const split = state.datasetSplit || "train";
           runDatasetCheck(datasetName, split);
@@ -757,7 +1124,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             datasetEvalSplit,
             evalSteps,
           });
-          set({
+          setUserEdit({
             datasetEvalSplit,
             evalSteps,
             ...streamingPatch,
@@ -765,65 +1132,103 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           notifyStreamingCompat(streamingPatch);
         },
         setDatasetStreaming: (datasetStreaming) => {
+          const state = get();
+          if (datasetStreaming && state.datasetSource !== "huggingface") {
+            if (state.datasetStreaming) {
+              set({ datasetStreaming: false });
+            }
+            return;
+          }
+          const changed = state.datasetStreaming !== datasetStreaming;
           if (!datasetStreaming) {
-            set({ datasetStreaming: false });
+            if (changed) {
+              trainingDatasetCacheRejections.reset(state.dataset);
+            }
+            setUserEdit({
+              datasetStreaming: false,
+              ...(changed
+                ? {
+                    isDatasetImage: null,
+                    isDatasetAudio: false,
+                    datasetCheckFailed: false,
+                  }
+                : {}),
+            });
+            if (changed) {
+              recheckSelectedDatasetForStreamingMode(false);
+            }
             return;
           }
 
-          const state = get();
           if (state.maxSteps <= 0) {
             set({ datasetStreaming: false });
             toast.warning(
-              "Streaming needs a fixed Max Steps (streaming datasets have no known length). Set Max Steps > 0 first.",
+              translate("studio.dataset.streaming.notifications.needsMaxSteps"),
             );
             return;
+          }
+
+          if (changed) {
+            trainingDatasetCacheRejections.reset(state.dataset);
           }
 
           const dropsTrainOnCompletions = state.trainOnCompletions;
           const dropsEval = !hasSeparateStreamingEvalSplit(state);
 
-          set({
+          setUserEdit({
             datasetStreaming: true,
             trainOnCompletions: false,
+            trainOnCompletionsDefaultPendingFor: null,
             evalSteps: dropsEval ? 0 : state.evalSteps,
+            isDatasetImage: null,
+            isDatasetAudio: false,
+            datasetCheckFailed: false,
           });
+          recheckSelectedDatasetForStreamingMode(true);
 
           if (dropsTrainOnCompletions || dropsEval) {
-            const disabled = [
-              dropsTrainOnCompletions && "assistant-completions-only",
-              dropsEval && "evaluation (needs a separate eval split)",
-            ].filter(Boolean);
+            const options = formatStreamingDisabledOptions(
+              dropsTrainOnCompletions,
+              dropsEval,
+            );
             toast.info(
-              `Streaming enabled. Disabled incompatible options: ${disabled.join(", ")}.`,
+              translate(
+                "studio.dataset.streaming.notifications.enabledAdjusted",
+                { options },
+              ),
             );
           }
         },
         setDatasetManualMapping: (datasetManualMapping) =>
-          set({ datasetManualMapping }),
+          setUserEdit({ datasetManualMapping }),
         setDatasetAdvisorFields: (fields) =>
-          set({
-            datasetSystemPrompt: fields.systemPrompt ?? get().datasetSystemPrompt,
-            datasetUserTemplate: "",  // templates no longer used
-            datasetAssistantTemplate: "",  // templates no longer used
-            datasetLabelMapping: fields.labelMapping ?? get().datasetLabelMapping,
-            datasetAdvisorNotification: fields.notification !== undefined ? fields.notification : get().datasetAdvisorNotification,
+          setUserEdit({
+            datasetSystemPrompt:
+              fields.systemPrompt ?? get().datasetSystemPrompt,
+            datasetLabelMapping:
+              fields.labelMapping ?? get().datasetLabelMapping,
+            datasetAdvisorNotification:
+              fields.notification !== undefined
+                ? fields.notification
+                : get().datasetAdvisorNotification,
           }),
-        clearDatasetAdvisorFields: () =>
-          set({
-            datasetSystemPrompt: "",
-            datasetUserTemplate: "",
-            datasetAssistantTemplate: "",
-            datasetLabelMapping: {},
-            datasetAdvisorNotification: null,
-          }),
-        setDatasetSliceStart: (datasetSliceStart) => set({ datasetSliceStart }),
-        setDatasetSliceEnd: (datasetSliceEnd) => set({ datasetSliceEnd }),
+        setDatasetSliceStart: (datasetSliceStart) =>
+          setUserEdit({ datasetSliceStart }),
+        setDatasetSliceEnd: (datasetSliceEnd) =>
+          setUserEdit({ datasetSliceEnd }),
         setUploadedFile: (uploadedFile) => {
           _datasetCheckController?.abort();
           _datasetCheckController = null;
           _trainOnCompletionsManuallySet = false;
-          set({
+          setUserEdit((state) => ({
             uploadedFile,
+            datasetKnownCached: false,
+            datasetLocalPath: null,
+            browseDatasetSelection:
+              state.datasetSource === "upload"
+                ? createUploadBrowseDatasetSelection(uploadedFile)
+                : state.browseDatasetSelection,
+            datasetCheckFailed: false,
             datasetSubset: null,
             datasetSplit: null,
             datasetEvalSplit: null,
@@ -834,182 +1239,169 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             isDatasetImage: null,
             isDatasetAudio: false,
             isCheckingDataset: false,
-          });
+          }));
         },
-        setUploadedEvalFile: (uploadedEvalFile) => set({
-          uploadedEvalFile,
-          evalSteps: uploadedEvalFile ? 0.1 : 0,
-        }),
-        setEpochs: (epochs) => set({ epochs }),
-        setContextLength: (contextLength) => set({ contextLength }),
-        setVisionImageSize: (visionImageSize) => set({ visionImageSize }),
-        setLearningRate: (learningRate) => {
-          _learningRateManuallySet = true;
-          set({ learningRate });
-        },
+        setUploadedEvalFile: (uploadedEvalFile) =>
+          setUserEdit({
+            uploadedEvalFile,
+            evalSteps: uploadedEvalFile ? 0.1 : 0,
+          }),
+        setEpochs: (epochs) => setUserEdit({ epochs }),
+        setContextLength: (contextLength) => setUserEdit({ contextLength }),
+        setVisionImageSize: (visionImageSize) =>
+          setUserEdit({ visionImageSize }),
+        setLearningRate: (learningRate) =>
+          setUserEdit((state) => ({
+            learningRate,
+            trainingMethodProvenance: {
+              ...state.trainingMethodProvenance,
+              learningRateManuallySet: true,
+            },
+          })),
         setEmbeddingLearningRate: (embeddingLearningRate) =>
-          set({ embeddingLearningRate }),
-        setOptimizerType: (optimizerType) => set({ optimizerType }),
-        setLrSchedulerType: (lrSchedulerType) => set({ lrSchedulerType }),
-        setLoraRank: (loraRank) => set({ loraRank }),
-        setLoraAlpha: (loraAlpha) => set({ loraAlpha }),
-        setLoraDropout: (loraDropout) => set({ loraDropout }),
-        setLoraVariant: (loraVariant) => set({ loraVariant }),
-        setBatchSize: (batchSize) => set({ batchSize }),
+          setUserEdit({ embeddingLearningRate }),
+        setOptimizerType: (optimizerType) => setUserEdit({ optimizerType }),
+        setLrSchedulerType: (lrSchedulerType) =>
+          setUserEdit({ lrSchedulerType }),
+        setLoraRank: (loraRank) => setUserEdit({ loraRank }),
+        setLoraAlpha: (loraAlpha) => setUserEdit({ loraAlpha }),
+        setLoraDropout: (loraDropout) => setUserEdit({ loraDropout }),
+        setLoraVariant: (loraVariant) => setUserEdit({ loraVariant }),
+        setBatchSize: (batchSize) => setUserEdit({ batchSize }),
         setGradientAccumulation: (gradientAccumulation) =>
-          set({ gradientAccumulation }),
-        setWeightDecay: (weightDecay) => set({ weightDecay }),
-        setWarmupSteps: (warmupSteps) => set({ warmupSteps }),
+          setUserEdit({ gradientAccumulation }),
+        setWeightDecay: (weightDecay) => setUserEdit({ weightDecay }),
+        setWarmupSteps: (warmupSteps) => setUserEdit({ warmupSteps }),
         setMaxSteps: (maxSteps) => {
           const state = get();
-          // streamingCompatiblePatch already turns streaming off when maxSteps<=0,
-          // so no separate datasetStreaming reset is needed here.
-          const streamingPatch = streamingCompatiblePatch({ ...state, maxSteps });
-          set({
+          // streamingCompatiblePatch already turns streaming off when maxSteps<=0.
+          const streamingPatch = streamingCompatiblePatch({
+            ...state,
+            maxSteps,
+          });
+          setUserEdit({
             maxSteps,
             ...streamingPatch,
           });
           notifyStreamingCompat(streamingPatch);
         },
-        setSaveSteps: (saveSteps) => set({ saveSteps }),
+        setSaveSteps: (saveSteps) => setUserEdit({ saveSteps }),
         setEvalSteps: (evalSteps) => {
           const state = get();
-          const streamingPatch = streamingCompatiblePatch({ ...state, evalSteps });
-          set({
+          const streamingPatch = streamingCompatiblePatch({
+            ...state,
+            evalSteps,
+          });
+          setUserEdit({
             evalSteps,
             ...streamingPatch,
           });
           notifyStreamingCompat(streamingPatch);
         },
-        setPacking: (packing) => set({ packing }),
+        setPacking: (packing) => setUserEdit({ packing }),
         setTrainOnCompletions: (trainOnCompletions) => {
           _trainOnCompletionsManuallySet = true;
-          set({
+          setUserEdit({
             trainOnCompletions,
+            trainOnCompletionsDefaultPendingFor: null,
             ...(trainOnCompletions ? { datasetStreaming: false } : {}),
           });
         },
         setGradientCheckpointing: (gradientCheckpointing) =>
-          set({ gradientCheckpointing }),
-        setRandomSeed: (randomSeed) => set({ randomSeed }),
-        setEnableWandb: (enableWandb) => set({ enableWandb }),
-        setWandbToken: (wandbToken) => set({ wandbToken }),
-        setWandbProject: (wandbProject) => set({ wandbProject }),
-        setEnableTensorboard: (enableTensorboard) => set({ enableTensorboard }),
-        setTensorboardDir: (tensorboardDir) => set({ tensorboardDir }),
-        setLogFrequency: (logFrequency) => set({ logFrequency }),
+          setUserEdit({ gradientCheckpointing }),
+        setRandomSeed: (randomSeed) => setUserEdit({ randomSeed }),
+        setEnableWandb: (enableWandb) => setUserEdit({ enableWandb }),
+        setWandbToken: (wandbToken) => setUserEdit({ wandbToken }),
+        setWandbProject: (wandbProject) => setUserEdit({ wandbProject }),
+        setEnableTensorboard: (enableTensorboard) =>
+          setUserEdit({ enableTensorboard }),
+        setTensorboardDir: (tensorboardDir) => setUserEdit({ tensorboardDir }),
+        setLogFrequency: (logFrequency) => setUserEdit({ logFrequency }),
         setFinetuneVisionLayers: (finetuneVisionLayers) =>
-          set({ finetuneVisionLayers }),
+          setUserEdit({ finetuneVisionLayers }),
         setFinetuneLanguageLayers: (finetuneLanguageLayers) =>
-          set({ finetuneLanguageLayers }),
+          setUserEdit({ finetuneLanguageLayers }),
         setFinetuneAttentionModules: (finetuneAttentionModules) =>
-          set({ finetuneAttentionModules }),
+          setUserEdit({ finetuneAttentionModules }),
         setFinetuneMLPModules: (finetuneMLPModules) =>
-          set({ finetuneMLPModules }),
-        setTargetModules: (targetModules) => set({ targetModules }),
-        setS3Config: (s3Config) => set({ s3Config }),
-        canProceed: () => canProceedForStep(get()),
+          setUserEdit({ finetuneMLPModules }),
+        setTargetModules: (targetModules) => setUserEdit({ targetModules }),
+        setS3Config: (s3Config) => setUserEdit({ s3Config }),
+        canProceed: () => canProceedForTrainingStep(get()),
         reset: () => {
+          trainingDatasetCacheRejections.reset();
           _trainOnCompletionsManuallySet = false;
-          _learningRateManuallySet = false;
-          _yamlLearningRate = undefined;
-          clearCptDatasetFormatTracking();
-          set(initialState);
+          _modelDefaultsEditBaseline = null;
+          setUserEdit(initialTrainingConfigState);
         },
         resetToModelDefaults: () => {
           const { selectedModel } = get();
           if (!selectedModel) return;
-          set({
+          setUserEdit({
             modelDefaultsAppliedFor: null,
+            advancedSettingsBaseline: null,
             visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize,
           });
           loadAndApplyModelDefaults(selectedModel);
         },
         applyConfigPatch: (config: BackendModelConfig) => {
           const patch = mapBackendModelConfigToTrainingPatch(config);
-          // Only clear the manual-edit flag when the config provides a LR,
-          // so unrelated config patches don't silently disarm the guard.
-          if (patch.learningRate !== undefined) {
-            _learningRateManuallySet = false;
-          }
-          set(patch);
+          setUserEdit((state) => ({
+            ...patch,
+            ...(patch.trainOnCompletions !== undefined
+              ? { trainOnCompletionsDefaultPendingFor: null }
+              : {}),
+            ...(patch.learningRate !== undefined
+              ? {
+                  trainingMethodProvenance: {
+                    ...state.trainingMethodProvenance,
+                    learningRateManuallySet: false,
+                  },
+                }
+              : {}),
+          }));
         },
       };
     },
     {
-      name: "unsloth_training_config_v1",
-      version: 11,
-      migrate: (persisted, version) => {
-        const s = persisted as Record<string, unknown>;
-        if (version < 2 && s.datasetSubset == null && s.datasetConfig != null) {
-          s.datasetSubset = s.datasetConfig;
-        }
-        delete s.datasetConfig;
-        if (version < 3 && s.modelDefaultsAppliedFor == null) {
-          s.modelDefaultsAppliedFor = null;
-        }
-        if (version < 4 && s.optimizerType == null) {
-          s.optimizerType = DEFAULT_HYPERPARAMS.optimizerType;
-        }
-        if (version < 5 && s.lrSchedulerType == null) {
-          s.lrSchedulerType = DEFAULT_HYPERPARAMS.lrSchedulerType;
-        }
-        if (version < 6 && s.datasetEvalSplit == null) {
-          s.datasetEvalSplit = null;
-        }
-        if (version < 7) {
-          s.datasetSliceStart ??= null;
-          s.datasetSliceEnd ??= null;
-        }
-        if (version < 8) {
-          s.datasetSystemPrompt ??= "";
-          s.datasetUserTemplate ??= "";
-          s.datasetAssistantTemplate ??= "";
-          s.datasetLabelMapping ??= {};
-          s.datasetAdvisorNotification ??= null;
-        }
-        if (version < 9) {
-          // weight_decay default changed from 0.01 to 0.001.
-          if (s.weightDecay === 0.01) {
-            s.weightDecay = DEFAULT_HYPERPARAMS.weightDecay;
-          }
-        }
-        if (version < 10 && s.trainingMethod === "cpt") {
-          // Backfill CPT defaults for state persisted before they existed.
-          s.loraRank = 128;
-          s.loraAlpha = 32;
-          s.loraVariant = "rslora";
-          s.targetModules = CPT_TARGET_MODULES;
-          s.datasetFormat = "raw";
-          if (s.learningRate == null || s.learningRate === LR_DEFAULT_LORA) {
-            s.learningRate = LR_DEFAULT_CPT;
-          }
-        }
-        if (version < 11) {
-          // Standalone bump: users already on main's v10 (CPT) skipped the
-          // streaming backfill when it was nested under v<10, so give it its
-          // own version guard.
-          s.datasetStreaming ??= false;
-        }
-        return s as unknown as TrainingConfigStore;
-      },
-      partialize: partializePersistedState,
+      name: TRAINING_CONFIG_PERSISTENCE_NAME,
+      version: TRAINING_CONFIG_PERSISTENCE_VERSION,
+      migrate: migrateTrainingConfig,
+      partialize: partializeTrainingConfig,
+      merge: mergeTrainingConfig,
       onRehydrateStorage: () => (state) => {
-        // datasetStreaming is persisted, but constraint-coupled fields like
-        // trainOnCompletions / maxSteps / evalSteps are NON_PERSISTED and
-        // rehydrate to defaults. That can resurrect an invalid combo (e.g.
-        // streaming=true with a default trainOnCompletions) that the backend
-        // rejects with 422. Reconcile immediately on load instead of relying
-        // on a post-mount effect.
         if (!state) return;
-        const patch = streamingCompatiblePatch(state);
+        const sourcePatch = datasetSourceInvariantPatch(state);
+        const patch = {
+          ...streamingCompatiblePatch({ ...state, ...sourcePatch }),
+          ...sourcePatch,
+        };
         if (Object.keys(patch).length > 0) {
-          // Sync localStorage hydration runs inside create(), before
-          // useTrainingConfigStore is assigned (TDZ). Defer to a microtask so the
-          // store exists when we reconcile the persisted streaming combo.
+          // Sync localStorage hydration runs inside create(), before useTrainingConfigStore is assigned
+          // (TDZ). Defer to a microtask so the store exists when the persisted combo is reconciled.
           queueMicrotask(() => useTrainingConfigStore.setState(patch));
         }
       },
     },
   ),
 );
+
+export function clearDeletedDataset(datasetName: string): boolean {
+  const state = useTrainingConfigStore.getState();
+  const selection = resolveDeletedLocalDatasetSelection({
+    datasetName,
+    source: state.datasetSource,
+    dataset: state.dataset,
+    uploadedFile: state.uploadedFile,
+  });
+  switch (selection) {
+    case "upload":
+      state.selectLocalDataset(null);
+      return true;
+    case "huggingface":
+      state.setDataset(null);
+      return true;
+    default:
+      return false;
+  }
+}

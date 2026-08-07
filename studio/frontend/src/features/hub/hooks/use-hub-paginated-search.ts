@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { sanitizeHubErrorMessage } from "../lib/network";
 
 interface HfPaginatedState<T> {
   results: T[];
@@ -10,6 +11,10 @@ interface HfPaginatedState<T> {
   isLoadingMore: boolean;
   hasMore: boolean;
   error: string | null;
+}
+
+interface InternalPaginatedState<T> extends HfPaginatedState<T> {
+  queryKey: object | null;
 }
 
 const INITIAL: HfPaginatedState<never> = {
@@ -52,7 +57,16 @@ export async function pullBatch<T>(
       return { items, done: true, scanned };
     }
     scanned += 1;
-    const mapped = mapItem(result.value);
+    // mapItem already returns null to mean "skip", so a throw is the same
+    // answer arriving the hard way. Letting it out marked the generator dead
+    // over an item next() had already handed us, and every restart then hit
+    // the same row at the same position.
+    let mapped: T | null = null;
+    try {
+      mapped = mapItem(result.value);
+    } catch {
+      continue;
+    }
     if (mapped !== null) {
       items.push(mapped);
     }
@@ -64,6 +78,14 @@ function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === "AbortError";
 }
 
+// The SDK appends the request URL to its message, and for a proxied request
+// that URL carries the user's search query, which some pickers render raw.
+function hubErrorText(err: unknown, fallback: string): string {
+  return err instanceof Error
+    ? sanitizeHubErrorMessage(err.message)
+    : fallback;
+}
+
 function isDocumentHidden(): boolean {
   return typeof document !== "undefined" && document.hidden;
 }
@@ -72,12 +94,24 @@ export function useHubPaginatedSearch<T>(
   createIter: (signal: AbortSignal) => AsyncGenerator<unknown>,
   mapItem: (raw: unknown) => T | null,
   options?: { enabled?: boolean },
-): HfPaginatedState<T> & { fetchMore: () => boolean; retry: () => void } {
+): HfPaginatedState<T> & {
+  fetchMore: () => boolean;
+  retry: () => void;
+  needsRestart: () => boolean;
+} {
   const enabled = options?.enabled ?? true;
-  const [state, setState] = useState<HfPaginatedState<T>>(
-    INITIAL as HfPaginatedState<T>,
-  );
   const [retryNonce, setRetryNonce] = useState(0);
+  // An async generator that throws is closed: the next next() resolves done
+  // without a request, so a failed page cannot be resumed, only restarted.
+  const iterDeadRef = useRef(false);
+  const queryKey = useMemo(
+    () => ({ createIter, mapItem, retryNonce }),
+    [createIter, mapItem, retryNonce],
+  );
+  const [state, setState] = useState<InternalPaginatedState<T>>({
+    ...(INITIAL as HfPaginatedState<T>),
+    queryKey: null,
+  });
   const stateRef = useRef(state);
   useEffect(() => {
     stateRef.current = state;
@@ -148,13 +182,14 @@ export function useHubPaginatedSearch<T>(
         busyRef.current = false;
         busyKindRef.current = null;
       }
+      // `error` is deliberately preserved: disabling the feed must not erase why
+      // the last attempt failed, leaving only a generic "you're offline" panel.
       setState((prev) =>
-        prev.isLoading || prev.isLoadingMore || prev.error
+        prev.isLoading || prev.isLoadingMore
           ? {
               ...prev,
               isLoading: false,
               isLoadingMore: false,
-              error: null,
             }
           : prev,
       );
@@ -187,10 +222,12 @@ export function useHubPaginatedSearch<T>(
     setState({
       ...(INITIAL as HfPaginatedState<T>),
       isLoading: true,
+      queryKey,
     });
 
     const iter = createIter(controller.signal);
     iterRef.current = iter;
+    iterDeadRef.current = false;
 
     pullBatch(iter, mapItem, BATCH)
       .then(({ items, done, scanned }) => {
@@ -203,6 +240,7 @@ export function useHubPaginatedSearch<T>(
           isLoadingMore: false,
           hasMore: !done,
           error: null,
+          queryKey,
         });
       })
       .catch((err) => {
@@ -213,7 +251,8 @@ export function useHubPaginatedSearch<T>(
           isLoading: false,
           isLoadingMore: false,
           hasMore: false,
-          error: err instanceof Error ? err.message : "Search failed",
+          error: hubErrorText(err, "Search failed"),
+          queryKey,
         });
       })
       .finally(() => {
@@ -226,7 +265,17 @@ export function useHubPaginatedSearch<T>(
     return () => {
       clearDeferredFetch();
     };
-  }, [createIter, mapItem, enabled, retryNonce, clearDeferredFetch]);
+  }, [
+    createIter,
+    mapItem,
+    enabled,
+    retryNonce,
+    queryKey,
+    clearDeferredFetch,
+  ]);
+
+  // A thrown generator is closed, so continuing needs a new one.
+  const needsRestart = useCallback(() => iterDeadRef.current, []);
 
   const retry = useCallback(() => {
     setRetryNonce((n) => n + 1);
@@ -247,6 +296,15 @@ export function useHubPaginatedSearch<T>(
         queuedAfterBusyRef.current = true;
         return true;
       }
+      return false;
+    }
+
+    // A generator that threw is finished; hasMore stays true only to keep the
+    // footer and its error. Pulling again returns done, which clears both, so
+    // the auto-fill would swallow the failure. Only a restart resumes.
+    if (iterDeadRef.current) {
+      queuedAfterBusyRef.current = false;
+      queuedWhileHiddenRef.current = false;
       return false;
     }
 
@@ -313,13 +371,13 @@ export function useHubPaginatedSearch<T>(
       .catch((err) => {
         if (versionRef.current !== v || isAbortError(err)) return;
         shouldScheduleFollowUp = false;
+        // The generator threw, so it is finished. Keep the rows and hasMore so
+        // the footer survives, but record that continuing now needs a restart.
+        iterDeadRef.current = true;
         setState((prev) => ({
           ...prev,
           isLoadingMore: false,
-          // Keep results and hasMore=true: the iterator is still valid, so the
-          // next fetchMore() resumes the failed page without discarding the list
-          // (retry() restarts from page 1).
-          error: err instanceof Error ? err.message : "Failed to load more",
+          error: hubErrorText(err, "Failed to load more"),
         }));
       })
       .finally(() => {
@@ -358,5 +416,23 @@ export function useHubPaginatedSearch<T>(
     };
   }, [enabled, fetchMore]);
 
-  return { ...state, fetchMore, retry };
+  const visibleState: InternalPaginatedState<T> =
+    state.queryKey === queryKey
+      ? state
+      : {
+          ...(INITIAL as HfPaginatedState<T>),
+          isLoading: enabled,
+          queryKey,
+        };
+  return {
+    results: visibleState.results,
+    scannedCount: visibleState.scannedCount,
+    isLoading: visibleState.isLoading,
+    isLoadingMore: visibleState.isLoadingMore,
+    hasMore: visibleState.hasMore,
+    error: visibleState.error,
+    fetchMore,
+    retry,
+    needsRestart,
+  };
 }

@@ -57,6 +57,15 @@ def test_media_type_and_status():
     assert err.status_code == 503
 
 
+def test_pooled_client_disables_proxy_env():
+    async def _scenario():
+        client = llama_http.nonstreaming_client()
+        assert client.trust_env is False
+        await llama_http.aclose()
+
+    asyncio.run(_scenario())
+
+
 def test_pooled_client_reused_within_loop_and_recreated_after_close():
     async def _scenario():
         a = llama_http.nonstreaming_client()

@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import socket
 import sys
 import threading
 import time
 import types as _types
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -64,7 +66,11 @@ _httpx_stub.Client = type(
 sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference import llama_cpp as llama_cpp_module
-from core.inference.llama_cpp import _CTX_FIT_VRAM_FRACTION, LlamaCppBackend
+from core.inference.llama_cpp import (
+    _CTX_FIT_VRAM_FRACTION,
+    GgufLoadIntent,
+    LlamaCppBackend,
+)
 from core.inference.llama_server_args import (
     _effective_tensor_parallel,
     resolve_tensor_parallel,
@@ -179,17 +185,19 @@ def _loaded_backend(tensor_parallel: bool) -> LlamaCppBackend:
 
 
 def _target_state(backend: LlamaCppBackend, tensor_parallel: bool) -> bool:
-    return backend._already_in_target_state(
-        gguf_path = None,
-        model_identifier = "owner/repo",
-        hf_variant = "Q4_K_M",
-        n_ctx = 8192,
-        cache_type_kv = None,
-        speculative_type = "auto",
-        chat_template_override = None,
-        extra_args = None,
-        is_vision = False,
-        tensor_parallel = tensor_parallel,
+    return backend.adopt_load_intent_if_matched(
+        GgufLoadIntent(
+            gguf_path = None,
+            model_identifier = "owner/repo",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "auto",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            tensor_parallel = tensor_parallel,
+        )
     )
 
 
@@ -208,23 +216,32 @@ def test_already_in_target_state_reloads_on_tensor_parallel_change(loaded, reque
     assert _target_state(_loaded_backend(loaded), requested) is False
 
 
+def test_already_in_target_state_reloads_when_swa_full_env_changes(monkeypatch):
+    backend = _loaded_backend(False)
+    backend._swa_full = False
+    monkeypatch.setenv("LLAMA_ARG_SWA_FULL", "1")
+    assert _target_state(backend, False) is False
+
+
 def test_already_in_target_state_reconciles_split_mode_extras():
     # Tensor engaged via --split-mode in extras (boolean omitted/default False)
     # must match a server already running tensor mode -- no spurious reload.
     backend = _loaded_backend(tensor_parallel = True)
     backend._extra_args = ["--split-mode", "tensor"]
     assert (
-        backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "owner/repo",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = "auto",
-            chat_template_override = None,
-            extra_args = ["--split-mode", "tensor"],
-            is_vision = False,
-            tensor_parallel = False,
+        backend.adopt_load_intent_if_matched(
+            GgufLoadIntent(
+                gguf_path = None,
+                model_identifier = "owner/repo",
+                hf_variant = "Q4_K_M",
+                n_ctx = 8192,
+                cache_type_kv = None,
+                speculative_type = "auto",
+                chat_template_override = None,
+                extra_args = ["--split-mode", "tensor"],
+                is_vision = False,
+                tensor_parallel = False,
+            )
         )
         is True
     )
@@ -262,9 +279,12 @@ def test_proportional_tensor_split_is_emitted_in_tensor_mode():
     src = _load_model_source()
     assert '"--tensor-split"' in src
     gate = src.find("if tensor_parallel:")
-    ts = src.find('"--tensor-split"')
+    # Find the TP block's emission (after the gate); manual mode emits its own
+    # --tensor-split earlier in the source from the user's per-GPU shares.
+    ts = src.find('"--tensor-split"', gate)
     nxt_else = src.find("self._tensor_parallel = False")
     assert 0 <= gate < ts < nxt_else, "--tensor-split must be emitted under `if tensor_parallel:`"
+    assert "tp_tensor_split" in src[gate:nxt_else]
 
 
 def test_mtp_decode_probe_wired_under_tensor_parallel():
@@ -279,11 +299,11 @@ def test_mtp_decode_probe_wired_under_tensor_parallel():
     guard = src[max(0, probe - 400) : probe]
     assert "self._tensor_parallel" in guard and "_spec_requested_mtp" in guard
     # A hard fault retries FA-off (keeps MTP) before flipping healthy so the
-    # shared MTP-drop fallback fires.
+    # shared drafter-drop fallback fires.
     after = src[probe : probe + 900]
     assert "_with_flash_attn_off" in after and "healthy = False" in after
-    fallback = src.find("if not healthy and _spec_requested_mtp")
-    assert 0 <= probe < fallback, "the probe must precede the MTP-drop fallback"
+    fallback = src.find("and (_spec_requested_mtp or _spec_requested_dspark)")
+    assert 0 <= probe < fallback, "the probe must precede the drafter-drop fallback"
 
 
 def test_probe_mtp_decode_returns_false_on_crash(monkeypatch):
@@ -327,12 +347,12 @@ def _recovery_backend() -> LlamaCppBackend:
     b._speculative_type = "draft-mtp"
     b._mtp_runtime_fallback_active = True
     b._process = _FakeProcess()
-    b._last_load_kwargs = {
-        "model_identifier": "owner/repo",
-        "tensor_parallel": True,
-        "speculative_type": "auto",
-        "n_parallel": 4,
-    }
+    b._last_load_intent = GgufLoadIntent(
+        model_identifier = "owner/repo",
+        tensor_parallel = True,
+        speculative_type = "auto",
+        n_parallel = 4,
+    )
     return b
 
 
@@ -350,8 +370,8 @@ def test_runtime_recovery_reloads_without_mtp(monkeypatch):
     done = threading.Event()
     captured = {}
 
-    def _fake_load_model(**kwargs):
-        captured.update(kwargs)
+    def _fake_load_model(intent):
+        captured.update(vars(intent))
         done.set()
         return True
 
@@ -377,7 +397,7 @@ def test_runtime_recovery_reloads_without_mtp(monkeypatch):
     "mutate",
     [
         lambda b: setattr(b, "_mtp_runtime_fallback_active", False),
-        lambda b: setattr(b, "_last_load_kwargs", None),
+        lambda b: setattr(b, "_last_load_intent", None),
         lambda b: setattr(b, "_process", None),
         lambda b: b._cancel_event.set(),
     ],
@@ -388,7 +408,7 @@ def test_runtime_recovery_skips_when_not_applicable(monkeypatch, mutate):
     b = _recovery_backend()
     mutate(b)
     calls = []
-    monkeypatch.setattr(b, "load_model", lambda **k: calls.append(k))
+    monkeypatch.setattr(b, "load_model", lambda intent: calls.append(intent))
     assert b._maybe_recover_from_mtp_crash(RuntimeError()) is False
     assert calls == []
 
@@ -420,12 +440,12 @@ def test_runtime_recovery_fires_for_user_env_mtp(monkeypatch):
     # MTP driven by user extra_args / LLAMA_ARG_SPEC_TYPE leaves _speculative_type
     # unset, but the launch flag still gates recovery on (pass-through MTP).
     b = _recovery_backend()
-    b._speculative_type = None  # Studio stepped back; user/env owns the spec
+    b._speculative_type = None  # Unsloth stepped back; user/env owns the spec
     done = threading.Event()
     captured = {}
 
-    def _fake_load_model(**kwargs):
-        captured.update(kwargs)
+    def _fake_load_model(intent):
+        captured.update(vars(intent))
         done.set()
         return True
 
@@ -437,14 +457,18 @@ def test_runtime_recovery_fires_for_user_env_mtp(monkeypatch):
 
 def test_runtime_recovery_strips_user_mtp_extra_args(monkeypatch):
     # A user --spec-type draft-mtp in extra_args must be neutralised on the reload
-    # (append a last-wins --spec-default) so MTP can't re-engage and loop.
+    # so MTP can't re-engage and loop. Appending --spec-default cannot do it:
+    # llama.cpp appends spec types rather than replacing, so the flag has to go.
     b = _recovery_backend()
-    b._last_load_kwargs = dict(b._last_load_kwargs, extra_args = ["--spec-type", "draft-mtp"])
+    b._last_load_intent = replace(
+        b._last_load_intent,
+        extra_args = ["--spec-type", "draft-mtp"],
+    )
     done = threading.Event()
     captured = {}
 
-    def _fake_load_model(**kwargs):
-        captured.update(kwargs)
+    def _fake_load_model(intent):
+        captured.update(vars(intent))
         done.set()
         return True
 
@@ -452,17 +476,18 @@ def test_runtime_recovery_strips_user_mtp_extra_args(monkeypatch):
     assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
     assert done.wait(timeout = 5)
     assert captured["speculative_type"] == "off"
-    assert captured["extra_args"][-1] == "--spec-default"
+    assert "--spec-type" not in captured["extra_args"]
+    assert "draft-mtp" not in captured["extra_args"]
 
 
 def test_runtime_recovery_restores_requested_mode(monkeypatch):
     # After the off-reload, /status must show the user's requested mode + the
     # runtime-error note, not a bare "off" (matches the startup MTP fallback).
     b = _recovery_backend()
-    b._last_load_kwargs = dict(b._last_load_kwargs, speculative_type = "mtp")
+    b._last_load_intent = replace(b._last_load_intent, speculative_type = "mtp")
     done = threading.Event()
 
-    def _fake_load_model(**kwargs):
+    def _fake_load_model(intent):
         b._requested_spec_mode = "off"  # what a real off-reload would leave behind
         done.set()
         return True
@@ -484,7 +509,7 @@ def test_runtime_recovery_skips_when_process_replaced(monkeypatch):
     p1 = _BlockingDeadProc()
     b._process = p1
     calls = []
-    monkeypatch.setattr(b, "load_model", lambda **k: calls.append(k))
+    monkeypatch.setattr(b, "load_model", lambda intent: calls.append(intent))
     assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True  # captures p1
     b._process = _FakeProcess()  # a newer load swapped the live process
     p1.release()  # p1 now reports dead -> recovery runs its staleness check
@@ -498,9 +523,9 @@ def test_runtime_recovery_skips_when_snapshot_changed(monkeypatch):
     p1 = _BlockingDeadProc()
     b._process = p1
     calls = []
-    monkeypatch.setattr(b, "load_model", lambda **k: calls.append(k))
+    monkeypatch.setattr(b, "load_model", lambda intent: calls.append(intent))
     assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
-    b._last_load_kwargs = dict(b._last_load_kwargs, model_identifier = "other/model")
+    b._last_load_intent = replace(b._last_load_intent, model_identifier = "other/model")
     p1.release()
     time.sleep(0.6)
     assert calls == []
@@ -512,7 +537,7 @@ def test_runtime_recovery_is_single_flight(monkeypatch):
     started = threading.Event()
     release = threading.Event()
 
-    def _slow_load(**kwargs):
+    def _slow_load(intent):
         started.set()
         release.wait(timeout = 5)
         return True
@@ -523,6 +548,357 @@ def test_runtime_recovery_is_single_flight(monkeypatch):
     # Second failure while the first reload is in flight is a no-op.
     assert b._maybe_recover_from_mtp_crash(RuntimeError()) is False
     release.set()
+
+
+def test_single_flight_claim_is_released_when_the_reload_cannot_start(monkeypatch):
+    # Only the reload thread's finally clears the claim, so if starting it raises the
+    # claim must not latch: nothing else resets it, and _respawn_if_dead then refuses
+    # forever, for every later model.
+    b = _recovery_backend()
+
+    class _NoThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(llama_cpp_module.threading, "Thread", _NoThread)
+
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is False
+    assert b._mtp_runtime_fallback_in_progress is False
+
+
+def test_load_intent_is_read_once_before_the_claim(monkeypatch):
+    # Gate and snapshot must share one read: reading twice lets an unload null
+    # the intent in between and strand the flag with no thread alive to clear it.
+    b = _recovery_backend()
+
+    class _CountingIntent:
+        def __init__(self, value):
+            self.value = value
+            self.reads = 0
+
+        def __get__(self, obj, owner):
+            if obj is None:
+                return self
+            self.reads += 1
+            return self.value
+
+        def __set__(self, obj, value):
+            self.value = value
+
+    counter = _CountingIntent(GgufLoadIntent(model_identifier = "owner/repo"))
+    monkeypatch.setattr(type(b), "_last_load_intent", counter, raising = False)
+
+    class _UnstartedThread:  # keep the reload off-thread so only sync reads count
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(llama_cpp_module.threading, "Thread", _UnstartedThread)
+
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    assert counter.reads == 1, f"read {counter.reads} times; an unload can race the claim"
+
+
+def test_respawn_defers_to_an_inflight_mtp_reload(monkeypatch):
+    # "Already recovering" must not read as "not an MTP crash": respawning replays the
+    # crashing MTP intent and aborts the in-flight no-MTP reload on its "newer load" check.
+    b = _recovery_backend()
+    b._mtp_runtime_fallback_in_progress = True
+    loads: list[GgufLoadIntent] = []
+    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
+
+    assert b._respawn_if_dead() is False
+    assert loads == []
+
+    # Once that reload finishes, an ordinary respawn works again.
+    b._mtp_runtime_fallback_in_progress = False
+    b._process.returncode = -9  # only the respawn path logs it
+    assert b._respawn_if_dead() is True
+    assert [intent.speculative_type for intent in loads] == ["auto"]
+
+
+def test_respawn_does_not_wait_out_the_grace_on_a_replacement(monkeypatch):
+    # Callers losing the same child queue on _respawn_lock and wake holding the healthy
+    # REPLACEMENT. Unable to tell it from their own child, each burns the reap grace, and
+    # that sleep is held under the lock, so N callers cost N grace periods.
+    class _LiveProcess(_FakeProcess):
+        returncode = None
+
+        def __init__(self):
+            self.polls = 0
+
+        def poll(self):  # never reapable, so the grace loop runs to its deadline
+            self.polls += 1
+            return None
+
+    workers = 4
+    b = _recovery_backend()
+    b._healthy = True
+    b._process.returncode = -9  # only the respawn path logs it
+    live = _LiveProcess()
+    loads: list[GgufLoadIntent] = []
+    guard = threading.Lock()
+    all_in_flight = threading.Event()
+
+    # Subclass this instance, not the class: a descriptor on LlamaCppBackend would
+    # redirect _process for every other live backend, including atexit-registered ones.
+    state = {"proc": b._process, "readers": set()}
+
+    class _Tracked(type(b)):
+        @property
+        def _process(self):
+            """Reports when every worker has taken its pre-lock look at the child."""
+            with guard:
+                state["readers"].add(threading.get_ident())
+                everyone = len(state["readers"]) >= workers
+            if everyone:
+                all_in_flight.set()
+            return state["proc"]
+
+        @_process.setter
+        def _process(self, value):
+            state["proc"] = value
+
+    b.__class__ = _Tracked
+
+    def _load(intent):
+        # A real load_model takes seconds, so every caller that lost this child is in
+        # flight before the replacement appears; waiting reproduces that ordering. The
+        # timeout keeps the pre-fix build, where losers cannot read until the lock is
+        # free, from hanging instead of failing.
+        all_in_flight.wait(timeout = 2)
+        with guard:
+            loads.append(intent)
+        b._process = live
+        b._healthy = True  # the real load_model marks the new server healthy
+        return True
+
+    monkeypatch.setattr(b, "load_model", _load)
+    results: list[bool] = []
+
+    def _respawn():
+        outcome = b._respawn_if_dead()
+        with guard:
+            results.append(outcome)
+
+    threads = [threading.Thread(target = _respawn) for _ in range(workers)]
+    started = time.monotonic()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout = 30)
+    elapsed = time.monotonic() - started
+
+    assert results == [True] * workers, results
+    assert len(loads) == 1, f"{len(loads)} reloads, expected one"
+    # The grace loop is the only poll() of a live process, so any count means a queued
+    # caller charged the wait to a server that never failed.
+    assert live.polls == 0, "queued caller waited out the grace on a healthy server"
+    assert elapsed < llama_cpp_module._RESPAWN_REAP_GRACE_S * (workers - 1)
+
+
+class _DyingChild(_FakeProcess):
+    """Alive for the first polls, then reapable: what a terminate() looks like."""
+
+    def __init__(
+        self,
+        code = -15,
+        alive_polls = 2,
+        on_death = None,
+    ):
+        self.polls = 0
+        self.returncode = None
+        self._code = code
+        self._alive_polls = alive_polls
+        self._on_death = on_death
+
+    def poll(self):
+        self.polls += 1
+        if self.polls <= self._alive_polls:
+            return None
+        if self.returncode is None:
+            self.returncode = self._code
+            if self._on_death is not None:
+                self._on_death()
+        return self._code
+
+
+def test_respawn_does_not_resurrect_a_deliberate_unload(monkeypatch):
+    # unload_model() sets _cancel_event before killing, so a request that loses the
+    # connection can watch that deliberate exit through the grace loop and call it a
+    # crash, with _last_load_intent still populated (unload clears it after the kill).
+    b = _recovery_backend()
+    b._healthy = True
+    b._process = _DyingChild()
+    b._cancel_event.set()
+    loads: list[GgufLoadIntent] = []
+    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
+
+    assert b._respawn_if_dead() is False
+    assert loads == [], "resurrected a model the user unloaded"
+
+
+def test_respawn_rechecks_the_cancel_flag_after_the_grace_wait(monkeypatch):
+    # The unload can also begin while we are already sleeping in the grace loop.
+    b = _recovery_backend()
+    b._healthy = True
+    b._process = _DyingChild(on_death = b._cancel_event.set)
+    loads: list[GgufLoadIntent] = []
+    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
+
+    assert b._respawn_if_dead() is False
+    assert loads == [], "checked the cancel flag only before the wait"
+
+
+def test_respawn_does_not_revert_a_newer_load(monkeypatch):
+    # A model switch landing while we wait must win; replaying the old intent would
+    # swap the user's new model back out.
+    b = _recovery_backend()
+    b._healthy = True
+    replacement = _DyingChild(alive_polls = 10**6)
+    b._process = _DyingChild(on_death = lambda: setattr(b, "_process", replacement))
+    loads: list[GgufLoadIntent] = []
+    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
+
+    b._respawn_if_dead()
+    assert loads == [], "replayed stale kwargs over a newer load"
+    assert b._process is replacement
+
+
+def test_respawn_still_recovers_an_ordinary_crash(monkeypatch):
+    # Guard rail: none of the above may disable the recovery this path exists for.
+    b = _recovery_backend()
+    b._healthy = True
+    b._process = _DyingChild(code = -9)
+    loads: list[GgufLoadIntent] = []
+    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
+
+    assert b._respawn_if_dead() is True
+    assert len(loads) == 1
+
+
+class _NeverReapable(_FakeProcess):
+    """A child that stays unreapable, so only the port can tell alive from dead."""
+
+    returncode = None
+
+    def poll(self):
+        return None
+
+
+def test_a_transient_error_against_a_live_server_costs_nothing(monkeypatch):
+    # The reap grace must not be charged to a server that never died: the sleep is
+    # held under _respawn_lock, so a full grace per caller serialises into N seconds
+    # of added latency on an install that is working fine.
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(16)
+    try:
+        b = _recovery_backend()
+        b._healthy = True
+        b._process = _NeverReapable()
+        b._port = listener.getsockname()[1]
+        loads: list[GgufLoadIntent] = []
+        monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
+
+        started = time.monotonic()
+        assert b._respawn_if_dead() is True
+        elapsed = time.monotonic() - started
+
+        assert loads == [], "a live server must not be reloaded"
+        assert (
+            elapsed < llama_cpp_module._RESPAWN_REAP_GRACE_S / 2
+        ), f"waited {elapsed:.2f}s on a server that is still accepting"
+    finally:
+        listener.close()
+
+
+def test_a_closed_port_still_waits_for_the_child_to_be_reapable(monkeypatch):
+    # The other half: no listener means the server really is gone, so the grace
+    # still runs and the reap-race fix is preserved.
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    dead_port = probe.getsockname()[1]
+    probe.close()
+
+    b = _recovery_backend()
+    b._healthy = True
+    b._process = _DyingChild(code = -9)
+    b._port = dead_port
+    loads: list[GgufLoadIntent] = []
+    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
+
+    assert b._respawn_if_dead() is True
+    assert len(loads) == 1
+
+
+def test_socket_fast_path_honours_a_pending_unload(monkeypatch):
+    # unload_model() sets _cancel_event before it kills, so the child is still
+    # accepting when the probe runs. Reporting it healthy aims the retry at a server
+    # that is deliberately going away.
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(8)
+    try:
+        b = _recovery_backend()
+        b._healthy = True
+        b._process = _NeverReapable()
+        b._port = listener.getsockname()[1]
+        b._cancel_event.set()
+        loads: list[GgufLoadIntent] = []
+        monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
+
+        assert b._respawn_if_dead() is False
+        assert loads == []
+    finally:
+        listener.close()
+
+
+def test_an_unload_landing_during_the_reload_is_undone(monkeypatch):
+    # The cancel check cannot live under _serial_load_lock alone: unload_model never
+    # takes that lock, so it can land entirely between the check and load_model and
+    # the captured intent then restarts a model the user stopped. load_model clears
+    # _cancel_event on the way in, so _unload_epoch is the surviving evidence.
+    b = _recovery_backend()
+    b._healthy = True
+    b._process = _FakeProcess()
+    b._process.returncode = -9
+    loads: list[GgufLoadIntent] = []
+    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
+
+    unloads: list[int] = []
+    real_unload = b.unload_model
+    monkeypatch.setattr(b, "unload_model", lambda: unloads.append(1) or real_unload())
+
+    # The warning marks the window: after the snapshot, before the reload.
+    real_warning = llama_cpp_module.logger.warning
+    fired: list[int] = []
+
+    def racing_warning(*args, **kwargs):
+        if not fired:
+            fired.append(1)
+            real_unload()
+        return real_warning(*args, **kwargs)
+
+    monkeypatch.setattr(llama_cpp_module.logger, "warning", racing_warning)
+
+    assert b._respawn_if_dead() is False
+    assert unloads, "the racing unload was not honoured"
+
+
+def test_socket_probe_is_false_without_a_port():
+    # Unloaded backends have no port; the probe must not raise, and the caller
+    # then falls back to the poll-based grace.
+    b = _recovery_backend()
+    b._port = None
+    assert b._server_socket_is_open() is False
 
 
 def test_runtime_recovery_rechecks_cancel_before_reload():
@@ -554,6 +930,8 @@ def test_probe_mtp_decode_uses_api_key_auth(monkeypatch):
     backend._api_key = "secret"
     backend._probe_mtp_decode(timeout = 1.0)
     assert captured["headers"] == {"Authorization": "Bearer secret"}
+
+    assert captured["trust_env"] is False
     backend._api_key = None
     backend._probe_mtp_decode(timeout = 1.0)
     assert captured["headers"] is None
@@ -744,10 +1122,14 @@ def test_tp_plan_weighted_split_on_asymmetric_big_model():
     b, (ec, mac, gi, ts) = _plan(50)
     reserve = b._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
     assert gi == [0, 1]
-    # split weighted by (usable - buffer); with no totals usable is free*frac
+    # split weighted by (usable - flat buffer - per-device context compute); with
+    # no totals usable is free*frac. The per-device cc is subtracted so the smaller
+    # card isn't weighted above its real usable budget (see below).
+    cc_per_dev = b._compute_buffer_ctx_bytes(ec, None, None) // (1024 * 1024)
+    assert cc_per_dev > 0
     assert ts == [
-        int(48000 * _CTX_FIT_VRAM_FRACTION - reserve),
-        int(24000 * _CTX_FIT_VRAM_FRACTION - reserve),
+        int(48000 * _CTX_FIT_VRAM_FRACTION - reserve - cc_per_dev),
+        int(24000 * _CTX_FIT_VRAM_FRACTION - reserve - cc_per_dev),
     ]
     assert ec < 131072  # capped below native
 
@@ -815,6 +1197,75 @@ def test_tp_plan_mtp_reserves_extra_and_shrinks_context():
     _, (ec_no, *_rest) = _plan(50)
     _, (ec_mtp, *_rest) = _plan(50, mtp = True)
     assert ec_mtp < ec_no
+
+
+def test_tp_plan_reserves_context_linear_compute_buffer():
+    # Tensor mode replicates the compute graph on every device; measured on
+    # Qwen3.5-9B at f16 the per-device buffer grows ~n_ubatch*2 B/token (~1024
+    # B/tok), so the fit must reserve n_dev x that on top of the flat reserve or
+    # it over-pins and OOMs at high context. The chosen KV must leave room for it.
+    b, (ec, mac, gi, ts) = _plan(50)
+    cc = len(gi) * b._compute_buffer_ctx_bytes(ec, None, "f16")
+    assert cc > 0
+    assert b._estimate_kv_cache_bytes(ec) + cc <= _kv_budget_b(50)
+
+
+def test_tp_plan_context_shrinks_vs_compute_unaware():
+    # With the context-linear term the pinned context is strictly below what a
+    # KV-only (compute-unaware) fit at the same budget would allow.
+    b, (ec, *_r) = _plan(50)
+    b2 = _kv_seeded_backend()
+    b2._embedding_length = 0  # kills the context-linear compute term (returns 0)
+    ec_naive, *_r2 = b2._plan_tensor_parallel(_ASYM, int(50 * _GB), 131072)
+    assert ec < ec_naive
+
+
+def test_tp_plan_soft_overhead_shrinks_context():
+    # The CUDA-ctx / mmproj / MTP-draft reserve the layer path folds into the fit
+    # budget (model_size_fit) must also shrink the tensor context. Tensor mode has
+    # no --fit valve, so an unreserved overshoot OOMs at startup instead of
+    # offloading. A non-zero soft_overhead must pin a strictly smaller context.
+    b = _kv_seeded_backend()
+    ec_no, *_r = b._plan_tensor_parallel(_ASYM, int(50 * _GB), 131072)
+    ec_soft, *_r2 = b._plan_tensor_parallel(
+        _ASYM, int(50 * _GB), 131072, soft_overhead_bytes = 2 * _GB
+    )
+    assert 2048 < ec_soft < ec_no
+
+
+def test_tp_plan_soft_overhead_reserved_against_budget():
+    # The pinned context must leave the whole soft reserve free on top of KV and
+    # the replicated context compute, so the real footprint stays within the pool.
+    b = _kv_seeded_backend()
+    soft = 2 * _GB
+    ec, *_r = b._plan_tensor_parallel(_ASYM, int(50 * _GB), 131072, soft_overhead_bytes = soft)
+    cc = len(_ASYM) * b._compute_buffer_ctx_bytes(ec, None, None)
+    assert b._estimate_kv_cache_bytes(ec) + cc + soft <= _kv_budget_b(50)
+
+
+def test_tp_plan_weighted_split_keeps_small_gpu_within_budget():
+    # Regression: the weighted split must subtract each device's replicated context
+    # compute (cc_bytes/n_dev), not just the flat reserve. Otherwise the smaller
+    # card is weighted above its usable budget and OOMs at launch. Model the split:
+    # llama.cpp distributes weights+KV by the tensor-split weights; every device
+    # also holds the flat reserve plus its per-device context compute.
+    b, (ec, mac, gi, ts) = _plan(50)
+    assert ts is not None and len(ts) == len(gi) == 2
+    reserve = b._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
+    cc_per_dev = b._compute_buffer_ctx_bytes(ec, None, None) // (1024 * 1024)
+    free_by_idx = {0: 48000, 1: 24000}
+    split_content_mib = (int(50 * _GB) + b._estimate_kv_cache_bytes(ec)) / (1024 * 1024)
+    total_weight = sum(ts)
+    for w, idx in zip(ts, gi):
+        placed = split_content_mib * w / total_weight
+        usable = free_by_idx[idx] * _CTX_FIT_VRAM_FRACTION
+        assert placed + reserve + cc_per_dev <= usable + 1  # +1 MiB for int rounding
+
+    # Lock the regression: under the old formula (flat reserve only) the smaller
+    # card was placed over its budget; the cc term is what pulls it back.
+    old_adj = [int(free_by_idx[i] * _CTX_FIT_VRAM_FRACTION - reserve) for i in gi]
+    old_small_placed = split_content_mib * old_adj[1] / sum(old_adj)
+    assert old_small_placed + reserve + cc_per_dev > free_by_idx[1] * _CTX_FIT_VRAM_FRACTION
 
 
 def test_tp_plan_no_kv_metadata_floors_context():

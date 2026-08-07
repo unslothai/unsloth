@@ -7,6 +7,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from auth.storage import MIN_PASSWORD_LENGTH
+
 
 class AuthLoginRequest(BaseModel):
     """Login payload: username/password to obtain a JWT."""
@@ -41,14 +43,28 @@ class AuthStatusResponse(BaseModel):
     )
 
 
+class DesktopInitialPasswordRequest(BaseModel):
+    """Set the seeded admin's first real password from the desktop app."""
+
+    new_password: str = Field(
+        ...,
+        min_length = MIN_PASSWORD_LENGTH,
+        description = f"Replacement password (minimum {MIN_PASSWORD_LENGTH} characters)",
+    )
+
+
 class ChangePasswordRequest(BaseModel):
     """Change the current user's password, typically on first login."""
 
     current_password: str = Field(
-        ..., min_length = 8, description = "Existing password for the authenticated user"
+        ...,
+        min_length = MIN_PASSWORD_LENGTH,
+        description = "Existing password for the authenticated user",
     )
     new_password: str = Field(
-        ..., min_length = 8, description = "Replacement password (minimum 8 characters)"
+        ...,
+        min_length = MIN_PASSWORD_LENGTH,
+        description = f"Replacement password (minimum {MIN_PASSWORD_LENGTH} characters)",
     )
 
 

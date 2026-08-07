@@ -1,0 +1,81 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Runs studio/backend/tests/test_export_capability.py on Linux, Windows and macOS.
+#
+# export_capability() is per-OS (is_apple_silicon() and the PyTorch-import probe differ per
+# platform) and the export backend must import without PyTorch, so this confirms the gating and
+# import-safety on hosted Windows/macOS. Hosted runners have no GPU/MLX, so a real accelerator
+# export is validated separately. No GPU / model / llama.cpp: the tests mock the probes and block
+# torch/unsloth, so the job installs only a CPU PyTorch plus import deps.
+
+name: Unsloth export capability
+
+on:
+  pull_request:
+    paths:
+      - 'studio/backend/utils/hardware/hardware.py'
+      - 'studio/backend/core/export/export.py'
+      - 'studio/backend/routes/export.py'
+      - 'studio/backend/main.py'
+      - 'studio/backend/tests/test_export_capability.py'
+      - '.github/workflows/studio-export-capability-ci.yml'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  capability:
+    name: capability (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # No macOS leg on purpose. The only command this job runs is
+        # `pytest tests/test_export_capability.py`, and every test in that file
+        # goes through `_patch()`, which monkeypatches `_has_torch`,
+        # `get_device` and `is_apple_silicon`. Nothing in it touches Metal, MLX
+        # or any Apple binary, so a real Mac proves nothing a Linux runner does
+        # not already prove -- and studio-backend-ci.yml runs the same file on
+        # ubuntu-latest as part of `pytest tests/`. macOS concurrency is capped
+        # at 5 account-wide, so a leg that buys no signal is worth reclaiming.
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      # No accelerator on hosted runners; keep detection on the CPU path.
+      CUDA_VISIBLE_DEVICES: ""
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+      - name: Install CPU PyTorch
+        # CPU wheel index so every OS gets a CPU build; keep PyPI as an extra index so torch's
+        # transitive deps still resolve (matching the other workflows in this repo).
+        run: python -m pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple "torch>=2.4,<2.13"
+      - name: Install backend import deps
+        # Enough to import utils.hardware and core.export.export; NOT unsloth (needs a GPU, and
+        # the import-safety test blocks it) or triton/llama.cpp (Linux-only / native builds).
+        run: python -m pip install
+          transformers peft accelerate safetensors huggingface_hub datasets
+          sentencepiece protobuf fastapi starlette structlog psutil
+          python-multipart pydantic httpx "numpy<3" pytest
+      - name: Export capability + import-safety tests
+        working-directory: studio/backend
+        run: python -m pytest tests/test_export_capability.py -q

@@ -8,12 +8,20 @@ filter_sensitive_data (structlog processor for sanitization), and
 get_logger (factory for structured loggers).
 """
 
+from __future__ import annotations
+
+import logging
 import os
 import re
 import time
+from typing import TYPE_CHECKING
 
 import structlog
-from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+# Annotations only: a runtime import makes the ASGI stack a hard dependency of
+# every CLI command.
+if TYPE_CHECKING:
+    from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from utils.native_path_leases import redact_native_paths
 
@@ -35,19 +43,39 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-# Drop duplicate successful-GET access logs repeated within the window: the SPA
-# fans one cache invalidation into many identical list fetches; only the first
-# informs. Loading polls, mutations, and errors are unaffected. 0 = log all.
+# Collapse identical GET/2xx logs within the window (the SPA fans one invalidation
+# into many list fetches). Mutations and errors always log. 0 = off.
 _ACCESS_LOG_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS", 300)
-# Pure-liveness/UI polls whose access line carries no signal beyond "client still
-# polling" (state changes are logged by their own modules). Collapsed to a longer
-# heartbeat instead of one line per poll; first hit and any error still log. 0 = off.
+# Liveness/UI polls whose line means only "still polling"; collapse to a longer
+# heartbeat. First hit and errors still log. 0 = off.
 _QUIET_POLL_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS", 10000)
+# Both windows off is what --verbose sets; the drop-the-2xx suppressor below has no
+# window of its own, so it must read the same signal to honour --verbose.
+_VERBOSE_ACCESS_LOG = _ACCESS_LOG_DEDUP_MS <= 0 and _QUIET_POLL_DEDUP_MS <= 0
 _QUIET_POLL_PATHS = {
     "/api/health",
     "/api/auth/status",
     "/api/inference/status",
     "/api/inference/monitor",
+    # List polls the tabs refetch on a timer and on every tab switch.
+    "/api/train/runs",
+    "/api/models/checkpoints",
+    "/api/models/local",
+    "/api/rag/knowledge-bases",
+    # Legacy download polls emit no progress events (unlike /api/hub/*), so heartbeat them.
+    "/api/models/download-progress",
+    "/api/models/gguf-download-progress",
+    "/api/datasets/download-progress",
+    # Generation is fire-and-forget: its outcome only reaches the UI via these polls.
+    "/api/inference/images/generate-progress",
+    "/api/inference/video/generate-progress",
+    # Polled every 1.5s while the train UI is open.
+    "/api/train/diffusion/status",
+    # Unlike /api/inference/load-progress, these handlers log nothing and
+    # diffusion.loaded / video.loaded are terminal, so a minutes-long load would
+    # otherwise emit nothing at all.
+    "/api/inference/images/load-progress",
+    "/api/inference/video/load-progress",
 }
 _DEDUP_MAP_MAX = 4096
 _NATIVE_PATH_LEASE_RE = re.compile(
@@ -57,14 +85,13 @@ _STANDARD_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", 
 # Status/progress polls the UI hits every few seconds while an operation runs.
 # Their successful 200s carry no signal (the operation's own module logs state
 # changes), so they're suppressed on success but STILL logged on any error.
+# The export/load-progress polls live in _QUIET_SUCCESS_PATHS instead, which owns
+# the same rule GET-only; do not duplicate a path across both sets.
 _EXCLUDED_PATHS = {
     "/api/train/status",
     "/api/train/metrics",
     "/api/train/hardware",
     "/api/system",
-    "/api/export/status",
-    "/api/export/logs",
-    "/api/inference/load-progress",
 }
 _EXCLUDED_SUFFIXES = (
     ".png",
@@ -76,6 +103,110 @@ _EXCLUDED_SUFFIXES = (
     ".woff2",
     ".ttf",
 )
+# GET polls whose 2xx line carries no signal (their progress/phase events and the UI
+# do), so drop it entirely; non-2xx still logs. Only /api/hub download polls emit
+# events; the legacy /api/models and /api/datasets ones heartbeat via _QUIET_POLL_PATHS.
+_QUIET_SUCCESS_PATHS = {
+    "/api/inference/load-progress",
+    "/api/llama/update-status",
+    "/api/export/logs",
+    "/api/export/status",
+    "/api/hub/download-status",
+    "/api/hub/download-progress",
+    "/api/hub/gguf-download-progress",
+    "/api/hub/active-downloads",
+    "/api/hub/transport-status",
+    "/api/hub/datasets/download-status",
+    "/api/hub/datasets/download-progress",
+    "/api/hub/datasets/active-downloads",
+    "/api/hub/datasets/transport-status",
+    # Boot-burst catalog reads. The SPA refetches these on every auth change, store
+    # rehydration and settings/provider dialog open, and each one is a plain read whose
+    # outcome is already visible as the populated (or empty) list in the UI.
+    # Provider registry + configs: syncExternalProvidersFromBackend fetches the pair in
+    # one Promise.all, so they always arrive as two lines saying the same thing.
+    "/api/providers/registry",
+    "/api/providers/",
+    # Fetched in the same Promise.all as /api/models/list and /api/inference/status, both
+    # of which keep their access line, so the resync is still traceable without it.
+    "/api/models/loras",
+    # Re-read once per auth generation at boot. Suppression is GET-only, so the PUT that
+    # actually writes a profile change still logs.
+    "/api/settings/personalization",
+}
+# The token-refresh route. Its first 2xx means the client has obtained a valid
+# session, so from then on chat 401s are real failures and must stay visible.
+_AUTH_REFRESH_PATH = "/api/auth/refresh"
+# High-frequency chat list polls; their 2xx is covered by generation/tool-call/stats
+# events. Exact paths only, so detail/message reads (/threads/{id}, .../messages,
+# /projects/{id}) keep their logs. The pre-auth 401 race also fires on these polls.
+_CHAT_LIST_PATHS = {
+    "/api/chat/threads",
+    "/api/chat/projects",
+}
+
+
+def _is_quiet_success(method: str, path: str, status_code: int, pre_auth: bool) -> bool:
+    """GET-only. Suppress a 2xx poll line that carries no signal, plus a chat list
+    poll's transient pre-auth 401 (only in the bootstrap window before the first
+    successful token refresh). Mutations, real (post-refresh) auth failures, and
+    all other errors always log. --verbose disables the whole suppressor, via either
+    signal: the CLI zeroes the dedup windows, the direct `run.py --verbose` path only
+    sets UNSLOTH_STUDIO_VERBOSE/LOG_LEVEL."""
+    if _VERBOSE_ACCESS_LOG or _logs_verbose() or method != "GET":
+        return False
+    if 200 <= status_code < 300:
+        return path in _QUIET_SUCCESS_PATHS or path in _CHAT_LIST_PATHS
+    return pre_auth and status_code == 401 and path in _CHAT_LIST_PATHS
+
+
+# An unhandled request exception is logged twice: once here as a structured
+# request_failed event whose "exception" field already carries the whole traceback
+# (format_exc_info renders it, see loggers/config.py), and then again by uvicorn on
+# stderr as "Exception in ASGI application" after the re-raise. The desktop shell
+# mirrors every stderr line separately into tauri.log, so the second copy alone costs
+# ~90 lines per failure. Keep the structured copy and drop uvicorn's.
+_UVICORN_ASGI_EXC_MSG = "Exception in ASGI application"
+# Set on the exception instance itself rather than tracked in a side table: the object
+# is what uvicorn hands us, so the match cannot go stale or collide with a recycled id,
+# and an exception raised above this middleware (CORS, remote-access, the protocol
+# layer) carries no marker and keeps uvicorn's traceback.
+_LOGGED_EXC_ATTR = "_unsloth_request_failed_logged"
+
+
+def _mark_exception_logged(exc: BaseException) -> None:
+    """Flag exc as already reported by request_failed. Best effort: an exception type
+    that refuses attributes just means both copies are logged, as before."""
+    try:
+        setattr(exc, _LOGGED_EXC_ATTR, True)
+    except Exception:
+        pass
+
+
+class _DropDuplicateAsgiException(logging.Filter):
+    """Drop uvicorn's "Exception in ASGI application" record when request_failed has
+    already logged that same exception. Anything else, including a failure that never
+    reached this middleware, passes through untouched. --verbose keeps both copies."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if _VERBOSE_ACCESS_LOG or _logs_verbose():
+            return True
+        try:
+            msg = record.msg if isinstance(record.msg, str) else ""
+            if not msg.startswith(_UVICORN_ASGI_EXC_MSG):
+                return True
+            exc_info = record.exc_info
+            exc = exc_info[1] if isinstance(exc_info, tuple) else exc_info
+            return not getattr(exc, _LOGGED_EXC_ATTR, False)
+        except Exception:
+            return True
+
+
+def install_uvicorn_duplicate_exception_filter() -> None:
+    """Attach the duplicate-traceback filter to uvicorn's error logger. Same
+    logger-level filter technique as run.py's startup-line rewrite; safe to call more
+    than once because a second identical install only re-checks the same records."""
+    logging.getLogger("uvicorn.error").addFilter(_DropDuplicateAsgiException())
 
 
 class LoggingMiddleware:
@@ -85,16 +216,18 @@ class LoggingMiddleware:
         self.app = app
         # (method, path, query, status_code) -> monotonic ts of the last EMITTED log.
         self._last_log: dict[tuple[str, str, bytes, int], float] = {}
+        # Flips True after the first successful /api/auth/refresh; before that, chat
+        # list-poll 401s are the transient bootstrap race and are suppressed.
+        self._auth_refreshed = False
 
     def _is_redundant_repeat(
         self, method: str, path: str, query: bytes, status_code: int, now: float
     ) -> bool:
-        """True if an identical GET/2xx log fired < window ago. The query string
-        is part of the identity, so distinct query-driven GETs are not collapsed.
-        Mutations and non-2xx are never deduped. Quiet-poll paths use a longer
-        heartbeat window. Stamps only on emit, so steady polls still log. Verbose
-        keeps every line (the direct backend --verbose path doesn't zero the dedup
-        env vars, so honor it here too, not just via the CLI helper)."""
+        """True if an identical GET/2xx log fired < window ago (query string is part
+        of the identity). Non-GET/non-2xx never dedup; quiet-poll paths use the longer
+        heartbeat. Stamps only on emit, so steady polls still log. Verbose keeps every
+        line (the direct backend --verbose path doesn't zero the dedup env vars, so
+        honor it here too, not just via the CLI helper)."""
         if _logs_verbose():
             return False
         if method != "GET" or not (200 <= status_code < 300):
@@ -148,10 +281,13 @@ class LoggingMiddleware:
                 process_time_ms = round((time.perf_counter() - start_time) * 1000, 2),
                 exc_info = True,
             )
+            _mark_exception_logged(exc)
             raise
         else:
             end_time = time.perf_counter()
             is_success = 200 <= status_code < 300
+            if is_success and path == _AUTH_REFRESH_PATH:
+                self._auth_refreshed = True
             if _logs_verbose():
                 suppress = False
             elif scanner or static:
@@ -160,8 +296,12 @@ class LoggingMiddleware:
                 suppress = True
             else:
                 suppress = False
-            if not suppress and not self._is_redundant_repeat(
-                method, path, scope.get("query_string", b""), status_code, end_time
+            if (
+                not suppress
+                and not _is_quiet_success(method, path, status_code, not self._auth_refreshed)
+                and not self._is_redundant_repeat(
+                    method, path, scope.get("query_string", b""), status_code, end_time
+                )
             ):
                 logger.info(
                     "request_completed",

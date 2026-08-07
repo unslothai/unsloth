@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Multi-repo GitHub scraper for the Studio seed plugin.
+"""Multi-repo GitHub scraper for the Unsloth seed plugin.
 
 Drives the GraphQL scraper in `scraper_impl/` per repo, capped via trial_limits
 to stop at `limit` items per resource. Then reads the per-resource JSONL shards

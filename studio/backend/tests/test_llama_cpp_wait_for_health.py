@@ -67,6 +67,15 @@ class TestWaitForHealthResilience:
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: ok_resp)
         assert b._wait_for_health(timeout = 1.0, interval = 0.01) is True
 
+    def test_timeout_records_marker_for_classification(self, monkeypatch):
+        """A live-but-never-healthy server leaves a marker so the failure is
+        classified as a /health timeout, not a bad GGUF (#5740)."""
+        b = _make_backend()
+        b._process.poll.return_value = None
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock.Mock(status_code = 503))
+        assert b._wait_for_health(timeout = 0.02, interval = 0.01) is False
+        assert any("health check timed out" in ln for ln in b._stdout_lines)
+
     def test_read_error_loops_to_subprocess_poll(self, monkeypatch):
         """WinError 10054 (httpx.ReadError) must be swallowed; the next iteration sees the dead subprocess and returns False with a structured exit-code log."""
         b = _make_backend()
@@ -215,7 +224,7 @@ class TestRetryLogFilenameUnique:
 class TestFitOffRetryEligible:
     """Gate for the one-shot --fit off startup-crash retry.
 
-    Retry only when Studio's own VRAM math placed the model and nothing
+    Retry only when Unsloth's own VRAM math placed the model and nothing
     on the command line chose the fit mode explicitly."""
 
     def test_eligible_for_plain_ngl_launch(self):

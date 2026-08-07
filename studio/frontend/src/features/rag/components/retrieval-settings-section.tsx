@@ -9,6 +9,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   Tooltip,
@@ -74,10 +75,10 @@ function SliderRow({
       )}
     >
       <div className="flex items-center justify-between">
-        <span className="text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+        <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
           {label}
         </span>
-        <span className="text-[13px] tabular-nums text-muted-foreground">
+        <span className="text-ui-13 tabular-nums text-muted-foreground">
           {format(value)}
         </span>
       </div>
@@ -109,11 +110,17 @@ export function RetrievalSettingsSection() {
   const setRagAutoInjectMinScore = useChatRuntimeStore(
     (s) => s.setRagAutoInjectMinScore,
   );
+  const ragOcrScanned = useChatRuntimeStore((s) => s.ragOcrScanned);
+  const setRagOcrScanned = useChatRuntimeStore((s) => s.setRagOcrScanned);
+  const ragCaptionFigures = useChatRuntimeStore((s) => s.ragCaptionFigures);
+  const setRagCaptionFigures = useChatRuntimeStore(
+    (s) => s.setRagCaptionFigures,
+  );
 
   return (
     <div className="flex flex-col gap-5 pt-1">
       <div className="flex flex-col gap-2">
-        <span className="text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+        <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
           Search mode
         </span>
         <Select
@@ -136,10 +143,10 @@ export function RetrievalSettingsSection() {
 
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between">
-          <span className="text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+          <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
             Passages (top K)
           </span>
-          <span className="text-[13px] tabular-nums text-muted-foreground">
+          <span className="text-ui-13 tabular-nums text-muted-foreground">
             {ragTopK}
           </span>
         </div>
@@ -156,7 +163,7 @@ export function RetrievalSettingsSection() {
 
       <div className="flex flex-col gap-3">
         <div className="flex flex-col">
-          <span className="flex items-center gap-1.5 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+          <span className="flex items-center gap-1.5 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
             Auto-retrieve documents
             <InfoHint>
               Auto turns retrieval on for smaller models (9B and below), which
@@ -164,7 +171,7 @@ export function RetrievalSettingsSection() {
               larger ones. On and Off force it either way.
             </InfoHint>
           </span>
-          <span className="text-[12px] leading-[1.3] text-muted-foreground">
+          <span className="text-ui-12 leading-[1.3] text-muted-foreground">
             Search attached documents before answering.
           </span>
         </div>
@@ -200,6 +207,51 @@ export function RetrievalSettingsSection() {
           disabled={ragAutoInject === "off"}
           onChange={setRagAutoInjectMinScore}
           format={(v) => v.toFixed(2)}
+        />
+      </div>
+
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col">
+          <span className="flex items-center gap-1.5 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+            OCR scanned pages
+            <InfoHint>
+              Read text off scanned or image-only PDF pages with the loaded
+              model's vision, at upload time, so picture-only documents become
+              searchable. Needs a vision model; pages with a text layer are
+              unaffected.
+            </InfoHint>
+          </span>
+          <span className="text-ui-12 leading-[1.3] text-muted-foreground">
+            Transcribe image-only PDF pages when attaching.
+          </span>
+        </div>
+        <Switch
+          checked={ragOcrScanned}
+          onCheckedChange={setRagOcrScanned}
+          aria-label="OCR scanned pages"
+          className="mt-0.5"
+        />
+      </div>
+
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col">
+          <span className="flex items-center gap-1.5 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+            Describe figures &amp; charts
+            <InfoHint>
+              Caption PDF figures, charts, tables and diagrams at upload with the
+              loaded model's vision, so their content becomes searchable. Needs a
+              vision model; adds vision calls for detected figures.
+            </InfoHint>
+          </span>
+          <span className="text-ui-12 leading-[1.3] text-muted-foreground">
+            Read charts and diagrams when attaching.
+          </span>
+        </div>
+        <Switch
+          checked={ragCaptionFigures}
+          onCheckedChange={setRagCaptionFigures}
+          aria-label="Describe figures and charts"
+          className="mt-0.5"
         />
       </div>
     </div>

@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth";
 import {
   AssistantRuntimeProvider,
+  type Attachment,
   type AttachmentAdapter,
   type ChatModelAdapter,
   type CompleteAttachment,
@@ -22,7 +23,6 @@ import {
   unstable_useRemoteThreadListRuntime as useRemoteThreadListRuntime,
 } from "@assistant-ui/react";
 import { createAssistantStream } from "assistant-stream";
-import mammoth from "mammoth";
 import {
   type ReactElement,
   type ReactNode,
@@ -33,13 +33,18 @@ import {
   useMemo,
   useRef,
 } from "react";
-import { extractText, getDocumentProxy } from "unpdf";
 import { toast } from "sonner";
-import { StudioWebSpeechDictationAdapter } from "./adapters/studio-web-speech-dictation-adapter";
+import { StudioDictationAdapter } from "./adapters/studio-dictation-adapter";
+import { StudioSpeechSynthesisAdapter } from "./adapters/studio-speech-synthesis-adapter";
 import {
   ThreadAutosaveHandle,
   createOpenAIStreamAdapter,
 } from "./api/chat-adapter";
+import { getResearchThreadState } from "./api/research-api";
+import {
+  ingestResearchUpdate,
+  useResearchRunStore,
+} from "./stores/research-run-store";
 import {
   loadConnectionsEnabled,
   loadExternalProviders,
@@ -55,7 +60,30 @@ import {
 } from "./open-document";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import { ToolPaneScopeContext, toolPaneScope } from "./tool-output-scope";
+import {
+  notifyPromptQueueRunFailed,
+  requestPromptQueueStop,
+  requestTemporaryPromptQueueStop,
+} from "./utils/prompt-queue-boundary";
+import {
+  adoptPreStreamRunReservation,
+  claimPreStreamRunReservation,
+  findPreStreamRunReservation,
+  isPreStreamRunReservationCancelled,
+  preStreamRunThreadIdsForRuntime,
+  releasePreStreamRunReservation,
+} from "./utils/pre-stream-run-reservation";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
+import {
+  chatContentPartAttachmentIdFromSignature,
+  chatContentPartAttachmentSignature,
+  onChatAttachmentDeleted,
+} from "./utils/chat-attachment-events";
+import {
+  refreshContextUsage,
+  setActiveBranchReader,
+} from "./utils/refresh-context-usage";
 import {
   deleteStoredChatThreads,
   ensureStoredChatThread,
@@ -68,22 +96,72 @@ import {
   saveStoredChatThread,
   updateStoredChatThread,
 } from "./utils/chat-history-storage";
-import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
+import {
+  isChatThreadDeleted,
+  markChatThreadDeleted,
+} from "./utils/chat-thread-tombstones";
+import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
-import { requestPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
-const pendingRunStartReadyByMessageId = new Map<string, Promise<void>>();
+// Resolves to the thread id assigned when this message's chat was first persisted.
+const pendingRunStartReadyByMessageId = new Map<
+  string,
+  Promise<string | undefined>
+>();
+const pendingRunStartThreadIdsByMessageId = new Map<string, string[]>();
 
 type TitleResponse = {
   choices?: Array<{
+    finish_reason?: string | null;
     message?: {
       content?: string;
     };
   }>;
 };
+
+class PreStreamAwareAttachmentAdapter implements AttachmentAdapter {
+  private readonly delegate: AttachmentAdapter;
+  private readonly getThreadIds: () => Array<string | null | undefined>;
+
+  constructor(
+    delegate: AttachmentAdapter,
+    getThreadIds: () => Array<string | null | undefined>,
+  ) {
+    this.delegate = delegate;
+    this.getThreadIds = getThreadIds;
+  }
+
+  get accept(): string {
+    return this.delegate.accept;
+  }
+
+  add(state: { file: File }) {
+    return this.delegate.add(state);
+  }
+
+  remove(attachment: Attachment): Promise<void> {
+    return this.delegate.remove(attachment);
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const threadIds = this.getThreadIds();
+    const reservationToken = findPreStreamRunReservation(threadIds);
+    try {
+      return await this.delegate.send(attachment);
+    } catch (error) {
+      if (
+        reservationToken &&
+        releasePreStreamRunReservation(reservationToken)
+      ) {
+        notifyPromptQueueRunFailed(threadIds.find(Boolean) ?? null);
+      }
+      throw error;
+    }
+  }
+}
 
 class VisionImageAdapter implements AttachmentAdapter {
   accept = "image/jpeg,image/png,image/webp,image/gif";
@@ -181,7 +259,10 @@ class PDFAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const buffer = new Uint8Array(await attachment.file.arrayBuffer());
+    const [{ extractText, getDocumentProxy }, buffer] = await Promise.all([
+      import("unpdf"),
+      attachment.file.arrayBuffer().then((bytes) => new Uint8Array(bytes)),
+    ]);
     const pdf = await getDocumentProxy(buffer);
     const { text } = await extractText(pdf, { mergePages: true });
     return {
@@ -298,7 +379,10 @@ class DocxAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const arrayBuffer = await attachment.file.arrayBuffer();
+    const [{ default: mammoth }, arrayBuffer] = await Promise.all([
+      import("mammoth"),
+      attachment.file.arrayBuffer(),
+    ]);
     const { value } = await mammoth.extractRawText({ arrayBuffer });
     return {
       id: attachment.id,
@@ -470,6 +554,8 @@ async function generateTitleWithModel(payload: {
       max_tokens: 24,
       top_k: 20,
       repetition_penalty: 1.0,
+      enable_thinking: false,
+      reasoning_effort: "none",
       messages: [
         {
           role: "system",
@@ -485,8 +571,10 @@ async function generateTitleWithModel(payload: {
     .json()
     .catch(() => null)) as TitleResponse | null;
   if (!response.ok) return null;
-  const raw: string | undefined = body?.choices?.[0]?.message?.content;
-  if (!raw) return null;
+  const choice = body?.choices?.[0];
+  if (choice?.finish_reason === "length") return null;
+  const raw: string | undefined = choice?.message?.content;
+  if (!raw || /<\/?think>/i.test(raw)) return null;
   return normalizeTitle(raw);
 }
 
@@ -678,6 +766,10 @@ function createStudioDbAdapter(
 
     async initialize(threadId: string) {
       await ensureThreadRecord({ threadId, modelType, pairId, projectId });
+      // A run already streaming on this thread filed its handles under "__default" because
+      // the id did not exist yet. Re-key them now, or the sidebar row and Stop look up an
+      // id nothing is registered against.
+      useChatRuntimeStore.getState().adoptDefaultThreadRun(threadId);
       return { remoteId: threadId, externalId: undefined };
     },
 
@@ -814,13 +906,29 @@ function trackHistoryAppend(
 
 function trackRunStartReady(
   messageId: string,
-  ready: Promise<void>,
-): Promise<void> {
+  ready: Promise<string | undefined>,
+  localThreadId: string,
+): Promise<string | undefined> {
   pendingRunStartReadyByMessageId.set(messageId, ready);
+  pendingRunStartThreadIdsByMessageId.set(messageId, [localThreadId]);
+  ready.then(
+    (remoteId) => {
+      if (
+        remoteId &&
+        pendingRunStartReadyByMessageId.get(messageId) === ready
+      ) {
+        pendingRunStartThreadIdsByMessageId.set(messageId, [
+          ...new Set([localThreadId, remoteId]),
+        ]);
+      }
+    },
+    () => undefined,
+  );
   const cleanup = () => {
     setTimeout(() => {
       if (pendingRunStartReadyByMessageId.get(messageId) === ready) {
         pendingRunStartReadyByMessageId.delete(messageId);
+        pendingRunStartThreadIdsByMessageId.delete(messageId);
       }
     }, 30_000);
   };
@@ -828,39 +936,119 @@ function trackRunStartReady(
   return ready;
 }
 
+function runStartThreadIdsForMessages(
+  messages: Parameters<ChatModelAdapter["run"]>[0]["messages"],
+): string[] {
+  const userMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === "user");
+  return userMessage
+    ? (pendingRunStartThreadIdsByMessageId.get(userMessage.id) ?? [])
+    : [];
+}
+
 async function waitForRunStartHistoryAppend(
   messages: Parameters<ChatModelAdapter["run"]>[0]["messages"],
-): Promise<void> {
-  const lastMessage = messages.at(-1);
-  if (!lastMessage || lastMessage.role !== "user") {
+): Promise<string | undefined> {
+  // Deep Research reserves an assistant placeholder before invoking the model
+  // adapter, so the user message is not necessarily the final entry here.
+  const userMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === "user");
+  if (!userMessage) {
     return;
   }
-  const ready =
-    pendingRunStartReadyByMessageId.get(lastMessage.id) ??
-    pendingHistoryAppendByMessageId.get(lastMessage.id);
-  if (!ready) {
-    return;
+  const runStartReady = pendingRunStartReadyByMessageId.get(userMessage.id);
+  const historyAppendReady = pendingHistoryAppendByMessageId.get(userMessage.id);
+  if (runStartReady === undefined && historyAppendReady === undefined) {
+    return undefined;
   }
   let didBecomeReady = false;
+  let adoptedThreadId: string | undefined;
   try {
-    await ready;
+    [adoptedThreadId] = await Promise.all([
+      runStartReady ?? Promise.resolve(undefined),
+      historyAppendReady?.then(() => undefined),
+    ]);
     didBecomeReady = true;
   } finally {
     if (
       didBecomeReady &&
-      pendingRunStartReadyByMessageId.get(lastMessage.id) === ready
+      runStartReady &&
+      pendingRunStartReadyByMessageId.get(userMessage.id) === runStartReady
     ) {
-      pendingRunStartReadyByMessageId.delete(lastMessage.id);
+      pendingRunStartReadyByMessageId.delete(userMessage.id);
+      pendingRunStartThreadIdsByMessageId.delete(userMessage.id);
     }
   }
+  return adoptedThreadId;
 }
 
 function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter {
   return {
     ...adapter,
     async *run(options) {
-      await waitForRunStartHistoryAppend(options.messages);
-      const result = adapter.run(options);
+      const trackedRunStartThreadIds = runStartThreadIdsForMessages(
+        options.messages,
+      );
+      const reservationThreadIds = preStreamRunThreadIdsForRuntime(
+        [options.unstable_threadId, ...trackedRunStartThreadIds],
+        useChatRuntimeStore.getState().activeThreadId,
+      );
+      const reservationToken =
+        findPreStreamRunReservation(reservationThreadIds);
+      if (reservationToken) {
+        claimPreStreamRunReservation(reservationToken);
+      }
+      const throwIfReservationCancelled = () => {
+        if (
+          reservationToken &&
+          isPreStreamRunReservationCancelled(reservationToken)
+        ) {
+          releasePreStreamRunReservation(reservationToken);
+          throw new DOMException("The send was cancelled", "AbortError");
+        }
+      };
+      throwIfReservationCancelled();
+      const persistedRunThreadIds = preStreamRunThreadIdsForRuntime(
+        [
+          ...reservationThreadIds,
+          ...trackedRunStartThreadIds,
+        ],
+        undefined,
+      );
+      let adoptedThreadId: string | undefined;
+      try {
+        adoptedThreadId = await waitForRunStartHistoryAppend(options.messages);
+        throwIfReservationCancelled();
+      } catch (error) {
+        if (reservationToken) {
+          releasePreStreamRunReservation(reservationToken);
+        }
+        // Queued runs do not carry a direct-send reservation. Their persisted
+        // preflight can still fail before the model adapter consumes the queued
+        // settings. Stop matching pending/waiting work as well as an already
+        // dispatched item so a rapid follow-up cannot run after persistence failed.
+        requestPromptQueueStop(persistedRunThreadIds);
+        notifyPromptQueueRunFailed(
+          options.unstable_threadId ?? persistedRunThreadIds[0] ?? null,
+        );
+        throw error;
+      }
+      if (reservationToken && adoptedThreadId) {
+        adoptPreStreamRunReservation(reservationToken, [
+          ...reservationThreadIds,
+          adoptedThreadId,
+        ]);
+      }
+      // The thread has an id by the time that resolves, but assistant-ui bound unstable_threadId
+      // before the await. Hand the run its real id so a first turn never files its handles
+      // under the unresolved key that concurrent runs share.
+      const result = adapter.run(
+        !options.unstable_threadId && adoptedThreadId
+          ? { ...options, unstable_threadId: adoptedThreadId }
+          : options,
+      );
       if (!result) {
         return;
       }
@@ -878,6 +1066,168 @@ function useStudioRuntimeAdapters(
   pairId?: string,
 ): StudioRuntimeAdapters {
   const aui = useAui();
+
+  // Mirror Data-tab attachment deletions into the loaded thread. The in-memory
+  // repository otherwise keeps the attachment, and a later repo-to-storage sync
+  // (e.g. deleting a message in the thread) would write it back.
+  useEffect(() => {
+    let active = true;
+    let pendingDeletion = Promise.resolve();
+    const unsubscribe = onChatAttachmentDeleted((event) => {
+      pendingDeletion = pendingDeletion.then(async () => {
+        if (!active) return;
+        const { messageId, attachmentId } = event;
+        try {
+          const thread = aui.thread();
+          if (attachmentId.startsWith("content-part-sha256-")) {
+            for (let attempt = 0; attempt < 3 && active; attempt += 1) {
+              const exported = thread.export();
+              const target = exported.messages.find(
+                (item) => item.message.id === messageId,
+              );
+              if (!target || !Array.isArray(target.message.content)) return;
+              const content = target.message.content;
+
+              const signatures = content.map((part) =>
+                chatContentPartAttachmentSignature(part),
+              );
+              const ids = await Promise.all(
+                signatures.map((signature) =>
+                  signature === null
+                    ? null
+                    : chatContentPartAttachmentIdFromSignature(signature),
+                ),
+              );
+              const targetAttachments = (
+                target.message as {
+                  attachments?: readonly { id: string }[];
+                }
+              ).attachments;
+              const hasTargetAttachment =
+                Array.isArray(targetAttachments) &&
+                targetAttachments.some(
+                  (attachment) => attachment.id === attachmentId,
+                );
+              if (
+                (!ids.includes(attachmentId) && !hasTargetAttachment) ||
+                !active
+              ) {
+                return;
+              }
+
+              // Preserve any messages added or streamed while WebCrypto ran.
+              // Retry if the target's managed content itself changed.
+              const latest = thread.export();
+              const latestTarget = latest.messages.find(
+                (item) => item.message.id === messageId,
+              );
+              const latestContent = latestTarget?.message.content;
+              if (!Array.isArray(latestContent)) return;
+              const latestSignatures = latestContent.map((part) =>
+                chatContentPartAttachmentSignature(part),
+              );
+              if (
+                signatures.length !== latestSignatures.length ||
+                signatures.some(
+                  (signature, index) => signature !== latestSignatures[index],
+                )
+              ) {
+                continue;
+              }
+
+              const messages = latest.messages.map((item) => {
+                if (item.message.id !== messageId) return item;
+                const attachments = (
+                  item.message as {
+                    attachments?: readonly { id: string }[];
+                  }
+                ).attachments;
+                return {
+                  ...item,
+                  message: {
+                    ...item.message,
+                    content: latestContent.filter(
+                      (_, index) => ids[index] !== attachmentId,
+                    ),
+                    ...(Array.isArray(attachments)
+                      ? {
+                          attachments: attachments.filter(
+                            (attachment) =>
+                              attachment.id !== attachmentId,
+                          ),
+                        }
+                      : {}),
+                  } as typeof item.message,
+                };
+              });
+              if (active) thread.import({ ...latest, messages });
+              return;
+            }
+            return;
+          }
+
+          const exported = thread.export();
+          let changed = false;
+          const messages = exported.messages.map((item) => {
+            if (item.message.id !== messageId) return item;
+            const message = item.message;
+            const attachments = (
+              message as { attachments?: readonly { id: string }[] }
+            ).attachments;
+            if (
+              Array.isArray(attachments) &&
+              attachments.some(
+                (attachment) => attachment.id === attachmentId,
+              )
+            ) {
+              changed = true;
+              return {
+                ...item,
+                message: {
+                  ...message,
+                  attachments: attachments.filter(
+                    (attachment) => attachment.id !== attachmentId,
+                  ),
+                } as typeof message,
+              };
+            }
+            if (/^content-part-[0-9]+$/.test(attachmentId)) {
+              // Legacy synthetic id for a blob stored as a message content part.
+              const idx = Number(attachmentId.slice("content-part-".length));
+              const content = message.content;
+              if (
+                !Array.isArray(content) ||
+                !Number.isInteger(idx) ||
+                idx < 0 ||
+                idx >= content.length
+              ) {
+                return item;
+              }
+              const part = content[idx] as { type?: string };
+              if (part?.type !== "image" && part?.type !== "audio") return item;
+              changed = true;
+              return {
+                ...item,
+                message: {
+                  ...message,
+                  content: content.filter((_, i) => i !== idx),
+                } as typeof message,
+              };
+            }
+            return item;
+          });
+          if (changed && active) thread.import({ ...exported, messages });
+        } catch {
+          // No active thread mounted: storage already holds the truth.
+        }
+      });
+      return pendingDeletion;
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [aui]);
 
   const history = useMemo<ThreadHistoryAdapter>(
     () => ({
@@ -899,6 +1249,32 @@ function useStudioRuntimeAdapters(
             throw error;
           }
           msgs = [];
+        }
+        // Durable research can outlive this runtime. Reattach its server-owned
+        // assistant message to the inline card after navigation or refresh.
+        const researchThreadState = await getResearchThreadState(remoteId).catch(
+          () => null,
+        );
+        if (researchThreadState) {
+          useResearchRunStore
+            .getState()
+            .setThreadClaimed(remoteId, researchThreadState.hasRun);
+        }
+        const activeResearchRun = researchThreadState?.activeRun ?? null;
+        if (activeResearchRun) ingestResearchUpdate(activeResearchRun);
+        if (activeResearchRun?.assistantMessageId) {
+          const assistant = msgs.find(
+            (message) => message.id === activeResearchRun.assistantMessageId,
+          );
+          if (assistant) {
+            assistant.metadata = {
+              ...(assistant.metadata ?? {}),
+              researchRunId: activeResearchRun.id,
+              researchRun: activeResearchRun,
+              serverManaged: true,
+              serverRevision: activeResearchRun.lastEventSeq,
+            };
+          }
         }
         msgs.sort((a, b) => {
           if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
@@ -936,8 +1312,26 @@ function useStudioRuntimeAdapters(
           ? savedUsage.modelId === store.params.checkpoint
           : typeof store.ggufContextLength === "number" &&
             store.ggufContextLength > 0;
-        if (savedUsage && withinLocalLimit && modelMatches) {
-          store.setContextUsage(savedUsage);
+        // The value, not a boolean: the writes below need the narrowing.
+        const restoredUsage =
+          savedUsage && withinLocalLimit && modelMatches ? savedUsage : null;
+        if (restoredUsage) {
+          // Key by the thread this loader read, not whichever is active when the await resolves:
+          // a switch inside it would file this thread's usage under the incoming one. Same rule
+          // the adapter's end-of-run write follows.
+          store.setThreadContextUsage(remoteId, restoredUsage);
+          if (store.activeThreadId === remoteId) {
+            store.setContextUsage(restoredUsage);
+          }
+        }
+        // Only when nothing was restored: saved usage is the last completion's exact totals, and
+        // refreshContextUsage does NOT stand down for usage already there, so it would overwrite
+        // them with an estimate whose completionTokens is 0. A thread opened after a model switch
+        // fails modelMatches and still gets priced (#7450).
+        // Primary pane only: a compare pane never owns the global bar, so its count would be
+        // rebuilt from storage, sent, then dropped at publish for not being activeThreadId.
+        if (!restoredUsage && modelType === "base" && !pairId) {
+          void refreshContextUsage({ threadId: remoteId });
         }
 
         // If any message has a stored parentId, reconstruct the tree so
@@ -962,8 +1356,30 @@ function useStudioRuntimeAdapters(
       },
 
       append({ parentId, message }: ExportedMessageRepositoryItem) {
-        const initializeThread = aui.threadListItem().initialize();
-        trackRunStartReady(message.id, initializeThread.then(() => undefined));
+        const localThreadId = aui.threadListItem().getState().id;
+        const historyClearGeneration = chatHistoryClearBoundary.capture();
+        const throwIfHistoryWasCleared = async (remoteId: string) => {
+          if (
+            chatHistoryClearBoundary.capture() === historyClearGeneration
+          ) {
+            return;
+          }
+          markChatThreadDeleted(remoteId);
+          await deleteStoredChatThreads([remoteId]);
+          throw new DOMException("Chat history was cleared", "AbortError");
+        };
+        const initializeThread = aui
+          .threadListItem()
+          .initialize()
+          .then(async (initialized) => {
+            await throwIfHistoryWasCleared(initialized.remoteId);
+            return initialized;
+          });
+        trackRunStartReady(
+          message.id,
+          initializeThread.then(({ remoteId }) => remoteId),
+          localThreadId,
+        );
         const write = (async () => {
           const { remoteId } = await initializeThread;
           if (isChatThreadDeleted(remoteId)) {
@@ -974,17 +1390,29 @@ function useStudioRuntimeAdapters(
           // persisted. Compare panes intentionally don't write global activeThreadId.
           if (modelType === "base" && !pairId) {
             const store = useChatRuntimeStore.getState();
-            if (store.activeThreadId !== remoteId) {
+            const visibleThreadId = aui.threads().getState().mainThreadId;
+            if (
+              (visibleThreadId === localThreadId ||
+                visibleThreadId === remoteId) &&
+              store.activeThreadId !== remoteId
+            ) {
               store.setActiveThreadId(remoteId);
             }
           }
           const thread = await getStoredChatThread(remoteId);
+          await throwIfHistoryWasCleared(remoteId);
           if (thread) {
             await ensureStoredChatThread(remoteId, thread);
+            await throwIfHistoryWasCleared(remoteId);
           }
           if (thread?.modelType === "base" && !thread.pairId) {
             const store = useChatRuntimeStore.getState();
-            if (store.activeThreadId !== remoteId) {
+            const visibleThreadId = aui.threads().getState().mainThreadId;
+            if (
+              (visibleThreadId === localThreadId ||
+                visibleThreadId === remoteId) &&
+              store.activeThreadId !== remoteId
+            ) {
               store.setActiveThreadId(remoteId);
             }
           }
@@ -992,60 +1420,99 @@ function useStudioRuntimeAdapters(
           const attachments =
             message.role === "user" ? cloneAttachments(message.attachments) : [];
           const custom = message.metadata?.custom;
-          const existingMessage = (await listStoredChatMessages(remoteId)).find(
+          const storedMessages = await listStoredChatMessages(remoteId);
+          await throwIfHistoryWasCleared(remoteId);
+          const existingMessage = storedMessages.find(
             (storedMessage) => storedMessage.id === message.id,
           );
           const createdAt =
             existingMessage?.createdAt ??
             message.createdAt?.getTime?.() ??
-            Date.now();
+              Date.now();
+          const existingMetadata = existingMessage?.metadata;
+          const incomingRevision = Number(
+            (custom as Record<string, unknown> | undefined)?.serverRevision ?? -1,
+          );
+          const existingRevision = Number(existingMetadata?.serverRevision ?? -1);
+          const incomingMetadata = custom as
+            | Record<string, unknown>
+            | undefined;
+          const sameResearchRun =
+            typeof existingMetadata?.researchRunId === "string" &&
+            existingMetadata.researchRunId === incomingMetadata?.researchRunId;
+          const preserveServerManaged =
+            existingMetadata?.serverManaged === true &&
+            (sameResearchRun ||
+              !incomingMetadata?.serverManaged ||
+              existingRevision > incomingRevision);
+          // Echo the backend's stored metadata verbatim on autosave: merging
+          // incomingMetadata re-adds client-only fields (researchRun / serverRevision) the
+          // server never persisted, so _research_message_would_change sees a diff and
+          // rejects every streamed/snapshot update with 409.
+          const metadata = preserveServerManaged
+            ? existingMetadata
+            : incomingMetadata;
           await saveStoredChatMessage({
             id: message.id,
             threadId: remoteId,
             parentId: parentId ?? null,
             role: message.role,
-            content,
+            content: preserveServerManaged ? existingMessage!.content : content,
             ...(attachments.length > 0 && { attachments }),
-            ...(custom &&
-              Object.keys(custom).length > 0 && { metadata: custom }),
+            ...(metadata && { metadata }),
             createdAt,
           });
+          await throwIfHistoryWasCleared(remoteId);
         })();
-        return trackHistoryAppend(message.id, write);
+        return trackHistoryAppend(
+          message.id,
+          chatHistoryClearBoundary.trackPending(write),
+        );
       },
     }),
     [aui, modelType, pairId],
   );
 
-  const dictation = useMemo(
+  // Always register the adapter so the mic stays clickable for any engine. The
+  // engine is resolved at listen() time and the composer shows guidance when it
+  // cannot run, so engine switches also work on an already-mounted thread.
+  const dictation = useMemo(() => new StudioDictationAdapter(), []);
+  const speech = useMemo(
     () =>
-      StudioWebSpeechDictationAdapter.isSupported()
-        ? new StudioWebSpeechDictationAdapter()
+      StudioSpeechSynthesisAdapter.isSupported()
+        ? new StudioSpeechSynthesisAdapter()
         : undefined,
     [],
   );
   const attachments = useMemo(
     () =>
-      new CompositeAttachmentAdapter([
-        new VisionImageAdapter(),
-        new AudioAttachmentAdapter(),
-        new TextAttachmentAdapter(),
-        new HtmlAttachmentAdapter(),
-        new PDFAttachmentAdapter(),
-        new DocxAttachmentAdapter(),
-        new OpenDocumentAttachmentAdapter(),
-      ]),
-    [],
+      new PreStreamAwareAttachmentAdapter(
+        new CompositeAttachmentAdapter([
+          new VisionImageAdapter(),
+          new AudioAttachmentAdapter(),
+          new TextAttachmentAdapter(),
+          new HtmlAttachmentAdapter(),
+          new PDFAttachmentAdapter(),
+          new DocxAttachmentAdapter(),
+          new OpenDocumentAttachmentAdapter(),
+        ]),
+        () => {
+          const state = aui.threadListItem().getState();
+          return preStreamRunThreadIdsForRuntime(
+            [state.remoteId, state.id],
+            useChatRuntimeStore.getState().activeThreadId,
+          );
+        },
+      ),
+    [aui],
   );
   const adapters = useMemo(
-    () => ({ history, dictation, attachments }),
-    [history, dictation, attachments],
+    () => ({ history, dictation, speech, attachments }),
+    [history, dictation, speech, attachments],
   );
 
   return adapters;
 }
-
-const chatAdapter = createOpenAIStreamAdapter();
 
 function useRuntimeHook(
   modelType: ModelType,
@@ -1053,8 +1520,11 @@ function useRuntimeHook(
 ): ReturnType<typeof useLocalRuntime> {
   const adapters = useStudioRuntimeAdapters(modelType, pairId);
   const persistedChatAdapter = useMemo(
-    () => createPersistedRunAdapter(chatAdapter),
-    [],
+    () =>
+      createPersistedRunAdapter(
+        createOpenAIStreamAdapter({ modelType, pairId }),
+      ),
+    [modelType, pairId],
   );
   return useLocalRuntime(persistedChatAdapter, { adapters });
 }
@@ -1063,17 +1533,6 @@ function createRuntimeHook(modelType: ModelType, pairId?: string) {
   return function useConfiguredRuntimeHook(): ReturnType<typeof useLocalRuntime> {
     return useRuntimeHook(modelType, pairId);
   };
-}
-
-function stopChatRun(threadId: string | null | undefined) {
-  if (!threadId) {
-    return;
-  }
-  try {
-    useChatRuntimeStore.getState().cancelByThreadId[threadId]?.();
-  } catch {
-    // The run may have ended while navigation was mounting.
-  }
 }
 
 function ThreadAutoSwitch({
@@ -1089,10 +1548,9 @@ function ThreadAutoSwitch({
 
   useEffect(() => {
     if (!isLoading && mainThreadId !== threadId) {
-      if (syncActiveThreadId) {
-        requestPromptQueueStop();
-        stopChatRun(mainThreadId);
-      }
+      // Saved chats keep running in the background, but a temporary chat is
+      // unreachable after this switch and must not retain an active queue.
+      requestTemporaryPromptQueueStop();
       const switchResult = aui.threads().switchToThread(threadId) as unknown;
       if (
         switchResult &&
@@ -1122,21 +1580,49 @@ function ThreadNewChatSwitch({
 }: { nonce: string }): ReactElement | null {
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
-  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
-  const mainThreadIdRef = useRef(mainThreadId);
-  mainThreadIdRef.current = mainThreadId;
-
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
+  // Read only by the recount below: New Chat itself must not care whether a run is still going.
+  const runActive = useChatRuntimeStore((s) =>
+    Object.values(s.runningByThreadId).some(Boolean),
+  );
+  // The outgoing thread is not read here: New Chat leaves it running.
   useEffect(() => {
     if (isLoading) {
       return;
     }
-    requestPromptQueueStop();
-    stopChatRun(mainThreadIdRef.current);
+    // Saved chats keep running in the background. A temporary chat is never
+    // persisted, so abandoning it must also discard its otherwise unreachable
+    // queue. Queue provenance remains reliable even if incognito was cleared first.
+    requestTemporaryPromptQueueStop();
     // Switch to a fresh local thread without persisting it yet; persistence
     // still happens on first message append.
     void aui.threads().switchToNewThread();
     useChatRuntimeStore.getState().setActiveThreadId(null);
   }, [aui, isLoading, nonce]);
+
+  // The effect above blanks the bar, and this view reaches no other recount trigger: no persisted
+  // thread for the history loader, and ActiveThreadSync is off while a nonce is present. Keyed on
+  // the model too: on a RELOAD of /chat?new=<uuid> nothing is known until status answers.
+  useEffect(() => {
+    if (
+      isLoading ||
+      modelLoading ||
+      runActive ||
+      !checkpoint ||
+      ggufContextLength == null
+    ) {
+      return;
+    }
+    const store = useChatRuntimeStore.getState();
+    if (store.activeThreadId != null || store.contextUsage != null) return;
+    void refreshContextUsage();
+    // nonce: a fresh New Chat click re-runs the effect above, which blanks the bar again.
+    // runActive is a DEPENDENCY, not just a guard: refreshContextUsage declines while anything
+    // generates, and nothing else re-fires this when the run ends. ThreadContextUsageRecount
+    // cannot cover for it -- an unpersisted New Chat has no activeThreadId.
+  }, [checkpoint, ggufContextLength, isLoading, modelLoading, nonce, runActive]);
 
   return null;
 }
@@ -1159,30 +1645,137 @@ function ActiveThreadSync({
   return null;
 }
 
-// Exposes the current thread's cancelRun() via the shared store so external
-// surfaces (e.g. the sidebar trash button) can stop an in-flight stream before
-// deleting the thread, mirroring the Stop -> Trash sequence.
-function CancelRegistrar(): ReactElement | null {
+// Lets the recount read the on-screen branch, not the stored records: an incognito thread stores
+// none, and a retried thread's newest stored leaf is not what the runtime would send.
+function ActiveBranchRegistrar({
+  enabled,
+}: { enabled: boolean }): ReactElement | null {
   const aui = useAui();
-  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
-  const isRunning = useChatRuntimeStore((s) =>
-    mainThreadId ? Boolean(s.runningByThreadId[mainThreadId]) : false,
+
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+    setActiveBranchReader(() => {
+      try {
+        return aui.thread().getState().messages;
+      } catch {
+        // No thread mounted yet; the recount falls back to the stored records.
+        return null;
+      }
+    });
+    return () => setActiveBranchReader(null);
+  }, [aui, enabled]);
+
+  return null;
+}
+
+// Price whichever thread the bar points at whenever it has nothing to show. Only two paths reach
+// it: (1) a model change empties contextUsageByThreadId and a mounted thread does not rerun its
+// history loader; (2) on a deep link to /chat/:id the history loader and status can each land
+// before the other, so neither independently timed callback counts.
+function ThreadContextUsageRecount({
+  enabled,
+}: { enabled: boolean }): ReactElement | null {
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
+  // A DEPENDENCY, not just a guard: nothing else here changes when a run ends, so a count skipped
+  // for being busy would never be retried. Every run, not just local ones, since that is what the
+  // endpoint refuses on.
+  const runActive = useChatRuntimeStore((s) =>
+    Object.values(s.runningByThreadId).some(Boolean),
   );
 
   useEffect(() => {
-    if (!mainThreadId || !isRunning) return;
+    if (
+      !enabled ||
+      !activeThreadId ||
+      modelLoading ||
+      runActive ||
+      !checkpoint ||
+      ggufContextLength == null
+    ) {
+      return;
+    }
+    // Only into a blank bar: restored or completion-written usage is exact, this is an estimate.
+    if (useChatRuntimeStore.getState().contextUsage != null) return;
+    void refreshContextUsage({ threadId: activeThreadId });
+  }, [
+    activeThreadId,
+    checkpoint,
+    enabled,
+    ggufContextLength,
+    runActive,
+    modelLoading,
+  ]);
+
+  return null;
+}
+
+// Exposes the current thread's cancelRun() via the shared store so external
+// surfaces can stop an in-flight stream before deleting the thread.
+function CancelRegistrar(): ReactElement | null {
+  const aui = useAui();
+  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+  const remoteThreadId = useAuiState(
+    ({ threadListItem }) => threadListItem.remoteId,
+  );
+
+  useEffect(() => {
+    if (!mainThreadId) return;
+    const runtime = aui.threads().__internal_getAssistantRuntime?.();
+    const threadIds = Array.from(
+      new Set([mainThreadId, remoteThreadId].filter((id): id is string => Boolean(id))),
+    );
     const cancel = () => {
-      try {
-        aui.thread().cancelRun();
-      } catch {
-        // Run may have already ended between the caller's read and this call.
+      for (const threadId of threadIds) {
+        try {
+          runtime?.threads.getById(threadId).cancelRun();
+          return;
+        } catch {
+          // Try the other alias; the run may also have ended between reads.
+        }
       }
     };
-    useChatRuntimeStore.getState().registerThreadCancel(mainThreadId, cancel);
+    for (const threadId of threadIds) {
+      useChatRuntimeStore.getState().registerThreadCancel(threadId, cancel);
+    }
     return () => {
-      useChatRuntimeStore.getState().clearThreadCancel(mainThreadId);
+      const store = useChatRuntimeStore.getState();
+      let thread = null;
+      for (const threadId of threadIds) {
+        try {
+          thread = runtime?.threads.getById(threadId) ?? null;
+          if (thread) break;
+        } catch {
+          // Try the other alias.
+        }
+      }
+      if (!thread?.getState().isRunning) {
+        for (const threadId of threadIds) {
+          store.clearThreadCancel(threadId, cancel);
+        }
+        return;
+      }
+      // assistant-ui enters its running state before adapter preflight turns
+      // on runningByThreadId. Keep the only cancel handle after navigation,
+      // then release it when assistant-ui reports that the run actually ended.
+      let unsubscribe = () => {};
+      unsubscribe = thread.subscribe(() => {
+        if (thread.getState().isRunning) {
+          return;
+        }
+        for (const threadId of threadIds) {
+          useChatRuntimeStore
+            .getState()
+            .clearThreadCancel(threadId, cancel);
+        }
+        unsubscribe();
+      });
     };
-  }, [aui, mainThreadId, isRunning]);
+  }, [aui, mainThreadId, remoteThreadId]);
 
   return null;
 }
@@ -1329,26 +1922,35 @@ export function ChatRuntimeProvider({
 
   return (
     <AssistantRuntimeProvider runtime={runtime} aui={aui}>
-      <ActiveThreadSync
-        enabled={
-          modelType === "base" && !pairId && !newThreadNonce && !initialThreadId
-        }
-      />
-      <ThreadBackendAutosave modelType={modelType} pairId={pairId} />
-      <CancelRegistrar />
-      {initialThreadId && (
-        <ThreadAutoSwitch
-          threadId={initialThreadId}
-          syncActiveThreadId={syncActiveThreadId}
+      {/* Pane identity for the tool-output store maps: the adapter prefixes its
+          keys with this scope so concurrent panes with colliding tool ids
+          ("call_0") can't bleed live output into each other's cards. */}
+      <ToolPaneScopeContext.Provider value={toolPaneScope(modelType, pairId)}>
+        <ActiveThreadSync
+          enabled={
+            modelType === "base" &&
+            !pairId &&
+            !newThreadNonce &&
+            !initialThreadId
+          }
         />
-      )}
-      {!initialThreadId && newThreadNonce && (
-        <ThreadNewChatSwitch nonce={newThreadNonce} />
-      )}
-      {/* The view stays mounted (only CSS-hidden by RootLayout) while off-route
-          so assistant-ui keeps the run attached and the stream alive. Unmounting
-          it here aborts the in-flight generation. */}
-      {children}
+        <ActiveBranchRegistrar enabled={modelType === "base" && !pairId} />
+        <ThreadContextUsageRecount enabled={modelType === "base" && !pairId} />
+        <ThreadBackendAutosave modelType={modelType} pairId={pairId} />
+        <CancelRegistrar />
+        {initialThreadId && (
+          <ThreadAutoSwitch
+            threadId={initialThreadId}
+            syncActiveThreadId={syncActiveThreadId}
+          />
+        )}
+        {!initialThreadId && newThreadNonce && (
+          <ThreadNewChatSwitch nonce={newThreadNonce} />
+        )}
+        {/* The view stays mounted (only CSS-hidden) while off-route so the run
+            stays attached and the stream alive; unmounting aborts generation. */}
+        {children}
+      </ToolPaneScopeContext.Provider>
     </AssistantRuntimeProvider>
   );
 }

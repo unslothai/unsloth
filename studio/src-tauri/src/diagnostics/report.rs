@@ -26,7 +26,7 @@ pub(crate) fn render_report(
     let mut warnings = Vec::new();
     let mut raw = String::new();
 
-    raw.push_str("Unsloth Studio Support Diagnostics\n");
+    raw.push_str("Unsloth Support Diagnostics\n");
     raw.push_str(&format!("diag_report_schema={SCHEMA_VERSION}\n"));
     raw.push_str(&format!("created_at_ms={}\n", now_ms()));
     raw.push_str(&format!("app_version={}\n", env!("CARGO_PKG_VERSION")));

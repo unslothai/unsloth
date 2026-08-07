@@ -112,7 +112,26 @@ export async function deleteThreadMessage(args: {
   const exported = thread.export();
   const repo = new MessageRepository();
   repo.import(exported);
+
+  const target = exported.messages.find(
+    ({ message }) => message.id === messageId,
+  );
+  const assistantReplyIds =
+    target?.message.role === "user"
+      ? exported.messages
+          .filter(
+            ({ parentId, message }) =>
+              parentId === messageId && message.role === "assistant",
+          )
+          .map(({ message }) => message.id)
+      : [];
+
+  // Delete the prompt first; that relinks its replies up to the prompt's parent
   repo.deleteMessage(messageId);
+  for (const replyId of assistantReplyIds) {
+    repo.deleteMessage(replyId);
+  }
+
   const next = repo.export();
   if (remoteId) {
     await syncExportedRepositoryToBackend(remoteId, next, {

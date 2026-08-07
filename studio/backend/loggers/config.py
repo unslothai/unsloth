@@ -47,6 +47,15 @@ def logs_verbose() -> bool:
     return os.getenv("LOG_LEVEL", "INFO").upper() == "DEBUG"
 
 
+class _DropTorchDtypeDeprecation(logging.Filter):
+    """Drop transformers' once-per-run "`torch_dtype` is deprecated" warning_once.
+    It is emitted via logging (not warnings), so a warnings filter cannot catch it."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not ("torch_dtype" in msg and "deprecated" in msg)
+
+
 class LogConfig:
     """Structured logging configuration for the application."""
 
@@ -63,8 +72,12 @@ class LogConfig:
         log_level_name = os.getenv("LOG_LEVEL", "INFO").upper()
         log_level = getattr(logging, log_level_name, logging.INFO)
 
-        if sys.platform == "win32":
-            for stream in (sys.stdout, sys.stderr):
+        # Non-ASCII on a non-UTF-8 stream raises UnicodeEncodeError (Windows,
+        # LANG=C), so key off the stream, not the platform.
+        for stream in (sys.stdout, sys.stderr):
+            if getattr(stream, "encoding", "") and not str(stream.encoding).lower().replace(
+                "-", ""
+            ).startswith("utf8"):
                 if hasattr(stream, "reconfigure"):
                     try:
                         stream.reconfigure(encoding = "utf-8", errors = "replace")
@@ -106,5 +119,16 @@ class LogConfig:
             for name in _NOISY_LIBS:
                 logging.getLogger(name).setLevel(logging.WARNING)
             logging.captureWarnings(True)
+
+        # Drop transformers' cosmetic "`torch_dtype` is deprecated" warning_once (see
+        # filter). It is emitted at WARNING, so the _NOISY_LIBS level bump above does
+        # not cover it, and it stays dropped in verbose too — it is pure noise.
+        _dtype_filter = _DropTorchDtypeDeprecation()
+        for _name in (
+            "transformers.configuration_utils",
+            "transformers.modeling_utils",
+            "transformers.pipelines.base",
+        ):
+            logging.getLogger(_name).addFilter(_dtype_filter)
 
         return structlog.get_logger(service_name)

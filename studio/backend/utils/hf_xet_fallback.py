@@ -1,337 +1,551 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Xet-primary HF downloads with an automatic HTTP fallback on a no-progress stall.
+"""Unsloth shim over the shared ``unsloth_zoo.hf_xet_fallback`` Xet -> HTTP stall fallback.
 
-Xet (``hf_xet``) is the fast default but can hang with no progress and no
-exception, and a blocked native thread cannot be killed. Keep Xet primary; fall
-back to plain HTTP only when the parent observes a stall. ``HF_HUB_DISABLE_XET``
-is read at import time, so the fallback runs in a fresh ``spawn`` child (not a
-thread) that sets the env before importing ``huggingface_hub``. Cached files
-short-circuit with no child; deterministic errors (401/403/404/disk-full) and
-cancellation propagate without a fallback. Mirrors the safetensors inference
-recovery in core/inference/{orchestrator,worker}.py.
+Re-exports the shared API and injects Unsloth's marker-aware cache purge
+(``prepare_cache_for_transport``) so the download manager keeps its ``.transport``
+marker semantics on the HTTP retry.
+
+Import discipline: ``unsloth_zoo``'s ``__init__`` eagerly imports ``transformers``. The workers
+import this shim at startup (to decide the per-worker Xet env flip) *before* activating the model's
+``transformers`` sidecar. Activation only prepends the sidecar to ``sys.path``, so a ``transformers``
+already cached in ``sys.modules`` (via an eager ``unsloth_zoo`` import here) wins -- pinning the
+default 4.57.x and regressing Qwen3.5 / GLM-4.7 / gemma-4 training with
+``Tokenizer class TokenizersBackend does not exist``. So the shared backend is loaded **lazily**
+(``_load_shared``), only on first use of a heavy download helper, i.e. after the sidecar is active.
+``child_should_disable_xet`` and the ``DEFAULT_*`` constants are defined locally so importing them
+never triggers the heavy load.
 """
 
 from __future__ import annotations
 
-import multiprocessing as mp
-import os
-import queue
-import signal
-import sys
 import threading
-import time
+from functools import partial
+from pathlib import Path
 from typing import Any, Callable, Optional
 
-from loggers import get_logger
-
-logger = get_logger(__name__)
-
-_CTX = mp.get_context("spawn")
-
-# Defaults match the existing inference watchdog and hub shutdown deadline.
-DEFAULT_HEARTBEAT_INTERVAL = 30.0
-DEFAULT_STALL_TIMEOUT = 180.0
+# Defaults mirror unsloth_zoo.hf_xet_fallback; plain literals so they resolve (including as
+# default args below) without importing unsloth_zoo/transformers.
 DEFAULT_GRACE_PERIOD = 10.0
-_POLL_INTERVAL = 0.5
+DEFAULT_HEARTBEAT_INTERVAL = 30.0
+# Xet gets 30s of zero progress before the HTTP retry; HTTP, the last resort, keeps 180s. The
+# wrappers pass None so the shared layer picks per transport; these literals are for callers that
+# want an explicit value without the heavy import.
+DEFAULT_STALL_TIMEOUT = 30.0
+DEFAULT_CONNECT_TIMEOUT = 90.0
+DEFAULT_HTTP_STALL_TIMEOUT = 180.0
+
+# --- lazy shared-backend loader ----------------------------------------------------------------
+_shared: Any = None
+_shared_available: Optional[bool] = None  # None = not yet attempted
+_shared_import_error: Optional[BaseException] = None
+# Guards _shared_available AND every UNSLOTH_ZOO_DISABLE_GPU_INIT save/set/restore here. Both
+# loaders mutate that one process-wide variable, so they must serialize against each other: two
+# locks would still allow A-saves-unset / B-saves-"1" / A-restores-unset / B-restores-"1", leaving
+# it set for the life of the process. RLock because child_environment_for_spawn holds it across a
+# spawn and legitimately nests (its own _spawn_env_lock is an RLock for the same reason).
+_load_lock = threading.RLock()
 
 
-class DownloadStallError(RuntimeError):
-    """Raised when no download progress is observed for too long.
+def _gpu_present() -> bool:
+    """Whether this host has a usable accelerator, decided WITHOUT importing unsloth_zoo.
 
-    Canonical home; orchestrator.py re-imports it so all paths share one type.
-    """
-
-
-def child_should_disable_xet(config: dict) -> bool:
-    """Single source of truth for the per-worker Xet env flip."""
-    return bool(config.get("disable_xet"))
-
-
-def get_hf_download_state(
-    repo_ids: Optional[list[str]] = None, *, repo_type: str = "model"
-) -> Optional[tuple[int, bool]]:
-    """Return ``(total_on_disk_bytes, has_incomplete)`` for the active HF cache.
-
-    Sparse-aware (st_blocks based) so a sparse Xet/``hf_transfer`` ``.incomplete``
-    is not mistaken for full-size progress. ``None`` means the state could not be
-    measured, so callers skip stall logic for that tick.
+    Only torch is consulted (already imported by the time any download helper runs), and any
+    failure answers False so a genuinely torch-less host keeps the light-init retry below.
     """
     try:
-        from hub.utils.hf_cache_state import (
-            blob_bytes_present,
-            has_active_incomplete_blobs,
-            hf_cache_root,
-            iter_active_repo_cache_dirs,
-        )
+        import torch
+    except Exception:  # noqa: BLE001 -- no torch at all: the light path is the right one
+        return False
+    for probe in (
+        lambda: torch.cuda.is_available(),
+        lambda: torch.backends.mps.is_available(),
+        lambda: torch.xpu.is_available(),
+    ):
+        try:
+            if probe():
+                return True
+        except Exception:  # noqa: BLE001 -- a missing backend is just "not this one"
+            continue
+    return False
 
-        if hf_cache_root() is None:
-            return (0, False)
 
-        total = 0
-        has_incomplete = False
-        for repo_id in repo_ids or []:
-            # Skip local paths: HF IDs never start with / . ~ or contain "\".
-            if not repo_id or repo_id.startswith(("/", ".", "~")) or "\\" in repo_id:
-                continue
-            for entry in iter_active_repo_cache_dirs(repo_type, repo_id):
-                blobs_dir = entry / "blobs"
-                if not blobs_dir.is_dir():
-                    continue
-                for blob in blobs_dir.iterdir():
-                    try:
-                        if blob.is_file():
-                            total += blob_bytes_present(blob)
-                    except OSError:
-                        pass
-            if has_active_incomplete_blobs(repo_type, repo_id):
-                has_incomplete = True
-        return (total, has_incomplete)
-    except Exception as e:
-        logger.debug("Failed to determine HF download state: %s", e)
+def _load_shared() -> bool:
+    """Import ``unsloth_zoo.hf_xet_fallback`` on demand; return True if available. Deferred so
+    importing this module at worker startup does not pull transformers in before the sidecar is
+    activated. Degrades (returns False) rather than crashing when unsloth_zoo is unavailable."""
+    global _shared, _shared_available, _shared_import_error
+    if _shared_available is not None:
+        return _shared_available
+    with _load_lock:
+        if _shared_available is not None:
+            return _shared_available
+        try:
+            import unsloth_zoo.hf_xet_fallback as shared
+
+            _shared = shared
+            _shared_available = True
+            _shared_import_error = None
+            return True
+        except Exception as exc:  # noqa: BLE001 - any import failure must degrade, not crash
+            # unsloth_zoo's __init__ runs torch/GPU detection, which raises on a torch-less/GPU-less
+            # host. The download helper needs none of it, so retry via UNSLOTH_ZOO_DISABLE_GPU_INIT.
+            _shared_import_error = exc
+            import os as _os
+
+            # ...but ONLY on a host that really has no accelerator. That flag makes unsloth_zoo take its MLX/CPU path, injecting triton and bitsandbytes
+            # STUBS into sys.modules for the process. On a working GPU box those stubs raise from the first CUDA-only kernel, turning a healthy GPU into 500s.
+            if _gpu_present():
+                _shared_available = False
+                import logging as _logging
+
+                _logging.getLogger(__name__).warning(
+                    "unsloth_zoo.hf_xet_fallback unavailable (%s); the Xet stall watchdog is "
+                    "disabled. Not retrying under UNSLOTH_ZOO_DISABLE_GPU_INIT because this host "
+                    "has an accelerator and that path would stub out triton/bitsandbytes for the "
+                    "whole process.",
+                    exc,
+                )
+                return False
+
+            global _gpu_init_override_depth
+            _prev_gpu_init = _os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
+            _ours = _prev_gpu_init != "1"
+            _gpu_init_override_depth += _ours  # claimed before the write, released after
+            _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = "1"
+            try:
+                import unsloth_zoo.hf_xet_fallback as shared
+
+                _shared = shared
+                _shared_available = True
+                _shared_import_error = None
+                return True
+            except Exception as exc2:  # noqa: BLE001 - degrade so Unsloth still boots with plain HF
+                _shared_import_error = exc2
+                _shared_available = False
+                import logging as _logging
+
+                _logging.getLogger(__name__).warning(
+                    "unsloth_zoo.hf_xet_fallback unavailable (%s); the Xet stall watchdog is "
+                    "disabled. Install/upgrade unsloth_zoo (and its torch dependency) to "
+                    "re-enable automatic Xet -> HTTP download recovery.",
+                    _shared_import_error,
+                )
+                return False
+            finally:
+                if _prev_gpu_init is None:
+                    _os.environ.pop("UNSLOTH_ZOO_DISABLE_GPU_INIT", None)
+                else:
+                    _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = _prev_gpu_init
+                _gpu_init_override_depth -= _ours
+
+
+# _load_optional results by module name. Memoising the FAILURE is the point: on a zoo that predates
+# these modules the import can never start succeeding, so without this every xet_health /
+# record_xet_outcome / xet_env_overrides call re-ran the GPU-init retry, re-opening the
+# process-wide env window on every download. With it the window opens once per module per process.
+_UNTRIED = object()
+_optional_modules: "dict[str, Any]" = {}
+
+
+def _reset_optional_module_cache() -> None:
+    """Forget memoised optional-module results (tests that install or remove a zoo module)."""
+    with _load_lock:
+        _optional_modules.clear()
+
+
+def _load_optional(module_name: str) -> Any:
+    """Import an optional shared Xet helper module (health / tuning), or return ``None``.
+
+    Separate from ``_load_shared``: these modules exist only in newer unsloth_zoo, and a Studio
+    pinned to an older one must keep downloading without the preflight verdict or buffer caps.
+    The GPU-init retry matters most here: ``unsloth_zoo.__init__`` runs torch accelerator detection
+    and raises ``NotImplementedError`` on a CPU-only host, which is precisely the small machine
+    whose RAM these caps protect, so without the retry they switch off where they are needed.
+    """
+    import importlib
+    import os as _os
+
+    cached = _optional_modules.get(module_name, _UNTRIED)
+    if cached is not _UNTRIED:
+        return cached
+
+    try:
+        module = importlib.import_module(module_name)
+        _optional_modules[module_name] = module
+        return module
+    except Exception as exc:  # noqa: BLE001 - an older/absent unsloth_zoo must degrade, not crash
+        first_error = exc
+
+    # Deliberately the SAME lock _load_shared uses: interleaved save/set/restore would leave
+    # UNSLOTH_ZOO_DISABLE_GPU_INIT set for the life of the process (see _load_lock).
+    with _load_lock:
+        cached = _optional_modules.get(module_name, _UNTRIED)
+        if cached is not _UNTRIED:
+            return cached
+        global _gpu_init_override_depth
+        previous = _os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
+        ours = previous != "1"
+        # Claim BEFORE the write, release AFTER the restore, so the set window sits strictly inside
+        # the window where a spawning thread can see the flag is ours. The other order leaves a gap
+        # at each end where a child inherits an unclaimed flag and never clears it.
+        _gpu_init_override_depth += ours
+        try:
+            _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = "1"
+            try:
+                module = importlib.import_module(module_name)
+            except Exception as exc:  # noqa: BLE001
+                import logging as _logging
+                _logging.getLogger(__name__).debug(
+                    "%s unavailable (%s; with GPU init disabled: %s)", module_name, first_error, exc
+                )
+                module = None
+            finally:
+                if previous is None:
+                    _os.environ.pop("UNSLOTH_ZOO_DISABLE_GPU_INIT", None)
+                else:
+                    _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = previous
+        finally:
+            _gpu_init_override_depth -= ours
+        _optional_modules[module_name] = module
+        return module
+
+
+def xet_health(**kwargs: Any) -> Any:
+    """The machine's Xet verdict, or ``None`` when unsloth_zoo cannot answer.
+
+    ``None`` means "no opinion": callers keep their default (Xet), they do not downgrade.
+    """
+    module = _load_optional("unsloth_zoo.hf_xet_health")
+    if module is None:
+        return None
+    try:
+        return module.xet_health(**kwargs)
+    except Exception as exc:  # noqa: BLE001
+        import logging as _logging
+        _logging.getLogger(__name__).debug("xet_health failed: %s", exc)
         return None
 
 
-def start_watchdog(
+def record_xet_outcome(ok: bool, reason: str = "") -> None:
+    """Record a finished Xet attempt so a repeatedly-failing machine stops starting on Xet."""
+    module = _load_optional("unsloth_zoo.hf_xet_health")
+    if module is None:
+        return
+    try:
+        module.record_xet_outcome(ok, reason)
+    except Exception as exc:  # noqa: BLE001
+        import logging as _logging
+        _logging.getLogger(__name__).debug("record_xet_outcome failed: %s", exc)
+
+
+def xet_env_overrides() -> "dict[str, str]":
+    """RAM/CPU-derived ``HF_XET_*`` caps for a download worker's environment; ``{}`` if unavailable."""
+    module = _load_optional("unsloth_zoo.hf_xet_tuning")
+    if module is None:
+        return {}
+    try:
+        return dict(module.xet_env_overrides())
+    except Exception as exc:  # noqa: BLE001
+        import logging as _logging
+        _logging.getLogger(__name__).debug("xet_env_overrides failed: %s", exc)
+        return {}
+
+
+def apply_xet_env(env: dict, cache_dir: "Optional[str]" = None) -> "Optional[dict[str, str]]":
+    """Let unsloth_zoo size a download worker's ``HF_XET_*`` in *env*, in place.
+
+    Returns what it wrote, or ``None`` when the installed zoo has no opinion, which is the caller's
+    signal to fall back. ``fail_fast`` suits a supervised child: our Xet -> HTTP ladder acts on the
+    failure, so short Xet timeouts are right here and wrong process-wide.
+
+    *env* is a copy of this process's environment, which already carries the zoo's import-time
+    sizing, and applying is setdefault: on a zoo that can resize we recompute for *cache_dir*
+    instead, so a backend whose cache has since moved does not hand the worker the old volume's
+    numbers. Older zoos keep the previous behaviour."""
+    module = _load_optional("unsloth_zoo.hf_xet_tuning")
+    if module is None or not hasattr(module, "apply_xet_env"):
+        return None
+    try:
+        resize = getattr(module, "resize_for_cache_dir", None)
+        if resize is not None:
+            return dict(resize(env, cache_dir))
+        return dict(module.apply_xet_env(env, fail_fast = True))
+    except Exception as exc:  # noqa: BLE001
+        import logging as _logging
+        _logging.getLogger(__name__).debug("apply_xet_env failed: %s", exc)
+        return None
+
+
+def child_should_disable_xet(config: dict) -> bool:
+    """Single source of truth for the per-worker Xet env flip (mirrors
+    ``unsloth_zoo.hf_xet_fallback.child_should_disable_xet``). Deliberately lightweight: importing or
+    calling it must NOT pull in unsloth_zoo/transformers, so the worker can decide before activating
+    the transformers sidecar (see the module docstring)."""
+    return bool(config.get("disable_xet"))
+
+
+# --- degraded stubs (used only when unsloth_zoo is unavailable) -------------------------------
+class _DegradedDownloadStallError(RuntimeError):
+    """Stub mirror so callers' ``except`` clauses resolve; never raised in degraded mode."""
+
+
+def _degraded_get_hf_download_state(*args: Any, **kwargs: Any) -> None:
+    return None  # unmeasurable -> the (absent) watchdog never fires
+
+
+def _degraded_start_watchdog(
     *,
-    repo_ids: list[str],
-    on_stall: Callable[[str], None],
-    repo_type: str = "model",
+    on_heartbeat: "Optional[Callable[[str], None]]" = None,
     interval: float = DEFAULT_HEARTBEAT_INTERVAL,
-    stall_timeout: float = DEFAULT_STALL_TIMEOUT,
     xet_disabled: bool = False,
-    on_heartbeat: Optional[Callable[[str], None]] = None,
-) -> threading.Event:
-    """Start a daemon thread that fires ``on_stall(message)`` exactly once iff a
-    ``*.incomplete`` is present AND the on-disk size is unchanged for
-    *stall_timeout* seconds. The timer resets while no ``*.incomplete`` exists, so
-    post-download init is never misread as a stall. Returns a stop event the
-    caller sets when the download phase ends.
-    """
+    **kwargs: Any,
+) -> "threading.Event":
+    # No stall detection, but keep emitting heartbeats so the orchestrator's inactivity deadline
+    # is not tripped during a long download.
     stop = threading.Event()
+    if on_heartbeat is None:
+        return stop
     transport = "https" if xet_disabled else "xet"
-    fired = False
 
     def _beat() -> None:
-        nonlocal fired
-        state = get_hf_download_state(repo_ids, repo_type = repo_type)
-        last_size = state[0] if state is not None else 0
-        last_change = time.monotonic()
-
         while not stop.wait(interval):
-            state = get_hf_download_state(repo_ids, repo_type = repo_type)
-            now = time.monotonic()
-
-            if state is None:
-                if on_heartbeat is not None:
-                    on_heartbeat(f"Downloading ({transport} transport)...")
-                continue
-
-            current_size, has_incomplete = state
-            if current_size != last_size:
-                last_size = current_size
-                last_change = now
-
-            # Reset unless .incomplete confirms an active download, so model init
-            # and lock waits are not counted as a stall.
-            if not has_incomplete:
-                last_change = now
-            elif now - last_change >= stall_timeout:
-                if not fired:
-                    fired = True
-                    on_stall(
-                        f"Download appears stalled ({transport} transport) "
-                        f"-- no progress for {int(now - last_change)}s"
-                    )
-                return
-
-            if on_heartbeat is not None:
+            try:
                 on_heartbeat(f"Downloading ({transport} transport)...")
+            except Exception:
+                pass
 
-    threading.Thread(target = _beat, daemon = True, name = "hf-xet-watchdog").start()
+    threading.Thread(
+        target = _beat,
+        daemon = True,
+        name = "hf-xet-degraded-heartbeat",
+    ).start()
     return stop
 
 
-def _download_child_entry(
-    *,
-    repo_id: str,
-    filename: str,
-    token: Optional[str],
-    repo_type: str,
-    disable_xet: bool,
-    result_queue: Any,
-) -> None:
-    """Spawn-child entrypoint: download one file and report the result.
-
-    Top-level and picklable. Sets the Xet env BEFORE importing huggingface_hub,
-    forms its own process group so the parent can kill the whole transfer, and
-    never logs the token or signed URLs.
-    """
-    # Die with Studio on Linux (this mp child gets no parent-set preexec_fn).
-    try:
-        from utils.process_lifetime import bind_current_process_to_parent_lifetime
-        bind_current_process_to_parent_lifetime()
-    except Exception:
-        pass
-
-    if hasattr(os, "setsid"):
-        try:
-            os.setsid()
-        except OSError:
-            pass
-
-    if disable_xet:
-        os.environ["HF_HUB_DISABLE_XET"] = "1"
-        # Keep the HTTP writer sequential and resumable (hf_transfer leaves sparse
-        # partials a sequential resume cannot safely continue).
-        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
-    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
-
-    # Test-only fault injection (never set in production): stall the Xet attempt
-    # so the watchdog + HTTP fallback can be exercised against a real repo.
-    if not disable_xet and os.environ.get("UNSLOTH_HF_XET_FORCE_STALL") == "1":
-        import time as _t
-        try:
-            from huggingface_hub.constants import HF_HUB_CACHE
-
-            blobs = os.path.join(HF_HUB_CACHE, "models--" + repo_id.replace("/", "--"), "blobs")
-            os.makedirs(blobs, exist_ok = True)
-            with open(os.path.join(blobs, "xet-force-stall.incomplete"), "wb") as fh:
-                fh.write(b"\0" * 4096)
-        except OSError:
-            pass
-        while True:
-            _t.sleep(3600)
-
-    try:
-        from huggingface_hub import hf_hub_download
-        path = hf_hub_download(
-            repo_id = repo_id,
-            filename = filename,
-            repo_type = repo_type,
-            token = token,
-        )
-        result_queue.put({"ok": True, "path": path})
-    except BaseException as e:  # noqa: BLE001 - report every failure to the parent
-        error = f"{type(e).__name__}: {e}"
-        try:
-            from hub.utils.download_registry import scrub_secrets
-            error = scrub_secrets(error, hf_token = token)
-        except Exception:
-            pass
-        result_queue.put({"ok": False, "error": error})
+def _degraded_cancelled(cancel_event: "Optional[threading.Event]") -> bool:
+    return cancel_event is not None and cancel_event.is_set()
 
 
-def _terminate_process_group(proc: "mp.process.BaseProcess", grace_period: float) -> None:
-    """Kill *proc* and its whole process group (Xet may spawn helper procs).
-
-    The child calls ``os.setsid()`` so its pgid equals its pid; signal via
-    ``os.killpg(pid, ...)`` -- NOT ``getpgid``, which before the child becomes a
-    group leader resolves to OUR group. SIGTERM, then SIGKILL after *grace_period*.
-    """
-    pid = proc.pid
-
-    def _signal_group(sig: int) -> None:
-        if pid is not None and hasattr(os, "killpg"):
-            try:
-                os.killpg(pid, sig)
-                return
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
-        # Windows or pre-setsid: best effort on the single process.
-        try:
-            proc.terminate() if sig != getattr(signal, "SIGKILL", -9) else proc.kill()
-        except Exception:
-            pass
-
-    _signal_group(getattr(signal, "SIGTERM", signal.SIGINT))
-    proc.join(timeout = grace_period)
-    if proc.is_alive():
-        _signal_group(getattr(signal, "SIGKILL", signal.SIGTERM))
-        proc.join(timeout = 5.0)
-
-
-def _run_download_attempt(
+def _degraded_hf_hub_download_with_xet_fallback(
     repo_id: str,
     filename: str,
     token: Optional[str],
     *,
-    repo_type: str,
-    disable_xet: bool,
-    cancel_event: Optional[threading.Event],
-    stall_timeout: float,
-    interval: float,
-    grace_period: float,
-    on_status: Optional[Callable[[str], None]],
-) -> tuple[str, Optional[str]]:
-    """Run one download in a spawn child supervised by the no-progress watchdog.
+    repo_type: str = "model",
+    revision: Optional[str] = None,
+    cache_dir: Optional[str] = None,
+    force_download: bool = False,
+    cancel_event: "Optional[threading.Event]" = None,
+    **_ignored: Any,
+) -> str:
+    # Keep the cancellation contract: do not start or return a download once cancelled.
+    if _degraded_cancelled(cancel_event):
+        raise RuntimeError("Cancelled")
 
-    Returns ``("ok", path)``, ``("stall", None)``, ``("cancelled", None)``, or
-    ``("error", message)``. This is the seam tests monkeypatch to avoid spawning.
-    """
-    result_queue: Any = _CTX.Queue()
-    proc = _CTX.Process(
-        target = _download_child_entry,
-        kwargs = dict(
-            repo_id = repo_id,
-            filename = filename,
-            token = token,
-            repo_type = repo_type,
-            disable_xet = disable_xet,
-            result_queue = result_queue,
-        ),
-        daemon = True,
-    )
-    proc.start()
-    from utils.process_lifetime import adopt_pid
+    from huggingface_hub import hf_hub_download
 
-    adopt_pid(proc.pid)  # bind to parent lifetime (Windows job / sweep)
-
-    stalled = threading.Event()
-    stop_watchdog = start_watchdog(
-        repo_ids = [repo_id],
-        on_stall = lambda msg: stalled.set(),
+    path = hf_hub_download(
+        repo_id = repo_id,
+        filename = filename,
+        token = token,
         repo_type = repo_type,
-        interval = interval,
-        stall_timeout = stall_timeout,
-        xet_disabled = disable_xet,
-        on_heartbeat = on_status,
+        revision = revision,
+        cache_dir = cache_dir,
+        force_download = force_download,
     )
+    if _degraded_cancelled(cancel_event):
+        raise RuntimeError("Cancelled")
+    return path
 
-    result: Optional[dict] = None
+
+def _degraded_snapshot_download_with_xet_fallback(
+    repo_id: str,
+    *,
+    revision: Optional[str] = None,
+    token: Optional[str] = None,
+    repo_type: str = "model",
+    cache_dir: Optional[str] = None,
+    allow_patterns: Optional[Any] = None,
+    ignore_patterns: Optional[Any] = None,
+    force_download: bool = False,
+    cancel_event: "Optional[threading.Event]" = None,
+    **_ignored: Any,
+) -> str:
+    if _degraded_cancelled(cancel_event):
+        raise RuntimeError("Cancelled")
+
+    from huggingface_hub import snapshot_download
+
+    path = snapshot_download(
+        repo_id = repo_id,
+        repo_type = repo_type,
+        revision = revision,
+        token = token,
+        cache_dir = cache_dir,
+        allow_patterns = allow_patterns,
+        ignore_patterns = ignore_patterns,
+        force_download = force_download,
+    )
+    if _degraded_cancelled(cancel_event):
+        raise RuntimeError("Cancelled")
+    return path
+
+
+# --- lazy attribute access for the heavy shared API -------------------------------------------
+# ``DownloadStallError`` (class identity matters for ``except``), ``start_watchdog`` and
+# ``get_hf_download_state`` come from the shared backend when available, else the degraded stubs.
+# Resolved via PEP 562 ``__getattr__`` so ``from utils.hf_xet_fallback import X`` triggers the load
+# only for these heavy names, not for ``child_should_disable_xet`` / ``DEFAULT_*``.
+_DEGRADED_ATTRS = {
+    "DownloadStallError": _DegradedDownloadStallError,
+    "get_hf_download_state": _degraded_get_hf_download_state,
+}
+
+
+# Nonzero while a loader has UNSLOTH_ZOO_DISABLE_GPU_INIT set process-wide for its retry. Read by
+# utf8_child_env so a child spawned in that window does not inherit it: unsloth_zoo injects triton
+# and bitsandbytes STUBS when it is set, so a training child would silently run against no-ops.
+# Only counted when the loader introduced the value; an operator who exported it keeps it.
+_gpu_init_override_depth = 0
+
+
+def gpu_init_override_active() -> bool:
+    """Is a loader currently holding UNSLOTH_ZOO_DISABLE_GPU_INIT set for its own import?"""
+    return _gpu_init_override_depth > 0
+
+
+def env_override_barrier() -> Any:
+    """Context manager a caller holds across a spawn so no loader can be mid-override.
+
+    Spawn children inherit the parent's live ``os.environ`` and there is no env dict to filter, so
+    the only way to keep UNSLOTH_ZOO_DISABLE_GPU_INIT out of a worker is that no loader has it set
+    when the child is created. Loaders never spawn, so holding this with the spawn lock cannot
+    deadlock, and ``_load_optional`` memoises so the window opens at most once per module per
+    process.
+    """
+    return _load_lock
+
+
+def _supported_kwargs(fn: Any, kwargs: "dict[str, Any]") -> "dict[str, Any]":
+    """Drop kwargs *fn* does not accept; pass everything through if it takes ``**kwargs``.
+
+    Uninspectable callables (C functions, some test doubles) also pass through unchanged.
+    """
+    import inspect
+
     try:
-        while proc.is_alive():
-            if cancel_event is not None and cancel_event.is_set():
-                _terminate_process_group(proc, grace_period)
-                return ("cancelled", None)
-            if stalled.is_set():
-                _terminate_process_group(proc, grace_period)
-                return ("stall", None)
-            try:
-                result = result_queue.get(timeout = _POLL_INTERVAL)
-                break
-            except queue.Empty:
-                continue
-        else:
-            # Process exited; drain any result it enqueued.
-            try:
-                result = result_queue.get_nowait()
-            except queue.Empty:
-                result = None
-    finally:
-        stop_watchdog.set()
-        proc.join(timeout = grace_period)
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return kwargs
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return kwargs
+    return {k: v for k, v in kwargs.items() if k in params}
 
-    if result is None:
-        return (
-            "error",
-            f"download process for '{repo_id}/{filename}' exited "
-            f"(code={proc.exitcode}) without a result",
+
+def start_watchdog(**kwargs: Any) -> Any:
+    """Shared stall watchdog, minus any kwarg the INSTALLED unsloth_zoo does not accept.
+
+    Load-bearing version-skew adapter: the supported floor (2026.8.1) has no ``connect_timeout`` or
+    ``heartbeat_interval`` and no ``**kwargs``, so passing one raises TypeError into the caller's
+    ``except Exception`` -- the watchdog then never starts and a stalled Xet worker is never killed
+    or retried over HTTP. That is the feature entirely off, not degraded. Filtering keeps newer
+    knobs live on a newer zoo and makes the NEXT new kwarg a no-op instead of a repeat of this bug.
+
+    Dropping the pre-byte budget on 2026.8.1 costs little: huggingface_hub opens the ``.incomplete``
+    BEFORE calling ``xet_get`` (``file_download.py`` opens ``incomplete_path`` and calls ``xet_get``
+    inside that ``with``) and the floor counts a partial by presence, not size, so a hf_xet hang
+    still trips the floor's 180s data clock. Verified against the released wheel: wedged inside
+    ``xet_get`` trips, wedged before the open does not. The uncovered window is the metadata phase,
+    where ``snapshot_download`` calls ``repo_info`` with no timeout. That gap predates this shim;
+    the connect clock closes it only once a zoo carrying it ships, and passing the kwarg early would
+    not close it, it would disable the watchdog outright.
+    """
+    impl = _shared.start_watchdog if _load_shared() else _degraded_start_watchdog
+    return impl(**_supported_kwargs(impl, kwargs))
+
+
+# Annotation-only declarations for the three names above: they bind NO value, so lookup still misses
+# and PEP 562 ``__getattr__`` resolves them lazily -- but ruff/pyflakes see them as defined, so listing
+# them in ``__all__`` does not trip F822 (while F822 still catches a real typo elsewhere in the list).
+DownloadStallError: type
+get_hf_download_state: Any
+
+
+def __getattr__(name: str) -> Any:
+    if name in _DEGRADED_ATTRS:
+        if _load_shared():
+            return getattr(_shared, name)
+        return _DEGRADED_ATTRS[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+# Indirection seam the public wrappers call (and tests monkeypatch): lazy-load the shared backend,
+# then dispatch to it or the degraded stub. The ``_shared_*`` names preserve the pre-refactor contract.
+def _shared_hf_hub_download_with_xet_fallback(*args: Any, **kwargs: Any) -> str:
+    impl = (
+        _shared.hf_hub_download_with_xet_fallback
+        if _load_shared()
+        else _degraded_hf_hub_download_with_xet_fallback
+    )
+    return impl(*args, **kwargs)
+
+
+def _shared_snapshot_download_with_xet_fallback(*args: Any, **kwargs: Any) -> str:
+    impl = (
+        _shared.snapshot_download_with_xet_fallback
+        if _load_shared()
+        else _degraded_snapshot_download_with_xet_fallback
+    )
+    return impl(*args, **kwargs)
+
+
+__all__ = [
+    "DEFAULT_CONNECT_TIMEOUT",
+    "DEFAULT_GRACE_PERIOD",
+    "DEFAULT_HEARTBEAT_INTERVAL",
+    "DEFAULT_HTTP_STALL_TIMEOUT",
+    "DEFAULT_STALL_TIMEOUT",
+    "DownloadStallError",
+    "child_should_disable_xet",
+    "get_hf_download_state",
+    "record_xet_outcome",
+    "start_watchdog",
+    "xet_env_overrides",
+    "apply_xet_env",
+    "xet_health",
+    "hf_hub_download_with_xet_fallback",
+    "snapshot_download_with_xet_fallback",
+]
+
+
+def _studio_prepare_for_http(
+    repo_type: str,
+    repo_id: str,
+    *,
+    cache_dir: Optional[str] = None,
+) -> None:
+    """Unsloth's marker-aware purge before an HTTP resume, keeping the download manager's ``.transport``
+    accounting consistent (vs unsloth_zoo's generic default). Guarded: a purge failure is logged,
+    not fatal to the retry."""
+    try:
+        from hub.utils.download_registry import prepare_cache_for_transport
+        prepare_cache_for_transport(
+            repo_type,
+            repo_id,
+            "http",
+            root = Path(cache_dir) if cache_dir else None,
         )
-    if result.get("ok"):
-        return ("ok", result["path"])
-    return ("error", result.get("error") or "unknown download error")
+    except Exception as exc:
+        try:
+            from loggers import get_logger
+            get_logger(__name__).debug(
+                "Unsloth prepare_cache_for_transport failed for %s: %s", repo_id, exc
+            )
+        except ModuleNotFoundError as logger_exc:
+            if logger_exc.name != "loggers":
+                raise
 
 
 def hf_hub_download_with_xet_fallback(
@@ -341,75 +555,76 @@ def hf_hub_download_with_xet_fallback(
     *,
     cancel_event: Optional[threading.Event] = None,
     repo_type: str = "model",
-    stall_timeout: float = DEFAULT_STALL_TIMEOUT,
-    interval: float = DEFAULT_HEARTBEAT_INTERVAL,
+    revision: Optional[str] = None,
+    stall_timeout: Optional[float] = None,
+    interval: Optional[float] = None,
     grace_period: float = DEFAULT_GRACE_PERIOD,
     on_status: Optional[Callable[[str], None]] = None,
+    force_download: bool = False,
+    cache_dir: Optional[str] = None,
+    reuse_other_cache_root: bool = False,
 ) -> str:
-    """Download a single file with Xet primary and HTTP as a stall-only fallback.
+    """Single-file download via the shared fallback with Unsloth's marker-aware HTTP-retry prep.
+    ``force_download`` re-fetches a newer blob over a cached one (Unsloth's model-update path).
 
-    Returns the local cache path. Raises ``RuntimeError("Cancelled")`` if
-    *cancel_event* is set, re-raises a deterministic child error unchanged (no
-    fallback), and raises ``DownloadStallError`` only if BOTH transports stall.
-    """
-    # Finalized blob already cached: return it with no child and no network.
-    try:
-        from huggingface_hub import try_to_load_from_cache
-        cached = try_to_load_from_cache(repo_id, filename, repo_type = repo_type)
-        if isinstance(cached, str) and os.path.exists(cached):
-            return cached
-    except Exception as e:
-        logger.debug("Cached probe failed for %s/%s: %s", repo_id, filename, e)
+    ``reuse_other_cache_root`` (opt-in) resolves a file cached ONLY under huggingface_hub's
+    import-time root through that root. Studio's cache folder is a setting, so after it changes every
+    cached asset is invisible to a call pinned to the new root: GBs re-download, and a gated base with
+    no valid token 401s even though the bytes are there and the preflight (which checks both roots)
+    already cleared it. Routed THROUGH the other root rather than returned raw, so the ref still
+    resolves and a republished file is picked up; the blob is reused, and offline/401
+    hf_hub_download keeps the failed HEAD and serves the cached pointer. Off for
+    ``force_download``, whose point is to re-fetch."""
+    if cache_dir is None:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        cache_dir = str(get_hf_cache_paths().hub_cache)
+    if reuse_other_cache_root and not force_download and cache_dir is not None:
+        try:
+            from huggingface_hub import try_to_load_from_cache
 
-    if cancel_event is not None and cancel_event.is_set():
-        raise RuntimeError("Cancelled")
-
-    disable_xet = False
-    for attempt in range(2):
-        if disable_xet:
-            # Purge a non-HTTP partial before resuming over HTTP: an HTTP resume
-            # over a sparse Xet/hf_transfer partial silently corrupts the blob.
-            try:
-                from hub.utils.download_registry import prepare_cache_for_transport
-                prepare_cache_for_transport(repo_type, repo_id, "http")
-            except Exception as e:
-                logger.debug("prepare_cache_for_transport failed for %s: %s", repo_id, e)
-
-        kind, payload = _run_download_attempt(
-            repo_id,
-            filename,
-            token,
-            repo_type = repo_type,
-            disable_xet = disable_xet,
-            cancel_event = cancel_event,
-            stall_timeout = stall_timeout,
-            interval = interval,
-            grace_period = grace_period,
-            on_status = on_status,
-        )
-
-        if kind == "ok":
-            return payload  # type: ignore[return-value]
-        if kind == "cancelled":
-            raise RuntimeError("Cancelled")
-        if kind == "error":
-            # Deterministic failure: the other transport would fail identically.
-            raise RuntimeError(payload)
-        # kind == "stall"
-        if attempt == 0 and not disable_xet:
-            logger.warning(
-                "Download stalled for '%s/%s' -- retrying with HF_HUB_DISABLE_XET=1",
-                repo_id,
-                filename,
+            # Only a str is a cached path; a miss is None and a known-absent file is a sentinel.
+            here = try_to_load_from_cache(
+                repo_id, filename, repo_type = repo_type, revision = revision, cache_dir = cache_dir
             )
-            if on_status is not None:
-                on_status(f"{repo_id}/{filename}: Xet stalled, retrying over HTTP")
-            disable_xet = True
-            continue
-        raise DownloadStallError(
-            f"Download stalled for '{repo_id}/{filename}' even with "
-            f"HF_HUB_DISABLE_XET=1 -- check your network connection"
-        )
+            if not isinstance(here, str):
+                elsewhere = try_to_load_from_cache(
+                    repo_id, filename, repo_type = repo_type, revision = revision, cache_dir = None
+                )
+                if isinstance(elsewhere, str) and Path(elsewhere).is_file():
+                    cache_dir = None
+        except Exception:  # noqa: BLE001 — a cache we cannot read just keeps the live root
+            pass
+    # Omit rather than forward None: an older unsloth_zoo hands `interval` straight to Event.wait(),
+    # where None blocks forever and a hung Xet download never falls back. Omitting also lets the
+    # shared layer pick its per-transport defaults.
+    optional: dict[str, Any] = {}
+    if stall_timeout is not None:
+        optional["stall_timeout"] = stall_timeout
+    if interval is not None:
+        optional["interval"] = interval
+    return _shared_hf_hub_download_with_xet_fallback(
+        repo_id,
+        filename,
+        token,
+        cancel_event = cancel_event,
+        repo_type = repo_type,
+        revision = revision,
+        **optional,
+        grace_period = grace_period,
+        on_status = on_status,
+        force_download = force_download,
+        cache_dir = cache_dir,
+        prepare_for_http_fn = partial(_studio_prepare_for_http, cache_dir = cache_dir),
+    )
 
-    # Unreachable: the loop either returns or raises on each attempt.
-    raise DownloadStallError(f"Download failed for '{repo_id}/{filename}'")
+
+def snapshot_download_with_xet_fallback(repo_id: str, **kwargs: Any) -> str:
+    """Whole-repo download via the shared fallback with Unsloth's marker-aware HTTP-retry prep."""
+    if kwargs.get("cache_dir") is None:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        kwargs["cache_dir"] = str(get_hf_cache_paths().hub_cache)
+    kwargs.setdefault(
+        "prepare_for_http_fn",
+        partial(_studio_prepare_for_http, cache_dir = kwargs["cache_dir"]),
+    )
+    return _shared_snapshot_download_with_xet_fallback(repo_id, **kwargs)

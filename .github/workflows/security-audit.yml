@@ -2,14 +2,15 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 # Multi-language supply-chain audit. Triggers:
-#   - PRs touching any dependency manifest (Python / npm / Cargo) or
-#     this workflow file,
-#   - push to main / pip,
+#   - every pull request, deliberately not path-filtered, so nothing
+#     slips past the audit by touching only files outside the
+#     dependency manifests,
+#   - push to main,
 #   - nightly @ 04:13 UTC so newly-published advisories surface even
 #     when no PR opens,
 #   - workflow_dispatch for ad-hoc invocations.
 #
-# Two jobs:
+# Six jobs:
 #   - advisory-audit:    one runner that runs pip-audit + npm audit +
 #                        cargo audit back-to-back. All three are
 #                        advisory-DB lookups -- fast, lockfile-driven,
@@ -24,6 +25,12 @@
 #                        independent so a CVE-DB hit in advisory-audit
 #                        does not block the supply-chain pattern scan
 #                        (or vice versa).
+#   - npm-scan-packages: npm tarball content scan, no npm install.
+#   - workflow-trigger-lint:
+#                        bans pull_request_target + shared cache keys.
+#   - tests-security:    pytest tests/security regression suite.
+#   - npm-provenance-and-install-scripts:
+#                        npm audit signatures + new-postinstall gate.
 #
 # All steps are non-blocking initially. The default branch already
 # carries a known-vuln backlog (the dependabot banner shows 17 today,
@@ -36,8 +43,8 @@
 #   - unsloth `huggingfacenotorch` extras (the canonical install path
 #     for fine-tuning users; pulls transformers / peft / accelerate /
 #     trl / datasets / diffusers / sentence-transformers / etc.)
-#   - all six Studio backend requirements files
-#   - Studio frontend (npm) and Tauri shell (cargo)
+#   - all six Unsloth backend requirements files
+#   - Unsloth frontend (npm) and Tauri shell (cargo)
 # Each Python step builds a filtered dep list from pyproject.toml +
 # requirements/*.txt before auditing. We do NOT install any of these
 # -- pip-audit resolves through PyPI metadata, scan_packages.py
@@ -49,25 +56,23 @@ name: Security audit
 
 on:
   pull_request:
-    paths:
-      - 'studio/backend/requirements/**'
-      - 'studio/frontend/package.json'
-      - 'studio/frontend/package-lock.json'
-      - 'studio/src-tauri/Cargo.toml'
-      - 'studio/src-tauri/Cargo.lock'
-      - 'pyproject.toml'
-      - 'scripts/scan_packages.py'
-      - 'scripts/scan_npm_packages.py'
-      - '.github/workflows/security-audit.yml'
   push:
-    branches: [main, pip]
+    branches: [main]
   schedule:
     - cron: '13 4 * * *'   # 04:13 UTC daily, off the cron rush
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # The event is part of the group so a scheduled run and a push to main cannot
+  # coalesce. Both resolve to refs/heads/main, and the default queue: single keeps
+  # only one pending run, so without this a merge burst silently drops the nightly:
+  # cancel-in-progress protects the running run, never the pending one.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -122,12 +127,12 @@ jobs:
       # anyone using @v0 / @v2 / @latest references. Pinning to a 40-
       # char SHA freezes this action at known-good code; Dependabot's
       # github-actions ecosystem will auto-bump the SHA.
-      # v2.19.1 commit:
+      # v2.20.0 commit:
       # Per-job allowlist: advisory-audit hits PyPI, npm registry,
       # crates.io advisories, GitHub release artefacts (osv-scanner
       # binary), Semgrep registry, and TruffleHog's own GitHub action.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
           egress-policy: block
           disable-sudo: true
@@ -147,19 +152,19 @@ jobs:
             crates.io:443
             semgrep.dev:443
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # Full history so TruffleHog can diff base..head; without
           # this it sees only the latest commit and reports nothing.
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
           cache: 'pip'
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
 
@@ -167,6 +172,11 @@ jobs:
 
       - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
+          # Save only on main. This action defaults to saving on every ref, and
+          # a PR-scoped rust cache (550-840MB here) can only be restored by
+          # re-runs of that same PR while still counting against the 10GB
+          # per-repo budget, evicting main's copy that every PR can restore.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: studio/src-tauri -> target
 
       - name: Install pip-audit + cargo-audit
@@ -216,7 +226,7 @@ jobs:
         #       on the runner). A comment line is left in place so the
         #       skipped specs are obvious in the artifact.
         # The `huggingface` extra is `huggingfacenotorch` plus torch /
-        # torchvision / triton, deliberately skipped: Studio backend
+        # torchvision / triton, deliberately skipped: Unsloth backend
         # already pins a torch and the +cu* / +cpu local-version tags
         # trip up the PyPI resolver in `-r` mode.
         run: |
@@ -251,7 +261,7 @@ jobs:
         # `-r requirements.txt` resolves the requirements through pip's
         # dependency resolver against PyPI metadata and audits the
         # resolved tree without ever executing setup.py / install
-        # hooks. Way faster than installing the full Studio runtime
+        # hooks. Way faster than installing the full Unsloth runtime
         # and -- critically -- safer: an attacker who has compromised
         # a transitive dep cannot run code in this job.
         #
@@ -324,9 +334,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ─────────────────────────────────────────────────────────────
-      # npm: Studio frontend
+      # npm: Unsloth frontend
       # ─────────────────────────────────────────────────────────────
-      - name: npm audit (Studio frontend)
+      - name: npm audit (Unsloth frontend)
         # `npm audit` resolves the lockfile through the npmjs.com
         # advisory DB. `--audit-level=high` filters the noise floor
         # to only HIGH and CRITICAL. We do NOT pass --omit=dev: a
@@ -340,7 +350,7 @@ jobs:
           # Always also write the full JSON for grep-ability.
           npm audit --json > ../../logs-npm-audit.json || true
           {
-            echo "## npm audit (Studio frontend)"
+            echo "## npm audit (Unsloth frontend)"
             echo
             echo '```'
             tail -200 ../../logs-npm-audit.txt
@@ -348,9 +358,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ─────────────────────────────────────────────────────────────
-      # cargo: Studio Tauri shell
+      # cargo: Unsloth Tauri shell
       # ─────────────────────────────────────────────────────────────
-      - name: cargo audit (Studio Tauri)
+      - name: cargo audit (Unsloth Tauri)
         # `--deny warnings` would make the job fail on any advisory.
         # Keep non-blocking initially; drop continue-on-error after
         # the baseline closes.
@@ -360,7 +370,7 @@ jobs:
           set +e
           cargo audit | tee ../../logs-cargo-audit.txt
           {
-            echo "## cargo audit (Studio Tauri)"
+            echo "## cargo audit (Unsloth Tauri)"
             echo
             echo '```'
             tail -200 ../../logs-cargo-audit.txt
@@ -538,13 +548,13 @@ jobs:
       # / tokens / cred files committed accidentally. --only-verified
       # filters out probabilistic findings, so we only flag tokens
       # that the source provider confirmed are live. On push to main
-      # / pip we scan the full repo; on PR we scan base..head.
+      # we scan the full repo; on PR we scan base..head.
       # SHA-pinned for the same reason as harden-runner above.
       # v3.95.2 commit:
       # ─────────────────────────────────────────────────────────────
       - name: TruffleHog (secrets in diff)
         continue-on-error: true
-        uses: trufflesecurity/trufflehog@37b77001d0174ebec2fcca2bd83ff83a6d45a3ab  # v3.95.3
+        uses: trufflesecurity/trufflehog@6f3c981e7b77f235fd2702dd74af25fc4b72bf11  # v3.96.0
         with:
           path: ./
           base: ${{ github.event.pull_request.base.sha || '' }}
@@ -557,7 +567,7 @@ jobs:
 
       # ─────────────────────────────────────────────────────────────
       # CycloneDX SBOM. Lets downstream consumers audit what's
-      # actually shipped in unsloth wheels and the Studio backend
+      # actually shipped in unsloth wheels and the Unsloth backend
       # runtime. Generates one JSON file per requirements input plus
       # a combined SBOM keyed off pyproject.toml; uploads as a build
       # artifact (and a future step can attest it via SLSA).
@@ -738,7 +748,7 @@ jobs:
     # `--with-deps` makes the scan transitive: every package the
     # declared set resolves to gets fetched and pattern-scanned, not
     # just the top-level pins. Resolving the full transitive closure
-    # of the unsloth + Studio dep tree downloads several hundred
+    # of the unsloth + Unsloth dep tree downloads several hundred
     # archives, hence the longer timeout.
     #
     # Sharded across runners for wall-clock parallelism. Each shard
@@ -747,7 +757,7 @@ jobs:
     # composition tries to balance load:
     #   - hf-stack: pyproject extras + no-torch-runtime
     #               (~150 archives, transformers/peft/accelerate/...)
-    #   - studio:   FastAPI/Studio backend + overrides + extras-no-deps
+    #   - studio:   FastAPI/Unsloth backend + overrides + extras-no-deps
     #               (~150 archives, smaller scientific stack)
     #   - extras:   the heavy openai-whisper / scikit-learn / librosa
     #               stack (~250 archives, dominant cost)
@@ -776,7 +786,7 @@ jobs:
       # Per-job allowlist: pip-scan-packages only fetches PyPI archives
       # via scan_packages.py + pip download. No npm or cargo traffic.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
           egress-policy: block
           disable-sudo: true
@@ -788,11 +798,11 @@ jobs:
             pypi.org:443
             files.pythonhosted.org:443
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -962,7 +972,7 @@ jobs:
     # documented at scripts/scan_npm_packages.py top-of-file. The
     # script is stdlib-only so adding it does not increase the
     # transitive supply-chain surface.
-    name: npm scan-packages (Studio frontend tarballs)
+    name: npm scan-packages (Unsloth frontend tarballs)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: []
@@ -971,7 +981,7 @@ jobs:
       # registry.npmjs.org. GitHub endpoints retained for checkout +
       # setup-python action machinery.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
           egress-policy: block
           disable-sudo: true
@@ -982,11 +992,11 @@ jobs:
             objects.githubusercontent.com:443
             registry.npmjs.org:443
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
 
@@ -1055,7 +1065,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
           egress-policy: block
           disable-sudo: true
@@ -1067,11 +1077,11 @@ jobs:
             pypi.org:443
             files.pythonhosted.org:443
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
 
@@ -1092,7 +1102,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
           egress-policy: block
           disable-sudo: true
@@ -1104,11 +1114,11 @@ jobs:
             pypi.org:443
             files.pythonhosted.org:443
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
 
@@ -1145,7 +1155,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
           egress-policy: audit
           disable-sudo: true
@@ -1156,22 +1166,22 @@ jobs:
             objects.githubusercontent.com:443
             registry.npmjs.org:443
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # Need the base commit accessible for `git show
           # <base-sha>:studio/frontend/package-lock.json` below.
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
 
-      - name: Install Studio frontend deps (--ignore-scripts)
+      - name: Install Unsloth frontend deps (--ignore-scripts)
         # `npm audit signatures` requires node_modules to be populated.
         # `--ignore-scripts` is mandatory: this is exactly the lever the
         # new-install-script gate below protects against, and we must

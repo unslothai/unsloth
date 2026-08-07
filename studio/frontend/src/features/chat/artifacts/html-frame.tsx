@@ -28,23 +28,21 @@ export function buildArtifactSrcDoc(code: string): string {
 }
 
 // Preview iframes intentionally omit allow-downloads: generated canvases can
-// offer their own UI, but downloads must go through Studio's explicit
+// offer their own UI, but downloads must go through Unsloth's explicit
 // copy/download controls outside the no-same-origin sandbox.
 export function ArtifactHtmlFrame({
   code,
   title = "HTML canvas preview",
   className,
   fill = false,
-  // Tool-rendered canvases only; default off so fences never get network.
-  allowNetworkAccess = false,
 }: {
   code: string;
   title?: string;
   className?: string;
   fill?: boolean;
-  allowNetworkAccess?: boolean;
 }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  // Every canvas honors this, fence or tool. Off by default, and the only gate.
   const networkAccessEnabled = useChatRuntimeStore(
     (state) => state.allowArtifactNetworkAccess,
   );
@@ -53,11 +51,11 @@ export function ArtifactHtmlFrame({
   const src = useMemo(() => {
     const query = new URLSearchParams({ v: hashArtifactCode(code) });
     // Never put the auth token in the URL: in-frame code can read location.href.
-    if (allowNetworkAccess && networkAccessEnabled) {
+    if (networkAccessEnabled) {
       query.set("allow_network", "1");
     }
     return apiUrl(`/api/inference/artifact-preview-frame?${query.toString()}`);
-  }, [allowNetworkAccess, networkAccessEnabled, code]);
+  }, [networkAccessEnabled, code]);
   // Feed only parent-initiated loads, so a self-navigated frame can't self-upgrade.
   const pendingPostRef = useRef(false);
   useEffect(() => {

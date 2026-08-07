@@ -5,6 +5,7 @@ export interface TrainingRunSummary {
   id: string;
   status: "running" | "completed" | "stopped" | "error";
   model_name: string;
+  project_name: string | null;
   dataset_name: string;
   display_name: string | null;
   started_at: string;
@@ -14,7 +15,10 @@ export interface TrainingRunSummary {
   final_loss: number | null;
   output_dir: string | null;
   can_resume: boolean;
+  /** Why resume is unavailable, when the resource provenance is the cause. */
+  resume_blocked_reason?: string | null;
   resumed_later: boolean;
+  artifacts_available?: boolean;
   has_preview_model: boolean;
   preview_ref: string | null;
   preview_sig: string | null;
@@ -51,4 +55,6 @@ export interface TrainingRunDetailResponse {
 export interface TrainingRunDeleteResponse {
   status: string;
   message: string;
+  artifacts_deleted: boolean;
+  artifacts_kept_reason: "shared_output_dir" | "purge_failed" | null;
 }

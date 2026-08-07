@@ -4,11 +4,11 @@
 # Windows counterpart to studio-ui-smoke.yml / studio-mac-ui-smoke.yml.
 # Same Playwright + Chromium end-to-end chat UI flow + extra UI flow,
 # but on the FREE windows-latest runner so we catch Windows-specific
-# regressions in the install path (install.ps1), the Studio CLI's
+# regressions in the install path (install.ps1), the Unsloth CLI's
 # Windows process-management branches, and the llama.cpp prebuilt's
 # Windows HTTP layer.
 
-name: Windows Studio UI CI
+name: Windows Unsloth UI CI
 
 on:
   pull_request:
@@ -19,14 +19,24 @@ on:
       - 'install.ps1'
       - 'pyproject.toml'
       - 'tests/studio/**'
+      - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/workflows/studio-windows-ui-smoke.yml'
+      # Every server boot in this workflow shells out to that script, so an edit
+      # to it changes what this workflow actually runs.
+      - '.github/scripts/boot-studio-api-only.sh'
+      # Same for the /api/health wait that runs after a boot.
+      - '.github/scripts/wait-for-health.sh'
   push:
-    branches: [main, pip]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -49,18 +59,18 @@ jobs:
       GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf
       STUDIO_PORT: '18896'
       HF_HOME: ${{ github.workspace }}/hf-cache
-      # Force UTF-8 for stdio so Python tools (hf download, Studio
+      # Force UTF-8 for stdio so Python tools (hf download, Unsloth
       # CLI, etc.) can print Unicode characters like the success
       # checkmark "✓". Windows defaults to cp1252 / charmap and
       # any tool that prints "OK ✓" hits a UnicodeEncodeError.
       PYTHONIOENCODING: utf-8
       PYTHONUTF8: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
           # No `cache: 'npm'`. setup-node's npm cache restore silently
@@ -71,7 +81,7 @@ jobs:
           # npm/cli#7308. The frontend `npm ci` is fast enough without
           # the cache that the reliability gain is worth the ~30s.
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
           # No `cache: 'pip'`. install.ps1 / setup.ps1 use uv and
@@ -79,13 +89,17 @@ jobs:
           # then fatal-errors with "Cache folder path is retrieved
           # for pip but doesn't exist on disk".
 
+      # Cross-OS shared entry. The tree under `hf-cache` is byte-identical on
+      # Linux, macOS and Windows, so the key carries no `runner.os`, and
+      # enableCrossOsArchive lets Windows (which tars with --force-local) join it.
       - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
         id: cache-hf
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         continue-on-error: true
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
+          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
+          enableCrossOsArchive: true
 
       - name: Prime HF_HOME with the GGUF
         id: prime-hf
@@ -100,11 +114,22 @@ jobs:
           bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }}
-        if: always() && steps.prime-hf.outcome == 'success'
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        # Save on main only. Caches created on a PR ref are scoped to that
+        # merge ref -- per GitHub's docs they "can only be restored by re-runs
+        # of the pull request" -- while every PR *can* restore from the default
+        # branch. So a PR-scoped save helps almost nothing and competes for the
+        # 10GB per-repo budget, and when that budget is exceeded GitHub evicts
+        # by least-recently-used, which deletes main's copies that all PRs share.
+        # This repo was measured at 33.3GB across 30 caches, 3.3x over, with the
+        # same 4.6GB model held four times on four different PR refs and no copy
+        # on main at all. That is the thrash loop: PR misses -> downloads ->
+        # saves its own copy -> evicts main's -> next PR misses.
+        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
+          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
+          enableCrossOsArchive: true
 
       - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
         shell: pwsh
@@ -121,7 +146,7 @@ jobs:
           # studio-windows-update-smoke.yml for the full rationale --
           # creating an empty studio/frontend/dist trips setup.ps1's
           # mtime-based staleness check into "frontend up to date, skip
-          # rebuild" and Studio boots with an empty dist directory.
+          # rebuild" and Unsloth boots with an empty dist directory.
           # Add-MpPreference accepts paths that do not yet exist.
           foreach ($p in @(
             "$env:USERPROFILE\.unsloth",
@@ -148,7 +173,7 @@ jobs:
           Set-Content -LiteralPath (Join-Path $appDir 'launch-studio.vbs') -Value 'WScript.Echo "legacy"' -Encoding Unicode
           Write-Host "seeded legacy launch-studio.vbs at $appDir"
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         # install.ps1 is the supported Windows installer. install.sh
         # has no Windows branch (apt-get / brew calls). The PS1
         # script's `Install-UnslothStudio @args` line at the bottom
@@ -205,7 +230,7 @@ jobs:
           echo "install.ps1 installed the Windows prebuilt llama.cpp:"
           cat "$INFO"
 
-      - name: Assert Studio launcher chain (no VBS, hidden PowerShell shortcut)
+      - name: Assert Unsloth launcher chain (no VBS, hidden PowerShell shortcut)
         # The shortcut launch path is otherwise untested here (the steps below
         # boot `unsloth studio` directly). Guard against re-introducing the VBS
         # that tripped Kaspersky HEUR:Trojan.VBS.Agent.gen and against the .lnk
@@ -234,7 +259,7 @@ jobs:
           }
           Write-Host "launcher chain OK (no VBS; hidden powershell over launch-studio.ps1)"
 
-      - name: Launch Studio via the shortcut and assert health
+      - name: Launch Unsloth via the shortcut and assert health
         # Run the exact command the .lnk stores (hidden PowerShell over
         # launch-studio.ps1) and confirm it brings the backend up. This is the
         # only step that proves the shortcut launch is not silently broken.
@@ -265,10 +290,10 @@ jobs:
             $owner = (Get-NetTCPConnection -LocalPort $foundPort -State Listen -ErrorAction Stop | Select-Object -First 1).OwningProcess
             if ($owner) { taskkill /PID $owner /T /F 2>$null | Out-Null }
           } catch {}
-          if (-not $foundPort) { throw "Studio did not become healthy when launched via the shortcut" }
-          Write-Host "Studio healthy on port $foundPort (launched via the shortcut)"
+          if (-not $foundPort) { throw "Unsloth did not become healthy when launched via the shortcut" }
+          Write-Host "Unsloth healthy on port $foundPort (launched via the shortcut)"
 
-      - name: Add Studio shim to GITHUB_PATH
+      - name: Add Unsloth shim to GITHUB_PATH
         # install.ps1 puts unsloth.exe at $StudioHome\bin\unsloth.exe
         # and adds that dir to the User PATH via the Windows registry.
         # Registry-level PATH updates don't propagate to a running
@@ -284,7 +309,7 @@ jobs:
           fi
           # GITHUB_PATH wants Windows-style paths; convert via cygpath.
           cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
-          echo "Added Studio shim dir to PATH: $(cygpath -w "$SHIM_DIR")"
+          echo "Added Unsloth shim dir to PATH: $(cygpath -w "$SHIM_DIR")"
 
       - name: Install Playwright + Chromium
         # No --with-deps on Windows: that flag installs Linux apt
@@ -294,23 +319,14 @@ jobs:
           python -m pip install 'playwright>=1.45'
           python -m playwright install chromium
 
-      - name: Reset auth + boot Studio
+      - name: Reset auth + boot Unsloth
         run: |
-          unsloth studio reset-password
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
-            > logs/studio.log 2>&1 &
-          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+          # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
+          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
 
       - name: Wait for /api/health
         run: |
-          for i in $(seq 1 180); do
-            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
-              jq -e '.status == "healthy"' /tmp/health.json && break
-            fi
-            sleep 1
-          done
-          jq -e '.status == "healthy"' /tmp/health.json
+          bash .github/scripts/wait-for-health.sh --port "$STUDIO_PORT"
 
       - name: Pass bootstrap password to the Playwright step
         run: |
@@ -339,29 +355,25 @@ jobs:
           mkdir -p logs/playwright
           python tests/studio/playwright_chat_ui.py
 
-      - name: Stop Studio (chat-ui ends with Shutdown click; this is belt-and-suspenders)
+      - name: Stop Unsloth (chat-ui ends with Shutdown click; this is belt-and-suspenders)
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
           sleep 2
 
-      - name: Reset auth + boot Studio for extra UI tests (port 18897)
+      - name: Edge permission controls
         run: |
-          unsloth studio reset-password
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18897 \
-            > logs/studio_extra.log 2>&1 &
-          echo "STUDIO_EXTRA_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/run-studio-permission-browser.sh 18895 chromium msedge
+
+      - name: Reset auth + boot Unsloth for extra UI tests (port 18897)
+        run: |
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port 18897 --log logs/studio_extra.log --pid-var STUDIO_EXTRA_PID
 
       - name: Wait for /api/health on 18897
         run: |
-          for i in $(seq 1 180); do
-            if curl -fs "http://127.0.0.1:18897/api/health" > /tmp/health2.json; then
-              jq -e '.status == "healthy"' /tmp/health2.json && break
-            fi
-            sleep 1
-          done
-          jq -e '.status == "healthy"' /tmp/health2.json
+          bash .github/scripts/wait-for-health.sh \
+            --port 18897 --log logs/studio_extra.log --tmp /tmp/health2.json
 
       - name: Pass bootstrap pw for extra UI test
         run: |
@@ -372,7 +384,7 @@ jobs:
           echo "STUDIO_EXTRA_OLD_PW=$OLD" >> "$GITHUB_ENV"
           echo "STUDIO_EXTRA_NEW_PW=$NEW" >> "$GITHUB_ENV"
 
-      - name: Drive Compare/Recipes/Export/Studio/Settings with Playwright
+      - name: Drive Compare/Recipes/Export/Unsloth/Settings with Playwright
         env:
           BASE_URL: http://127.0.0.1:18897
           STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
@@ -386,7 +398,7 @@ jobs:
           mkdir -p logs/playwright_extra
           python tests/studio/playwright_extra_ui.py
 
-      - name: Stop second Studio
+      - name: Stop second Unsloth
         if: always()
         run: |
           kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
@@ -402,5 +414,10 @@ jobs:
             logs/studio_extra.log
             logs/install.log
             logs/playwright
+            logs/playwright-permissions-*
             logs/playwright_extra
-          retention-days: 7
+            logs/studio-permissions-*.log
+          # 1 day, matching the repository-wide cap. A larger value here is
+          # silently clamped to that cap today, so stating 7 only invites the
+          # artifacts to re-inflate if the cap is ever raised.
+          retention-days: 1

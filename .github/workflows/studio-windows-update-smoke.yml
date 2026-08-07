@@ -5,25 +5,27 @@
 # studio-mac-update-smoke.yml. Verifies that on the FREE
 # windows-latest runner:
 #
-#   1. install.ps1 --local --no-torch installs Studio AND auto-fetches
-#      the prebuilt llama.cpp Windows binary (llama-bNNNN-bin-win-cpu-
-#      x64 from ggml-org/llama.cpp). Hitting the source-build fallback
-#      is treated as an Unsloth bug -- Studio must always pick the
+#   1. install.ps1 --local --no-torch installs Unsloth AND auto-fetches
+#      the prebuilt llama.cpp Windows binary (app-<tag>-windows-x64-cpu
+#      from unslothai/llama.cpp). Hitting the source-build fallback is
+#      treated as an Unsloth bug -- Unsloth must always pick the
 #      prebuilt on Windows.
 #   2. unsloth studio update --local is idempotent. Two consecutive
 #      runs both report "prebuilt up to date and validated", no
 #      source-build fallback. The CLI's _find_setup_script picks
 #      setup.ps1 on Windows automatically.
-#   3. The installed Studio still boots and /api/health returns
+#   3. The installed Unsloth still boots and /api/health returns
 #      healthy after the update path.
 
-name: Windows Studio Update CI
+name: Windows Unsloth Update CI
 
 on:
   pull_request:
     paths:
       - 'install.ps1'
       - 'scripts/uninstall.ps1'
+      - 'tests/studio/test_uninstall_*.ps1'
+      - 'tests/studio/test_psmodulepath_normalization.ps1'
       - 'studio/setup.ps1'
       - 'studio/setup.bat'
       - 'studio/install_python_stack.py'
@@ -33,19 +35,23 @@ on:
       - 'pyproject.toml'
       - '.github/workflows/studio-windows-update-smoke.yml'
   push:
-    branches: [main, pip]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
 
 jobs:
   update-idempotency:
-    name: Studio Updating Tests
+    name: Unsloth Updating Tests
     runs-on: windows-latest
     timeout-minutes: 30
     defaults:
@@ -53,20 +59,45 @@ jobs:
         shell: bash
     env:
       # Force UTF-8 for stdio (Windows defaults to cp1252; hf
-      # download / Studio CLI print "✓" checkmarks and crash
+      # download / Unsloth CLI print "✓" checkmarks and crash
       # otherwise).
       PYTHONIOENCODING: utf-8
       PYTHONUTF8: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      # This workflow triggers on uninstall.ps1; neither test really uninstalls.
+      - name: uninstall.ps1 unit tests (argument guard, dual-install icon preserve)
+        shell: pwsh
+        run: |
+          # Propagate each child test's failure before continuing.
+          pwsh -NoProfile -File tests/studio/test_uninstall_arg_guard.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          pwsh -NoProfile -File tests/studio/test_uninstall_dual_install_icon.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      # Both entry points prepend the 5.1 system module dir, and Refresh-Environment
+      # must not reload PSModulePath back over it before the uv installer runs.
+      - name: PSModulePath normalization unit tests
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/studio/test_psmodulepath_normalization.ps1
+
+      # The guard is self-hosting, so launching it from powershell.exe covers
+      # Windows PowerShell 5.1: the shell the README one-liner lands in, handled
+      # nowhere else in CI, and it differs from pwsh 7 on native stderr.
+      - name: uninstall.ps1 argument guard under Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          powershell -NoProfile -File tests/studio/test_uninstall_arg_guard.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
           # Don't cache pip: install.ps1 + setup.ps1 go through uv
@@ -90,7 +121,7 @@ jobs:
         #     reuses the existing Node with no download.
         #
         # (2) Defender. windows-latest's real-time scan opens / hashes
-        #     every file Studio writes during install (Vite output =
+        #     every file Unsloth writes during install (Vite output =
         #     thousands of small chunks, uv pip = wheel-extraction =
         #     thousands of small files). The latency dominates the
         #     200 s frontend build and the 90 s deps install. Adding
@@ -109,7 +140,7 @@ jobs:
           # setup.ps1 line 1281-1296's mtime-based "is the frontend
           # stale?" check into "up to date, skip rebuild", because the
           # newly-created dist's mtime is younger than every source
-          # file. Studio then boots with an empty dist and 500s on
+          # file. Unsloth then boots with an empty dist and 500s on
           # GET / with FileNotFoundError: dist\index.html. See run
           # 25546676715 / job 74984469728.
           # Add-MpPreference accepts paths that do not yet exist; the
@@ -129,7 +160,7 @@ jobs:
             }
           }
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -168,7 +199,7 @@ jobs:
           echo "install.ps1 installed the Windows prebuilt llama.cpp:"
           cat "$INFO"
 
-      - name: Add Studio shim to GITHUB_PATH
+      - name: Add Unsloth shim to GITHUB_PATH
         run: |
           SHIM_DIR=~/.unsloth/studio/bin
           if [ ! -f "$SHIM_DIR/unsloth.exe" ]; then
@@ -198,6 +229,31 @@ jobs:
           fi
           echo "update path took the prebuilt fast path"
 
+      - name: Update must keep the --no-torch install GGUF-only
+        run: |
+          # `unsloth studio update` exports no UNSLOTH_NO_TORCH, so setup.ps1 has
+          # to recover the mode from the install manifest. Without that it reads
+          # the missing torch as a stale venv and tries to delete the venv it is
+          # running out of, and the shared dependency pass pulls torch back in.
+          # The skip line only prints when the dependency pass actually runs, so
+          # don't demand it if the fast path short-circuited that pass.
+          if grep -q "running ordered dependency installation" logs/update.log \
+             && ! grep -q "skipping direct PyTorch and Triton installation (no-torch mode)" logs/update.log; then
+            echo "::error::studio update left no-torch mode; it would reinstall PyTorch."
+            grep -iE "no-torch|stale venv|PyTorch" logs/update.log | tail -40
+            exit 1
+          fi
+          PY="$HOME/.unsloth/studio/unsloth_studio/Scripts/python.exe"
+          if [ ! -f "$PY" ]; then
+            echo "::error::studio venv interpreter missing at $PY"
+            exit 1
+          fi
+          if "$PY" -c "import torch" 2>/dev/null; then
+            echo "::error::torch was reinstalled into the --no-torch venv."
+            exit 1
+          fi
+          echo "update preserved no-torch mode"
+
       - name: Second update must also be a no-op
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -212,7 +268,7 @@ jobs:
           grep -qE "prebuilt up to date and validated|prebuilt installed and validated" logs/update2.log
           echo "second update was clean"
 
-      - name: Boot Studio briefly to confirm the install is still usable
+      - name: Boot Unsloth briefly to confirm the install is still usable
         run: |
           mkdir -p logs
           UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18891 \
@@ -239,13 +295,13 @@ jobs:
             sleep 1
           done
           if [ -z "$HEALTHY" ]; then
-            echo "Studio failed to come up after \`update\`"
+            echo "Unsloth failed to come up after \`update\`"
             tail -200 logs/studio.log
             kill "$PID" 2>/dev/null || true
             exit 1
           fi
           kill "$PID" 2>/dev/null || true
-          echo "post-update Studio /api/health OK"
+          echo "post-update Unsloth /api/health OK"
 
       - name: Uninstall and verify clean
         # Round-trip through scripts/uninstall.ps1 against the default
@@ -268,12 +324,26 @@ jobs:
           foreach ($p in @(
             "$env:USERPROFILE\.unsloth\studio",
             "$env:USERPROFILE\.unsloth\studio\unsloth_studio",
-            "$env:USERPROFILE\.unsloth\studio\bin\unsloth.exe"
+            "$env:USERPROFILE\.unsloth\studio\bin\unsloth.exe",
+            "$env:USERPROFILE\.unsloth\whisper.cpp",
+            "$env:USERPROFILE\.unsloth\.llama.cpp.install.lock",
+            "$env:USERPROFILE\.unsloth\.node.install.lock",
+            "$env:USERPROFILE\.unsloth\.whisper.cpp.install.lock"
           )) {
             if (Test-Path -LiteralPath $p) {
               Write-Host "::error::leak: $p"
               $leak++
             }
+          }
+          # Catch-all that does not need updating when a new artifact is added:
+          # nothing but Unsloth writes under ~/.unsloth on a runner, so a
+          # surviving directory means the uninstaller missed something. Mirrors
+          # the POSIX check in studio-update-smoke.yml.
+          if (Test-Path -LiteralPath "$env:USERPROFILE\.unsloth") {
+            Write-Host "::error::leak: ~/.unsloth survived the uninstall"
+            Get-ChildItem -LiteralPath "$env:USERPROFILE\.unsloth" -Force -Recurse -ErrorAction SilentlyContinue |
+              Select-Object -First 40 -ExpandProperty FullName
+            $leak++
           }
           if ($leak -gt 0) { exit 1 }
           # Idempotency.
