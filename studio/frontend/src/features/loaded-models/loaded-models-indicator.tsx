@@ -144,9 +144,8 @@ export function LoadedModelsIndicator({
   const enabled = showIndicator && canShowIndicator(pathname);
   const { entries, ejecting, eject } = useLoadedModels(enabled);
   const [collapsed, setCollapsed] = usePersistedToggle(COLLAPSED_KEY);
-  const { position, panelRef, startDrag, dragging } = useDragPosition(
-    LOADED_MODELS_PREFERENCE_KEYS.position,
-  );
+  const { position, panelRef, startDrag, dragging, justDragged } =
+    useDragPosition(LOADED_MODELS_PREFERENCE_KEYS.position);
 
   if (!enabled || entries.length === 0) return null;
 
@@ -162,7 +161,9 @@ export function LoadedModelsIndicator({
         "pointer-events-none",
         position && "fixed z-[9999] w-fit",
         !position &&
-          (positioned ? "fixed bottom-4 right-4 z-50" : "flex min-h-0 justify-end"),
+          (positioned
+            ? "fixed bottom-4 right-4 z-50"
+            : "flex min-h-0 justify-end"),
         dragging && "select-none",
       )}
       style={position ? { left: position.left, top: position.top } : undefined}
@@ -172,9 +173,14 @@ export function LoadedModelsIndicator({
           <TooltipTrigger asChild={true}>
             <button
               type="button"
-              aria-label={`${countLabel}. Show details`}
-              onClick={() => setCollapsed(false)}
-              className="menu-soft-surface pointer-events-auto flex h-9 cursor-pointer items-center gap-1.5 rounded-full pl-2.5 pr-3 font-heading text-muted-foreground transition-colors hover:text-foreground"
+              aria-label={`${countLabel}. Show details, or drag to move`}
+              onPointerDown={startDrag}
+              // The pill is its own drag handle, so a press that moved is a
+              // drag and must not also expand the card.
+              onClick={() => {
+                if (!justDragged()) setCollapsed(false);
+              }}
+              className="menu-soft-surface pointer-events-auto flex h-9 cursor-grab touch-none items-center gap-1.5 rounded-full pl-2.5 pr-3 font-heading text-muted-foreground transition-colors hover:text-foreground active:cursor-grabbing"
             >
               <HugeiconsIcon
                 icon={AiBrain01Icon}

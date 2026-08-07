@@ -13,19 +13,44 @@ export type DragPosition = { left: number; top: number };
 /** Keeps the panel fully on screen, and off the very edge. */
 const MARGIN = 8;
 
+// Below this the press is a click, so the collapsed pill can be both a drag
+// handle and the button that expands it.
+const DRAG_THRESHOLD_PX = 4;
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-function clampToViewport(
+export type Viewport = { width: number; height: number };
+
+/** Keeps the whole panel on screen. Exported pure for the node suite. */
+export function clampToViewport(
   position: DragPosition,
   width: number,
   height: number,
+  viewport: Viewport,
 ): DragPosition {
   return {
-    left: clamp(position.left, MARGIN, Math.max(MARGIN, innerWidth - width - MARGIN)),
-    top: clamp(position.top, MARGIN, Math.max(MARGIN, innerHeight - height - MARGIN)),
+    left: clamp(
+      position.left,
+      MARGIN,
+      Math.max(MARGIN, viewport.width - width - MARGIN),
+    ),
+    top: clamp(
+      position.top,
+      MARGIN,
+      Math.max(MARGIN, viewport.height - height - MARGIN),
+    ),
   };
+}
+
+/** Whether a press has moved far enough to be a drag rather than a click. */
+export function passedDragThreshold(dx: number, dy: number): boolean {
+  return Math.hypot(dx, dy) >= DRAG_THRESHOLD_PX;
+}
+
+function viewport(): Viewport {
+  return { width: window.innerWidth, height: window.innerHeight };
 }
 
 function readStored(key: string): DragPosition | null {
@@ -59,15 +84,20 @@ export type UseDragPosition = {
   panelRef: React.RefObject<HTMLDivElement | null>;
   startDrag: (event: React.PointerEvent<HTMLElement>) => void;
   dragging: boolean;
-  /** Send it back to its corner. */
-  reset: () => void;
+  /** True once, for the click that ends a drag, so a handle can also be a
+   *  button. Reading it clears the flag, so a later keyboard activation on the
+   *  same button is not swallowed too. */
+  justDragged: () => boolean;
 };
 
 export function useDragPosition(storageKey: string): UseDragPosition {
   const [position, setPosition] = useState<DragPosition | null>(() =>
     typeof window === "undefined" ? null : readStored(storageKey),
   );
+  // Held from pointerdown to pointerup; dragging only once past the threshold.
+  const [pressing, setPressing] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const movedRef = useRef(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const sessionRef = useRef<{
     pointerId: number;
@@ -79,25 +109,39 @@ export function useDragPosition(storageKey: string): UseDragPosition {
     height: number;
   } | null>(null);
 
-  // A window that shrank while the panel sat near an edge would strand it
-  // off screen, and nothing else can move it back.
+  // Returning the same object when nothing changed matters: this also runs from
+  // a ResizeObserver, and a fresh object every time would re-render forever.
+  const reclamp = useCallback((width: number, height: number) => {
+    setPosition((current) => {
+      if (!current) return current;
+      const next = clampToViewport(current, width, height, viewport());
+      return next.left === current.left && next.top === current.top
+        ? current
+        : next;
+    });
+  }, []);
+
+  // A window that shrank, or a panel that grew when expanded, would otherwise
+  // strand it off screen with nothing able to bring it back.
   useEffect(() => {
     if (!position) return;
-    const onResize = () => {
-      const box = panelRef.current?.getBoundingClientRect();
-      if (!box) return;
-      setPosition((current) =>
-        current ? clampToViewport(current, box.width, box.height) : current,
-      );
+    const panel = panelRef.current;
+    const measure = () => {
+      const box = panel?.getBoundingClientRect();
+      if (box) reclamp(box.width, box.height);
     };
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, [position]);
+    window.addEventListener("resize", measure);
+    const observer = panel ? new ResizeObserver(measure) : null;
+    if (panel && observer) observer.observe(panel);
+    return () => {
+      window.removeEventListener("resize", measure);
+      observer?.disconnect();
+    };
+  }, [position, reclamp]);
 
   const startDrag = useCallback((event: React.PointerEvent<HTMLElement>) => {
     const panel = panelRef.current;
     if (event.button !== 0 || !panel) return;
-    event.preventDefault();
     const box = panel.getBoundingClientRect();
     sessionRef.current = {
       pointerId: event.pointerId,
@@ -108,26 +152,30 @@ export function useDragPosition(storageKey: string): UseDragPosition {
       width: box.width,
       height: box.height,
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
-    setDragging(true);
-    // Anchor to the measured box first, so the first move is not a jump from
-    // the corner the panel was flowing in.
-    setPosition(clampToViewport({ left: box.left, top: box.top }, box.width, box.height));
+    movedRef.current = false;
+    setPressing(true);
   }, []);
 
   useEffect(() => {
-    if (!dragging) return;
+    if (!pressing) return;
     const onMove = (event: PointerEvent) => {
       const session = sessionRef.current;
       if (!session || session.pointerId !== event.pointerId) return;
+      const dx = event.clientX - session.startX;
+      const dy = event.clientY - session.startY;
+      if (!movedRef.current) {
+        if (!passedDragThreshold(dx, dy)) return;
+        movedRef.current = true;
+        setDragging(true);
+      }
+      // Text selection would otherwise start mid-drag on the pill's label.
+      event.preventDefault();
       setPosition(
         clampToViewport(
-          {
-            left: session.left + (event.clientX - session.startX),
-            top: session.top + (event.clientY - session.startY),
-          },
+          { left: session.left + dx, top: session.top + dy },
           session.width,
           session.height,
+          viewport(),
         ),
       );
     };
@@ -135,9 +183,10 @@ export function useDragPosition(storageKey: string): UseDragPosition {
       const session = sessionRef.current;
       if (session && session.pointerId !== event.pointerId) return;
       sessionRef.current = null;
+      setPressing(false);
       setDragging(false);
     };
-    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointermove", onMove, { passive: false });
     window.addEventListener("pointerup", onEnd);
     window.addEventListener("pointercancel", onEnd);
     return () => {
@@ -145,15 +194,19 @@ export function useDragPosition(storageKey: string): UseDragPosition {
       window.removeEventListener("pointerup", onEnd);
       window.removeEventListener("pointercancel", onEnd);
     };
-  }, [dragging]);
+  }, [pressing]);
 
   // Persist the resting place only, not every frame of the drag.
   useEffect(() => {
-    if (dragging) return;
+    if (pressing) return;
     store(storageKey, position);
-  }, [dragging, position, storageKey]);
+  }, [pressing, position, storageKey]);
 
-  const reset = useCallback(() => setPosition(null), []);
+  const justDragged = useCallback(() => {
+    const moved = movedRef.current;
+    movedRef.current = false;
+    return moved;
+  }, []);
 
-  return { position, panelRef, startDrag, dragging, reset };
+  return { position, panelRef, startDrag, dragging, justDragged };
 }
