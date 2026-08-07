@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import threading
 from ctypes import wintypes
 from pathlib import Path
@@ -189,9 +190,10 @@ def test_idle_scan_excludes_verified_launcher_and_blocks_another_managed_image(
 
 
 @pytest.mark.skipif(os.name != "nt", reason = "Windows process inspection is required")
-def test_idle_scan_excludes_the_venv_python_redirector_under_a_shim(tmp_path, monkeypatch):
-    # install.ps1 runs `Scripts\unsloth.exe studio setup`, and the venv redirector
-    # sits between that shim and base Python. Without it the installer blocks itself.
+def test_idle_scan_excludes_the_venv_python_redirector(tmp_path, monkeypatch):
+    # install.ps1 runs `Scripts\unsloth.exe studio setup` and Tauri runs the venv
+    # interpreter directly, so both arrive through the redirector. Without the
+    # exemption each blocks on its own launcher.
     studio_home = tmp_path / "studio"
     scripts = studio_home / "unsloth_studio" / "Scripts"
     managed_python = scripts / "python.exe"
@@ -222,6 +224,7 @@ def test_idle_scan_excludes_the_venv_python_redirector_under_a_shim(tmp_path, mo
             "ExecutablePath": str(managed_launcher),
         },
     ]
+    monkeypatch.setattr(sys, "executable", str(managed_python))
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -233,24 +236,19 @@ def test_idle_scan_excludes_the_venv_python_redirector_under_a_shim(tmp_path, mo
     )
     gate.ensure_managed_environment_is_idle(studio_home)
 
-    # A redirector with no shim above it is an ordinary managed process.
-    payload[1]["ParentProcessId"] = 0
-    del payload[2]
-    with pytest.raises(RuntimeError, match = rf"PID {redirector_pid}"):
+    # Tauri runs the redirector directly, with no shim above it.
+    payload[2]["ExecutablePath"] = str(tmp_path / "Unsloth" / "unsloth.exe")
+    gate.ensure_managed_environment_is_idle(studio_home)
+
+    # Only the direct parent is the redirector; a managed image above it is a
+    # real consumer.
+    payload[2]["ExecutablePath"] = str(managed_python)
+    with pytest.raises(RuntimeError, match = rf"PID {launcher_pid}"):
         gate.ensure_managed_environment_is_idle(studio_home)
 
-    # Only a base interpreter runs under a redirector. If we are the managed
-    # image, a managed parent is a real consumer and must keep blocking.
-    payload[0]["ExecutablePath"] = str(managed_python)
-    payload[1]["ParentProcessId"] = launcher_pid
-    payload.append(
-        {
-            "ProcessId": launcher_pid,
-            "ParentProcessId": 0,
-            "Name": "unsloth.exe",
-            "ExecutablePath": str(managed_launcher),
-        }
-    )
+    # We were not launched through the venv, so nothing above us is a redirector.
+    payload[2]["ExecutablePath"] = str(managed_launcher)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "base" / "python.exe"))
     with pytest.raises(RuntimeError, match = rf"PID {redirector_pid}"):
         gate.ensure_managed_environment_is_idle(studio_home)
 

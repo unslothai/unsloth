@@ -246,7 +246,6 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
             studio_home / "bin" / "unsloth.exe",
         )
     }
-    managed_python = _canonical_windows_path(venv / "Scripts" / "python.exe")
 
     script = (
         "$ErrorActionPreference='Stop';"
@@ -285,21 +284,28 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
     # Ignore only verified launcher ancestors. A managed backend may start an
     # update as its child, and that backend must still block replacement.
     #
-    # venv\Scripts\python.exe is a redirector: it runs base Python as a child and
-    # waits, so the launcher chain is unsloth.exe -> python.exe -> us. Carry one
-    # such redirector as pending and exempt it only once a shim is found directly
-    # above it, so a managed backend that spawns an update still blocks.
-    #
-    # Only a base interpreter can sit under a redirector. If we are the managed
-    # image ourselves there is no redirector above us, and a managed parent is a
-    # real consumer, so the hop stays closed.
+    # venv\Scripts\python.exe is a redirector (bpo-34977): it starts base Python
+    # as a child and waits, so a launch through the venv arrives as
+    # python.exe -> us. Our image is then the base interpreter while
+    # sys.executable still names the redirector, which identifies our direct
+    # parent as that launcher rather than a live consumer. Exempt that one hop
+    # only; every ancestor above it must be a shim. install.ps1 goes through
+    # unsloth.exe and the Tauri updater launches the redirector directly, so
+    # both need it, while a managed backend deeper up still blocks.
     excluded_pids = {os.getpid()}
     descendant_pid = os.getpid()
     self_executable = (process_by_pid.get(os.getpid()) or {}).get("ExecutablePath")
-    redirector_hop_allowed = not self_executable or not _windows_path_is_within(
-        _canonical_windows_path(Path(str(self_executable))), protected_root
-    )
-    pending_redirector_pid = -1
+    interpreter = _canonical_windows_path(Path(sys.executable)) if sys.executable else ""
+    launcher_redirector = ""
+    if (
+        interpreter
+        and self_executable
+        and _windows_path_is_within(interpreter, protected_root)
+        and not _windows_paths_equal(
+            _canonical_windows_path(Path(str(self_executable))), interpreter
+        )
+    ):
+        launcher_redirector = interpreter
     for _ in range(16):
         descendant = process_by_pid.get(descendant_pid)
         if descendant is None:
@@ -314,21 +320,17 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
         if not parent_executable:
             break
         parent_image = _canonical_windows_path(Path(str(parent_executable)))
-        if any(
+        is_shim = any(
             _windows_paths_equal(parent_image, protected_file) for protected_file in protected_files
-        ):
-            if pending_redirector_pid > 0:
-                excluded_pids.add(pending_redirector_pid)
-                pending_redirector_pid = -1
-            excluded_pids.add(parent_pid)
-        elif (
-            redirector_hop_allowed
-            and pending_redirector_pid < 0
-            and _windows_paths_equal(parent_image, managed_python)
-        ):
-            pending_redirector_pid = parent_pid
-        else:
+        )
+        is_our_redirector = (
+            descendant_pid == os.getpid()
+            and bool(launcher_redirector)
+            and _windows_paths_equal(parent_image, launcher_redirector)
+        )
+        if not (is_shim or is_our_redirector):
             break
+        excluded_pids.add(parent_pid)
         descendant_pid = parent_pid
 
     for process_id, process in process_by_pid.items():
