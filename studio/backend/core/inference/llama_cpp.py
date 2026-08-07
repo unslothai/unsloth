@@ -4516,12 +4516,14 @@ class LlamaCppBackend:
 
     @staticmethod
     def _vulkan_targets_are_igpus(binary: Optional[str], gpu_indices = None) -> bool:
-        """True when every Vulkan device in play is integrated.
+        """True when any Vulkan device in play is integrated.
 
         An iGPU's reported "VRAM" is shared system RAM (see
         ``_apply_igpu_host_reserve_mib``), so a model "fully offloaded" onto one
-        is still backed by pageable host memory and is worth page-locking. Any
-        discrete device in the set, or an unreadable probe, answers False.
+        is still backed by pageable host memory and is worth page-locking. Any,
+        not every: a mixed selection splits weights onto the iGPU too, and those
+        pages are as evictable as if it were the only device. An unreadable probe
+        answers False.
         """
         try:
             rows = LlamaCppBackend._run_vulkan_probe(binary)
@@ -4531,7 +4533,7 @@ class LlamaCppBackend:
             return False
         wanted = set(gpu_indices) if gpu_indices else None
         selected = [r for r in rows if wanted is None or r["index"] in wanted]
-        return bool(selected) and all(r["is_igpu"] for r in selected)
+        return any(r["is_igpu"] for r in selected)
 
     def _weights_in_host_memory(
         self,

@@ -1203,15 +1203,21 @@ class TestVulkanIgpuDetection:
         rows = [{"index": 0, "is_igpu": True}]
         assert self._probe(monkeypatch, rows)("bin", None) is True
 
-    def test_a_mixed_set_is_not_all_integrated(self, monkeypatch):
+    def test_a_mixed_set_still_has_host_weights(self, monkeypatch):
+        """A split puts part of the model on the iGPU, whose VRAM is system RAM,
+        so those pages are as evictable as if it were the only device."""
         rows = [{"index": 0, "is_igpu": True}, {"index": 1, "is_igpu": False}]
-        assert self._probe(monkeypatch, rows)("bin", None) is False
+        assert self._probe(monkeypatch, rows)("bin", None) is True
 
     def test_only_the_selected_devices_count(self, monkeypatch):
         rows = [{"index": 0, "is_igpu": True}, {"index": 1, "is_igpu": False}]
         assert self._probe(monkeypatch, rows)("bin", [0]) is True
         assert self._probe(monkeypatch, rows)("bin", [1]) is False
-        assert self._probe(monkeypatch, rows)("bin", [0, 1]) is False
+        assert self._probe(monkeypatch, rows)("bin", [0, 1]) is True
+
+    def test_discrete_only_stays_no(self, monkeypatch):
+        rows = [{"index": 0, "is_igpu": False}, {"index": 1, "is_igpu": False}]
+        assert self._probe(monkeypatch, rows)("bin", None) is False
 
     def test_an_unreadable_probe_answers_no(self, monkeypatch):
         assert self._probe(monkeypatch, [])("bin", None) is False
