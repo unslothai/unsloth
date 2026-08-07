@@ -1555,11 +1555,7 @@ class DiffusionBackend:
             checkpoint_bytes = int(
                 file_sizes.get(repo_id, {}).get(gguf_filename, sizes.get(repo_id, 0))
             )
-        required_total += sum(
-            int(size)
-            for files in te_files.values()
-            for _name, size in files[1]
-        )
+        required_total += sum(int(size) for files in te_files.values() for _name, size in files[1])
 
         def add_missing_entry(
             repo: str,
@@ -1625,7 +1621,6 @@ class DiffusionBackend:
         """
         try:
             from huggingface_hub import try_to_load_from_cache
-
             for root in (hub_cache_dir(), None):
                 hit = try_to_load_from_cache(repo_id, filename, cache_dir = root)
                 if isinstance(hit, str) and Path(hit).is_file():

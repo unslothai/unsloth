@@ -29,9 +29,7 @@ def test_cached_checkpoint_is_not_staged_again(monkeypatch):
             types.SimpleNamespace(rfilename = "model_index.json", size = 1_000),
             types.SimpleNamespace(rfilename = "scheduler/scheduler_config.json", size = 2_000),
             types.SimpleNamespace(rfilename = "tokenizer/tokenizer.json", size = 3_000),
-            types.SimpleNamespace(
-                rfilename = "text_encoder/model.safetensors", size = 2 * GB
-            ),
+            types.SimpleNamespace(rfilename = "text_encoder/model.safetensors", size = 2 * GB),
             types.SimpleNamespace(
                 rfilename = "vae/diffusion_pytorch_model.safetensors", size = 500_000_000
             ),
@@ -39,7 +37,12 @@ def test_cached_checkpoint_is_not_staged_again(monkeypatch):
     }
 
     class FakeApi:
-        def model_info(self, repo_id, files_metadata = False, token = None):
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
             del files_metadata, token
             return types.SimpleNamespace(siblings = repos[repo_id])
 
@@ -67,8 +70,7 @@ def test_cached_checkpoint_is_not_staged_again(monkeypatch):
         DiffusionBackend,
         "_hub_file_is_cached",
         staticmethod(
-            lambda repo_id, filename: repo_id == CHECKPOINT_REPO
-            and filename == CHECKPOINT_FILE
+            lambda repo_id, filename: repo_id == CHECKPOINT_REPO and filename == CHECKPOINT_FILE
         ),
         raising = False,
     )

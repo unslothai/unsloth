@@ -243,9 +243,7 @@ def main() -> None:
         picker = page.locator(".unsloth-model-selector-menu")
         assert picker.count() == 1
         picker.screenshot(path = str(ART_DIR / "image-model-footprint-before.png"))
-        page.screenshot(
-            path = str(ART_DIR / "image-model-footprint-before-full.png"), full_page = True
-        )
+        page.screenshot(path = str(ART_DIR / "image-model-footprint-before-full.png"), full_page = True)
 
         full_footprint["enabled"] = True
         _open_klein_quant(page)
@@ -257,9 +255,7 @@ def main() -> None:
         picker = page.locator(".unsloth-model-selector-menu")
         assert picker.count() == 1
         picker.screenshot(path = str(ART_DIR / "image-model-footprint-after.png"))
-        page.screenshot(
-            path = str(ART_DIR / "image-model-footprint-after-full.png"), full_page = True
-        )
+        page.screenshot(path = str(ART_DIR / "image-model-footprint-after-full.png"), full_page = True)
         help_icon = page.locator("[data-model-download-footprint-help]")
         assert help_icon.count() == 1
         help_icon.hover()
@@ -268,9 +264,7 @@ def main() -> None:
         explanation_text = " ".join(explanation.inner_text().split())
         assert "Full required size" in explanation_text
         assert "2.6GBmodel+8.2GBrequiredassets" in "".join(explanation_text.split())
-        page.screenshot(
-            path = str(ART_DIR / "image-model-footprint-hover.png"), full_page = True
-        )
+        page.screenshot(path = str(ART_DIR / "image-model-footprint-hover.png"), full_page = True)
 
         assert not page_errors, page_errors
         browser.close()
