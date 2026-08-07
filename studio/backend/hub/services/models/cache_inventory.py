@@ -841,7 +841,6 @@ def _scan_cached_models() -> list[dict]:
     inspected = 0
     skipped_gguf = 0
     skipped_no_weights = 0
-    skipped_stt = 0
     for hf_cache in cache_scans:
         for repo_info in hf_cache.repos:
             inspected += 1
@@ -858,7 +857,9 @@ def _scan_cached_models() -> list[dict]:
                     str(snapshot_path) if snapshot_path is not None else None,
                 )
                 is_curated_stt = is_curated_stt_repo_id(repo_id)
-                if is_hidden_infra and not is_curated_stt:
+                snapshot_metadata = _cached_model_local_metadata(repo_path, snapshot_path)
+                is_whisper_stt = bool(snapshot_metadata.get("_hidden_stt"))
+                if is_hidden_infra and not is_curated_stt and not is_whisper_stt:
                     continue
                 has_main_gguf = _repo_has_gguf_files(repo_info)
                 payload = _repo_non_gguf_model_payload(repo_info)
@@ -881,9 +882,7 @@ def _scan_cached_models() -> list[dict]:
                 )
                 load_snapshot = identity.load_snapshot
                 local_metadata = _cached_model_local_metadata(repo_path, load_snapshot)
-                if local_metadata.pop("_hidden_stt", False) and not is_curated_stt:
-                    skipped_stt += 1
-                    continue
+                is_whisper_stt = local_metadata.pop("_hidden_stt", False)
                 # Scoped to the row's snapshot, so an incomplete newer revision cannot flip can_chat.
                 download_partial = hf_cache_scan.is_snapshot_partial(
                     "model",
@@ -901,7 +900,13 @@ def _scan_cached_models() -> list[dict]:
                 # serves the row and it would reach for the Hub.
                 if not payload.payload_snapshots:
                     snapshot_partial = True
-                row_task = _cached_row_task(repo_info, gguf = False)
+                row_task = (
+                    "automatic-speech-recognition"
+                    if is_whisper_stt
+                    else _cached_row_task(repo_info, gguf = False)
+                )
+                if is_whisper_stt:
+                    local_metadata["pipeline_tag"] = "automatic-speech-recognition"
                 row = {
                     "repo_id": repo_id,
                     "size_bytes": payload.size_bytes,
@@ -956,12 +961,10 @@ def _scan_cached_models() -> list[dict]:
                 continue
     cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
     logger.info(
-        "Cached model scan: inspected=%d skipped_gguf=%d skipped_no_weights=%d "
-        "skipped_stt=%d returned=%d",
+        "Cached model scan: inspected=%d skipped_gguf=%d skipped_no_weights=%d returned=%d",
         inspected,
         skipped_gguf,
         skipped_no_weights,
-        skipped_stt,
         len(cached),
     )
     return cached

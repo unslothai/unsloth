@@ -236,6 +236,15 @@ export function loadSttModel(model: string, engine?: SttEngine): Promise<void> {
   });
 }
 
+/** Cancel an engine's pending model load without touching its downloads. */
+export async function cancelSttLoad(engine: SttEngine): Promise<void> {
+  const response = await authFetch(
+    `/api/inference/audio/stt/load/cancel?engine=${encodeURIComponent(engine)}`,
+    { method: "POST" },
+  );
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+}
+
 /** Start a background download of a dictation model. */
 export async function startSttDownload(
   model: string,

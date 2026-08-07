@@ -263,3 +263,21 @@ test("file transcription cannot overlap a pending microphone permission", () => 
     /type="file"[\s\S]*disabled=\{[\s\S]*micRequestPending[\s\S]*onChange=/,
   );
 });
+
+test("gallery refresh preserves fallback selection and pagination identity", () => {
+  assert.match(
+    audioPageSource,
+    /!fallbackClipRef\.current[\s\S]*page\.audio\.length > 0/,
+  );
+  assert.match(
+    audioPageSource,
+    /galleryCache\.nextOffset \+= page\.audio\.length;[\s\S]*new Set\(galleryCache\.clips\.map[\s\S]*filter\(\(clip\) => !known\.has\(clip\.id\)\)/,
+  );
+});
+
+test("Audio transcription uses backend language auto-detection", () => {
+  assert.match(
+    audioPageSource,
+    /transcribeAudioBlob\(blob, \{[\s\S]*model: key,[\s\S]*engine,[\s\S]*language: ""/,
+  );
+});

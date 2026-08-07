@@ -48,6 +48,7 @@ import {
 } from "@/features/chat";
 import {
   SttModelNotDownloadedError,
+  cancelSttLoad,
   fetchSttStatus,
   loadSttModel,
   startSttDownload,
@@ -138,11 +139,13 @@ const CLIP_BLOB_BUDGET_BYTES = 64 * 1024 * 1024;
 const galleryCache: {
   clips: AudioGalleryClip[];
   hasMore: boolean;
+  nextOffset: number;
   selectedId: string | null;
   srcById: BlobUrlCache;
 } = {
   clips: [],
   hasMore: false,
+  nextOffset: 0,
   selectedId: null,
   srcById: new BlobUrlCache(CLIP_BLOB_BUDGET_BYTES),
 };
@@ -270,6 +273,8 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     prompt: string;
     model: string;
   } | null>(null);
+  const fallbackClipRef = useRef(fallbackClip);
+  fallbackClipRef.current = fallbackClip;
   const loadingMoreRef = useRef(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordStreamRef = useRef<MediaStream | null>(null);
@@ -434,6 +439,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       const page = await listAudioGallery(0, PAGE_SIZE);
       galleryCache.clips = page.audio;
       galleryCache.hasMore = page.has_more;
+      galleryCache.nextOffset = page.audio.length;
       setClips(page.audio);
       setHasMore(page.has_more);
       if (
@@ -443,7 +449,11 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         galleryCache.selectedId = page.audio[0]?.id ?? null;
         setSelectedId(galleryCache.selectedId);
       }
-      if (!galleryCache.selectedId && page.audio.length > 0) {
+      if (
+        !galleryCache.selectedId &&
+        !fallbackClipRef.current &&
+        page.audio.length > 0
+      ) {
         galleryCache.selectedId = page.audio[0].id;
         setSelectedId(galleryCache.selectedId);
       }
@@ -458,8 +468,13 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     if (loadingMoreRef.current) return;
     loadingMoreRef.current = true;
     try {
-      const page = await listAudioGallery(galleryCache.clips.length, PAGE_SIZE);
-      galleryCache.clips = [...galleryCache.clips, ...page.audio];
+      const page = await listAudioGallery(galleryCache.nextOffset, PAGE_SIZE);
+      galleryCache.nextOffset += page.audio.length;
+      const known = new Set(galleryCache.clips.map((clip) => clip.id));
+      galleryCache.clips = [
+        ...galleryCache.clips,
+        ...page.audio.filter((clip) => !known.has(clip.id)),
+      ];
       galleryCache.hasMore = page.has_more;
       setClips(galleryCache.clips);
       setHasMore(page.has_more);
@@ -487,6 +502,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const selectClip = useCallback((id: string) => {
     galleryCache.selectedId = id;
     setSelectedId(id);
+    setFallbackClip(null);
   }, []);
 
   // --- Model selection ----------------------------------------------------
@@ -662,11 +678,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         } catch (error) {
           if (!(error instanceof SttModelNotDownloadedError)) throw error;
           if (!isCurrent()) return;
-          await startSttDownload(
-            sidecarKey,
-            hfApiToken(getHfToken()),
-            engine,
-          );
+          await startSttDownload(sidecarKey, hfApiToken(getHfToken()), engine);
           // STT owns its specialized transfer, but the existing mirror gives
           // it the same global Downloads row, progress and Cancel action as
           // every other Studio model download. Do not reset an adopted row.
@@ -756,6 +768,8 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         sttLoadingGeneration.current = null;
         busyRef.current = null;
         setBusy(null);
+        const engine = repoId ? sttEngineForRepoId(repoId) : null;
+        if (engine) void cancelSttLoad(engine).catch(() => {});
       }
       return;
     }
@@ -763,11 +777,31 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     const deferred = deferredSttLoad.current;
     deferredSttLoad.current = null;
     if (deferred && selectedSttRepoRef.current === deferred.repoId) {
-      void ensureSttLoaded(
-        deferred.repoId,
-        deferred.sidecarKey,
-        deferred.engine,
-      );
+      void (async () => {
+        try {
+          const status = await fetchSttStatus(
+            undefined,
+            deferred.engine === "transformers"
+              ? deferred.sidecarKey
+              : undefined,
+          );
+          const download = sttEngineStatusFor(
+            status,
+            deferred.sidecarKey,
+            deferred.engine,
+          )?.download;
+          if (download?.cancelled && download.model === deferred.sidecarKey)
+            return;
+        } catch {
+          // Status is advisory here; the normal preparation path reports errors.
+        }
+        if (activeRef.current && selectedSttRepoRef.current === deferred.repoId)
+          void ensureSttLoaded(
+            deferred.repoId,
+            deferred.sidecarKey,
+            deferred.engine,
+          );
+      })();
     }
   }, [active, ensureSttLoaded]);
 
@@ -1113,6 +1147,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         const text = await transcribeAudioBlob(blob, {
           model: key,
           engine,
+          language: "",
         });
         setTranscript(text);
         if (!text) toast.info("The model heard no speech in that audio.");

@@ -9,6 +9,13 @@ const source = readFileSync(
   new URL("../src/features/audio/audio-page.tsx", import.meta.url),
   "utf8",
 );
+const mirrorSource = readFileSync(
+  new URL(
+    "../src/features/settings/lib/stt-download-mirror.ts",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 test("STT download polling uses the available engine fallback", () => {
   assert.match(
@@ -24,7 +31,7 @@ test("STT download polling uses the available engine fallback", () => {
 test("Audio mirrors an STT transfer into Downloads without resetting an adopted job", () => {
   assert.match(
     source,
-    /await startSttDownload\([\s\S]*sidecarKey,[\s\S]*engine,[\s\S]*if \(!isTrackingSttDownload\(sidecarKey, engine\)\) \{[\s\S]*trackSttDownload\(sidecarKey, \{[\s\S]*warmSelectedVoiceModelOnComplete: false,[\s\S]*engine,[\s\S]*repoId,[\s\S]*\}\);[\s\S]*\}[\s\S]*for \(;;\)/,
+    /await startSttDownload\(sidecarKey,[\s\S]*engine\);[\s\S]*if \(!isTrackingSttDownload\(sidecarKey, engine\)\) \{[\s\S]*trackSttDownload\(sidecarKey, \{[\s\S]*warmSelectedVoiceModelOnComplete: false,[\s\S]*engine,[\s\S]*repoId,[\s\S]*\}\);[\s\S]*\}[\s\S]*for \(;;\)/,
   );
   assert.doesNotMatch(source, /`Downloading \$\{sidecarKey\}:/);
 });
@@ -44,5 +51,34 @@ test("hidden STT preparation resumes once only for the same selected repo", () =
   assert.match(
     source,
     /const deferred = deferredSttLoad\.current;[\s\S]*deferredSttLoad\.current = null;[\s\S]*selectedSttRepoRef\.current === deferred\.repoId[\s\S]*ensureSttLoaded\([\s\S]*deferred\.repoId,[\s\S]*deferred\.sidecarKey,[\s\S]*deferred\.engine/,
+  );
+});
+
+test("default Transformers transfers share one tracker identity", () => {
+  assert.match(
+    mirrorSource,
+    /engine && engine !== "transformers" \? `\$\{engine\}:\$\{model\}` : model/,
+  );
+  assert.match(
+    mirrorSource,
+    /options\.engine === "transformers" \? undefined : options\.engine/,
+  );
+  assert.match(
+    mirrorSource,
+    /if \(trackers\.has\(key\)\)[\s\S]*warmSelectedVoiceModelOnComplete\.set\(key, true\)/,
+  );
+});
+
+test("hidden Audio cancels only an active sidecar load", () => {
+  assert.match(
+    source,
+    /if \(sttLoadingGeneration\.current !== null\)[\s\S]*cancelSttLoad\(engine\)/,
+  );
+});
+
+test("cancelled deferred downloads remain cancelled on return", () => {
+  assert.match(
+    source,
+    /const download = sttEngineStatusFor[\s\S]*download\?\.cancelled[\s\S]*download\.model === deferred\.sidecarKey[\s\S]*return/,
   );
 });

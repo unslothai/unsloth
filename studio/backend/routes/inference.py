@@ -8753,6 +8753,17 @@ async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_c
     return JSONResponse(content = {"loaded_model": sidecar.loaded_model, "device": sidecar.device})
 
 
+@studio_router.post("/audio/stt/load/cancel")
+async def stt_load_cancel(
+    engine: Optional[str] = None, current_subject: str = Depends(get_current_subject)
+):
+    """Cancel an in-flight STT model load without cancelling its download."""
+    resolved_engine = _resolve_serving_stt_engine(engine)
+    sidecar = _stt_sidecar_for(resolved_engine)
+    cancelled = await asyncio.to_thread(sidecar.cancel_pending_load)
+    return JSONResponse(content = {"cancelled": cancelled})
+
+
 @studio_router.post("/audio/stt/validate")
 async def stt_validate(
     payload: SttLoadRequest,

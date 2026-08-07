@@ -13,10 +13,10 @@ const source = readFileSync(
   "utf8",
 );
 
-test("an adopted STT transfer keeps its existing progress and completion owner", () => {
+test("an adopted STT transfer keeps progress and merges its Voice owner", () => {
   assert.match(
     source,
-    /const key = trackerKey\(model, explicitEngine\);[\s\S]*if \(trackers\.has\(key\)\) return;[\s\S]*warmSelectedVoiceModelOnComplete\.set/,
+    /const key = trackerKey\(model, explicitEngine\);[\s\S]*if \(trackers\.has\(key\)\) \{[\s\S]*warmSelectedVoiceModelOnComplete\.set\(key, true\);[\s\S]*return;[\s\S]*\}/,
   );
 });
 
@@ -27,8 +27,11 @@ test("tracking-only STT jobs never invoke the Voice-owned completion load", () =
   );
 });
 
-test("same-key downloads on different STT engines have independent jobs", () => {
-  assert.match(source, /return engine \? `\$\{engine\}:\$\{model\}` : model/);
+test("non-default STT engines have independent jobs", () => {
+  assert.match(
+    source,
+    /engine && engine !== "transformers" \? `\$\{engine\}:\$\{model\}` : model/,
+  );
   assert.match(source, /cancelSttDownload\(model, resolvedEngine\)/);
   assert.match(
     source,

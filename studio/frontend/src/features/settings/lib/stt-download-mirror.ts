@@ -39,11 +39,13 @@ const trackers = new SttDownloadTrackers();
 const warmSelectedVoiceModelOnComplete = new Map<string, boolean>();
 
 function trackerKey(model: SttModel, engine?: SttEngine): string {
-  return engine ? `${engine}:${model}` : model;
+  return engine && engine !== "transformers" ? `${engine}:${model}` : model;
 }
 
 function jobKey(model: SttModel, engine?: SttEngine): string {
-  return engine ? `stt:${engine}:${model}` : `stt:${model}`;
+  return engine && engine !== "transformers"
+    ? `stt:${engine}:${model}`
+    : `stt:${model}`;
 }
 
 async function loadAndAnnounce(
@@ -162,12 +164,17 @@ export function trackSttDownload(
     repoId?: string;
   } = {},
 ): void {
-  const explicitEngine = options.engine;
+  const explicitEngine =
+    options.engine === "transformers" ? undefined : options.engine;
   const resolvedEngine = explicitEngine ?? sttEngineFor(model);
   const key = trackerKey(model, explicitEngine);
   // Starting/adopting the same transfer from another surface must not reset
   // its visible progress or replace its poller/completion policy.
-  if (trackers.has(key)) return;
+  if (trackers.has(key)) {
+    if (options.warmSelectedVoiceModelOnComplete !== false)
+      warmSelectedVoiceModelOnComplete.set(key, true);
+    return;
+  }
   warmSelectedVoiceModelOnComplete.set(
     key,
     options.warmSelectedVoiceModelOnComplete ?? true,

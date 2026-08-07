@@ -614,7 +614,7 @@ def test_a_later_attempts_cancel_marker_does_not_break_the_pinned_quant(monkeypa
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
     monkeypatch.setattr(
         GV,
@@ -674,7 +674,7 @@ def test_the_pins_excuse_covers_only_the_quants_it_holds(monkeypatch, tmp_path):
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
     monkeypatch.setattr(
         GV,
@@ -731,7 +731,7 @@ def test_a_later_attempts_incomplete_blob_does_not_break_the_pinned_quant(monkey
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
     variant = GgufVariantInfo(
         filename = "Model-Q4_K_M.gguf",
@@ -1242,9 +1242,6 @@ def test_is_hidden_model_hides_dictation_models(tmp_path):
 
 
 def test_list_cached_models_hides_custom_whisper_by_config(monkeypatch, tmp_path):
-    # Regression: the legacy /cached-models picker must pass the snapshot path so
-    # the config check hides a custom (non-curated) Whisper checkpoint; a bare
-    # repo id cannot ("user/whisper-finetune" is not in the curated set).
     repo_path = tmp_path / "models--user--whisper-finetune"
     snap = repo_path / "snapshots" / "abc"
     snap.mkdir(parents = True)
@@ -1275,7 +1272,7 @@ def test_list_cached_models_hides_custom_whisper_by_config(monkeypatch, tmp_path
     )
     # The route passed the snapshot path (not just the repo id) ...
     assert any(str(repo_path) in values for values in captured)
-    # ... so the custom Whisper checkpoint is hidden from the chat picker.
+    # ... so the legacy chat inventory keeps hiding the custom checkpoint.
     assert result["cached"] == []
 
 
@@ -2573,9 +2570,9 @@ def test_arch_to_task_agrees_with_the_loader_on_ambiguous_archs():
             loader_accepts = True
         except (ValueError, FileNotFoundError):
             loader_accepts = False
-        assert (
-            task == "text-to-image"
-        ) == loader_accepts, f"{fam.name}: picker task={task} but loader accepts={loader_accepts}"
+        assert (task == "text-to-image") == loader_accepts, (
+            f"{fam.name}: picker task={task} but loader accepts={loader_accepts}"
+        )
 
 
 def _clear_chat_delete_guards(monkeypatch):
@@ -2965,7 +2962,7 @@ def test_list_cached_models_flags_single_file_diffusion_repos(monkeypatch, tmp_p
     monkeypatch.setattr(
         models_route,
         "_cached_repo_task",
-        lambda repo_info: ("text-to-image" if "Qwen-Image" in repo_info.repo_id else None),
+        lambda repo_info: "text-to-image" if "Qwen-Image" in repo_info.repo_id else None,
     )
     monkeypatch.setattr(
         models_route,
@@ -3246,9 +3243,9 @@ def test_cached_repo_task_agrees_with_the_image_loader(monkeypatch):
             loader_accepts = True
         except (ValueError, FileNotFoundError, RuntimeError):
             loader_accepts = False
-        assert (
-            task == "text-to-image"
-        ) == loader_accepts, f"{repo_id}: picker task={task} but loader accepts={loader_accepts}"
+        assert (task == "text-to-image") == loader_accepts, (
+            f"{repo_id}: picker task={task} but loader accepts={loader_accepts}"
+        )
 
 
 def test_cached_picker_hides_a_family_this_diffusers_cannot_build(monkeypatch):
@@ -3385,9 +3382,9 @@ def test_every_shipped_video_family_resolves_on_this_diffusers():
     from core.inference.diffusion_families import family_pipeline_available
     from core.inference.video_families import _FAMILIES as _VIDEO_FAMILIES
     for fam in _VIDEO_FAMILIES:
-        assert family_pipeline_available(
-            fam
-        ), f"{fam.name}: {fam.pipeline_class} is not in diffusers"
+        assert family_pipeline_available(fam), (
+            f"{fam.name}: {fam.pipeline_class} is not in diffusers"
+        )
 
 
 def test_the_gguf_picker_and_the_image_loader_agree_on_an_old_diffusers(monkeypatch):
@@ -3410,9 +3407,9 @@ def test_the_gguf_picker_and_the_image_loader_agree_on_an_old_diffusers(monkeypa
                 loader_accepts = True
             except (ValueError, FileNotFoundError, RuntimeError):
                 loader_accepts = False
-            assert (
-                (task == "text-to-image") == loader_accepts
-            ), f"{repo_id} on {engine}: picker task={task} but loader accepts={loader_accepts}"
+            assert (task == "text-to-image") == loader_accepts, (
+                f"{repo_id} on {engine}: picker task={task} but loader accepts={loader_accepts}"
+            )
 
 
 def test_a_cancelled_siblings_resume_survives_the_local_listing(monkeypatch, tmp_path):
@@ -3436,7 +3433,7 @@ def test_a_cancelled_siblings_resume_survives_the_local_listing(monkeypatch, tmp
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
 
     # Disk-only means disk-only: a remote listing here would be the bug this route avoids.
@@ -3479,7 +3476,7 @@ def test_a_cancelled_sibling_survives_a_failed_remote_listing(monkeypatch, tmp_p
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
 
     def _unreachable(*args, **kwargs):
@@ -3518,7 +3515,7 @@ def test_a_cancelled_siblings_marker_shows_on_the_repo_row(monkeypatch, tmp_path
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
 
     from hub.services.models import cache_inventory
