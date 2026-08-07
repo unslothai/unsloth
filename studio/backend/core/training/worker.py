@@ -1171,8 +1171,15 @@ def _install_package_wheel_first(
     return True
 
 
-def _ensure_causal_conv1d_fast_path(event_queue: Any, model_name: str) -> None:
-    if not _model_wants_causal_conv1d(model_name):
+def _ensure_causal_conv1d_fast_path(
+    event_queue: Any,
+    model_name: str,
+    *,
+    required: bool | None = None,
+) -> None:
+    if required is None:
+        required = _model_wants_causal_conv1d(model_name)
+    if not required:
         return
     if sys.platform == "win32":
         logger.info("causal-conv1d: no prebuilt wheel for Windows; skipping")
@@ -1702,7 +1709,12 @@ def _rebind_in_already_imported_modules(*, attr_name: str, old_obj: Any, new_obj
     return count
 
 
-def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
+def _install_fast_path_hooks(
+    event_queue: Any,
+    model_name: str,
+    *,
+    install_causal_conv1d: bool | None = None,
+) -> None:
     """Hook transformers' is_*_available gates so the first call drives the install.
 
     Idempotent. UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS=1 falls back to the substring gate.
@@ -1807,7 +1819,9 @@ def _install_fast_path_hooks(event_queue: Any, model_name: str) -> None:
     hooks = [
         ("is_flash_linear_attention_available", _fla_install, _fla_post_available),
     ]
-    if _model_wants_causal_conv1d(model_name):
+    if install_causal_conv1d is None:
+        install_causal_conv1d = _model_wants_causal_conv1d(model_name)
+    if install_causal_conv1d:
         hooks.append(("is_causal_conv1d_available", _causal_conv1d_install, None))
 
     for gate_name, install_fn, post_fn in hooks:
@@ -3305,18 +3319,33 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         return
 
     # ── 1b. Install fast-path kernel libraries for the chosen model.
-    # 1) causal-conv1d ALWAYS runs eagerly via the substring path: some SSM modeling files
+    # 1) causal-conv1d runs eagerly for matching architectures: some SSM modeling files
     #    lazy_load it without calling is_causal_conv1d_available.
     # 2) FLA + tilelang: gated by the runtime hook on is_flash_linear_attention_available.
     # 3) mamba-ssm + flash-attn keep their substring / size gates.
     # 4) UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS=1 falls back to the substring path.
     try:
-        _ensure_causal_conv1d_fast_path(event_queue, model_name)
+        from utils.ssm_runtime import resolved_model_wants_causal_conv1d
+
+        wants_causal_conv1d = resolved_model_wants_causal_conv1d(
+            model_name,
+            model_load_target,
+            config.get("hf_token") or None,
+        )
+        _ensure_causal_conv1d_fast_path(
+            event_queue,
+            model_name,
+            required = wants_causal_conv1d,
+        )
         if os.getenv(_FAST_PATH_HOOKS_SKIP_ENV) == "1":
             _ensure_flash_linear_attention(event_queue, model_name)
             _ensure_tilelang_backend(event_queue, model_name)
         else:
-            _install_fast_path_hooks(event_queue, model_name)
+            _install_fast_path_hooks(
+                event_queue,
+                model_name,
+                install_causal_conv1d = wants_causal_conv1d,
+            )
         _ensure_mamba_ssm(event_queue, model_name)
         _ensure_flash_attn_for_long_context(
             event_queue,
