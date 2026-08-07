@@ -802,8 +802,7 @@ def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     font_src = "font-src 'self' data:"
     if docs:
         script_src += f" 'unsafe-inline' {_DOCS_CDN}"
-        # ReDoc pulls a Google Fonts stylesheet, which 'unsafe-inline' does not
-        # cover, and that sheet then fetches the faces from gstatic.
+        # 'unsafe-inline' does not cover ReDoc's Google Fonts sheet, which pulls faces from gstatic.
         style_src += f" {_DOCS_CDN} {_DOCS_FONT_CSS}"
         font_src += f" {_DOCS_FONT_FILES}"
         worker_src += " blob:"

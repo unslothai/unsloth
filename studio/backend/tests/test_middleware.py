@@ -464,7 +464,6 @@ class TestSecurityHeadersMiddleware:
         assert main_module._DOCS_CDN in directives["style-src"]
         assert "'unsafe-inline'" in directives["script-src"]
         assert "blob:" in directives["worker-src"]
-        # ReDoc's font sheet and the faces it then pulls.
         assert main_module._DOCS_FONT_CSS in directives["style-src"]
         assert main_module._DOCS_FONT_FILES in directives["font-src"]
 
@@ -481,8 +480,7 @@ class TestSecurityHeadersMiddleware:
         assert "/docs/oauth2-redirect" in main_module._DOCS_PATHS
 
     def test_middleware_relaxes_only_the_docs_paths(self, main_module):
-        # The frozenset is an exact match on scope["path"], so pin the wiring:
-        # a docs path gets the CDN, its trailing-slash twin does not.
+        # _DOCS_PATHS matches scope["path"] exactly, so the trailing-slash twin stays strict.
         app = _make_csp_app(main_module)
 
         @app.get("/docs")
