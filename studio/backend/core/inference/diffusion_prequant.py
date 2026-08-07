@@ -162,6 +162,54 @@ def usable_prequant_source(
     return src
 
 
+def cached_checkpoint_path(source: Any, *, cache_dir: Optional[str] = None) -> Optional[str]:
+    """The path of a hosted (``kind == "repo"``) checkpoint ALREADY in the local Hub cache.
+
+    A pure lookup (a refs read plus a stat, no network), so memory planning can ask on every pick.
+    Only the PRIMARY ``filename`` counts: a cached ``fallback_filename`` (the legacy artifact) must
+    not short-circuit it, or a stale name stays pinned once the repo ships the real one, so a
+    fallback-only cache reads as "this would have to download" and the GGUF simply runs.
+
+    Both cache roots are searched: Studio pins the LIVE cache setting while an unpinned
+    ``hf_hub_download`` falls back to huggingface_hub's import-time constant. Never raises."""
+    for root in (cache_dir, None) if cache_dir else (None,):
+        hit = _cached_in_root(source, root)
+        if hit is not None:
+            return hit
+    return None
+
+
+def _cached_in_root(
+    source: Any,
+    root: Optional[str],
+    name: Optional[str] = None,
+) -> Optional[str]:
+    """One checkpoint name's path inside ONE cache root, or None. Defaults to the primary name; the
+    resolver passes ``fallback_filename`` once the primary turns out to be absent. Never raises."""
+    if source is None or getattr(source, "kind", None) != "repo":
+        return None
+    name = name or getattr(source, "filename", None)
+    if not name:
+        return None
+    try:
+        import os
+
+        from huggingface_hub import try_to_load_from_cache
+    except Exception:  # noqa: BLE001 — no cache API to ask: treat as not cached
+        return None
+    try:
+        hit = try_to_load_from_cache(source.location, name, cache_dir = root)
+    except Exception:  # noqa: BLE001 — a malformed cache entry is not a hit
+        return None
+    # A str is the cached path; a miss is None and a known-absent file is a sentinel object.
+    return hit if isinstance(hit, str) and os.path.isfile(hit) else None
+
+
+def prequant_checkpoint_cached(source: Any, *, cache_dir: Optional[str] = None) -> bool:
+    """True when ``source`` resolves from the cache, i.e. enabling prequant costs no download."""
+    return cached_checkpoint_path(source, cache_dir = cache_dir) is not None
+
+
 def _pin_kernel_preference(state_dict: Any, logger: Any = None) -> int:
     """Force every loaded fp8 weight onto the plain-torch kernel, matching the local path.
 
@@ -206,9 +254,14 @@ def load_prequantized_transformer(
     scheme: str,
     min_features: Optional[int] = None,
     fast_accum: Optional[bool] = None,
+    cache_dir: Optional[str] = None,
     logger: Any = None,
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
+
+    ``cache_dir`` is the live Hub cache root, as every other loader call pins it: unset, a fetch
+    lands under huggingface_hub's import-time constant, so a mid-session cache change re-downloads
+    into a root Studio no longer reads.
 
     Returns the placed transformer, or None on any problem (missing / mismatched /
     unreadable checkpoint, or unsupported meta-init) so the caller falls back to
@@ -228,7 +281,7 @@ def load_prequantized_transformer(
             )
             return None
 
-        path = _resolve_checkpoint_path(source, hf_token)
+        path = _resolve_checkpoint_path(source, hf_token, cache_dir)
         if path is None:
             return None
 
@@ -243,7 +296,10 @@ def load_prequantized_transformer(
         state_dict = ckpt["state_dict"]
         _pin_kernel_preference(state_dict, logger)
 
-        config = transformer_cls.load_config(base, subfolder = "transformer", token = hf_token)
+        # Read from the root that actually supplied the checkpoint: after a mid-session cache change
+        # the pinned root may be gone or read-only, and load_config's raise is swallowed below into
+        # a None return, silently dropping a prequant whose checkpoint is cached and already loaded.
+        config = _load_transformer_config(transformer_cls, base, hf_token, cache_dir, path)
         from accelerate import init_empty_weights
 
         with init_empty_weights():
@@ -278,7 +334,81 @@ def load_prequantized_transformer(
         return None
 
 
-def _resolve_checkpoint_path(source: PrequantSource, hf_token: Optional[str]) -> Optional[str]:
+def _entry_not_found_errors() -> tuple:
+    """``(EntryNotFoundError, LocalEntryNotFoundError)`` for both huggingface_hub majors.
+
+    On 1.x the base splits into a remote 404 and ``LocalEntryNotFoundError`` (no copy in this root,
+    no network); on BOTH majors local subclasses the base, so catch it first where they differ.
+    Private markers on an unexpected layout are raised by nothing, keeping today's behaviour."""
+    try:
+        from huggingface_hub.errors import EntryNotFoundError
+    except Exception:  # noqa: BLE001 — older/newer hub layouts
+
+        class EntryNotFoundError(Exception):  # type: ignore[no-redef]
+            pass
+
+    try:
+        from huggingface_hub.errors import LocalEntryNotFoundError
+    except Exception:  # noqa: BLE001
+
+        class LocalEntryNotFoundError(EntryNotFoundError):  # type: ignore[no-redef]
+            pass
+
+    return EntryNotFoundError, LocalEntryNotFoundError
+
+
+def _download_checkpoint_name(
+    source: PrequantSource,
+    name: str,
+    hf_token: Optional[str],
+    cache_dir: Optional[str],
+    *,
+    propagate_missing: bool,
+) -> str:
+    """Download ONE checkpoint filename, reusing a copy that sits under the other cache root.
+
+    Pinned to ``cache_dir``, hf_hub_download would not look there and would re-fetch multiple GB, so
+    re-run it THROUGH that root rather than return the raw path: the blob is reused after one HEAD,
+    a republished checkpoint is picked up rather than pinned stale, and offline still resolves off
+    the cached pointer. ``propagate_missing`` says another filename is still to be tried, so a
+    remote 404 for THIS one must reach the caller's fallback branch; swallowing it would return the
+    stale other-root copy of a name the repo no longer publishes. A local cache miss is not that
+    verdict, and with no name left to try neither is a 404: both keep the copy already found."""
+    from huggingface_hub import hf_hub_download
+
+    EntryNotFoundError, LocalEntryNotFoundError = _entry_not_found_errors()
+
+    if cache_dir is not None and _cached_in_root(source, cache_dir, name) is None:
+        elsewhere = _cached_in_root(source, None, name)
+        if elsewhere is not None:
+            try:
+                return hf_hub_download(
+                    repo_id = source.location,
+                    filename = name,
+                    token = hf_token,
+                    cache_dir = None,
+                )
+            except LocalEntryNotFoundError:  # offline with the copy right there: use it
+                return elsewhere
+            except EntryNotFoundError:
+                if not propagate_missing:
+                    return elsewhere
+                raise
+            except Exception:  # noqa: BLE001 — revalidation is a bonus, never a new failure
+                return elsewhere
+    return hf_hub_download(
+        repo_id = source.location,
+        filename = name,
+        token = hf_token,
+        cache_dir = cache_dir,
+    )
+
+
+def _resolve_checkpoint_path(
+    source: PrequantSource,
+    hf_token: Optional[str],
+    cache_dir: Optional[str] = None,
+) -> Optional[str]:
     """The local file path for ``source``, downloading from the Hub if needed; None if absent."""
     if source.kind == "path":
         import os
@@ -287,25 +417,71 @@ def _resolve_checkpoint_path(source: PrequantSource, hf_token: Optional[str]) ->
         expanded = os.path.expanduser(source.location)
         return expanded if os.path.isfile(expanded) else None
     if source.kind == "repo":
-        from huggingface_hub import hf_hub_download
+        EntryNotFoundError, _ = _entry_not_found_errors()
+        has_fallback = (
+            bool(source.fallback_filename) and source.fallback_filename != source.filename
+        )
         try:
-            from huggingface_hub.errors import EntryNotFoundError
-        except Exception:  # noqa: BLE001 — older hub layouts; fall back to a private marker
-
-            class EntryNotFoundError(Exception):  # type: ignore[no-redef]
-                pass
-
-        try:
-            return hf_hub_download(
-                repo_id = source.location, filename = source.filename, token = hf_token
+            return _download_checkpoint_name(
+                source,
+                source.filename,
+                hf_token,
+                cache_dir,
+                propagate_missing = has_fallback,
             )
         except EntryNotFoundError:
-            if not source.fallback_filename or source.fallback_filename == source.filename:
+            if not has_fallback:
                 raise
-            return hf_hub_download(
-                repo_id = source.location, filename = source.fallback_filename, token = hf_token
+            # Primary genuinely absent: same other-root treatment, with nothing left after it.
+            return _download_checkpoint_name(
+                source,
+                source.fallback_filename,
+                hf_token,
+                cache_dir,
+                propagate_missing = False,
             )
     return None
+
+
+def _config_cache_roots(checkpoint_path: str, cache_dir: Optional[str]) -> tuple:
+    """Cache roots to read the transformer config from, the checkpoint's OWN root first.
+
+    ``_resolve_checkpoint_path`` may answer from huggingface_hub's import-time root even when Studio
+    pins its live one, so pinning the config to the live root alone misses in exactly the
+    cache-moved/offline case the checkpoint lookup just accepted, and load_config's raise is
+    swallowed into a None return. The other root is still tried second."""
+    if cache_dir is None:
+        return (None,)
+    import os
+
+    try:
+        # normcase before comparing: on Windows C:\Users vs c:\users would read as "not under the
+        # live root" and silently reverse the order below.
+        root = os.path.normcase(os.path.realpath(cache_dir))
+        real = os.path.normcase(os.path.realpath(checkpoint_path))
+        under_live = real == root or real.startswith(root + os.sep)
+    except Exception:  # noqa: BLE001 — an unresolvable path keeps today's order
+        under_live = True
+    return (cache_dir, None) if under_live else (None, cache_dir)
+
+
+def _load_transformer_config(
+    transformer_cls: Any,
+    base: str,
+    hf_token: Optional[str],
+    cache_dir: Optional[str],
+    checkpoint_path: str,
+) -> Any:
+    """``transformer_cls.load_config`` against the checkpoint's cache root, then the other one."""
+    last: Optional[BaseException] = None
+    for root in _config_cache_roots(checkpoint_path, cache_dir):
+        try:
+            return transformer_cls.load_config(
+                base, subfolder = "transformer", token = hf_token, cache_dir = root
+            )
+        except Exception as exc:  # noqa: BLE001 — try the other root before giving up
+            last = exc
+    raise last  # type: ignore[misc]
 
 
 def _validate_checkpoint(
@@ -417,7 +593,16 @@ def _validate_checkpoint(
 
 def _same_base_model(a: str, b: str) -> bool:
     """Tolerant base-model id compare: exact, or same final path/repo segment (e.g.
-    ``/models/Z-Image-Turbo`` vs ``Tongyi-MAI/Z-Image-Turbo``)."""
+    ``/models/Z-Image-Turbo`` vs ``Tongyi-MAI/Z-Image-Turbo``).
+
+    Both sides normalise through ``canonical_base`` first, so a mirror id in a baked
+    ``base_model_id`` check cannot refuse the checkpoint and send the load down the multi-GB dense
+    download. Today's mirrors keep the repo name, so the tail compare would cover them, but this
+    must not depend on that.
+    """
+    from .diffusion_families import canonical_base
+
+    a, b = canonical_base(a), canonical_base(b)
 
     def _tail(x: str) -> str:
         return x.replace("\\", "/").rstrip("/").split("/")[-1].lower()

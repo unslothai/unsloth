@@ -8,7 +8,6 @@ import {
   FlimSlateIcon,
   Image03Icon,
   InformationCircleIcon,
-  SparklesIcon,
   VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -1546,26 +1545,32 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       {/* Controls rail + preview canvas, as on the Images tabs: no cards, a rule the full page
           height. Full width, so the preview grows with the window.
           Gutters match Images, so both pages' content starts at the same 40px. */}
-      <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-hidden pl-2 pr-5 pt-9 sm:pr-8">
+      {/* overflow-x-hidden: an unset overflow-x computes to auto beside overflow-y-auto,
+          letting a wide row pan the page sideways on a phone. */}
+      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pl-2 pr-5 pt-9 sm:pr-8 md:flex-row md:overflow-hidden">
         {/* Widened by the pl-8 so the controls keep their old width. */}
-        <div className="relative flex w-[400px] shrink-0 flex-col overflow-hidden border-r border-border/60 pl-8">
+        <div className="relative flex w-full shrink-0 flex-col border-b border-border/60 pl-8 md:w-[400px] md:overflow-hidden md:border-r md:border-b-0">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-20 pl-0.5 pr-7",
+              // pb-20 at every width: the floating Generate button below is absolutely
+              // positioned over this rail and stands 72px tall (h-11 + pb-7), so a smaller
+              // phone padding puts it on top of the last control.
+              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 pb-20 pl-0.5 pr-7 md:overflow-y-auto",
               settingsFadeClass,
             )}
           >
-          {/* Names the pane, as the Images column does. h-9 keeps both pages' headings level. */}
-          <div className="grid gap-1">
-            <h2 className="flex h-9 items-center gap-2 font-heading text-base font-medium text-foreground">
-              {/* The Images page's Create icon, so both headings read the same. */}
-              <HugeiconsIcon icon={SparklesIcon} className="size-4 shrink-0" />
-              Create
+          {/* Names the pane, as the Images column does. Same shape there, so
+              the two pages stay level. */}
+          <div className="mb-2 grid gap-1.5">
+            <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
+              {/* The app's Video icon, same as the sidebar row. */}
+              <HugeiconsIcon icon={FlimSlateIcon} className="size-[18px] shrink-0" />
+              Create videos
             </h2>
-            <p className="text-ui-11p5 leading-snug text-muted-foreground">
+            <p className="text-xs leading-snug text-muted-foreground">
               Generate a video from a prompt
             </p>
           </div>
@@ -1697,7 +1702,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           </div>
         </div>
 
-        <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden pl-2">
+        <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden pl-2 md:min-h-0">
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6">
             {selected && selectedSrc ? (
               <>

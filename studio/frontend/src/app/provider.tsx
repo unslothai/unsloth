@@ -57,6 +57,16 @@ const MINIMUM_APP_WINDOW_SIZE: LogicalWindowSize = {
   width: MIN_WINDOW_WIDTH,
   height: MIN_WINDOW_HEIGHT,
 };
+// Keep in step with MOBILE_BREAKPOINT in hooks/use-mobile.ts.
+const MIN_DESKTOP_LAYOUT_WIDTH = 768;
+
+// Logical px per CSS px: webview zoom above the display scale (Windows text
+// scaling); 1 if none.
+function logicalPerCssPx(monitorScale: number): number {
+  if (typeof window === "undefined" || !(monitorScale > 0)) return 1;
+  const ratio = window.devicePixelRatio / monitorScale;
+  return Number.isFinite(ratio) && ratio > 1 ? ratio : 1;
+}
 
 async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
   const { getCurrentWindow, LogicalSize } = await import(
@@ -93,9 +103,9 @@ async function enforceMinimumWindowSize(
 
   const logicalWidth = Math.round(innerSize.width / scaleFactor);
   const logicalHeight = Math.round(innerSize.height / scaleFactor);
-  // Linux reports innerSize from a cache updated by configure events. The
-  // AppImage's bundled GTK can deliver that event after this check, leaving the
-  // old setup size in the cache even though the first app resize has completed.
+  // Linux reports innerSize from a cache updated by WebKitGTK configure events.
+  // That event can arrive after this check, leaving the old setup size in the
+  // cache even though the first app resize has completed.
   const nextWidth = Math.max(
     logicalWidth,
     MIN_WINDOW_WIDTH,
@@ -154,7 +164,17 @@ async function applyAppWindowLayout(
       const scale = monitor.scaleFactor;
       const screenW = monitor.size.width / scale;
       const screenH = monitor.size.height / scale;
-      finalW = Math.max(MIN_WINDOW_WIDTH, Math.round(screenW * 0.75));
+      finalW = Math.max(
+        MIN_WINDOW_WIDTH,
+        Math.round(screenW * 0.75),
+        // Windows text scaling shrinks CSS px, so the window would open under
+        // the sidebar's mobile breakpoint. No-op elsewhere; never exceed the
+        // screen.
+        Math.min(
+          Math.round(MIN_DESKTOP_LAYOUT_WIDTH * logicalPerCssPx(scale)),
+          Math.round(screenW),
+        ),
+      );
       const targetH = Math.max(MIN_WINDOW_HEIGHT, Math.round(finalW / 1.618));
       finalH = Math.min(targetH, Math.round(screenH * 0.85));
     }
@@ -314,6 +334,40 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-window-control-inset": "112px",
 } as CSSProperties;
 
+// Mirror the titlebar heights onto <html>: the styles above sit on a wrapper
+// div, so overlays portalled into document.body would read them as empty.
+function DesktopChromeVarsEffect({
+  usesCustomTitlebar,
+  usesNativeMacTitlebar,
+}: {
+  usesCustomTitlebar: boolean;
+  usesNativeMacTitlebar: boolean;
+}) {
+  useEffect(() => {
+    const el = document.documentElement;
+    const set = (name: string, value: string | null) =>
+      value === null
+        ? el.style.removeProperty(name)
+        : el.style.setProperty(name, value);
+    set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null);
+    set("--studio-mac-titlebar-height", usesNativeMacTitlebar ? "34px" : null);
+    set("--studio-window-control-inset", usesCustomTitlebar ? "112px" : null);
+    // How far body-portaled surfaces (dialogs, alert dialogs) must stay clear of the
+    // top: either titlebar paints over them, and neither inherits the wrapper's style.
+    set(
+      "--studio-window-chrome-top",
+      usesCustomTitlebar || usesNativeMacTitlebar ? "34px" : null,
+    );
+    return () => {
+      set("--studio-custom-titlebar-height", null);
+      set("--studio-mac-titlebar-height", null);
+      set("--studio-window-control-inset", null);
+      set("--studio-window-chrome-top", null);
+    };
+  }, [usesCustomTitlebar, usesNativeMacTitlebar]);
+  return null;
+}
+
 function TauriWrapper({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const {
@@ -337,6 +391,10 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const windowLayoutGenerationRef = useRef(0);
   const [desktopAuthReady, setDesktopAuthReady] = useState(!isTauri);
   const [desktopAuthRetry, setDesktopAuthRetry] = useState(0);
+  const [nativeMacControlsHidden, setNativeMacControlsHidden] = useState(false);
+  const usesCustomTitlebar = shouldUseCustomWindowTitlebar();
+  const usesNativeMacTitlebar = shouldUseNativeMacWindowTitlebar();
+  const hidesTitlebarSidebar = HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
 
   useEffect(() => {
     if (!isTauri) return;
@@ -414,6 +472,29 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     void fetchDeviceType({ force: true }).catch(() => undefined);
   }, [status, desktopAuthReady]);
 
+  useEffect(() => {
+    if (!usesNativeMacTitlebar) return;
+    let active = true;
+    const refresh = () => {
+      void import("@tauri-apps/api/window")
+        .then(({ getCurrentWindow }) => getCurrentWindow().isFullscreen())
+        .then((fullscreen) => {
+          if (active) setNativeMacControlsHidden(fullscreen);
+        })
+        .catch(() => undefined);
+    };
+    const handleResize = () => {
+      refresh();
+    };
+    refresh();
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      active = false;
+      window.removeEventListener("resize", handleResize);
+    };
+  }, [usesNativeMacTitlebar]);
+
   if (!isTauri) {
     return (
       <>
@@ -440,9 +521,6 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const showApp = status === "running" && desktopAuthReady;
   const startupStatus = status === "running" ? "starting" : status;
   const startupProgressDetail = progressDetail;
-  const usesCustomTitlebar = shouldUseCustomWindowTitlebar();
-  const usesNativeMacTitlebar = shouldUseNativeMacWindowTitlebar();
-  const hidesTitlebarSidebar = HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
 
   const content = showApp ? (
     <TauriUpdateLayer
@@ -478,6 +556,13 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     />
   );
 
+  const chromeVars = (
+    <DesktopChromeVarsEffect
+      usesCustomTitlebar={usesCustomTitlebar}
+      usesNativeMacTitlebar={usesNativeMacTitlebar}
+    />
+  );
+
   if (!usesCustomTitlebar) {
     // macOS desktop uses the native titlebar and returns here before the
     // custom-titlebar branch, so mount the updater banner on this path too.
@@ -489,7 +574,14 @@ function TauriWrapper({ children }: { children: ReactNode }) {
               ? "relative h-dvh min-h-0 overflow-x-hidden overflow-y-auto bg-background"
               : "relative h-dvh min-h-0 overflow-hidden bg-background"
           }
-          style={MAC_NATIVE_CHROME_STYLE}
+          style={
+            nativeMacControlsHidden
+              ? {
+                  ...MAC_NATIVE_CHROME_STYLE,
+                  "--studio-mac-traffic-light-inset": "6px",
+                } as CSSProperties
+              : MAC_NATIVE_CHROME_STYLE
+          }
         >
           {!showApp || hidesTitlebarSidebar ? (
             <div
@@ -498,12 +590,18 @@ function TauriWrapper({ children }: { children: ReactNode }) {
               className="pointer-events-auto fixed inset-x-0 top-0 z-50 h-[var(--studio-mac-titlebar-height,34px)] select-none"
             />
           ) : null}
+          {chromeVars}
           {content}
         </div>
       );
     }
 
-    return <>{content}</>;
+    return (
+      <>
+        {chromeVars}
+        {content}
+      </>
+    );
   }
 
   const showSidebarSurface = showApp && !hidesTitlebarSidebar;
@@ -513,6 +611,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       className="relative h-dvh min-h-0 overflow-hidden bg-background"
       style={CUSTOM_CHROME_STYLE}
     >
+      {chromeVars}
       <WindowTitlebar showSidebarSurface={showSidebarSurface} />
       <div className="h-full min-h-0 overflow-hidden">{content}</div>
     </div>
@@ -525,11 +624,19 @@ function TauriWrapper({ children }: { children: ReactNode }) {
  * whenever either the customization or the resolved theme changes.
  */
 function AppearanceCustomizationEffect() {
-  const { resolved } = useTheme();
+  const { theme, resolved } = useTheme();
   const customization = useAppearanceCustomStore((s) => s.customization);
   useEffect(() => {
     applyCustomizationToDocument(customization, resolved);
   }, [customization, resolved]);
+  useEffect(() => {
+    if (!isTauri) return;
+    void import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) =>
+        getCurrentWindow().setTheme(theme === "system" ? null : theme),
+      )
+      .catch(() => undefined);
+  }, [theme]);
   return null;
 }
 

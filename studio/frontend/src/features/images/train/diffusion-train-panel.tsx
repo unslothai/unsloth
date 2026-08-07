@@ -1111,30 +1111,39 @@ export function DiffusionTrainPanel({
     </div>
   );
 
+  // overflow-x-hidden: an unset overflow-x computes to auto beside overflow-y-auto,
+  // letting a wide row pan the page sideways on a phone.
   return (
-    <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-hidden pl-2 pr-5 pt-9 sm:pr-8">
+    <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pl-2 pr-5 pt-9 sm:pr-8 md:flex-row md:overflow-hidden">
       {/* Left: configure. No cards: both panes sit on the page background, split by a full-height rule. */}
       {/* Gutters match the Create tab: pl-8 puts the content 40px in, level with the model
           selector above; pr-8 sets the gap to the rule. */}
-      <div className="relative flex w-[416px] min-w-0 shrink-0 flex-col overflow-hidden border-r border-border/60 pl-8">
+      <div className="relative flex w-full min-w-0 shrink-0 flex-col border-b border-border/60 pl-8 md:w-[416px] md:overflow-hidden md:border-r md:border-b-0">
         {/* pl-0.5 keeps focus rings off the scroll container's edge. pt-1.5
             matches the right pane's p-1.5, so both headings start on the same line. */}
         <div
           ref={attachSettingsScroll}
           onScroll={onSettingsScroll}
           className={cn(
-            "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto overflow-x-hidden pb-20 pl-0.5 pr-8 pt-1.5",
+            // pb-20 at every width: the floating Start training button below is absolutely
+            // positioned over this rail and stands 72px tall (h-11 + pb-7), so a smaller
+            // phone padding puts it on top of the Adapter name field.
+            "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-5 overflow-x-hidden pb-20 pl-0.5 pr-8 pt-1.5 md:overflow-y-auto",
             settingsFadeClass,
           )}
         >
-          <div>
-            {/* Matches "Training settings" across the rule, so the two headings read as one row. */}
-            <h2 className="font-heading flex items-center gap-1.5 text-base font-medium">
-              <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-4" />
+          {/* Icon rides the heading; the line below runs the full width. */}
+          <div className="mb-1 grid gap-1.5">
+            {/* Matches "Train settings" across the rule, so the two headings read as one row. */}
+            <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none">
+              <HugeiconsIcon
+                icon={TestTubeOutlineIcon}
+                className="size-[18px] shrink-0"
+              />
               Train a LoRA
             </h2>
-            <p className="mt-1 text-ui-11 leading-snug text-muted-foreground">
-              Teach a model a style or subject from your own images.
+            <p className="text-xs leading-snug text-muted-foreground">
+              Teach a model a new style or subject.
             </p>
           </div>
 
@@ -1416,7 +1425,7 @@ export function DiffusionTrainPanel({
       {/* Right: the run area. Before a run: training settings + previous-runs history; during/after: the live view. Selecting a previous run re-plots its logs read-only. */}
       {/* Sections carry no card of their own: spacing and a rule separate them. p-1.5 keeps the chart cards' outer ring from being clipped. */}
       {/* 40px off the rule, the gutter the settings column has off the page edge. */}
-      <div className="hover-scrollbar relative flex min-w-0 flex-1 flex-col gap-5 overflow-y-auto p-1.5 pb-7 pl-10">
+      <div className="hover-scrollbar relative flex min-w-0 flex-1 flex-col gap-5 p-1.5 pb-7 pl-8 md:overflow-y-auto md:pl-10">
         {viewRun && !hasRun ? (
           <>
             <div className="flex flex-col gap-3">
@@ -1483,11 +1492,21 @@ export function DiffusionTrainPanel({
         ) : !hasRun ? (
           <>
             <div className="flex flex-col gap-4">
-              <div className="flex items-center justify-between">
-                <span className="font-heading flex items-center gap-1.5 text-base font-medium">
-                  <HugeiconsIcon icon={Settings02Icon} className="size-4" />
-                  Training settings
-                </span>
+              {/* mb-2 + gap-4 matches the left column's mb-1 + gap-5, so Steps
+                  starts level with Model family. */}
+              <div className="mb-2 flex items-center justify-between">
+                <div className="grid gap-1.5">
+                  <span className="flex items-center gap-2 font-heading text-xl font-medium leading-none">
+                    <HugeiconsIcon
+                      icon={Settings02Icon}
+                      className="size-[18px] shrink-0"
+                    />
+                    Train settings
+                  </span>
+                  <p className="text-xs leading-snug text-muted-foreground">
+                    Hyperparameters for this run.
+                  </p>
+                </div>
                 <span className="text-xs text-muted-foreground">
                   Applied on Start training
                 </span>

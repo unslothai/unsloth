@@ -27,6 +27,12 @@ on:
       - 'pyproject.toml'
       - 'tests/studio/**'
       - '.github/workflows/studio-api-smoke.yml'
+      # Every server boot in this workflow shells out to that script, so an edit
+      # to it changes what this workflow actually runs.
+      - '.github/scripts/boot-studio-api-only.sh'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
   push:
     branches: [main, pip]
   workflow_dispatch:
@@ -69,15 +75,19 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
+      # Cross-OS shared entry. The tree under `hf-cache` is byte-identical on
+      # Linux, macOS and Windows, so the key carries no `runner.os`, and
+      # enableCrossOsArchive lets Windows (which tars with --force-local) join it.
       - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
         id: cache-hf
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         continue-on-error: true
         with:
           path: hf-cache
-          # Same key as studio-ui-smoke.yml so the two jobs share a
-          # single GGUF download across CI.
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
+          # Shared by every gemma-3-270m-it job in CI (Linux, macOS and
+          # Windows alike) so the model is downloaded once, not once per OS.
+          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
+          enableCrossOsArchive: true
 
       - name: Prime HF_HOME with the GGUF
         id: prime-hf
@@ -92,21 +102,29 @@ jobs:
           bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }}
-        if: always() && steps.prime-hf.outcome == 'success'
+        # Save on main only. Caches created on a PR ref are scoped to that
+        # merge ref -- per GitHub's docs they "can only be restored by re-runs
+        # of the pull request" -- while every PR *can* restore from the default
+        # branch. So a PR-scoped save helps almost nothing and competes for the
+        # 10GB per-repo budget, and when that budget is exceeded GitHub evicts
+        # by least-recently-used, which deletes main's copies that all PRs share.
+        # This repo was measured at 33.3GB across 30 caches, 3.3x over, with the
+        # same 4.6GB model held four times on four different PR refs and no copy
+        # on main at all. That is the thrash loop: PR misses -> downloads ->
+        # saves its own copy -> evicts main's -> next PR misses.
+        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
+          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
+          enableCrossOsArchive: true
 
       - name: Install Unsloth (--local, --no-torch)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
       - name: Install pyjwt for the JWT-expiry forge test
         run: pip install 'pyjwt>=2.6'
@@ -114,11 +132,7 @@ jobs:
       - name: Reset auth + boot Unsloth (API-only)
         run: |
           # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
-            > logs/studio.log 2>&1 &
-          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
 
       - name: Wait for /api/health
         run: |

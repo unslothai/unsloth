@@ -15,6 +15,8 @@ import contextlib
 import sys
 import types
 
+import pytest
+
 import core.inference.diffusion_prequant as pq
 from core.inference.diffusion_families import DiffusionFamily
 from core.inference.diffusion_prequant import (
@@ -498,8 +500,19 @@ def test_load_repo_source_allowed_without_optin(monkeypatch, tmp_path):
 
     downloaded = tmp_path / "transformer_fp8.pt"
     downloaded.write_bytes(b"x")
+    roots: list = []
+
+    def _dl(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+    ):
+        roots.append(cache_dir)
+        return str(downloaded)
+
     hub = types.ModuleType("huggingface_hub")
-    hub.hf_hub_download = lambda repo_id, filename, token = None: str(downloaded)
+    hub.hf_hub_download = _dl
     monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
 
     source = PrequantSource(kind = "repo", location = "org/hosted-fp8", filename = "transformer_fp8.pt")
@@ -511,9 +524,12 @@ def test_load_repo_source_allowed_without_optin(monkeypatch, tmp_path):
         dtype = "bfloat16",
         hf_token = None,
         scheme = "fp8",
+        cache_dir = "/live-hub",
         logger = None,
     )
     assert result is not None
+    # The loader pins the caller's live root, so the fetch cannot split across two.
+    assert roots == ["/live-hub"]
 
 
 def test_load_repo_source_falls_back_to_legacy_filename(monkeypatch, tmp_path):
@@ -536,6 +552,7 @@ def test_load_repo_source_falls_back_to_legacy_filename(monkeypatch, tmp_path):
         repo_id,
         filename,
         token = None,
+        cache_dir = None,
     ):
         requested.append(filename)
         if filename != "transformer_fp8.pt":
@@ -716,3 +733,565 @@ def test_pin_kernel_preference_no_torchao(monkeypatch):
     sd = {"a.weight": _FakeFp8Weight(_FakeKernelPreference.AUTO)}
     assert pq._pin_kernel_preference(sd, logger = None) == 0
     assert sd["a.weight"].kernel_preference == _FakeKernelPreference.AUTO
+
+
+# ── local cache lookup (no network) ──────────────────────────────────────────────
+def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
+    # Memory planning asks this, so it must be a pure lookup: no Hub call, no raise.
+    from core.inference.diffusion_prequant import prequant_checkpoint_cached
+
+    ckpt = tmp_path / "Z-Image-Turbo-FP8.pt"
+    ckpt.write_bytes(b"weights")
+    legacy = tmp_path / "transformer_fp8.pt"
+    legacy.write_bytes(b"weights")
+    source = PrequantSource(
+        kind = "repo",
+        location = "unsloth/Z-Image-Turbo-FP8",
+        filename = "Z-Image-Turbo-FP8.pt",
+        fallback_filename = "transformer_fp8.pt",
+    )
+    asked: list = []
+
+    def _cache(
+        repo_id,
+        filename,
+        cache_dir = None,
+    ):
+        asked.append((repo_id, filename, cache_dir))
+        return str(tmp_path / filename) if (tmp_path / filename).is_file() else None
+
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _cache)
+    monkeypatch.setattr(
+        "huggingface_hub.hf_hub_download",
+        lambda *a, **k: pytest.fail("the cache probe must never download"),
+    )
+
+    assert prequant_checkpoint_cached(source, cache_dir = "/models/hub") is True
+    # The live root is asked first, and the model-name file resolves, so no legacy lookup.
+    assert asked == [("unsloth/Z-Image-Turbo-FP8", "Z-Image-Turbo-FP8.pt", "/models/hub")]
+
+    # Only the legacy name on disk does NOT count: whether the repo publishes the canonical one
+    # needs a network call, so this reads as "would download" and the GGUF runs.
+    ckpt.unlink()
+    assert prequant_checkpoint_cached(source) is False
+    # Neither name cached -> same answer, for the ordinary reason.
+    legacy.unlink()
+    assert prequant_checkpoint_cached(source) is False
+
+
+def test_a_live_root_hit_still_goes_through_the_hub_so_it_revalidates(monkeypatch, tmp_path):
+    # hf_hub_download(cache_dir = live) reuses that root's blob AND revalidates, so a hit there
+    # must not be short-circuited: returning it raw would pin a stale checkpoint past a republish.
+    live = tmp_path / "live-hub"
+    live.mkdir()
+    ckpt = live / "Z-Image-Turbo-FP8.pt"
+    ckpt.write_bytes(b"weights")
+    source = PrequantSource(
+        kind = "repo",
+        location = "unsloth/Z-Image-Turbo-FP8",
+        filename = "Z-Image-Turbo-FP8.pt",
+        fallback_filename = "transformer_fp8.pt",
+    )
+
+    def _cache(
+        repo_id,
+        filename,
+        cache_dir = None,
+    ):
+        path = live / filename
+        return str(path) if cache_dir == str(live) and path.is_file() else None
+
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _cache)
+    asked: list = []
+
+    def _download(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+    ):
+        asked.append((filename, cache_dir))
+        return str(ckpt)  # the same blob, revalidated
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _download)
+
+    # Still "cached" for the decline gate: this costs a HEAD, not a multi-GB fetch.
+    assert pq.prequant_checkpoint_cached(source, cache_dir = str(live)) is True
+    assert pq._resolve_checkpoint_path(source, None, str(live)) == str(ckpt)
+    assert asked == [("Z-Image-Turbo-FP8.pt", str(live))]  # pinned to the root holding the blob
+
+
+def _other_root_source():
+    return PrequantSource(
+        kind = "repo",
+        location = "unsloth/Z-Image-Turbo-FP8",
+        filename = "Z-Image-Turbo-FP8.pt",
+        fallback_filename = "transformer_fp8.pt",
+    )
+
+
+def test_a_hit_only_in_the_other_root_is_revalidated_through_that_root(monkeypatch, tmp_path):
+    # hf_hub_download(cache_dir = live) would not look in huggingface_hub's import-time root and
+    # would re-fetch multiple GB, while returning the cached path raw would pin it past a
+    # republish. So the download is re-run THROUGH the root that holds the copy: one HEAD.
+    default_root = tmp_path / "default-hub"
+    default_root.mkdir()
+    ckpt = default_root / "Z-Image-Turbo-FP8.pt"
+    ckpt.write_bytes(b"weights")
+    source = _other_root_source()
+
+    def _cache(
+        repo_id,
+        filename,
+        cache_dir = None,
+    ):
+        # Only the import-time default (cache_dir None) holds it; the live root is a miss.
+        path = default_root / filename
+        return str(path) if cache_dir is None and path.is_file() else None
+
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _cache)
+    asked: list = []
+
+    def _download(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+    ):
+        asked.append((filename, cache_dir))
+        return str(ckpt)  # unchanged upstream: the same blob, revalidated
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _download)
+
+    assert pq.prequant_checkpoint_cached(source, cache_dir = "/models/live") is True
+    assert pq._resolve_checkpoint_path(source, None, "/models/live") == str(ckpt)
+    # cache_dir None, never the live root: the live root is empty, so pinning it there would be
+    # the multi-GB re-fetch the caller declined on.
+    assert asked == [("Z-Image-Turbo-FP8.pt", None)]
+
+
+def test_a_republished_checkpoint_in_the_other_root_is_picked_up(monkeypatch, tmp_path):
+    # Revalidation earns its HEAD here: the repo replaced the file under the same name, so the
+    # cached pointer is stale and the loader must follow the new snapshot instead.
+    default_root = tmp_path / "default-hub"
+    default_root.mkdir()
+    stale = default_root / "Z-Image-Turbo-FP8.pt"
+    stale.write_bytes(b"old weights")
+    fresh = default_root / "snapshots-new" / "Z-Image-Turbo-FP8.pt"
+    fresh.parent.mkdir()
+    fresh.write_bytes(b"corrected weights")
+
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda repo_id, filename, cache_dir = None, **k: (
+            str(stale) if cache_dir is None and filename == "Z-Image-Turbo-FP8.pt" else None
+        ),
+    )
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", lambda **kwargs: str(fresh))
+
+    assert pq._resolve_checkpoint_path(_other_root_source(), None, "/models/live") == str(fresh)
+
+
+def test_other_root_revalidation_never_breaks_a_load_that_works(monkeypatch, tmp_path):
+    # Offline hf_hub_download already serves the cached pointer, but anything else it raises (a hub
+    # layout change, a read-only root) must fall back to the copy already located.
+    default_root = tmp_path / "default-hub"
+    default_root.mkdir()
+    ckpt = default_root / "Z-Image-Turbo-FP8.pt"
+    ckpt.write_bytes(b"weights")
+
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda repo_id, filename, cache_dir = None, **k: (
+            str(default_root / filename)
+            if cache_dir is None and (default_root / filename).is_file()
+            else None
+        ),
+    )
+    asked: list = []
+
+    def _download(**kwargs):
+        asked.append(kwargs["cache_dir"])
+        raise RuntimeError("hub is unhappy")
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _download)
+
+    assert pq._resolve_checkpoint_path(_other_root_source(), None, "/models/live") == str(ckpt)
+    assert asked == [None]  # it was tried, through the root holding the copy, and forgiven
+
+
+def test_an_uncached_checkpoint_downloads_into_the_live_root(monkeypatch):
+    # The other half: a real fetch must land where Studio is reading, not under the stale constant.
+    asked: list = []
+    source = PrequantSource(
+        kind = "repo", location = "unsloth/Z-Image-Turbo-FP8", filename = "Z-Image-Turbo-FP8.pt"
+    )
+
+    def _dl(**kwargs):
+        asked.append(kwargs)
+        return "/live-hub/blobs/abc"
+
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _dl)
+
+    assert pq._resolve_checkpoint_path(source, "tok", "/live-hub") == "/live-hub/blobs/abc"
+    assert asked == [
+        {
+            "repo_id": "unsloth/Z-Image-Turbo-FP8",
+            "filename": "Z-Image-Turbo-FP8.pt",
+            "token": "tok",
+            "cache_dir": "/live-hub",
+        }
+    ]
+
+
+def test_prequant_checkpoint_cached_never_raises(monkeypatch):
+    # An unanswerable probe is "not cached", never an exception into the memory planner.
+    from core.inference.diffusion_prequant import prequant_checkpoint_cached
+
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("unreadable cache")),
+    )
+    source = PrequantSource(kind = "repo", location = "org/hosted-fp8", filename = "hosted-FP8.pt")
+    assert prequant_checkpoint_cached(source) is False
+    # A local override is the operator's own file, so it is not a cache question.
+    assert prequant_checkpoint_cached(PrequantSource(kind = "path", location = "/tmp/x.pt")) is False
+    assert prequant_checkpoint_cached(None) is False
+
+
+def test_a_cached_legacy_file_does_not_pre_empt_the_canonical_one(monkeypatch, tmp_path):
+    """fallback_filename is primary-first by contract, reached only once the canonical name is
+    absent remotely. Short-circuiting on a cached legacy artifact would pin a stale
+    transformer_<scheme>.pt forever, even after the repo publishes the real name."""
+    from core.inference.diffusion_prequant import _resolve_checkpoint_path
+
+    legacy = tmp_path / "transformer_fp8.pt"
+    legacy.write_bytes(b"stale")
+    source = PrequantSource(
+        kind = "repo",
+        location = "unsloth/Z-Image-Turbo-FP8",
+        filename = "Z-Image-Turbo-FP8.pt",
+        fallback_filename = "transformer_fp8.pt",
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda repo_id, filename, cache_dir = None: (
+            str(tmp_path / filename) if (tmp_path / filename).is_file() else None
+        ),
+    )
+    asked: list = []
+
+    def _download(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+    ):
+        asked.append(filename)
+        return str(tmp_path / "downloaded-canonical.pt")
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _download)
+
+    assert _resolve_checkpoint_path(source, None) == str(tmp_path / "downloaded-canonical.pt")
+    assert asked == ["Z-Image-Turbo-FP8.pt"]  # the canonical name, not the cached legacy one
+
+
+def test_the_legacy_name_is_still_used_once_the_canonical_one_is_absent(monkeypatch, tmp_path):
+    """The other direction, which is what fallback_filename exists for: a repo that only ever
+    shipped the legacy artifact must still load."""
+    from huggingface_hub.errors import EntryNotFoundError
+
+    from core.inference.diffusion_prequant import _resolve_checkpoint_path
+
+    source = PrequantSource(
+        kind = "repo",
+        location = "unsloth/Z-Image-Turbo-FP8",
+        filename = "Z-Image-Turbo-FP8.pt",
+        fallback_filename = "transformer_fp8.pt",
+    )
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+    asked: list = []
+
+    def _download(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+    ):
+        asked.append(filename)
+        if filename == "Z-Image-Turbo-FP8.pt":
+            raise EntryNotFoundError("404")
+        return str(tmp_path / filename)
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _download)
+
+    assert _resolve_checkpoint_path(source, None) == str(tmp_path / "transformer_fp8.pt")
+    assert asked == ["Z-Image-Turbo-FP8.pt", "transformer_fp8.pt"]  # primary first, then legacy
+
+
+def test_a_legacy_copy_in_the_other_root_is_reused_after_the_primary_404s(monkeypatch, tmp_path):
+    """Once the primary is absent remotely the legacy name IS the artifact, so it needs the same
+    other-root treatment: revalidate through the root holding the copy rather than re-fetch multiple
+    GB into the live one, or pin a stale file by returning it raw."""
+    from huggingface_hub.errors import EntryNotFoundError
+
+    default_root = tmp_path / "default-hub"
+    default_root.mkdir()
+    legacy = default_root / "transformer_fp8.pt"
+    legacy.write_bytes(b"weights")
+    source = PrequantSource(
+        kind = "repo",
+        location = "unsloth/Z-Image-Turbo-FP8",
+        filename = "Z-Image-Turbo-FP8.pt",
+        fallback_filename = "transformer_fp8.pt",
+    )
+
+    def _cache(
+        repo_id,
+        filename,
+        cache_dir = None,
+    ):
+        # Only the import-time default holds the legacy file; the live root holds nothing.
+        path = default_root / filename
+        return str(path) if cache_dir is None and path.is_file() else None
+
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _cache)
+    asked: list = []
+
+    def _download(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+    ):
+        asked.append((filename, cache_dir))
+        if filename == "Z-Image-Turbo-FP8.pt":
+            raise EntryNotFoundError("404")
+        return str(legacy)  # unchanged upstream: the same blob, revalidated
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _download)
+
+    assert pq._resolve_checkpoint_path(source, None, "/models/live") == str(legacy)
+    # The primary was tried in the live root and 404'd; the legacy was revalidated through the
+    # root that actually holds it, never re-fetched into the live one.
+    assert asked == [("Z-Image-Turbo-FP8.pt", "/models/live"), ("transformer_fp8.pt", None)]
+
+
+def test_a_primary_404_during_revalidation_still_reaches_the_legacy_fallback(monkeypatch, tmp_path):
+    """The other-root revalidation must not swallow the primary's 404: when the live root misses
+    but the import-time root still holds an OLD canonical checkpoint, a blanket catch returns that
+    stale file and the fallback-name branch is never reached."""
+    from huggingface_hub.errors import EntryNotFoundError
+
+    default_root = tmp_path / "default-hub"
+    default_root.mkdir()
+    stale = default_root / "Z-Image-Turbo-FP8.pt"
+    stale.write_bytes(b"obsolete")
+    live = str(tmp_path / "live")
+
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda repo_id, filename, cache_dir = None, **k: (
+            str(default_root / filename)
+            if cache_dir is None and (default_root / filename).is_file()
+            else None
+        ),
+    )
+    asked: list = []
+
+    def _download(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+    ):
+        asked.append((filename, cache_dir))
+        if filename == "Z-Image-Turbo-FP8.pt":
+            raise EntryNotFoundError("404: the repo no longer publishes this name")
+        return str(tmp_path / "fresh-legacy.pt")
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _download)
+
+    assert pq._resolve_checkpoint_path(_other_root_source(), None, live) == str(
+        tmp_path / "fresh-legacy.pt"
+    )
+    # The 404 reached the fallback branch instead of pinning the stale canonical copy.
+    assert asked == [("Z-Image-Turbo-FP8.pt", None), ("transformer_fp8.pt", live)]
+
+
+def test_offline_revalidation_still_returns_the_other_root_copy(monkeypatch, tmp_path):
+    """A LOCAL cache miss is not "absent remotely": huggingface_hub raises LocalEntryNotFoundError
+    (a subclass of EntryNotFoundError on both majors) when it cannot reach the Hub, so telling it
+    apart from a real 404 is what keeps an offline load from dropping the prequant."""
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    default_root = tmp_path / "default-hub"
+    default_root.mkdir()
+    ckpt = default_root / "Z-Image-Turbo-FP8.pt"
+    ckpt.write_bytes(b"weights")
+
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda repo_id, filename, cache_dir = None, **k: (
+            str(default_root / filename)
+            if cache_dir is None and (default_root / filename).is_file()
+            else None
+        ),
+    )
+    asked: list = []
+
+    def _download(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+    ):
+        asked.append((filename, cache_dir))
+        raise LocalEntryNotFoundError("offline and not in this root")
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _download)
+
+    assert pq._resolve_checkpoint_path(_other_root_source(), None, "/models/live") == str(ckpt)
+    assert asked == [("Z-Image-Turbo-FP8.pt", None)]  # no doomed fallback fetch
+
+
+def test_with_no_fallback_name_a_404_keeps_the_other_root_copy(monkeypatch, tmp_path):
+    """Propagating the 404 only makes sense while another filename is left to try. With none, the
+    copy already located is still the best answer, so revalidation stays a bonus."""
+    from huggingface_hub.errors import EntryNotFoundError
+
+    default_root = tmp_path / "default-hub"
+    default_root.mkdir()
+    ckpt = default_root / "X-FP8.pt"
+    ckpt.write_bytes(b"weights")
+    source = PrequantSource(kind = "repo", location = "unsloth/X-FP8", filename = "X-FP8.pt")
+
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda repo_id, filename, cache_dir = None, **k: (
+            str(default_root / filename)
+            if cache_dir is None and (default_root / filename).is_file()
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.hf_hub_download",
+        lambda **k: (_ for _ in ()).throw(EntryNotFoundError("404")),
+    )
+
+    assert pq._resolve_checkpoint_path(source, None, "/models/live") == str(ckpt)
+
+
+def test_load_config_reads_the_same_cache_root_as_the_checkpoint(monkeypatch, tmp_path):
+    """load_config forwards cache_dir to hf_hub_download, so unpinned it reads huggingface_hub's
+    import-time constant. After a mid-session cache change that root may be gone or read-only, and
+    the raise is swallowed into a None return: the prequant is silently dropped."""
+    import torch
+
+    from core.inference import diffusion_prequant as P
+
+    seen: list = []
+    live_root = tmp_path / "live"
+    live_root.mkdir()
+    live = str(live_root)
+    ckpt = live_root / "ck.pt"  # the checkpoint came from the LIVE root
+    ckpt.write_bytes(b"x")
+
+    monkeypatch.setattr(P, "_resolve_checkpoint_path", lambda s, t, c = None: str(ckpt))
+    monkeypatch.setattr(P, "_validate_checkpoint", lambda *a, **k: True)
+    monkeypatch.setattr(P, "_pin_kernel_preference", lambda *a, **k: 0)
+    monkeypatch.setattr(torch, "load", lambda *a, **k: {"state_dict": {}, "scheme": "int8"})
+
+    class _Cls:
+        @staticmethod
+        def load_config(
+            base,
+            subfolder = None,
+            token = None,
+            cache_dir = None,
+        ):
+            seen.append(cache_dir)
+            raise RuntimeError("stop right after the config fetch")
+
+    src = P.PrequantSource(kind = "repo", location = "unsloth/X-FP8", filename = "X-FP8.pt")
+    assert (
+        P.load_prequantized_transformer(
+            _Cls,
+            "org/base",
+            src,
+            device = "cpu",
+            dtype = torch.bfloat16,
+            scheme = "int8",
+            cache_dir = live,
+        )
+        is None
+    )
+
+    assert seen[0] == live  # the checkpoint's own root is read first
+
+
+def test_the_config_follows_the_checkpoint_into_the_other_cache_root(monkeypatch, tmp_path):
+    """``_resolve_checkpoint_path`` can answer from huggingface_hub's import-time root while Studio
+    pins its live one, so a config pinned to the live root misses in exactly the cache-moved case
+    the checkpoint lookup just accepted -- silently, as the raise becomes a None return."""
+    import torch
+
+    from core.inference import diffusion_prequant as P
+
+    seen: list = []
+    live = str(tmp_path / "live")  # the moved-to root: nothing is cached under it yet
+    other_root = tmp_path / "default-hub"
+    other_root.mkdir()
+    ckpt = other_root / "ck.pt"
+    ckpt.write_bytes(b"x")
+
+    monkeypatch.setattr(P, "_resolve_checkpoint_path", lambda s, t, c = None: str(ckpt))
+    monkeypatch.setattr(P, "_validate_checkpoint", lambda *a, **k: True)
+    monkeypatch.setattr(P, "_pin_kernel_preference", lambda *a, **k: 0)
+    monkeypatch.setattr(torch, "load", lambda *a, **k: {"state_dict": {}, "scheme": "int8"})
+    monkeypatch.setattr(P, "_has_meta_tensors", lambda *a, **k: False)
+    accelerate = types.ModuleType("accelerate")
+    accelerate.init_empty_weights = lambda: contextlib.nullcontext()
+    monkeypatch.setitem(sys.modules, "accelerate", accelerate)
+
+    class _Transformer:
+        def load_state_dict(self, *a, **k):
+            return None
+
+        def to(self, device):
+            return self
+
+        def eval(self):
+            return self
+
+    class _Cls:
+        @staticmethod
+        def load_config(
+            base,
+            subfolder = None,
+            token = None,
+            cache_dir = None,
+        ):
+            seen.append(cache_dir)
+            if cache_dir is not None:
+                raise OSError("the live root has no cached config for this base")
+            return {"ok": True}
+
+        @staticmethod
+        def from_config(config):
+            return _Transformer()
+
+    src = P.PrequantSource(kind = "repo", location = "unsloth/X-FP8", filename = "X-FP8.pt")
+    out = P.load_prequantized_transformer(
+        _Cls,
+        "org/base",
+        src,
+        device = "cpu",
+        dtype = torch.bfloat16,
+        scheme = "int8",
+        cache_dir = live,
+    )
+
+    assert isinstance(out, _Transformer)  # the prequant loaded instead of being dropped
+    assert seen == [None]  # read straight through the root that supplied the checkpoint
