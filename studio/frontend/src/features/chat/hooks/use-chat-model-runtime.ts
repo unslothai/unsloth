@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import { createElement, useCallback, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
@@ -9,6 +10,8 @@ import {
   useTransformersUpgradeDialogStore,
 } from "@/features/transformers-upgrade";
 import { consumeNativePathToken } from "@/features/native-intents/api";
+// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
+import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   notifyNative,
@@ -233,7 +236,9 @@ export function syncModelCapabilities(
       ...models,
       {
         id: modelId,
-        name: resp.display_name || modelId,
+        // Label like the catalog entry that replaces this on the next /api/models/list;
+        // the fallback keeps a cached GGUF's snapshot path out of the bar.
+        name: modelDisplayName(resp.display_name || modelId),
         isLora: Boolean(resp.is_lora),
         ...synced,
       },
@@ -778,6 +783,11 @@ export function useChatModelRuntime() {
             typeof selection !== "string" && selection.previousConfig
               ? (selection.previousConfig.nParallel ?? null)
               : useChatRuntimeStore.getState().nParallel;
+          // Same reason: the rollback echo would overwrite an edit staged against it.
+          const previousMlxKvBits =
+            typeof selection !== "string" && selection.previousConfig
+              ? (selection.previousConfig.mlxKvBits ?? null)
+              : useChatRuntimeStore.getState().mlxKvBits;
           if (isGguf && isDiffusion === undefined) {
             // Prepare the token exactly as validateModel/loadModel do (and as
             // the compare path does): the Hub rejects an invalid Authorization
@@ -850,12 +860,16 @@ export function useChatModelRuntime() {
           // (validation, the trust dialog, unload). When the picker staged a
           // config payload, prefer it over the store: React may not have
           // flushed NumericValueInput's blur commit into state yet.
-          const loadChatTemplateOverride =
+          // Per-model: a template is written against one model's tokens.
+          let loadChatTemplateOverride =
             pendingLoadConfig?.chatTemplateOverride?.trim()
               ? pendingLoadConfig.chatTemplateOverride
               : stateBeforeUnload.chatTemplateOverride;
           const loadKvCacheDtype =
             pendingLoadConfig?.kvCacheDtype ?? stateBeforeUnload.kvCacheDtype;
+          // Per-model, not a standing preference: eligibility is decided per model.
+          let loadMlxKvBits =
+            pendingLoadConfig?.mlxKvBits ?? stateBeforeUnload.mlxKvBits;
           // gpuMemoryMode is a standing preference (kept across a model switch);
           // the rest are per-model knobs the reset below clears, so they are
           // re-baselined there in lock-step with the store.
@@ -1084,6 +1098,13 @@ export function useChatModelRuntime() {
                   : persistedSpeculativeType;
               loadSpecDraftNMax = pendingLoadConfig?.specDraftNMax ?? null;
               loadNParallel = pendingLoadConfig?.nParallel ?? null;
+              // Both payload-only. The store keeps its values: a width is dormant
+              // preset state off MLX, and a completed load rewrites both anyway.
+              loadMlxKvBits = pendingLoadConfig?.mlxKvBits ?? null;
+              loadChatTemplateOverride =
+                pendingLoadConfig?.chatTemplateOverride?.trim()
+                  ? pendingLoadConfig.chatTemplateOverride
+                  : null;
               // Keep the click-time snapshot in lock-step with the store reset so
               // the load below sizes against the cleared per-model knobs, not the
               // previous model's (gpuMemoryMode is standing, so left as captured).
@@ -1156,6 +1177,7 @@ export function useChatModelRuntime() {
               approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
               chat_template_override: effectiveChatTemplateOverride,
               cache_type_kv: loadKvCacheDtype,
+              mlx_kv_bits: loadMlxKvBits ?? null,
               speculative_type: loadSpeculativeType,
               spec_draft_n_max: loadSpecDraftNMax,
               // GGUF-only: slots mean nothing for a transformers load.
@@ -1303,6 +1325,7 @@ export function useChatModelRuntime() {
                 : resolveToolsEnabledOnLoad(supportsTools)),
               kvCacheDtype: loadedKv,
               loadedKvCacheDtype: loadedKv,
+              ...mlxRuntimeStateFrom(loadResponse),
               tensorParallel: loadedTp,
               loadedTensorParallel: loadedTp,
               ...loadedGpuMemoryFields(loadResponse),
@@ -1423,6 +1446,7 @@ export function useChatModelRuntime() {
                   chat_template_override:
                     stateBeforeUnload.loadedChatTemplateOverride,
                   cache_type_kv: stateBeforeUnload.loadedKvCacheDtype,
+                  mlx_kv_bits: stateBeforeUnload.loadedMlxKvBitsRequested,
                   speculative_type:
                     stateBeforeUnload.loadedSpeculativeType,
                   spec_draft_n_max:
@@ -1463,6 +1487,10 @@ export function useChatModelRuntime() {
                   loadedSpecDraftNMax:
                     rollbackResponse.spec_draft_n_max ?? null,
                   loadedKvCacheDtype: rollbackResponse.cache_type_kv ?? null,
+                  ...mlxRuntimeStateFrom(rollbackResponse),
+                  // After the spread, which seeds the control from the echo; the
+                  // control keeps its intent, like nParallel above.
+                  mlxKvBits: previousMlxKvBits,
                   loadedChatTemplateOverride:
                     stateBeforeUnload.loadedChatTemplateOverride,
                   ...loadedGpuMemoryFields(rollbackResponse),

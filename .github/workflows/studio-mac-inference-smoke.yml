@@ -43,18 +43,24 @@ on:
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
       - '.github/scripts/boot-studio-api-only.sh'
+      # Same for the /api/health wait that runs after a boot.
+      - '.github/scripts/wait-for-health.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
   push:
-    branches: [main, pip]
+    branches: [main]
   # Manual trigger for pre-warming model caches on main, or re-running
   # against an arbitrary branch without pushing a no-op commit.
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -155,6 +161,9 @@ jobs:
           echo "GGUF_FILE=gemma-3-270m-it-UD-Q4_K_XL.gguf" >> "$GITHUB_ENV"
           echo "STUDIO_PORT=18888" >> "$GITHUB_ENV"
 
+      # Cross-OS shared entry. The tree under `hf-cache` is byte-identical on
+      # Linux, macOS and Windows, so the key carries no `runner.os`, and
+      # enableCrossOsArchive lets Windows (which tars with --force-local) join it.
       - name: Restore HF_HOME for unsloth/gemma-3-270m-it-GGUF
         id: cache-hf
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
@@ -162,7 +171,8 @@ jobs:
         timeout-minutes: 15
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-unsloth/gemma-3-270m-it-GGUF-UD-Q4_K_XL-v2
+          key: hf-unsloth/gemma-3-270m-it-GGUF-UD-Q4_K_XL-v3
+          enableCrossOsArchive: true
 
       - name: Prime HF_HOME with the GGUF
         id: prime-hf
@@ -195,7 +205,8 @@ jobs:
         timeout-minutes: 15
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-unsloth/gemma-3-270m-it-GGUF-UD-Q4_K_XL-v2
+          key: hf-unsloth/gemma-3-270m-it-GGUF-UD-Q4_K_XL-v3
+          enableCrossOsArchive: true
       - name: Install OpenAI + Anthropic Python SDKs
         timeout-minutes: 5
         run: pip install 'openai>=1.50' 'anthropic>=0.40'
@@ -209,16 +220,7 @@ jobs:
       - name: Wait for /api/health
         timeout-minutes: 5
         run: |
-          for i in $(seq 1 180); do
-            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
-              jq -e '.status == "healthy"' /tmp/health.json
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "Unsloth did not become healthy in 180s"
-          tail -200 logs/studio.log
-          exit 1
+          bash .github/scripts/wait-for-health.sh --port "$STUDIO_PORT"
 
       - name: Password rotation (old must fail, new must work)
         timeout-minutes: 3
@@ -406,15 +408,21 @@ jobs:
           echo "GGUF_FILE=Qwen3.5-2B-UD-Q4_K_XL.gguf" >> "$GITHUB_ENV"
           echo "STUDIO_PORT=18898" >> "$GITHUB_ENV"
 
-      # Key suffix bumped v1 -> v2 with the directory rename, and this is not
-      # cosmetic. actions/cache identifies an entry by key AND a version hash
-      # derived from the `path` input, but key uniqueness is global per ref. The
-      # old gguf-cache entry still holds the -v1 key, so a restore into
-      # gguf-cache-tools misses on version while the save is refused with
-      # "Unable to reserve cache with key ... another job may be creating this
-      # cache". Without the bump this phase re-downloads the model on every run,
-      # forever. Measured on staging before the bump: two consecutive runs both
-      # logged "Cache not found for input keys" and both failed to save.
+      # Cross-OS shared entry with the Linux tool-calling job in
+      # studio-inference-smoke.yml: same repo, same file, same flat
+      # --local-dir payload, byte-identical on all three runners. The key
+      # therefore carries no `runner.os`, and enableCrossOsArchive is what
+      # lets Windows -- which tars with --force-local -- join it.
+      #
+      # The suffix is bumped v2 -> v3 because the Linux side moves its
+      # directory to gguf-cache-tools in the same commit, and that is not
+      # cosmetic: actions/cache identifies an entry by key AND a version hash
+      # derived from the `path` input, while key uniqueness is global per ref.
+      # Move the path without bumping the key and the restore misses on
+      # version while the save is refused with "Unable to reserve cache with
+      # key ... another job may be creating this cache" -- measured on staging
+      # during the Mac consolidation: two consecutive runs both logged "Cache
+      # not found for input keys" and both failed to save.
       - name: Restore GGUF model file
         id: cache-gguf-tools
         if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' }}
@@ -423,7 +431,8 @@ jobs:
         timeout-minutes: 15
         with:
           path: gguf-cache-tools
-          key: ${{ runner.os }}-gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v2
+          key: gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v3
+          enableCrossOsArchive: true
 
       - name: Download GGUF if cache miss
         id: download-gguf-tools
@@ -445,7 +454,8 @@ jobs:
         timeout-minutes: 15
         with:
           path: gguf-cache-tools
-          key: ${{ runner.os }}-gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v2
+          key: gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v3
+          enableCrossOsArchive: true
 
       - name: Reset auth + boot Unsloth (API-only, default tool policy)
         id: boot-tools

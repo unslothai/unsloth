@@ -1129,6 +1129,10 @@ _STREAM_DISCONNECT_POLL_TIMEOUT_S = 0.25
 _OPENAI_PASSTHROUGH_PREHEADER_STATUS_WINDOW_S = 0.1
 _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S = 5.0
 _OPENAI_PASSTHROUGH_SSE_KEEPALIVE = ": keep-alive\n\n"
+# Lets a client tell "queued" from "backend silent"; SSE comments, so readers ignore both.
+_OPENAI_ADMISSION_SSE_WAIT = ": admission-wait\n\n"
+# Paired with the above: the slot is ours, so a suspended client clock starts now.
+_OPENAI_ADMISSION_SSE_DONE = ": admission-done\n\n"
 _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
 # Cap on waiting for a cancelled teardown task. Request.is_disconnected() can swallow
 # cancel() (#7617), so teardown abandons the task rather than hold the response, and
@@ -1365,6 +1369,8 @@ async def _openai_admission_wait_stream_chunks(
     )
     deadline = None if config.queue_timeout_s is None else time.monotonic() + config.queue_timeout_s
     keepalive_interval_s = max(0.001, config.keepalive_interval_s)
+    # At once, not after a full interval: a caller must not wait one out to learn it queued.
+    yield _OPENAI_ADMISSION_SSE_WAIT
     next_keepalive_at = time.monotonic() + keepalive_interval_s
     try:
         while True:
@@ -1375,6 +1381,7 @@ async def _openai_admission_wait_stream_chunks(
             )
             lease = reservation.lease_nowait()
             if lease is not None:
+                yield _OPENAI_ADMISSION_SSE_DONE
                 yield lease
                 return
 
@@ -1391,6 +1398,7 @@ async def _openai_admission_wait_stream_chunks(
             except asyncio.TimeoutError:
                 lease = None
             if lease is not None:
+                yield _OPENAI_ADMISSION_SSE_DONE
                 yield lease
                 return
             await _raise_if_openai_admission_cancelled(
@@ -1401,7 +1409,7 @@ async def _openai_admission_wait_stream_chunks(
             now = time.monotonic()
             if now >= next_keepalive_at:
                 next_keepalive_at = now + keepalive_interval_s
-                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                yield _OPENAI_ADMISSION_SSE_WAIT
     except asyncio.CancelledError:
         reservation.cancel()
         raise
@@ -2007,7 +2015,7 @@ def _request_used_api_key(request: Any) -> bool:
 from state.tool_approvals import resolve_tool_decision
 
 from core.inference.key_exchange import decrypt_api_key
-from core.inference.model_ids import model_id_matches, public_model_id
+from core.inference.model_ids import display_model_name, model_id_matches, public_model_id
 from core.inference.api_monitor import api_monitor
 from core.inference.llama_http import nonstreaming_client
 from core.inference.tool_call_parser import (
@@ -3658,6 +3666,14 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         if hasattr(llama_backend, name) or hasattr(llama_backend, f"_{name}")
     }
     fields.update(
+        # Not MLX, so the MLX runtime fields report as absent.
+        is_mlx = False,
+        mlx_kv_bits = None,
+        mlx_kv_bits_requested = None,
+        mlx_kv_quant_eligibility = None,
+        mlx_kv_quant_reason = None,
+        mlx_kv_quant_note = None,
+        chat_template_override_reason = None,
         speculative_type = llama_backend.requested_spec_mode,
         requested_parallel_slots = (
             None if llama_backend.is_diffusion else llama_backend.requested_parallel_slots
@@ -3688,7 +3704,9 @@ def _gguf_load_response(
     return LoadResponse(
         status = status,
         model = model,
-        display_name = display_name or model,
+        # Not the bare identifier: the already-resident path leaves display_name unset,
+        # and a cached repo loads from its snapshot dir, so clients label it by path.
+        display_name = display_name or display_model_name(model) or model,
         is_lora = False,
         is_gguf = True,
         is_local_model = is_local_model,
@@ -6098,6 +6116,24 @@ async def get_active_generations(
     }
 
 
+def _mlx_runtime_settings_match(backend, request) -> bool:
+    """Whether a loaded model already runs the request's MLX runtime settings.
+
+    Only the MLX backend records these, so a backend that never stored them
+    (GGUF, CUDA safetensors) always matches and reuse is unaffected. Both sides
+    are normalized, otherwise an out-of-domain value would differ from the
+    stored None on every request and reload forever.
+    """
+    entry = backend.models.get(backend.active_model_name, {}) or {}
+    if "mlx_kv_bits_requested" not in entry:
+        return True
+    from core.inference.mlx_inference import _normalize_mlx_kv_bits
+
+    return entry["mlx_kv_bits_requested"] == _normalize_mlx_kv_bits(request.mlx_kv_bits) and (
+        entry.get("chat_template_override_requested") or None
+    ) == (request.chat_template_override or None)
+
+
 @router.post("/load", response_model = LoadResponse)
 async def load_model(
     request: LoadRequest,
@@ -6303,6 +6339,7 @@ async def _load_model_impl(
             if (
                 backend.active_model_name
                 and backend.active_model_name.lower() == model_identifier.lower()
+                and _mlx_runtime_settings_match(backend, request)
             ):
                 api_monitor.discard(_load_event)  # nothing loaded, no monitor row
                 logger.info(f"Model already loaded (Unsloth): {model_log_label}, skipping reload")
@@ -6335,6 +6372,16 @@ async def _load_model_impl(
                     is_audio = _model_info.get("is_audio", False),
                     audio_type = _model_info.get("audio_type"),
                     has_audio_input = _model_info.get("has_audio_input", False),
+                    is_mlx = bool(_model_info.get("is_mlx", False)),
+                    mlx_kv_bits = _model_info.get("mlx_kv_bits"),
+                    mlx_kv_bits_requested = _model_info.get("mlx_kv_bits_requested"),
+                    mlx_kv_quant_eligibility = _model_info.get("mlx_kv_quant_eligibility"),
+                    mlx_kv_quant_reason = _model_info.get("mlx_kv_quant_reason"),
+                    mlx_kv_quant_note = _model_info.get("mlx_kv_quant_note"),
+                    # Requested, as /status reports it: a null override would read
+                    # as "using the default".
+                    chat_template_override = _model_info.get("chat_template_override_requested"),
+                    chat_template_override_reason = _model_info.get("chat_template_override_reason"),
                     inference = inference_config,
                     requires_trust_remote_code = _resolve_loaded_trust_remote_code(
                         backend.active_model_name, _model_info, inference_config
@@ -6726,6 +6773,8 @@ async def _load_model_impl(
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
             gpu_ids = placement.requested_gpu_ids,
             subject = current_subject,
+            mlx_kv_bits = request.mlx_kv_bits,
+            chat_template_override = request.chat_template_override,
         )
 
         if not success:
@@ -6817,6 +6866,16 @@ async def _load_model_impl(
             is_audio = _model_info.get("is_audio", config.is_audio),
             audio_type = _model_info.get("audio_type", config.audio_type),
             has_audio_input = _model_info.get("has_audio_input", config.has_audio_input),
+            is_mlx = bool(_model_info.get("is_mlx", False)),
+            mlx_kv_bits = _model_info.get("mlx_kv_bits"),
+            mlx_kv_bits_requested = _model_info.get("mlx_kv_bits_requested"),
+            mlx_kv_quant_eligibility = _model_info.get("mlx_kv_quant_eligibility"),
+            mlx_kv_quant_reason = _model_info.get("mlx_kv_quant_reason"),
+            mlx_kv_quant_note = _model_info.get("mlx_kv_quant_note"),
+            # Requested, as /status reports it: a null override would read as
+            # "using the default".
+            chat_template_override = _model_info.get("chat_template_override_requested"),
+            chat_template_override_reason = _model_info.get("chat_template_override_reason"),
             inference = inference_config,
             requires_trust_remote_code = _requires_rc,
             supports_reasoning = _sf_flags["supports_reasoning"],
@@ -7980,6 +8039,12 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 and _reported_chat_template_override == _auto_chat_template_override
             ):
                 _reported_chat_template_override = None
+            # chat_template_override is one of the runtime fields, so it arrives in the
+            # dict below as the raw backend value. Overwrite it rather than passing it
+            # as a second keyword: two values for one keyword is a TypeError, whatever
+            # the values are.
+            _runtime_fields = _llama_runtime_fields(llama_backend)
+            _runtime_fields["chat_template_override"] = _reported_chat_template_override
             return InferenceStatusResponse(
                 active_model = _display_model_id,
                 model_identifier = _reported_model_identifier,
@@ -7991,8 +8056,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 loading = [],
                 loaded = [_display_model_id] if _display_model_id else [],
                 inference = _inference_cfg,
-                **_llama_runtime_fields(llama_backend),
-                chat_template_override = _reported_chat_template_override,
+                **_runtime_fields,
                 requested_context_length = llama_backend.requested_n_ctx,
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
@@ -8046,6 +8110,14 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             is_audio = is_audio,
             audio_type = audio_type,
             has_audio_input = has_audio_input,
+            is_mlx = bool(model_info.get("is_mlx", False)),
+            mlx_kv_bits = model_info.get("mlx_kv_bits"),
+            mlx_kv_bits_requested = model_info.get("mlx_kv_bits_requested"),
+            mlx_kv_quant_eligibility = model_info.get("mlx_kv_quant_eligibility"),
+            mlx_kv_quant_reason = model_info.get("mlx_kv_quant_reason"),
+            mlx_kv_quant_note = model_info.get("mlx_kv_quant_note"),
+            chat_template_override = model_info.get("chat_template_override_requested"),
+            chat_template_override_reason = model_info.get("chat_template_override_reason"),
             loading = list(getattr(backend, "loading_models", set())),
             loaded = list(backend.models.keys()),
             inference = inference_config,

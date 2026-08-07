@@ -131,6 +131,27 @@ let STORE: any = makeStore();
 // but they are the same landmine as syncModelCapabilities was, waiting for the
 // first scenario that turns a GPU option on. Stubbed so the harness is complete
 // rather than complete-by-luck.
+// Imported by chat-adapter.ts from ../lib/mlx-runtime-state. Mirrors the real
+// one rather than returning {}: a non-MLX response retires the verdict but
+// leaves mlxKvBits absent, and a scenario that saw an empty object would keep
+// a stale width alive and pass for the wrong reason.
+function mlxRuntimeStateFrom(resp: any) {
+  if (resp?.is_mlx !== true) {
+    return {
+      loadedMlxKvBitsRequested: null,
+      mlxKvQuantReason: null,
+      chatTemplateOverrideReason: null,
+      mlxKvQuantNote: null,
+    };
+  }
+  return {
+    mlxKvBits: resp.mlx_kv_bits_requested ?? null,
+    loadedMlxKvBitsRequested: resp.mlx_kv_bits_requested ?? null,
+    mlxKvQuantReason: resp.mlx_kv_quant_reason ?? null,
+    chatTemplateOverrideReason: resp.chat_template_override_reason ?? null,
+    mlxKvQuantNote: resp.mlx_kv_quant_note ?? null,
+  };
+}
 async function prepareHfTokenForUse(token: any) {
   EVENTS.push({ kind: "prepareHfToken" });
   if (SCENARIO.tokenDecision === "decline") return { proceed: false, token };

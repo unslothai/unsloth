@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import { getAuthToken } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { DOWNLOAD_KIND } from "@/features/hub/download-manager/constants";
@@ -1757,6 +1758,13 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "defaultChatTemplate",
   "chatTemplateOverride",
   "loadedChatTemplateOverride",
+  "chatTemplateOverrideReason",
+  // The rest of the group mlxRuntimeStateFrom writes, or a background autoload
+  // leaves its width and verdict on the restored model.
+  "mlxKvBits",
+  "loadedMlxKvBitsRequested",
+  "mlxKvQuantReason",
+  "mlxKvQuantNote",
   "loadedIsMultimodal",
   "loadedIsDiffusion",
   "speculativeType",
@@ -2412,13 +2420,18 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     gguf_variant?: string | null;
     // GGUF-only: scopes the training guard to the same placement policy /load
     // will use. Manual mode must match because it makes placement user-owned.
-    // The layer/MoE/split/KV/spec knobs are deliberately not sent: Auto mode's
-    // guard sizes conservatively, while Manual mode bypasses that estimate.
+    // The layer/MoE/split knobs are deliberately not sent: Auto mode's guard
+    // sizes conservatively, while Manual mode bypasses that estimate.
     // The safetensors fallback omits both fields and uses HF auto-placement.
     gpu_ids?: number[];
     gpu_memory_mode?: "auto" | "manual";
     cache_type_kv?: string | null;
     tensor_parallel?: boolean | null;
+    // The estimate charges a drafter whose size differs by mode (a DSpark
+    // sidecar is ~11 GB, and Auto reaches it), so this preflight has to be told
+    // what the load will send or it sizes a different model.
+    speculative_type?: string | null;
+    spec_draft_n_max?: number | null;
   }): Promise<boolean> {
     options?.abortSignal?.throwIfAborted();
     const validation = await validateModel({
@@ -2579,6 +2592,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         gguf_variant: candidate.ggufVariant,
         cache_type_kv: config.kvCacheDtype,
         tensor_parallel: effectiveTensorParallel,
+        // The same values the load below sends.
+        speculative_type: effectiveSpeculativeType,
+        spec_draft_n_max: effectiveSpecDraftNMax,
         // The same remembered-derived GPU pick the load below sends.
         ...(candidate.kind === "gguf"
           ? {
@@ -2615,6 +2631,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       trust_remote_code: trustRemoteCode,
       chat_template_override: effectiveChatTemplateOverride,
       cache_type_kv: config.kvCacheDtype,
+      mlx_kv_bits: config.mlxKvBits ?? null,
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
       tensor_parallel: effectiveTensorParallel,
@@ -2718,6 +2735,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
           kvCacheDtype: loadResp.cache_type_kv ?? null,
           loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+          ...mlxRuntimeStateFrom(loadResp),
           // Click-time value, not the resolved backend echo (see performLoad).
           nParallel: committedSlots,
           loadedNParallel: committedSlots,
@@ -2748,6 +2766,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
           kvCacheDtype: loadResp.cache_type_kv ?? null,
           loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+          ...mlxRuntimeStateFrom(loadResp),
           // GGUF-only and never sent here: a staged override would be saved for
           // a model that cannot use it.
           nParallel: null,
@@ -2942,6 +2961,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           // model has no remembered settings to prefer).
           gpu_ids: defaultGpuIds ?? undefined,
           gpu_memory_mode: rt.gpuMemoryMode,
+          speculative_type: specSettings.speculativeType,
+          spec_draft_n_max: specSettings.specDraftNMax,
         }))
       ) {
         toast.dismiss(toastId);
@@ -3048,6 +3069,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+        ...mlxRuntimeStateFrom(loadResp),
         // The request above omits n_parallel: a staged override left from a
         // preset would read as applied and be re-sent by the next Apply.
         nParallel: null,

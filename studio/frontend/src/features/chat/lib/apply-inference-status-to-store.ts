@@ -4,6 +4,8 @@
 // Barrel import (lint rule); the model-picker cycle is fine because the call
 // happens at runtime, not module eval.
 import { resolveResidentInitialConfig } from "@/features/model-picker";
+// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
+import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { getInferenceStatus } from "../api/chat-api";
 import {
   mergeBackendRecommendedInference,
@@ -110,7 +112,9 @@ function ensureActiveModelInStoreList(
   }
   const summary: ChatModelSummary = {
     id: checkpointId,
-    name: status.active_model ?? checkpointId,
+    // active_model is already the clean public id; its leaf matches the catalog rows,
+    // and the fallback keeps a snapshot path out of the trigger.
+    name: modelDisplayName(status.active_model ?? checkpointId),
     isVision: status.is_vision ?? false,
     isLora: false,
     isGguf: status.is_gguf ?? false,
@@ -353,6 +357,43 @@ export function applyActiveModelStatusToStore(
       (prevState.loadedTensorParallel === null || hydratingExistingModel) && {
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
+      }),
+    // Hydration only, so a steady poll never rewrites settings the store owns.
+    // Width, verdict and request move together; a late reply can overwrite a newer one.
+    ...(seedLoadParams &&
+      hydratingExistingModel &&
+      status.mlx_kv_bits !== undefined &&
+      (status.is_mlx === true
+        ? {
+            mlxKvBits: status.mlx_kv_bits_requested ?? null,
+            loadedMlxKvBitsRequested: status.mlx_kv_bits_requested ?? null,
+            mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
+            chatTemplateOverrideReason:
+              status.chat_template_override_reason ?? null,
+            mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
+          }
+        : {
+            // The verdict retires; the editable width is dormant, not wrong.
+            loadedMlxKvBitsRequested: null,
+            mlxKvQuantReason: null,
+            chatTemplateOverrideReason: null,
+            mlxKvQuantNote: null,
+          })),
+    // Recovery for a hydration this tab never saw, and only when nothing is
+    // staged: re-seeding over an earlier edit would discard it.
+    ...(seedLoadParams &&
+      !hydratingExistingModel &&
+      status.is_mlx === true &&
+      status.mlx_kv_bits !== undefined &&
+      prevState.mlxKvBits === null &&
+      prevState.loadedMlxKvBitsRequested === null &&
+      prevState.mlxKvQuantReason === null &&
+      prevState.chatTemplateOverrideReason === null && {
+        mlxKvBits: status.mlx_kv_bits_requested ?? null,
+        loadedMlxKvBitsRequested: status.mlx_kv_bits_requested ?? null,
+        mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
+        chatTemplateOverrideReason: status.chat_template_override_reason ?? null,
+        mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
       }),
     // Baseline only, never the control: the echo is the RESOLVED count and would
     // pin a blank "server default" control. The rollback re-sends the baseline,

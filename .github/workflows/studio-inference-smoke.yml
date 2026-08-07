@@ -41,18 +41,24 @@ on:
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
       - '.github/scripts/boot-studio-api-only.sh'
+      # Same for the /api/health wait that runs after a boot.
+      - '.github/scripts/wait-for-health.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
   push:
-    branches: [main, pip]
+    branches: [main]
   # Manual trigger for pre-warming HF_HOME caches on main, or re-running
   # against an arbitrary branch without pushing a no-op commit.
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -91,13 +97,17 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
+      # Cross-OS shared entry. The tree under `hf-cache` is byte-identical on
+      # Linux, macOS and Windows, so the key carries no `runner.os`, and
+      # enableCrossOsArchive lets Windows (which tars with --force-local) join it.
       - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
         id: cache-hf
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         continue-on-error: true
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
+          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
+          enableCrossOsArchive: true
 
       - name: Prime HF_HOME with the GGUF
         id: prime-hf
@@ -122,11 +132,12 @@ jobs:
         # same 4.6GB model held four times on four different PR refs and no copy
         # on main at all. That is the thrash loop: PR misses -> downloads ->
         # saves its own copy -> evicts main's -> next PR misses.
-        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success'
+        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
+          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
+          enableCrossOsArchive: true
 
       - name: Install Unsloth (--local, --no-torch)
         uses: ./.github/actions/install-unsloth-local
@@ -145,16 +156,7 @@ jobs:
 
       - name: Wait for /api/health
         run: |
-          for i in $(seq 1 180); do
-            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
-              jq -e '.status == "healthy"' /tmp/health.json
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "Unsloth did not become healthy in 180s"
-          tail -200 logs/studio.log
-          exit 1
+          bash .github/scripts/wait-for-health.sh --port "$STUDIO_PORT"
 
       - name: Password rotation (old must fail, new must work)
         run: |
@@ -332,7 +334,7 @@ jobs:
       # (Qwen3.5-2B at Q4_K_XL = ~1.28 GiB). Caching HF_HOME would
       # store xet chunks + blobs + snapshots = ~4 GiB compressed --
       # 4-5x file-size inflation, dominated by xet chunks. Use main's
-      # `--local-dir gguf-cache` pattern to cache the flat .gguf only.
+      # `--local-dir` pattern to cache the flat .gguf only.
       # Unsloth's /api/inference/load accepts either a HF repo (which
       # uses HF_HOME) or an absolute file path; passing the absolute
       # path keeps the test off HF_HOME entirely so the cache size
@@ -364,13 +366,21 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
+      # Cross-OS shared entry with the mac and Windows tool-calling phases:
+      # same repo, same file, same flat --local-dir payload, byte-identical on
+      # all three runners. The directory is renamed gguf-cache -> gguf-cache-tools
+      # to match them, and the key version is bumped in the SAME commit because
+      # actions/cache identifies an entry by key AND a hash of `path` -- moving
+      # the path without bumping the key gives a permanent restore miss plus a
+      # refused save ("Unable to reserve cache with key ...").
       - name: Restore GGUF model file
         id: cache-gguf
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         continue-on-error: true
         with:
-          path: gguf-cache
-          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
+          path: gguf-cache-tools
+          key: gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v3
+          enableCrossOsArchive: true
 
       - name: Download GGUF if cache miss
         id: download-gguf
@@ -380,15 +390,16 @@ jobs:
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
-          mkdir -p gguf-cache
-          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache
+          mkdir -p gguf-cache-tools
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache-tools
 
       - name: Save GGUF model file
-        if: always() && github.ref == 'refs/heads/main' && steps.download-gguf.outcome == 'success'
+        if: always() && github.ref == 'refs/heads/main' && steps.download-gguf.outcome == 'success' && hashFiles('gguf-cache-tools/**/*.gguf') != ''
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
-          path: gguf-cache
-          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
+          path: gguf-cache-tools
+          key: gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v3
+          enableCrossOsArchive: true
 
       - name: Install Unsloth (--local, --no-torch)
         uses: ./.github/actions/install-unsloth-local
@@ -432,7 +443,7 @@ jobs:
             -H 'content-type: application/json' \
             -d "{\"username\":\"unsloth\",\"password\":\"$NEW\"}" | jq -r .access_token)
           echo "API_KEY=$TOKEN" >> "$GITHUB_ENV"
-          GGUF_PATH="$GITHUB_WORKSPACE/gguf-cache/${GGUF_FILE}"
+          GGUF_PATH="$GITHUB_WORKSPACE/gguf-cache-tools/${GGUF_FILE}"
           ls -lh "$GGUF_PATH"
           curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
             -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \

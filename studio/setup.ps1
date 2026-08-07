@@ -61,6 +61,38 @@ if ($PSVersionTable.PSEdition -ne 'Core' -and $env:SystemRoot) {
     }
 }
 
+# UTF-8 output invariant. 5.1 encodes redirected output with the OEM code page,
+# but the desktop app decodes the pipe as UTF-8 (from_utf8_lossy, install.rs):
+# U+1F9A5 prints as '??', U+2500 becomes a bare 0xC4 and arrives as U+FFFD.
+# Must precede the first write, since this rebuilds [Console]::Out. ASCII-only,
+# because 5.1 parses these BOM-less files as ANSI.
+$_UnslothUtf8NoBom = New-Object System.Text.UTF8Encoding $false
+try {
+    [Console]::OutputEncoding = $_UnslothUtf8NoBom
+} catch {
+    # No console (CREATE_NO_WINDOW). The setter P/Invokes SetConsoleOutputCP and
+    # drops the cached writer BEFORE throwing, assigning OutputEncoding only
+    # after, so [Console]::Out would rebuild on the OLD code page. Bind UTF-8
+    # writers instead: redirected step/substep use Out as their only sink, and
+    # Tauri decodes stderr the same way to build its failure text.
+    try {
+        $_UnslothStdout = New-Object System.IO.StreamWriter -ArgumentList ([Console]::OpenStandardOutput()), $_UnslothUtf8NoBom
+        $_UnslothStdout.AutoFlush = $true
+        [Console]::SetOut($_UnslothStdout)
+        $_UnslothStderr = New-Object System.IO.StreamWriter -ArgumentList ([Console]::OpenStandardError()), $_UnslothUtf8NoBom
+        $_UnslothStderr.AutoFlush = $true
+        [Console]::SetError($_UnslothStderr)
+    } catch { }
+}
+$OutputEncoding = $_UnslothUtf8NoBom
+$env:PYTHONUTF8 = '1'
+$env:PYTHONIOENCODING = 'utf-8'
+
+# Resolved once: it picks the output sink in step/substep and must not change
+# mid-run. See Write-StudioStdoutMirror.
+$script:StudioStdoutRedirected = $false
+try { $script:StudioStdoutRedirected = [Console]::IsOutputRedirected } catch { }
+
 # --------------------------------------------------------------------------
 #  Maintainer-editable defaults
 #  Change these in the GitHub-hosted script so users get updated defaults.
@@ -148,6 +180,10 @@ function Refresh-Environment {
             # (which loads Microsoft.PowerShell.Security), so the module path
             # would be broken again exactly where it has to be right.
             if ($key -eq 'Path' -or $key -eq 'PSModulePath') { continue }
+            # Same exception, for the UTF-8 invariant at the top. This runs
+            # repeatedly, so a registry PYTHONUTF8=0 would otherwise reload over
+            # ours and every later Python child would go back to mojibake.
+            if ($key -eq 'PYTHONUTF8' -or $key -eq 'PYTHONIOENCODING') { continue }
             Set-Item -Path "Env:$key" -Value $vars[$key] -ErrorAction SilentlyContinue
         }
     }
@@ -561,6 +597,62 @@ function Get-NvccMaxArch {
         }
     } catch { }
     return $null
+}
+
+# Reserved for the OS, and budgeted per compile job, both in MB. The budget sits
+# above the measured per-translation-unit peak on purpose; see the derivation on
+# _LLAMA_BUILD_* in setup.sh, which these must match and which the shell test
+# pins. MSVC and Windows, where the freeze was reported, need that headroom more.
+$LlamaBuildReserveMb = 2048
+$LlamaBuildMbPerJob = 2048
+
+# The cmake -j count. A negative $TotalMb means RAM was unreadable and keeps the
+# old core-count behaviour. Zero is a reading, not a failure: a box with no
+# memory left is the last one that should get its full core count, so it falls
+# through and floors at 1, as _llama_jobs_for does for a numeric 0.
+# UNSLOTH_LLAMA_BUILD_JOBS wins. Pure, so the tests can drive it.
+function Get-LlamaJobsFor {
+    param([int]$Cores, [long]$TotalMb)
+
+    $override = 0
+    if ($env:UNSLOTH_LLAMA_BUILD_JOBS -and
+        [int]::TryParse($env:UNSLOTH_LLAMA_BUILD_JOBS.Trim(), [ref]$override) -and $override -ge 1) {
+        return $override
+    }
+    if ($Cores -lt 1) { $Cores = 4 }
+    if ($TotalMb -lt 0) { return $Cores }
+    $jobs = [int][Math]::Floor(($TotalMb - $LlamaBuildReserveMb) / $LlamaBuildMbPerJob)
+    if ($jobs -lt 1) { $jobs = 1 }
+    if ($jobs -gt $Cores) { $jobs = $Cores }
+    return $jobs
+}
+
+# Usable RAM in MB; -1 when it cannot be read at all. Available, not installed:
+# a box with 8 GB already resident cannot host a 14 GB compile just because
+# 16 GB is fitted. AvailableMBytes counts the standby list, which the Free
+# counters do not, and the raw perf class is not localized the way Get-Counter
+# paths are; installed RAM stays the fallback. A reading of 0 is returned as 0
+# rather than treated as unreadable, since falling back to installed RAM under
+# real pressure would hand the machine its full core count at the worst moment.
+function Get-UsableMemoryMb {
+    try {
+        $avail = (Get-CimInstance Win32_PerfRawData_PerfOS_Memory -ErrorAction Stop).AvailableMBytes
+        if ($null -ne $avail) { return [long]$avail }
+    } catch { }
+    try {
+        $bytes = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory
+        if ($bytes -gt 0) { return [long]($bytes / 1MB) }
+    } catch { }
+    try {
+        # TotalVisibleMemorySize is in KB and excludes hardware-reserved RAM.
+        $kb = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).TotalVisibleMemorySize
+        if ($kb -gt 0) { return [long]($kb / 1KB) }
+    } catch { }
+    return -1
+}
+
+function Get-LlamaBuildJobs {
+    return (Get-LlamaJobsFor -Cores ([Environment]::ProcessorCount) -TotalMb (Get-UsableMemoryMb))
 }
 
 # Classify the physical NVIDIA inventory for a cu126 fallback: "cu126" when it covers
@@ -1457,20 +1549,18 @@ function Write-LlamaFailureLog {
         Write-Host "   | $line" -ForegroundColor DarkGray
     }
 }
-# Mirror the plain (no ANSI) form of step/substep messages to the
-# OS-level stdout handle when a parent is consuming our stdout via
-# a pipe (CI `tee`, Python subprocess.PIPE, CREATE_NO_WINDOW grandchild).
-# Write-Host on PS 5.1 routes through $Host.UI / the Information
-# stream, neither of which propagates reliably across the
-# install.ps1 -> unsloth.exe -> python -> powershell.exe ->
-# setup.ps1 process chain. [Console]::Out always lands on the OS
-# stdout file handle. Gated on IsOutputRedirected so the
-# interactive-console path keeps the colorized Write-Host output
-# only (no double-print).
+# Plain (no ANSI) form of a step/substep message on the OS stdout handle.
+# Write-Host on 5.1 goes through the Information stream, which does not survive
+# every install.ps1 -> unsloth.exe -> python -> powershell.exe chain.
+#
+# One half of an either/or: when redirected this is the ONLY sink. It used to
+# run in ADDITION to Write-Host, assuming that never reached the pipe. It does,
+# because the CLI spawns us as `-Command "& 'setup.ps1' *>&1"`, so every step
+# printed twice.
 function Write-StudioStdoutMirror {
     param([Parameter(Mandatory = $true)][string]$Line)
     try {
-        if ([Console]::IsOutputRedirected) {
+        if ($script:StudioStdoutRedirected) {
             [Console]::Out.WriteLine($Line)
             [Console]::Out.Flush()
         }
@@ -1484,6 +1574,12 @@ function step {
         [string]$Color = "Green"
     )
     $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
+    # Exactly one sink: the console handle when redirected, Write-Host (the only
+    # one that colorizes) when interactive.
+    if ($script:StudioStdoutRedirected) {
+        Write-StudioStdoutMirror ("  {0}{1}" -f $padded, $Value)
+        return
+    }
     if ($script:StudioVtOk -and -not $env:NO_COLOR) {
         $dim = Get-StudioAnsi Dim
         $rst = Get-StudioAnsi Reset
@@ -1496,7 +1592,6 @@ function step {
         }
         Write-Host ("  {0}{1}{2}{3}{4}{2}" -f $dim, $padded, $rst, $val, $Value)
     } else {
-        Write-Host ("  {0}" -f $padded) -NoNewline -ForegroundColor DarkGray
         $fc = switch ($Color) {
             'Green' { 'DarkGreen' }
             'Yellow' { 'Yellow' }
@@ -1504,9 +1599,11 @@ function step {
             'DarkGray' { 'DarkGray' }
             default { 'DarkGreen' }
         }
-        Write-Host $Value -ForegroundColor $fc
+        # One composed record, not `-NoNewline` label + value: two Write-Host
+        # calls are two Information records, and a redirected consumer turns each
+        # boundary into a line break. Costs the dimmed label on no-VT consoles.
+        Write-Host ("  {0}{1}" -f $padded, $Value) -ForegroundColor $fc
     }
-    Write-StudioStdoutMirror ("  {0}{1}" -f $padded, $Value)
 }
 
 function substep {
@@ -1514,6 +1611,11 @@ function substep {
         [Parameter(Mandatory = $true)][string]$Message,
         [string]$Color = "DarkGray"
     )
+    # Exactly one sink, as in `step` above.
+    if ($script:StudioStdoutRedirected) {
+        Write-StudioStdoutMirror ("  {0,-15}{1}" -f "", $Message)
+        return
+    }
     if ($script:StudioVtOk -and -not $env:NO_COLOR) {
         $msgCol = switch ($Color) {
             'Yellow' { (Get-StudioAnsi Warn) }
@@ -1528,7 +1630,6 @@ function substep {
         }
         Write-Host ("  {0,-15}{1}" -f "", $Message) -ForegroundColor $fc
     }
-    Write-StudioStdoutMirror ("  {0,-15}{1}" -f "", $Message)
 }
 
 function Show-NpmRegistryHint {
@@ -5818,13 +5919,12 @@ if ($LocalLlamaCppLinked) {
     }
 
     # -- Step C: Build llama-server --
-    $NumCpu = [Environment]::ProcessorCount
-    if ($NumCpu -lt 1) { $NumCpu = 4 }
+    $NumCpu = Get-LlamaBuildJobs
 
     if ($BuildOk) {
         Write-Host ""
         Write-Host "--- cmake build (llama-server) ---" -ForegroundColor Cyan
-        Write-Host "   Parallel jobs: $NumCpu" -ForegroundColor Gray
+        Write-Host "   Parallel jobs: $NumCpu of $([Environment]::ProcessorCount) cores (RAM-capped; UNSLOTH_LLAMA_BUILD_JOBS overrides)" -ForegroundColor Gray
         Write-Host ""
 
         $output = cmake --build $BuildDir --config Release --target llama-server -j $NumCpu 2>&1 | Out-String
