@@ -75,6 +75,15 @@ function logicalPerCssPx(monitorScale: number): number {
   return Number.isFinite(ratio) && ratio > 1 ? ratio : 1;
 }
 
+// Autostart passes --hidden: layout still applies, but the window stays in the tray.
+let launchedHidden: Promise<boolean> | null = null;
+function wasLaunchedHidden(): Promise<boolean> {
+  launchedHidden ??= import("@tauri-apps/api/core")
+    .then(({ invoke }) => invoke<boolean>("was_launched_hidden"))
+    .catch(() => false);
+  return launchedHidden;
+}
+
 type WindowLayoutObserver = {
   waitForSettled: () => Promise<void>;
   dispose: () => void;
@@ -203,6 +212,8 @@ async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
   );
   await placeWindow(win, windowModule, measured, setupSize, isCurrent);
   if (!isCurrent()) return;
+  if (await wasLaunchedHidden()) return;
+  if (!isCurrent()) return;
   await win.show();
 }
 
@@ -292,7 +303,11 @@ async function applyAppWindowLayout(
     await finalizeAppWindowLayout({
       restored,
       measured,
-      show: () => win.show(),
+      show: async () => {
+        if (await wasLaunchedHidden()) return;
+        if (!isCurrent()) return;
+        await win.show();
+      },
       waitForSettled: layoutObserver?.waitForSettled,
       measure: () => measureTauriWindowLayout(windowModule, win, isCurrent),
       setMinimumConstraints: (minimum) =>
@@ -322,6 +337,7 @@ async function showWindowFallback(): Promise<void> {
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   const win = getCurrentWindow();
   await win.setResizable(true);
+  if (await wasLaunchedHidden()) return;
   await win.show();
 }
 

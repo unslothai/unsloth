@@ -138,7 +138,7 @@ except ValueError as exc:
 # See: https://github.com/python/cpython/issues/102396
 import _platform_compat  # noqa: F401
 
-from loggers import get_logger
+from loggers import get_logger, install_uvicorn_duplicate_exception_filter
 from startup_banner import print_studio_access_banner, print_studio_stop_hint
 
 logger = get_logger(__name__)
@@ -2018,6 +2018,10 @@ def run_server(
     # Resolve once; shared by the log rewrite and banner.
     display_host = _display_host_for_bind(host)
     _install_uvicorn_startup_log_rewrite(host, display_host)
+    # LoggingMiddleware already logs every unhandled request exception with its full
+    # traceback as a structured event; without this uvicorn prints the same traceback
+    # again on stderr and the desktop shell copies it into tauri.log line by line.
+    install_uvicorn_duplicate_exception_filter()
 
     logger.info(
         "run_server pre-uvicorn setup completed in %.1fms",

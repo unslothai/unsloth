@@ -32,11 +32,13 @@ on:
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
       - '.github/scripts/boot-studio-api-only.sh'
+      # Same for the /api/health wait that runs after a boot.
+      - '.github/scripts/wait-for-health.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
   push:
-    branches: [main, pip]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -147,17 +149,11 @@ jobs:
           bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
 
       - name: Wait for /api/health
-        # 180 s -- a cold runner with venv warm-up + lazy imports has
-        # been seen to exceed 60 s. Failing the wait is more expensive
-        # than waiting an extra two minutes.
+        # The 180 s deadline lives in wait-for-health.sh, along with the
+        # reason for it: a cold runner with venv warm-up + lazy imports
+        # has been seen to exceed 60 s.
         run: |
-          for i in $(seq 1 180); do
-            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
-              jq -e '.status == "healthy"' /tmp/health.json && break
-            fi
-            sleep 1
-          done
-          jq -e '.status == "healthy"' /tmp/health.json
+          bash .github/scripts/wait-for-health.sh --port "$STUDIO_PORT"
 
       - name: Pass bootstrap password to the Playwright step
         # The Playwright test does its OWN /change-password through the
@@ -223,13 +219,8 @@ jobs:
 
       - name: Wait for /api/health on 18894
         run: |
-          for i in $(seq 1 180); do
-            if curl -fs "http://127.0.0.1:18894/api/health" > /tmp/health2.json; then
-              jq -e '.status == "healthy"' /tmp/health2.json && break
-            fi
-            sleep 1
-          done
-          jq -e '.status == "healthy"' /tmp/health2.json
+          bash .github/scripts/wait-for-health.sh \
+            --port 18894 --log logs/studio_extra.log --tmp /tmp/health2.json
 
       - name: Pass bootstrap pw for extra UI test
         run: |
@@ -280,13 +271,8 @@ jobs:
 
       - name: Wait for /api/health on 18898
         run: |
-          for i in $(seq 1 180); do
-            if curl -fs "http://127.0.0.1:18898/api/health" > /tmp/health4.json; then
-              jq -e '.status == "healthy"' /tmp/health4.json && break
-            fi
-            sleep 1
-          done
-          jq -e '.status == "healthy"' /tmp/health4.json
+          bash .github/scripts/wait-for-health.sh \
+            --port 18898 --log logs/studio_modelcfg.log --tmp /tmp/health4.json
 
       - name: Pass bootstrap pw for model-config test
         run: |
@@ -323,13 +309,8 @@ jobs:
 
       - name: Wait for /api/health on 18896
         run: |
-          for i in $(seq 1 180); do
-            if curl -fs "http://127.0.0.1:18896/api/health" > /tmp/health3.json; then
-              jq -e '.status == "healthy"' /tmp/health3.json && break
-            fi
-            sleep 1
-          done
-          jq -e '.status == "healthy"' /tmp/health3.json
+          bash .github/scripts/wait-for-health.sh \
+            --port 18896 --log logs/studio_ime.log --tmp /tmp/health3.json
 
       - name: Pass bootstrap pw for IME / i18n test
         # IME smoke does the change-password against the bootstrap that

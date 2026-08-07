@@ -580,8 +580,11 @@ async fn health_ready_status(
     }
 }
 
-async fn fetch_liveness(port: u16) -> Result<Option<DesktopLiveness>, reqwest::Error> {
-    let client = crate::loopback_http::client(LOCAL_HTTP_TIMEOUT)?;
+async fn fetch_liveness(
+    port: u16,
+    timeout: Duration,
+) -> Result<Option<DesktopLiveness>, reqwest::Error> {
+    let client = crate::loopback_http::client(timeout)?;
     for path in ["/api/liveness", "/api/health"] {
         let response = client
             .get(format!("http://127.0.0.1:{port}{path}"))
@@ -641,8 +644,8 @@ async fn fetch_health(
         .map_err(|e| e.to_string())
 }
 
-async fn desktop_login_route_compatible(port: u16) -> bool {
-    let client = match crate::loopback_http::client(LOCAL_HTTP_TIMEOUT) {
+async fn desktop_login_route_compatible(port: u16, timeout: Duration) -> bool {
+    let client = match crate::loopback_http::client(timeout) {
         Ok(client) => client,
         Err(_) => return false,
     };
@@ -696,13 +699,29 @@ pub(crate) async fn probe_owned_backend_state(
     port: Option<u16>,
     require_desktop_secret: bool,
 ) -> OwnedBackendProbe {
+    probe_owned_backend_state_with_timeout(owner, port, require_desktop_secret, LOCAL_HTTP_TIMEOUT)
+        .await
+}
+
+/// As above, but with an explicit per-request budget.
+///
+/// The health watchdog needs this. Its probes have to survive the multi-second GIL stalls
+/// the backend's warm thread causes while it imports the ML stack, and at the default 2s
+/// every request here times out during exactly the stall the watchdog is meant to tolerate,
+/// so the backend reads as unverified and gets cleared.
+pub(crate) async fn probe_owned_backend_state_with_timeout(
+    owner: BackendOwnerState,
+    port: Option<u16>,
+    require_desktop_secret: bool,
+    timeout: Duration,
+) -> OwnedBackendProbe {
     let ports: Vec<u16> = match port {
         Some(port) => vec![port],
         None => desktop_candidate_ports().collect(),
     };
     let mut verified = Vec::new();
     for port in ports {
-        let liveness = match fetch_liveness(port).await {
+        let liveness = match fetch_liveness(port, timeout).await {
             Ok(Some(liveness)) => liveness,
             Ok(None) => continue,
             Err(error) => {
@@ -719,7 +738,7 @@ pub(crate) async fn probe_owned_backend_state(
         if let Some(reason) = lifecycle_control_block_reason(&liveness) {
             return OwnedBackendProbe::Unmanageable { port, reason };
         }
-        if !desktop_login_route_compatible(port).await {
+        if !desktop_login_route_compatible(port, timeout).await {
             return OwnedBackendProbe::Unmanageable {
                 port,
                 reason: "desktop_login_probe_failed".to_string(),
