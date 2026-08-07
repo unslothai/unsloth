@@ -212,7 +212,7 @@ jobs:
           {
             echo "mode=${MODE}"
             echo "events=${P_EVENTS:-${I_EVENTS:-schedule}}"
-            echo "classes=${P_CLASSES:-${I_CLASSES:-macos}}"
+            echo "classes=${P_CLASSES:-${I_CLASSES:-linux,windows}}"
             echo "hold=${P_HOLD:-${I_HOLD:-0}}"
             echo "reason=${P_REASON:-${I_REASON:-manual}}"
           } >> "$GITHUB_OUTPUT"
@@ -257,14 +257,14 @@ jobs:
           # Map file name -> numeric workflow id once. Everything downstream
           # compares ids, so a workflow renamed in the UI cannot slip through.
           gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/workflows" \
-            --jq '.workflows[] | "\(.id)\t\(.path)"' > /tmp/wf.tsv
-          : > /tmp/ids.txt
+            --jq '.workflows[] | "\(.id)\t\(.path)"' > "${RUNNER_TEMP}/wf.tsv"
+          : > "${RUNNER_TEMP}/ids.txt"
           while read -r f; do
-            ID="$(awk -F'\t' -v p=".github/workflows/$f" '$2==p{print $1}' /tmp/wf.tsv)"
+            ID="$(awk -F'\t' -v p=".github/workflows/$f" '$2==p{print $1}' "${RUNNER_TEMP}/wf.tsv")"
             if [ -z "$ID" ]; then
               echo "::warning::${f} is in ci-preempt.json but not in this repository; ignoring"
             else
-              echo "$ID" >> /tmp/ids.txt
+              echo "$ID" >> "${RUNNER_TEMP}/ids.txt"
             fi
           done <<<"$FILES"
 
@@ -273,7 +273,7 @@ jobs:
               [ "$DRY" = 1 ] && { echo "would enable workflow ${ID}"; continue; }
               gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${ID}/enable" \
                 && echo "enabled ${ID}" || echo "::error::could not enable ${ID}"
-            done < /tmp/ids.txt
+            done < "${RUNNER_TEMP}/ids.txt"
           }
 
           if [ "$MODE" = "resume" ]; then
@@ -293,7 +293,8 @@ jobs:
             #  - GitHub documents that disabling stops a workflow "from being
             #    triggered". It says nothing about runs already sitting in the
             #    queue. If disable does not drain those, this buys much less
-            #    than it looks like it does against a 70-deep backlog.
+            #    than it looks like it does. Org queue depth peaked at
+            #    1,175 jobs during the window I measured.
             #
             # Hence: not the default, gated behind the enable flag, and floored
             # by the guard above.
@@ -301,7 +302,7 @@ jobs:
               [ "$DRY" = 1 ] && { echo "would disable workflow ${ID}"; continue; }
               gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${ID}/disable" \
                 && echo "disabled ${ID}" || echo "::error::could not disable ${ID}"
-            done < /tmp/ids.txt
+            done < "${RUNNER_TEMP}/ids.txt"
           fi
 
           # Only the count goes to stdout, because the caller reads it through a
@@ -340,7 +341,7 @@ jobs:
                 done < <(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?workflow_id=${ID}&status=${ST}&per_page=100&exclude_pull_requests=true" \
                            --jq '.workflow_runs[] | "\(.id) \(.event) \(.head_branch)"' 2>/dev/null)
               done
-            done < /tmp/ids.txt
+            done < "${RUNNER_TEMP}/ids.txt"
             echo "$n" >&3
           }
 
