@@ -961,6 +961,12 @@ export function AppSidebar() {
   const chatDisabled = trainingInProgress;
   const usesDesktopTitlebar = usesCustomTitlebar || usesNativeMacTitlebar;
 
+  // One box for every row pill, so a hover pill has the same edges wherever it
+  // lands. The list scroller hides its rail (index.css) instead of eating width.
+  const rowPadding = usesDesktopTitlebar
+    ? "pl-[5px] pr-2"
+    : "pl-1.5 pr-1.75";
+
 
   // One definition per row, so pinned rows and the flyout can't drift apart.
   const navRows: Record<SidebarNavItemId, NavRowDef> = {
@@ -1889,11 +1895,10 @@ export function AppSidebar() {
         )}
       </SidebarHeader>
 
-      {/* Paired padding shifts Tauri's primary pills left without changing width. */}
       <SidebarGroup
         className={cn(
           "group-data-[collapsible=icon]:px-0 shrink-0 transition-[padding]",
-          usesDesktopTitlebar ? "pl-[5px] pr-2" : "pl-1.5 pr-1.75",
+          rowPadding,
           usesDesktopTitlebar ? "pt-[11px]" : "pt-[9px]",
           // Scrolled: New Chat is pinned, give a little gap below it.
           scrolled ? "pb-[5px]" : "pb-px",
@@ -1980,7 +1985,7 @@ export function AppSidebar() {
           data-tour="navbar"
           className={cn(
             "group-data-[collapsible=icon]:px-0 py-0 shrink-0",
-            usesDesktopTitlebar ? "pl-[5px] pr-2" : "pl-1.5 pr-1.75",
+            rowPadding,
           )}
         >
 
@@ -2151,7 +2156,7 @@ export function AppSidebar() {
                   </CollapsibleTrigger>
                 </SidebarGroupLabel>
                 <CollapsibleContent>
-                  <SidebarGroupContent className="pl-1.5 pr-1.75">
+                  <SidebarGroupContent className={rowPadding}>
                     <SidebarMenu>
                       {pinnedProjectRecords.map((project) => {
                         const projectChats =
@@ -2301,13 +2306,7 @@ export function AppSidebar() {
                 </CollapsibleTrigger>
               </SidebarGroupLabel>
               <CollapsibleContent>
-                <SidebarGroupContent
-                  className={
-                    usesDesktopTitlebar
-                      ? "pl-2 pr-[5px]"
-                      : "pl-1.5 pr-1.75"
-                  }
-                >
+                <SidebarGroupContent className={rowPadding}>
                   <SidebarMenu>
                     {recentChatItems.map((item) =>
                       renderChatSidebarItem(item, "recent"),
@@ -2339,7 +2338,7 @@ export function AppSidebar() {
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
-              <SidebarGroupContent className="pl-1.5 pr-1.75">
+              <SidebarGroupContent className={rowPadding}>
                 <SidebarMenu>
                   {runItems.map((run) => {
                     // Explicit selection wins. Otherwise highlight the active job only while the "Current Run"
@@ -2431,6 +2430,8 @@ export function AppSidebar() {
       <SidebarFooter
         className={cn(
           "relative pb-[11px] group-data-[collapsible=icon]:px-0",
+          // Same box as the rows above.
+          rowPadding,
           // pt-[3px] cancels the profile button's -3px margin, so the 8px
           // above it is whatever sits over the footer edge (the fade plateau,
           // or the list's pb-2 once the fade is hidden) and 8px sits below.
@@ -2439,7 +2440,7 @@ export function AppSidebar() {
       >
         {/* Fade above the profile box, shown only when there's more list below
             the fold; at the bottom (or short lists) it fades so the last row
-            shows fully (Gemini-style). right-2 keeps it clear of the 8px scrollbar gutter. */}
+            shows fully (Gemini-style). No scroll rail to clear, so full width. */}
         <div
           aria-hidden="true"
           className={cn(
@@ -2447,7 +2448,7 @@ export function AppSidebar() {
             // ramp is still part-transparent there and slices the last row
             // mid-glyph. from-[8px] holds it opaque just across the clip, and
             // matches the list's pb-2 so the gap is the same once it hides.
-            "pointer-events-none absolute left-0 right-2 bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[8px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
+            "pointer-events-none absolute inset-x-0 bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[8px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
             // Shorter fade with the update card so the list reads closer to
             // it, but still tall enough to clear a row.
             showUpdateCard ? "h-7" : "h-10",
