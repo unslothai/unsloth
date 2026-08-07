@@ -1503,7 +1503,6 @@ class TestInheritedCpuPlacement:
     )
     def test_the_predicate(self, env, expected):
         from core.inference.llama_cpp import _env_places_tensors_on_cpu
-
         assert _env_places_tensors_on_cpu(env) is expected
 
     def test_it_is_the_same_predicate_the_pipeline_check_uses(self):
@@ -1525,9 +1524,7 @@ class TestInheritedCpuPlacement:
             {"LLAMA_ARG_N_CPU_MOE": "4"},
         ],
     )
-    def test_an_inherited_placement_keeps_a_full_offload_host_resident(
-        self, monkeypatch, env
-    ):
+    def test_an_inherited_placement_keeps_a_full_offload_host_resident(self, monkeypatch, env):
         assert (
             TestHostMemoryGate._gate(
                 monkeypatch, fully_gpu_offloaded = True, extra_args = None, env = env
@@ -1537,8 +1534,6 @@ class TestInheritedCpuPlacement:
 
     def test_an_unset_environment_leaves_the_gate_alone(self, monkeypatch):
         assert (
-            TestHostMemoryGate._gate(
-                monkeypatch, fully_gpu_offloaded = True, extra_args = None, env = {}
-            )
+            TestHostMemoryGate._gate(monkeypatch, fully_gpu_offloaded = True, extra_args = None, env = {})
             is False
         )
