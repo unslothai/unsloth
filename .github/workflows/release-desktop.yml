@@ -52,6 +52,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Ask the sweeper to stand scheduled CI down while this release builds. Same
+  # repository, so this needs no secret: the job's own GITHUB_TOKEN with
+  # actions: write is enough, and there is no credential to rotate or leak.
+  #
+  # Deliberately not a `needs:` of anything. Freeing capacity is an
+  # optimisation, so a failure here must never hold up or fail a release, and
+  # the build must not wait on it either.
+  #
+  # ci-capacity.yml ships inert. Until CI_PREEMPT_ENABLED is set on this
+  # repository it resolves what it would have cancelled, prints that to the job
+  # summary, and touches nothing. That is the intended state for now: this wires
+  # the request up so the dry-run summary shows what a real sweep would free.
+  free-capacity:
+    name: Ask CI to free runner capacity
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch the capacity sweeper
+        # A release must never fail because the request did not land.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh workflow run ci-capacity.yml --repo "$GITHUB_REPOSITORY" --ref main \
+            -f mode=sweep \
+            -f events=schedule \
+            -f classes=linux,windows \
+            -f reason="release-desktop run ${GITHUB_RUN_ID}"
+
   prepare-version:
     name: Prepare release versions
     runs-on: ubuntu-latest
