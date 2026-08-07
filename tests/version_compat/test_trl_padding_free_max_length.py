@@ -3076,17 +3076,29 @@ def test_a_zoo_that_already_normalizes_the_seed_is_left_alone():
     old = '    max_seq_length = getattr(args, "max_length", 0)'
     new = '    max_seq_length = getattr(args, "max_length", 0) or 0'
     done = "def f():\n" + new + "\n"
-    assert R._replace_or_fallback(
-        done, old, new,
-        fallback_pattern = R._ZOO_MAX_LENGTH_SEED,
-        fallback_new = r'\g<indent>max_seq_length = getattr(args, "max_length", 0) or 0',
-        where = "test", required = True,
-    ) == done
+    assert (
+        R._replace_or_fallback(
+            done,
+            old,
+            new,
+            fallback_pattern = R._ZOO_MAX_LENGTH_SEED,
+            fallback_new = r'\g<indent>max_seq_length = getattr(args, "max_length", 0) or 0',
+            where = "test",
+            required = True,
+        )
+        == done
+    )
     # And the edit itself still applies to an un-normalized source.
     todo = "def f():\n" + old + "\n"
-    assert R._replace_or_fallback(
-        todo, old, new,
-        fallback_pattern = R._ZOO_MAX_LENGTH_SEED,
-        fallback_new = r'\g<indent>max_seq_length = getattr(args, "max_length", 0) or 0',
-        where = "test", required = True,
-    ) == done
+    assert (
+        R._replace_or_fallback(
+            todo,
+            old,
+            new,
+            fallback_pattern = R._ZOO_MAX_LENGTH_SEED,
+            fallback_new = r'\g<indent>max_seq_length = getattr(args, "max_length", 0) or 0',
+            where = "test",
+            required = True,
+        )
+        == done
+    )
