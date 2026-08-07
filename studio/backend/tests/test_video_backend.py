@@ -2530,6 +2530,37 @@ def test_the_h3_native_load_never_puts_the_vae_on_the_cpu():
     assert "--vae-on-cpu" not in offload_flags(OFFLOAD_MODEL, vae_on_cpu = False)
 
 
+def test_h3_rejects_companion_checkpoints_as_the_transformer():
+    """Only an fl2va denoiser is a valid T2VA pick, and the mirror ships more than that.
+
+    The Qwen3-VL encoder quants now live in the same repo as the denoisers, so the picker lists
+    both and a user can name either. Loading the encoder as the transformer would waste a ~12 GB
+    download and fail deep inside sd-cli rather than at the boundary. Ref2VA is a different
+    workflow entirely.
+
+    The accept cases include the dynamic rung names specifically: the guard is a prefix/suffix
+    check, and `-UD-Q2_K_XL` is a shape it had never seen when it was written.
+    """
+    from core.inference.video_minimax_h3 import validate_h3_transformer_filename
+
+    for good in (
+        "minimax_h3_fl2va_pruned-UD-Q2_K_XL.gguf",
+        "minimax_h3_fl2va_pruned-UD-Q3_K_XL.gguf",
+        "minimax_h3_fl2va_pruned-Q4_K.gguf",
+        "minimax_h3_fl2va-Q4_K_M.gguf",
+    ):
+        validate_h3_transformer_filename(good)
+
+    for bad in (
+        "qwen3vl_32b_minimax_h3-Q2_K_M.gguf",
+        "qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
+        "minimax_h3_ref2va_pruned-Q4_K_M.gguf",
+        "minimax_h3_fl2va_pruned_bf16.safetensors",
+    ):
+        with pytest.raises(ValueError):
+            validate_h3_transformer_filename(bad)
+
+
 def test_the_h3_native_repo_matches_the_family_gguf_repo():
     """The declared pick and the actual download must be the same repo.
 
