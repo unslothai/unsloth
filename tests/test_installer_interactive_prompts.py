@@ -46,9 +46,13 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "scripts/uninstall.sh",
     "scripts/uninstall.ps1",
     "studio/install_llama_prebuilt.py",
+    "studio/install_manifest.py",
     "studio/install_node_prebuilt.py",
     "studio/install_python_stack.py",
+    "studio/install_sd_cpp_prebuilt.py",
     "studio/install_whisper_prebuilt.py",
+    # install_python_stack runs this one with sys.executable.
+    "studio/backend/requirements/single-env/patch_metadata.py",
 )
 
 # Every question these scripts may ask, keyed by (script, normalised
@@ -88,10 +92,10 @@ _POSIX_READ = re.compile(
 # Options then variable names to end of line, in command position, so the word
 # `read` in a heredoc of prose is not a prompt.
 _BARE_READ = re.compile(
-    r"(?:^|[;&(])\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
+    r"(?:^|[;&(]|\b(?:if|elif|then|else)\b)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
     # No variable name at all is valid: the answer lands in $REPLY.
     r"read(?:\s+(?:-[a-zA-Z0-9]+|\d+))*(?:\s+[A-Za-z_][A-Za-z0-9_]*)*"
-    r"(?:\s*(?:\|\||&&).*)?\s*$"
+    r"(?:\s*;?\s*then\b.*|\s*(?:\|\||&&).*)?\s*$"
 )
 _LOOP = re.compile(r"\b(?:while|until|for)\b")
 
@@ -105,8 +109,10 @@ _PWSH_READ = re.compile(
 )
 
 # The Python helpers setup runs, and the batch launcher.
-_PY_READ = re.compile(r"(?<![.\w])input\s*\(|getpass\.getpass\s*\(|confirm\s*\(")
-_BAT_READ = re.compile(r"(?:^|[&(]|\bdo\b)\s*(?:set\s+/p\b|choice\b)", re.IGNORECASE)
+_PY_READ = re.compile(
+    r"(?<![.\w])input\s*\(|getpass\.getpass\s*\(|click\.confirm\s*\(|sys\.stdin\.read(?:line)?\s*\("
+)
+_BAT_READ = re.compile(r"(?:^|[&(]|\bdo\b)\s*@?\s*(?:set\s+/p\b|choice\b)", re.IGNORECASE)
 
 # A helper filename, with or without its `scripts/` prefix: sibling invocations
 # such as "$SCRIPT_DIR/build_deps.sh" carry no prefix. Resolved against the repo
@@ -114,6 +120,9 @@ _BAT_READ = re.compile(r"(?:^|[&(]|\bdo\b)\s*(?:set\s+/p\b|choice\b)", re.IGNORE
 _HELPER_REF = re.compile(r"(?<![$\w])((?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.(?:sh|ps1|py|bat))")
 
 _QUOTED = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"' r"|'([^']*)'")
+
+# Quoted text that still runs: a shell or PowerShell subexpression, an f-string field.
+_EXECUTES = re.compile(r"\$\(|\{[^}]*\(")
 
 # `<# ... #>` opened and closed on one line.
 _INLINE_BLOCK = re.compile(r"<#.*?#>", re.DOTALL)
@@ -137,9 +146,9 @@ def _is_comment(line: str) -> bool:
 
 def _blank_strings(line: str) -> str:
     """Blank quoted text so a message naming an input API is not one. A `$(...)`
-    subexpression is kept: it executes, and PowerShell really does prompt from
-    inside an expandable string."""
-    return _QUOTED.sub(lambda m: m.group(0) if "$(" in m.group(0) else '""', line)
+    subexpression or an f-string field is kept: those execute, and both PowerShell
+    and Python really do prompt from inside a string."""
+    return _QUOTED.sub(lambda m: m.group(0) if _EXECUTES.search(m.group(0)) else '""', line)
 
 
 def _is_interactive_read(line: str, script: str) -> bool:
@@ -159,6 +168,23 @@ def _is_interactive_read(line: str, script: str) -> bool:
     # `||` is a fallback, not a pipeline: `read -r reply || reply=n` still blocks.
     piped = "|" in code.replace("||", "")
     return "<" not in code and not piped and bool(_BARE_READ.search(code))
+
+
+def _redirected_loop_bodies(lines: list[str]) -> set[int]:
+    """Indices inside a `do ... done < file` block. The redirection feeds every read
+    in the body, but it sits on the `done`, so the read line alone looks interactive."""
+    inside: set[int] = set()
+    opened: list[int] = []
+    for index, line in enumerate(lines):
+        if re.search(r"(?:^|[;&])\s*do\b|\bdo\s*$", line):
+            opened.append(index)
+        if re.match(r"\s*done\b", line):
+            if not opened:
+                continue
+            start = opened.pop()
+            if "<" in line or "|" in line:
+                inside.update(range(start, index))
+    return inside
 
 
 def _outside_docstring(line: str, delimiter: str) -> tuple[str, str]:
@@ -212,14 +238,14 @@ def blank_comments(source: str, script: str) -> str:
 
 
 def _quoted_strings(line: str) -> list[str]:
-    """Outer strings first, then anything quoted inside a `$(...)`, which is code."""
+    """Outer strings first, then anything quoted inside an executable region."""
     found = []
     for match in _QUOTED.finditer(line):
         for group in match.groups():
             if not group:
                 continue
             found.append(group)
-            if "$(" in group:
+            if _EXECUTES.search(group):
                 found.extend(_quoted_strings(group))
     return found
 
@@ -278,6 +304,7 @@ def _questions_for_read(lines: list[str], index: int) -> list[str]:
 def find_prompts(script: str, source: str) -> list[tuple[str, int, str]]:
     """Return (script, line_number, normalised question) for every prompt site."""
     lines = blank_comments(source, script).splitlines()
+    redirected = _redirected_loop_bodies(lines)
     found: dict[tuple[str, str], tuple[str, int, str]] = {}
 
     for index, line in enumerate(lines):
@@ -295,7 +322,7 @@ def find_prompts(script: str, source: str) -> list[tuple[str, int, str]]:
             )
             found.setdefault((script, question), (script, line_number, question))
 
-        if _is_interactive_read(line, script):
+        if index not in redirected and _is_interactive_read(line, script):
             for question in _questions_for_read(lines, index):
                 found.setdefault((script, question), (script, line_number, question))
 
@@ -367,6 +394,7 @@ def test_every_installer_script_is_scanned():
         "studio/setup*.ps1",
         "studio/setup*.bat",
         "install*.bat",
+        "studio/install_*.py",
         "scripts/install*.sh",
         "scripts/install*.ps1",
         "scripts/uninstall*.sh",
@@ -389,13 +417,9 @@ def test_helpers_the_installers_invoke_are_scanned():
     """Naming the helpers by hand only ever covers the ones we thought of, so read
     them back out instead: whatever the installers reach, the guard scans. Every
     scanned script is a source, not just the entry points, so a helper that grows
-    a helper of its own is caught as soon as the first one is listed here. Python
-    helpers are scanned but not read back: a shell script naming a file runs it, a
-    Python file naming one imports it, and library code is not an installer."""
+    a helper of its own is caught as soon as the first one is listed here."""
     referenced = set()
     for script in SCANNED_SCRIPTS:
-        if script.endswith(".py"):
-            continue
         path = REPO_ROOT / script
         source = blank_comments(path.read_text(encoding = "utf-8"), script)
         for match in _HELPER_REF.finditer(source):
@@ -546,6 +570,49 @@ def test_detects_an_assignment_prefixed_read():
     source = 'printf "  Continue with installation? "\nIFS= read -r _reply\n'
     assert [question for _, _, question in find_prompts("install.sh", source)] == [
         "continue with installation?",
+    ]
+
+
+def test_detects_a_read_used_as_a_condition():
+    source = 'printf "  Continue with installation? "\nif read -r _reply; then :; fi\n'
+    assert [question for _, _, question in find_prompts("install.sh", source)] == [
+        "continue with installation?",
+    ]
+
+
+def test_ignores_a_read_in_a_loop_redirected_at_the_done():
+    """The redirection feeds the read, it just sits three lines below it."""
+    source = 'while true; do\n    read -r _line || break\ndone < "$manifest"\n'
+    assert find_prompts("install.sh", source) == []
+
+
+def test_detects_a_python_stdin_read():
+    source = 'print("  Continue with installation? ")\n_reply = sys.stdin.readline()\n'
+    assert [
+        question for _, _, question in find_prompts("studio/install_python_stack.py", source)
+    ] == [
+        "continue with installation?",
+    ]
+
+
+def test_detects_a_prompt_inside_an_f_string():
+    """An f-string field executes, so blanking the string cannot blank it."""
+    source = "print(f\"Answer: {input('Enable telemetry? ')}\")\n"
+    questions = [
+        question for _, _, question in find_prompts("studio/install_python_stack.py", source)
+    ]
+    assert "enable telemetry?" in questions
+
+
+def test_ignores_a_python_function_named_confirm():
+    source = "def confirm(value):\n    return value\n"
+    assert find_prompts("studio/install_python_stack.py", source) == []
+
+
+def test_detects_a_batch_prompt_with_echo_suppressed():
+    source = '@choice /M "Enable telemetry?"\n'
+    assert [question for _, _, question in find_prompts("studio/setup.bat", source)] == [
+        "enable telemetry?",
     ]
 
 
