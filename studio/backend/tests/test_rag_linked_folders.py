@@ -396,6 +396,18 @@ def test_linked_folders_cannot_overlap_within_a_scope(rag_home):
     assert other_scope["path"] == str(child)
 
 
+@requires_sqlite_vec
+def test_linked_folder_rejects_managed_rag_uploads_overlap(rag_home):
+    from utils.paths import ensure_dir, rag_uploads_root
+
+    uploads = ensure_dir(rag_uploads_root())
+    uploads_child = uploads / "child"
+    uploads_child.mkdir()
+    for path in [uploads.parent, uploads, uploads_child]:
+        with pytest.raises(ValueError, match = "managed RAG uploads"):
+            folder_sync.create_folder(scope_type = "project", scope_id = "one", path = str(path))
+
+
 def test_backend_routes_match_linked_folder_client_contract():
     from routes.rag import LinkFolderRequest, router
 
@@ -752,6 +764,33 @@ def test_shutdown_requeues_a_scan_before_it_mutates_mappings(rag_home, monkeypat
         )
     finally:
         conn.close()
+
+
+@requires_sqlite_vec
+def test_start_auto_sync_does_not_block_on_retired_live_worker(rag_home):
+    blocker = threading.Event()
+    released = threading.Event()
+
+    def parked():
+        blocker.wait()
+        released.set()
+
+    thread = threading.Thread(target = parked)
+    thread.start()
+    original_thread = folder_sync._thread
+    original_stop = folder_sync._stop.is_set()
+    try:
+        folder_sync._thread = thread
+        folder_sync._stop.set()
+        assert folder_sync.start_auto_sync() is False
+        assert thread.is_alive()
+    finally:
+        blocker.set()
+        thread.join(timeout = 1)
+        if not original_stop:
+            folder_sync._stop.clear()
+        folder_sync._thread = original_thread
+    assert released.is_set()
 
 
 def test_project_rag_cleanup_runs_off_the_event_loop(monkeypatch):

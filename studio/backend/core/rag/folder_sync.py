@@ -97,6 +97,9 @@ def validate_folder_path(path: str) -> str:
     except OSError as exc:
         raise ValueError("Path does not exist") from exc
     normalized = os.path.realpath(expanded)
+    uploads_root = os.path.realpath(str(rag_uploads_root()))
+    if _paths_overlap(_path_key(normalized), _path_key(uploads_root)):
+        raise ValueError("The managed RAG uploads folder cannot be linked")
 
     from hub.storage.scan_folders import (
         contains_sensitive_path_component,
@@ -1074,7 +1077,9 @@ def start_auto_sync(*, admission_lock = None, admit = None) -> bool:
         if retired is not None and not _stop.is_set():
             return False
     if retired is not None:
-        retired.join()
+        retired.join(timeout = 0)
+        if retired.is_alive():
+            return False
 
     def launch() -> bool:
         global _thread

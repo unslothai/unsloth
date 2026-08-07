@@ -282,6 +282,47 @@ fn reject_document_folder_root(path: &Path) -> Result<(), String> {
 }
 
 fn reject_sensitive_document_folder(path: &Path) -> Result<(), String> {
+    let has_sensitive_segment = path.components().any(|component| {
+        matches!(
+            component
+                .as_os_str()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .as_str(),
+            ".1password"
+                | ".aws"
+                | ".azure"
+                | ".bitwarden"
+                | ".config"
+                | ".docker"
+                | ".gcloud"
+                | ".gnupg"
+                | ".huggingface"
+                | ".kaggle"
+                | ".kube"
+                | ".local"
+                | ".modelscope"
+                | ".mozilla"
+                | ".ngc"
+                | ".password-store"
+                | ".pki"
+                | ".ssh"
+                | ".thunderbird"
+                | "1password"
+                | "bitwarden"
+                | "keychains"
+                | "keyrings"
+                | "mozilla"
+                | "thunderbird"
+        )
+    });
+    if has_sensitive_segment {
+        return Err(
+            "Sensitive system or application folders cannot be linked as document sources."
+                .to_string(),
+        );
+    }
+
     let mut sensitive_roots = Vec::new();
     if let Some(home) = dirs::home_dir() {
         if same_native_path(path, &home) {
@@ -289,9 +330,7 @@ fn reject_sensitive_document_folder(path: &Path) -> Result<(), String> {
                 "The entire home folder cannot be linked as a document source.".to_string(),
             );
         }
-        for relative in [
-            ".unsloth", ".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker",
-        ] {
+        for relative in [".unsloth"] {
             sensitive_roots.push(home.join(relative));
         }
     }
@@ -505,6 +544,9 @@ mod tests {
         let Some(home) = dirs::home_dir() else { return };
         assert!(reject_sensitive_document_folder(&home.join("Documents")).is_ok());
         assert!(reject_sensitive_document_folder(&home.join(".ssh")).is_err());
+        assert!(reject_sensitive_document_folder(&home.join(".huggingface")).is_err());
+        assert!(reject_sensitive_document_folder(&home.join("work").join(".local")).is_err());
+        assert!(reject_sensitive_document_folder(&home.join("work").join("keyrings")).is_err());
         assert!(reject_sensitive_document_folder(&home.join(".unsloth").join("studio")).is_err());
     }
 
