@@ -43,7 +43,9 @@ from _playwright_robust import (  # noqa: E402
 )
 
 BASE = os.environ["BASE_URL"]
-OLD = os.environ["STUDIO_OLD_PW"]
+# STUDIO_OLD_PW is what the repo's own macOS workflow exports; STUDIO_PW is what the
+# staging harness exports. Accept either so the same script runs under both.
+OLD = os.environ.get("STUDIO_OLD_PW") or os.environ["STUDIO_PW"]
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_mac_tabs"))
 ART.mkdir(parents = True, exist_ok = True)
 
