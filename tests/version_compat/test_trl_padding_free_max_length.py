@@ -905,7 +905,12 @@ def test_rows_whose_mask_is_truncated_away_are_dropped(tmp_path, trl_has_guard):
     """Same rule the `labels` filter already applies, for the other two spellings."""
     if not trl_has_guard:
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
-    trainer = _build(tmp_path, dataset = _mask_supervised_dataset)
+    # completion_only_loss explicitly, because the collator's mode is what decides
+    # whether this mask is supervision at all. TRL resolves a None from the TRAIN
+    # sample, and this split has no prompt/completion columns, so the effective mode
+    # would be False, the collator would ignore the mask, and filtering on it would
+    # be deleting rows that still carry full-sequence supervision.
+    trainer = _build(tmp_path, dataset = _mask_supervised_dataset, completion_only_loss = True)
     for row in trainer.train_dataset:
         assert any(
             m != 0 for m in row["completion_mask"]
@@ -1451,3 +1456,71 @@ def test_evaluate_caps_a_split_that_carries_no_column_metadata():
 
     got = seen["ds"]
     assert all(len(r["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH for r in got)
+
+
+def test_evaluate_caps_a_split_with_no_map(monkeypatch):
+    """A `torch.utils.data.Dataset` or a plain list has no `.map()`.
+
+    Calling it raised AttributeError into the broad catch, which returns the
+    original, so the split reached the collator uncapped on a path where
+    `args.max_length` is already None.
+    """
+    _, tok = _load_plain()
+    ids = tok("The quick brown fox. " * 200)["input_ids"]
+    cap = _MODEL_MAX_SEQ_LENGTH
+    assert len(ids) > cap
+
+    class MapLess:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def __len__(self):
+            return len(self._rows)
+
+        def __getitem__(self, i):
+            return self._rows[i]
+
+    rows = [{"input_ids": list(ids), "attention_mask": [1] * len(ids)} for _ in range(3)]
+
+    Stub, seen = _stub_trainer_class()
+    stub = Stub()
+    stub.args = _Args(cap, None)
+    stub.evaluate(eval_dataset = MapLess(rows))
+
+    got = seen["ds"]
+    assert len(got) == 3
+    assert all(len(r["input_ids"]) <= cap for r in got)
+    assert all(len(r["attention_mask"]) == len(r["input_ids"]) for r in got)
+    # Indexing is the other way the collator reads it.
+    assert len(got[0]["input_ids"]) <= cap
+
+
+def test_evaluate_caps_a_with_transform_split():
+    """`with_transform` reports its BACKING columns while yielding `input_ids`.
+
+    Trusting `column_names` read the split as raw text, and mapping it would be
+    wrong anyway: the rows are rebuilt on every read, so a map writes a table
+    nobody reads.
+    """
+    from datasets import Dataset
+
+    _, tok = _load_plain()
+    cap = _MODEL_MAX_SEQ_LENGTH
+    text = "The quick brown fox. " * 200
+    backing = Dataset.from_list([{"text": text} for _ in range(3)])
+
+    def transform(batch):
+        ids = [tok(t)["input_ids"] for t in batch["text"]]
+        return {"input_ids": ids, "attention_mask": [[1] * len(i) for i in ids]}
+
+    shaped = backing.with_transform(transform)
+    assert "input_ids" not in (shaped.column_names or ()), "metadata must still say `text`"
+
+    Stub, seen = _stub_trainer_class()
+    stub = Stub()
+    stub.args = _Args(cap, None)
+    stub.evaluate(eval_dataset = shaped)
+
+    got = seen["ds"]
+    assert got is not shaped, "the transformed split came back untouched"
+    assert all(len(r["input_ids"]) <= cap for r in got)

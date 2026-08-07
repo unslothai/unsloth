@@ -604,21 +604,94 @@ def _wrap_sft_evaluate_cap(trainer_cls):
     )
 
     def _column_names(dataset):
-        """The split's columns, from metadata or from a row when it has none.
+        """The split's columns, from metadata AND from a row.
 
-        A `torch.utils.data.Dataset` or any custom map-style split carries no
-        `column_names`, and reading that as "raw text, prep will tokenize it"
-        left a pre-tokenized one uncapped on a path where `args.max_length` is
-        already None, so nothing else would cut it either.
+        Both, because either alone is wrong. A `torch.utils.data.Dataset`, a list
+        or any custom map-style split carries no `column_names`, and reading that
+        as "raw text, prep will tokenize it" left a pre-tokenized one uncapped on
+        a path where `args.max_length` is already None. And a `with_transform`
+        dataset reports its BACKING columns (`text`) while yielding `input_ids`,
+        so trusting the metadata alone misses it in the other direction.
         """
-        names = getattr(dataset, "column_names", None)
-        if names:
-            return tuple(names)
+        names = set(getattr(dataset, "column_names", None) or ())
         try:
             row = next(iter(dataset), None)
         except Exception:
-            return ()
-        return tuple(row.keys()) if isinstance(row, dict) else ()
+            row = None
+        if isinstance(row, dict):
+            names.update(row.keys())
+        return tuple(names)
+
+    class _CappedRows:
+        """A read-side cap for a split that cannot be rewritten in place.
+
+        `map`/`filter` belong to `datasets`; a plain `torch.utils.data.Dataset` or
+        a list has neither, and a `with_transform` dataset has them but rebuilds
+        its rows on every read, so mapping it writes the backing table while the
+        reader keeps handing back the untruncated row. Both reach the collator
+        through iteration and indexing, so cutting there covers both.
+
+        Rows left with no supervised token are dropped, which changes the length,
+        so the surviving indices are resolved once up front.
+        """
+
+        def __init__(self, inner, cut, supervision, per_token):
+            self._inner = inner
+            self._cut = cut
+            self._supervision = tuple(supervision)
+            self._per_token = tuple(per_token)
+            self._index = None
+            try:
+                length = len(inner)
+            except Exception:
+                length = None
+            if length is not None:
+                self._index = [
+                    i for i in range(length) if self._keep(self._slice(inner[i]))
+                ]
+
+        def _slice(self, row):
+            if not isinstance(row, dict):
+                return row
+            return {
+                k: (v[self._cut] if k in self._per_token else v) for k, v in row.items()
+            }
+
+        def _keep(self, row):
+            if not self._supervision or not isinstance(row, dict):
+                return True
+            columns = [c for c in self._supervision if c in row]
+            if not columns:
+                return True
+            return any(
+                all((x != -100) if n == "labels" else x for n, x in zip(columns, values))
+                for values in zip(*[row[c] for c in columns])
+            )
+
+        def __len__(self):
+            if self._index is None:
+                raise TypeError("this split has no length")
+            return len(self._index)
+
+        def __getitem__(self, i):
+            if self._index is None:
+                raise TypeError("this split is not indexable")
+            return self._slice(self._inner[self._index[i]])
+
+        def __iter__(self):
+            if self._index is not None:
+                for i in range(len(self._index)):
+                    yield self[i]
+                return
+            for row in self._inner:
+                cut = self._slice(row)
+                if self._keep(cut):
+                    yield cut
+
+        def __getattr__(self, attribute):
+            # Anything else the trainer asks for (column_names, features, ...) is
+            # the wrapped split's own answer.
+            return getattr(self._inner, attribute)
 
     def _supervision_columns(args, names):
         """Columns that decide whether a row still has a supervised token.
@@ -685,6 +758,13 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             keep_end = getattr(args, "truncation_mode", "keep_start") == "keep_end"
             cut = slice(-cap, None) if keep_end else slice(None, cap)
             per_token = [c for c in names if c in _PER_TOKEN]
+            supervision = _supervision_columns(args, names)
+            # A split we cannot rewrite is capped on read instead. `map` belongs to
+            # `datasets`, and a `with_transform` split has it but recreates its rows
+            # on every read, so mapping writes a table nobody reads.
+            transform = str((getattr(dataset, "format", None) or {}).get("type", "")).lower()
+            if not hasattr(dataset, "map") or not hasattr(dataset, "filter") or transform == "custom":
+                return _CappedRows(dataset, cut, supervision, per_token)
             new = dataset.map(lambda e: {c: e[c][cut] for c in per_token})
             # Truncating can leave a row with every label at -100, or a mask that is
             # now all zeros, which the collator turns into all -100. A batch of
@@ -697,7 +777,6 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             # the collator applies the masks ONTO the labels, so a row whose only
             # supervised label sits where the mask is zero passes both filters
             # separately and still goes out all -100.
-            supervision = _supervision_columns(args, names)
             if supervision:
                 new = new.filter(
                     lambda e, c = tuple(supervision): any(
