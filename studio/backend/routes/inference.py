@@ -3102,24 +3102,19 @@ def _monitor_openai_chunk(
     # Defensive: ignore malformed shapes so the helper never raises into the
     # streaming generator and aborts the user's response.
     choices = data.get("choices")
-    finish_reason = None
     if isinstance(choices, list):
-        # The row covers every choice, so one choice's reason only describes the
-        # request when they all agree; otherwise report none.
-        reasons = {
-            str(choice["finish_reason"])
-            for choice in choices
-            if isinstance(choice, dict) and choice.get("finish_reason")
-        }
-        if len(reasons) == 1:
-            finish_reason = reasons.pop()
+        # The row covers every choice, so one reason only describes the request when they
+        # all agree. An n > 1 stream reports each choice in its own chunk, so the monitor
+        # accumulates them across the request rather than judging a chunk in isolation.
+        for choice in choices:
+            if isinstance(choice, dict) and choice.get("finish_reason"):
+                api_monitor.note_stop_reason(monitor_id, str(choice["finish_reason"]))
     timings = data.get("timings")
     _monitor_usage(
         monitor_id,
         data.get("usage"),
         context_length,
         timings = timings if isinstance(timings, dict) else None,
-        stop_reason = finish_reason,
     )
     if not isinstance(choices, list) or not choices:
         return
@@ -12062,6 +12057,9 @@ async def openai_chat_completions(
                 for _c in _sf_flush_reasoning():
                     yield _c
                 yield _chat_final_chunk(completion_id, created, model_name, "stop")
+                # This path always closes the client stream with "stop"; record the
+                # same. Outside the stats block: only MLX reports stats.
+                api_monitor.set_perf(monitor_id, stop_reason = "stop")
                 # Usage chunk from the last turn, same shape as the
                 # GGUF tool loop's metadata. Request-scoped holder, so
                 # concurrent streams cannot read each other's stats.
@@ -12077,12 +12075,10 @@ async def openai_chat_completions(
                     )
                     if usage_line is not None:
                         yield usage_line
-                    # This path always closes the client stream with "stop"; record the same.
                     _monitor_usage(
                         monitor_id,
                         _stats.get("usage"),
                         timings = _stats.get("timings"),
-                        stop_reason = "stop",
                     )
                 api_monitor.finish(
                     monitor_id, "cancelled" if cancel_event.is_set() else "completed"
@@ -12173,14 +12169,15 @@ async def openai_chat_completions(
                 reasoning_prefilled = _sf_reasoning_prefilled,
             )
             api_monitor.set_reply(monitor_id, _visible_text)
+            # This response always carries finish_reason "stop"; record the same.
+            # Outside the stats block: only MLX reports stats.
+            api_monitor.set_perf(monitor_id, stop_reason = "stop")
             _stats = _sf_stats_holder.get("stats")
             if _stats:
-                # This response always carries finish_reason "stop"; record the same.
                 _monitor_usage(
                     monitor_id,
                     _stats.get("usage"),
                     timings = _stats.get("timings"),
-                    stop_reason = "stop",
                 )
             api_monitor.finish(monitor_id, "cancelled" if cancel_event.is_set() else "completed")
             _sf_msg_kwargs = {"content": _visible_text}
@@ -12514,6 +12511,9 @@ async def openai_chat_completions(
                     else "stop"
                 )
                 yield _chat_final_chunk(completion_id, created, model_name, _finish)
+                # Reuse the stop reason already sent to the client. Outside the
+                # stats block: only MLX reports stats.
+                api_monitor.set_perf(monitor_id, stop_reason = _finish)
                 # Usage chunk (choices=[], usage set), same shape as the
                 # GGUF path so the speed popover works for MLX too.
                 # Request-scoped holder, so concurrent streams cannot
@@ -12530,12 +12530,10 @@ async def openai_chat_completions(
                     )
                     if usage_line is not None:
                         yield usage_line
-                    # Reuse the stop reason already sent to the client.
                     _monitor_usage(
                         monitor_id,
                         _stats.get("usage"),
                         timings = _stats.get("timings"),
-                        stop_reason = _finish,
                     )
                 api_monitor.finish(
                     monitor_id, "cancelled" if cancel_event.is_set() else "completed"
@@ -12700,13 +12698,15 @@ async def openai_chat_completions(
                     f"[tool_calls] {_calls_text}" if _calls_text else ""
                 )
             api_monitor.set_reply(monitor_id, _monitor_reply)
+            # Reuse the response's finish_reason. Outside the stats block: only
+            # MLX reports stats.
+            api_monitor.set_perf(monitor_id, stop_reason = _finish)
             _stats = stats_holder.get("stats")
             if _stats:
                 _monitor_usage(
                     monitor_id,
                     _stats.get("usage"),
                     timings = _stats.get("timings"),
-                    stop_reason = _finish,
                 )
             api_monitor.finish(monitor_id)
             return _model_json_response(response)
@@ -14952,6 +14952,10 @@ async def _responses_stream(
         if healer is not None:
             events = (healer.feed(final_visible) if final_visible else []) + healer.finalize()
             final_visible = ""
+            if events:
+                # Same as the in-loop stamp: this is where the client first sees
+                # the promoted call, and the item only closes several yields later.
+                api_monitor.mark_first_token(monitor_id)
             for event in _healed_event_sse(events):
                 yield event
         if final_visible:

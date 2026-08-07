@@ -13,6 +13,8 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from models.inference import ChatCompletionRequest, ChatMessage
 from routes.inference import openai_chat_completions
 from core.inference.api_monitor import ApiMonitor
@@ -360,6 +362,53 @@ def test_usage_recorded_when_stats_present(monkeypatch):
     [entry] = monitor.snapshot()
     assert entry["prompt_tokens"] == 7
     assert entry["completion_tokens"] == 3
+
+
+class _ToolLoopBackend(_ScriptedBackend):
+    """Server-side tool loop: the event stream the GGUF loop also emits."""
+
+    def generate_chat_completion_with_tools(
+        self, *, messages, tools = None, stats_holder = None, **kwargs
+    ):
+        self.calls.append({"messages": messages, "tools": tools, **kwargs})
+        if stats_holder is not None and self._stats is not None:
+            stats_holder["stats"] = self._stats
+        yield {"type": "content", "text": "done"}
+
+
+@pytest.mark.parametrize(
+    "kind, stream, expected",
+    [
+        ("plain", True, "stop"),
+        ("plain", False, "stop"),
+        ("healed", True, "tool_calls"),
+        ("healed", False, "tool_calls"),
+        ("tool_loop", True, "stop"),
+        ("tool_loop", False, "stop"),
+    ],
+)
+def test_stop_reason_recorded_without_backend_stats(monkeypatch, kind, stream, expected):
+    # last_generation_stats is MLX-only, so a transformers generation leaves
+    # stats_holder empty; the stop reason must not ride along with it.
+    if kind == "tool_loop":
+        backend = _ToolLoopBackend(_fixed("done"))
+        payload = _request(stream = stream, enable_tools = True)
+    elif kind == "healed":
+        backend = _ScriptedBackend(_fixed(_CALL_XML))
+        payload = _request(stream = stream, tools = [LOOKUP_TOOL])
+    else:
+        backend = _ScriptedBackend(_fixed("plain answer"))
+        payload = _request(stream = stream)
+    monitor = _install(monkeypatch, backend)
+
+    async def _run():
+        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+
+    response = asyncio.run(_run())
+    if stream:
+        _collect_sse(response)
+    [entry] = monitor.snapshot()
+    assert entry["stop_reason"] == expected
 
 
 # ── Nudge ─────────────────────────────────────────────────────────

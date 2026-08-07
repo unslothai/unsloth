@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 
@@ -99,6 +99,9 @@ class ApiMonitorEntry:
     prompt_ms: Optional[float] = None
     tok_per_sec: Optional[float] = None
     stop_reason: Optional[str] = None
+    # Every finish reason seen so far. An n > 1 stream reports each choice in its own
+    # chunk, so agreement can only be judged across the whole request. Not serialized.
+    stop_reasons_seen: set[str] = field(default_factory = set)
 
     def snapshot(
         self,
@@ -381,6 +384,24 @@ class ApiMonitor:
                 entry.prompt_ms = prompt_ms
             if stop_reason is not None:
                 entry.stop_reason = str(stop_reason)
+            entry.updated_at = time.time()
+
+    def note_stop_reason(self, entry_id: Optional[str], reason: Optional[str]) -> None:
+        """Record one choice's finish reason.
+
+        The row carries a single stop reason, so it only describes the request while every
+        choice agrees. Clears it again as soon as two disagree, which last-write-wins per
+        chunk could not do.
+        """
+        if not entry_id or not reason:
+            return
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is None:
+                return
+            entry.stop_reasons_seen.add(str(reason))
+            seen = entry.stop_reasons_seen
+            entry.stop_reason = next(iter(seen)) if len(seen) == 1 else None
             entry.updated_at = time.time()
 
     def set_usage(

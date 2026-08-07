@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import itertools
+import json
 
 import pytest
 from fastapi import FastAPI
@@ -1244,4 +1245,35 @@ def test_disagreeing_choice_finish_reasons_report_no_stop_reason(monkeypatch):
 
     assert row_for(["stop"]) == "stop"
     assert row_for(["stop", "stop"]) == "stop"
+    assert row_for(["stop", "length"]) is None
+
+
+def test_streamed_choice_finish_reasons_are_compared_across_chunks(monkeypatch):
+    # llama-server streams an n > 1 request as one single-choice chunk per sample, so
+    # agreement can only be judged across the whole stream, not inside one chunk.
+    import routes.inference as inf
+
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inf, "api_monitor", monitor)
+
+    def row_for(reasons):
+        entry_id = monitor.start(
+            endpoint = "/v1/completions",
+            method = "POST",
+            model = "m",
+            prompt = "hi",
+        )
+        for i, reason in enumerate(reasons):
+            inf._monitor_openai_sse_line(
+                entry_id,
+                "data: " + json.dumps(
+                    {"choices": [{"index": i, "text": "x", "finish_reason": reason}]}
+                ),
+            )
+        monitor.finish(entry_id)
+        return next(r for r in monitor.snapshot() if r["id"] == entry_id)["stop_reason"]
+
+    assert row_for(["stop"]) == "stop"
+    assert row_for(["stop", "stop"]) == "stop"
+    # Used to report "length": each chunk agreed with itself and the last one won.
     assert row_for(["stop", "length"]) is None
