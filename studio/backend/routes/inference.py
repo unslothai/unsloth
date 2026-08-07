@@ -14018,6 +14018,10 @@ def _build_chat_request(
             chat_kwargs["auto_heal_tool_calls"] = _extra["auto_heal_tool_calls"]
         if isinstance(_extra.get("nudge_tool_calls"), bool):
             chat_kwargs["nudge_tool_calls"] = _extra["nudge_tool_calls"]
+        # Same for continuation, or a Responses request resuming a trailing
+        # assistant turn opens a fresh one and restarts the answer.
+        if isinstance(_extra.get("continue_final_message"), bool):
+            chat_kwargs["continue_final_message"] = _extra["continue_final_message"]
 
     if isinstance(payload.reasoning, dict):
         effort = payload.reasoning.get("effort")

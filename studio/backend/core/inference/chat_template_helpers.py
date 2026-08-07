@@ -2458,9 +2458,11 @@ def apply_chat_template_for_generation(
             _fallback_markup = markup_for_tokenizer(tokenizer, None)
         return neutralize_control_markup_in_messages(msgs, None, _fallback_markup)
 
-    # Anything not continuable renders as an ordinary new turn.
+    # Anything not continuable renders as an ordinary new turn. An empty partial has no
+    # resume point either, so it is excluded here too, matching the route guard and
+    # render_prompt_with_boundary.
     _continue_text = trailing_assistant_text(messages) if continue_final_message else None
-    _continuing = _continue_text is not None
+    _continuing = bool(_continue_text)
     _boundary_kwargs = (
         {"add_generation_prompt": False, "continue_final_message": True}
         if _continuing

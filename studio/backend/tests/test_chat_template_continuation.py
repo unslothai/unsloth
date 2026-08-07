@@ -13,7 +13,9 @@ so anything else renders normally instead of raising.
 
 from __future__ import annotations
 
+import importlib
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -31,6 +33,48 @@ from core.inference.chat_template_helpers import (  # noqa: E402
 )
 
 _PARTIAL = "The three steps are: first, preheat the"
+
+
+class _AnyModule(types.ModuleType):
+    """Stand-in module: every attribute resolves, nothing runs.
+
+    ``__spec__`` is set because ``importlib.util.find_spec`` raises without one.
+    """
+
+    def __init__(self, name):
+        super().__init__(name)
+        self.__spec__ = importlib.machinery.ModuleSpec(name, None)
+
+    def __getattr__(self, name):
+        return object
+
+
+def _inference_backend():
+    """``InferenceBackend`` without the training stack.
+
+    ``core/inference/inference.py`` imports unsloth and peft at module scope and the
+    dependency-light backend CI job installs neither, but the formatters under test
+    touch neither either. Stub them rather than skip, or the matrix that would catch
+    a restart regression never runs it. Stubs are dropped once the module is bound.
+    """
+    import transformers  # noqa: F401 - resolve optional deps before anything is faked
+
+    stubbed = []
+    for name in ("unsloth", "unsloth.chat_templates", "peft"):
+        if name in sys.modules:
+            continue
+        try:
+            importlib.import_module(name)
+        except Exception:  # noqa: BLE001 - any failure means "use the stub"
+            sys.modules[name] = _AnyModule(name)
+            stubbed.append(name)
+    try:
+        from core.inference.inference import InferenceBackend
+    finally:
+        for name in stubbed:
+            sys.modules.pop(name, None)
+
+    return InferenceBackend
 
 
 def _conv(partial = _PARTIAL):
@@ -226,7 +270,7 @@ _VISION_MESSAGES = [
 
 def test_vision_continuation_ends_inside_the_partial():
     prompt = render_prompt_with_boundary(
-        _VisionProcessor(), _VISION_MESSAGES, "It is a bar chart showing"
+        _VisionProcessor(), _VISION_MESSAGES, continue_final_message = True
     )
     assert prompt.endswith("It is a bar chart showing")
     assert not prompt.endswith("<assistant>")
@@ -419,7 +463,7 @@ def test_the_manual_formatters_resume_instead_of_opening_a_new_turn(format_type,
     These run when the tokenizer template raises or a base model has none, which is
     exactly where a restart would otherwise be invisible.
     """
-    from core.inference.inference import InferenceBackend
+    InferenceBackend = _inference_backend()
 
     class _RaisingTokenizer:
         chat_template = None
@@ -493,3 +537,29 @@ def test_a_merge_stops_once_the_turn_is_no_longer_the_resumed_one():
         after_nudge, {"role": "assistant", "content": "z"}, continue_final_message = True
     )
     assert len(after_nudge) == 3
+
+
+def test_an_empty_partial_renders_an_ordinary_new_turn():
+    """No resume point inside an empty turn, so all three guards agree on it."""
+    empty = _conv("")
+    assert trailing_assistant_text(empty) == ""
+    assert apply_chat_template_for_generation(
+        _ChatMLTokenizer(), empty, continue_final_message = True
+    ).endswith("<|im_start|>assistant\n")
+    assert render_prompt_with_boundary(
+        _ChatMLTokenizer(), empty, continue_final_message = True
+    ).endswith("<|im_start|>assistant\n")
+
+
+def test_the_responses_api_forwards_the_continuation_flag():
+    """Responses carries it in the extra-body, like auto_heal / nudge_tool_calls."""
+    from models.inference import ResponsesRequest
+    from routes.inference import _build_chat_request
+
+    messages = [{"role": "user", "content": "q"}, {"role": "assistant", "content": _PARTIAL}]
+
+    payload = ResponsesRequest(model = "m", input = "q", continue_final_message = True)
+    assert _build_chat_request(payload, messages, False).continue_final_message is True
+
+    plain = ResponsesRequest(model = "m", input = "q")
+    assert _build_chat_request(plain, messages, False).continue_final_message is None
