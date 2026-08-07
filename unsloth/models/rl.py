@@ -731,12 +731,15 @@ def _is_stream(dataset):
 def _first_row_without_consuming(dataset):
     """Row 0, or None when reading one would cost the caller that row."""
     if not _is_stream(dataset):
-        try: return dataset[0]
-        except Exception: return None
+        try:
+            return dataset[0]
+        except Exception:
+            return None
     # A stream whose `iter` hands back the same exhausting generator cannot
     # spare a row, and nothing here chains it back.
     probe = iter(dataset)
-    if probe is dataset or probe is iter(dataset): return None
+    if probe is dataset or probe is iter(dataset):
+        return None
     return next(probe, None)
 
 
@@ -754,7 +757,8 @@ def _sliceable_per_token(dataset, names, cap):
     column the cap exists for, and the one every other is measured against.
     """
     per_token = [c for c in names if c in _PER_TOKEN]
-    if len(per_token) < 2: return per_token
+    if len(per_token) < 2:
+        return per_token
     row = _first_row_without_consuming(dataset)
     if not isinstance(row, dict):
         return ["input_ids"] if "input_ids" in names else []
@@ -768,8 +772,10 @@ def _sliceable_per_token(dataset, names, cap):
         try:
             # As long as `input_ids`, and flat: a nested first element is a
             # per-token vector that `[:cap]` would cut along the wrong axis.
-            if len(value) != width: continue
-            if len(value) and isinstance(value[0], (list, tuple)): continue
+            if len(value) != width:
+                continue
+            if len(value) and isinstance(value[0], (list, tuple)):
+                continue
         except Exception:
             continue
         kept.append(name)

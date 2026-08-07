@@ -2314,10 +2314,13 @@ def test_a_two_dimensional_token_column_is_not_sliced():
     assert len(got["position_ids"][0]) == len(rows[0]["position_ids"])
 
 
-@pytest.mark.parametrize("method, keyword", [
-    ("get_eval_dataloader", "eval_dataset"),
-    ("get_test_dataloader", "test_dataset"),
-])
+@pytest.mark.parametrize(
+    "method, keyword",
+    [
+        ("get_eval_dataloader", "eval_dataset"),
+        ("get_test_dataloader", "test_dataset"),
+    ],
+)
 def test_the_dataloader_builders_cap_a_late_split_too(method, keyword):
     """Both are public API and neither goes through `evaluate`/`predict`, so a
     caller building a dataloader directly reached the padding-free collator with
@@ -2327,13 +2330,18 @@ def test_the_dataloader_builders_cap_a_late_split_too(method, keyword):
     _, tok = _load_plain()
     seen = {}
 
-    def _builder(self, split = None, **kw):
+    def _builder(
+        self,
+        split = None,
+        **kw,
+    ):
         seen["ds"] = split
 
     Stub = type("Stub", (), {method: _builder})
     _wrap_sft_evaluate_cap(Stub)
-    assert getattr(getattr(Stub, method), "_unsloth_eval_cap_wrapped", False), \
-        f"{method} was never wrapped"
+    assert getattr(
+        getattr(Stub, method), "_unsloth_eval_cap_wrapped", False
+    ), f"{method} was never wrapped"
 
     stub = Stub()
     stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
@@ -2348,8 +2356,10 @@ def test_the_pretokenized_probe_does_not_eat_a_one_shot_row():
     read tokenized it rejects a caller-owned stream it has already mutated."""
     block = _padding_free_codegen_block()
     start = block.index("def _unsloth_pretokenized")
-    body = block[start:start + 900]
-    assert "_probe is _ds or _probe is iter(_ds)" in body, \
-        "the pretokenized probe still reads a row off a one-shot stream"
-    assert body.index("column_names") < body.index("iter(_ds)"), \
-        "the schema is not consulted before a row is taken"
+    body = block[start : start + 900]
+    assert (
+        "_probe is _ds or _probe is iter(_ds)" in body
+    ), "the pretokenized probe still reads a row off a one-shot stream"
+    assert body.index("column_names") < body.index(
+        "iter(_ds)"
+    ), "the schema is not consulted before a row is taken"
