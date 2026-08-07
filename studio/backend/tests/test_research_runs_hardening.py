@@ -1745,23 +1745,30 @@ def test_every_stream_assertion_matches_the_return_arity():
 
     from core import research_runs as _rr
 
-    annotation = str(_inspect.signature(
-        _rr.ResearchSupervisor._stream_completion).return_annotation)
+    annotation = str(
+        _inspect.signature(_rr.ResearchSupervisor._stream_completion).return_annotation
+    )
     # `tuple[a, b, c, d]` -> 4, counting only top-level commas so that a nested
     # `dict[str, int]` does not read as two extra members.
     inner = annotation[annotation.index("[") + 1 : annotation.rindex("]")]
     depth, width = 0, 1
     for ch in inner:
-        if ch in "[(": depth += 1
-        elif ch in "])": depth -= 1
-        elif ch == "," and depth == 0: width += 1
+        if ch in "[(":
+            depth += 1
+        elif ch in "])":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            width += 1
 
     source = Path(__file__).read_text(encoding = "utf-8")
     tree = ast.parse(source)
 
     def _calls_run_stream(node):
-        return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                and node.func.id == "_run_stream")
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_run_stream"
+        )
 
     compared, unpacked = 0, 0
     for node in ast.walk(tree):
@@ -1772,7 +1779,8 @@ def test_every_stream_assertion_matches_the_return_arity():
                     assert len(other.elts) == width, (
                         f"line {node.lineno}: compares against a "
                         f"{len(other.elts)}-tuple, but _stream_completion "
-                        f"returns {width} values")
+                        f"returns {width} values"
+                    )
                     compared += 1
         # `a, b, c, d = _run_stream(...)`
         if isinstance(node, ast.Assign) and _calls_run_stream(node.value):
@@ -1780,7 +1788,8 @@ def test_every_stream_assertion_matches_the_return_arity():
                 if isinstance(target, ast.Tuple):
                     assert len(target.elts) == width, (
                         f"line {node.lineno}: unpacks {len(target.elts)} names "
-                        f"from a {width}-value return")
+                        f"from a {width}-value return"
+                    )
                     unpacked += 1
 
     # Not a vacuous pass: both shapes are present in this file today.
