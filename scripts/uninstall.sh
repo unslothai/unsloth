@@ -648,8 +648,14 @@ _unsloth_uninstall_main() {
             if [ "$_un_appdir" != "$HOME/.local/share/applications" ]; then
                 _remove_path "$HOME/.local/share/applications/unsloth-studio-handler.desktop"
             fi
+            # Rebuild mimeinfo.cache in each directory an entry was removed from, or the
+            # cache beside the removed handler keeps advertising it. install.sh refreshes
+            # the directory it actually wrote to (install.sh:1574); do the same on the way out.
             if command -v update-desktop-database >/dev/null 2>&1; then
                 update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+                if [ "$_un_appdir" != "$HOME/.local/share/applications" ]; then
+                    update-desktop-database "$_un_appdir" 2>/dev/null || true
+                fi
             fi
             ;;
     esac
