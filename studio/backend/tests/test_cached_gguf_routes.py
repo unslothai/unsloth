@@ -3838,7 +3838,7 @@ def test_switching_cache_storage_does_not_join_a_stuck_scan(monkeypatch, tmp_pat
 
 
 def test_gguf_variants_route_carries_local_resolution(monkeypatch, tmp_path):
-    # The CLI gate reads resolved_locally, so the legacy constructor must carry it through.
+    # The CLI gate reads resolved_locally, so the legacy constructor must carry it.
     monkeypatch.chdir(tmp_path)
     (tmp_path / "models" / "qwen").mkdir(parents = True)
     (tmp_path / "models" / "qwen" / "q-Q4_K_M.gguf").write_bytes(b"GGUF")

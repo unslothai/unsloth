@@ -44,8 +44,7 @@ from hub.utils.paths import (
     is_valid_repo_id as _is_valid_repo_id,
 )
 
-# The loader's normalizer, not the hub's: the two disagree on a WSL host with a custom
-# [automount] root, and the answer here has to be the path the load will actually open.
+# Loader's normalizer, not the hub's: they disagree on WSL, and only it names what the load opens.
 from utils.paths import normalize_path as _loader_normalize_path
 from hub.services.models.common import (
     _is_mmproj_filename,
@@ -546,8 +545,7 @@ def _direct_gguf_loads(path: Path) -> bool:
     Mirrors ``detect_gguf_model``: refuses companions (mmproj, MTP/dspark
     drafter) and big-endian builds by name+parent, same as the load path.
     """
-    # Load extractor, not the hub one: they disagree on shapes like
-    # F16-be-checkpoint-Q4_K_M, which would wrongly exempt a refused load.
+    # Load extractor, not the hub one: they disagree on F16-be-checkpoint-Q4_K_M shapes.
     from utils.models.model_config import _extract_quant_label
 
     context = f"{path.parent.name}/{path.name}"
@@ -558,8 +556,8 @@ def _direct_gguf_loads(path: Path) -> bool:
     )
 
 
-# llama.cpp's split grammar: five digits exactly (model_config._GGUF_SPLIT_FILE_RE), not
-# the cache scan's looser -\d{3,}- resume form -- a shorter name still loads as an ordinary file.
+# llama.cpp's split grammar (model_config._GGUF_SPLIT_FILE_RE): five digits exactly, since a
+# shorter name loads as an ordinary file, not the cache scan's looser -\d{3,}- resume form.
 _DIRECT_SPLIT_RE = re.compile(r"^(?P<stem>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})$", re.IGNORECASE)
 
 
@@ -602,7 +600,7 @@ def _direct_gguf_split_is_whole(path: Path) -> bool:
         """
         m = _DIRECT_SPLIT_RE.match(target.name.rsplit(".", 1)[0])
         if m is None:
-            # Link names a split but points at an ordinary file: loads as-is, nothing missing.
+            # Split-named link on an ordinary target: loads as-is, nothing missing.
             return True
         target_total = int(m.group("total"))
         pattern = re.compile(
@@ -619,22 +617,20 @@ def _direct_gguf_split_is_whole(path: Path) -> bool:
     try:
         found = _indexes_beside(path, sibling)
         if not found >= set(range(1, total + 1)) and path.is_symlink():
-            # _local_gguf_load_path resolves siblings from the TARGET, so a differently
-            # named alias still loads the target's real set -- and a torn target stays torn.
+            # _local_gguf_load_path resolves siblings from the TARGET, so a renamed alias
+            # still loads the target's real set -- and a torn target stays torn.
             return _target_set_is_whole(path.resolve())
     except OSError:
         return True
-    # Declared indexes, not a count: an over-indexed stray must not stand in for a
-    # missing shard, and a zero-byte sibling is an interrupted copy (partial like the scan).
+    # Declared indexes, not a count: an over-indexed stray must not stand in for a missing
+    # shard, and a zero-byte sibling is an interrupted copy.
     return found >= set(range(1, total + 1))
 
 
-# Cache scan's looser split grammar (hub.utils.inventory_scan._GGUF_SPLIT_RE) --
-# kept separate to tell it apart from the load path's five digits.
+# Cache scan's looser grammar (hub.utils.inventory_scan._GGUF_SPLIT_RE), not the five digits above.
 _CACHE_SPLIT_RE = re.compile(r"-(\d{3,})-of-(\d{3,})(?=\.gguf$)", re.IGNORECASE)
 
-# Only enumerates candidate spellings for the resolver to adjudicate; drift here
-# costs a candidate, never a verdict.
+# Only enumerates candidates for the resolver to adjudicate; drift costs a candidate, not a verdict.
 _KNOWN_QUANT_RE = re.compile(
     r"(UD-)?"
     r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
@@ -660,10 +656,10 @@ def _will_serve(resolved: Optional[str]) -> bool:
         return False
     try:
         path = Path(resolved)
-        # Absence must be caught here since the resolver answers for nonexistent paths too:
-        # "no such file" is definite, but an error reading it (Windows lock window after
-        # llama-server is killed) stays unknown and serves. stat() rather than exists(),
-        # which swallows every OSError on 3.14 and would read a sharing violation as absence.
+        # The resolver answers for nonexistent paths, so absence is caught here: "no such
+        # file" is definite, a read error (Windows lock window) stays unknown and serves.
+        # stat(), not exists(), which swallows every OSError on 3.14 and would read a
+        # sharing violation as absence.
         try:
             size = path.stat().st_size
         except (FileNotFoundError, NotADirectoryError):
@@ -683,11 +679,10 @@ def _loadable_variants(identifier: str, variants):
     """
     from utils.models.model_config import _find_local_gguf_by_variant
 
-    # from_identifier only consults the variant for a DIRECTORY; a direct file loads
-    # itself regardless. Leave it unanswered here rather than be stricter than the load.
-    # stat(), not is_file(): a file locked by llama-server must stay unanswered, since an
-    # empty list reads as authoritative at the gate and rejects the variant. is_file()
-    # cannot express that -- it raises here and, from 3.14, answers False instead.
+    # from_identifier only consults the variant for a DIRECTORY; a direct file loads itself
+    # regardless, so leave it unanswered rather than be stricter than the load. stat(), not
+    # is_file(): a locked file must stay unanswered (an empty list is authoritative at the
+    # gate), which is_file() cannot express -- it raises here, and answers False from 3.14.
     import stat as _stat
 
     try:
@@ -698,10 +693,9 @@ def _loadable_variants(identifier: str, variants):
     except OSError:
         return None
 
-    # The resolver walks the tree per call, so spellings are deduped against `seen` before
-    # asking: measured 2 calls per row (36 for 18 quants, 179ms over 144 files), not one per
-    # spelling. Each derived alias is still confirmed rather than assumed, so a token that
-    # happens to bind a different file is never advertised.
+    # The resolver walks the tree per call, so spellings are deduped against `seen` first:
+    # ~2 calls per row (36 for 18 quants, 179ms over 144 files), not one per spelling. Each
+    # alias is still confirmed, so a token binding a different file is never advertised.
     accepted: list = []
     seen = set()
     for variant in variants:
@@ -718,12 +712,10 @@ def _loadable_variants(identifier: str, variants):
         if key not in seen:
             seen.add(key)
             accepted.append(quant)
-        # The resolver also takes the snapshot-relative stem (BF16/model) and the
-        # basename's own tokens; derive those and let the resolver confirm each, so no
-        # spelling is claimed that the load would not honour.
-        # It returns an absolute path, so a relative identifier must be resolved the
-        # same way, or the relative alias is lost. Try unresolved first: a symlink
-        # pointing outside the tree still answers BF16/model there, but not once resolved.
+        # The resolver also takes the snapshot-relative stem (BF16/model) and the basename's
+        # own tokens; derive those and let it confirm each. It returns an absolute path, so a
+        # relative identifier must be resolved the same way or its alias is lost. Unresolved
+        # first: a symlink out of the tree still answers BF16/model there, but not resolved.
         relative = Path(bound).name
         for base_raw, bound_path in (
             (Path(identifier).expanduser(), Path(bound)),
@@ -863,10 +855,9 @@ async def get_gguf_variants_answer(
     # Set by whichever branch answers, and returned with the listing: the HF cache answers
     # before local_path, so a caller cannot infer the copy from the request alone.
     answered_from: list[Optional[str]] = [None]
-    # Set by the existence-first local branch below: a repo-shaped id that resolves to a
-    # directory is answered by that directory alone, not the HF cache of the identically
-    # named repo -- else a GGUF-less directory could evict the resident model via a
-    # cleanable row from the cache.
+    # Set by the existence-first local branch below: a repo-shaped id resolving to a directory
+    # is answered by that directory alone, not the HF cache of the same-named repo -- else a
+    # GGUF-less directory could evict the resident model via a cleanable row from the cache.
     answered_locally = [False]
 
     def _compute() -> GgufVariantsResponse:
@@ -973,13 +964,12 @@ async def get_gguf_variants_answer(
             return response.model_copy(update = {"variants": [*response.variants, *extra]})
 
         # Local directory path (e.g. LM Studio models) — scan filesystem. Load-path parity:
-        # from_identifier resolves existence-first, so a marker-less relative name that
-        # exists here is a local model, not a Hub id, and a direct .gguf file is loadable
-        # without the metadata siblings the directory scan requires.
-        # from_identifier normalizes before resolving, so every filesystem question below
-        # must ask about the same path: under WSL a supported "C:\\models\\qwen" maps to
-        # /mnt/c/models/qwen, and probing the raw spelling would report nothing loadable
-        # for a model the load serves fine.
+        # from_identifier resolves existence-first, so a marker-less relative name that exists
+        # here is a local model, not a Hub id, and a direct .gguf file loads without the
+        # metadata siblings the directory scan requires. It also normalizes first, so every
+        # question below must ask about the same path: under WSL "C:\\models\\qwen" maps to
+        # /mnt/c/models/qwen, and probing the raw spelling would report a working model
+        # unloadable.
         local_id = _loader_normalize_path(repo_id) if is_local_path(repo_id) else repo_id
         local_target = None
         try:
@@ -990,8 +980,8 @@ async def get_gguf_variants_answer(
             local_target = None
         if local_target is not None:
             variants, has_vision = list_local_gguf_variants(local_id)
-            # The load id is this path, so a quant offered here must resolve here too --
-            # a scan-torn quant is still ready if the resolver's bound file opens fine.
+            # The load id is this path, so a scan-torn quant is still ready when the file the
+            # resolver binds opens fine.
             complete = _complete_with_servable(local_id, _complete_quants_under(local_id), variants)
             if (
                 not variants
@@ -999,16 +989,14 @@ async def get_gguf_variants_answer(
                 and local_target.suffix.lower() == ".gguf"
                 and _direct_gguf_loads(local_target)
             ):
-                # An unmarked-parent .gguf is skipped by the directory scan but still loads
-                # via detect_gguf_model; fall back to the file itself only here, so a marked
-                # parent still keeps its sibling quants and vision flag.
+                # An unmarked-parent .gguf is skipped by the directory scan but detect_gguf_model
+                # still loads it; falling back only here keeps a marked parent's siblings.
                 try:
                     size = local_target.stat().st_size
                 except OSError:
                     size = 0
-                # Label with the load resolver's own extractor over the same context it reads,
-                # so the quant is by construction what the echoed load resolves (the hub-side
-                # extractor disagrees on shapes like F16-checkpoint-Q4_K_M).
+                # The load resolver's own extractor over the context it reads, so the quant is
+                # what the echoed load resolves (the hub one differs on F16-checkpoint-Q4_K_M).
                 from utils.models.model_config import _extract_quant_label
 
                 variants = [
@@ -1020,17 +1008,15 @@ async def get_gguf_variants_answer(
                         size_bytes = size,
                     )
                 ]
-                # The shard scan resolves a file to its marked parent, so an unmarked one
-                # walks a bare file and would misreport the row as not downloaded. Report
-                # instead what the file itself answers: whole unless it's a split missing a
-                # sibling or a zero-byte interrupted copy (partial like the directory scan).
+                # The shard scan resolves a file to its marked parent, so an unmarked one walks
+                # a bare file and misreports the row. Ask the file itself: whole unless it is a
+                # split missing a sibling or a zero-byte interrupted copy.
                 complete = None if size > 0 and _direct_gguf_split_is_whole(local_target) else set()
             answered_from[0] = repo_id
             answered_locally[0] = True
-            # Surface the resolution so the CLI gate can match a local answer with the local
-            # resolver's exact labels instead of guessing from the id's shape, and answer the
-            # gate's real question -- would this load resolve -- with the loader itself, so no
-            # client has to mirror its grammar (labels, splits, companions, big-endian, symlinks).
+            # Surface the resolution so the CLI gate matches on the local resolver's exact
+            # labels rather than the id's shape, and answers its real question -- would this
+            # load resolve -- with the loader itself, so no client mirrors its grammar.
             return _local_response(repo_id, variants, has_vision, complete).model_copy(
                 update = {
                     "resolved_locally": True,

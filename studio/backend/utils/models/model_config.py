@@ -2073,15 +2073,15 @@ def detect_gguf_model(path: str, model_root: Optional[str] = None) -> Optional[s
             gguf_files.append(f)
         gguf_files.sort(key = lambda f: f.stat().st_size, reverse = True)
 
-        # A torn split's lone shard can sort largest but can't load; prefer any complete
+        # A torn split's lone shard can sort largest but cannot load; prefer a complete
         # candidate, keeping the old pick when nothing is whole.
         def _split_is_whole(f: Path) -> bool:
             if _GGUF_SPLIT_FILE_RE.match(f.name) is None:
                 return True
             if _colocated_first_split_shard(f)[1]:
                 return True
-            # Follows a shard symlink to the target's set, like _local_gguf_load_path --
-            # the alias's own empty directory proves nothing.
+            # Follow a shard symlink to the target's set, like _local_gguf_load_path: the
+            # alias's own empty directory proves nothing.
             try:
                 if not f.is_symlink():
                     return False
@@ -2554,12 +2554,10 @@ def _direct_gguf_for_variant(
     context = f"{f.parent.name}/{f.name}"
     quant = _extract_quant_label(context)
     fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", f.name.rsplit(".", 1)[0])
-    # The hub-side extractor drops the -bpw modifier, so listings advertise and clients
-    # echo that shorter label; accept it like the hub download path's filename match does.
+    # The hub extractor drops the -bpw modifier, so accept the shorter label it advertises.
     stripped = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", quant, flags = re.IGNORECASE)
-    # The listing can also name this file by another of its own quant tokens (the hub
-    # extractor prefers the K-quant in F16-checkpoint-Q4_K_M), so any whole basename
-    # token resolves it -- there's only this one file it could mean.
+    # The listing can also name it by another of its own tokens (the hub extractor prefers the
+    # K-quant in F16-checkpoint-Q4_K_M), and only this file could be meant, so any token resolves.
     stem_tokens = [
         f"{m.group(1) or ''}{m.group(2)}"
         for m in _GGUF_KNOWN_QUANT_RE.finditer(fallback_variant.rsplit("/", 1)[-1])
@@ -2599,11 +2597,9 @@ def _find_local_gguf_by_variant(
             continue
         quant = _extract_quant_label(rel)
         fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", rel.rsplit(".", 1)[0])
-        # Listings advertise the hub-style bpw-stripped spelling; accept it here like the
-        # direct-file resolver does. The hub extractor can also prefer a different token of
-        # the same BASENAME (F16-checkpoint-Q4_K_M advertises Q4_K_M), so those tokens label
-        # the same file -- but not a parent directory's quant: Q8_0/model-Q4_K_M.gguf IS the
-        # Q4_K_M file, and matching it for Q8_0 would load the wrong weights.
+        # Listings advertise the bpw-stripped spelling, and the hub extractor can prefer another
+        # token of the same BASENAME (F16-checkpoint-Q4_K_M advertises Q4_K_M), so both label this
+        # file -- but never a parent's quant: Q8_0/model-Q4_K_M.gguf IS the Q4_K_M file.
         stripped = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", quant, flags = re.IGNORECASE)
         basename_stem = fallback_variant.rsplit("/", 1)[-1]
         stem_tokens = [

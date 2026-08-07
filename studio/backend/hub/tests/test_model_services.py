@@ -2878,10 +2878,9 @@ def test_completed_gguf_split_variant_requires_all_shards(tmp_path):
 
 
 def test_completed_gguf_variants_ignores_big_endian_by_the_loader_label(tmp_path):
-    # The two extractors disagree here: the scan reads Q4_K_M, the loader reads F16 and
-    # refuses the file as big-endian. Judged by the scan's label it would vouch for
-    # Q4_K_M, and _complete_with_servable skips already-complete quants, so the torn
-    # split below would be reported downloaded.
+    # The scan reads Q4_K_M here, the loader reads F16 and refuses the file as big-endian. By
+    # the scan's label it would vouch for Q4_K_M, and _complete_with_servable skips complete
+    # quants, so the torn split below would be reported downloaded.
     snapshot = tmp_path / "snapshot"
     snapshot.mkdir()
     (snapshot / "0-F16-be-checkpoint-Q4_K_M.gguf").write_bytes(b"GGUF")
