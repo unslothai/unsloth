@@ -633,7 +633,13 @@ class TestRetryBackoffRespectsTheDeadline:
     past --timeout-seconds before the loop notices and writes its summary."""
 
     def _client(self, status, now, slept, interval):
-        def transport(method, url, headers, body, timeout = None):
+        def transport(
+            method,
+            url,
+            headers,
+            body,
+            timeout = None,
+        ):
             return status, b""
 
         # The retry backoff is seeded from the request interval.
@@ -691,9 +697,7 @@ class TestWorkflowOrdering:
         # new release before the scan would expose an empty release for its
         # duration, and leave it empty for good if the run were cancelled.
         names = self._publish_steps()
-        assert names.index("VirusTotal pre-flight scan") < names.index(
-            "Create versioned release"
-        )
+        assert names.index("VirusTotal pre-flight scan") < names.index("Create versioned release")
         assert names.index("Create versioned release") < names.index(
             "Publish versioned release assets"
         )

@@ -255,7 +255,11 @@ class VirusTotalClient:
         if remaining > 0:
             self._sleep(remaining)
 
-    def _backoff(self, seconds: float, deadline: float | None = None) -> None:
+    def _backoff(
+        self,
+        seconds: float,
+        deadline: float | None = None,
+    ) -> None:
         """Sleep between retry attempts, clamped to the remaining budget.
 
         The retry sleep grows exponentially, so a 429 arriving shortly before the
