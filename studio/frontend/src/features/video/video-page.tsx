@@ -505,8 +505,9 @@ function VideoGate({ children }: { children: ReactNode }) {
 /**
  * Capability gate in front of the generator.
  *
- * The row is reachable before the hardware verdict lands (the root guard no longer bounces
- * /video on the browser-platform guess), and video has no Apple path in the backend, so the
+ * The root guard never bounces /video: not on the browser-platform guess, and not on a measured
+ * chat-only verdict either, because a CPU-only host or a Mac without MLX is precisely where the
+ * explanation below has something to say. Video also has no Apple path in the backend, so the
  * page answers for itself: spin while the answer is out, explain when it is no.
  *
  * The spin is bounded: AppSidebar is mounted on this route and re-reads /api/health while the

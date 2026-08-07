@@ -639,16 +639,22 @@ export function AppSidebar() {
     // verdict (studio-page and video-page read the same store, so they recover with it).
     if (selfHealSettled && !capabilitiesUnknown) return;
     let pollingSince = 0;
+    // Which read currently owns the guard. A read that outlived the stall window is replaced,
+    // and the replacement takes the guard with it; without an owner the abandoned read's
+    // `finally` would clear a guard it no longer holds and let the next tick stack another
+    // forced read onto the slow backend, every interval, which is the pile-up this prevents.
+    let pollOwner = 0;
     const id = window.setInterval(() => {
       // A backend still importing torch answers slowly, so skip while a re-read is outstanding
       // rather than stacking them against it. Bounded, or a request that never settles would
       // hold the poll off for good.
       if (pollingSince && Date.now() - pollingSince < VERDICT_POLL_STALL_MS) return;
+      const owned = ++pollOwner;
       pollingSince = Date.now();
       void fetchDeviceType({ force: true })
         .catch(() => undefined)
         .finally(() => {
-          pollingSince = 0;
+          if (owned === pollOwner) pollingSince = 0;
         });
     }, capabilitiesUnknown ? VERDICT_UNKNOWN_POLL_MS : SELF_HEAL_POLL_MS);
     return () => window.clearInterval(id);
