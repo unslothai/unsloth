@@ -422,6 +422,8 @@ class Finding:
     filename: str
     check: str
     evidence: str = ""
+    # Whole-file digest; a baseline entry may pin it (see _load_baseline).
+    file_sha256: str = ""
 
 
 # Checkers
@@ -1151,6 +1153,9 @@ def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
             )
         )
 
+    digest = hashlib.sha256(original.encode("utf-8", "replace")).hexdigest()
+    for f in findings:
+        f.file_sha256 = digest
     return findings
 
 
@@ -2971,24 +2976,30 @@ def _finding_key(f: Finding) -> tuple[str, str, str, str]:
     )
 
 
-def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
-    """Load an allowlist JSON into a set of match keys. Missing file -> empty."""
+def _load_baseline(path: str) -> "dict[tuple[str, str, str, str], set[str] | None]":
+    """Load an allowlist JSON into {match key: pinned file digests}.
+
+    None means unpinned: the key alone suppresses, as before. A set of digests
+    covers only those exact file contents, so any other edit to the file reopens
+    the finding. For files whose danger sits outside the matched lines, e.g. a
+    credential send whose evidence records the urlopen call but not its destination.
+    """
     try:
         with open(path, "r", encoding = "utf-8") as fh:
             data = json.load(fh)
     except FileNotFoundError:
-        return set()
+        return {}
     except (OSError, json.JSONDecodeError) as exc:
         print(f"  [WARN] could not read baseline {path}: {exc}", file = sys.stderr)
-        return set()
+        return {}
     if not isinstance(data, dict):
         print(f"  [WARN] baseline {path} is not a JSON object", file = sys.stderr)
-        return set()
+        return {}
     entries = data.get("entries", [])
     if not isinstance(entries, list):
         print(f"  [WARN] baseline {path} entries is not a list", file = sys.stderr)
-        return set()
-    keys: set[tuple[str, str, str, str]] = set()
+        return {}
+    keys: dict[tuple[str, str, str, str], "set[str] | None"] = {}
     legacy = 0
     for e in entries:
         if not isinstance(e, dict):
@@ -2998,16 +3009,23 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
             evidence_hash = e.get("evidence_hash") or _evidence_hash(e.get("evidence") or "")
             if not e.get("evidence_hash"):
                 legacy += 1
-            keys.add(
-                (
-                    _norm_pkg(e["package"]),
-                    _relpath_in_package(e["file"]),
-                    e["check"],
-                    evidence_hash,
-                )
+            key = (
+                _norm_pkg(e["package"]),
+                _relpath_in_package(e["file"]),
+                e["check"],
+                evidence_hash,
             )
         except (KeyError, TypeError):
             continue
+        # None = unpinned (key alone suppresses). A set = only those file digests.
+        # An unpinned entry wins, since it already suppresses the key on its own.
+        pin = e.get("file_sha256")
+        if key not in keys:
+            keys[key] = {pin} if pin else None
+        elif not pin:
+            keys[key] = None
+        elif keys[key] is not None:
+            keys[key].add(pin)
     if legacy:
         print(
             f"  [WARN] baseline {path}: {legacy} entries lack evidence_hash and may "
@@ -3018,8 +3036,14 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
     return keys
 
 
-def _write_baseline(path: str, findings: list[Finding]) -> None:
-    """Persist CRITICAL/HIGH findings as an allowlist for human triage."""
+def _write_baseline(path: str, findings: list[Finding], source: "str | None" = None) -> None:
+    """Persist CRITICAL/HIGH findings as an allowlist for human triage.
+
+    Pins are carried over from `source`, the baseline in effect for this run, so
+    regenerating cannot silently widen a reviewed entry. Reading them from `path`
+    instead would drop every pin whenever the output goes somewhere new.
+    """
+    pinned = {k for k, v in _load_baseline(source or path).items() if v is not None}
     entries = []
     seen: set[tuple[str, str, str, str]] = set()
     for f in sorted(findings, key = lambda f: SEVERITY_ORDER.get(f.severity, 99)):
@@ -3029,24 +3053,28 @@ def _write_baseline(path: str, findings: list[Finding]) -> None:
         if key in seen:
             continue
         seen.add(key)
-        entries.append(
-            {
-                "package": f.package,
-                "file": _relpath_in_package(f.filename),
-                "check": f.check,
-                "severity": f.severity,
-                "evidence": f.evidence,
-                "evidence_hash": _evidence_hash(f.evidence),
-            }
-        )
+        entry = {
+            "package": f.package,
+            "file": _relpath_in_package(f.filename),
+            "check": f.check,
+            "severity": f.severity,
+            "evidence": f.evidence,
+            "evidence_hash": _evidence_hash(f.evidence),
+        }
+        if key in pinned and f.file_sha256:
+            entry["file_sha256"] = f.file_sha256
+        entries.append(entry)
     doc = {
         "_comment": (
             "scan_packages.py allowlist. Each entry is a CRITICAL/HIGH finding "
             "manually judged benign. Matched on (package, package-relative file, "
             "check, evidence_hash); evidence_hash is over the matched code with "
             "L<NN>: markers stripped, so version bumps and line shifts do not "
-            "reopen an entry but changed code does. severity and evidence are for "
-            "review only. Regenerate with --write-baseline AFTER reviewing every line."
+            "reopen an entry but changed code does. An optional file_sha256 pins an "
+            "entry to that exact file, for danger sitting outside the matched lines "
+            "(a credential send records the urlopen call, not its destination). "
+            "severity and evidence are for review only. Regenerate with "
+            "--write-baseline AFTER reviewing every line."
         ),
         "version": 1,
         "entries": entries,
@@ -3058,14 +3086,21 @@ def _write_baseline(path: str, findings: list[Finding]) -> None:
 
 
 def _partition_baseline(
-    findings: list[Finding], baseline: set[tuple[str, str, str, str]]
+    findings: list[Finding],
+    baseline: "dict[tuple[str, str, str, str], set[str] | None]",
 ) -> tuple[list[Finding], list[Finding]]:
     """Split findings into (active, suppressed) by allowlist membership."""
     if not baseline:
         return list(findings), []
     active, suppressed = [], []
     for f in findings:
-        (suppressed if _finding_key(f) in baseline else active).append(f)
+        key = _finding_key(f)
+        hit = key in baseline
+        if hit:
+            pins = baseline[key]
+            # A pinned entry only covers the file it was reviewed against.
+            hit = pins is None or f.file_sha256 in pins
+        (suppressed if hit else active).append(f)
     return active, suppressed
 
 
@@ -3229,7 +3264,7 @@ def main() -> int:
         baseline_path = _DEFAULT_BASELINE_PATH
     else:
         baseline_path = None
-    baseline = _load_baseline(baseline_path) if baseline_path else set()
+    baseline = _load_baseline(baseline_path) if baseline_path else {}
 
     active, suppressed = _partition_baseline(all_findings, baseline)
 
@@ -3276,7 +3311,7 @@ def main() -> int:
     # allowlist (ignoring any loaded baseline), then exit 0. Only reached once
     # the scan is known complete.
     if args.write_baseline:
-        _write_baseline(args.write_baseline, all_findings)
+        _write_baseline(args.write_baseline, all_findings, source = baseline_path)
         return 0
 
     # Exit code: 1 only if a NON-baselined CRITICAL or HIGH remains. This is the
