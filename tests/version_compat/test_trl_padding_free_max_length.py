@@ -977,11 +977,19 @@ def test_the_codegen_carries_the_third_round_fixes():
     # A None `completion_only_loss` is resolved from the dataset the way TRL
     # resolves it, not read as "on".
     assert "getattr(args, 'completion_only_loss', None) is not False" not in block
-    assert "'prompt' in _unsloth_cols and 'completion' in _unsloth_cols" in block
+    # Resolved from the TRAIN sample now, not this split's columns, because that is
+    # what the collator does and the two have to agree.
+    assert "'prompt' in _unsloth_train_sample and 'completion' in _unsloth_train_sample" in block
 
-    # The masks apply onto the same labels one after another, so a row survives
-    # only where they all agree.
-    assert "any(all(_v) for _v in zip(*[_e[_n] for _n in _c]))" in block
+    # The masks apply onto the same labels one after another, so a row survives only
+    # where they all agree -- and `labels` is in that intersection, not a filter of its
+    # own: a row supervised at one position and masked in at another passes two separate
+    # filters and still goes out all -100.
+    assert "_unsloth_supervision = (['labels'] if 'labels' in _unsloth_cols else []) + _unsloth_masks" in block
+    assert (
+        "any(all((_x != -100) if _n == 'labels' else _x for _n, _x in zip(_c, _v)) "
+        "for _v in zip(*[_e[_n] for _n in _c]))" in block
+    )
 
     # skip_prepare_dataset must not exempt the overlength check.
     assert "if not _unsloth_skip_prepare and not (_unsloth_within_cap" not in block
@@ -1089,9 +1097,13 @@ def test_a_none_completion_only_loss_does_not_filter_a_pretokenized_split():
     entirely. Reading `None` as "on" deleted rows that still had valid
     full-sequence supervision, and could empty the split outright."""
     block = _padding_free_codegen_block()
-    i = block.index("_unsloth_col_loss")
-    window = block[i : i + 400]
-    assert "is None" in window and "'prompt' in _unsloth_cols" in window
+    i = block.index("_unsloth_completion_only")
+    window = block[i : i + 600]
+    assert "is None" in window
+    # From the training sample, which is the sample TRL reads.
+    assert "'prompt' in _unsloth_train_sample and 'completion' in _unsloth_train_sample" in window
+    # And published so the late evaluate()/predict() cap uses the same value.
+    assert "args._unsloth_completion_only_loss = _unsloth_completion_only" in block
 
 
 def test_the_predict_entry_point_is_capped_too():
@@ -1261,8 +1273,178 @@ def test_the_codegen_leaves_a_packed_eval_split_to_the_packer():
     )
     # And it drops the enforcement claim rather than the split: packing needs
     # `max_length`, so clearing it would make TRL raise instead.
-    assert (
-        "if 'eval_dataset' in locals() and eval_dataset is not None and _unsloth_eval_packing:"
-        in block
-    )
+    assert "if _unsloth_eval_packing:" in block
     assert "_unsloth_capped = False\\n" in block
+    # And the fallback scan must not then raise on the split it just spared.
+    assert (
+        "_unsloth_scan_eval = None if _unsloth_eval_packing else "
+        "(eval_dataset if 'eval_dataset' in locals() else None)" in block
+    )
+
+
+# ── round five: what the eval packer owns, and what supervision means ────────
+def test_the_codegen_does_not_raise_on_a_split_it_left_to_the_packer():
+    """Sparing the split and then scanning it is a hard error, not a fallback.
+
+    Leaving an eval split for TRL's packer sets `_unsloth_capped = False`, which
+    drops through to the branch that scans every split and raises on an
+    overlength row. That split is overlength ON PURPOSE, so the scan turned a
+    working eval-packing run into a ValueError and denied `wrapped` and
+    `bfd_split` the overflow they exist to handle.
+    """
+    block = _padding_free_codegen_block()
+    assert (
+        "_unsloth_scan_eval = None if _unsloth_eval_packing else "
+        "(eval_dataset if 'eval_dataset' in locals() else None)" in block
+    )
+    assert "_unsloth_splits_within_cap(_unsloth_scan_eval)" in block
+    # The train split is still scanned: nothing packs that one.
+    assert "_unsloth_within_cap(train_dataset) and" in block
+    # And it is resolved outside the truncation block, which skip_prepare_dataset skips.
+    packing_at = block.index("_unsloth_eval_packing = getattr(args, 'packing'")
+    skip_at = block.index("if not _unsloth_skip_prepare:")
+    assert packing_at < skip_at, "the fallback reads it even when that block is skipped"
+
+
+def test_the_codegen_refuses_an_unknown_truncation_mode():
+    """keep_start and keep_end are the only two slices there are.
+
+    TRL's SFT path never reads `truncation_mode` at all (it belongs to the
+    preference trainers), so nothing downstream would catch a third value and
+    mapping it to the default silently cuts from the side the caller asked us
+    not to. Drop the enforcement claim instead.
+    """
+    block = _padding_free_codegen_block()
+    assert "_unsloth_known_mode = _unsloth_truncation_mode in ('keep_start', 'keep_end')" in block
+    assert "_unsloth_capped = _unsloth_known_mode" in block
+
+
+def test_evaluate_leaves_a_split_the_eval_packer_will_take():
+    """The late cap has to make the same call as the constructor.
+
+    `evaluate()` re-prepares the split it is given, so under eval packing TRL
+    packs it, and every strategy owns the overflow: `wrapped` concatenates the
+    stream before chunking, `bfd_split` turns an overlength example into more
+    chunks. Cutting rows first evaluates on a truncated corpus.
+    """
+    _, tok = _load_plain()
+    late = _tokenized_dataset(tok)
+    for strategy in ("wrapped", "bfd_split"):
+        Stub, seen = _stub_trainer_class()
+        stub = Stub()
+        stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
+        stub.args.eval_packing = True
+        stub.args.packing_strategy = strategy
+        stub.evaluate(eval_dataset = late)
+        assert seen["ds"] is late, f"{strategy}: the packer's split was truncated first"
+
+
+def test_evaluate_intersects_labels_with_the_masks():
+    """A label and a mask lighting up in DIFFERENT positions is still all -100.
+
+    The collator applies the masks onto the labels, so filtering each on its own
+    keeps exactly the row that ends up with no supervised token.
+    """
+    from datasets import Dataset
+
+    cap = _MODEL_MAX_SEQ_LENGTH
+    length = cap + 8
+    # Supervised label at position 0, assistant mask on at position 1: each filter
+    # on its own says "keep", the intersection says the row is empty.
+    crossed = {
+        "input_ids": list(range(length)),
+        "labels": [7] + [-100] * (length - 1),
+        "assistant_masks": [0, 1] + [0] * (length - 2),
+    }
+    agreeing = {
+        "input_ids": list(range(length)),
+        "labels": [7, 7] + [-100] * (length - 2),
+        "assistant_masks": [1, 1] + [0] * (length - 2),
+    }
+    late = Dataset.from_list([crossed, agreeing])
+
+    Stub, seen = _stub_trainer_class()
+    stub = Stub()
+    stub.args = _Args(cap, None)
+    stub.evaluate(eval_dataset = late)
+
+    got = seen["ds"]
+    assert len(got) == 1, "the row whose label and mask never agree should be gone"
+    assert got[0]["assistant_masks"][0] == 1
+
+
+def test_evaluate_uses_the_trainer_resolved_completion_only_mode():
+    """TRL resolves the mode ONCE, from the training sample.
+
+        dataset_sample = next(iter(train_dataset))
+        if args.completion_only_loss is None:
+            self.completion_only_loss = "prompt" in dataset_sample and "completion" in dataset_sample
+
+    So prompt/completion training data makes the collator apply
+    `completion_mask` to a pre-tokenized eval split that carries neither column.
+    Resolving per split read that as full-sequence loss and kept rows whose mask
+    truncated to all zeros.
+    """
+    from datasets import Dataset
+
+    cap = _MODEL_MAX_SEQ_LENGTH
+    length = cap + 8
+    doomed = {
+        "input_ids": list(range(length)),
+        "completion_mask": [0] * cap + [1] * (length - cap),
+    }
+    late = Dataset.from_list([doomed])
+
+    Stub, seen = _stub_trainer_class()
+    stub = Stub()
+    stub.args = _Args(cap, None)
+    # What the trainer resolved from the TRAIN split, which this eval split cannot see.
+    stub.args._unsloth_completion_only_loss = True
+    stub.evaluate(eval_dataset = late)
+    assert len(seen["ds"]) == 0, "the mask truncated to all zeros, so the row has no supervision"
+
+    # Without the trainer's answer this split alone reads as full-sequence loss.
+    Stub, seen = _stub_trainer_class()
+    stub = Stub()
+    stub.args = _Args(cap, None)
+    stub.evaluate(eval_dataset = late)
+    assert len(seen["ds"]) == 1
+
+
+def test_evaluate_caps_a_split_that_carries_no_column_metadata():
+    """A custom map-style split has no `column_names`.
+
+    Reading that as "raw text, prep will tokenize it" left a pre-tokenized split
+    uncapped on a path where `args.max_length` is already None, so nothing else
+    cut it either.
+    """
+    _, tok = _load_plain()
+    backing = _tokenized_dataset(tok)
+    rows = [dict(backing[i]) for i in range(len(backing))]
+
+    class NoMetadata:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def __len__(self):
+            return len(self._rows)
+
+        def __iter__(self):
+            return iter(self._rows)
+
+        def __getitem__(self, i):
+            return self._rows[i]
+
+        def map(self, fn):
+            return NoMetadata([{**r, **fn(r)} for r in self._rows])
+
+        def filter(self, fn):
+            return NoMetadata([r for r in self._rows if fn(r)])
+
+    Stub, seen = _stub_trainer_class()
+    stub = Stub()
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
+    stub.evaluate(eval_dataset = NoMetadata(rows))
+
+    got = seen["ds"]
+    assert all(len(r["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH for r in got)

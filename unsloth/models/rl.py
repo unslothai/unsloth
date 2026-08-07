@@ -603,27 +603,58 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         "position_ids",
     )
 
-    def _supervision_masks(args, names):
-        """The mask columns TRL's collator will actually apply to this split.
+    def _column_names(dataset):
+        """The split's columns, from metadata or from a row when it has none.
 
-        `assistant_masks` on presence alone, `completion_mask` only under
-        `completion_only_loss`, which TRL resolves from the dataset shape when it
-        is None. Same rule as the construction-time filter.
+        A `torch.utils.data.Dataset` or any custom map-style split carries no
+        `column_names`, and reading that as "raw text, prep will tokenize it"
+        left a pre-tokenized one uncapped on a path where `args.max_length` is
+        already None, so nothing else would cut it either.
         """
-        masks = []
-        only = getattr(args, "completion_only_loss", None)
+        names = getattr(dataset, "column_names", None)
+        if names:
+            return tuple(names)
+        try:
+            row = next(iter(dataset), None)
+        except Exception:
+            return ()
+        return tuple(row.keys()) if isinstance(row, dict) else ()
+
+    def _supervision_columns(args, names):
+        """Columns that decide whether a row still has a supervised token.
+
+        `labels` when present, `assistant_masks` on presence alone,
+        `completion_mask` only under `completion_only_loss`. That mode is the
+        trainer's, resolved once from the training sample, so read the collator's
+        effective value rather than guessing from this split's own columns: TRL
+        does the same and the two must agree.
+        """
+        columns = ["labels"] if "labels" in names else []
+        only = getattr(args, "_unsloth_completion_only_loss", None)
+        if only is None:
+            only = getattr(args, "completion_only_loss", None)
         if only is None:
             only = "prompt" in names and "completion" in names
         if only and "completion_mask" in names:
-            masks.append("completion_mask")
+            columns.append("completion_mask")
         if "assistant_masks" in names:
-            masks.append("assistant_masks")
-        return masks
+            columns.append("assistant_masks")
+        return columns
+
+    def _eval_packing_on(args):
+        """TRL resolves the eval packer separately from `packing`."""
+        packing = getattr(args, "eval_packing", None)
+        return getattr(args, "packing", False) if packing is None else packing
 
     def _cap(dataset, cap, args):
-        names = tuple(getattr(dataset, "column_names", None) or ())
+        names = _column_names(dataset)
         if "input_ids" not in names:
             return dataset  # raw text: prep tokenizes it with the cap
+        # TRL packs a split it will pack rather than truncating it, and every
+        # strategy owns the overflow: `wrapped` concatenates the stream before
+        # chunking, `bfd_split` turns an overlength example into more chunks.
+        if _eval_packing_on(args):
+            return dataset
         # A packed split carries document lengths, not tokens. Slicing `input_ids`
         # under a `seq_lengths` that still describes the longer row makes
         # padding-free build position ids for tokens the row no longer has, which
@@ -639,8 +670,15 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             # the catch below and handed the eval call its uncapped stream back.
             # map() is lazy and applies to every row it will ever yield.
             stream = not hasattr(dataset, "__len__")
-            if not stream and max(len(r) for r in dataset["input_ids"]) <= cap:
-                return dataset
+            if not stream:
+                try:
+                    if max(len(r) for r in dataset["input_ids"]) <= cap:
+                        return dataset
+                except Exception:
+                    # The scan only exists to skip a pointless map. A split with no
+                    # column access (a custom map-style dataset) cannot answer it, and
+                    # that is not a reason to hand it back uncapped.
+                    pass
             # TRL slices [-max_length:] for `keep_end`, and so does the
             # construction-time cap. Always keeping the prefix evaluates the wrong
             # half of every long row for callers whose completion sits at the tail.
@@ -655,12 +693,17 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             # so TRL does not, and the construction-time cap filters them for the
             # splits it saw. Masks are applied one after another onto the same
             # labels, so what survives is their intersection.
-            masks = _supervision_masks(args, names)
-            if "labels" in names:
-                new = new.filter(lambda e: any(l != -100 for l in e["labels"]))
-            if masks:
+            # One intersection over labels AND every active mask, not a filter each:
+            # the collator applies the masks ONTO the labels, so a row whose only
+            # supervised label sits where the mask is zero passes both filters
+            # separately and still goes out all -100.
+            supervision = _supervision_columns(args, names)
+            if supervision:
                 new = new.filter(
-                    lambda e, c = tuple(masks): any(all(v) for v in zip(*[e[n] for n in c]))
+                    lambda e, c = tuple(supervision): any(
+                        all((x != -100) if n == "labels" else x for n, x in zip(c, v))
+                        for v in zip(*[e[n] for n in c])
+                    )
                 )
             return new
         except Exception:
@@ -1434,8 +1477,37 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # the completion sits at the tail of a long prompt. Consuming
                     # `max_length` while always keeping the prefix trained on the wrong
                     # half of every row.
-                    "    _unsloth_keep_end = getattr(args, 'truncation_mode', 'keep_start') == 'keep_end'\n"
+                    "    _unsloth_truncation_mode = getattr(args, 'truncation_mode', 'keep_start') or 'keep_start'\n"
+                    # keep_start and keep_end are the only two slices there are. TRL's SFT path
+                    # never reads this attribute at all -- it belongs to the preference trainers --
+                    # so nothing downstream would catch a third value, and mapping it to the
+                    # default would silently cut from the side the caller asked us not to. Refuse
+                    # the enforcement claim instead, the same answer this block gives for any
+                    # split it cannot honour.
+                    "    _unsloth_keep_end = _unsloth_truncation_mode == 'keep_end'\n"
+                    "    _unsloth_known_mode = _unsloth_truncation_mode in ('keep_start', 'keep_end')\n"
                     "    _unsloth_slice = slice(-_unsloth_cap, None) if _unsloth_keep_end else slice(None, _unsloth_cap)\n"
+                    # Resolved here, one level out from the truncation block, because the fallback
+                    # below reads it even when `skip_prepare_dataset` skips that block entirely.
+                    # `eval_packing` is separate from `packing`:
+                    #     packing = args.packing if args.eval_packing is None else args.eval_packing
+                    # (sft_trainer.py), so packing = False with eval_packing = True reaches this
+                    # branch, which is gated on `not args.packing`. TRL then PACKS the eval split
+                    # rather than truncating it, and every strategy owns the overflow: `wrapped`
+                    # concatenates the stream before chunking, `bfd_split` splits an overlength
+                    # example into more chunks. Cutting rows at the cap first throws that away.
+                    "    _unsloth_eval_packing = getattr(args, 'packing', False) if getattr(args, 'eval_packing', None) is None else getattr(args, 'eval_packing')\n"
+                    "    _unsloth_completion_only = getattr(args, 'completion_only_loss', None)\n"
+                    "    if _unsloth_completion_only is None:\n"
+                    "        try:\n"
+                    "            _unsloth_train_sample = next(iter(train_dataset), None) or {}\n"
+                    "        except Exception:\n"
+                    "            _unsloth_train_sample = {}\n"
+                    "        _unsloth_completion_only = ('prompt' in _unsloth_train_sample and 'completion' in _unsloth_train_sample)\n"
+                    # Parked on args so the late evaluate()/predict() cap reads the SAME value.
+                    # It resolves from the train schema, which a split handed over later cannot
+                    # see, and disagreeing with the collator is what leaves an all -100 row in.
+                    "    args._unsloth_completion_only_loss = _unsloth_completion_only\n"
                     # EVERY row, not the first. A short row 0 in front of a long
                     # row 5000 read as "within the cap", and in the fallback branch
                     # nothing downstream truncates it. A map-style split is read in
@@ -1582,33 +1654,58 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # entirely; treating None as enabled deleted rows that still had
                     # valid full-sequence supervision, and could empty the split.
                     "            _unsloth_cols = getattr(_new, 'column_names', None) or ()\n"
-                    "            _unsloth_col_loss = getattr(args, 'completion_only_loss', None)\n"
-                    "            if _unsloth_col_loss is None:\n"
-                    "                _unsloth_col_loss = ('prompt' in _unsloth_cols and 'completion' in _unsloth_cols)\n"
+                    # One mode for every split, resolved from the TRAIN sample, because that is
+                    # what the collator uses:
+                    #     dataset_sample = next(iter(train_dataset))
+                    #     if args.completion_only_loss is None:
+                    #         self.completion_only_loss = "prompt" in dataset_sample and "completion" in dataset_sample
+                    # (sft_trainer.py). Resolving it per split disagreed with the collator whenever
+                    # the schemas differ: prompt/completion training data makes the collator apply
+                    # `completion_mask`, while a pre-tokenized eval split carrying only
+                    # `input_ids` and `completion_mask` read here as full-sequence loss, so rows
+                    # whose mask truncated to all zeros survived and went all -100 at eval.
                     "            _unsloth_masks = []\n"
-                    "            if _unsloth_col_loss and 'completion_mask' in _unsloth_cols:\n"
+                    "            if _unsloth_completion_only and 'completion_mask' in _unsloth_cols:\n"
                     "                _unsloth_masks.append('completion_mask')\n"
                     "            if 'assistant_masks' in _unsloth_cols:\n"
                     "                _unsloth_masks.append('assistant_masks')\n"
                     "            try:\n"
                     # `labels` is unconditional: it IS the supervision.
-                    "                if 'labels' in _unsloth_cols:\n"
-                    "                    _new = _new.filter(lambda _e: any(_l != -100 for _l in _e['labels']), **_kw)\n"
+                    # One intersection over labels AND every active mask, not a filter each.
+                    # The collator applies the masks ONTO the labels, so a row whose only
+                    # supervised label sits where the mask is zero passes both filters
+                    # separately and still goes out all -100.
+                    "                _unsloth_supervision = (['labels'] if 'labels' in _unsloth_cols else []) + _unsloth_masks\n"
                     # The masks are applied one after another onto the same labels, so
                     # what survives is their INTERSECTION. Filtering each on its own kept
                     # rows whose two masks light up in different positions, which TRL then
                     # labels all -100 -- the very rows this filter exists to drop. zip
                     # stops at the shorter, which is what an intersection means for a
                     # ragged pair.
-                    "                if _unsloth_masks:\n"
-                    "                    _new = _new.filter(lambda _e, _c = tuple(_unsloth_masks): any(all(_v) for _v in zip(*[_e[_n] for _n in _c])), **_kw)\n"
+                    "                if _unsloth_supervision:\n"
+                    "                    _new = _new.filter(lambda _e, _c = tuple(_unsloth_supervision): any(all((_x != -100) if _n == 'labels' else _x for _n, _x in zip(_c, _v)) for _v in zip(*[_e[_n] for _n in _c])), **_kw)\n"
                     "            except Exception:\n"
                     "                pass\n"
                     "            return _new, (True if _unsloth_is_stream(_new) else _unsloth_within_cap(_new))\n"
+                    # Resolved BEFORE the try, because the fallback below needs it even when
+                    # the try never ran. `eval_packing` is separate from `packing`:
+                    #     packing = args.packing if args.eval_packing is None else args.eval_packing
+                    # (sft_trainer.py), so packing = False with eval_packing = True reaches this
+                    # branch, which is gated on `not args.packing`. TRL then PACKS the eval split
+                    # rather than truncating it, and every strategy owns the overflow: `wrapped`
+                    # concatenates the stream before chunking, `bfd_split` splits an overlength
+                    # example into more chunks. Cutting rows at the cap first throws that away.
+                    # So the packer keeps the split, and the enforcement claim is dropped rather
+                    # than the tokens: `max_length` stays and padding-free turns off. That is
+                    # required anyway, since packing raises on a None `max_length`, and it has to
+                    # hold even with no eval split at construction, because one handed to
+                    # `evaluate()` later would find `max_length` already cleared.
                     "        _unsloth_orig_train = train_dataset\n"
                     "        _unsloth_orig_eval = eval_dataset if 'eval_dataset' in locals() else None\n"
                     "        try:\n"
-                    "            _unsloth_capped = True\n"
+                    "            _unsloth_capped = _unsloth_known_mode\n"
+                    "            if not _unsloth_known_mode:\n"
+                    "                print('Unsloth: `truncation_mode = ' + str(_unsloth_truncation_mode) + '` is not one of keep_start / keep_end, so `max_length` is not being enforced here.')\n"
                     # A raw train split is tokenized with the cap by prep, so leave it alone.
                     "            if not _unsloth_prep_truncates:\n"
                     "                train_dataset, _unsloth_capped = _unsloth_cap_split(train_dataset)\n"
@@ -1628,10 +1725,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # rather than the split: `max_length` stays and padding-free turns off,
                     # which is the same answer this block already gives for a split it
                     # cannot rewrite.
-                    "            _unsloth_eval_packing = getattr(args, 'packing', False) if getattr(args, 'eval_packing', None) is None else getattr(args, 'eval_packing')\n"
                     # Each eval split on its own: a raw one stays raw for the tokenizer pass
                     # that follows, and only a materialised tokenized one is cut.
-                    "            if 'eval_dataset' in locals() and eval_dataset is not None and _unsloth_eval_packing:\n"
+                    "            if _unsloth_eval_packing:\n"
                     "                _unsloth_capped = False\n"
                     "            elif 'eval_dataset' in locals() and eval_dataset is not None:\n"
                     "                if isinstance(eval_dataset, dict):\n"
@@ -1673,7 +1769,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # way to get a silently uncapped run: TRL then neither truncates nor
                     # builds its collator with a truncation length, so the oversized rows
                     # reach the model. The check is what decides, not the flag.
-                    "        if not (_unsloth_within_cap(train_dataset) and _unsloth_splits_within_cap(eval_dataset if 'eval_dataset' in locals() else None)):\n"
+                    # An eval split left for the packer is overlength ON PURPOSE, so scanning it
+                    # here turned a working eval-packing run into a hard error and denied
+                    # `wrapped` / `bfd_split` the overflow they exist to handle. The train split
+                    # is still scanned: nothing packs that one.
+                    "        _unsloth_scan_eval = None if _unsloth_eval_packing else (eval_dataset if 'eval_dataset' in locals() else None)\n"
+                    "        if not (_unsloth_within_cap(train_dataset) and _unsloth_splits_within_cap(_unsloth_scan_eval)):\n"
                     "            raise ValueError('Unsloth: `max_length = ' + str(args.max_length) + '` cannot be enforced. Your dataset already carries `input_ids` and holds rows longer than that, and nothing downstream truncates pre-tokenized rows. Truncate it yourself before passing it in, or drop `max_length`.')\n"
                     "        print('Unsloth: Turning padding-free batching off, since your dataset is already tokenized and cannot be truncated here. Padding-free batching cannot enforce a `max_length` of ' + str(args.max_length) + '.')\n"
                     "        args.padding_free = False\n"
