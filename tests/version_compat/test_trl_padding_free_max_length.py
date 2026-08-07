@@ -1201,7 +1201,11 @@ def test_evaluate_drops_rows_left_with_no_supervision():
     cap = _MODEL_MAX_SEQ_LENGTH
     assert len(ids) > cap
     # One row supervised only past the cap, one supervised from the start.
-    doomed = {"input_ids": ids, "attention_mask": [1] * len(ids), "labels": [-100] * cap + ids[cap:]}
+    doomed = {
+        "input_ids": ids,
+        "attention_mask": [1] * len(ids),
+        "labels": [-100] * cap + ids[cap:],
+    }
     fine = {"input_ids": ids, "attention_mask": [1] * len(ids), "labels": list(ids)}
     late = Dataset.from_list([doomed, fine])
 
@@ -1251,7 +1255,10 @@ def test_the_codegen_leaves_a_packed_eval_split_to_the_packer():
     from unsloth.models import rl
 
     block = inspect.getsource(rl)
-    assert "_unsloth_eval_packing = getattr(args, 'packing', False) if getattr(args, 'eval_packing', None) is None else getattr(args, 'eval_packing')" in block
+    assert (
+        "_unsloth_eval_packing = getattr(args, 'packing', False) if getattr(args, 'eval_packing', None) is None else getattr(args, 'eval_packing')"
+        in block
+    )
     # And it drops the enforcement claim rather than the split: packing needs
     # `max_length`, so clearing it would make TRL raise instead.
     assert (
