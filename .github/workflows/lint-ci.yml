@@ -28,7 +28,7 @@ name: Lint CI
 on:
   pull_request:
   push:
-    branches: [main, pip]
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

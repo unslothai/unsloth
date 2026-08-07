@@ -784,6 +784,10 @@ from starlette.datastructures import MutableHeaders  # noqa: E402
 
 _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
 _ARTIFACT_PREVIEW_FRAME_PATH = "/api/inference/artifact-preview-frame"
+_DOCS_CDN = "https://cdn.jsdelivr.net"
+_DOCS_FONT_CSS = "https://fonts.googleapis.com"
+_DOCS_FONT_FILES = "https://fonts.gstatic.com"
+_DOCS_PATHS = frozenset({"/docs", "/docs/oauth2-redirect", "/redoc"})
 
 
 # /content is Colab's working directory -- more reliable than env vars.
@@ -796,8 +800,17 @@ _IS_COLAB = os.path.isdir("/content") and (
 )
 
 
-def _build_csp(script_nonce: "str | None" = None) -> str:
+def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     script_src = "script-src 'self'"
+    style_src = "style-src 'self' 'unsafe-inline'"
+    worker_src = "worker-src 'self'"
+    font_src = "font-src 'self' data:"
+    if docs:
+        script_src += f" 'unsafe-inline' {_DOCS_CDN}"
+        # 'unsafe-inline' does not cover ReDoc's Google Fonts sheet, which pulls faces from gstatic.
+        style_src += f" {_DOCS_CDN} {_DOCS_FONT_CSS}"
+        font_src += f" {_DOCS_FONT_FILES}"
+        worker_src += " blob:"
     if script_nonce:
         script_src += f" 'nonce-{script_nonce}'"
     # Colab parent frames span multi-level *.prod.colab.dev subdomains (CSP wildcards match
@@ -822,9 +835,10 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
         "img-src 'self' data: blob: https:; "
         "media-src 'self' data: blob: https:; "
         f"connect-src {connect_src}; "
-        "style-src 'self' 'unsafe-inline'; "
+        f"{style_src}; "
         f"{script_src}; "
-        "font-src 'self' data:; "
+        f"{worker_src}; "
+        f"{font_src}; "
         "frame-src 'self'; "
         f"frame-ancestors {frame_ancestors}; "
         "form-action 'self'; "
@@ -861,7 +875,10 @@ class SecurityHeadersMiddleware:
                 nonce = headers.get(_CSP_SCRIPT_NONCE_HEADER)
                 if nonce is not None:
                     del headers[_CSP_SCRIPT_NONCE_HEADER]
-                headers.setdefault("Content-Security-Policy", _build_csp(nonce))
+                headers.setdefault(
+                    "Content-Security-Policy",
+                    _build_csp(nonce, docs = path in _DOCS_PATHS),
+                )
                 # Omit X-Frame-Options in Colab: DENY would block serve_kernel_port_as_iframe regardless of CSP.
                 if not _IS_COLAB and path != _ARTIFACT_PREVIEW_FRAME_PATH:
                     headers.setdefault("X-Frame-Options", "DENY")

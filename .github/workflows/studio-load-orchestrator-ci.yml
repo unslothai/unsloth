@@ -25,11 +25,6 @@ on:
       - '.github/workflows/studio-load-orchestrator-ci.yml'
   push:
     branches: [main]
-    paths:
-      - 'studio/backend/routes/inference.py'
-      - 'studio/backend/core/inference/llama_cpp.py'
-      - 'tests/studio/load_freeze/**'
-      - '.github/workflows/studio-load-orchestrator-ci.yml'
   workflow_dispatch:
 
 concurrency:
