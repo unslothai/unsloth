@@ -73,7 +73,8 @@ assert_eq "junk override ignored" "7" "$(run_jobs 20 16384 "lots")"
 # namespace, but under Slurm, systemd or --cgroupns=host the binding limit is
 # the process's own path or an ancestor's, and a root-only read sees "max".
 _CG_FILE=$(mktemp)
-for _fn in _cg_read _cg_limit _cg_dirs _cg_mounts _cg_rel _cg_pick_mount _cgroup_free_mb; do
+for _fn in _cg_read _cg_limit _cg_dirs _cg_unesc_prog _cg_unesc _cg_mounts _cg_rel \
+           _cg_pick_mount _cgroup_free_mb; do
     sed -n "/^${_fn}()/,/^}/p" "$SETUP_SH" >> "$_CG_FILE"
 done
 if [ ! -s "$_CG_FILE" ]; then
@@ -284,19 +285,52 @@ printf '4:cpu,memoryfoo:/slice:tenant/task\n' > "$_TMPD/colonv1.bad"
 assert_eq "a lookalike controller is not matched" "" \
     "$(run_cgroup "$_TMPD/colon/v1" "$_TMPD/colonv1.bad")"
 
-# The min() that ties it together. _usable_ram_mb hardcodes the real paths, so
-# stub the reader to prove the wiring rather than just the parts.
+# 27) \012 is a legal escape, and decoding it where the fields are read put a
+#     newline into the reader's own line-oriented output, splitting one mount
+#     record into two. The record has to travel escaped and be decoded once.
+_NL=$'\n'
+mkdir -p "$_TMPD/esc/two${_NL}lines/job"
+printf '8589934592\n' > "$_TMPD/esc/two${_NL}lines/memory.max"
+printf '3221225472\n' > "$_TMPD/esc/two${_NL}lines/job/memory.max"
+printf '0::/slice/job\n' > "$_TMPD/escnl.proc"
+printf '%s\n' "72 30 0:62 /slice $_TMPD/esc/two\\012lines rw - cgroup2 cgroup2 rw" \
+    > "$_TMPD/escnl.mnt"
+assert_eq "a newline in the mount point survives" "3072" \
+    "$(run_cgroup "$_TMPD/esc" "$_TMPD/escnl.proc" "$_TMPD/escnl.mnt")"
+
+# 28) And the same mount point one level down, so the ancestor walk has to
+#     carry the newline too rather than only the leaf lookup.
+mkdir -p "$_TMPD/esc/two${_NL}lines/outer/inner"
+printf '2147483648\n' > "$_TMPD/esc/two${_NL}lines/outer/memory.max"
+printf 'max\n'        > "$_TMPD/esc/two${_NL}lines/outer/inner/memory.max"
+printf '0::/slice/outer/inner\n' > "$_TMPD/escnl2.proc"
+assert_eq "a newline survives the ancestor walk" "2048" \
+    "$(run_cgroup "$_TMPD/esc" "$_TMPD/escnl2.proc" "$_TMPD/escnl.mnt")"
+
+# The min() that ties it together. Drive _usable_ram_mb from a pinned meminfo
+# rather than the live one: MemAvailable moves between two reads, so comparing
+# a cached host figure against a second read is a race on any Linux runner.
 _RAM_FILE=$(mktemp)
 sed -n '/^_usable_ram_mb()/,/^}/p' "$SETUP_SH" > "$_RAM_FILE"
+printf 'MemTotal:       16777216 kB\nMemAvailable:   12582912 kB\n' > "$_TMPD/meminfo"
+# $1 = the cgroup allowance the stubbed reader returns.
 run_usable_ram() {
     FAKE_FREE="$1" bash -c \
-        '. "$1"; _cgroup_free_mb() { printf "%s" "$FAKE_FREE"; }; _usable_ram_mb' _ "$_RAM_FILE"
+        '. "$1"; _cgroup_free_mb() { printf "%s" "$FAKE_FREE"; }; _usable_ram_mb "$2"' \
+        _ "$_RAM_FILE" "$_TMPD/meminfo"
 }
-_HOST_MB=$(run_usable_ram "")
 
 assert_eq "a lower cgroup allowance wins" "512" "$(run_usable_ram 512)"
-assert_eq "a higher allowance is ignored" "$_HOST_MB" "$(run_usable_ram 8796093022207)"
-assert_eq "no cgroup leaves host memory" "$_HOST_MB" "$(run_usable_ram "")"
+assert_eq "a higher allowance is ignored" "12288" "$(run_usable_ram 8796093022207)"
+# Host memory is what is available, not what is fitted: 16 GiB with 12 GiB free
+# budgets from 12.
+assert_eq "no cgroup leaves host memory" "12288" "$(run_usable_ram "")"
+
+# MemTotal is still the pre-3.14 fallback when MemAvailable is absent.
+printf 'MemTotal:       16777216 kB\n' > "$_TMPD/meminfo-old"
+assert_eq "pre-3.14 kernels fall back to MemTotal" "16384" \
+    "$(bash -c '. "$1"; _cgroup_free_mb() { :; }; _usable_ram_mb "$2"' \
+        _ "$_RAM_FILE" "$_TMPD/meminfo-old")"
 
 # End to end: a 4 GB allowance builds at -j1, not -j(cores).
 assert_eq "4 GB allowance floors at 1 job" "1" "$(run_jobs 20 "$(run_usable_ram 4096)" "")"
@@ -343,6 +377,17 @@ _check_ps1 "setup.ps1 per-job budget matches setup.sh" '^\$LlamaBuildMbPerJob = 
 _check_ps1 "setup.ps1 budgets from available memory" 'AvailableMBytes'
 _check_ps1 "setup.ps1 feeds it to the job count" 'Get-LlamaJobsFor .*-TotalMb \(Get-UsableMemoryMb\)'
 _check_ps1 "setup.ps1 keeps installed RAM as the fallback" 'TotalPhysicalMemory'
+# Zero available memory is a reading, not a failure. Treating it as unreadable
+# fell back to installed RAM and handed a machine with nothing left its full
+# core count, so only a negative value now means "could not read".
+_check_ps1 "setup.ps1 keeps a zero reading" '^[[:space:]]*if \(\$null -ne \$avail\) \{ return \[long\]\$avail \}$'
+_check_ps1 "setup.ps1 signals unreadable memory as -1" '^[[:space:]]*return -1$'
+_check_ps1 "setup.ps1 treats only a negative as unreadable" '^[[:space:]]*if \(\$TotalMb -lt 0\) \{ return \$Cores \}$'
+if grep -qE '^\s*if \(\$TotalMb -le 0\) \{ return \$Cores \}' "$SETUP_PS1"; then
+    echo "  FAIL: setup.ps1 still treats zero available memory as unreadable"; FAIL=$((FAIL + 1))
+else
+    echo "  PASS: setup.ps1 no longer treats zero as unreadable"; PASS=$((PASS + 1))
+fi
 
 # The bare ProcessorCount is what caused the hang; it must not come back.
 if grep -qE '^\s*\$NumCpu = \[Environment\]::ProcessorCount' "$SETUP_PS1"; then

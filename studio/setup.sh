@@ -316,31 +316,32 @@ _cg_limit() {
     return 0
 }
 
-# Echo "$1/$2" and every ancestor up to $1, innermost first.
+# Echo "$1/$2" and every ancestor up to $1, innermost first, NUL-delimited. A
+# mount point is an arbitrary directory and may contain a newline, so a
+# line-delimited list would split one path into two and none of them would
+# exist. dirname is inlined for the same reason: $() eats a trailing newline.
 _cg_dirs() {
     local _root=$1 _cur
     if [ -n "${2:-}" ] && [ "$2" != "/" ]; then
         _cur="$_root/${2#/}"
-        while [ "$_cur" != "$_root" ] && [ "$_cur" != "/" ] && [ "$_cur" != "." ]; do
-            printf '%s\n' "$_cur"
-            _cur=$(dirname "$_cur")
+        while [ "$_cur" != "$_root" ] && [ "$_cur" != "/" ]; do
+            printf '%s\0' "$_cur"
+            case "$_cur" in
+                */*) _cur=${_cur%/*}; [ -n "$_cur" ] || _cur="/" ;;
+                *) break ;;
+            esac
         done
     fi
-    printf '%s\n' "$_root"
+    printf '%s\0' "$_root"
 }
 
-# Echo every matching cgroup hierarchy as "<mount root><tab><mount point>".
-# $1 = a mountinfo file, $2 = "cgroup2" for the unified mount or a v1 controller
-# name. mountinfo is "... <root> <mountpoint> <opts> [tags] - <fstype> <source>
-# <superopts>", and a v1 hierarchy lists its controllers in the super options,
-# so a co-mounted or relocated one is found by name instead of assumed to sit
-# at <root>/<name>.
-_cg_mounts() {
-    [ -r "$1" ] || return 0
-    # mountinfo escapes space, tab, newline and backslash in paths as \040 and
-    # friends, so both path fields are decoded before use. strtonum is a gawk
-    # extension; this arithmetic is POSIX and runs under mawk and BSD awk too.
-    awk -v want="$2" '
+# The mountinfo path decoder, as an awk function, in one place so its two
+# callers cannot drift. mountinfo escapes space, tab, newline and backslash in
+# paths as \040 and friends. strtonum is a gawk extension, so the octal
+# conversion is plain arithmetic that also runs under mawk and BSD awk, which
+# is what Debian and macOS give you.
+_cg_unesc_prog() {
+    cat <<'_CG_AWK_UNESC'
         function unesc(s,   out, i, c, o, v) {
             out = ""; i = 1
             while (i <= length(s)) {
@@ -353,16 +354,40 @@ _cg_mounts() {
             }
             return out
         }
+_CG_AWK_UNESC
+}
+
+# Echo $1 with its mountinfo escapes decoded. Decoding is deliberately not done
+# where the fields are read: \011 and \012 decode to the very tab and newline
+# that delimit the records below, so a mount point containing either would
+# split one record into two and the binding cgroup would never be inspected. An
+# escaped path holds neither, so it travels intact and is decoded here, once a
+# single path is in hand.
+_cg_unesc() {
+    [ -n "$1" ] || return 0
+    printf '%s\n' "$1" | awk "$(_cg_unesc_prog)"'{ printf "%s", unesc($0); exit }'
+    return 0
+}
+
+# Echo every matching cgroup hierarchy as "<mount root><tab><mount point>",
+# both still escaped. $1 = a mountinfo file, $2 = "cgroup2" for the unified
+# mount or a v1 controller name. mountinfo is "... <root> <mountpoint> <opts>
+# [tags] - <fstype> <source> <superopts>", and a v1 hierarchy lists its
+# controllers in the super options, so a co-mounted or relocated one is found
+# by name instead of assumed to sit at <root>/<name>.
+_cg_mounts() {
+    [ -r "$1" ] || return 0
+    awk -v want="$2" '
         {
             for (i = 1; i <= NF; i++) if ($i == "-") break
             if (i + 3 > NF) next
             if (want == "cgroup2") {
-                if ($(i + 1) == "cgroup2") print unesc($4) "\t" unesc($5)
+                if ($(i + 1) == "cgroup2") print $4 "\t" $5
                 next
             }
             if ($(i + 1) != "cgroup") next
             n = split($(i + 3), opts, ",")
-            for (j = 1; j <= n; j++) if (opts[j] == want) { print unesc($4) "\t" unesc($5); next }
+            for (j = 1; j <= n; j++) if (opts[j] == want) { print $4 "\t" $5; next }
         }' "$1" 2>/dev/null
     return 0
 }
@@ -386,19 +411,22 @@ _cg_rel() {
     return 0
 }
 
-# Pick one "<root><tab><point>" from the candidates on stdin. A hierarchy can be
-# mounted more than once, and taking the first would step past the binding mount
-# whenever an unrelated subtree is listed ahead of it. Prefer a mount whose root
-# contains the process path, most specific first; else keep the first seen.
-# Args: process cgroup path.
+# Pick one "<root><tab><point>" from the escaped candidates on stdin, and echo
+# it still escaped. A hierarchy can be mounted more than once, and taking the
+# first would step past the binding mount whenever an unrelated subtree is
+# listed ahead of it. Prefer a mount whose root contains the process path, most
+# specific first; else keep the first seen. Args: process cgroup path.
 _cg_pick_mount() {
-    local _rel=$1 _root _point _bestroot="" _bestpoint="" _firstroot="" _firstpoint=""
+    local _rel=$1 _root _point _droot _bestlen=0
+    local _bestroot="" _bestpoint="" _firstroot="" _firstpoint=""
     while IFS=$'\t' read -r _root _point; do
         [ -n "$_point" ] || continue
         if [ -z "$_firstpoint" ]; then _firstroot=$_root; _firstpoint=$_point; fi
-        [ -n "$(_cg_rel "$_root" "$_rel")" ] || continue
-        if [ -z "$_bestpoint" ] || [ "${#_root}" -gt "${#_bestroot}" ]; then
-            _bestroot=$_root; _bestpoint=$_point
+        # /proc/self/cgroup is not escaped, so the root is compared decoded.
+        _droot=$(_cg_unesc "$_root")
+        [ -n "$(_cg_rel "$_droot" "$_rel")" ] || continue
+        if [ -z "$_bestpoint" ] || [ "${#_droot}" -gt "$_bestlen" ]; then
+            _bestroot=$_root; _bestpoint=$_point; _bestlen=${#_droot}
         fi
     done
     if [ -n "$_bestpoint" ]; then
@@ -420,7 +448,7 @@ _cg_pick_mount() {
 _cgroup_free_mb() {
     local _root=$1 _proc=$2 _mnt=${3:-} _rel _dir _used _limit _free _name _min=""
     local _v2 _v1 _v2root _v1root _v2rel _v1rel
-    _consider() {
+    _cg_consider() {
         [ -n "$1" ] || return 0
         if [[ "$2" =~ ^[0-9]+$ ]]; then _free=$(( $1 - $2 )); else _free=$1; fi
         [ "$_free" -lt 0 ] && _free=0
@@ -441,27 +469,34 @@ _cgroup_free_mb() {
         }' "$_proc" 2>/dev/null || true)
     IFS=$'\t' read -r _v2root _v2 <<< "$(_cg_mounts "$_mnt" cgroup2 | _cg_pick_mount "$_v2rel")"
     IFS=$'\t' read -r _v1root _v1 <<< "$(_cg_mounts "$_mnt" memory | _cg_pick_mount "$_v1rel")"
+    # Escapes survive the tab- and newline-delimited transport above; a single
+    # path is in hand now, so decode it before touching the filesystem. The
+    # trailing sentinel keeps $() from eating a decoded trailing newline.
+    _v2root=$(_cg_unesc "$_v2root"; printf X); _v2root=${_v2root%X}
+    _v2=$(_cg_unesc "$_v2"; printf X); _v2=${_v2%X}
+    _v1root=$(_cg_unesc "$_v1root"; printf X); _v1root=${_v1root%X}
+    _v1=$(_cg_unesc "$_v1"; printf X); _v1=${_v1%X}
     [ -n "$_v2" ] || { _v2=$_root; _v2root="/"; }
     [ -n "$_v1" ] || { _v1="$_root/memory"; _v1root="/"; }
     if [ -d "$_v2" ]; then
         # The v2 line is "0::<path>"; systemd hybrid mode adds v1 lines alongside.
         _rel=$(_cg_rel "$_v2root" "$_v2rel")
-        while IFS= read -r _dir; do
+        while IFS= read -r -d '' _dir; do
             _used=$(_cg_read "$_dir/memory.current")
             for _name in memory.max memory.high; do
                 _limit=$(_cg_limit "$(_cg_read "$_dir/$_name")")
-                _consider "$_limit" "$_used"
+                _cg_consider "$_limit" "$_used"
             done
-        done <<< "$(_cg_dirs "$_v2" "$_rel")"
+        done < <(_cg_dirs "$_v2" "$_rel")
     fi
     if [ -d "$_v1" ]; then
         # v1 is "<id>:<controllers>:<path>", and mounts are often combined.
         _rel=$(_cg_rel "$_v1root" "$_v1rel")
-        while IFS= read -r _dir; do
+        while IFS= read -r -d '' _dir; do
             _used=$(_cg_read "$_dir/memory.usage_in_bytes")
             _limit=$(_cg_limit "$(_cg_read "$_dir/memory.limit_in_bytes")")
-            _consider "$_limit" "$_used"
-        done <<< "$(_cg_dirs "$_v1" "$_rel")"
+            _cg_consider "$_limit" "$_used"
+        done < <(_cg_dirs "$_v1" "$_rel")
     fi
     [ -n "$_min" ] && printf '%d' "$(( _min / 1048576 ))"
     return 0
@@ -471,14 +506,15 @@ _cgroup_free_mb() {
 # a workstation with 8 GiB already resident cannot host a 14 GiB compile just
 # because 16 GiB is fitted. /proc is not namespaced either, so a lower cgroup
 # allowance wins. macOS has no comparable reclaim-aware figure, so it keeps
-# installed RAM.
+# installed RAM. $1 is the meminfo file, an argument like every other reader's
+# path here so the tests can pin a number instead of racing the live one.
 _usable_ram_mb() {
-    local _bytes _mb="" _free
-    if [ -r /proc/meminfo ]; then
+    local _meminfo=${1:-/proc/meminfo} _bytes _mb="" _free
+    if [ -r "$_meminfo" ]; then
         # MemAvailable counts reclaimable page cache; MemFree does not. Absent
         # before Linux 3.14, where MemTotal is the only thing to go on.
-        _mb=$(awk '/^MemAvailable:/ { printf "%d", $2 / 1024; exit }' /proc/meminfo)
-        [ -n "$_mb" ] || _mb=$(awk '/^MemTotal:/ { printf "%d", $2 / 1024; exit }' /proc/meminfo)
+        _mb=$(awk '/^MemAvailable:/ { printf "%d", $2 / 1024; exit }' "$_meminfo")
+        [ -n "$_mb" ] || _mb=$(awk '/^MemTotal:/ { printf "%d", $2 / 1024; exit }' "$_meminfo")
     elif _bytes=$(sysctl -n hw.memsize 2>/dev/null); then
         [[ "$_bytes" =~ ^[0-9]+$ ]] && _mb=$(( _bytes / 1048576 ))
     fi

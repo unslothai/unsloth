@@ -605,9 +605,12 @@ function Get-NvccMaxArch {
 $LlamaBuildReserveMb = 2048
 $LlamaBuildMbPerJob = 2048
 
-# The cmake -j count. $TotalMb of 0 means RAM was unreadable, which keeps the
-# old core-count behaviour. UNSLOTH_LLAMA_BUILD_JOBS wins. Pure so the tests
-# can drive it without faking hardware.
+# The cmake -j count. A negative $TotalMb means RAM was unreadable, which keeps
+# the old core-count behaviour. Zero is a reading, not a failure: a box with no
+# memory left is the last one that should be handed its full core count, so it
+# falls through and floors at 1, as _llama_jobs_for does for a numeric 0.
+# UNSLOTH_LLAMA_BUILD_JOBS wins. Pure so the tests can drive it without faking
+# hardware.
 function Get-LlamaJobsFor {
     param([int]$Cores, [long]$TotalMb)
 
@@ -617,22 +620,26 @@ function Get-LlamaJobsFor {
         return $override
     }
     if ($Cores -lt 1) { $Cores = 4 }
-    if ($TotalMb -le 0) { return $Cores }
+    if ($TotalMb -lt 0) { return $Cores }
     $jobs = [int][Math]::Floor(($TotalMb - $LlamaBuildReserveMb) / $LlamaBuildMbPerJob)
     if ($jobs -lt 1) { $jobs = 1 }
     if ($jobs -gt $Cores) { $jobs = $Cores }
     return $jobs
 }
 
-# Usable RAM in MB; 0 when it cannot be read. Available, not installed: a box
-# with 8 GB already resident cannot host a 14 GB compile just because 16 GB is
-# fitted. AvailableMBytes counts the standby list, which the Free counters do
-# not, and the raw perf class is not localized the way Get-Counter paths are.
-# Installed RAM stays as the fallback, which is the pre-cap behaviour.
+# Usable RAM in MB; -1 when it cannot be read at all. Available, not installed:
+# a box with 8 GB already resident cannot host a 14 GB compile just because
+# 16 GB is fitted. AvailableMBytes counts the standby list, which the Free
+# counters do not, and the raw perf class is not localized the way Get-Counter
+# paths are. Installed RAM stays as the fallback, which is the pre-cap
+# behaviour. A reading of 0 is returned as 0 rather than treated as unreadable:
+# under real memory pressure Windows does report it, and falling back to
+# installed RAM there would hand the machine its full core count at the one
+# moment it can least afford it.
 function Get-UsableMemoryMb {
     try {
         $avail = (Get-CimInstance Win32_PerfRawData_PerfOS_Memory -ErrorAction Stop).AvailableMBytes
-        if ($avail -gt 0) { return [long]$avail }
+        if ($null -ne $avail) { return [long]$avail }
     } catch { }
     try {
         $bytes = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory
@@ -643,7 +650,7 @@ function Get-UsableMemoryMb {
         $kb = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).TotalVisibleMemorySize
         if ($kb -gt 0) { return [long]($kb / 1KB) }
     } catch { }
-    return 0
+    return -1
 }
 
 function Get-LlamaBuildJobs {
