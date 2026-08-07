@@ -628,6 +628,41 @@ class TestMalformedUploadAcknowledgement:
             client.upload(bundle)
 
 
+class TestAnnotationEscaping:
+    """Engine names, detection labels and error strings are third-party data.
+    Actions truncates an annotation at the first newline, which would drop the
+    engine list exactly when the scan is trying to alert a maintainer."""
+
+    def test_percent_is_escaped_before_the_newlines(self):
+        # Order matters: escaping % last would double-encode %0A into %250A.
+        assert vt._gha_escape("100%\nnext") == "100%25%0Anext"
+        assert vt._gha_escape("a\r\nb") == "a%0D%0Ab"
+
+    def test_clean_text_is_untouched(self):
+        assert vt._gha_escape("AlphaAV (Trojan.Gen)") == "AlphaAV (Trojan.Gen)"
+
+    def test_detection_annotation_stays_on_one_line(self, capsys):
+        report = vt.FileReport(
+            name = "a.exe",
+            stats = vt.ScanStats(malicious = 1),
+            detections = ["Evil\nAV (Tro%jan)"],
+        )
+        vt._emit(report)
+        annotation = [
+            line for line in capsys.readouterr().out.splitlines() if line.startswith("::warning")
+        ]
+        assert len(annotation) == 1
+        assert "Evil%0AAV (Tro%25jan)" in annotation[0]
+
+    def test_note_annotation_is_escaped(self, capsys):
+        vt._emit(vt.FileReport(name = "a.exe", note = "HTTP 500\r\nbody: 50%"))
+        annotation = [
+            line for line in capsys.readouterr().out.splitlines() if line.startswith("::warning")
+        ]
+        assert len(annotation) == 1
+        assert "HTTP 500%0D%0Abody: 50%25" in annotation[0]
+
+
 class TestRetryBackoffRespectsTheDeadline:
     """Retry sleeps grow exponentially, so a late 429 could otherwise sleep well
     past --timeout-seconds before the loop notices and writes its summary."""

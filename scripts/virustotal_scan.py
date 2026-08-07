@@ -532,6 +532,19 @@ def scan_file(client: VirusTotalClient, path: Path, deadline: float) -> FileRepo
     return report
 
 
+def _gha_escape(text: str) -> str:
+    """Escape a string for a GH Actions `::warning::` message.
+
+    Engine names, detection labels and error strings are third-party data, so
+    they can contain anything. GH Actions truncates an annotation at the first
+    newline unless `\\n`/`\\r` are escaped as `%0A`/`%0D`. `%` must be replaced
+    first to avoid double-encoding the subsequent escapes.
+
+    Mirrors `_gha_escape` in scripts/lockfile_supply_chain_audit.py.
+    """
+    return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
 def _emit(report: FileReport) -> None:
     """One deterministic, greppable line per asset."""
     stats = report.stats or ScanStats()
@@ -545,14 +558,16 @@ def _emit(report: FileReport) -> None:
     if report.detections:
         # ::warning:: and not ::error:: so the release still ships; see the module docstring.
         print(
-            f"::warning title=VirusTotal detection::{report.name}: "
+            f"::warning title=VirusTotal detection::{_gha_escape(report.name)}: "
             f"{stats.malicious} malicious, {stats.suspicious} suspicious "
-            f"({', '.join(report.detections)})",
+            f"({_gha_escape(', '.join(report.detections))})",
             flush = True,
         )
     if report.note:
         print(
-            f"::warning title=VirusTotal scan incomplete::{report.name}: {report.note}", flush = True
+            f"::warning title=VirusTotal scan incomplete::"
+            f"{_gha_escape(report.name)}: {_gha_escape(report.note)}",
+            flush = True,
         )
 
 
