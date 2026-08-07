@@ -183,9 +183,9 @@ def test_gated_mirror_table_round_trips():
         assert canonical_base(mirror) == upstream
         # Case-insensitive in, since a card tag may carry any casing.
         assert mirror_repo(upstream.upper()) == mirror
-    # A base with no mirror is left alone. HunyuanImage 2.1 is the deliberate one: the Tencent
-    # Hunyuan Community License allows distribution only inside a Territory that excludes the EU,
-    # the UK and South Korea, which a public Hub repo cannot honour.
+    # A base with no mirror is left alone. HunyuanImage 2.1 is the deliberate one: its licence
+    # allows distribution only in a Territory excluding the EU, UK and South Korea, which a public
+    # Hub repo cannot honour.
     hunyuan = "hunyuanvideo-community/HunyuanImage-2.1-Diffusers"
     assert mirror_repo(hunyuan) is None
     assert canonical_base(hunyuan) == hunyuan
@@ -4648,9 +4648,8 @@ def test_dense_fit_check_runs_for_a_base_the_live_cache_root_does_not_hold(
     # live root reads 0 for either.
     from core.inference import diffusion as dmod
 
-    # The subject is cross-root shard discovery, not mirroring. Pin the base id so the fixture's
-    # cache dir is the one the load reads: otherwise whether the swap fires depends on whether the
-    # ambient cache happens to hold the upstream, and the test passes or fails by accident.
+    # Subject is cross-root shard discovery, not mirroring. Pin the base id so the load reads the
+    # fixture's cache dir, else the ambient cache decides whether the swap fires.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     _live, other = _split_cache_roots(tmp_path, monkeypatch, register_root = True)
     root = tmp_path / "stale-root" if staged else other
