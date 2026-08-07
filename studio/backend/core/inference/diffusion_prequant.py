@@ -167,7 +167,10 @@ def local_prequant_scheme(path: str) -> Optional[str]:
     try:
         real = os.path.expanduser(path)
         st = os.stat(real)
-        key = (real, int(st.st_mtime), int(st.st_size))
+        # Nanoseconds, not int(st_mtime): an atomic swap for a same-sized artifact inside the same
+        # second would otherwise reuse the previous scheme for the life of the process, and int8
+        # and fp8 checkpoints of one model are exactly that shape.
+        key = (real, st.st_mtime_ns, int(st.st_size))
     except Exception:  # noqa: BLE001 -- unreadable is "unknown", handled by the caller
         return None
     if key in _LOCAL_PREQUANT_SCHEME:

@@ -160,7 +160,9 @@ def test_candidate_disk_gate_spares_an_already_cached_prequant(monkeypatch):
     import core.inference.diffusion_prequant as pq
 
     _patch_selector(monkeypatch, scheme = "int8")
-    monkeypatch.setattr(pq, "usable_prequant_source", lambda *a, **k: object())
+    monkeypatch.setattr(
+        pq, "usable_prequant_source", lambda *a, **k: type("S", (), {"kind": "repo"})()
+    )
     monkeypatch.setattr(pq, "prequant_checkpoint_cached", lambda *a, **k: True)
     # Far too little space for the checkpoint, which is precisely the case being excused.
     monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: 1024)
@@ -175,6 +177,28 @@ def test_candidate_disk_gate_spares_an_already_cached_prequant(monkeypatch):
         resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "auto")
         is None
     )
+
+
+def test_a_local_override_is_never_gated_on_disk_space(monkeypatch):
+    """A local path override downloads nothing, so the space gate has no claim on it.
+
+    prequant_checkpoint_cached only answers for hosted repos (_cached_in_root returns None for any
+    other kind), so probing a path source there reports False and re-applies the gate to a file
+    already on disk. The retry treats a local override as costing no bytes; this has to agree, or a
+    low-disk host drops the local rung to GGUF.
+    """
+    import core.inference.diffusion_auto_policy as ap
+    import core.inference.diffusion_prequant as pq
+
+    _patch_selector(monkeypatch, scheme = "int8")
+    monkeypatch.setattr(
+        pq, "usable_prequant_source", lambda *a, **k: type("S", (), {"kind": "path"})()
+    )
+    # Would say "not cached" for a path source, exactly as the real one does.
+    monkeypatch.setattr(pq, "prequant_checkpoint_cached", lambda *a, **k: False)
+    monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: 1024)
+    est = resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "auto")
+    assert isinstance(est, DenseQuantEstimate)
 
 
 def test_the_cached_probe_is_pinned_to_the_active_cache_root(monkeypatch):
@@ -192,7 +216,9 @@ def test_the_cached_probe_is_pinned_to_the_active_cache_root(monkeypatch):
     seen: list = []
 
     _patch_selector(monkeypatch, scheme = "int8")
-    monkeypatch.setattr(pq, "usable_prequant_source", lambda *a, **k: object())
+    monkeypatch.setattr(
+        pq, "usable_prequant_source", lambda *a, **k: type("S", (), {"kind": "repo"})()
+    )
     monkeypatch.setattr(cache_settings, "active_hf_hub_cache", lambda: "/live-root")
     monkeypatch.setattr(
         pq,

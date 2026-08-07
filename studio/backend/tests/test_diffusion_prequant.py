@@ -201,6 +201,40 @@ def test_an_unreadable_override_is_not_usable(tmp_path, monkeypatch):
     assert pq.usable_prequant_source(fam, "fp8", path_override = str(ckpt)) is None
 
 
+def test_the_local_scheme_cache_survives_a_same_second_swap(tmp_path):
+    """Two checkpoints of one model differ only in scheme, so an atomic swap is same-size.
+
+    The memo key used int(st_mtime), which truncates to seconds: replacing an int8 override with
+    the fp8 bake of the same model inside one second left the key unchanged, so every later probe
+    in that process reported the OLD scheme. Under `auto` that is the exact failure the scheme
+    check exists to stop, only inverted: planning trusts a scheme the file no longer records.
+    """
+    import os
+
+    import torch
+
+    ckpt = tmp_path / "model.pt"
+
+    def _write(scheme, pad):
+        torch.save(
+            {"format": pq.PREQUANT_FORMAT, "metadata": {"scheme": scheme, "pad": "x" * pad}},
+            str(ckpt),
+        )
+
+    _write("int8", 8)
+    stamp = os.stat(str(ckpt)).st_mtime_ns
+    size = os.stat(str(ckpt)).st_size
+    assert pq.local_prequant_scheme(str(ckpt)) == "int8"
+
+    # Same size, and a timestamp inside the same second as the first write.
+    _write("fp8", 9)
+    assert os.stat(str(ckpt)).st_size == size, "the two bakes must be same-size for this to bite"
+    os.utime(str(ckpt), ns = (stamp + 1, stamp + 1))
+    assert int(os.stat(str(ckpt)).st_mtime) == int(stamp / 1e9)
+
+    assert pq.local_prequant_scheme(str(ckpt)) == "fp8"
+
+
 def test_usable_source_repo_unaffected_by_allowlist(monkeypatch):
     # Hosted-repo sources are first-party and keep resolving with no allowlist at all.
     monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [])

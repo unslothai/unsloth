@@ -203,7 +203,14 @@ def resolve_dense_quant_candidate(
                 fam, scheme, path_override = prequant_path, base_repo = base_repo
             )
             prequant_available = src is not None
-            if src is not None:
+            if src is not None and getattr(src, "kind", None) == "path":
+                # A local override is the operator's own file on disk: it downloads nothing, so the
+                # space gate has no claim on it. prequant_checkpoint_cached only answers for hosted
+                # repos (_cached_in_root returns None for any other kind), so asking it here would
+                # report False and re-apply the gate to a file that costs no bytes, which is the
+                # opposite of what the retry assumes about local paths.
+                prequant_cached = True
+            elif src is not None:
                 # Pin the ACTIVE root, as the retry and the loader both do. Unpinned,
                 # cached_checkpoint_path searches only huggingface_hub's import-time constant, so
                 # after a cache-folder change the retry proves the checkpoint cached in the live
