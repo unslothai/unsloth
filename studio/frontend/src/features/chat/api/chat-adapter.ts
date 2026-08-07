@@ -1861,18 +1861,25 @@ function applyAutoLoadRuntimeState(
   }
 }
 
-/** Whether a cache row is chattable. Both fields are optional so an older backend keeps trying. */
+/** Whether a cache row is chattable. Every field is optional so an older backend keeps trying. */
 function isChattableCachedRepo(repo: {
   partial?: boolean;
+  task?: string | null;
   capabilities?: { can_chat?: boolean } | null;
 }): boolean {
-  return repo.partial !== true && repo.capabilities?.can_chat !== false;
+  return (
+    repo.partial !== true &&
+    repo.capabilities?.can_chat !== false &&
+    // Cached diffusion repos report can_chat true on file format alone.
+    !IMAGE_OR_VIDEO_TASKS.has(repo.task ?? "")
+  );
 }
 
-// Tasks the backend tags an on-device row with. It only ever sets one for an
-// image or video model (a chat LLM stays null), and the chat picker routes
-// those to the Images/Video page on click. A background load has no routing
-// step, so it must skip them or the chat turn goes to a diffusion runtime.
+// Image and video tasks the backend tags a row with. A chat model is tagged
+// "text-generation" or left null, so the exclusion is by this list, not by
+// "has a task". The chat picker routes these to the Images/Video page on
+// click; a background load has no routing step, so it must skip them or the
+// chat turn goes to a diffusion runtime.
 const IMAGE_OR_VIDEO_TASKS: ReadonlySet<string> = new Set([
   "text-to-image",
   "text-to-video",
@@ -2118,6 +2125,7 @@ function formatDownloadBytes(bytes: number): string {
  * disk.
  */
 async function ensureDefaultModelDownloaded(
+  hfToken: string | null,
   abortSignal: AbortSignal | undefined,
   setToast: (title: string, description: string, cancel?: () => void) => void,
 ): Promise<"ready" | "cancelled" | "failed"> {
@@ -2138,6 +2146,16 @@ async function ensureDefaultModelDownloaded(
   }
   abortSignal?.throwIfAborted();
 
+  // startJob reads the stored token straight from the store and sends it, with
+  // none of the recovery validateModel and loadModel get. An expired token
+  // would fail the download of a public repo the lookup above just read
+  // anonymously. Run after the on-disk check so nothing prompts when there is
+  // nothing to download; choosing anonymous clears the shared token, which is
+  // the same one startJob reads.
+  const prepared = await prepareHfTokenForUse(hfToken);
+  abortSignal?.throwIfAborted();
+  if (!prepared.proceed) return "cancelled";
+
   const request = {
     kind: DOWNLOAD_KIND.MODEL,
     repoId: DEFAULT_CHAT_MODEL_REPO,
@@ -2149,11 +2167,13 @@ async function ensureDefaultModelDownloaded(
   // no-ops on a missing key. Remember the click and re-issue it once the job
   // appears, or the first Cancel is silently swallowed.
   let cancelRequested = false;
-  let cancelIssued = false;
+  let cancelInFlight = false;
+  let cancelEverIssued = false;
   // Cancelling patches the job, which wakes the store subscription below, so
-  // this must fire once or the two bounce off each other.
-  const cancelActiveJob = (): boolean => {
-    if (cancelIssued) return true;
+  // this must not re-enter while a request is outstanding or the two bounce
+  // off each other. A cancel that fails restores the job to running, so the
+  // latch clears when the request settles and a later click can retry.
+  const issueCancel = (): boolean => {
     const active = selectActiveJob(
       useDownloadManagerStore.getState(),
       request.kind,
@@ -2161,13 +2181,17 @@ async function ensureDefaultModelDownloaded(
       request.variant,
     );
     if (!active) return false;
-    cancelIssued = true;
-    void downloadManager.cancel(active.key);
+    if (cancelInFlight || active.state === "cancelling") return true;
+    cancelInFlight = true;
+    cancelEverIssued = true;
+    void downloadManager.cancel(active.key).finally(() => {
+      cancelInFlight = false;
+    });
     return true;
   };
   const cancelDownload = (): void => {
     cancelRequested = true;
-    cancelActiveJob();
+    issueCancel();
   };
   const totalLabel = formatDownloadBytes(expectedBytes);
   const description =
@@ -2196,7 +2220,11 @@ async function ensureDefaultModelDownloaded(
     // Before the start request, so a fast completion cannot be missed.
     cleanups.push(
       subscribeJobListeners(request.kind, request.repoId, {
-        onComplete: (variant) => isOurVariant(variant) && finish("ready"),
+        // A cancel can fail and the transfer finish anyway. The user asked for
+        // it to stop, so the bytes are not handed to a load.
+        onComplete: (variant) =>
+          isOurVariant(variant) &&
+          finish(cancelRequested ? "cancelled" : "ready"),
         onCancelled: (variant) => isOurVariant(variant) && finish("cancelled"),
         onError: (variant) => isOurVariant(variant) && finish("failed"),
       }),
@@ -2206,9 +2234,11 @@ async function ensureDefaultModelDownloaded(
       useDownloadManagerStore.subscribe((state) => {
         const job = state.jobs[jobKey];
         if (!job) return;
-        // Cancelled during the preflights: stop it as soon as it exists.
+        // Cancelled during the preflights: stop it as soon as it exists. Only
+        // the deferred first attempt; a failed cancel is retried by the user
+        // clicking again, not on every store tick.
         if (cancelRequested) {
-          cancelActiveJob();
+          if (!cancelEverIssued) issueCancel();
           return;
         }
         if (job.state === "cancelling") return;
@@ -2234,7 +2264,7 @@ async function ensureDefaultModelDownloaded(
       (outcome) => {
         if (outcome === "started") {
           // Cancelled while the start was still in flight.
-          if (cancelRequested && !cancelActiveJob()) finish("cancelled");
+          if (cancelRequested && !issueCancel()) finish("cancelled");
           return;
         }
         if (cancelRequested) {
@@ -2828,6 +2858,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     // only hand it to /api/inference/load once the bytes are here.
     try {
       const download = await ensureDefaultModelDownloaded(
+        hfToken,
         options?.abortSignal,
         updateAutoLoadToast,
       );

@@ -55,6 +55,10 @@ export type Scenario = {
   deviceType: string;
   /** Click the toast's Cancel while requestStart is still in its preflights. */
   cancelDuringStart: boolean;
+  /** Cancellation request fails and the transfer keeps running. */
+  cancelFails: boolean;
+  /** "decline" or "anonymous" from the expired-token dialog. */
+  tokenDecision: string | null;
   variants: Record<string, any>;
   lastLoaded: any;
   validate: (payload: any) => any;
@@ -126,6 +130,9 @@ let STORE: any = makeStore();
 // first scenario that turns a GPU option on. Stubbed so the harness is complete
 // rather than complete-by-luck.
 async function prepareHfTokenForUse(token: any) {
+  EVENTS.push({ kind: "prepareHfToken" });
+  if (SCENARIO.tokenDecision === "decline") return { proceed: false, token };
+  if (SCENARIO.tokenDecision === "anonymous") return { proceed: true, token: null };
   return { proceed: true, token };
 }
 async function fetchGgufStagedMetadata(_req: any) {
@@ -325,8 +332,19 @@ const downloadManager = {
   },
   cancel: async (key: string) => {
     EVENTS.push({ kind: "download.cancel", key });
-    CANCELLED_KEYS.add(key);
     const job = DOWNLOAD_STATE.jobs[key];
+    // The real cancelJob can fail its request, probe the transfer as still
+    // running, and restore the job. Nothing is cancelled in that case.
+    if (SCENARIO.cancelFails) {
+      if (job) {
+        DOWNLOAD_STATE = {
+          jobs: { ...DOWNLOAD_STATE.jobs, [key]: { ...job, state: "running" } },
+        };
+        notifyDownloadStore();
+      }
+      return;
+    }
+    CANCELLED_KEYS.add(key);
     if (job) {
       DOWNLOAD_STATE = {
         jobs: { ...DOWNLOAD_STATE.jobs, [key]: { ...job, state: "cancelled" } },
@@ -414,6 +432,8 @@ SCENARIO_HELPERS = """
       chatOnly: false,
       deviceType: "linux",
       cancelDuringStart: false,
+      cancelFails: false,
+      tokenDecision: null,
       variants: {},
       lastLoaded: null,
       validate: VALIDATE_OK,
@@ -1112,3 +1132,82 @@ def test_the_default_variant_lookup_carries_the_run_abort_signal():
         if event["kind"] == "listGgufVariants" and event["repoId"] == DEFAULT_MODEL
     ]
     assert lookup["hasSignal"] is True
+
+
+def test_a_download_that_survives_a_failed_cancel_is_not_loaded():
+    """cancelJob can fail its request, probe the transfer as still running, and
+    restore the job. The user asked for it to stop, so the bytes that arrive
+    anyway must not be handed to a load."""
+    out = _run("scenario({ cancelDuringStart: true, cancelFails: true })")
+
+    assert _loaded_paths(out) == []
+    assert out["result"]["loaded"] is False
+
+
+def test_a_failed_cancel_does_not_latch_the_toast_action_off():
+    """The retry latch must clear once the request settles, or every later
+    Cancel click is swallowed."""
+    src = (WORKDIR / "studio/frontend/src/features/chat/api/chat-adapter.ts").read_text(
+        encoding = "utf-8"
+    )
+    helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
+    helper = helper.split("async function autoLoadSmallestModel", 1)[0]
+    # In flight only, cleared when the request settles.
+    assert "if (cancelInFlight || active.state === \"cancelling\") return true;" in helper
+    assert "cancelInFlight = false;\n    });" in helper
+    # The subscription fires the deferred attempt once; retries come from clicks.
+    assert "if (!cancelEverIssued) issueCancel();" in helper
+
+
+def test_an_expired_token_is_prepared_before_the_managed_start():
+    """startJob reads the stored token and sends it with none of the recovery
+    validateModel and loadModel get, so a public default discovered
+    anonymously would fail its own download."""
+    out = _run("scenario({})")
+    kinds = [event["kind"] for event in out["events"]]
+    assert "prepareHfToken" in kinds
+    assert kinds.index("prepareHfToken") < kinds.index("download.start")
+
+
+def test_declining_the_token_dialog_starts_no_download():
+    out = _run("scenario({ tokenDecision: 'decline' })")
+    assert _downloads_started(out) == []
+    assert _loaded_paths(out) == []
+    assert out["result"]["loaded"] is False
+
+
+def test_the_token_is_not_prepared_when_the_default_is_already_on_disk():
+    """Nothing to download means nothing to prompt about."""
+    downloaded = (
+        "{ variants: [{ quant: 'UD-Q4_K_XL', filename: 'm-UD-Q4_K_XL.gguf',"
+        " downloaded: true, size_bytes: 100 }] }"
+    )
+    out = _run(
+        f"scenario({{ variants: {{ 'unsloth/gemma-4-E2B-it-GGUF': {downloaded} }} }})"
+    )
+    kinds = [event["kind"] for event in out["events"]]
+    assert "prepareHfToken" not in kinds
+    assert _downloads_started(out) == []
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
+
+
+def test_a_cached_image_repo_is_never_auto_loaded_for_chat():
+    """Cached diffusion repos report can_chat true on file format alone, and
+    carry their Images/Video task on the row."""
+    for task in ("text-to-image", "text-to-video", "image-diffusion-unsupported"):
+        out = _run(
+            f"scenario({{ ggufRepos: [{{ ...GEMMA, repo_id: 'img', load_id: 'img',"
+            f" size_bytes: 1, task: '{task}' }}, GEMMA],"
+            " variants: { img: GEMMA_VARIANTS, [GEMMA.repo_id]: GEMMA_VARIANTS } })"
+        )
+        assert _loaded_paths(out) == [GEMMA_REPO], task
+
+
+def test_a_cached_text_generation_repo_still_auto_loads():
+    """Chat GGUFs are tagged text-generation, not null, so the gate must be a
+    list of image/video tasks rather than "has a task"."""
+    out = _run(
+        "scenario({ ggufRepos: [{ ...GEMMA, task: 'text-generation' }],"
+        " variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })"
+    )
+    assert _loaded_paths(out) == [GEMMA_REPO]

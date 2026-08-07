@@ -96,7 +96,7 @@ def test_chat_autoload_toast_is_persistent_and_dismissible():
     # via the same updater handed to ensureDefaultModelDownloaded.
     assert auto_load.count("updateAutoLoadToast(") >= 2
     assert (
-        "ensureDefaultModelDownloaded(\n        options?.abortSignal,\n        updateAutoLoadToast,\n      )"
+        "ensureDefaultModelDownloaded(\n        hfToken,\n        options?.abortSignal,\n        updateAutoLoadToast,\n      )"
         in auto_load
     )
     download_helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
@@ -2560,10 +2560,11 @@ def test_download_cancel_survives_the_pending_start_window():
     helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
     helper = helper.split("async function autoLoadSmallestModel", 1)[0]
     assert "let cancelRequested = false;" in helper
-    assert "let cancelIssued = false;" in helper
-    assert "if (cancelIssued) return true;" in helper
-    assert "if (cancelRequested) {\n          cancelActiveJob();" in helper
-    assert 'if (cancelRequested && !cancelActiveJob()) finish("cancelled");' in helper
+    assert "let cancelInFlight = false;" in helper
+    # In flight only: a failed cancel restores the job, so a later click retries.
+    assert 'if (cancelInFlight || active.state === "cancelling") return true;' in helper
+    assert "if (cancelRequested) {\n          if (!cancelEverIssued) issueCancel();" in helper
+    assert 'if (cancelRequested && !issueCancel()) finish("cancelled");' in helper
 
 
 def test_a_failed_quant_is_marked_tried_so_the_repo_continues():
@@ -2647,3 +2648,40 @@ def test_the_default_variant_lookup_takes_the_run_signal():
     # The catch below swallows the abort rejection, so the guard after it is
     # what actually stops the download from starting.
     assert helper.index("} catch {") < helper.index("abortSignal?.throwIfAborted();")
+
+
+def test_cached_rows_get_the_same_image_and_video_gate_as_local_rows():
+    """Cached diffusion repos carry their task on the row and report can_chat
+    true on file format alone."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    cached = src.split("function isChattableCachedRepo", 1)[1].split("\n}\n", 1)[0]
+    assert 'IMAGE_OR_VIDEO_TASKS.has(repo.task ?? "")' in cached
+    local = src.split("function isAutoLoadableLocalRow", 1)[1].split("\n}", 1)[0]
+    assert 'IMAGE_OR_VIDEO_TASKS.has(row.task ?? "")' in local
+    # A chat GGUF is tagged text-generation, so the gate is a list, not "has a task".
+    tasks = src.split("const IMAGE_OR_VIDEO_TASKS", 1)[1].split("]", 1)[0]
+    assert '"text-generation"' not in tasks
+
+
+def test_the_default_download_prepares_the_token_first():
+    """startJob sends the stored token raw, with none of the recovery
+    validateModel and loadModel get."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
+    helper = helper.split("async function autoLoadSmallestModel", 1)[0]
+    assert "prepareHfTokenForUse(hfToken)" in helper
+    assert 'if (!prepared.proceed) return "cancelled";' in helper
+    # After the on-disk check, so nothing prompts when there is no download,
+    # and before the managed start.
+    assert helper.index('return "ready"') < helper.index("prepareHfTokenForUse(hfToken)")
+    assert helper.index("prepareHfTokenForUse(hfToken)") < helper.index(
+        "downloadManager.requestStart(request)"
+    )
+
+
+def test_a_cancelled_download_is_never_handed_to_a_load():
+    """A cancel can fail and the transfer finish anyway."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
+    helper = helper.split("async function autoLoadSmallestModel", 1)[0]
+    assert 'finish(cancelRequested ? "cancelled" : "ready")' in helper
