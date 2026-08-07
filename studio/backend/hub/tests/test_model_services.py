@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import os
 import sys
 import threading
 from collections import Counter
@@ -1213,6 +1214,45 @@ def test_legacy_unscoped_download_state_falls_back_only_for_selected_cache(monke
     marker.write_text("[" * 10_000 + "0" + "]" * 10_000)
     assert download_manifest.purge_state("model", "Owner/Repo", "Q4_K_M", hub_cache = cache_a)
     assert not marker.exists()
+
+
+def test_state_scan_survives_a_state_filename_with_an_undecodable_byte(monkeypatch, tmp_path):
+    """One corrupt filename must not take the whole inventory down with it.
+
+    A byte the filesystem encoding cannot decode comes back from iterdir() as a
+    lone surrogate, and hashing that for the canonical spelling raises
+    UnicodeEncodeError. Per-repo reads used to contain the damage to the repo
+    that owned the file. The index is built once per scan and outside the
+    per-repo try, so an escaping hash would 500 the endpoint and hide every
+    cached model, not just this one.
+    """
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path)
+    cache = tmp_path / "cache-a"
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = cache),
+    )
+    assert download_manifest.write_cancel_marker(
+        "model", "Owner/Repo", "Q4_K_M", "http", hub_cache = cache
+    )
+    marker = state_dir.marker_path("model", "Owner/Repo", "Q4_K_M", hub_cache = cache)
+    corrupt = os.path.join(
+        os.fsencode(str(marker.parent)), b"models--Owner--Repo--variant--q\xff.json"
+    )
+    with open(corrupt, "wb") as handle:
+        handle.write(json.dumps({"version": 2, "repo_type": "model"}).encode("utf-8"))
+
+    index = download_manifest.build_variant_state_index(
+        [("model", "Owner/Repo", cache)], active_hub_cache = cache
+    )
+    state = index.for_repo("model", "Owner/Repo", hub_cache = cache)
+    assert state.has_marker("q4_k_m"), "the readable marker was lost to its corrupt neighbour"
+    assert state.summary()[0] is True
+
+    # The per-repo iterators keep enumerating past it too, surrogate name and all.
+    variants = [variant for variant, _path in
+                download_manifest.iter_variant_markers("model", "Owner/Repo", hub_cache = cache)]
+    assert "Q4_K_M" in variants and any("\udcff" in v for v in variants), variants
 
 
 class _RecordingLogger:

@@ -1372,7 +1372,19 @@ def build_variant_state_index(
         cache: Optional[str], entry: Path, record, *, cancel_marker: bool, scoped: bool
     ) -> None:
         repo_type, repo_id, variant, _payload = record
-        canonical = marker_path(repo_type, repo_id, variant, create = False)
+        try:
+            canonical = marker_path(repo_type, repo_id, variant, create = False)
+        except (UnicodeError, ValueError, OSError):
+            # A state filename can carry a byte the filesystem encoding cannot
+            # decode, which iterdir() surfaces as a lone surrogate; hashing that
+            # for the canonical spelling raises UnicodeEncodeError. Per-repo
+            # reads used to contain the damage to the one repo that owned the
+            # file. This index is built once for the whole scan and outside the
+            # per-repo try, so letting it escape turns one corrupt filename into
+            # a 500 that hides every cached model. `canonical` only decides the
+            # "is this the canonical filename" half of `priority`, so treat the
+            # entry as non-canonical and keep indexing.
+            canonical = None
         add_entry(
             cache,
             record,
@@ -1522,13 +1534,21 @@ def _iter_variant_state_files(
                 elif cancel_markers:
                     variant_payload = None
                 variant = _variant_from_state_payload(variant_payload, fallback)
-                canonical = path_factory(
-                    repo_type,
-                    repo_id,
-                    variant,
-                    hub_cache = None if legacy else requested,
-                    create = False,
-                )
+                try:
+                    canonical = path_factory(
+                        repo_type,
+                        repo_id,
+                        variant,
+                        hub_cache = None if legacy else requested,
+                        create = False,
+                    )
+                except (UnicodeError, ValueError, OSError):
+                    # Same undecodable-filename case guarded in add_path: a lone
+                    # surrogate from iterdir() cannot be hashed for the canonical
+                    # spelling. Before, this loop yielded such an entry as-is;
+                    # letting the hash escape would instead abort the whole
+                    # iteration and lose the repo's valid state alongside it.
+                    canonical = None
                 priority = (not legacy, canonical is not None and canonical.name == entry.name)
                 key = variant.lower()
                 if key not in selected or priority > selected[key][0]:
