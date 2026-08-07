@@ -72,10 +72,17 @@ export function mapBackendModelConfigToTrainingPatch(
   const learningRate = toNumber(training?.learning_rate);
   if (learningRate !== undefined) patch.learningRate = learningRate;
 
-  // Preserve explicit null ("derive it") versus an absent key.
+  // Preserve explicit null ("derive it") versus an absent or invalid value.
   if (Object.hasOwn(training ?? {}, "embedding_learning_rate")) {
     const raw = training?.embedding_learning_rate;
-    patch.embeddingLearningRate = raw == null ? null : (toNumber(raw) ?? null);
+    if (raw === null) {
+      patch.embeddingLearningRate = null;
+    } else {
+      const embeddingLearningRate = toNumber(raw);
+      if (embeddingLearningRate !== undefined) {
+        patch.embeddingLearningRate = embeddingLearningRate;
+      }
+    }
   }
 
   const optim = toStringValue(training?.optim);

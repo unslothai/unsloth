@@ -129,13 +129,23 @@ test("gradient_checkpointing is read from a YAML boolean as well as a string", (
 
 test("a blank number is treated as absent, not as zero", () => {
   seedTunedModelDefaults();
-  useTrainingConfigStore.setState({ epochs: 5, warmupSteps: 7 });
+  useTrainingConfigStore.setState({
+    epochs: 5,
+    warmupSteps: 7,
+    embeddingLearningRate: 4e-5,
+  });
 
-  importConfig('training:\n  num_epochs: ""\n  warmup_steps: "   "\n');
+  importConfig(
+    'training:\n  num_epochs: ""\n  warmup_steps: "   "\n  embedding_learning_rate: ""\n',
+  );
 
   const after = useTrainingConfigStore.getState();
   assert.equal(after.epochs, 5);
   assert.equal(after.warmupSteps, 7);
+  assert.equal(after.embeddingLearningRate, 4e-5);
+
+  importConfig('training:\n  embedding_learning_rate: "not-a-number"\n');
+  assert.equal(useTrainingConfigStore.getState().embeddingLearningRate, 4e-5);
 
   importConfig("training:\n  num_epochs: 0\n");
   assert.equal(
@@ -143,6 +153,9 @@ test("a blank number is treated as absent, not as zero", () => {
     0,
     "a real 0 still applies; only the blank is ignored",
   );
+
+  importConfig("training:\n  embedding_learning_rate: null\n");
+  assert.equal(useTrainingConfigStore.getState().embeddingLearningRate, null);
 });
 
 test("saving and reloading a config keeps the logging settings", () => {
