@@ -71,12 +71,23 @@ _POSIX_READ = re.compile(
     r"(?:^|[\s;&|(])read\s+(?![a-zA-Z_]+=)"
     r"(?:-[a-zA-Z]*p(?=[\s\"']|$)|[^\n;|&]*?(?:<\s*/dev/tty|\s-[a-zA-Z]*p(?=[\s\"']|$)))"
 )
+
+# An unredirected `read` takes the terminal it inherited, so it blocks too. Loop
+# and pipeline reads are fed by the `done < ...` or the pipe: data, not questions.
+# Options then variable names to end of line, in command position, so the word
+# `read` in a heredoc of prose is not a prompt.
+_BARE_READ = re.compile(r"(?:^|[;&(])\s*read(?:\s+-[a-zA-Z]+)*(?:\s+[A-Za-z_][A-Za-z0-9_]*)+\s*$")
+_LOOP = re.compile(r"\b(?:while|until|for)\b")
+
 _PWSH_READ = re.compile(
-    r"Read-Host|PromptForChoice|Console\]::(?:In\.)?Read(?:Line|Key)|ReadKey\s*\(", re.IGNORECASE
+    r"Read-Host|PromptForChoice|Console\]::(?:In\.)?Read(?:Line|Key)?\b|ReadKey\s*\(",
+    re.IGNORECASE,
 )
 
-# A `scripts/<helper>` mention is an invocation, quoted or behind a path prefix.
-_HELPER_REF = re.compile(r"scripts/([A-Za-z0-9_.-]+\.(?:sh|ps1))")
+# A helper filename, with or without its `scripts/` prefix: sibling invocations
+# such as "$SCRIPT_DIR/build_deps.sh" carry no prefix. Resolved against the repo
+# before it counts, so a name that is not a real script is ignored.
+_HELPER_REF = re.compile(r"([A-Za-z0-9_.-]+\.(?:sh|ps1))")
 
 _QUOTED = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"' r"|'([^']*)'")
 
@@ -93,6 +104,35 @@ def _is_comment(line: str) -> bool:
     """Whole-line `#` comment. Inline ones need a parser to tell from a `#` inside
     a string, and a false positive only costs an allowlist entry."""
     return line.lstrip().startswith("#")
+
+
+def _is_interactive_read(line: str, powershell: bool) -> bool:
+    """A read that waits on a person, by prompt option, /dev/tty, or plain inherited
+    stdin. Redirected and loop reads are excluded: they consume a file."""
+    if powershell:
+        return bool(_PWSH_READ.search(line))
+    if _POSIX_READ.search(line):
+        return True
+    return "<" not in line and "|" not in line and bool(_BARE_READ.search(line))
+
+
+def blank_comments(source: str, powershell: bool) -> str:
+    """Blank comment lines, keeping the line count so numbers still line up. `.ps1`
+    files carry `<# ... #>` blocks, where a documented Read-Host example would
+    otherwise fail CI over a prompt that cannot run."""
+    lines = []
+    in_block = False
+    for line in source.splitlines():
+        if powershell and in_block:
+            lines.append("")
+            in_block = "#>" not in line
+            continue
+        if powershell and "<#" in line and "#>" not in line.split("<#", 1)[1]:
+            lines.append(line.split("<#", 1)[0])
+            in_block = True
+            continue
+        lines.append("" if _is_comment(line) else line)
+    return "\n".join(lines)
 
 
 def _quoted_strings(line: str) -> list[str]:
@@ -113,62 +153,64 @@ def _looks_like_question(text: str) -> bool:
     return "?" in text and not _REGEXY.search(text)
 
 
-def _nearby_question(lines: list[str], index: int, *, direction: int) -> str:
-    """Nearest readable question around `lines[index]`, or "". Walk back (-1) from
-    a read site to the `printf` that drew it, forward (+1) from a bare `[Y/n]`
-    hint assigned into a variable and interpolated below (the #7016 shape)."""
+def _nearby_questions(lines: list[str], index: int, *, direction: int) -> list[str]:
+    """Readable questions around `lines[index]`, nearest first. Walk back (-1) from a
+    read site to the `printf` that drew it, forward (+1) from a bare `[Y/n]` hint
+    assigned into a variable and interpolated below (the #7016 shape)."""
     candidates = list(_quoted_strings(lines[index]))
     for step in range(1, 9):
         neighbour = index + direction * step
         if not 0 <= neighbour < len(lines):
             break
         line = lines[neighbour]
-        if _is_comment(line) or not line.strip():
+        if not line.strip():
             continue
         candidates.extend(_quoted_strings(line))
 
+    questions = []
     for text in candidates:
-        if _looks_like_question(text):
-            normalised = normalise_question(text)
-            if normalised:
-                return normalised
-    return ""
+        if not _looks_like_question(text):
+            continue
+        normalised = normalise_question(text)
+        if normalised and normalised not in questions:
+            questions.append(normalised)
+    return questions
 
 
-def _question_for_read(lines: list[str], index: int) -> str:
-    """Allowlist key for a read site, falling back to the read line itself so an
-    unlabelled prompt is still allowlisted explicitly rather than ignored."""
-    return _nearby_question(lines, index, direction = -1) or (
+def _questions_for_read(lines: list[str], index: int) -> list[str]:
+    """Allowlist keys for a read site. Every question in reach, not just the nearest:
+    one read can serve a branch each, and validating only the closest lets the other
+    branch through. Falls back to the read line so an unlabelled prompt still has to
+    be allowlisted rather than ignored."""
+    return _nearby_questions(lines, index, direction = -1) or [
         f"<unlabelled read: {normalise_question(lines[index])}>"
-    )
+    ]
 
 
 def find_prompts(script: str, source: str) -> list[tuple[str, int, str]]:
     """Return (script, line_number, normalised question) for every prompt site."""
-    lines = source.splitlines()
     powershell = script.endswith(".ps1")
+    lines = blank_comments(source, powershell).splitlines()
     found: dict[tuple[str, str], tuple[str, int, str]] = {}
 
     for index, line in enumerate(lines):
-        if _is_comment(line):
-            continue
         line_number = index + 1
 
         for text in _quoted_strings(line):
             if not _MARKER.search(text):
                 continue
             # A bare `[Y/n]` is a hint variable; its question is printed below.
+            forward = _nearby_questions(lines, index, direction = 1)
             question = (
                 normalise_question(text)
-                or _nearby_question(lines, index, direction = 1)
+                or (forward[0] if forward else "")
                 or f"<yes/no marker with no question: {text.strip()}>"
             )
             found.setdefault((script, question), (script, line_number, question))
 
-        reads = _PWSH_READ if powershell else _POSIX_READ
-        if reads.search(line):
-            question = _question_for_read(lines, index)
-            found.setdefault((script, question), (script, line_number, question))
+        if _is_interactive_read(line, powershell):
+            for question in _questions_for_read(lines, index):
+                found.setdefault((script, question), (script, line_number, question))
 
     return sorted(found.values(), key = lambda item: item[1])
 
@@ -259,16 +301,18 @@ def test_helpers_the_installers_invoke_are_scanned():
     them back out instead: whatever the installers reach, the guard scans. Every
     scanned script is a source, not just the entry points, so a helper that grows
     a helper of its own is caught as soon as the first one is listed here."""
-    referenced = {
-        f"scripts/{match.group(1)}"
-        for script in SCANNED_SCRIPTS
-        for line in (REPO_ROOT / script).read_text(encoding = "utf-8").splitlines()
-        if not _is_comment(line)
-        for match in _HELPER_REF.finditer(line)
-    }
-    unscanned = sorted(
-        name for name in referenced - set(SCANNED_SCRIPTS) if (REPO_ROOT / name).is_file()
-    )
+    referenced = set()
+    for script in SCANNED_SCRIPTS:
+        path = REPO_ROOT / script
+        source = blank_comments(path.read_text(encoding = "utf-8"), script.endswith(".ps1"))
+        for match in _HELPER_REF.finditer(source):
+            # Sibling of the script that names it, or in scripts/. Anything that
+            # resolves nowhere is a filename in a message, not an invocation.
+            for candidate in (path.parent / match.group(1), REPO_ROOT / "scripts" / match.group(1)):
+                if candidate.is_file():
+                    referenced.add(candidate.relative_to(REPO_ROOT).as_posix())
+
+    unscanned = sorted(referenced - set(SCANNED_SCRIPTS))
     assert not unscanned, (
         f"helpers invoked by the installers but not scanned: {unscanned}. "
         f"Add them to SCANNED_SCRIPTS in tests/test_installer_interactive_prompts.py "
@@ -364,6 +408,54 @@ def test_detects_powershell_console_readline():
     assert [question for _, _, question in find_prompts("install.ps1", source)] == [
         "install desktop shortcuts?",
     ]
+
+
+@pytest.mark.parametrize("read_line", ("read -r _reply", "read _reply", "  read -r _reply"))
+def test_detects_a_bare_read_from_inherited_stdin(read_line: str):
+    """The commonest prompt of all: a question printed with no marker, answered by a
+    read with no redirection. It takes the terminal the installer inherited."""
+    source = f'printf "  Continue with installation? "\n{read_line}\n'
+    assert [question for _, _, question in find_prompts("install.sh", source)] == [
+        "continue with installation?",
+    ]
+
+
+def test_detects_powershell_console_read():
+    source = 'Write-Host "  Continue? " -NoNewline\n$key = [Console]::Read()\n'
+    assert [question for _, _, question in find_prompts("install.ps1", source)] == ["continue?"]
+
+
+def test_validates_every_question_a_read_can_ask():
+    """One read serving a branch each: approving the nearest question would wave the
+    other one through under an allowlisted key."""
+    source = (
+        'if [ "$_telemetry" = ask ]; then\n'
+        '    printf "  Enable telemetry? [Y/n] "\n'
+        "else\n"
+        '    printf "  Start Unsloth Studio now? [Y/n] "\n'
+        "fi\n"
+        'read -r _reply </dev/tty || _reply="n"\n'
+    )
+    questions = {question for _, _, question in find_prompts("install.sh", source)}
+    assert "enable telemetry?" in questions
+
+
+def test_ignores_a_powershell_block_comment():
+    """Comment-based help documents what the script does, sometimes by example. A
+    prompt that cannot run must not fail CI: studio/setup.ps1 opens with such a block."""
+    source = (
+        "<#\n"
+        ".SYNOPSIS\n"
+        '    Historically this asked Read-Host "Enable telemetry? [Y/n]" here.\n'
+        "#>\n"
+        'Write-Host "done"\n'
+    )
+    assert find_prompts("install.ps1", source) == []
+
+
+def test_helper_reference_matches_a_sibling_path():
+    """Helpers invoke each other by their own directory, with no scripts/ prefix."""
+    assert _HELPER_REF.findall('run_quiet "$SCRIPT_DIR/build_deps.sh" --yes') == ["build_deps.sh"]
 
 
 def test_detects_unlabelled_read():
