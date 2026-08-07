@@ -219,6 +219,8 @@ _set_marker() {
     return 0
 }
 _marker_set() { [ -n "$1" ] && [ -f "$1" ]; }
+# No marker storage means no record of what failed, so the summary must not claim success.
+_markers_unavailable() { [ -z "$_MARKER_DIR" ]; }
 
 # EXIT, not a line at the end of main: --help returns early, an unknown argument exits
 # non-zero, and `set -e` can fire partway through, none of which would reach it.
@@ -688,13 +690,19 @@ _unsloth_uninstall_main() {
 
     echo ""
     echo "Unsloth Studio uninstalled."
-    if _marker_set "$_REMOVE_FAILED_FLAG"; then
+    if _markers_unavailable || _marker_set "$_REMOVE_FAILED_FLAG"; then
+        # Also the no-marker-storage case: without it a failed rm left no record, so
+        # reporting success would be a guess in the one direction that misleads.
         echo "Note: some paths could not be removed (see 'could not remove:' above), so the"
         echo "      signed-in session, saved provider API keys and local chat history may"
         echo "      still be on disk. Remove those paths by hand to clear them."
     elif _marker_set "$_DB_REMOVED_FLAG"; then
-        echo "Note: this also removed the app's WebView data and studio.db, so the signed-in"
-        echo "      session, saved provider API keys and local chat history are gone."
+        # Scoped to what was removed. A default and an env-mode install can coexist, and
+        # with neither variable exported the custom root is never discovered, so an
+        # unqualified "are gone" would be false for the database still sitting in it.
+        echo "Note: this also removed the app's WebView data and the studio.db it found, so"
+        echo "      the signed-in session, saved provider API keys and chat history in the"
+        echo "      install(s) removed above are gone."
     else
         # No studio.db was deleted, so only the WebView-local data is accounted for.
         # Claiming the keys and history are gone would be false for an env-mode install

@@ -264,7 +264,7 @@ _out=$(env -u UNSLOTH_STUDIO_HOME -u STUDIO_HOME \
     HOME="$H" PATH="$STUB_BIN:$PATH" sh "$UNINSTALL_SH" 2>/dev/null)
 assert_present "linux: undiscovered env-mode studio.db survives" "$CUSTOM2/studio.db"
 case "$_out" in
-    *"chat history are gone."*)
+    *"studio.db it found"*)
         echo "  FAIL: linux: claimed chat history is gone with studio.db still on disk"
         FAIL=$((FAIL+1)) ;;
     *) echo "  PASS: linux: no studio.db removed -> no claim that the history is gone"
@@ -280,7 +280,7 @@ mkdir -p "$H/.unsloth/studio/unsloth_studio"
 _out=$(run_uninstall_out "$H" Linux)
 assert_gone "linux: default-mode studio.db removed" "$H/.unsloth/studio/studio.db"
 case "$_out" in
-    *"chat history are gone."*)
+    *"studio.db it found"*)
         echo "  PASS: linux: studio.db removed -> summary states the history is gone"
         PASS=$((PASS+1)) ;;
     *) echo "  FAIL: linux: studio.db was removed but the summary never says so"
@@ -338,16 +338,41 @@ for _sh in sh dash busybox; do
     assert_gone "$_sh: cleanup still completed with an unusable TMPDIR" "$_H2/.cache/$BID"
 done
 
-# ── 3j. The marker directory is private and removed on the way out, not left in $TMPDIR ──
+# ── 3j. The marker directory is private and removed on the way out. TMPDIR points at a
+# fixture-owned directory so the check sees only what this run created: counting entries
+# in the shared temp dir would call a concurrent process's mktemp a leak, and an unrelated
+# directory disappearing at the same time would hide a real one. ──
 H=$(new_home)
-_before=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'tmp.*' 2>/dev/null | wc -l)
-run_uninstall "$H" Linux
-_after=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'tmp.*' 2>/dev/null | wc -l)
-if [ "$_before" = "$_after" ]; then
+_MK_TMP=$(mktemp -d "$_TMP_ROOT/markertmp.XXXXXX")
+printf '#!/bin/sh\necho Linux\n' > "$STUB_BIN/uname"; chmod +x "$STUB_BIN/uname"
+env -u UNSLOTH_STUDIO_HOME -u STUDIO_HOME \
+    -u XDG_CACHE_HOME -u XDG_DATA_HOME -u XDG_CONFIG_HOME -u XDG_STATE_HOME \
+    TMPDIR="$_MK_TMP" HOME="$H" PATH="$STUB_BIN:$PATH" sh "$UNINSTALL_SH" >/dev/null 2>&1
+_left=$(find "$_MK_TMP" -mindepth 1 2>/dev/null | wc -l)
+if [ "$_left" = 0 ]; then
     echo "  PASS: linux: marker directory cleaned up on exit"; PASS=$((PASS+1))
 else
-    echo "  FAIL: linux: leaked a temp dir ($_before -> $_after)"; FAIL=$((FAIL+1))
+    echo "  FAIL: linux: left $_left entries in TMPDIR"; FAIL=$((FAIL+1))
+    find "$_MK_TMP" -mindepth 1 | sed 's/^/         /'
 fi
+
+# ── 3j2. With no marker storage at all there is no record of what failed, so the summary
+# must take the cautious branch rather than reporting the session gone. mktemp is stubbed
+# to fail, which is what an unwritable or missing TMPDIR produces. ──
+H=$(new_home)
+mkdir -p "$H/.unsloth/studio/unsloth_studio"
+: > "$H/.unsloth/studio/unsloth_studio/.unsloth-studio-owned"
+: > "$H/.unsloth/studio/studio.db"
+printf '#!/bin/sh\nexit 1\n' > "$STUB_BIN/mktemp"; chmod +x "$STUB_BIN/mktemp"
+_out=$(run_uninstall_out "$H" Linux)
+rm -f "$STUB_BIN/mktemp"
+case "$_out" in
+    *"may"*"still be on disk"*)
+        echo "  PASS: linux: no marker storage -> cautious summary"; PASS=$((PASS+1)) ;;
+    *)
+        echo "  FAIL: linux: no marker storage but the summary still reported success"
+        FAIL=$((FAIL+1)) ;;
+esac
 
 # ── 3k. _set_marker itself must survive a write it cannot perform. 3i only proves the
 # mktemp -d guard holds, since an unusable TMPDIR leaves the marker path empty and the

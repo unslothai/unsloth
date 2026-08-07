@@ -86,6 +86,17 @@ Environment:
         }
     }
 
+    # LOCALAPPDATA / APPDATA are dropped in service and CI contexts. Fall back to the
+    # known folder so every consumer resolves the same directory; $null only when even
+    # that fails, which callers treat as incomplete cleanup.
+    function _AppDataRoot {
+        param([string]$Var, [string]$Folder)
+        if (-not [string]::IsNullOrWhiteSpace($Var)) { return $Var }
+        $p = try { [Environment]::GetFolderPath($Folder) } catch { $null }
+        if ([string]::IsNullOrWhiteSpace($p)) { return $null }
+        return $p
+    }
+
     # Record whether the install root about to be removed carries a studio.db. That file
     # holds chat_threads/chat_messages and the saved provider keys (backend/storage/
     # studio_db.py, providers_db.py, both via studio_root()) and lives under the install
@@ -427,7 +438,10 @@ Environment:
     }
     _StopStudioProcesses -KnownRoots $knownRoots
     # App and the WebView2 helpers holding its profile open must both exit before the EBWebView delete below.
-    $webviewProfile = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "ai.unsloth.studio" } else { $null }
+    # Same resolver as the removal below: resolving there but not here would skip the
+    # helper sweep for a profile we then try to delete, leaving helpers holding locks.
+    $localAppRoot = _AppDataRoot $env:LOCALAPPDATA 'LocalApplicationData'
+    $webviewProfile = if ($localAppRoot) { Join-Path $localAppRoot "ai.unsloth.studio" } else { $null }
     # Account-scoped, like every other kill here. installMode is currentUser, so the profile
     # removed below is this account's and is shared by all of its sessions: a second console or
     # RDS session of the same user must die too or it re-creates the profile mid-delete, while
@@ -598,10 +612,7 @@ Environment:
         @{ Var = $env:LOCALAPPDATA; Folder = 'LocalApplicationData' },
         @{ Var = $env:APPDATA;      Folder = 'ApplicationData' }
     )) {
-        $base = $known.Var
-        if ([string]::IsNullOrWhiteSpace($base)) {
-            $base = try { [Environment]::GetFolderPath($known.Folder) } catch { $null }
-        }
+        $base = _AppDataRoot $known.Var $known.Folder
         if ([string]::IsNullOrWhiteSpace($base)) {
             _Substep "could not resolve $($known.Folder); WebView data may remain" "Yellow"
             $script:RemoveFailed = $true
@@ -699,8 +710,11 @@ Environment:
         Write-Host "      signed-in session, saved provider API keys and local chat history may"
         Write-Host "      still be on disk. Remove those paths by hand to clear them."
     } elseif ($script:StudioDbRemoved) {
-        Write-Host "Note: this also removed the app's WebView data and studio.db, so the signed-in"
-        Write-Host "      session, saved provider API keys and local chat history are gone."
+        # Scoped to what was removed: a default and an env-mode install can coexist, and
+        # with neither variable set the custom root is never discovered.
+        Write-Host "Note: this also removed the app's WebView data and the studio.db it found, so"
+        Write-Host "      the signed-in session, saved provider API keys and chat history in the"
+        Write-Host "      install(s) removed above are gone."
     } else {
         # No studio.db was deleted, so only the WebView-local data is accounted for.
         # Claiming the keys and history are gone would be false for an env-mode install
