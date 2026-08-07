@@ -1,19 +1,5 @@
-# Unsloth
-# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Lesser General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU Lesser General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team.
 """transformers can keep a module and drop the names peft imports from it.
 
 `Ministral_3_(3B)_Reinforcement_Learning_Sudoku_Game` dies on main with
@@ -248,7 +234,7 @@ def _peft_converter_source():
         # relative imports resolve against ITS package, not the root: in a nested split
         # where `__init__` imports `.sub.core` and `sub/core.py` imports `.ops`, Python
         # reads that as `sub.ops`, so carry the prefix rather than fetching `ops.py`.
-        pending = list(_relative_import_targets(init))
+        pending = _resolved_relative_targets("", init)
         seen = set()
         while pending:
             child = pending.pop(0)
@@ -264,8 +250,7 @@ def _peft_converter_source():
                 if text is None:
                     continue
                 sources.append(text)
-                prefix = f"{package}." if package else ""
-                pending.extend(prefix + name for name in _relative_import_targets(text))
+                pending.extend(_resolved_relative_targets(package, text))
                 break
         return "\n\n".join(src if src.endswith("\n") else src + "\n" for src in sources)
 
@@ -295,12 +280,35 @@ def _peft_converter_source():
     return "\n".join(sources)
 
 
-def _relative_import_targets(src):
-    """Submodule names a module imports relatively, at import time.
+def _resolved_relative_targets(package, src):
+    """`_relative_import_targets`, resolved against the importing module's package.
 
-    `from .core import X` and `from . import core` both name `core`. Only the
-    modules the package actually pulls in are followed, so a package that
-    re-exports one implementation file costs one extra fetch.
+    A level counts dots: `from .ops import X` is level 1 and resolves inside
+    `package`, `from ..ops import X` is level 2 and resolves one package up.
+    Prefixing `package` onto every name regardless probed `sub.ops` for the
+    second form and silently read nothing, which is a drift check that cannot
+    fail. A level that walks above the converter package leaves the code this
+    test is about, so it is dropped rather than guessed at.
+    """
+    parts = package.split(".") if package else []
+    resolved = []
+    for level, name in _relative_import_targets(src):
+        drop = level - 1
+        if drop > len(parts):
+            continue
+        base = parts[: len(parts) - drop] if drop else parts
+        resolved.append(".".join([*base, name]))
+    return resolved
+
+
+def _relative_import_targets(src):
+    """`(level, submodule)` for every relative import a module runs at import time.
+
+    `from .core import X` and `from . import core` both name `core`, at level 1.
+    The level travels with the name because the caller has to resolve it against
+    the importing module's own package. Only the modules the package actually
+    pulls in are followed, so a package that re-exports one implementation file
+    costs one extra fetch.
     """
     import ast
 
@@ -310,9 +318,9 @@ def _relative_import_targets(src):
         for node in body:
             if isinstance(node, ast.ImportFrom) and node.level:
                 if node.module:
-                    targets.append(node.module)
+                    targets.append((node.level, node.module))
                 else:  # `from . import a, b`
-                    targets.extend(alias.name for alias in node.names)
+                    targets.extend((node.level, alias.name) for alias in node.names)
                 continue
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Import)):
                 continue
@@ -729,7 +737,12 @@ def test_the_model_type_map_is_recovered_not_emptied(fake_modules):
     error. A rename is the likeliest reason for the name to go, so the map is
     found by shape."""
     real = fake_modules["transformers.conversion_mapping"]
-    real._RENAMED_CONVERSION_PATTERN = {"qwen3_moe": "qwen2_moe", "mixtral": "mixtral"}
+    real._RENAMED_CONVERSION_PATTERN = {
+        "qwen3_moe": "qwen2_moe",
+        "deepseek_v3": "qwen2_moe",
+        "minimax": "mixtral",
+        "mixtral": "mixtral",
+    }
 
     assert F._backfill_missing_conversion_symbols() is True
 
@@ -874,3 +887,148 @@ def test_the_fetcher_walks_a_package():
 
     src = inspect.getsource(_peft_converter_source)
     assert "__path__" in src and "iter_modules" in src
+
+
+# --- what the second review round found -------------------------------------
+
+
+def test_a_fused_moe_type_that_does_not_say_moe_still_refuses():
+    """Eleven of the twenty-four fused MoE model types are not named for it.
+
+    `deepseek_v3`, `dots1`, `longcat_flash`, `minimax`, `mellum`, `qwen3_next`,
+    `solar_open` and `flex_olmo` all map to `mixtral` or `qwen2_moe`, which are
+    the only two base patterns peft rewrites for. A substring test over the name
+    answered the default for exactly the checkpoints the stand-in exists to
+    protect.
+    """
+    stand_in = F._UnavailableConversionPatternMap().copy()
+    stand_in["mixtral"] = "mixtral"  # peft's own line, and it must keep working
+
+    for model_type in (
+        "deepseek_v3",
+        "dots1",
+        "longcat_flash",
+        "minimax",
+        "minimax_m2",
+        "mellum",
+        "qwen3_next",
+        "solar_open",
+        "flex_olmo",
+        "deepseek_v2",
+        "deepseek_v32",
+    ):
+        assert "moe" not in model_type, f"{model_type} would pass on the name alone"
+        with pytest.raises(RuntimeError):
+            stand_in.get(model_type, None)
+        with pytest.raises(RuntimeError):
+            stand_in[model_type]
+
+    # The naming convention is still honoured on top, for a type added later.
+    with pytest.raises(RuntimeError):
+        stand_in.get("some_new_moe", None)
+    # And a non-MoE type is still answered with the default.
+    assert stand_in.get("llama", None) is None
+
+
+def test_the_moe_snapshot_matches_the_installed_transformers():
+    """The snapshot only helps while it agrees with the map it stands in for."""
+    try:
+        from transformers.conversion_mapping import _MODEL_TO_CONVERSION_PATTERN as real
+    except Exception:
+        pytest.skip("this transformers ships no conversion map to compare against")
+
+    live = {k: v for k, v in real.items() if v in ("mixtral", "qwen2_moe")}
+    missing = {k: v for k, v in live.items() if F._PEFT_MOE_CONVERSION_PATTERNS.get(k) != v}
+    assert not missing, f"fused MoE model types missing from the snapshot: {sorted(missing)}"
+
+
+def test_an_unrelated_string_dictionary_is_not_installed_as_the_map(fake_modules):
+    """Shape alone selects the biggest `dict[str, str]`, not the right one.
+
+    A module that renamed the conversion map is just as likely to carry an alias
+    table or a doc map, and installing that maps a coincidentally matching model
+    type to the wrong conversion family -- and bypasses the stand-in, so every
+    other MoE lookup goes back to a silent None.
+    """
+    real = fake_modules["transformers.conversion_mapping"]
+    real._DOC_ALIASES = {f"key_{i}": f"value_{i}" for i in range(50)}
+    real._RENAMED = {
+        "qwen3_moe": "qwen2_moe",
+        "deepseek_v3": "qwen2_moe",
+        "minimax": "mixtral",
+    }
+
+    assert F._backfill_missing_conversion_symbols() is True
+    recovered = real._MODEL_TO_CONVERSION_PATTERN
+    assert recovered["deepseek_v3"] == "qwen2_moe", "the larger unrelated dict won"
+    assert "key_0" not in recovered
+
+
+def test_only_an_unrelated_dictionary_leaves_the_map_unrecovered(fake_modules):
+    """Nothing convincing means nothing recovered, not something wrong."""
+    real = fake_modules["transformers.conversion_mapping"]
+    real._DOC_ALIASES = {f"key_{i}": f"value_{i}" for i in range(50)}
+
+    assert F._backfill_missing_conversion_symbols() is True
+    installed = real._MODEL_TO_CONVERSION_PATTERN
+    assert isinstance(installed, F._UnavailableConversionPatternMap)
+    with pytest.raises(RuntimeError):
+        installed.get("deepseek_v3", None)
+
+
+def test_a_parent_relative_import_resolves_above_its_own_package(monkeypatch):
+    """`from ..ops import x` in `sub/core.py` means `ops`, not `sub.ops`.
+
+    Prefixing the current package onto every name regardless probed a path that
+    is not there, read nothing, and left the transformers import in the real
+    target out of the drift check -- a check that then cannot fail.
+    """
+    import io
+    import urllib.error
+    import urllib.request
+
+    pages = {
+        "transformers_weight_conversion/__init__.py": "from .sub.core import build\n",
+        "transformers_weight_conversion/sub/core.py": "from ..ops import apply\n",
+        "transformers_weight_conversion/ops.py": "from transformers.parent import UpOne\n",
+        # Where the level-blind resolution would look instead.
+        "transformers_weight_conversion/sub/ops.py": (
+            "from transformers.wrong_level import NotThis\n"
+        ),
+    }
+
+    def fake_urlopen(request, timeout = None):
+        for suffix, body in pages.items():
+            if request.full_url.endswith(suffix):
+                return io.BytesIO(body.encode())
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", None, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert _transformers_imports(_peft_converter_source()) == {"transformers.parent": {"UpOne"}}
+
+
+def test_a_relative_import_above_the_package_root_is_dropped(monkeypatch):
+    """`from ...elsewhere import x` leaves the converter package entirely.
+
+    There is nothing under the fetch root to read, and guessing a path produces
+    a 404 per level. The walk drops it rather than probing.
+    """
+    import io
+    import urllib.error
+    import urllib.request
+
+    pages = {
+        "transformers_weight_conversion/__init__.py": (
+            "from ...elsewhere import gone\nfrom .core import build\n"
+        ),
+        "transformers_weight_conversion/core.py": "from transformers.here import Kept\n",
+    }
+
+    def fake_urlopen(request, timeout = None):
+        for suffix, body in pages.items():
+            if request.full_url.endswith(suffix):
+                return io.BytesIO(body.encode())
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", None, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert _transformers_imports(_peft_converter_source()) == {"transformers.here": {"Kept"}}

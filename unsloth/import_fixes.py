@@ -2427,6 +2427,49 @@ def _unsupported_conversion_symbol(qualified, donor_value = None):
     return _refuse
 
 
+# The model types peft actually acts on, and what it converts them as. Only two
+# base patterns reach a rewrite -- `_MOE_TARGET_MODULE_MAPPING` and
+# `_MOE_FUSED_TARGETS` are keyed on `mixtral` and `qwen2_moe` alone, and
+# `_convert_peft_config_moe` returns early for anything else -- so this is the
+# whole set of lookups that must not be answered with a silent None.
+# Snapshotted from transformers `conversion_mapping._MODEL_TO_CONVERSION_PATTERN`,
+# because the case this file handles is that map being gone. Names are the
+# reason it is a list and not a rule: `deepseek_v3`, `dots1`, `longcat_flash`,
+# `minimax`, `mellum`, `qwen3_next`, `solar_open` and `flex_olmo` are all fused
+# MoE and none of them say so.
+_PEFT_MOE_CONVERSION_PATTERNS = {
+    "minimax": "mixtral",
+    "minimax_m2": "mixtral",
+    "afmoe": "qwen2_moe",
+    "cohere2_moe": "qwen2_moe",
+    "deepseek_v2": "qwen2_moe",
+    "deepseek_v3": "qwen2_moe",
+    "deepseek_v32": "qwen2_moe",
+    "dots1": "qwen2_moe",
+    "ernie4_5_moe": "qwen2_moe",
+    "exaone_moe": "qwen2_moe",
+    "flex_olmo": "qwen2_moe",
+    "glm4_moe": "qwen2_moe",
+    "glm4_moe_lite": "qwen2_moe",
+    "glm4v_moe": "qwen2_moe",
+    "glm_moe_dsa": "qwen2_moe",
+    "hunyuan_v1_moe": "qwen2_moe",
+    "longcat_flash": "qwen2_moe",
+    "mellum": "qwen2_moe",
+    "olmoe": "qwen2_moe",
+    "qwen3_moe": "qwen2_moe",
+    "qwen3_next": "qwen2_moe",
+    "qwen3_omni_moe": "qwen2_moe",
+    "qwen3_omni_moe_thinker": "qwen2_moe",
+    "solar_open": "qwen2_moe",
+}
+
+# How many of those pairs a candidate map has to agree with before we believe it
+# is the conversion map under a new name. Three, so a coincidence does not pass
+# and a version that has renamed or dropped a handful of model types still does.
+_CONVERSION_MAP_MATCHES = 3
+
+
 def _recover_conversion_pattern_map(real):
     """Find the model-type map under whatever name this transformers uses.
 
@@ -2435,15 +2478,27 @@ def _recover_conversion_pattern_map(real):
     lookup and leaves legacy LoRA targets unconverted, with no error. The most
     likely reason for the name to disappear is a rename, so go by shape --
     a non-empty module-level `dict[str, str]` -- rather than by name.
+
+    Shape alone is not enough to install one, though. A module that renames the
+    map is just as likely to carry some other `dict[str, str]` (an alias table,
+    a doc map), and the largest of those is not the conversion map. So a
+    candidate also has to agree with the known model-type -> pattern pairs
+    above, and the best agreement wins rather than the biggest dict. Nothing
+    convincing means nothing recovered: the caller then installs the map that
+    raises on a MoE lookup, which is the safe answer, not the wrong one.
     """
     best = None
+    best_matches = 0
     for attribute in vars(real).values():
         if not isinstance(attribute, dict) or not attribute:
             continue
         if not all(isinstance(k, str) and isinstance(v, str) for k, v in attribute.items()):
             continue
-        if best is None or len(attribute) > len(best):
-            best = attribute
+        matches = sum(1 for k, v in _PEFT_MOE_CONVERSION_PATTERNS.items() if attribute.get(k) == v)
+        if matches < _CONVERSION_MAP_MATCHES:
+            continue
+        if matches > best_matches or (matches == best_matches and len(attribute) > len(best)):
+            best, best_matches = attribute, matches
     return best
 
 
@@ -2476,14 +2531,26 @@ class _UnavailableConversionPatternMap(dict):
     # mapping, not just MoE ones, and for those a None is the correct answer: the function
     # returns without a MoE target rewrite, which is what it would do with the real map
     # too. Raising for all of them would break ordinary adapter loads to guard a case they
-    # are not in. Substring hints, because the alias that would tell us exactly is the
-    # thing we lost.
+    # are not in.
+    #
+    # The snapshot is the list, not a rule over the name: eleven of the twenty-four fused
+    # MoE model types say nothing about MoE in their names (`deepseek_v3`, `dots1`,
+    # `longcat_flash`, `minimax`, `mellum`, `qwen3_next`, `solar_open`, `flex_olmo` among
+    # them), so a substring test answered the default for exactly the checkpoints this
+    # exists to protect. The substring hints stay on top of it, for a fused MoE model type
+    # added after this snapshot that does follow the naming convention.
     _MOE_HINTS = ("moe", "mixtral")
+
+    def _is_moe(self, key):
+        name = str(key).lower()
+        if name in _PEFT_MOE_CONVERSION_PATTERNS:
+            return True
+        return any(hint in name for hint in self._MOE_HINTS)
 
     def _answer(self, key, default):
         if dict.__contains__(self, key):
             return dict.__getitem__(self, key)
-        if any(hint in str(key).lower() for hint in self._MOE_HINTS):
+        if self._is_moe(key):
             raise RuntimeError(self._MESSAGE)
         return default
 
