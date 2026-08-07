@@ -3,10 +3,10 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Regression tests for WebView runtime-data cleanup in scripts/uninstall.sh.
 #
-# WKWebView (macOS) and webkit2gtk (Linux) key their data by bundle id and create it at first
-# launch, not at install time, so the uninstaller used to miss it and a leftover cache served a
-# stale frontend to the next install. Runs the full script against a fixture HOME with the OS
-# branch and the tools it calls stubbed via PATH, asserting bundle-id paths go and others stay.
+# WKWebView (macOS) and webkit2gtk (Linux) key data by bundle id and create it at first launch,
+# not at install time, so the uninstaller used to miss it and a leftover cache served a stale
+# frontend to the next install. Runs the full script against a fixture HOME with the OS branch
+# and its tools stubbed via PATH, asserting bundle-id paths go and others stay.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -18,14 +18,12 @@ FAIL=0
 _TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$_TMP_ROOT"' EXIT
 
-# The script sweeps $XDG_RUNTIME_DIR/unsloth-studio-launcher-<uid>*.lock, so an unsandboxed
-# runtime dir would cost the real launcher its locks.
+# The script sweeps $XDG_RUNTIME_DIR launcher locks, so sandbox it or the real launcher loses its own.
 XDG_RUNTIME_DIR="$_TMP_ROOT/run"
 export XDG_RUNTIME_DIR
 mkdir -p "$XDG_RUNTIME_DIR"
 
-# Explicit template: -p is GNU-only (BSD got it in macOS 14) and a bare mktemp -d implies -t,
-# landing outside _TMP_ROOT on macOS.
+# Explicit template: -p is GNU-only and a bare mktemp -d lands outside _TMP_ROOT on macOS.
 new_home() { mktemp -d "$_TMP_ROOT/home.XXXXXX"; }
 
 assert_gone()    { _l="$1"; if [ -e "$2" ]; then echo "  FAIL: $_l (still present: $2)"; FAIL=$((FAIL+1)); else echo "  PASS: $_l"; PASS=$((PASS+1)); fi; }
@@ -36,8 +34,8 @@ STUB_BIN="$_TMP_ROOT/stubbin"
 mkdir -p "$STUB_BIN"
 printf '#!/bin/sh\nexit 0\n' > "$STUB_BIN/defaults"
 chmod +x "$STUB_BIN/defaults"
-# pkill records its argv so the app kill can be asserted; real pkill exits 1 on no match,
-# so mimic that rather than a blanket 0, which would hide a missing `|| true`.
+# Records argv so the app kill can be asserted. Exits 1 like real pkill on no match: a
+# blanket 0 would hide a missing `|| true`.
 PKILL_LOG="$_TMP_ROOT/pkill.args"
 cat > "$STUB_BIN/pkill" <<EOF
 #!/bin/sh
@@ -45,10 +43,9 @@ printf '%s\n' "\$*" >> "$PKILL_LOG"
 exit 1
 EOF
 chmod +x "$STUB_BIN/pkill"
-# On a WSL host the script's `grep -qi microsoft /proc/version` probe fires even with uname
-# stubbed to Linux, and the real WSL cleanup would touch the host's /mnt/* shortcuts and /etc
-# profile. Fail that one probe, delegate the rest. REAL_GREP must be absolute or the stub
-# execs itself forever.
+# On a WSL host the /proc/version probe fires even with uname stubbed to Linux, and the WSL
+# branch would touch the host's /mnt/* shortcuts and /etc profile. Fail that one probe, delegate
+# the rest. REAL_GREP must be absolute or the stub execs itself forever.
 REAL_GREP=$(command -v grep)
 case "$REAL_GREP" in /*) ;; *) REAL_GREP=/usr/bin/grep ;; esac
 cat > "$STUB_BIN/grep" <<EOF
@@ -59,8 +56,8 @@ done
 exec "$REAL_GREP" "\$@"
 EOF
 chmod +x "$STUB_BIN/grep"
-# Belt and braces if the WSL branch is entered anyway: powershell.exe exiting 0 takes the no-op
-# path (skipping the /mnt/* drvfs fallback), and sudo exiting 0 without its argv keeps /etc clean.
+# If the WSL branch runs anyway: powershell.exe exiting 0 skips the /mnt/* drvfs fallback, and
+# sudo exiting 0 without running its argv keeps /etc clean.
 for _tool in powershell.exe sudo; do
     printf '#!/bin/sh\nexit 0\n' > "$STUB_BIN/$_tool"
     chmod +x "$STUB_BIN/$_tool"
@@ -118,8 +115,8 @@ mkdir -p "$H/.cache/$BID" "$H/.local/share/$BID" "$H/.config/$BID" \
 : > "$H/.local/share/applications/unsloth-studio-handler.desktop"
 : > "$H/.local/share/applications/other-app.desktop"
 : > "$XDG_RUNTIME_DIR/unsloth-studio-launcher-$(id -u).lock"
-# Truncate first: every fixture home has this user's uid, so the Darwin run above logged the
-# same argv and the assertion below would pass on it even if Linux emitted no kill at all.
+# Truncate first: the Darwin run logged the same uid argv, so the assertion below would pass
+# even if Linux emitted no kill at all.
 : > "$PKILL_LOG"
 run_uninstall "$H" Linux
 # Proves the lock sweep hit the fixture runtime dir, not the real one.
@@ -130,15 +127,14 @@ assert_gone "linux: ~/.local/share/$BID removed" "$H/.local/share/$BID"
 assert_gone "linux: ~/.config/$BID removed"      "$H/.config/$BID"
 assert_gone "linux: ~/.local/state/$BID removed" "$H/.local/state/$BID"
 assert_present "linux: unrelated app cache kept" "$H/.cache/other.app"
-# tauri-plugin-deep-link rewrites <exe>-handler.desktop on every launch to claim
-# the unsloth:// scheme, so it is present on any machine the app has ever run on.
-# Leaving it points the desktop's scheme handler at a binary that no longer exists.
+# tauri-plugin-deep-link rewrites <exe>-handler.desktop on every launch, so leaving it points
+# the unsloth:// handler at a binary that no longer exists.
 assert_gone "linux: deep-link handler .desktop removed" \
     "$H/.local/share/applications/unsloth-studio-handler.desktop"
 assert_present "linux: another app's .desktop kept" \
     "$H/.local/share/applications/other-app.desktop"
-# The app kill must be scoped: unscoped, a root-run uninstall signals every user's
-# unsloth-studio. -u takes the owner of the $HOME being cleared, not just `id -u`.
+# Unscoped, a root-run uninstall signals every user's unsloth-studio. -u takes the owner of
+# the $HOME being cleared, not just `id -u`.
 _want_uid=$(stat -c %u "$H" 2>/dev/null || stat -f %u "$H")
 if grep -q -- "-x -u $_want_uid unsloth-studio" "$PKILL_LOG" 2>/dev/null; then
     echo "  PASS: linux: app kill scoped to the \$HOME owner"; PASS=$((PASS+1))
@@ -178,9 +174,9 @@ assert_gone    "linux: relative XDG_STATE_HOME falls back to HOME"  "$H/.local/s
 assert_present "linux: relative XDG left cwd/reldata alone"         "$CWD/reldata/$BID"
 assert_present "linux: relative XDG left cwd/relcache alone"        "$CWD/relcache/$BID"
 
-# ── 3d. A symlinked $HOME still resolves an owner and still clears the target. stat lstats by
-# default, so without -L a root-owned link to a user-owned home would resolve to uid 0. Owner
-# and target owner match here, so this guards the symlink path, not the differing-owner case. ──
+# ── 3d. A symlinked $HOME still resolves an owner and clears the target. stat lstats by default,
+# so without -L a root-owned link to a user home resolves to uid 0. Owners match here, so this
+# guards the symlink path, not the differing-owner case. ──
 H=$(new_home)
 _HL="$_TMP_ROOT/homelink.$$"
 ln -s "$H" "$_HL"
@@ -200,8 +196,8 @@ rm -f "$_HL"
 # session, API keys and chat history, so claiming that after a failed rm is a false all-clear. ──
 H=$(new_home)
 mkdir -p "$H/.cache/$BID"
-# An rm stub that refuses this one path, not chmod: root ignores mode bits, so a permission
-# fixture deletes the dir anyway and the cleanup then aborts the suite under set -e.
+# An rm stub, not chmod: root ignores mode bits, so a permission fixture deletes the dir
+# anyway and the cleanup then aborts the suite under set -e.
 REAL_RM=$(command -v rm)
 case "$REAL_RM" in /*) ;; *) REAL_RM=/bin/rm ;; esac
 cat > "$STUB_BIN/rm" <<EOF
@@ -249,10 +245,9 @@ case "$_out" in
     *) echo "  PASS: linux: custom-root failure reaches the summary"; PASS=$((PASS+1)) ;;
 esac
 
-# ── 3g. Env-mode install, bare uninstall. An env-mode install writes studio.conf into
-# $STUDIO_HOME/share (install.sh:567), not $HOME, so nothing in $HOME points at the custom
-# root. Running the documented bare uninstaller leaves studio.db (chat_threads,
-# chat_messages, provider keys) untouched, so the summary must not say it is gone. ──
+# ── 3g. Env-mode install, bare uninstall. studio.conf goes to $STUDIO_HOME/share
+# (install.sh:567), not $HOME, so a bare run never finds the root and leaves studio.db
+# (chat_threads, chat_messages) untouched; the summary must not say it is gone. ──
 H=$(new_home)
 CUSTOM2="$_TMP_ROOT/envroot.$$"
 mkdir -p "$CUSTOM2/share"
@@ -287,9 +282,9 @@ case "$_out" in
         FAIL=$((FAIL+1)) ;;
 esac
 
-# ── 3f. A custom root the deny list refuses is also incomplete removal. install.sh accepts any
-# writable root (mkdir -p + -w, no deny list), so /var/tmp/studio installs without elevation and
-# then survives uninstall untouched. Uses the fixture HOME, which _is_unsafe_root also refuses. ──
+# ── 3f. A deny-listed custom root is also incomplete removal: install.sh accepts any writable
+# root (mkdir -p + -w), so /var/tmp/studio installs without elevation and then survives untouched.
+# Fixture HOME stands in for it, since _is_unsafe_root refuses that too. ──
 H=$(new_home)
 mkdir -p "$H/share"
 : > "$H/share/studio.conf"
@@ -302,10 +297,9 @@ case "$_out" in
     *) echo "  PASS: linux: deny-listed root counts as incomplete removal"; PASS=$((PASS+1)) ;;
 esac
 
-# ── 3i. An unusable TMPDIR must not abort the run. The summary markers are written with
-# `printf`, not `: >`: `:` is a POSIX special builtin, so a redirection error on it kills a
-# non-interactive shell outright (dash exits 2, busybox ash 1) and `2>/dev/null || true`
-# does not stop it. The uninstall would then stop partway with most of the tree still there. ──
+# ── 3i. An unusable TMPDIR must not abort the run. Markers use `printf`, not `: >`: `:` is a
+# POSIX special builtin, so a redirection error on it kills a non-interactive shell outright
+# (dash 2, busybox ash 1), `|| true` does not stop it, and the uninstall halts partway. ──
 H=$(new_home)
 mkdir -p "$H/.cache/$BID" "$H/.unsloth/studio/unsloth_studio"
 : > "$H/.unsloth/studio/unsloth_studio/.unsloth-studio-owned"
@@ -317,8 +311,7 @@ for _sh in sh dash busybox; do
     mkdir -p "$_H2/.cache/$BID" "$_H2/.unsloth/studio/unsloth_studio"
     : > "$_H2/.unsloth/studio/unsloth_studio/.unsloth-studio-owned"
     _rc=0
-    # busybox needs its applet name as a separate argument; spelled out per branch
-    # rather than word-splitting one variable.
+    # busybox needs its applet name as a separate argument, so spell out both branches.
     if [ "$_sh" = busybox ]; then
         env -u UNSLOTH_STUDIO_HOME -u STUDIO_HOME \
             -u XDG_CACHE_HOME -u XDG_DATA_HOME -u XDG_CONFIG_HOME -u XDG_STATE_HOME \
@@ -338,10 +331,8 @@ for _sh in sh dash busybox; do
     assert_gone "$_sh: cleanup still completed with an unusable TMPDIR" "$_H2/.cache/$BID"
 done
 
-# ── 3j. The marker directory is private and removed on the way out. TMPDIR points at a
-# fixture-owned directory so the check sees only what this run created: counting entries
-# in the shared temp dir would call a concurrent process's mktemp a leak, and an unrelated
-# directory disappearing at the same time would hide a real one. ──
+# ── 3j. The marker directory is removed on the way out. A fixture-owned TMPDIR so the check
+# sees only this run: entries in the shared temp dir would both fake and hide leaks. ──
 H=$(new_home)
 _MK_TMP=$(mktemp -d "$_TMP_ROOT/markertmp.XXXXXX")
 printf '#!/bin/sh\necho Linux\n' > "$STUB_BIN/uname"; chmod +x "$STUB_BIN/uname"
@@ -356,9 +347,8 @@ else
     find "$_MK_TMP" -mindepth 1 | sed 's/^/         /'
 fi
 
-# ── 3j2. With no marker storage at all there is no record of what failed, so the summary
-# must take the cautious branch rather than reporting the session gone. mktemp is stubbed
-# to fail, which is what an unwritable or missing TMPDIR produces. ──
+# ── 3j2. No marker storage means no record of what failed, so the summary must take the
+# cautious branch. mktemp stubbed to fail, as an unwritable or missing TMPDIR would. ──
 H=$(new_home)
 mkdir -p "$H/.unsloth/studio/unsloth_studio"
 : > "$H/.unsloth/studio/unsloth_studio/.unsloth-studio-owned"
@@ -374,9 +364,8 @@ case "$_out" in
         FAIL=$((FAIL+1)) ;;
 esac
 
-# ── 3j3. A relocated install: ~/.unsloth/studio is a symlink to another disk. rm -rf on a
-# symlink unlinks the link and leaves the target, so the database survives and the summary
-# must not report it gone. Reachable whenever a user moves Studio off the system disk. ──
+# ── 3j3. Relocated install: ~/.unsloth/studio a symlink to another disk. rm -rf unlinks only
+# the link, so the database survives and the summary must not report it gone. ──
 H=$(new_home)
 _ELSEWHERE=$(mktemp -d "$_TMP_ROOT/otherdisk.XXXXXX")
 mkdir -p "$_ELSEWHERE/unsloth_studio" "$H/.unsloth"
@@ -400,15 +389,13 @@ case "$_out" in
         echo "  FAIL: linux: relocated install not reported as incomplete"; FAIL=$((FAIL+1)) ;;
 esac
 
-# ── 3j4. Marker storage that vanishes mid-run. The pathname still looks fine, so a
-# predicate that only tests for emptiness keeps reporting success while every failure
-# _set_marker tried to record was silently dropped. ──
+# ── 3j4. Marker storage that vanishes mid-run: the pathname still looks fine, so an
+# emptiness-only predicate reports success while every failure is silently dropped. ──
 H=$(new_home)
 mkdir -p "$H/.local/share/$BID"
 _VAN=$(mktemp -d "$_TMP_ROOT/vanish.XXXXXX")
-# mktemp -d names a directory it does not leave behind. Deterministic, rather than racing
-# a background delete: $_MARKER_DIR is non-empty so the pathname still looks usable, which
-# is the state the predicate has to catch.
+# mktemp names a directory it does not create: deterministic, and $_MARKER_DIR is non-empty
+# so the pathname still looks usable, which is the state the predicate has to catch.
 cat > "$STUB_BIN/mktemp" <<EOF
 #!/bin/sh
 printf '%s\n' "$_VAN/marker.gone"
@@ -424,9 +411,8 @@ case "$_out" in
         echo "  FAIL: linux: vanished marker dir still reported success"; FAIL=$((FAIL+1)) ;;
 esac
 
-# ── 3j5. studio.db itself a symlink out of the tree. -f follows it, rm -rf unlinks only
-# the link, so the database survives and the summary must not report it gone. Same root
-# cause as the relocated-install case, different shape. ──
+# ── 3j5. studio.db itself a symlink out of the tree: -f follows it, rm -rf unlinks only the
+# link, so the database survives and the summary must not report it gone. ──
 H=$(new_home)
 _DBTARGET=$(mktemp -d "$_TMP_ROOT/dbtarget.XXXXXX")
 mkdir -p "$H/.unsloth/studio/unsloth_studio"
@@ -443,9 +429,8 @@ case "$_out" in
         PASS=$((PASS+1)) ;;
 esac
 
-# ── 3j5b. Same, with `readlink -f` unavailable and a RELATIVE link target. BSD readlink
-# only gained -f in macOS 12.3, so the GNU form fails on older macOS; the resolution has
-# to work from the raw link text. Stub rejects -f the way BSD readlink does. ──
+# ── 3j5b. Same, with `readlink -f` unavailable and a RELATIVE target. BSD readlink only gained
+# -f in macOS 12.3, so resolution must work from the raw link text. Stub rejects -f like BSD. ──
 H=$(new_home)
 mkdir -p "$H/.unsloth/studio/unsloth_studio" "$H/dbdir"
 : > "$H/.unsloth/studio/unsloth_studio/.unsloth-studio-owned"
@@ -472,11 +457,9 @@ case "$_out" in
         PASS=$((PASS+1)) ;;
 esac
 
-# ── 3j6. Provider API keys are NOT in studio.db. providers_db.py: "API keys are NOT
-# stored here: they live only in the browser (localStorage) and are sent encrypted
-# per-request." install.sh runs with TAURI_MODE=false, so the default install serves the
-# UI to a normal browser and the keys sit in that browser's profile, which this script
-# never touches. No branch may claim they were removed. ──
+# ── 3j6. Provider API keys are NOT in studio.db: providers_db.py keeps them in the browser's
+# localStorage only, and install.sh runs TAURI_MODE=false, so they sit in a browser profile
+# this script never touches. No branch may claim they were removed. ──
 for _case in dbremoved nodb; do
     H=$(new_home)
     mkdir -p "$H/.unsloth/studio/unsloth_studio"
@@ -494,9 +477,8 @@ for _case in dbremoved nodb; do
             echo "  PASS: $_case: says where the keys actually are"; PASS=$((PASS+1)) ;;
         *)  echo "  FAIL: $_case: never says where the keys actually are"; FAIL=$((FAIL+1)) ;;
     esac
-    # Removing the WebView profile clears the desktop app's session only. A browser
-    # session keeps its tokens in localStorage (frontend/src/features/auth/session.ts),
-    # which this script never touches, so an unqualified claim is wrong there too.
+    # The WebView profile is the desktop session only; a browser session keeps its tokens in
+    # localStorage (frontend/src/features/auth/session.ts), so an unqualified claim is wrong.
     case "$_out" in
         *"the signed-in session is gone"*)
             echo "  FAIL: $_case: unqualified signed-out claim"; FAIL=$((FAIL+1)) ;;
@@ -505,12 +487,10 @@ for _case in dbremoved nodb; do
     esac
 done
 
-# ── 3k. _set_marker itself must survive a write it cannot perform. 3i only proves the
-# mktemp -d guard holds, since an unusable TMPDIR leaves the marker path empty and the
-# redirection never runs. This drives the redirection directly: the marker directory
-# exists at startup and is gone by the time the write happens, which is what an operator
-# clearing /tmp mid-run looks like. With `: >` the shell dies here and takes the rest of
-# the uninstall with it. ──
+# ── 3k. _set_marker must survive a write it cannot perform. 3i only proves the mktemp guard,
+# since an empty marker path never runs the redirection. This drives it directly: the marker
+# dir exists at startup and is gone by the write, as an operator clearing /tmp mid-run would
+# leave it. With `: >` the shell dies here and takes the rest of the uninstall with it. ──
 _SM_FILE=$(mktemp "$_TMP_ROOT/setmarker.XXXXXX")
 sed -n '/^_set_marker() {/,/^}/p' "$UNINSTALL_SH" > "$_SM_FILE"
 if [ ! -s "$_SM_FILE" ]; then
@@ -538,12 +518,10 @@ else
     done
 fi
 
-# ── 3m. uninstall.ps1 must stop the legacy-named desktop process too. Older Windows
-# releases used the product name as MAINBINARYNAME, so they run Unsloth.exe rather than
-# unsloth-studio.exe (installer.nsi migrates away from it). The uninstaller is always
-# fetched fresh from main, so an old install meets this script, and a process it never
-# stops re-creates the WebView profile straight after the delete. Source assertion: the
-# .ps1 is not driven from this suite. ──
+# ── 3m. uninstall.ps1 must stop the legacy-named process too: older releases used the product
+# name as MAINBINARYNAME and run Unsloth.exe, and this script is always fetched fresh from main,
+# so it meets them. A missed process re-creates the WebView profile straight after the delete.
+# Source assertion: the .ps1 is not driven from this suite. ──
 UNINSTALL_PS1="$SCRIPT_DIR/../../scripts/uninstall.ps1"
 if [ ! -f "$UNINSTALL_PS1" ]; then
     echo "  FAIL: uninstall.ps1 not found"; FAIL=$((FAIL+1))

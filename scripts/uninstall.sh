@@ -101,18 +101,18 @@ _stop_owned_sd_cpp_processes() {
     done
 }
 
-# Numeric owner of $HOME, empty if it cannot be resolved. Not always the caller: macOS
-# ships `env_keep += "HOME MAIL"`, so sudo keeps the invoking user's home while euid is 0.
+# Numeric owner of $HOME, empty if unresolvable. Not always the caller: macOS sudo keeps
+# HOME (env_keep), so the home stays the invoking user's while euid is 0.
 _home_uid() {
-    # -L: both stats lstat by default, so a root-owned link to a user-owned home reads as 0.
+    # -L: stat lstats by default, so a root-owned link to a user home would read as uid 0.
     _hu=$(stat -L -c %u "$HOME" 2>/dev/null || stat -L -f %u "$HOME" 2>/dev/null || true)
     case "$_hu" in ''|*[!0-9]*) _hu=$(id -u 2>/dev/null || true) ;; esac
     case "$_hu" in *[!0-9]*) _hu= ;; esac
     printf '%s\n' "$_hu"
 }
 
-# Run "$@" as that owner when we are root and it is someone else, so per-user daemons see
-# the right domain. Plain "$@" otherwise, which is every non-elevated run.
+# Run "$@" as the $HOME owner when we are root and it is someone else, so per-user daemons
+# see the right domain. Plain "$@" otherwise, which is every non-elevated run.
 _run_as_home_owner() {
     _ro=$(_home_uid)
     if [ "$(id -u 2>/dev/null || echo 0)" = "0" ] && [ -n "$_ro" ] && [ "$_ro" != "0" ] &&
@@ -123,9 +123,8 @@ _run_as_home_owner() {
     fi
 }
 
-# Is the desktop app running? Only called when there is no pkill to ask, so it reads
-# /proc, the one process inventory such a system still has. Scoped to the owner of the
-# $HOME being cleared, matching the pkill -u call below.
+# Is the desktop app running? Only reached when there is no pkill to ask, so read /proc.
+# Scoped to the owner of the $HOME being cleared, matching the pkill -u call below.
 _studio_app_running() {
     [ -d /proc ] || return 1
     _sar_uid=$(_home_uid)
@@ -152,9 +151,8 @@ _pkill_studio() {
     done
 
     if ! command -v pkill >/dev/null 2>&1; then
-        # No procps. The PID-file sweep above is all we can do, and install.sh never
-        # requires pkill, so this is a real configuration. If the desktop app is still
-        # up, its WebView helpers re-create the profile right after we delete it, so
+        # No procps (install.sh never requires it): the PID sweep above is all we have.
+        # A live app's WebView helpers re-create the profile right after the delete, so
         # the removal is incomplete and the summary must not claim otherwise.
         if _studio_app_running; then
             echo "  pkill not found and Unsloth Studio is running; close it and re-run" >&2
@@ -205,10 +203,10 @@ $_roots_from_conf"
     _stop_owned_sd_cpp_processes KILL
 
     # The app's WebView helpers re-create the caches removed below, so it has to die here.
-    # -x is exact, so the "unsloth" CLI shim never matches. -u scopes to the owner of the
-    # $HOME being cleared, not the caller (macOS sudo keeps HOME), so a root run leaves other
-    # logged-in users alone. Numeric suits procps and BSD pkill; BSD reads the signal from
-    # argv[1] only, so it stays first. Unknown owner skips rather than signalling everyone.
+    # -x is exact, so the "unsloth" CLI shim never matches. -u takes the owner of the $HOME
+    # being cleared, not the caller (macOS sudo keeps HOME), so a root run spares other users;
+    # an unknown owner skips rather than signalling everyone. Numeric uid and signal-first
+    # suit BSD pkill, which reads the signal from argv[1] only.
     _studio_uid=$(_home_uid)
     if [ -n "$_studio_uid" ]; then
         pkill -TERM -x -u "$_studio_uid" unsloth-studio 2>/dev/null || true
@@ -217,20 +215,16 @@ $_roots_from_conf"
     fi
 }
 
-# Two pieces of state the closing summary needs, carried in files rather than variables:
-# custom roots are removed inside a pipeline subshell, where an assignment would never
-# reach the summary.
+# Summary state in files, not variables: custom roots are removed inside a pipeline
+# subshell, where an assignment would never reach the summary.
 #   remove-failed  an rm failed, or a root was skipped while still holding data
 #   db-removed     a removed install root actually held studio.db
-# studio.db is what holds chat_threads/chat_messages (backend/storage/studio_db.py via
-# studio_root()). Not the provider API keys: providers_db.py says they "live only in the
-# browser (localStorage) and are sent encrypted per-request". studio.db lives
-# under the install root, so an env-mode install keeps it inside the custom root. A bare
-# run with neither variable exported cannot discover that root, so the summary must not
-# claim the history is gone unless a database was really deleted.
-#
-# mktemp -d, not a PID-derived name under $TMPDIR: the directory is private (0700) and
-# unpredictable, so the markers cannot collide with, or be pre-created by, anything else.
+# studio.db holds chat_threads/chat_messages (backend/storage/studio_db.py via studio_root()),
+# not the provider API keys: providers_db.py keeps those in the browser's localStorage only.
+# It sits under the install root, so an env-mode install keeps it in a custom root a bare run
+# cannot discover; claim the history is gone only if a database was really deleted.
+# mktemp -d, not a $TMPDIR name: private (0700) and unpredictable, so the markers cannot
+# collide with, or be pre-created by, anything else.
 _MARKER_DIR=$(mktemp -d 2>/dev/null || true)
 _REMOVE_FAILED_FLAG=""
 _DB_REMOVED_FLAG=""
@@ -239,20 +233,18 @@ if [ -n "$_MARKER_DIR" ] && [ -d "$_MARKER_DIR" ]; then
     _DB_REMOVED_FLAG="$_MARKER_DIR/db-removed"
 fi
 
-# `printf`, never `: > "$f"`. `:` is a POSIX special builtin, so a redirection error on it
-# terminates a non-interactive shell outright, and `2>/dev/null || true` does not stop it:
-# dash exits 2 and busybox ash exits 1, aborting the uninstall partway through. printf is
-# a regular builtin, so the same failure is just a nonzero status.
+# `printf`, never `: > "$f"`: `:` is a POSIX special builtin, so a redirection error on it
+# kills a non-interactive shell outright (dash 2, busybox ash 1) and `|| true` does not stop
+# it. printf is a regular builtin, so the same failure is just a nonzero status.
 _set_marker() {
     [ -n "$1" ] || return 0
     printf '' > "$1" 2>/dev/null || true
     return 0
 }
 _marker_set() { [ -n "$1" ] && [ -f "$1" ]; }
-# No usable marker storage means no record of what failed, so the summary must not claim
-# success. Re-checked rather than trusting the startup result: the directory can be removed
-# or made unwritable while the uninstall is running, after which _set_marker silently
-# discards every failure and the pathname alone still looks fine.
+# No marker storage means no record of what failed, so the summary must not claim success.
+# Re-checked, not trusted from startup: the directory can vanish or lose write access mid-run,
+# after which _set_marker silently drops every failure while the pathname still looks fine.
 _markers_unavailable() {
     [ -n "$_MARKER_DIR" ] || return 0
     [ -d "$_MARKER_DIR" ] || return 0
@@ -260,8 +252,7 @@ _markers_unavailable() {
     return 1
 }
 
-# EXIT, not a line at the end of main: --help returns early, an unknown argument exits
-# non-zero, and `set -e` can fire partway through, none of which would reach it.
+# EXIT, not a line at the end of main: --help, a bad argument and `set -e` all skip that.
 _cleanup_markers() {
     if [ -n "$_MARKER_DIR" ]; then
         rm -rf "$_MARKER_DIR" 2>/dev/null || true
@@ -269,19 +260,12 @@ _cleanup_markers() {
 }
 trap _cleanup_markers EXIT
 
-# Record whether the install root about to be removed carries a studio.db.
 # Remove an install root and record whether its studio.db really went with it.
-#
-# The check has to happen on the RESOLVED directory, before and after. A relocated
-# install (`~/.unsloth/studio` a symlink to another disk) satisfies `-f "$root/studio.db"`
-# through the link, but `rm -rf` on a symlink unlinks the symlink and leaves the target
-# intact, so a naive before-check would report the database gone while it is still there.
-# Checking `$root/studio.db` afterwards is no better: the link is gone, so the path stops
-# resolving and the file reads as absent either way.
-#
-# Deliberately verifying rather than chasing the link: following a symlink out of the
-# expected location to `rm -rf` its target is exactly what the deny lists exist to prevent.
-# A relocated install keeps its database, and the summary now says so.
+# The check runs on the RESOLVED path: a relocated install (~/.unsloth/studio a symlink to
+# another disk) passes `-f "$root/studio.db"` through the link, but `rm -rf` unlinks only the
+# link, and afterwards the path stops resolving and reads as absent either way.
+# Verifying rather than chasing the link is deliberate: following a symlink out of the
+# expected location to `rm -rf` its target is what the deny lists exist to prevent.
 _remove_root_recording_db() {
     _rrd_root="$1"
     # shellcheck disable=SC1007
@@ -291,11 +275,9 @@ _remove_root_recording_db() {
     _rrd_db="$_rrd_real/studio.db"
     if [ -f "$_rrd_db" ]; then
         _rrd_had_db=1
-        # The database itself can be a symlink out of the tree. -f follows it, but the
-        # rm below unlinks the link and leaves the target, so track where the bytes are.
-        # readlink without -f: BSD readlink only gained -f in macOS 12.3, and there the
-        # GNU form fails, leaves the link path in place and the claim goes wrong again.
-        # The raw link text plus cd -P on its directory is portable to both.
+        # The db itself can be a symlink out of the tree: -f follows it but the rm below
+        # unlinks only the link, so track where the bytes are. readlink without -f: BSD
+        # gained -f in macOS 12.3, so use the raw link text plus cd -P, portable to both.
         if [ -L "$_rrd_db" ]; then
             _rrd_link=$(readlink "$_rrd_db" 2>/dev/null || true)
             if [ -n "$_rrd_link" ]; then
@@ -329,15 +311,14 @@ _remove_path() {
             echo "  removed: $_p"
         else
             echo "  could not remove: $_p" >&2
-            # A marker file, not a variable: custom roots are removed inside a pipeline
-            # subshell, where an assignment would never reach the summary below.
+            # A marker file, not a variable: custom roots are removed in a pipeline subshell.
             _set_marker "$_REMOVE_FAILED_FLAG"
         fi
     fi
 }
 
-# $1 override, $2 default. A relative override is invalid per the XDG spec and dropped by dirs,
-# which Tauri resolves through, so following one would spare the real data and rm -rf under our cwd.
+# $1 override, $2 default. A relative override is invalid per XDG and dropped by dirs (which
+# Tauri resolves through), so honouring one would spare the real data and rm -rf under our cwd.
 _xdg_dir() {
     case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s\n' "$2" ;; esac
 }
@@ -469,14 +450,13 @@ _unsloth_uninstall_main() {
         [ -n "$_custom_root" ] || continue
         if _is_unsafe_root "$_custom_root"; then
             echo "  refusing to remove unsafe path: $_custom_root" >&2
-            # install.sh accepts any writable root, so this can be a real install under a
-            # path the deny list covers (/var/tmp/studio needs no elevation). Nothing is
-            # deleted, and it holds studio.db and the auth data, so the summary must say so.
+            # install.sh accepts any writable root, so a real install can sit under a deny-listed
+            # path (/var/tmp/studio). Nothing is deleted and it holds studio.db, so say so.
             [ -d "$_custom_root" ] && _set_marker "$_REMOVE_FAILED_FLAG"
             continue
         fi
         if ! _is_studio_root "$_custom_root"; then
-            # Not ours, so nothing of the user's data is left behind by skipping it.
+            # Not ours, so skipping leaves none of the user's data behind.
             echo "  refusing to remove non-Unsloth path: $_custom_root" >&2
             continue
         fi
@@ -576,8 +556,7 @@ _unsloth_uninstall_main() {
             if [ -x "$_lsr" ]; then
                 "$_lsr" -u "$HOME/Applications/Unsloth Studio.app" 2>/dev/null || true
             fi
-            # WKWebView data, keyed by bundle id. Created at first launch, not by install.sh,
-            # so it outlived every uninstall.
+            # WKWebView data, keyed by bundle id. Created at first launch, not by install.sh.
             _bid="ai.unsloth.studio"
             echo "Removing WebView caches and app data ($_bid)..."
             _remove_path "$HOME/Library/Caches/$_bid"
@@ -587,10 +566,8 @@ _unsloth_uninstall_main() {
             _remove_path "$HOME/Library/HTTPStorages/$_bid.binarycookies"
             _remove_path "$HOME/Library/Cookies/$_bid.binarycookies"
             _remove_path "$HOME/Library/Saved Application State/$_bid.savedState"
-            # defaults, not rm: cfprefsd rewrites the plist from memory after a bare rm.
-            # ByHost is a separate domain.
-            # As the home's owner: under sudo, root's defaults edits root's domain and the
-            # target user's cfprefsd still rewrites the plist after the rm below.
+            # defaults, not rm: cfprefsd rewrites the plist from memory. ByHost is a separate
+            # domain. As the home's owner, or under sudo root just edits root's own domain.
             if command -v defaults >/dev/null 2>&1; then
                 _run_as_home_owner defaults delete "$_bid" >/dev/null 2>&1 || true
                 _run_as_home_owner defaults -currentHost delete "$_bid" >/dev/null 2>&1 || true
@@ -738,8 +715,8 @@ _unsloth_uninstall_main() {
                     echo "          sudo rm -rf /opt/rocm /opt/rocm-* && sudo ldconfig"
                 fi
             fi
-            # webkit2gtk data, keyed by bundle id. Tauri points the WebView at LocalData/<bid>,
-            # so caches sit under XDG_DATA_HOME; rest is app data.
+            # webkit2gtk data by bundle id: Tauri points the WebView at LocalData/<bid>, so the
+            # caches sit under XDG_DATA_HOME; the rest is app data.
             _bid="ai.unsloth.studio"
             echo "Removing WebView caches and app data ($_bid)..."
             _remove_path "$(_xdg_dir "${XDG_DATA_HOME:-}" "$HOME/.local/share")/$_bid"
@@ -748,20 +725,17 @@ _unsloth_uninstall_main() {
             _remove_path "$(_xdg_dir "${XDG_STATE_HOME:-}" "$HOME/.local/state")/$_bid"
             echo "Removing Linux .desktop entry..."
             _remove_path "$HOME/.local/share/applications/unsloth-studio.desktop"
-            # tauri-plugin-deep-link writes "<exe>-handler.desktop" next to it on
-            # every launch to register the unsloth:// scheme, so it exists on any
-            # machine the app has ever started on. Left behind it is a dangling
-            # handler that points at a binary we just deleted. Unlike install.sh's
-            # own shortcut, the plugin resolves the directory through Tauri's
-            # data_dir(), which honours XDG_DATA_HOME, so check both.
+            # tauri-plugin-deep-link rewrites "<exe>-handler.desktop" on every launch for the
+            # unsloth:// scheme, so it exists on any machine the app has started on and would
+            # be left pointing at a binary we just deleted. Unlike install.sh's own shortcut,
+            # it uses Tauri's data_dir(), which honours XDG_DATA_HOME, so check both.
             _un_appdir="$(_xdg_dir "${XDG_DATA_HOME:-}" "$HOME/.local/share")/applications"
             _remove_path "$_un_appdir/unsloth-studio-handler.desktop"
             if [ "$_un_appdir" != "$HOME/.local/share/applications" ]; then
                 _remove_path "$HOME/.local/share/applications/unsloth-studio-handler.desktop"
             fi
-            # Rebuild mimeinfo.cache in each directory an entry was removed from, or the
-            # cache beside the removed handler keeps advertising it. install.sh refreshes
-            # the directory it actually wrote to (install.sh:1574); do the same on the way out.
+            # Rebuild mimeinfo.cache wherever an entry was removed, or the stale cache keeps
+            # advertising it. Mirrors install.sh:1574 on the way out.
             if command -v update-desktop-database >/dev/null 2>&1; then
                 update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
                 if [ "$_un_appdir" != "$HOME/.local/share/applications" ]; then
@@ -774,22 +748,19 @@ _unsloth_uninstall_main() {
     echo ""
     echo "Unsloth Studio uninstalled."
     if _markers_unavailable || _marker_set "$_REMOVE_FAILED_FLAG"; then
-        # Also the no-marker-storage case: without it a failed rm left no record, so
-        # reporting success would be a guess in the one direction that misleads.
+        # Also the no-marker-storage case: no record of a failed rm, so do not claim success.
         echo "Note: some paths could not be removed (see 'could not remove:' above), so the"
         echo "      signed-in session and local chat history may still be on disk. Remove"
         echo "      those paths by hand to clear them."
     elif _marker_set "$_DB_REMOVED_FLAG"; then
-        # Scoped to what was removed. A default and an env-mode install can coexist, and
-        # with neither variable exported the custom root is never discovered, so an
-        # unqualified "are gone" would be false for the database still sitting in it.
+        # Scoped to what was removed: a default and an env-mode install can coexist, and a bare
+        # run never discovers the custom root, so "are gone" would be false for its database.
         echo "Note: this also removed the app's WebView data and the studio.db it found, so"
         echo "      the desktop app's session and the chat history in the install(s) removed"
         echo "      above are gone."
     else
-        # No studio.db was deleted, so only the WebView-local data is accounted for.
-        # Claiming the keys and history are gone would be false for an env-mode install
-        # whose root this run never discovered.
+        # No studio.db was deleted, so only the WebView-local data is accounted for: an env-mode
+        # install this run never discovered still has its keys and history.
         echo "Note: this also removed the app's WebView data, so the desktop app's session is"
         echo "      gone. A browser session is not affected: its tokens live in the same"
         echo "      localStorage as the API keys below."

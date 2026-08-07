@@ -10,10 +10,8 @@
 function Uninstall-UnslothStudio {
     $ErrorActionPreference = "Continue"
 
-    # Reset both summary flags at entry. The documented form is `irm ... | iex`, which
-    # defines this function in the caller's session, so a second run in the same window
-    # would otherwise inherit the first run's state: a past failure would keep reporting
-    # failure, and a past studio.db removal would claim the keys and history are gone.
+    # Reset at entry: `irm ... | iex` defines this function in the caller's session, so a
+    # second run in the same window would otherwise inherit the first run's flags.
     $script:RemoveFailed = $false
     $script:StudioDbRemoved = $false
 
@@ -69,7 +67,7 @@ Environment:
             } catch {
                 if ($attempt -lt 4) { Start-Sleep -Milliseconds 700; continue }
                 _Substep "could not remove: $Path ($($_.Exception.Message))" "Yellow"
-                # Read by the closing summary, which must not promise the data is gone.
+                # The closing summary must not promise the data is gone.
                 $script:RemoveFailed = $true
                 return
             }
@@ -86,9 +84,8 @@ Environment:
         }
     }
 
-    # LOCALAPPDATA / APPDATA are dropped in service and CI contexts. Fall back to the
-    # known folder so every consumer resolves the same directory; $null only when even
-    # that fails, which callers treat as incomplete cleanup.
+    # LOCALAPPDATA / APPDATA are dropped in service and CI contexts, so fall back to the known
+    # folder; $null only if that fails too, which callers treat as incomplete cleanup.
     function _AppDataRoot {
         param([string]$Var, [string]$Folder)
         if (-not [string]::IsNullOrWhiteSpace($Var)) { return $Var }
@@ -97,26 +94,20 @@ Environment:
         return $p
     }
 
-    # Record whether the install root about to be removed carries a studio.db. That file
-    # holds chat_threads/chat_messages (backend/storage/studio_db.py via studio_root()).
-    # Not the provider API keys: providers_db.py says they "live only in the browser
-    # (localStorage) and are sent encrypted per-request". studio.db lives under the install
-    # root, so an env-mode install keeps it inside the custom root. A bare run with neither
-    # variable set cannot discover that root, so the summary must not claim the history is
-    # gone unless a database was really deleted.
-    # Remove an install root and record whether its studio.db really went with it. The
-    # check runs on the RESOLVED target: a relocated install (a directory junction or
-    # symlink to another disk) satisfies the before-check through the link, but the delete
-    # unlinks the reparse point and leaves the target intact, and afterwards the link is
-    # gone so the original path stops resolving and reads as absent either way.
-    # Verifying rather than chasing the link is deliberate: following a reparse point out
-    # of the expected location to delete its target is what the deny list exists to stop.
+    # Remove an install root and record whether its studio.db really went with it. That file
+    # holds chat_threads/chat_messages (backend/storage/studio_db.py), not the provider API
+    # keys, which providers_db.py keeps in the browser's localStorage only. It sits under the
+    # install root, so an env-mode install keeps it in a custom root a bare run cannot find.
+    # The check runs on the RESOLVED target: a relocated install (junction or symlink to
+    # another disk) passes the before-check through the link, but the delete unlinks only the
+    # reparse point, and afterwards the path stops resolving and reads as absent either way.
+    # Verifying rather than chasing the link is deliberate: following a reparse point out of
+    # the expected location to delete its target is what the deny list exists to stop.
     function _RemoveRootRecordingDb {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
-        # Anchor a relative reparse-point target to the link's own parent. Same rule as
-        # the studio.db link below: assigned raw, Join-Path would resolve it from the
-        # uninstaller's working directory and the database test would read false.
+        # Anchor a relative reparse-point target to the link's own parent, or Join-Path
+        # resolves it from the uninstaller's working directory and the db test reads false.
         $resolveTarget = {
             param($Item, $Fallback)
             if (-not $Item -or -not $Item.Target) { return $Fallback }
@@ -132,8 +123,7 @@ Environment:
             $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
             $real = & $resolveTarget $item $Path
         } catch { }
-        # The database itself can be a reparse point out of the tree, the same shape as
-        # the root: the delete unlinks the link and the target survives.
+        # The db itself can be a reparse point out of the tree: the target survives the delete.
         $dbPath = Join-Path $real "studio.db"
         $hadDb = Test-Path -LiteralPath $dbPath -PathType Leaf
         if ($hadDb) {
@@ -478,25 +468,22 @@ Environment:
         _StopByPortFile -PortFile (Join-Path $r "share\studio.port") -KnownRoots $knownRoots
     }
     _StopStudioProcesses -KnownRoots $knownRoots
-    # App and the WebView2 helpers holding its profile open must both exit before the EBWebView delete below.
-    # Same resolver as the removal below: resolving there but not here would skip the
-    # helper sweep for a profile we then try to delete, leaving helpers holding locks.
+    # The app and the WebView2 helpers holding its profile open must both exit before the
+    # EBWebView delete below. Same resolver as that removal, or the sweep misses the profile
+    # we then try to delete and the helpers keep holding locks.
     $localAppRoot = _AppDataRoot $env:LOCALAPPDATA 'LocalApplicationData'
     $webviewProfile = if ($localAppRoot) { Join-Path $localAppRoot "ai.unsloth.studio" } else { $null }
-    # Account-scoped, like every other kill here. installMode is currentUser, so the profile
-    # removed below is this account's and is shared by all of its sessions: a second console or
-    # RDS session of the same user must die too or it re-creates the profile mid-delete, while
-    # another user's Studio must not be touched. SIDs, so domain and locale do not matter; an
-    # owner we cannot read is skipped, and Stop-Process could not have touched it either.
+    # Account-scoped, like every other kill here. installMode is currentUser, so the profile is
+    # this account's and shared by all its sessions: a second console or RDS session must die
+    # too or it re-creates the profile mid-delete, while another user's Studio must not be
+    # touched. SIDs, so domain and locale do not matter; an unreadable owner is skipped.
     $meSid = try { [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value } catch { $null }
     $studioPids = @()
     if ($meSid) {
         try {
-            # Unsloth.exe as well: older releases used the product name as MAINBINARYNAME
-            # (installer.nsi migrates away from it, so an install predating that rename
-            # still runs it). The uninstaller is always fetched fresh from main, so an old
-            # install meets this script, and a missed process re-creates the profile we
-            # just deleted. The owner-SID filter below keeps the broader name safe.
+            # Unsloth.exe too: older releases used the product name as MAINBINARYNAME, and this
+            # script is always fetched fresh from main, so it meets those installs. A missed
+            # process re-creates the profile. The owner-SID filter keeps the broader name safe.
             $filter = "Name = 'unsloth-studio.exe' OR Name = 'Unsloth.exe'"
             foreach ($sp in (Get-CimInstance Win32_Process -Filter $filter -ErrorAction SilentlyContinue)) {
                 $spSid = try { (Invoke-CimMethod -InputObject $sp -MethodName GetOwnerSid -ErrorAction SilentlyContinue).Sid } catch { $null }
@@ -505,20 +492,17 @@ Environment:
         } catch { }
     }
     if ($webviewProfile) {
-        # Unescaped "[" is a wildcard class: would miss our own profile and match others.
-        # Trailing \ spares "<bid>2\EBWebView".
+        # Escape "[", a wildcard class, or we miss our profile and match others. Trailing \
+        # spares "<bid>2\EBWebView".
         $pattern = "*" + [System.Management.Automation.WildcardPattern]::Escape($webviewProfile) + "\*"
         try {
             $wvProcs = @(Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe'" -ErrorAction SilentlyContinue)
-            # Parent lookup for the ancestor walk below. Built from the WebView2 processes
-            # themselves, which is all the chain ever passes through.
+            # Parent lookup for the ancestor walk; WebView2 procs are all the chain passes through.
             $parentOf = @{}
             foreach ($p in $wvProcs) { $parentOf[[int]$p.ProcessId] = [int]$p.ParentProcessId }
-            # WebView2 is Chromium's process model: one browser process per host app, and the
-            # renderer, GPU and utility helpers are children of THAT browser process, not of
-            # unsloth-studio.exe. Checking only the immediate parent therefore matches the
-            # browser and misses every helper, and Stop-Process is not recursive, so the
-            # helpers keep files under EBWebView locked until _RemovePath gives up.
+            # Chromium process model: the renderer, GPU and utility helpers are children of the
+            # browser process, not of unsloth-studio.exe, so an immediate-parent check misses
+            # them all and they keep EBWebView locked (Stop-Process is not recursive).
             # Depth-capped so a PID-reuse cycle cannot spin here.
             $isOurs = {
                 param($StartPid)
@@ -570,9 +554,8 @@ Environment:
     foreach ($r in $customRoots) {
         if (_IsUnsafeRoot $r) {
             _Substep "refusing to remove unsafe path: $r" "Yellow"
-            # install.ps1 accepts any writable root, so this can be a real install under a
-            # path the deny list covers. Nothing is deleted and it holds studio.db and the
-            # auth data, so the summary must say so. Mirrors uninstall.sh.
+            # install.ps1 accepts any writable root, so a real install can sit under a deny-listed
+            # path. Nothing is deleted and it holds studio.db, so say so. Mirrors uninstall.sh.
             if (Test-Path -LiteralPath $r) { $script:RemoveFailed = $true }
             continue
         }
@@ -651,9 +634,8 @@ Environment:
     # Runtime data, created at first launch rather than by install.ps1: LOCALAPPDATA holds the
     # EBWebView profile (a leftover copy serves a stale frontend), APPDATA the app config dir.
     _Step "Removing WebView caches and app data (ai.unsloth.studio)..."
-    # Fall back to the known folder when the variable is missing (service and CI contexts
-    # drop them), and count an unresolvable one as incomplete cleanup: silently skipping it
-    # would leave the profile on disk while the summary reports the session as gone.
+    # Count an unresolvable root as incomplete cleanup: skipping it silently would leave the
+    # profile on disk while the summary reports the session as gone.
     foreach ($known in @(
         @{ Var = $env:LOCALAPPDATA; Folder = 'LocalApplicationData' },
         @{ Var = $env:APPDATA;      Folder = 'ApplicationData' }
@@ -756,15 +738,13 @@ Environment:
         Write-Host "      signed-in session and local chat history may still be on disk. Remove"
         Write-Host "      those paths by hand to clear them."
     } elseif ($script:StudioDbRemoved) {
-        # Scoped to what was removed: a default and an env-mode install can coexist, and
-        # with neither variable set the custom root is never discovered.
+        # Scoped to what was removed: a bare run never discovers a coexisting env-mode root.
         Write-Host "Note: this also removed the app's WebView data and the studio.db it found, so"
         Write-Host "      the desktop app's session and the chat history in the install(s) removed"
         Write-Host "      above are gone."
     } else {
-        # No studio.db was deleted, so only the WebView-local data is accounted for.
-        # Claiming the keys and history are gone would be false for an env-mode install
-        # whose root this run never discovered.
+        # No studio.db was deleted, so only the WebView-local data is accounted for: an env-mode
+        # install this run never discovered still has its keys and history.
         Write-Host "Note: this also removed the app's WebView data, so the desktop app's session"
         Write-Host "      is gone. A browser session is not affected: its tokens live in the same"
         Write-Host "      localStorage as the API keys below."
