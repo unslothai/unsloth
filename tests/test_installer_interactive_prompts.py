@@ -95,7 +95,7 @@ _BARE_READ = re.compile(
     r"(?:^|[;&(]|\b(?:if|elif|then|else)\b)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
     # No variable name at all is valid: the answer lands in $REPLY.
     r"read(?:\s+(?:-[a-zA-Z0-9]+|\d+))*(?:\s+[A-Za-z_][A-Za-z0-9_]*)*"
-    r"(?:\s*;?\s*then\b.*|\s*(?:\|\||&&).*)?\s*$"
+    r"(?:\s*(?:;|\|\||&&).*)?\s*$"
 )
 _LOOP = re.compile(r"\b(?:while|until|for)\b")
 
@@ -110,9 +110,16 @@ _PWSH_READ = re.compile(
 
 # The Python helpers setup runs, and the batch launcher.
 _PY_READ = re.compile(
-    r"(?<![.\w])input\s*\(|getpass\.getpass\s*\(|click\.confirm\s*\(|sys\.stdin\.read(?:line)?\s*\("
+    r"(?<![.\w])(?:input|getpass)\s*\(|getpass\.getpass\s*\("
+    r"|click\.confirm\s*\(|sys\.stdin\.read(?:line)?\s*\("
 )
-_BAT_READ = re.compile(r"(?:^|[&(]|\bdo\b)\s*@?\s*(?:set\s+/p\b|choice\b)", re.IGNORECASE)
+# In command position: starting the line or a `&`-joined command, after `do`, or
+# as the body of a single-line `if`. Echoing the word `choice` is not a prompt.
+_BAT_READ = re.compile(
+    r"(?:^\s*|[&(]\s*|\bdo\s+)@?\s*(?:set\s+/p\b|choice\b)"
+    r"|^\s*@?\s*(?:if|else)\b.*?\s(?:set\s+/p\b|choice\b)",
+    re.IGNORECASE,
+)
 
 # A helper filename, with or without its `scripts/` prefix: sibling invocations
 # such as "$SCRIPT_DIR/build_deps.sh" carry no prefix. Resolved against the repo
@@ -170,6 +177,29 @@ def _is_interactive_read(line: str, script: str) -> bool:
     return "<" not in code and not piped and bool(_BARE_READ.search(code))
 
 
+# `<<EOF`, not the `<<<` here-string, and not inside a quoted string: install.sh
+# prints a shell-profile marker containing `# <<< Unsloth ... <<<`.
+_HEREDOC = re.compile(r"<<(?!<)-?\s*[\"']?([A-Za-z_][A-Za-z0-9_]*)[\"']?")
+
+
+def _blank_heredocs(lines: list[str]) -> list[str]:
+    """Blank heredoc bodies, keeping the line count. A `read -r reply` shown in a
+    help text is documentation: scripts/uninstall.sh already prints one."""
+    out = []
+    terminator = ""
+    for line in lines:
+        if terminator:
+            out.append("")
+            if line.strip() == terminator:
+                terminator = ""
+            continue
+        out.append(line)
+        match = _HEREDOC.search(_blank_strings(line))
+        if match:
+            terminator = match.group(1)
+    return out
+
+
 def _redirected_loop_bodies(lines: list[str]) -> set[int]:
     """Indices inside a `do ... done < file` block. The redirection feeds every read
     in the body, but it sits on the `done`, so the read line alone looks interactive."""
@@ -182,7 +212,8 @@ def _redirected_loop_bodies(lines: list[str]) -> set[int]:
             if not opened:
                 continue
             start = opened.pop()
-            if "<" in line or "|" in line:
+            # Only an input redirection feeds them: `done | tee` pipes the output.
+            if "<" in line:
                 inside.update(range(start, index))
     return inside
 
@@ -200,6 +231,9 @@ def _outside_docstring(line: str, delimiter: str) -> tuple[str, str]:
             continue
         opener = min((i for i in (line.find('"""'), line.find("'''")) if i != -1), default = -1)
         if opener == -1:
+            return line, ""
+        # An f-string field executes, so this one is code, not documentation.
+        if "f" in line[max(0, opener - 2) : opener].lower():
             return line, ""
         head, delimiter = line[:opener], line[opener : opener + 3]
         rest, delimiter = _outside_docstring(line[opener + 3 :], delimiter)
@@ -304,6 +338,8 @@ def _questions_for_read(lines: list[str], index: int) -> list[str]:
 def find_prompts(script: str, source: str) -> list[tuple[str, int, str]]:
     """Return (script, line_number, normalised question) for every prompt site."""
     lines = blank_comments(source, script).splitlines()
+    if not script.endswith((".ps1", ".py", ".bat")):
+        lines = _blank_heredocs(lines)
     redirected = _redirected_loop_bodies(lines)
     found: dict[tuple[str, str], tuple[str, int, str]] = {}
 
@@ -570,6 +606,57 @@ def test_detects_an_assignment_prefixed_read():
     source = 'printf "  Continue with installation? "\nIFS= read -r _reply\n'
     assert [question for _, _, question in find_prompts("install.sh", source)] == [
         "continue with installation?",
+    ]
+
+
+def test_detects_a_read_followed_by_another_command():
+    source = 'printf "  Continue with installation? "\nread -r _reply; echo done\n'
+    assert [question for _, _, question in find_prompts("install.sh", source)] == [
+        "continue with installation?",
+    ]
+
+
+def test_keeps_a_loop_read_when_only_the_output_is_piped():
+    """`done | tee` consumes the loop's stdout. Its reads still take the terminal."""
+    source = 'while true; do\n    printf "  Enable telemetry? "\n    read -r _reply\ndone | tee install.log\n'
+    questions = [question for _, _, question in find_prompts("install.sh", source)]
+    assert "enable telemetry?" in questions
+
+
+def test_ignores_a_command_documented_in_a_heredoc():
+    source = "_usage() {\n    cat <<EOF\nExample: read -r reply\nEOF\n}\n"
+    assert find_prompts("scripts/uninstall.sh", source) == []
+
+
+def test_a_here_string_does_not_open_a_heredoc():
+    """`<<<` is a here-string, and install.sh prints one inside a profile marker.
+    Reading it as a heredoc blanked the rest of the file, prompts included."""
+    source = (
+        "printf '# <<< Unsloth marker <<<\\n'\nprintf \"  Enable telemetry? \"\nread -r _reply\n"
+    )
+    questions = [question for _, _, question in find_prompts("install.sh", source)]
+    assert "enable telemetry?" in questions
+
+
+def test_detects_a_prompt_inside_a_triple_quoted_f_string():
+    source = 'print(f"""Answer: {input(\'Enable telemetry? \')}""")\n'
+    questions = [
+        question for _, _, question in find_prompts("studio/install_python_stack.py", source)
+    ]
+    assert "enable telemetry?" in questions
+
+
+def test_detects_a_directly_imported_getpass():
+    source = 'print("  Continue with installation? ")\n_reply = getpass()\n'
+    assert [
+        question for _, _, question in find_prompts("studio/install_python_stack.py", source)
+    ] == ["continue with installation?"]
+
+
+def test_detects_a_batch_prompt_in_a_conditional():
+    source = 'if exist config choice /M "Enable telemetry?"\n'
+    assert [question for _, _, question in find_prompts("studio/setup.bat", source)] == [
+        "enable telemetry?",
     ]
 
 
