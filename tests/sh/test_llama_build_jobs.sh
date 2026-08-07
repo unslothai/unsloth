@@ -412,23 +412,30 @@ assert_eq "strict: the job count still comes out" "7" \
 # exported, or bash invoked as sh, gets those semantics, and an unreadable file
 # must cost the cap rather than the install. This is what pins the `|| true` on
 # each read; without them the shell exits before the job count is ever printed.
-run_posix() {
+# The distinguishing form is the assignment: `v=$(reader)` propagates the
+# reader's failure, while passing it as an argument discards the status. The
+# real call site is NCPU=$(_llama_build_jobs), so pin the assignment form.
+run_posix_assign() {  # $1 = a PATH prefix, $2 = the expression to assign from
     PATH="$1:$PATH" bash --posix -c \
-        'set -euo pipefail; . "$1"; shift; eval "$@"' _ "$_STRICT_FILE" "$2" 2>/dev/null
+        'set -euo pipefail; . "$1"; shift; v=$(eval "$@"); printf "SURVIVED[%s]" "$v"' \
+        _ "$_STRICT_FILE" "$2" 2>/dev/null
 }
-assert_eq "POSIX mode: an unreadable meminfo still yields the core count" "20" \
-    "$(run_posix "$_TMPD/noawk" '_llama_jobs_for 20 "$(_usable_ram_mb '"$_TMPD"'/nope)"')"
-assert_eq "POSIX mode: a failing awk still yields the core count" "20" \
-    "$(run_posix "$_TMPD/noawk" '_llama_jobs_for 20 "$(_usable_ram_mb '"$_TMPD"'/meminfo-strict)"')"
-assert_eq "POSIX mode: a failing awk does not abort _cgroup_free_mb" "0" \
-    "$(PATH="$_TMPD/noawk:$PATH" bash --posix -c \
-        'set -euo pipefail; . "$1"; _cgroup_free_mb "$2" "$3" "$4" >/dev/null' \
-        _ "$_STRICT_FILE" "$_TMPD/strict" "$_TMPD/strict.proc" "$_TMPD/strict.mnt" \
-        >/dev/null 2>&1; printf '%s' "$?")"
+assert_eq "POSIX mode: a failing awk does not abort _usable_ram_mb" "SURVIVED[]" \
+    "$(run_posix_assign "$_TMPD/noawk" '_usable_ram_mb '"$_TMPD"'/meminfo-strict')"
+assert_eq "POSIX mode: a failing awk does not abort _cgroup_free_mb" "SURVIVED[]" \
+    "$(run_posix_assign "$_TMPD/noawk" '_cgroup_free_mb '"$_TMPD"'/strict '"$_TMPD"'/strict.proc '"$_TMPD"'/strict.mnt')"
+assert_eq "POSIX mode: a failing awk does not abort _cg_unesc" "SURVIVED[]" \
+    "$(run_posix_assign "$_TMPD/noawk" '_cg_unesc /a/b')"
+assert_eq "POSIX mode: a failing awk does not abort _cg_mounts" "SURVIVED[]" \
+    "$(run_posix_assign "$_TMPD/noawk" '_cg_mounts '"$_TMPD"'/strict.mnt cgroup2')"
+# And with a working awk the numbers are still right under POSIX rules.
 # 12288 MiB available -> (12288 - 2048) / 2048 = 5.
 assert_eq "POSIX mode: the normal path still produces the capped count" "5" \
     "$(bash --posix -c 'set -euo pipefail; . "$1"; _llama_jobs_for 20 "$(_usable_ram_mb "$2")"' \
         _ "$_STRICT_FILE" "$_TMPD/meminfo-strict" 2>/dev/null)"
+assert_eq "POSIX mode: an unreadable meminfo keeps the core count" "20" \
+    "$(bash --posix -c 'set -euo pipefail; . "$1"; _llama_jobs_for 20 "$(_usable_ram_mb "$2")"' \
+        _ "$_STRICT_FILE" "$_TMPD/nope" 2>/dev/null)"
 
 rm -f "$_STRICT_FILE"
 

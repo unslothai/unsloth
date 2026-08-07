@@ -550,7 +550,7 @@ _usable_ram_mb() {
         _avail=$(vm_stat 2>/dev/null | _vm_stat_avail_mb || true)
         if [[ "$_avail" =~ ^[0-9]+$ ]] && [ "$_avail" -gt 0 ]; then _mb=$_avail; fi
     fi
-    _free=$(_cgroup_free_mb /sys/fs/cgroup /proc/self/cgroup /proc/self/mountinfo) || true
+    _free=$(_cgroup_free_mb /sys/fs/cgroup /proc/self/cgroup /proc/self/mountinfo)
     if [[ "$_free" =~ ^[0-9]+$ ]]; then
         if [ -z "$_mb" ] || [ "$_free" -lt "$_mb" ]; then _mb=$_free; fi
     fi
