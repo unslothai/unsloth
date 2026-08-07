@@ -399,8 +399,18 @@ async fn check_watchdog_health(
     let Some(owner) = snapshot.owner else {
         return BackendLiveness::default();
     };
+    // HEALTH_PROBE_TIMEOUT, not the ownership path's default 2s. Every request inside the
+    // probe would otherwise time out during the very GIL stall this watchdog is supposed to
+    // ride out, so the backend came back unverified and the warm-up read below -- which is
+    // gated on that verification -- never ran at all.
     let verified = matches!(
-        crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port), false).await,
+        crate::desktop_backend_owner::probe_owned_backend_state_with_timeout(
+            owner,
+            Some(port),
+            false,
+            HEALTH_PROBE_TIMEOUT,
+        )
+        .await,
         crate::desktop_backend_owner::OwnedBackendProbe::Verified(_)
     );
     // The ownership probe answers "is this still our process", not "is startup over", so
@@ -1107,6 +1117,29 @@ mod tests {
             false,
             super::BACKEND_STARTUP_GRACE_PERIOD
         ));
+    }
+
+    #[test]
+    fn the_adopted_ownership_probe_uses_the_watchdog_budget() {
+        // The warm-up read for an adopted backend is gated on ownership verifying, and that
+        // probe defaults to a 2s per-request budget. At 2s every request inside it times out
+        // during the very GIL stall the watchdog exists to ride out, so the backend reads as
+        // unverified, the warm-up read never runs, and the grace never reopens. Binding the
+        // call to HEALTH_PROBE_TIMEOUT here keeps the two from drifting apart again.
+        let src = include_str!("commands.rs");
+        let start = src
+            .find("async fn check_watchdog_health")
+            .expect("check_watchdog_health moved; update this guard");
+        let body = &src[start..];
+        let body = &body[..body.find("\n}\n").expect("could not find the function end")];
+        assert!(
+            body.contains("probe_owned_backend_state_with_timeout"),
+            "the adopted path is back on the default-timeout ownership probe"
+        );
+        assert!(
+            body.contains("HEALTH_PROBE_TIMEOUT"),
+            "the adopted ownership probe no longer uses the watchdog's probe budget"
+        );
     }
 
     #[test]
