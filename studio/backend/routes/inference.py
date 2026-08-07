@@ -3606,6 +3606,16 @@ def _direct_llama_request(counted: bool = True):
         _direct_llama_request_finished()
 
 
+def _direct_llama_is_busy() -> bool:
+    """Whether a direct llama call (RAG caption/OCR) holds the server right now.
+
+    Tracked separately from the admission snapshot, so it still answers when admission
+    control is off and :func:`_monitor_queue_state` reports nothing at all.
+    """
+    with _direct_llama_inflight_lock:
+        return _direct_llama_inflight > 0
+
+
 def _monitor_queue_state() -> Optional[dict]:
     """Live slot/queue occupancy of the loaded llama-server, for the API monitor."""
     # Disabled admission takes no leases and stays at capacity 1, so a multi-slot
@@ -8279,15 +8289,22 @@ async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
     """Return recent OpenAI-compatible API activity for Unsloth."""
     # Off-loop: both helpers reach get_inference_backend(), whose first call waits on
     # hardware detection, and this is polled from first paint.
-    active_model, context_length, queue = await asyncio.to_thread(
-        lambda: (_monitor_active_model(), _monitor_context_length(), _monitor_queue_state())
+    active_model, context_length, queue, direct_busy = await asyncio.to_thread(
+        lambda: (
+            _monitor_active_model(),
+            _monitor_context_length(),
+            _monitor_queue_state(),
+            _direct_llama_is_busy(),
+        )
     )
     active_requests = api_monitor.active_count(subject = current_subject)
     # Slots the rows cannot see: direct llama calls (RAG caption/OCR) open no row, logging
     # may be off, and another subject's work is not counted here. The queue readout beside
     # this is already server-wide, so deriving from rows alone reports Ready next to busy.
     queue_busy = bool(queue) and bool(queue.get("active") or queue.get("queued"))
-    if active_requests or queue_busy:
+    # direct_busy stands alone: with admission control off the queue readout is None, and
+    # deriving only from it would report Ready while a caption/OCR call holds the server.
+    if active_requests or queue_busy or direct_busy:
         operating_status = "generating"
     elif active_model:
         operating_status = "ready"
@@ -10625,11 +10642,19 @@ async def openai_chat_completions(
                                     completion_id, created, model_name, chunk_text
                                 )
 
+                        _audio_stats = _audio_stats_holder.get("stats")
                         _audio_finish = (
-                            "stop"
-                            if cancelled
-                            else _stats_finish_reason(_audio_stats_holder.get("stats"))
+                            "stop" if cancelled else _stats_finish_reason(_audio_stats)
                         )
+                        # The worker fills this in for both backends (MLX adds timings),
+                        # so the row has counts and a speed like every other request.
+                        if isinstance(_audio_stats, dict):
+                            _monitor_usage(
+                                monitor_id,
+                                _audio_stats.get("usage"),
+                                _monitor_context_length(),
+                                timings = _audio_stats.get("timings"),
+                            )
                         # Before finish(): that is where the reason is settled, and a
                         # later write would escape the clearing a cancelled row gets.
                         api_monitor.set_perf(monitor_id, stop_reason = _audio_finish)
@@ -10685,11 +10710,17 @@ async def openai_chat_completions(
                     # Nested under the except arms too: api_monitor.fail() can throw, and a leaked entry 409s swaps.
                     _tracker.__exit__(None, None, None)
                 api_monitor.set_reply(monitor_id, full_text)
+                _audio_json_stats = _audio_stats_holder.get("stats")
                 _audio_json_finish = (
-                    "stop"
-                    if cancel_event.is_set()
-                    else _stats_finish_reason(_audio_stats_holder.get("stats"))
+                    "stop" if cancel_event.is_set() else _stats_finish_reason(_audio_json_stats)
                 )
+                if isinstance(_audio_json_stats, dict):
+                    _monitor_usage(
+                        monitor_id,
+                        _audio_json_stats.get("usage"),
+                        _monitor_context_length(),
+                        timings = _audio_json_stats.get("timings"),
+                    )
                 api_monitor.set_perf(monitor_id, stop_reason = _audio_json_finish)
                 api_monitor.finish(monitor_id)
                 response = ChatCompletion(
@@ -11143,6 +11174,8 @@ async def openai_chat_completions(
                         final_reasoning, final_visible = reasoning_extractor.finish()
                         chunks = []
                         if final_reasoning:
+                            # Held-back markers can make this the FIRST output of all.
+                            api_monitor.mark_first_token(monitor_id)
                             chunks.append(
                                 _gguf_chat_delta_line(
                                     ChoiceDelta(reasoning_content = final_reasoning)
@@ -11836,6 +11869,8 @@ async def openai_chat_completions(
 
                     final_reasoning, final_visible = reasoning_extractor.finish()
                     if final_reasoning:
+                        # Held-back markers can make this the FIRST output of all.
+                        api_monitor.mark_first_token(monitor_id)
                         yield _gguf_chat_delta_line(ChoiceDelta(reasoning_content = final_reasoning))
                     if final_visible:
                         api_monitor.append_reply(monitor_id, final_visible)
@@ -12575,6 +12610,8 @@ async def openai_chat_completions(
                     fr, fv = reasoning_extractor.finish()
                     out = []
                     if fr:
+                        # Held-back markers can make this the FIRST output of all.
+                        api_monitor.mark_first_token(monitor_id)
                         out.append(_chat_reasoning_chunk(completion_id, created, model_name, fr))
                     if fv:
                         api_monitor.append_reply(monitor_id, fv)
@@ -13117,6 +13154,8 @@ async def openai_chat_completions(
 
                 final_reasoning, final_visible = reasoning_extractor.finish()
                 if final_reasoning:
+                    # Held-back markers can make this the FIRST output of all.
+                    api_monitor.mark_first_token(monitor_id)
                     yield _chat_reasoning_chunk(completion_id, created, model_name, final_reasoning)
                 if final_visible:
                     if healer is None:
@@ -15591,6 +15630,8 @@ async def _responses_stream(
 
         final_reasoning, final_visible = extractor.finish()
         if final_reasoning:
+            # Held-back markers can make this the FIRST output of all.
+            api_monitor.mark_first_token(monitor_id)
             for event in _ensure_reasoning_open():
                 yield event
             full_reasoning += final_reasoning

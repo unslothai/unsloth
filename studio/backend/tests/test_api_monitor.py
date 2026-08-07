@@ -1487,3 +1487,37 @@ def test_wants_stream_usage_reads_the_callers_opt_in(include_usage, expected):
     payload = SimpleNamespace(stream_options = {"include_usage": include_usage})
     assert inf._wants_stream_usage(payload) is expected
     assert inf._wants_stream_usage(SimpleNamespace(stream_options = None)) is False
+
+
+def test_direct_llama_work_is_busy_without_the_admission_snapshot(monkeypatch):
+    # With UNSLOTH_LLAMA_ADMISSION_CONTROL=off the queue readout is None, so a caption or
+    # OCR call (which opens no row) would leave the row saying Ready while the server works.
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 3))
+    monkeypatch.setattr(inf, "_monitor_active_model", lambda: "org/M-GGUF")
+    monkeypatch.setattr(inf, "_monitor_context_length", lambda: 4096)
+    monkeypatch.setattr(inf, "_monitor_queue_state", lambda: None)
+    monkeypatch.setattr(inf, "_direct_llama_inflight", 1)
+
+    app = FastAPI()
+    app.include_router(inf.studio_router)
+    app.dependency_overrides = {get_current_subject: lambda: "alice"}
+    body = TestClient(app).get("/monitor").json()
+
+    assert body["active_requests"] == 0
+    assert body["queue"] is None
+    assert body["status"] == "generating"
+
+    # Back to ready once it finishes.
+    monkeypatch.setattr(inf, "_direct_llama_inflight", 0)
+    assert TestClient(app).get("/monitor").json()["status"] == "ready"
+
+
+def test_direct_busy_reads_the_live_counter(monkeypatch):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "_direct_llama_inflight", 0)
+    assert inf._direct_llama_is_busy() is False
+    monkeypatch.setattr(inf, "_direct_llama_inflight", 2)
+    assert inf._direct_llama_is_busy() is True
