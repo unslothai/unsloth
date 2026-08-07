@@ -210,6 +210,29 @@ def test_refresh_environment_cannot_clobber_the_python_encoding_vars() -> None:
     assert "$key -eq 'PYTHONUTF8' -or $key -eq 'PYTHONIOENCODING'" in source
 
 
+@pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
+def test_entry_scripts_bind_a_utf8_writer_when_there_is_no_console(path: Path) -> None:
+    """The setter needs a console handle, and the desktop spawns us without one.
+
+    It P/Invokes SetConsoleOutputCP and drops the cached writer BEFORE throwing,
+    assigning OutputEncoding only after, so Console.Out would rebuild on the old
+    code page. Swallowing the exception alone leaves redirected step/substep,
+    whose only sink is Console.Out, still emitting locale-encoded bytes.
+    """
+    source = path.read_text(encoding = "utf-8")
+    assert "[Console]::OpenStandardOutput()" in source
+    assert "[Console]::SetOut(" in source
+
+
+def test_update_command_uses_the_utf8_switch_not_just_env() -> None:
+    """-I implies -E, so the isolated update child ignores every PYTHON* var.
+
+    https://docs.python.org/3/using/cmdline.html#cmdoption-I
+    """
+    source = (REPO_ROOT / "studio" / "src-tauri" / "src" / "update.rs").read_text(encoding = "utf-8")
+    assert '"-X", "utf8"' in source, "isolated Python child needs -X utf8, env vars are ignored"
+
+
 @pytest.mark.parametrize(
     "rust_file",
     ["install.rs", "update.rs", "process.rs"],

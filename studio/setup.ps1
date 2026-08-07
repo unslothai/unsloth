@@ -69,7 +69,20 @@ if ($PSVersionTable.PSEdition -ne 'Core' -and $env:SystemRoot) {
 # throws when there is no console (CREATE_NO_WINDOW). ASCII-only, because 5.1
 # parses these BOM-less files as ANSI.
 $_UnslothUtf8NoBom = New-Object System.Text.UTF8Encoding $false
-try { [Console]::OutputEncoding = $_UnslothUtf8NoBom } catch { }
+try {
+    [Console]::OutputEncoding = $_UnslothUtf8NoBom
+} catch {
+    # No console to set a code page on, which is how the desktop app spawns us
+    # (CREATE_NO_WINDOW). The setter P/Invokes SetConsoleOutputCP and drops the
+    # cached writer BEFORE it throws, while assigning OutputEncoding only after,
+    # so [Console]::Out would rebuild on the OLD code page. Bind an explicit
+    # UTF-8 writer instead: redirected step/substep use it as their only sink.
+    try {
+        $_UnslothStdout = New-Object System.IO.StreamWriter -ArgumentList ([Console]::OpenStandardOutput()), $_UnslothUtf8NoBom
+        $_UnslothStdout.AutoFlush = $true
+        [Console]::SetOut($_UnslothStdout)
+    } catch { }
+}
 $OutputEncoding = $_UnslothUtf8NoBom
 $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'

@@ -53,7 +53,17 @@ function Install-UnslothStudio {
     # write. The console setter throws when there is no console, which is how
     # the desktop app spawns us (CREATE_NO_WINDOW, install.rs).
     $_UnslothUtf8NoBom = New-Object System.Text.UTF8Encoding $false
-    try { [Console]::OutputEncoding = $_UnslothUtf8NoBom } catch { }
+    try {
+        [Console]::OutputEncoding = $_UnslothUtf8NoBom
+    } catch {
+        # Same no-console fallback as studio/setup.ps1: the setter drops the
+        # cached writer before throwing, so bind a UTF-8 one explicitly.
+        try {
+            $_UnslothStdout = New-Object System.IO.StreamWriter -ArgumentList ([Console]::OpenStandardOutput()), $_UnslothUtf8NoBom
+            $_UnslothStdout.AutoFlush = $true
+            [Console]::SetOut($_UnslothStdout)
+        } catch { }
+    }
     $OutputEncoding = $_UnslothUtf8NoBom
     $env:PYTHONUTF8 = '1'
     $env:PYTHONIOENCODING = 'utf-8'
