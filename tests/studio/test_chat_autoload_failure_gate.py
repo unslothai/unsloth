@@ -1153,7 +1153,7 @@ def test_a_failed_cancel_does_not_latch_the_toast_action_off():
     helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
     helper = helper.split("async function autoLoadSmallestModel", 1)[0]
     # In flight only, cleared when the request settles.
-    assert "if (cancelInFlight || active.state === \"cancelling\") return true;" in helper
+    assert 'if (cancelInFlight || active.state === "cancelling") return true;' in helper
     assert "cancelInFlight = false;\n    });" in helper
     # The subscription fires the deferred attempt once; retries come from clicks.
     assert "if (!cancelEverIssued) issueCancel();" in helper
@@ -1182,9 +1182,7 @@ def test_the_token_is_not_prepared_when_the_default_is_already_on_disk():
         "{ variants: [{ quant: 'UD-Q4_K_XL', filename: 'm-UD-Q4_K_XL.gguf',"
         " downloaded: true, size_bytes: 100 }] }"
     )
-    out = _run(
-        f"scenario({{ variants: {{ 'unsloth/gemma-4-E2B-it-GGUF': {downloaded} }} }})"
-    )
+    out = _run(f"scenario({{ variants: {{ 'unsloth/gemma-4-E2B-it-GGUF': {downloaded} }} }})")
     kinds = [event["kind"] for event in out["events"]]
     assert "prepareHfToken" not in kinds
     assert _downloads_started(out) == []
