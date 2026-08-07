@@ -4465,3 +4465,62 @@ def test_dataset_status_includes_generation(monkeypatch):
 
     assert result.state == "running"
     assert result.generation == 4
+
+
+def _write_local_model(root: Path, name: str, config: dict, *, modules: bool = False) -> Path:
+    path = root / name
+    path.mkdir(parents = True)
+    (path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    (path / "model.safetensors").write_bytes(b"\0" * 16)
+    if modules:
+        (path / "modules.json").write_text("[]", encoding = "utf-8")
+    return path
+
+
+@pytest.mark.parametrize(
+    "config, modules, expected",
+    [
+        ({"architectures": ["LlamaForCausalLM"], "model_type": "llama"}, False, True),
+        ({"architectures": ["T5ForConditionalGeneration"], "model_type": "t5"}, False, True),
+        ({"auto_map": {"AutoModelForCausalLM": "m.C"}, "model_type": "bert"}, False, True),
+        ({"architectures": ["BertModel"], "model_type": "bert"}, False, False),
+        ({"architectures": ["BertModel"], "model_type": "bert"}, True, False),
+        ({"architectures": ["RobertaForMaskedLM"], "model_type": "roberta"}, False, False),
+        ({"architectures": ["CLIPModel"], "model_type": "clip"}, False, False),
+        # Unknown architectures must fail OPEN: never hide a real chat model.
+        ({"architectures": ["SomeCustomNet"], "model_type": "custom"}, False, None),
+        ({}, False, None),
+    ],
+)
+def test_local_transformers_chat_classification(tmp_path, config, modules, expected):
+    """A safetensors dir is marked chat-capable on file format alone, so an
+    embedding export looked like a chat model. Chat auto-load picks the
+    smallest candidate first, and those are small."""
+    path = _write_local_model(tmp_path, "row", config, modules = modules)
+    assert model_common._local_transformers_can_chat(path) is expected
+
+
+def test_local_embedding_model_is_not_chat_capable(tmp_path):
+    """End to end through the scanner: the row is still listed (it is how the
+    user sees and deletes it) but can_chat is false, so background chat
+    auto-load skips it."""
+    _write_local_model(
+        tmp_path,
+        "all-MiniLM-L6-v2",
+        {"architectures": ["BertModel"], "model_type": "bert"},
+        modules = True,
+    )
+    _write_local_model(
+        tmp_path,
+        "tiny-llama",
+        {"architectures": ["LlamaForCausalLM"], "model_type": "llama"},
+    )
+    rows = {
+        row.display_name: row
+        for path in sorted(tmp_path.iterdir())
+        for row in model_common._classify_local_path(path, "models_dir")
+    }
+    assert rows["all-MiniLM-L6-v2"].capabilities.can_chat is False
+    assert rows["tiny-llama"].capabilities.can_chat is True
+    # Training and LoRA support are unchanged: this only gates chat.
+    assert rows["all-MiniLM-L6-v2"].capabilities.can_train is True

@@ -118,15 +118,144 @@ def _runtime_for_format(model_format: ModelFormat) -> ModelRuntime:
     return "unknown"
 
 
+# Transformers class names for generation-capable models. Deliberately narrow:
+# an unknown or custom architecture must not be called non-chat merely because
+# its class name is unfamiliar.
+_GENERATIVE_ARCHITECTURE_SUFFIXES = (
+    "ForCausalLM",
+    "ForConditionalGeneration",
+    "ForSeq2SeqLM",
+    "LMHeadModel",
+)
+_NON_GENERATIVE_ARCHITECTURE_SUFFIXES = (
+    "ForAudioClassification",
+    "ForCTC",
+    "ForFeatureExtraction",
+    "ForImageClassification",
+    "ForImageTextRetrieval",
+    "ForMaskedLM",
+    "ForMultipleChoice",
+    "ForNextSentencePrediction",
+    "ForObjectDetection",
+    "ForPreTraining",
+    "ForQuestionAnswering",
+    "ForRetrieval",
+    "ForRewardModel",
+    "ForSemanticSegmentation",
+    "ForSequenceClassification",
+    "ForTextEncoding",
+    "ForTokenClassification",
+    "ForVideoClassification",
+    "ForZeroShotImageClassification",
+)
+_ENCODER_ONLY_MODEL_TYPES = frozenset(
+    {
+        "albert",
+        "bert",
+        "camembert",
+        "chinese_clip",
+        "clip",
+        "deberta",
+        "deberta-v2",
+        "distilbert",
+        "electra",
+        "funnel",
+        "ibert",
+        "layoutlm",
+        "layoutlmv2",
+        "layoutlmv3",
+        "longformer",
+        "megatron-bert",
+        "mobilebert",
+        "modernbert",
+        "mpnet",
+        "nystromformer",
+        "rembert",
+        "roberta",
+        "roformer",
+        "siglip",
+        "siglip2",
+        "squeezebert",
+        "vision-text-dual-encoder",
+        "xlm-roberta",
+    }
+)
+
+
+def _read_local_json_object(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding = "utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return {}
+
+
+def _local_transformers_can_chat(path: Path) -> Optional[bool]:
+    """False for a locally identifiable non-generative Transformers row.
+
+    ``None`` means the metadata is inconclusive and the format capability
+    stands. Fails open, so a custom architecture is never hidden.
+
+    Without this, an embedding export (config.json plus model.safetensors) is
+    marked chat-capable on file format alone. Those are small, so chat
+    auto-load would try them before a real local chat model and could spend
+    its whole attempt budget on them.
+    """
+    if not _safe_is_dir(path):
+        return None
+
+    # SentenceTransformers exports carry this marker even when the config
+    # names a broadly reusable encoder class.
+    try:
+        if (path / "modules.json").is_file():
+            return False
+    except OSError:
+        return None
+
+    config = _read_local_json_object(path / "config.json")
+    if not config:
+        return None
+
+    auto_map = config.get("auto_map")
+    if isinstance(auto_map, dict) and any(
+        key in auto_map for key in ("AutoModelForCausalLM", "AutoModelForSeq2SeqLM")
+    ):
+        return True
+
+    architectures = config.get("architectures")
+    names = (
+        [name.strip() for name in architectures if isinstance(name, str) and name.strip()]
+        if isinstance(architectures, list)
+        else []
+    )
+    if any(name.endswith(_GENERATIVE_ARCHITECTURE_SUFFIXES) for name in names):
+        return True
+    if names and all(name.endswith(_NON_GENERATIVE_ARCHITECTURE_SUFFIXES) for name in names):
+        return False
+
+    model_type = config.get("model_type")
+    normalized_type = model_type.strip().lower() if isinstance(model_type, str) else ""
+    if (
+        normalized_type in _ENCODER_ONLY_MODEL_TYPES
+        and names
+        and all(name.endswith("Model") for name in names)
+    ):
+        return False
+    return None
+
+
 def _capabilities_for_format(
     model_format: ModelFormat,
     source: str,
     *,
     partial: bool = False,
     requires_variant: bool = False,
+    can_chat_override: Optional[bool] = None,
 ) -> LocalModelCapabilities:
     is_complete = not partial
     can_chat = model_format in {"gguf", "safetensors", "adapter", "checkpoint"}
+    if can_chat_override is not None:
+        can_chat = can_chat and can_chat_override
     can_train = model_format in {"safetensors", "checkpoint"} and is_complete
     return LocalModelCapabilities(
         can_train = can_train,
@@ -466,6 +595,7 @@ def _local_model_info(
     adapter_type: Optional[str] = None,
     training_method: Optional[str] = None,
     active_cache: Optional[bool] = None,
+    can_chat_override: Optional[bool] = None,
 ) -> LocalModelInfo:
     load_id = (
         model_id
@@ -502,6 +632,7 @@ def _local_model_info(
             source,
             partial = partial,
             requires_variant = requires_variant,
+            can_chat_override = can_chat_override,
         ),
     )
 
@@ -616,6 +747,11 @@ def _classify_local_path(
                 adapter_type = adapter_type if model_format == "adapter" else None,
                 training_method = training_method if model_format == "adapter" else None,
                 active_cache = active_cache,
+                can_chat_override = (
+                    _local_transformers_can_chat(scan_path)
+                    if model_format in {"safetensors", "checkpoint"}
+                    else None
+                ),
             )
         )
     elif not rows:

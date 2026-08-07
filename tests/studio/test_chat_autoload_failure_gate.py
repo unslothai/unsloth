@@ -53,6 +53,8 @@ export type Scenario = {
   localModels: any[];
   chatOnly: boolean;
   deviceType: string;
+  /** Click the toast's Cancel while requestStart is still in its preflights. */
+  cancelDuringStart: boolean;
   variants: Record<string, any>;
   lastLoaded: any;
   validate: (payload: any) => any;
@@ -69,6 +71,10 @@ export function setScenario(scenario: Scenario) {
   EVENTS.length = 0;
   STORE = makeStore();
   DOWNLOAD_LISTENERS = [];
+  DOWNLOAD_STATE = { jobs: {} };
+  DOWNLOAD_SUBS = [];
+  CANCELLED_KEYS = new Set();
+  CANCEL_TOAST_ACTION = null;
 }
 
 const GPU_LAYERS_AUTO = -1;
@@ -166,7 +172,13 @@ const toast: any = Object.assign(
   (_msg: string, _opts?: any) => "toast-id",
   {
     message: (msg: string, opts?: any) => {
-      EVENTS.push({ kind: "toast.message", msg, description: opts?.description });
+      EVENTS.push({
+        kind: "toast.message",
+        msg,
+        description: opts?.description,
+        hasCancel: Boolean(opts?.action),
+      });
+      if (opts?.action?.onClick) CANCEL_TOAST_ACTION = opts.action.onClick;
       return "toast-id";
     },
     success: (msg: string) => EVENTS.push({ kind: "toast.success", msg }),
@@ -204,11 +216,13 @@ function loadedGpuMemoryFields(_x: any) { return {}; }
 function resolveLoadedSpeculativeSettings(_x: any) { return {}; }
 function isMultimodalResponse(_x: any) { return false; }
 
-async function listCachedGguf() {
+async function listCachedGguf(signal?: any) {
+  EVENTS.push({ kind: "listCachedGguf", hasSignal: Boolean(signal) });
   if (SCENARIO.ggufRepos === "throw") throw new Error("cached gguf listing failed");
   return SCENARIO.ggufRepos as any;
 }
-async function listCachedModels() {
+async function listCachedModels(_token?: any, signal?: any) {
+  EVENTS.push({ kind: "listCachedModels", hasSignal: Boolean(signal) });
   if (SCENARIO.modelRepos === "throw") throw new Error("cached model listing failed");
   return SCENARIO.modelRepos as any;
 }
@@ -239,10 +253,25 @@ const DOWNLOAD_KIND = { MODEL: "model", DATASET: "dataset" } as const;
 function jobKeyOf(kind: string, repoId: string, variant: string | null) {
   return variant ? `${kind}:${repoId}#${variant}` : `${kind}:${repoId}`;
 }
-function selectActiveJob(..._a: any[]) { return null; }
+function selectActiveJob(state: any, kind: string, repoId: string, variant?: any) {
+  const job = state.jobs[jobKeyOf(kind, repoId, variant ?? null)];
+  return job && job.state !== "cancelled" ? job : null;
+}
+let DOWNLOAD_STATE: any = { jobs: {} };
+let DOWNLOAD_SUBS: any[] = [];
+let CANCELLED_KEYS = new Set<string>();
+let CANCEL_TOAST_ACTION: any = null;
+function notifyDownloadStore() {
+  for (const listener of [...DOWNLOAD_SUBS]) listener(DOWNLOAD_STATE);
+}
 const useDownloadManagerStore = {
-  getState: () => ({ jobs: {} }),
-  subscribe: (_listener: any) => () => {},
+  getState: () => DOWNLOAD_STATE,
+  subscribe: (listener: any) => {
+    DOWNLOAD_SUBS.push(listener);
+    return () => {
+      DOWNLOAD_SUBS = DOWNLOAD_SUBS.filter((entry) => entry !== listener);
+    };
+  },
 };
 let DOWNLOAD_LISTENERS: any[] = [];
 function subscribeJobListeners(_kind: string, _repoId: string, handlers: any) {
@@ -262,8 +291,26 @@ const downloadManager = {
     if (behaviour === "busy" || behaviour === "conflict" || behaviour === "error") {
       return behaviour;
     }
+    // The real requestStart runs transport preflights before any job exists.
+    // A scenario can click the toast's Cancel inside that window.
+    if (SCENARIO.cancelDuringStart) CANCEL_TOAST_ACTION?.();
+    const key = jobKeyOf(request.kind, request.repoId, request.variant);
+    DOWNLOAD_STATE = {
+      jobs: {
+        ...DOWNLOAD_STATE.jobs,
+        [key]: {
+          key,
+          variant: request.variant,
+          state: "running",
+          downloadedBytes: 0,
+          expectedBytes: request.expectedBytes,
+        },
+      },
+    };
+    notifyDownloadStore();
     // Terminal events land on a later turn, as the real poll loop's do.
     queueMicrotask(() => {
+      if (CANCELLED_KEYS.has(key)) return;
       for (const handlers of [...DOWNLOAD_LISTENERS]) {
         if (behaviour === "complete") {
           handlers.onComplete?.(request.variant, request.expectedBytes);
@@ -278,6 +325,17 @@ const downloadManager = {
   },
   cancel: async (key: string) => {
     EVENTS.push({ kind: "download.cancel", key });
+    CANCELLED_KEYS.add(key);
+    const job = DOWNLOAD_STATE.jobs[key];
+    if (job) {
+      DOWNLOAD_STATE = {
+        jobs: { ...DOWNLOAD_STATE.jobs, [key]: { ...job, state: "cancelled" } },
+      };
+      notifyDownloadStore();
+    }
+    for (const handlers of [...DOWNLOAD_LISTENERS]) {
+      handlers.onCancelled?.(job?.variant ?? null);
+    }
   },
 };
 async function listGgufVariants(repoId: string, _b?: any, _c?: any) {
@@ -350,6 +408,7 @@ SCENARIO_HELPERS = """
       localModels: [],
       chatOnly: false,
       deviceType: "linux",
+      cancelDuringStart: false,
       variants: {},
       lastLoaded: null,
       validate: VALIDATE_OK,
@@ -473,7 +532,11 @@ def _run(scenario_expr: str) -> dict:
         + textwrap.dedent(
             f"""
         setScenario({scenario_expr});
-        const result = await autoLoadSmallestModel();
+        // The real send path always supplies one, so the signal plumbing is
+        // exercised by every scenario.
+        const result = await autoLoadSmallestModel({{
+          abortSignal: new AbortController().signal,
+        }});
         console.log(JSON.stringify({{ result, events: EVENTS }}));
         """
         )
@@ -856,3 +919,109 @@ def test_a_mac_chat_only_install_still_auto_loads_a_local_mlx_model():
     )
     out = _run(f"scenario({{ chatOnly: true, deviceType: 'mac', localModels: [{mlx}] }})")
     assert _loaded_paths(out) == ["/models/mlx"]
+
+
+# --- review fixes on the on-device cascade ---
+
+
+def test_an_image_generation_row_is_never_auto_loaded_for_chat():
+    """The backend tags on-device diffusion rows with an image/video task while
+    can_chat stays true on file format alone. The chat picker routes those to
+    the Images page on click; a background load has no routing step, so it has
+    to skip them or the chat turn is sent to a diffusion runtime."""
+    for task in ("text-to-image", "text-to-video", "image-diffusion-unsupported"):
+        rows = (
+            f"{{ ...LOCAL_GGUF, id: 'img', load_id: 'img', path: 'img', task: '{task}',"
+            " size_bytes: 1 }, LOCAL_GGUF"
+        )
+        out = _run(f"scenario({{ localModels: [{rows}] }})")
+        # 'img' is the smaller row, so only the task gate can keep it out.
+        assert _loaded_paths(out) == [LOCAL_GGUF_PATH], task
+
+
+def test_a_chat_row_with_no_task_tag_still_auto_loads():
+    """Control for the gate above: the backend leaves task null for chat LLMs."""
+    out = _run("scenario({ localModels: [{ ...LOCAL_GGUF, task: null }] })")
+    assert _loaded_paths(out) == [LOCAL_GGUF_PATH]
+
+
+def test_a_failed_quant_falls_through_to_the_next_one_in_the_same_repo():
+    """A repo can hold several downloaded quants. The smallest being corrupt
+    must not cost the whole repo when a larger valid quant sits beside it."""
+    variants = (
+        "{ variants: ["
+        "{ quant: 'Q2_K', filename: 'm-Q2_K.gguf', downloaded: true, size_bytes: 100 },"
+        "{ quant: 'Q4_K_M', filename: 'm-Q4_K_M.gguf', downloaded: true, size_bytes: 200 }"
+        "] }"
+    )
+    out = _run(
+        f"scenario({{ ggufRepos: [GEMMA], variants: {{ [GEMMA.repo_id]: {variants} }},"
+        " load: (p) => p.gguf_variant === 'Q2_K' ? new Error(OOM) : LOADED(p) })"
+    )
+
+    assert [
+        event["gguf_variant"] for event in out["events"] if event["kind"] == "loadModel"
+    ] == ["Q2_K", "Q4_K_M"]
+    assert out["result"]["loaded"] is True
+    assert _downloads_started(out) == []
+
+
+def test_the_variant_retry_still_respects_the_attempt_cap():
+    """Guard on the loop above: a repo of broken quants must not spin."""
+    variants = (
+        "{ variants: [1,2,3,4,5,6].map((i) => ({ quant: `Q${i}`,"
+        " filename: `m-Q${i}.gguf`, downloaded: true, size_bytes: i })) }"
+    )
+    out = _run(
+        f"scenario({{ ggufRepos: [GEMMA], variants: {{ [GEMMA.repo_id]: {variants} }},"
+        " load: () => new Error(OOM) })"
+    )
+
+    assert len(_loaded_paths(out)) == 3
+    assert _downloads_started(out) == []
+
+
+def test_cached_inventory_lookups_carry_the_run_abort_signal():
+    """Both are raw fetches with no timeout of their own, so a stall would hold
+    the model-loading lease open after the user stops the send."""
+    out = _run("scenario({})")
+    for kind in ("listCachedGguf", "listCachedModels"):
+        [call] = [event for event in out["events"] if event["kind"] == kind]
+        assert call["hasSignal"] is True, kind
+
+
+def test_cancel_during_the_download_preflight_still_stops_it():
+    """requestStart runs transport preflights before the job exists, and cancel
+    no-ops on a missing key, so the first Cancel click used to be swallowed and
+    the download started anyway."""
+    out = _run("scenario({ cancelDuringStart: true })")
+
+    assert [event["kind"] for event in out["events"]].count("download.cancel") >= 1
+    assert _loaded_paths(out) == []
+    assert out["result"]["loaded"] is False
+
+
+def test_the_download_toast_carries_a_cancel_action():
+    out = _run("scenario({})")
+    assert any(
+        event.get("hasCancel") and "Getting Gemma 4 E2B ready" in event["msg"]
+        for event in _toasts(out, "toast.message")
+    )
+
+
+def test_remembered_posix_paths_match_case_sensitively():
+    """Two local models on Linux can differ only by path casing; folding them
+    marks both as the remembered one and can auto-load the wrong model."""
+    rows = (
+        "{ ...LOCAL_GGUF, id: '/models/Foo.gguf', load_id: '/models/Foo.gguf',"
+        " path: '/models/Foo.gguf', size_bytes: 200 },"
+        " { ...LOCAL_GGUF, id: '/models/foo.gguf', load_id: '/models/foo.gguf',"
+        " path: '/models/foo.gguf', size_bytes: 100 }"
+    )
+    out = _run(
+        f"scenario({{ localModels: [{rows}],"
+        " lastLoaded: { id: '/models/Foo.gguf', kind: 'gguf', ggufVariant: null } })"
+    )
+
+    # Lowercasing would rank both as remembered and let the smaller one win.
+    assert _loaded_paths(out) == ["/models/Foo.gguf"]

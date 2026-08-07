@@ -1867,6 +1867,16 @@ function isChattableCachedRepo(repo: {
   return repo.partial !== true && repo.capabilities?.can_chat !== false;
 }
 
+// Tasks the backend tags an on-device row with. It only ever sets one for an
+// image or video model (a chat LLM stays null), and the chat picker routes
+// those to the Images/Video page on click. A background load has no routing
+// step, so it must skip them or the chat turn goes to a diffusion runtime.
+const IMAGE_OR_VIDEO_TASKS: ReadonlySet<string> = new Set([
+  "text-to-image",
+  "text-to-video",
+  "image-diffusion-unsupported",
+]);
+
 // Scan folders the picker exposes. hf_cache is already in the cached lists,
 // and ollama links are not loadable.
 const AUTO_LOAD_LOCAL_SOURCES: ReadonlySet<string> = new Set([
@@ -1887,6 +1897,7 @@ function isAutoLoadableLocalRow(row: LocalModelInfo): boolean {
     row.partial !== true &&
     row.model_format !== "adapter" &&
     row.model_format !== "checkpoint" &&
+    !IMAGE_OR_VIDEO_TASKS.has(row.task ?? "") &&
     runsOnThisPlatform(row) &&
     !isHiddenModelId(row.model_id, row.id, row.path)
   );
@@ -1928,10 +1939,14 @@ type AutoLoadSource = {
 
 // POSIX paths keep their case (Linux distinguishes /models/Foo from
 // /models/foo); repo ids and Windows paths fold, as the backend resolves them.
-function autoLoadSourceKey(source: AutoLoadSource): string {
-  const target = source.loadId;
+function normalizeTarget(value: string): string {
+  const target = value.trim();
   const posixPath = /^[/~]/.test(target) && !/^[A-Za-z]:[\\/]/.test(target);
-  return `${source.kind}:${posixPath ? target : target.toLowerCase()}`;
+  return posixPath ? target : target.toLowerCase();
+}
+
+function autoLoadSourceKey(source: AutoLoadSource): string {
+  return `${source.kind}:${normalizeTarget(source.loadId)}`;
 }
 
 function buildAutoLoadSources(
@@ -1992,9 +2007,12 @@ function isRememberedSource(
   remembered: { id: string; kind: LastLocalModelKind },
 ): boolean {
   if (source.kind !== remembered.kind) return false;
-  const target = remembered.id.trim().toLowerCase();
+  // Same case rules as the dedupe key: folding a POSIX path would mark two
+  // models that differ only by casing as both being the remembered one.
+  const target = normalizeTarget(remembered.id);
   return (
-    source.id.toLowerCase() === target || source.loadId.toLowerCase() === target
+    normalizeTarget(source.id) === target ||
+    normalizeTarget(source.loadId) === target
   );
 }
 
@@ -2111,14 +2129,29 @@ async function ensureDefaultModelDownloaded(
     expectedBytes,
   };
   const jobKey = jobKeyOf(request.kind, request.repoId, request.variant);
-  const cancelDownload = (): void => {
+  // requestStart runs transport preflights before the job exists, and cancel()
+  // no-ops on a missing key. Remember the click and re-issue it once the job
+  // appears, or the first Cancel is silently swallowed.
+  let cancelRequested = false;
+  let cancelIssued = false;
+  // Cancelling patches the job, which wakes the store subscription below, so
+  // this must fire once or the two bounce off each other.
+  const cancelActiveJob = (): boolean => {
+    if (cancelIssued) return true;
     const active = selectActiveJob(
       useDownloadManagerStore.getState(),
       request.kind,
       request.repoId,
       request.variant,
     );
-    void downloadManager.cancel(active?.key ?? jobKey);
+    if (!active) return false;
+    cancelIssued = true;
+    void downloadManager.cancel(active.key);
+    return true;
+  };
+  const cancelDownload = (): void => {
+    cancelRequested = true;
+    cancelActiveJob();
   };
   const totalLabel = formatDownloadBytes(expectedBytes);
   const description =
@@ -2156,7 +2189,13 @@ async function ensureDefaultModelDownloaded(
     cleanups.push(
       useDownloadManagerStore.subscribe((state) => {
         const job = state.jobs[jobKey];
-        if (!job || job.state === "cancelling") return;
+        if (!job) return;
+        // Cancelled during the preflights: stop it as soon as it exists.
+        if (cancelRequested) {
+          cancelActiveJob();
+          return;
+        }
+        if (job.state === "cancelling") return;
         const done = formatDownloadBytes(job.downloadedBytes);
         const total = formatDownloadBytes(job.expectedBytes) || totalLabel;
         if (!done || !total) return;
@@ -2177,7 +2216,15 @@ async function ensureDefaultModelDownloaded(
 
     void downloadManager.requestStart(request).then(
       (outcome) => {
-        if (outcome === "started") return;
+        if (outcome === "started") {
+          // Cancelled while the start was still in flight.
+          if (cancelRequested && !cancelActiveJob()) finish("cancelled");
+          return;
+        }
+        if (cancelRequested) {
+          finish("cancelled");
+          return;
+        }
         // "conflict" and "busy" need the Hub download card; "error" already
         // toasted.
         finish("failed");
@@ -2653,9 +2700,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     // Fail closed. These three lists are the only evidence of what is on the
     // device, and `.catch(() => [])` turned one flaky request into "the user
     // has nothing", downloading a model over a loadable local one.
+    // Both cached calls take the run signal: they are raw fetches with no
+    // timeout, so a stall would hold the model-loading lease open after the
+    // user stops the send. listLocalModels has its own 30s bound.
     const [allGgufRepos, allModelRepos, localList] = await Promise.all([
-      listCachedGguf(),
-      listCachedModels(),
+      listCachedGguf(options?.abortSignal),
+      listCachedModels(hfToken, options?.abortSignal),
       listLocalModels(),
     ]);
     options?.abortSignal?.throwIfAborted();
@@ -2677,29 +2727,50 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       const isRemembered = lastLoaded
         ? isRememberedSource(source, lastLoaded)
         : false;
+      const isTried = (entry: AutoLoadCandidate): boolean =>
+        skippedAutoLoadCandidates.has(
+          autoLoadCandidateKey(
+            entry.kind,
+            entry.loadId ?? entry.id,
+            entry.ggufVariant,
+          ),
+        );
       try {
-        const candidate = await resolveAutoLoadCandidate(
-          source,
-          isRemembered ? lastLoaded?.ggufVariant ?? null : null,
-          (entry) =>
-            skippedAutoLoadCandidates.has(
+        // A repo can hold several downloaded quants. Each failure marks that
+        // quant tried and comes back for the next one, so one corrupt file
+        // does not cost the whole repo. The attempt cap bounds the loop.
+        while (!autoLoadCancelled && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS) {
+          const candidate = await resolveAutoLoadCandidate(
+            source,
+            isRemembered ? lastLoaded?.ggufVariant ?? null : null,
+            isTried,
+          );
+          options?.abortSignal?.throwIfAborted();
+          if (!candidate) break;
+          updateAutoLoadToast(
+            isRemembered ? "Loading last used model…" : "Loading a model…",
+            candidate.ggufVariant
+              ? `${candidate.id} (${candidate.ggufVariant})`
+              : candidate.id,
+          );
+          try {
+            if (await loadAutoLoadCandidate(candidate)) {
+              return { loaded: true, blockedByTrustRemoteCode: false };
+            }
+          } catch {
+            options?.abortSignal?.throwIfAborted();
+            hadNonTrustFailure = true;
+            // Refused candidates are recorded by loadAutoLoadCandidate; a
+            // rejected load is not, so mark it here or the next pass through
+            // this source resolves the same quant forever.
+            skippedAutoLoadCandidates.add(
               autoLoadCandidateKey(
-                entry.kind,
-                entry.loadId ?? entry.id,
-                entry.ggufVariant,
+                candidate.kind,
+                candidate.loadId ?? candidate.id,
+                candidate.ggufVariant,
               ),
-            ),
-        );
-        options?.abortSignal?.throwIfAborted();
-        if (!candidate) continue;
-        updateAutoLoadToast(
-          isRemembered ? "Loading last used model…" : "Loading a model…",
-          candidate.ggufVariant
-            ? `${candidate.id} (${candidate.ggufVariant})`
-            : candidate.id,
-        );
-        if (await loadAutoLoadCandidate(candidate)) {
-          return { loaded: true, blockedByTrustRemoteCode: false };
+            );
+          }
         }
       } catch {
         options?.abortSignal?.throwIfAborted();

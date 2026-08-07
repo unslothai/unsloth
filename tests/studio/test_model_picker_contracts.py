@@ -2415,8 +2415,8 @@ def test_autoload_sees_every_on_device_inventory_and_fails_closed():
     discovery = auto_load.split("for (const source of sources)", 1)[0]
     # The backend-indexed on-device inventory is consulted, not just the cache.
     assert "listLocalModels()" in discovery
-    assert "listCachedGguf()" in discovery
-    assert "listCachedModels()" in discovery
+    assert "listCachedGguf(options?.abortSignal)" in discovery
+    assert "listCachedModels(hfToken, options?.abortSignal)" in discovery
     # Fail closed: an inventory error must not read as an empty device.
     assert "listCachedGguf().catch(" not in src
     assert "listCachedModels().catch(" not in src
@@ -2517,3 +2517,76 @@ def test_indexed_local_loads_are_remembered_without_bypassing_leases():
     assert 'input.kind === "gguf" && !ggufVariant && !isPathLikeId(id)' in store
     # Identity only: no tokens, leases, or approvals are persisted.
     assert "token" not in store.lower().replace("isPathLikeId", "")
+
+
+def test_autoload_skips_image_and_video_rows():
+    """The backend only tags an on-device row with a task for image/video
+    models, and the chat picker routes those away on click. A background load
+    has no routing step."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    tasks = src.split("const IMAGE_OR_VIDEO_TASKS", 1)[1].split("]", 1)[0]
+    assert '"text-to-image"' in tasks
+    assert '"text-to-video"' in tasks
+    assert '"image-diffusion-unsupported"' in tasks
+    policy = src.split("function isAutoLoadableLocalRow", 1)[1].split("\n}", 1)[0]
+    assert 'IMAGE_OR_VIDEO_TASKS.has(row.task ?? "")' in policy
+
+
+def test_remembered_matching_uses_the_same_case_rules_as_the_dedupe_key():
+    """Folding a POSIX path would mark two models differing only by case as
+    both being the remembered one."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    remembered = src.split("function isRememberedSource", 1)[1].split("\n}", 1)[0]
+    assert "normalizeTarget(remembered.id)" in remembered
+    assert "normalizeTarget(source.id)" in remembered
+    assert "normalizeTarget(source.loadId)" in remembered
+    assert ".toLowerCase()" not in remembered
+    key = src.split("function autoLoadSourceKey", 1)[1].split("\n}", 1)[0]
+    assert "normalizeTarget(source.loadId)" in key
+
+
+def test_cached_inventory_lookups_take_the_run_signal():
+    """Neither has a timeout of its own, unlike listLocalModels."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    assert "listCachedGguf(options?.abortSignal)" in src
+    assert "listCachedModels(hfToken, options?.abortSignal)" in src
+
+
+def test_download_cancel_survives_the_pending_start_window():
+    """cancel() no-ops on a key with no job yet, so a click landing during
+    requestStart's preflights has to be replayed once the job exists, and
+    exactly once: cancelling patches the job and wakes the subscription."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
+    helper = helper.split("async function autoLoadSmallestModel", 1)[0]
+    assert "let cancelRequested = false;" in helper
+    assert "let cancelIssued = false;" in helper
+    assert "if (cancelIssued) return true;" in helper
+    assert "if (cancelRequested) {\n          cancelActiveJob();" in helper
+    assert "if (cancelRequested && !cancelActiveJob()) finish(\"cancelled\");" in helper
+
+
+def test_a_failed_quant_is_marked_tried_so_the_repo_continues():
+    """One corrupt quant must not cost a repo that holds a valid one."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    cascade = src.split("for (const source of sources)", 1)[1]
+    cascade = cascade.split("// Nothing on the device:", 1)[0]
+    assert "while (!autoLoadCancelled && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS)" in cascade
+    assert "skippedAutoLoadCandidates.add(" in cascade
+
+
+def test_local_safetensors_chat_capability_is_classified_not_assumed():
+    """An embedding export is config.json plus model.safetensors, which the
+    format-only rule marked chat-capable; those are small, so chat auto-load
+    would try them first."""
+    src = _read_backend("hub/services/models/common.py")
+    assert "def _local_transformers_can_chat(" in src
+    assert "can_chat_override" in src
+    call = src.split("adapter_type = adapter_type if model_format", 1)[1]
+    call = call.split("elif not rows:", 1)[0]
+    assert "_local_transformers_can_chat(scan_path)" in call
+    assert 'model_format in {"safetensors", "checkpoint"}' in call
+    # Fails open: an unfamiliar architecture must not be hidden.
+    classifier = src.split("def _local_transformers_can_chat(", 1)[1]
+    classifier = classifier.split("\ndef ", 1)[0]
+    assert classifier.rstrip().endswith("return None")
