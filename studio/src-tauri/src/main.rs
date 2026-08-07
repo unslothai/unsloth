@@ -25,8 +25,9 @@ use simplelog::{
     CombinedLogger, Config, LevelFilter, SharedLogger, TermLogger, TerminalMode, WriteLogger,
 };
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Once;
+use std::sync::{Once, OnceLock};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
@@ -37,10 +38,75 @@ use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 /// Exactly one runs cleanup; the others block, so the process never exits mid-reap.
 static TERMINATION_CLEANUP: Once = Once::new();
 
-/// Started by the OS login autostart entry, so the frontend keeps the window hidden in the tray.
+const IN_APP_RELAUNCH_MARKER_FILE: &str = "in-app-relaunch-v1";
+
+/// Resolved once, at setup: the marker is consumed there, so no later caller can flip the answer.
+static LAUNCHED_HIDDEN: OnceLock<bool> = OnceLock::new();
+
+/// The updater's `relaunch()` re-execs with the original argv, so a login start's `--hidden`
+/// would survive into the restarted app and hide it. Written before that restart.
 #[tauri::command]
-fn was_launched_hidden() -> bool {
-    std::env::args().any(|arg| arg == "--hidden")
+fn mark_in_app_relaunch(app: tauri::AppHandle) -> Result<(), String> {
+    let dir = in_app_relaunch_config_dir(&app)?;
+    fs::create_dir_all(&dir).map_err(|error| {
+        format!(
+            "Failed to create app configuration directory {}: {error}",
+            dir.display()
+        )
+    })?;
+    write_in_app_relaunch_marker(&dir)
+}
+
+fn in_app_relaunch_config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_config_dir()
+        .map_err(|error| format!("Could not determine app configuration directory: {error}"))
+}
+
+fn in_app_relaunch_marker_path(config_dir: &Path) -> PathBuf {
+    config_dir.join(IN_APP_RELAUNCH_MARKER_FILE)
+}
+
+fn write_in_app_relaunch_marker(config_dir: &Path) -> Result<(), String> {
+    let path = in_app_relaunch_marker_path(config_dir);
+    fs::write(&path, b"relaunching\n").map_err(|error| {
+        format!(
+            "Failed to write in-app relaunch marker {}: {error}",
+            path.display()
+        )
+    })
+}
+
+/// Consumes the marker. A failed removal only ever leaves a start that would have been hidden
+/// showing its window, never the reverse.
+fn take_in_app_relaunch_marker(config_dir: &Path) -> bool {
+    let path = in_app_relaunch_marker_path(config_dir);
+    if !path.exists() {
+        return false;
+    }
+    if let Err(error) = fs::remove_file(&path) {
+        warn!(
+            "Could not remove the in-app relaunch marker {}: {error}",
+            path.display()
+        );
+    }
+    true
+}
+
+fn resolve_launched_hidden(app: &tauri::AppHandle) -> bool {
+    // Consume unconditionally, so a marker left by a relaunch that never happened cannot
+    // outlive a start that carries no `--hidden` anyway.
+    let relaunched = in_app_relaunch_config_dir(app)
+        .map(|dir| take_in_app_relaunch_marker(&dir))
+        .unwrap_or(false);
+    std::env::args().any(|arg| arg == "--hidden") && !relaunched
+}
+
+/// Started by the OS login autostart entry, so the frontend keeps the window hidden in the tray.
+/// False after an in-app relaunch, which inherits `--hidden` without being a login start.
+#[tauri::command]
+fn was_launched_hidden(app: tauri::AppHandle) -> bool {
+    *LAUNCHED_HIDDEN.get_or_init(|| resolve_launched_hidden(&app))
 }
 
 #[tauri::command]
@@ -801,13 +867,18 @@ fn main() {
             native_intents::open_path_token,
             has_saved_window_state,
             was_launched_hidden,
+            mark_in_app_relaunch,
             reveal_main_window,
             get_launch_at_login,
             set_launch_at_login,
         ])
         .setup(|app| {
+            // Resolve here, before any window path can ask: this consumes the relaunch marker.
+            let launched_hidden = was_launched_hidden(app.handle().clone());
+            #[cfg(not(target_os = "macos"))]
+            let _ = launched_hidden;
             #[cfg(target_os = "macos")]
-            if was_launched_hidden() {
+            if launched_hidden {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
             reconcile_autostart_entry(app.handle());
@@ -868,6 +939,17 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relaunch_marker_is_consumed_by_the_next_start() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!take_in_app_relaunch_marker(dir.path()));
+
+        write_in_app_relaunch_marker(dir.path()).unwrap();
+        assert!(take_in_app_relaunch_marker(dir.path()));
+        assert!(!take_in_app_relaunch_marker(dir.path()));
+        assert!(!in_app_relaunch_marker_path(dir.path()).exists());
+    }
 
     // One test, not three: `QUIT_IN_PROGRESS` is process-global and cargo tests run in parallel.
     #[test]
