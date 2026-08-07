@@ -8567,7 +8567,6 @@ def _is_native_gemini_base(provider_type: str, base_url: Optional[str]) -> bool:
         return False
     try:
         from urllib.parse import urlparse
-
         return (urlparse(base_url).hostname or "").lower() == "generativelanguage.googleapis.com"
     except Exception:
         return False
