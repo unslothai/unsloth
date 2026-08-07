@@ -166,6 +166,48 @@ def variant_filename_prefix(
     return f"{repo_key}--variant--"
 
 
+def _variant_fragment(
+    variant: str,
+    *,
+    legacy_variant_key: bool = False,
+    legacy_hash_key: bool = False,
+) -> str:
+    normalized_variant = variant.strip().lower()
+    # Double-hyphen variants can alias a repository component plus the
+    # ``--variant--`` delimiter, so give them an injective hashed fragment.
+    if _SAFE_VARIANT_FRAGMENT.fullmatch(normalized_variant) and (
+        legacy_variant_key
+        or ("--" not in normalized_variant and not normalized_variant.startswith(_HASH_PREFIXES))
+    ):
+        return normalized_variant
+    digest = hashlib.sha256(normalized_variant.encode("utf-8")).hexdigest()[:32]
+    tag = "sha256-" if legacy_hash_key else "@sha256-"
+    return f"{tag}{digest}"
+
+
+def variant_key_fragments(variant: str) -> tuple[str, ...]:
+    """Every ``--variant--`` fragment this variant can be stored under.
+
+    A variant that cannot be spelled literally in a filename is stored hashed, so
+    a reader that recovers identity from the filename alone recovers the hash and
+    not the variant. Callers holding the variant string need these to match it.
+    """
+    fragments: list[str] = []
+    for legacy_variant_key in (False, True):
+        for legacy_hash_key in (False, True):
+            try:
+                fragment = _variant_fragment(
+                    variant,
+                    legacy_variant_key = legacy_variant_key,
+                    legacy_hash_key = legacy_hash_key,
+                )
+            except (UnicodeError, ValueError):
+                continue
+            if fragment not in fragments:
+                fragments.append(fragment)
+    return tuple(fragments)
+
+
 def _entry_key(
     repo_type: RepoType,
     repo_id: str,
@@ -183,18 +225,11 @@ def _entry_key(
     )
     if not variant:
         return base
-    normalized_variant = variant.strip().lower()
-    # Double-hyphen variants can alias a repository component plus the
-    # ``--variant--`` delimiter, so give them an injective hashed fragment.
-    if _SAFE_VARIANT_FRAGMENT.fullmatch(normalized_variant) and (
-        legacy_variant_key
-        or ("--" not in normalized_variant and not normalized_variant.startswith(_HASH_PREFIXES))
-    ):
-        variant_fragment = normalized_variant
-    else:
-        digest = hashlib.sha256(normalized_variant.encode("utf-8")).hexdigest()[:32]
-        tag = "sha256-" if legacy_hash_key else "@sha256-"
-        variant_fragment = f"{tag}{digest}"
+    variant_fragment = _variant_fragment(
+        variant,
+        legacy_variant_key = legacy_variant_key,
+        legacy_hash_key = legacy_hash_key,
+    )
     prefix = variant_filename_prefix(
         repo_type,
         repo_id,

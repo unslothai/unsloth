@@ -1216,6 +1216,52 @@ def test_legacy_unscoped_download_state_falls_back_only_for_selected_cache(monke
     assert not marker.exists()
 
 
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "unknown/variant with spaces",   # unsafe characters force the hashed filename
+        "double--hyphen",                # aliases the --variant-- delimiter, also hashed
+        "Q4_K_M",                        # spelled literally, the control
+    ],
+)
+def test_index_finds_an_unreadable_marker_stored_under_a_hashed_filename(
+    monkeypatch, tmp_path, variant
+):
+    """The index must agree with has_cancel_marker about a corrupt marker.
+
+    A marker whose payload will not parse stays fail-closed but loses its declared
+    variant, so the only identity left is the filename. When the variant is stored
+    hashed, that identity is the digest, and looking it up by variant name missed
+    it -- so a cancelled variant came back advertised as complete, while the
+    per-variant lookup still found the file by rebuilding the same digest.
+    """
+    hub_cache = tmp_path / "cache-a"
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "studio-cache")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = hub_cache),
+    )
+    assert download_manifest.write_cancel_marker(
+        "model", "Owner/Repo", variant, "http", hub_cache = hub_cache
+    )
+    marker = state_dir.marker_path("model", "Owner/Repo", variant, hub_cache = hub_cache)
+
+    def indexed():
+        index = download_manifest.build_variant_state_index(
+            [("model", "Owner/Repo", hub_cache)], active_hub_cache = hub_cache
+        )
+        return index.for_repo("model", "Owner/Repo", hub_cache = hub_cache).has_marker(variant)
+
+    assert indexed() and download_manifest.has_cancel_marker(
+        "model", "Owner/Repo", variant, hub_cache = hub_cache
+    )
+    marker.write_text("[")
+    assert download_manifest.has_cancel_marker(
+        "model", "Owner/Repo", variant, hub_cache = hub_cache
+    ), "per-variant lookup should stay fail-closed"
+    assert indexed(), "the index disagreed with has_cancel_marker about a corrupt marker"
+
+
 def test_cached_gguf_scan_degrades_when_the_shared_index_cannot_be_built(monkeypatch, tmp_path):
     """A malformed repo identity must not take every valid row down with it.
 
@@ -1231,8 +1277,11 @@ def test_cached_gguf_scan_degrades_when_the_shared_index_cannot_be_built(monkeyp
         lambda: SimpleNamespace(hub_cache = hub_cache),
     )
     # An undecodable byte in a cache directory name reaches us as a lone surrogate,
-    # and the repo key cannot be hashed from it.
-    bad_repo = os.fsdecode(b"Org/Re\xffpo")
+    # and the repo key cannot be hashed from it. Spelled directly rather than via
+    # os.fsdecode(b"...\xff...") because Windows decodes filenames as UTF-8 with
+    # surrogatepass, where a bare 0xff raises instead of producing a surrogate.
+    # Nothing here touches the filesystem, so the string alone is the whole case.
+    bad_repo = "Org/Re\udcffpo"
     repos = [
         SimpleNamespace(
             repo_id = repo_id,
@@ -1285,8 +1334,14 @@ def test_state_scan_survives_a_state_filename_with_an_undecodable_byte(monkeypat
     corrupt = os.path.join(
         os.fsencode(str(marker.parent)), b"models--Owner--Repo--variant--q\xff.json"
     )
-    with open(corrupt, "wb") as handle:
-        handle.write(json.dumps({"version": 2, "repo_type": "model"}).encode("utf-8"))
+    try:
+        with open(corrupt, "wb") as handle:
+            handle.write(json.dumps({"version": 2, "repo_type": "model"}).encode("utf-8"))
+    except (OSError, UnicodeError) as e:
+        # Only POSIX filesystems that accept arbitrary bytes can hold this name, so
+        # only there is the bug reachable. macOS rejects it with EILSEQ and Windows
+        # has no byte-level filename API at all.
+        pytest.skip(f"filesystem will not hold an undecodable filename: {e}")
 
     index = download_manifest.build_variant_state_index(
         [("model", "Owner/Repo", cache)], active_hub_cache = cache

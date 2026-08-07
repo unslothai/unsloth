@@ -53,6 +53,7 @@ from hub.utils.state_dir import (
     marker_path,
     state_filename_is_ambiguous,
     variant_filename_prefix,
+    variant_key_fragments,
 )
 
 logger = get_logger(__name__)
@@ -114,7 +115,21 @@ class VariantState:
         return entry[1] if entry is not None else None
 
     def has_marker(self, variant: str) -> bool:
-        return variant.lower() in self._markers
+        if variant.lower() in self._markers:
+            return True
+        # An unreadable marker keeps its entry fail-closed but loses the payload,
+        # so its only remaining identity is the filename. For a variant that has to
+        # be stored hashed (slashes, spaces, `--`, an existing hash prefix) that
+        # identity is the digest, not the variant, and a plain lookup misses it --
+        # leaving a cancelled variant advertised as complete even though
+        # has_cancel_marker still finds the file by rebuilding the same digest.
+        # Match the spellings the variant could have been written under, as that
+        # per-variant lookup does.
+        try:
+            fragments = variant_key_fragments(variant)
+        except (UnicodeError, ValueError):
+            return False
+        return any(fragment in self._markers for fragment in fragments)
 
     def summary(self) -> tuple[bool, int]:
         return bool(self._manifests or self._markers), sum(
