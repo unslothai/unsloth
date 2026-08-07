@@ -467,3 +467,28 @@ def test_a_backup_that_cannot_run_falls_back_to_the_moved_aside_copy(monkeypatch
     _update(studio)
 
     assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+
+
+def test_a_setup_exception_restores_a_runnable_launcher(monkeypatch, studio, tmp_path):
+    # __exit__ took the first PE-shaped candidate, so an interrupted run's
+    # non-runnable backup was installed over the working launcher this run had
+    # moved aside, and it could also undo a restore validate_launcher just made.
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
+    bad_backup = b"MZ-unrunnable"
+    (scripts / "unsloth.exe.update-backup").write_bytes(bad_backup)
+
+    def setup(**_kwargs):
+        raise RuntimeError("setup failed")
+
+    monkeypatch.setattr(studio, "_run_setup_script", setup)
+
+    def run(argv, **_kwargs):
+        current = Path(argv[0]).read_bytes()
+        return types.SimpleNamespace(returncode = 7 if current == bad_backup else 0)
+
+    monkeypatch.setattr(studio.subprocess, "run", run)
+
+    with pytest.raises(RuntimeError, match = "setup failed"):
+        _update(studio)
+
+    assert launcher.read_bytes() == ORIGINAL_LAUNCHER

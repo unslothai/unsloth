@@ -243,16 +243,26 @@ _SHARED_NON_RUNTIME_ROOTS = frozenset(
 _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
 
 
-def _shared_non_runtime(rel: str) -> bool:
-    """A row under a top-level dir several wheels write into.
+def _shared_non_runtime(rel: str, name: str) -> bool:
+    """A third-party row under a top-level dir several wheels write into.
 
-    None of them is importable, so a deletion here is not the damage this scan
-    seeks: the stdlib shadows `test`, and `tests`/`scripts` ship no
-    __init__.py. Applied while reading RECORD, not when reporting, so the row
-    also stays out of the ownership tally and the `limit` budget.
+    Ownership of these is unreliable: whichever wheel installed last wins, and
+    any of them uninstalling takes the others' files with it. Never applied to
+    what we ship, because a missing __init__.py does NOT make a directory
+    unimportable (PEP 420) and this repo imports scripts.* itself, so our own
+    top-level trees stay checked. Applied while reading RECORD, not when
+    reporting, so the row also stays out of the ownership tally and the `limit`
+    budget.
     """
+    if _canonical(name) in _OUR_DISTRIBUTIONS:
+        return False
     parts = tuple(p for p in rel.replace("\\", "/").split("/") if p and p != ".")
     return len(parts) > 1 and parts[0] in _SHARED_NON_RUNTIME_ROOTS
+
+
+# What Unsloth ships. Its top-level trees are ours to guarantee, so they are
+# never exempted however they are named.
+_OUR_DISTRIBUTIONS = frozenset(("unsloth", "unsloth-zoo", "unsloth-studio"))
 
 
 def _installer_rewritten(rel: str) -> bool:
@@ -325,7 +335,7 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
             # size recorded inside itself; .pyc is regenerated from source.
             if ".dist-info/" in rel or ".egg-info/" in rel or rel.endswith(".pyc"):
                 continue
-            if _shared_non_runtime(rel):
+            if _shared_non_runtime(rel, name):
                 continue
             # The size field is optional and real wheels do leave it blank. Keep
             # the row anyway with an unknown size: existence is still checkable,

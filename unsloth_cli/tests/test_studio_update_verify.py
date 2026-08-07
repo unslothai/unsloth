@@ -687,3 +687,15 @@ def test_ignored_rows_do_not_consume_the_finding_budget(site):
         (site / rel).unlink()
     found = _deps().damaged_installed_files(limit = 3)
     assert len(found) == 1 and "tau/__init__.py is missing" in found[0]
+
+
+def test_our_own_top_level_trees_are_still_checked(site):
+    # A missing __init__.py does not make a directory unimportable (PEP 420),
+    # and this repo imports scripts.* itself, so the shared-namespace exemption
+    # must never apply to what Unsloth ships.
+    _make_dist(site, "unsloth_zoo", {"unsloth_zoo/__init__.py": b"z\n"})
+    (site / "unsloth_zoo-1.0.dist-info" / "RECORD").write_text(
+        "unsloth_zoo/__init__.py,sha256=x,2\nscripts/helper.py,sha256=x,99\n"
+    )
+    found = _deps().damaged_installed_files()
+    assert len(found) == 1 and "scripts/helper.py is missing" in found[0]

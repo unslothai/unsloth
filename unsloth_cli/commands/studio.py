@@ -3332,19 +3332,24 @@ class _WindowsLauncherUpdateTransaction:
             typer.echo(f"Error: could not restore the Unsloth launcher: {last_error}", err = True)
         return False
 
-    def _restore_backup(self) -> bool:
-        """Put back the best copy available, without judging whether it runs."""
-        return any(self._restore_from(source) for source in self._recovery_candidates())
-
     def _restore_runnable(self) -> bool:
         """Put back the first copy that actually runs.
 
         Passing the two-byte header check does not make a copy runnable, so a
-        candidate that fails --version must not stop the next one being tried.
+        candidate that fails --version must not stop the next one being tried,
+        and a launcher already in place and working must not be replaced by a
+        candidate that is merely PE-shaped.
         """
-        for source in self._recovery_candidates():
+        if self._launcher_health_error() is None:
+            return True
+        candidates = self._recovery_candidates()
+        for source in candidates:
             if self._restore_from(source) and self._launcher_health_error() is None:
                 return True
+        # Nothing ran. Leave the best candidate in place rather than whichever
+        # one happened to be tried last.
+        if candidates:
+            self._restore_from(candidates[0])
         return False
 
     def _launcher_health_error(self) -> Optional[str]:
@@ -3469,7 +3474,7 @@ class _WindowsLauncherUpdateTransaction:
     def __exit__(self, exc_type, exc_value, traceback) -> bool:
         try:
             if self.enabled and exc_type is not None and not self._validated:
-                if not self._restore_backup() and self._retained_backup() is not None:
+                if not self._restore_runnable() and self._retained_backup() is not None:
                     typer.echo(f"Manual recovery copy retained at: {self.backup}", err = True)
         finally:
             self._release_lock()
