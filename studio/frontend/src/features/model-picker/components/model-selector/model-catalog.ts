@@ -341,7 +341,7 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
           { gpuGb: 123, systemRamGb: 80 },
         ],
       }),
-      gguf("leejet/MiniMax-H3-GGUF"),
+      gguf("unsloth/MiniMax-H3-GGUF"),
     ],
   },
   {

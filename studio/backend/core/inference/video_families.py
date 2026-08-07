@@ -108,7 +108,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # Decimal GB resident estimates: transformer, Qwen3-VL conditioner, video+audio VAEs.
         bf16_components_gb = (66.3, 66.8, 11.1),
         supports_torch_compile = False,
-        gguf_repo = "leejet/MiniMax-H3-GGUF",
+        gguf_repo = "unsloth/MiniMax-H3-GGUF",
         modular_workflow = "t2va",
         supports_cfg = False,
     ),
