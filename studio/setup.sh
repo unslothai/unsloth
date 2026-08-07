@@ -537,8 +537,11 @@ _usable_ram_mb() {
     if [ -r "$_meminfo" ]; then
         # MemAvailable counts reclaimable page cache; MemFree does not. Absent
         # before Linux 3.14, where MemTotal is the only thing to go on.
-        _mb=$(awk '/^MemAvailable:/ { printf "%d", $2 / 1024; exit }' "$_meminfo")
-        [ -n "$_mb" ] || _mb=$(awk '/^MemTotal:/ { printf "%d", $2 / 1024; exit }' "$_meminfo")
+        # `|| true` because bash applies errexit to a failing assignment in
+        # POSIX mode (POSIXLY_CORRECT in the environment, or bash invoked as
+        # sh), and an unreadable meminfo must cost the cap, not the install.
+        _mb=$(awk '/^MemAvailable:/ { printf "%d", $2 / 1024; exit }' "$_meminfo") || true
+        [ -n "$_mb" ] || _mb=$(awk '/^MemTotal:/ { printf "%d", $2 / 1024; exit }' "$_meminfo") || true
     elif _bytes=$(sysctl -n hw.memsize 2>/dev/null); then
         [[ "$_bytes" =~ ^[0-9]+$ ]] && _mb=$(( _bytes / 1048576 ))
         # macOS has no MemAvailable, so hw.memsize is installed RAM and would
@@ -547,7 +550,7 @@ _usable_ram_mb() {
         _avail=$(vm_stat 2>/dev/null | _vm_stat_avail_mb || true)
         if [[ "$_avail" =~ ^[0-9]+$ ]] && [ "$_avail" -gt 0 ]; then _mb=$_avail; fi
     fi
-    _free=$(_cgroup_free_mb /sys/fs/cgroup /proc/self/cgroup /proc/self/mountinfo)
+    _free=$(_cgroup_free_mb /sys/fs/cgroup /proc/self/cgroup /proc/self/mountinfo) || true
     if [[ "$_free" =~ ^[0-9]+$ ]]; then
         if [ -z "$_mb" ] || [ "$_free" -lt "$_mb" ]; then _mb=$_free; fi
     fi

@@ -354,6 +354,41 @@ assert_eq "strict: _cg_mounts on an unreadable file does not abort" "0" \
     "$(run_strict_rc '_cg_mounts "'"$_TMPD"'/strict" cgroup2')"
 assert_eq "strict: _cg_unesc does not abort" "0" \
     "$(run_strict_rc '_cg_unesc /a/b')"
+
+# The -f guard is not only about failing: reading a FIFO blocks forever, and an
+# install that hangs is worse than one that stops. Nothing in cgroupfs is a
+# FIFO, but the guard is what makes that true of any path handed to the reader.
+if mkfifo "$_TMPD/fifo" 2>/dev/null; then
+    _fifo_rc=$(timeout 5 bash -c 'set -euo pipefail; . "$1"; _cg_read "$2" >/dev/null' \
+                   _ "$_STRICT_FILE" "$_TMPD/fifo" >/dev/null 2>&1; printf '%s' "$?")
+    assert_eq "strict: _cg_read on a FIFO returns instead of blocking" "0" "$_fifo_rc"
+else
+    echo "  SKIP: mkfifo unavailable"
+fi
+
+# Whitespace really is stripped, rather than the trailing newline happening to
+# be eaten by read. A value with padding must still compare as a number.
+mkdir -p "$_TMPD/strict/pad"
+printf '  4294967296  \n' > "$_TMPD/strict/pad/memory.max"
+printf '0::/pad\n' > "$_TMPD/strictpad.proc"
+assert_eq "a padded limit value is still parsed" "4096" \
+    "$(run_cgroup "$_TMPD/strict" "$_TMPD/strictpad.proc" "$_TMPD/strict.mnt")"
+
+# If awk itself fails -- missing, or a busybox build without the applet -- the
+# reader must give up on the cgroup allowance, not take the install with it.
+mkdir -p "$_TMPD/noawk"
+printf '#!/bin/sh\nexit 1\n' > "$_TMPD/noawk/awk"
+chmod +x "$_TMPD/noawk/awk"
+_noawk_rc=$(PATH="$_TMPD/noawk:$PATH" bash -c \
+    'set -euo pipefail; . "$1"; _cgroup_free_mb "$2" "$3" "$4" >/dev/null' \
+    _ "$_STRICT_FILE" "$_TMPD/strict" "$_TMPD/strict.proc" "$_TMPD/strict.mnt" >/dev/null 2>&1
+    printf '%s' "$?")
+assert_eq "strict: a failing awk does not abort the install" "0" "$_noawk_rc"
+printf 'MemTotal:       16777216 kB\nMemAvailable:   12582912 kB\n' > "$_TMPD/meminfo-strict"
+_noawk_jobs=$(PATH="$_TMPD/noawk:$PATH" bash -c \
+    'set -euo pipefail; . "$1"; _llama_jobs_for 20 "$(_usable_ram_mb "$2")"' \
+    _ "$_STRICT_FILE" "$_TMPD/meminfo-strict" 2>/dev/null)
+assert_eq "a failing awk falls back to the core count" "20" "$_noawk_jobs"
 assert_eq "strict: _cgroup_free_mb on a real tree does not abort" "0" \
     "$(run_strict_rc '_cgroup_free_mb "'"$_TMPD"'/strict" "'"$_TMPD"'/strict.proc" "'"$_TMPD"'/strict.mnt"')"
 assert_eq "strict: _cgroup_free_mb on nothing does not abort" "0" \
@@ -371,6 +406,29 @@ assert_eq "strict: _llama_jobs_for with the floor binding does not abort" "0" \
 # And the value still arrives, rather than the function exiting early with none.
 assert_eq "strict: the job count still comes out" "7" \
     "$(bash -c 'set -euo pipefail; . "$1"; _llama_jobs_for 20 16384' _ "$_STRICT_FILE")"
+
+# POSIX mode is the strict end of the range: bash applies errexit to a failing
+# assignment there, which it does not do by default. A user with POSIXLY_CORRECT
+# exported, or bash invoked as sh, gets those semantics, and an unreadable file
+# must cost the cap rather than the install. This is what pins the `|| true` on
+# each read; without them the shell exits before the job count is ever printed.
+run_posix() {
+    PATH="$1:$PATH" bash --posix -c \
+        'set -euo pipefail; . "$1"; shift; eval "$@"' _ "$_STRICT_FILE" "$2" 2>/dev/null
+}
+assert_eq "POSIX mode: an unreadable meminfo still yields the core count" "20" \
+    "$(run_posix "$_TMPD/noawk" '_llama_jobs_for 20 "$(_usable_ram_mb '"$_TMPD"'/nope)"')"
+assert_eq "POSIX mode: a failing awk still yields the core count" "20" \
+    "$(run_posix "$_TMPD/noawk" '_llama_jobs_for 20 "$(_usable_ram_mb '"$_TMPD"'/meminfo-strict)"')"
+assert_eq "POSIX mode: a failing awk does not abort _cgroup_free_mb" "0" \
+    "$(PATH="$_TMPD/noawk:$PATH" bash --posix -c \
+        'set -euo pipefail; . "$1"; _cgroup_free_mb "$2" "$3" "$4" >/dev/null' \
+        _ "$_STRICT_FILE" "$_TMPD/strict" "$_TMPD/strict.proc" "$_TMPD/strict.mnt" \
+        >/dev/null 2>&1; printf '%s' "$?")"
+# 12288 MiB available -> (12288 - 2048) / 2048 = 5.
+assert_eq "POSIX mode: the normal path still produces the capped count" "5" \
+    "$(bash --posix -c 'set -euo pipefail; . "$1"; _llama_jobs_for 20 "$(_usable_ram_mb "$2")"' \
+        _ "$_STRICT_FILE" "$_TMPD/meminfo-strict" 2>/dev/null)"
 
 rm -f "$_STRICT_FILE"
 
