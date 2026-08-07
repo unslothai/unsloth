@@ -705,6 +705,7 @@ def update_password(
     *,
     revoke_refresh_tokens: bool = False,
     expect_password_hash: Optional[str] = None,
+    preserve_desktop_secret: bool = False,
 ) -> Optional[str]:
     """Update password, clear first-login requirement, rotate JWT secret.
 
@@ -720,6 +721,11 @@ def update_password(
     caller verified still being current, so a request that checked the old
     password cannot overwrite a reset that landed while it was in flight.
     Returns False when the credential moved underneath it.
+
+    ``preserve_desktop_secret`` keeps the local desktop credential valid. It is
+    for a caller that already authenticated as the desktop app: revoking the
+    secret it is currently using would break desktop auto-auth for a change the
+    desktop itself made.
     """
     from .hashing import hash_password
 
@@ -750,7 +756,8 @@ def update_password(
         conn.commit()
         if cursor.rowcount > 0:
             clear_bootstrap_password()
-            clear_desktop_secret()
+            if not preserve_desktop_secret:
+                clear_desktop_secret()
             return jwt_secret
         return None
     finally:

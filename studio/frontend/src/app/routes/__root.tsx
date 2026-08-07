@@ -98,6 +98,19 @@ const CHAT_ONLY_ALLOWED = new Set([
   "/api-monitor",
 ]);
 
+// Paths that render their own "still checking" state and self-gate once the verdict lands.
+// The redirect below is one-way, so acting on the pre-measurement guess strands a healthy host
+// on /chat; these two wait it out instead. Everything else keeps the old behaviour.
+// /video is allowed outright below, so in practice this is what keeps /studio off the guess;
+// it stays listed because that is the property the page's own loading panel relies on.
+const SELF_GATED_WHILE_UNKNOWN = ["/studio", "/video"];
+
+function waitsOutUnknownVerdict(pathname: string): boolean {
+  return SELF_GATED_WHILE_UNKNOWN.some(
+    (base) => pathname === base || pathname.startsWith(`${base}/`),
+  );
+}
+
 function isChatOnlyAllowed(pathname: string): boolean {
   if (CHAT_ONLY_ALLOWED.has(pathname)) return true;
   if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/"))
@@ -106,6 +119,11 @@ function isChatOnlyAllowed(pathname: string): boolean {
   if (pathname === "/images" || pathname.startsWith("/images/")) return true;
   // Audio inference is CPU-capable too: GGUF TTS through llama.cpp and STT through the whisper.cpp / mtmd sidecars.
   if (pathname === "/audio" || pathname.startsWith("/audio/")) return true;
+  // Video follows /export: the page explains an unsupported host itself, using the backend's
+  // own video verdict (no GPU, no PyTorch, no Apple path). A measured chat-only host is exactly
+  // where that explanation belongs, so a direct link or a reload has to reach VideoPage's gate
+  // instead of bouncing to /chat. It self-gates on videoSupported, so nothing loads.
+  if (pathname === "/video" || pathname.startsWith("/video/")) return true;
   return false;
 }
 
@@ -114,8 +132,13 @@ export const Route = createRootRoute({
     // Fetch platform info before the chat-only guard. fetchDeviceType caches,
     // so later navigations are instant.
     await fetchDeviceType();
-    const chatOnly = usePlatformStore.getState().isChatOnly();
-    if (chatOnly && !isChatOnlyAllowed(location.pathname)) {
+    const { isChatOnly, capabilitiesUnknown } = usePlatformStore.getState();
+    const unmeasured = capabilitiesUnknown();
+    if (
+      isChatOnly() &&
+      !isChatOnlyAllowed(location.pathname) &&
+      !(unmeasured && waitsOutUnknownVerdict(location.pathname))
+    ) {
       throw redirect({ to: "/chat" });
     }
   },

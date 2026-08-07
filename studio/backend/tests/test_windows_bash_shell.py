@@ -317,3 +317,113 @@ def test_detached_windows_stay_launchable(command, _windows_blocklist):
     # The blocklist is faked here too, or the Linux runner asserts this against
     # a set with no powershell in it and cannot see a blanket block at all.
     assert not tools._find_blocked_commands(command)
+
+
+# Whether Git Bash resolves picks the lexer, and the cmd lexer keeps the quote
+# marks the posix one strips. The tests above pin only the shell the Linux runner
+# happens to pick, so these run each command through both.
+_WINDOWS_SHELLS = [r"C:\Program Files\Git\bin\bash.exe", None]
+
+
+def _screen_on_windows(monkeypatch, bash, command):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
+    return tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", _WINDOWS_SHELLS)
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A quoted payload: the cmd lexer hands the recursion `"powershell`.
+        'cmd /c "powershell -Command ls"',
+        'start "My Title" powershell -Command ls',
+        # Switches may follow the title as well as precede it.
+        'cmd //c start "my window" /min powershell',
+        # A value-style switch, which the old width heuristic did not recognise.
+        "cmd /v:on /c powershell -Command ls",
+        # Git Bash doubles the slash on the switches ahead of /c too.
+        "cmd //v:on //c powershell -Command ls",
+        # MSYS rewrites a POSIX path before cmd sees it, so the program arrives
+        # with a leading slash. Skipping every /-word as a switch stepped over it.
+        'cmd //c start "" /c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command ls',
+        'start "" powershell -Command ls',
+        'cmd //c env start "" powershell',
+    ],
+)
+def test_windows_shellouts_are_screened_on_either_shell(
+    monkeypatch, bash, command, _windows_blocklist
+):
+    assert _screen_on_windows(monkeypatch, bash, command)
+
+
+@pytest.mark.parametrize("bash", _WINDOWS_SHELLS)
+@pytest.mark.parametrize(
+    "command",
+    [
+        'start "" notepad readme.txt',
+        'start "Build" npm run build',
+        'cmd /c "echo hello"',
+        r'echo "C:\Windows\System32\cmd.exe"',
+        # A document opened through its file association, what `start ""` is for.
+        r'cmd //c start "" "C:\Users\me\My Documents\report.docx"',
+        "npm start",
+        "./start.sh",
+        # `start` and `cmd` as data, not as programs. A shell name the shell
+        # never runs is text, however it is spelled after it.
+        "echo start notepad powershell",
+        "grep start README powershell",
+    ],
+)
+def test_ordinary_windows_commands_stay_runnable(monkeypatch, bash, command, _windows_blocklist):
+    assert not _screen_on_windows(monkeypatch, bash, command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The documented `start "title" prog` form. Only the cmd lexer can see
+        # it: the posix lexer has stripped the marks, leaving a one-word title
+        # indistinguishable from a program name, and guessing there would refuse
+        # ordinary text like `echo start notepad powershell`.
+        'cmd //c start "job" powershell -Command ls',
+        'cmd /c start "t" pwsh -c ls',
+    ],
+)
+def test_a_single_word_start_title_is_screened_under_the_cmd_lexer(
+    monkeypatch, command, _windows_blocklist
+):
+    assert _screen_on_windows(monkeypatch, None, command)
+
+
+@pytest.mark.parametrize("bash", _WINDOWS_SHELLS)
+@pytest.mark.parametrize(
+    "command",
+    [
+        # An assignment prefixes a command the shell still runs, and a shell
+        # handed to another shell is still run. Deciding "is this token executed"
+        # from the token before it missed all of these, which is a bypass and
+        # strictly worse than the echo-data over-blocks it was meant to fix.
+        'FOO=1 bash -c "rm -rf x"',
+        'env FOO=1 bash -c "rm -rf x"',
+        'FOO=1 start "" powershell',
+        'cmd //c start "" cmd /c powershell',
+        # A wrapper option's value sits between the wrapper and `start`, so the
+        # token before `start` says nothing about whether it is executed.
+        'cmd //c env -u FOO start "" powershell',
+        'cmd //c nice -n 5 start "" powershell',
+    ],
+)
+def test_a_prefixed_shell_is_still_screened(monkeypatch, bash, command, _windows_blocklist):
+    # An assignment is not cmd syntax, so under the cmd lexer `FOO=1` is itself
+    # the program name and the rest really is its arguments.
+    if bash is None and not command.startswith("cmd "):
+        pytest.skip("assignment prefixes are not cmd syntax")
+    assert _screen_on_windows(monkeypatch, bash, command)
+
+
+def test_a_program_path_is_not_read_as_a_cmd_switch(monkeypatch, _windows_blocklist):
+    # Matched loosely, the pattern would find the `/b` of /bin/bash, skip the
+    # token as a flag, and never reach the shell name behind it.
+    assert not tools._CMD_SWITCH_RE.fullmatch("/bin/bash")
+    assert _screen_on_windows(monkeypatch, _WINDOWS_SHELLS[0], '/bin/bash -c "rm -rf x"') == {"rm"}

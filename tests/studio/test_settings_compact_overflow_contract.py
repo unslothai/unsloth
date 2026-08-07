@@ -8,6 +8,7 @@ SETTINGS_DIALOG = REPO / "studio/frontend/src/features/settings/settings-dialog.
 # The monitor has its own page and Settings links to it; the shrink contract covers both.
 API_MONITOR_PAGE = REPO / "studio/frontend/src/features/api-monitor/api-monitor-page.tsx"
 MONITOR_LINK = REPO / "studio/frontend/src/features/settings/components/monitor-link.tsx"
+REMOTE_ACCESS = REPO / "studio/frontend/src/features/settings/components/remote-access-section.tsx"
 GENERAL_TAB = REPO / "studio/frontend/src/features/settings/tabs/general-tab.tsx"
 
 
@@ -33,6 +34,16 @@ def test_settings_monitor_link_can_shrink():
     assert "flex w-full min-w-0 items-center gap-3" in source
     # The summary line carries a model id, so it truncates instead of widening.
     assert '<span className="truncate text-xs text-muted-foreground">' in source
+
+
+def test_remote_access_card_can_shrink():
+    source = REMOTE_ACCESS.read_text(encoding = "utf-8")
+    # The heading and its status sit beside a button, so they need to shrink.
+    assert '<div className="flex min-w-0 items-start gap-3">' in source
+    assert '<div className="flex min-w-0 flex-col gap-0.5">' in source
+    # A tunnel URL has no spaces to wrap on, so it needs break-all.
+    assert "block w-full break-all rounded-md" in source
+    assert "<RemoteUrlPanel url={status?.url ?? null} />" in source
 
 
 def test_embedding_model_controls_stack_on_the_narrowest_viewports():

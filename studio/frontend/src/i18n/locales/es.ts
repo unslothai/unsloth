@@ -327,6 +327,13 @@ export const es = {
         title: "Cambiar contraseña",
         description:
           "Introduce tu contraseña actual y elige una nueva (al menos {minLength} caracteres).",
+        setTrigger: "Establecer contraseña remota",
+        setTitle: "Establecer contraseña remota",
+        setDescription:
+          "Elige la contraseña con la que los navegadores remotos inician sesión como unsloth (al menos {minLength} caracteres). La app de escritorio de Unsloth sigue iniciando sesión automáticamente.",
+        setSubmit: "Establecer contraseña",
+        setting: "Estableciendo...",
+        setDone: "Contraseña establecida.",
         currentPassword: "Contraseña actual",
         newPassword: "Contraseña nueva",
         confirmPassword: "Confirmar contraseña nueva",
@@ -408,6 +415,14 @@ export const es = {
         showLlamaUpdates: "Notificaciones de actualización de llama.cpp",
         showLlamaUpdatesDescription:
           "Avisa cuando haya una compilación más reciente de llama.cpp para ejecutar nuevos modelos. Desactívalo si solo entrenas.",
+      },
+      startup: {
+        sectionTitle: "Inicio",
+        launchAtLogin: "Ejecutar Unsloth al iniciar sesión",
+        launchAtLoginDescription:
+          "Inicia Unsloth en segundo plano cuando inicias sesión. Permanece en la barra de menús o en la bandeja del sistema hasta que lo abras.",
+        loadError: "No se pudo cargar el ajuste de inicio automático.",
+        saveError: "No se pudo actualizar el ajuste de inicio automático.",
       },
       gettingStarted: "Primeros pasos",
       startOnboarding: "Iniciar la configuración inicial",

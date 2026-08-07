@@ -324,6 +324,13 @@ export const ptBR = {
         title: "Alterar senha",
         description:
           "Insira sua senha atual e escolha uma nova (no mínimo {minLength} caracteres).",
+        setTrigger: "Definir senha remota",
+        setTitle: "Definir senha remota",
+        setDescription:
+          "Escolha a senha que os navegadores remotos usam para entrar como unsloth (no mínimo {minLength} caracteres). O aplicativo de desktop da Unsloth continua entrando automaticamente.",
+        setSubmit: "Definir senha",
+        setting: "Definindo...",
+        setDone: "Senha definida.",
         currentPassword: "Senha atual",
         newPassword: "Nova senha",
         confirmPassword: "Confirmar nova senha",
@@ -399,6 +406,16 @@ export const ptBR = {
         showLlamaUpdates: "Notificações de atualização do llama.cpp",
         showLlamaUpdatesDescription:
           "Notifica quando uma versão mais recente do llama.cpp está disponível para executar novos modelos. Desative se você só treina modelos.",
+      },
+      startup: {
+        sectionTitle: "Inicialização",
+        launchAtLogin: "Executar o Unsloth ao fazer login",
+        launchAtLoginDescription:
+          "Inicia o Unsloth em segundo plano quando você faz login. Ele permanece na barra de menus ou na bandeja do sistema até você abri-lo.",
+        loadError:
+          "Não foi possível carregar a configuração de inicialização no login.",
+        saveError:
+          "Não foi possível atualizar a configuração de inicialização no login.",
       },
       gettingStarted: "Primeiros passos",
       startOnboarding: "Iniciar configuração",

@@ -48,6 +48,27 @@ function Install-UnslothStudio {
         }
     }
 
+    # Same UTF-8 invariant as studio/setup.ps1, same ordering constraint: this
+    # rebuilds [Console]::Out, so it precedes the first write.
+    $_UnslothUtf8NoBom = New-Object System.Text.UTF8Encoding $false
+    try {
+        [Console]::OutputEncoding = $_UnslothUtf8NoBom
+    } catch {
+        # No console: the setter drops the cached writer before throwing, so
+        # bind UTF-8 ones explicitly. Same fallback as studio/setup.ps1.
+        try {
+            $_UnslothStdout = New-Object System.IO.StreamWriter -ArgumentList ([Console]::OpenStandardOutput()), $_UnslothUtf8NoBom
+            $_UnslothStdout.AutoFlush = $true
+            [Console]::SetOut($_UnslothStdout)
+            $_UnslothStderr = New-Object System.IO.StreamWriter -ArgumentList ([Console]::OpenStandardError()), $_UnslothUtf8NoBom
+            $_UnslothStderr.AutoFlush = $true
+            [Console]::SetError($_UnslothStderr)
+        } catch { }
+    }
+    $OutputEncoding = $_UnslothUtf8NoBom
+    $env:PYTHONUTF8 = '1'
+    $env:PYTHONIOENCODING = 'utf-8'
+
     # ── Tauri structured output ──
     function Write-TauriLog {
         param([string]$Tag, [string]$Message)
@@ -501,7 +522,6 @@ function Install-UnslothStudio {
             Write-Host ("  {0}{1}{2}{3}{4}{2}" -f $dim, $padded, $rst, $val, $Value)
         } else {
             $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
-            Write-Host ("  {0}" -f $padded) -NoNewline -ForegroundColor DarkGray
             $fc = switch ($Color) {
                 'Green' { 'DarkGreen' }
                 'Yellow' { 'Yellow' }
@@ -509,7 +529,10 @@ function Install-UnslothStudio {
                 'DarkGray' { 'DarkGray' }
                 default { 'DarkGreen' }
             }
-            Write-Host $Value -ForegroundColor $fc
+            # One composed record: two Write-Host calls are two Information
+            # records, and a redirected consumer splits the label from the value
+            # at the boundary. No mirror here, so this is the only sink.
+            Write-Host ("  {0}{1}" -f $padded, $Value) -ForegroundColor $fc
         }
     }
 
@@ -3183,7 +3206,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.5" "unsloth-zoo>=2026.8.4" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.7" "unsloth-zoo>=2026.8.5" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -3197,7 +3220,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.5" "unsloth-zoo>=2026.8.4" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.7" "unsloth-zoo>=2026.8.5" }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -3324,7 +3347,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.8.5" "unsloth-zoo>=2026.8.4" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.8.7" "unsloth-zoo>=2026.8.5" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
@@ -3336,7 +3359,7 @@ exit 0
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.5" "unsloth-zoo>=2026.8.4" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.7" "unsloth-zoo>=2026.8.5" }
         } else {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
@@ -3364,7 +3387,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.8.4" "unsloth>=2026.8.5" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.8.5" "unsloth>=2026.8.7" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)

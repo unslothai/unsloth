@@ -329,6 +329,13 @@ export const fr = {
         title: "Changer le mot de passe",
         description:
           "Saisissez votre mot de passe actuel et choisissez-en un nouveau (au moins {minLength} caractères).",
+        setTrigger: "Définir le mot de passe distant",
+        setTitle: "Définir le mot de passe distant",
+        setDescription:
+          "Choisissez le mot de passe utilisé par les navigateurs distants pour se connecter avec l'identifiant unsloth (au moins {minLength} caractères). L'application de bureau Unsloth continue de se connecter automatiquement.",
+        setSubmit: "Définir le mot de passe",
+        setting: "Définition...",
+        setDone: "Mot de passe défini.",
         currentPassword: "Mot de passe actuel",
         newPassword: "Nouveau mot de passe",
         confirmPassword: "Confirmer le nouveau mot de passe",
@@ -410,6 +417,16 @@ export const fr = {
         showLlamaUpdates: "Notifications de mise à jour de llama.cpp",
         showLlamaUpdatesDescription:
           "Notifier lorsqu'une nouvelle version de llama.cpp est disponible pour exécuter de nouveaux modèles. Désactivez si vous ne faites que de l'entraînement.",
+      },
+      startup: {
+        sectionTitle: "Démarrage",
+        launchAtLogin: "Lancer Unsloth à la connexion",
+        launchAtLoginDescription:
+          "Démarre Unsloth en arrière-plan lorsque vous vous connectez. Il reste dans la barre de menus ou la zone de notification jusqu'à ce que vous l'ouvriez.",
+        loadError:
+          "Impossible de charger le réglage de lancement à la connexion.",
+        saveError:
+          "Impossible de mettre à jour le réglage de lancement à la connexion.",
       },
       gettingStarted: "Prise en main",
       startOnboarding: "Démarrer la prise en main",

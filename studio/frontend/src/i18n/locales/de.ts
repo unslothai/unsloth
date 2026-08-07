@@ -330,6 +330,13 @@ export const de = {
         title: "Passwort ändern",
         description:
           "Geben Sie Ihr aktuelles Passwort ein und wählen Sie ein neues (mindestens {minLength} Zeichen).",
+        setTrigger: "Remote-Passwort festlegen",
+        setTitle: "Remote-Passwort festlegen",
+        setDescription:
+          "Wählen Sie das Passwort, mit dem sich entfernte Browser als unsloth anmelden (mindestens {minLength} Zeichen). Die Unsloth Desktop-App meldet sich weiterhin automatisch an.",
+        setSubmit: "Passwort festlegen",
+        setting: "Wird festgelegt...",
+        setDone: "Passwort festgelegt.",
         currentPassword: "Aktuelles Passwort",
         newPassword: "Neues Passwort",
         confirmPassword: "Neues Passwort bestätigen",
@@ -412,6 +419,15 @@ export const de = {
         showLlamaUpdates: "llama.cpp-Update-Benachrichtigungen",
         showLlamaUpdatesDescription:
           "Benachrichtigt, wenn ein neuerer llama.cpp-Build verfügbar ist, um neue Modelle auszuführen. Deaktivieren Sie dies, wenn Sie nur trainieren.",
+      },
+      startup: {
+        sectionTitle: "Autostart",
+        launchAtLogin: "Unsloth bei der Anmeldung starten",
+        launchAtLoginDescription:
+          "Startet Unsloth im Hintergrund, wenn Sie sich anmelden. Es bleibt in der Menüleiste bzw. im Infobereich, bis Sie es öffnen.",
+        loadError: "Die Autostart-Einstellung konnte nicht geladen werden.",
+        saveError:
+          "Die Autostart-Einstellung konnte nicht aktualisiert werden.",
       },
       gettingStarted: "Erste Schritte",
       startOnboarding: "Einrichtung starten",

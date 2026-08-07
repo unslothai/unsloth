@@ -294,6 +294,13 @@ export const it = {
         title: "Cambia password",
         description:
           "Inserisci la password attuale e scegline una nuova (almeno {minLength} caratteri).",
+        setTrigger: "Imposta la password remota",
+        setTitle: "Imposta la password remota",
+        setDescription:
+          "Scegli la password con cui i browser remoti accedono come unsloth (almeno {minLength} caratteri). L'app desktop di Unsloth continua ad accedere automaticamente.",
+        setSubmit: "Imposta la password",
+        setting: "Impostazione...",
+        setDone: "Password impostata.",
         currentPassword: "Password attuale",
         newPassword: "Nuova password",
         confirmPassword: "Conferma la nuova password",
@@ -385,6 +392,15 @@ export const it = {
         showLlamaUpdates: "Notifiche di aggiornamento di llama.cpp",
         showLlamaUpdatesDescription:
           "Avvisa quando è disponibile una build più recente di llama.cpp per eseguire nuovi modelli. Disattiva le notifiche se usi Unsloth solo per l'addestramento.",
+      },
+      startup: {
+        sectionTitle: "Avvio",
+        launchAtLogin: "Avvia Unsloth all'accesso",
+        launchAtLoginDescription:
+          "Avvia Unsloth in background quando accedi. Rimane nella barra dei menu o nell'area di notifica finché non lo apri.",
+        loadError: "Impossibile caricare l'impostazione di avvio all'accesso.",
+        saveError:
+          "Impossibile aggiornare l'impostazione di avvio all'accesso.",
       },
       gettingStarted: "Per iniziare",
       startOnboarding: "Avvia la configurazione guidata",

@@ -405,6 +405,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             if getattr(backend, "device", None) == "mlx":
                 load_kwargs["parallel_mode"] = config.get("mlx_parallel_mode")
                 load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
+                load_kwargs["kv_bits"] = config.get("mlx_kv_bits")
+                load_kwargs["chat_template_override"] = config.get("chat_template_override")
             success = backend.load_model(**load_kwargs)
         finally:
             heartbeat_stop.set()
@@ -435,6 +437,22 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             # Backend post-load audio classification outranks pre-load config.
             model_info.update(
                 {k: _entry[k] for k in ("is_audio", "audio_type", "has_audio_input") if k in _entry}
+            )
+            # Resolved MLX runtime knobs; only the backend knows what it honored.
+            model_info.update(
+                {
+                    k: _entry[k]
+                    for k in (
+                        "mlx_kv_bits",
+                        "mlx_kv_bits_requested",
+                        "mlx_kv_quant_eligibility",
+                        "mlx_kv_quant_reason",
+                        "mlx_kv_quant_note",
+                        "chat_template_override_requested",
+                        "chat_template_override_reason",
+                    )
+                    if k in _entry
+                }
             )
             # Forward chat_template_info so the parent can classify capabilities.
             try:

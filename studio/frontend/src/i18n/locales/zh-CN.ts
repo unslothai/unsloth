@@ -308,6 +308,13 @@ export const zhCN = {
         trigger: "更改密码",
         title: "更改密码",
         description: "输入当前密码并选择新密码（至少 {minLength} 个字符）。",
+        setTrigger: "设置远程密码",
+        setTitle: "设置远程密码",
+        setDescription:
+          "选择远程浏览器以 unsloth 身份登录时使用的密码（至少 {minLength} 个字符）。Unsloth 桌面应用仍会自动登录。",
+        setSubmit: "设置密码",
+        setting: "正在设置...",
+        setDone: "密码已设置。",
         currentPassword: "当前密码",
         newPassword: "新密码",
         confirmPassword: "确认新密码",
@@ -379,6 +386,14 @@ export const zhCN = {
         showLlamaUpdates: "llama.cpp 更新通知",
         showLlamaUpdatesDescription:
           "当有可用于运行新模型的新版 llama.cpp 构建时通知你。如果只进行训练，可以关闭此项。",
+      },
+      startup: {
+        sectionTitle: "启动",
+        launchAtLogin: "登录时运行 Unsloth",
+        launchAtLoginDescription:
+          "登录系统时在后台启动 Unsloth。在你打开它之前，它会一直驻留在菜单栏或系统托盘中。",
+        loadError: "无法加载登录时启动设置。",
+        saveError: "无法更新登录时启动设置。",
       },
       gettingStarted: "入门",
       startOnboarding: "开始引导",

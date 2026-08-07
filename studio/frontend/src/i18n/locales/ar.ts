@@ -318,6 +318,13 @@ export const ar = {
         title: "تغيير كلمة المرور",
         description:
           "أدخل كلمة المرور الحالية واختر كلمة مرور جديدة (بحد أدنى {minLength} حرفًا).",
+        setTrigger: "تعيين كلمة مرور الوصول عن بُعد",
+        setTitle: "تعيين كلمة مرور الوصول عن بُعد",
+        setDescription:
+          "اختر كلمة المرور التي تسجّل بها المتصفحات البعيدة الدخول باسم unsloth (بحد أدنى {minLength} حرفًا). سيواصل تطبيق Unsloth لسطح المكتب تسجيل الدخول تلقائيًا.",
+        setSubmit: "تعيين كلمة المرور",
+        setting: "جارٍ التعيين...",
+        setDone: "تم تعيين كلمة المرور.",
         currentPassword: "كلمة المرور الحالية",
         newPassword: "كلمة المرور الجديدة",
         confirmPassword: "تأكيد كلمة المرور الجديدة",
@@ -395,6 +402,14 @@ export const ar = {
         showLlamaUpdates: "إشعارات تحديث llama.cpp",
         showLlamaUpdatesDescription:
           "التنبيه عند توفر إصدار أحدث من llama.cpp لتشغيل نماذج جديدة. أوقف التشغيل إذا كنت تُدرّب فقط.",
+      },
+      startup: {
+        sectionTitle: "بدء التشغيل",
+        launchAtLogin: "تشغيل Unsloth عند تسجيل الدخول",
+        launchAtLoginDescription:
+          "يبدأ Unsloth في الخلفية عند تسجيل الدخول، ويبقى في شريط القوائم أو علبة النظام حتى تفتحه.",
+        loadError: "تعذر تحميل إعداد التشغيل عند تسجيل الدخول.",
+        saveError: "تعذر تحديث إعداد التشغيل عند تسجيل الدخول.",
       },
       gettingStarted: "البدء",
       startOnboarding: "بدء الإعداد التمهيدي",

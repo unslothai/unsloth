@@ -426,20 +426,19 @@ fn spawn_script(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    // AppImage sets LD_LIBRARY_PATH to its bundled libs, which breaks Python
-    // spawned by the install script. Only clear inside AppImage — native installs
-    // may need these for custom CUDA or conda paths.
-    #[cfg(target_os = "linux")]
-    if std::env::var_os("APPIMAGE").is_some() {
-        cmd.env_remove("LD_LIBRARY_PATH");
-        cmd.env_remove("PYTHONHOME");
-        cmd.env_remove("PYTHONPATH");
-    }
-
     // Tauri only does default-root installs; install.sh / install.ps1 reject
     // these under --tauri. Scrub so an inherited value can't trip the guard.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
+
+    // We decode this child as UTF-8 below, so its Python descendants must emit
+    // UTF-8 or the log fills with U+FFFD. The .ps1 entry points set these too;
+    // this covers any path reaching Python without them.
+    #[cfg(windows)]
+    {
+        cmd.env("PYTHONUTF8", "1");
+        cmd.env("PYTHONIOENCODING", "utf-8");
+    }
 
     // On Windows, launch the installer directly with CREATE_NO_WINDOW.
     // The app process is assigned to a KILL_ON_JOB_CLOSE job in main.rs, so

@@ -88,6 +88,8 @@ export interface ResearchBudgets {
   maxSources: number;
   modelTimeoutSeconds: number;
   toolTimeoutSeconds: number;
+  // Optional: runs created before this budget existed do not carry it.
+  firstOutputTimeoutSeconds?: number;
 }
 
 export interface ResearchWebsitePolicy {

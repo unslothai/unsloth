@@ -322,6 +322,7 @@ from utils.torch_warmup import (
     join_background_warm,
     reset_background_warm,
     start_background_warm,
+    warm_status,
 )
 from utils.cache_cleanup import clear_unsloth_compiled_cache
 from utils.lifespan_shutdown import run_lifespan_shutdown
@@ -368,9 +369,13 @@ def _load_desktop_owner() -> dict[str, str] | None:
 
 _DESKTOP_OWNER = _load_desktop_owner()
 
-# The Tauri desktop app runs the backend locally, so stdio MCP servers are safe; "0" opts out.
+# The Tauri desktop app runs the backend locally, so stdio MCP servers are safe ("0" opts
+# out). Tracked as an automatic loopback default so publishing a runtime tunnel can suspend
+# it without overriding an explicit operator choice.
 if _DESKTOP_OWNER:
-    os.environ.setdefault("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
+    from utils.host_policy import apply_stdio_mcp_loopback_default as _apply_desktop_stdio_default
+    _apply_desktop_stdio_default("127.0.0.1")
+    del _apply_desktop_stdio_default
 
 
 def _desktop_owner() -> dict[str, str] | None:
@@ -779,6 +784,10 @@ from starlette.datastructures import MutableHeaders  # noqa: E402
 
 _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
 _ARTIFACT_PREVIEW_FRAME_PATH = "/api/inference/artifact-preview-frame"
+_DOCS_CDN = "https://cdn.jsdelivr.net"
+_DOCS_FONT_CSS = "https://fonts.googleapis.com"
+_DOCS_FONT_FILES = "https://fonts.gstatic.com"
+_DOCS_PATHS = frozenset({"/docs", "/docs/oauth2-redirect", "/redoc"})
 
 
 # /content is Colab's working directory -- more reliable than env vars.
@@ -791,8 +800,17 @@ _IS_COLAB = os.path.isdir("/content") and (
 )
 
 
-def _build_csp(script_nonce: "str | None" = None) -> str:
+def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     script_src = "script-src 'self'"
+    style_src = "style-src 'self' 'unsafe-inline'"
+    worker_src = "worker-src 'self'"
+    font_src = "font-src 'self' data:"
+    if docs:
+        script_src += f" 'unsafe-inline' {_DOCS_CDN}"
+        # 'unsafe-inline' does not cover ReDoc's Google Fonts sheet, which pulls faces from gstatic.
+        style_src += f" {_DOCS_CDN} {_DOCS_FONT_CSS}"
+        font_src += f" {_DOCS_FONT_FILES}"
+        worker_src += " blob:"
     if script_nonce:
         script_src += f" 'nonce-{script_nonce}'"
     # Colab parent frames span multi-level *.prod.colab.dev subdomains (CSP wildcards match
@@ -817,9 +835,10 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
         "img-src 'self' data: blob: https:; "
         "media-src 'self' data: blob: https:; "
         f"connect-src {connect_src}; "
-        "style-src 'self' 'unsafe-inline'; "
+        f"{style_src}; "
         f"{script_src}; "
-        "font-src 'self' data:; "
+        f"{worker_src}; "
+        f"{font_src}; "
         "frame-src 'self'; "
         f"frame-ancestors {frame_ancestors}; "
         "form-action 'self'; "
@@ -856,7 +875,10 @@ class SecurityHeadersMiddleware:
                 nonce = headers.get(_CSP_SCRIPT_NONCE_HEADER)
                 if nonce is not None:
                     del headers[_CSP_SCRIPT_NONCE_HEADER]
-                headers.setdefault("Content-Security-Policy", _build_csp(nonce))
+                headers.setdefault(
+                    "Content-Security-Policy",
+                    _build_csp(nonce, docs = path in _DOCS_PATHS),
+                )
                 # Omit X-Frame-Options in Colab: DENY would block serve_kernel_port_as_iframe regardless of CSP.
                 if not _IS_COLAB and path != _ARTIFACT_PREVIEW_FRAME_PATH:
                     headers.setdefault("X-Frame-Options", "DENY")
@@ -1127,18 +1149,44 @@ async def _recipes_redirect(rest: str = ""):
 
 from utils.host_policy import cors_origins_for_mode  # noqa: E402
 
+
+class RemoteAccessCORSMiddleware(CORSMiddleware):
+    """Allow remote browser origins only while a Cloudflare URL is published."""
+
+    def __init__(self, cors_app, *, remote_access_state, **kwargs):
+        self.remote_access_state = remote_access_state
+        super().__init__(cors_app, **kwargs)
+
+    def is_allowed_origin(self, origin: str) -> bool:
+        return bool(
+            getattr(self.remote_access_state, "cloudflare_url", None)
+        ) or super().is_allowed_origin(origin)
+
+
 _cors_origins = cors_origins_for_mode(
     api_only = os.environ.get("UNSLOTH_API_ONLY") == "1",
     secure = os.environ.get("UNSLOTH_SECURE") == "1",
 )
 
 app.add_middleware(
-    CORSMiddleware,
+    RemoteAccessCORSMiddleware,
+    remote_access_state = app.state,
     allow_origins = _cors_origins,
     allow_credentials = True,
     allow_methods = ["*"],
     allow_headers = ["*"],
+    # is_allowed_origin closes the moment the tunnel URL clears, but a preflight
+    # already cached by the browser does not. Measured in WebKit: with Starlette's
+    # 600s default, a state-changing request still REACHED the server after remote
+    # access was stopped (Chromium/Firefox/Edge re-preflighted). Keep the stale
+    # window short so revocation is nearly as immediate as every other trust
+    # signal here.
+    max_age = 60,
 )
+
+from utils.remote_access_settings import RemoteAccessStopResponseMiddleware  # noqa: E402
+
+app.add_middleware(RemoteAccessStopResponseMiddleware)
 
 
 # ============ Register API Routes ============
@@ -1248,10 +1296,36 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str]]]:
     return None
 
 
+def _torch_warm_in_progress() -> bool:
+    """True while the coordinated warm thread is still working through its stages.
+
+    A separate field from ``hardware_detecting`` on purpose, rather than widening that one.
+    Hardware detection is only ``_STAGES[0]``; inference_backend, transformers, datasets and
+    unsloth_zoo import after it, and those C-extension imports are the ones that hold the GIL
+    for seconds at a time. A launcher ending its startup grace on ``hardware_detecting``
+    alone ends it with the expensive half of the warm still ahead of it, which is the window
+    the grace exists for. But that marker also means "this hardware verdict is provisional,
+    re-read it", and config/hardware-verdict.ts keeps the UI provisional and polling while it
+    is set, so keeping it lit through datasets would hide Train for the whole warm over a
+    verdict that settled seconds in. Two meanings, two fields.
+
+    A snapshot read of module state, no lock and no wait, so /api/liveness stays cheap.
+
+    False whenever no warm thread is running, which is what keeps the deferred case working:
+    with UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 the warm never starts, and one retired mid-stage
+    by a shutdown never finishes. Neither will ever set ``finished``, so deriving this from
+    "not finished" would report warming forever and hold the launcher's startup grace open
+    until it expired on its own. Absence therefore covers both "warm is over" and "no warm is
+    coming", and the field needs no deferred companion of its own.
+    """
+    status = warm_status()
+    return bool(status["started"] and not status["finished"] and status["alive"])
+
+
 @app.get("/api/liveness")
 async def liveness_check():
     """Cheap process liveness for desktop port validation."""
-    return {
+    alive = {
         "status": "alive",
         "service": "Unsloth UI Backend",
         "desktop_protocol_version": 1,
@@ -1263,6 +1337,23 @@ async def liveness_check():
         "studio_root_id": _studio_root_id(),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
+    # Same unsettled markers /api/health publishes, and for the desktop health watchdog they
+    # are the point of the route: it probes liveness every 15s and holds its startup grace
+    # period open until a reply says the warm-up is over, because the warm thread's
+    # `import torch` holds the GIL and can stall the next probes on a healthy process.
+    # The watchdog reads torch_warm_in_progress for that, not hardware_detecting: the GIL is
+    # held just as hard by transformers and unsloth_zoo, which import after detection settles.
+    # Both are non-blocking reads of module-level state, so unlike health this neither starts
+    # detection nor waits on it and the route stays cheap.
+    if _torch_warm_in_progress():
+        alive["torch_warm_in_progress"] = True
+    if _hardware_snapshot() is None:
+        alive["hardware_detecting"] = True
+        if os.environ.get(DISABLE_ENV_VAR) == "1":
+            # Nothing is detecting while the warm is switched off, so the verdict will not
+            # settle on its own. Say so, or the watchdog holds its grace open for nothing.
+            alive["hardware_detection_deferred"] = True
+    return alive
 
 
 @app.get("/api/health")
@@ -1296,6 +1387,10 @@ async def health_check(request: Request):
         "native_path_leases_supported": native_path_leases_supported(),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
+    # Lockstep with /api/liveness: the launcher falls back to this route on a backend too old
+    # to have liveness, so the warm marker has to reach it by the same path.
+    if _torch_warm_in_progress():
+        base["torch_warm_in_progress"] = True
     if snapshot is None:
         # chat_only above is the pre-detection default, not a measurement; clients should re-read.
         base["hardware_detecting"] = True
@@ -1342,6 +1437,10 @@ async def health_check(request: Request):
         authed.pop("hardware_detecting", None)
         # Same for the deferred marker: the client reads it first and would keep the old reason.
         authed.pop("hardware_detection_deferred", None)
+        # torch_warm_in_progress deliberately survives. It does not qualify the verdict below;
+        # a settled verdict is exactly the state where the warm has finished stage one and is
+        # off importing transformers, and dropping it here would hand the watchdog the same
+        # too-early "startup is over" this field exists to replace.
     else:
         # A re-detect started during the bearer await and base carries no chat_only_reason, so a
         # client reading this as measured would store reason null and stop the sidebar's recovery
@@ -1539,7 +1638,7 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
     import os
     import time
     import logging
-    from utils.hardware import get_device, export_capability
+    from utils.hardware import get_device, export_capability, video_capability
     from utils.hardware.hardware import _backend_label
 
     logger = logging.getLogger(__name__)
@@ -1615,6 +1714,8 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
         "ml_packages": ml_packages,
         # Export capability + torch-aware reason. See /api/system/hardware.
         **export_capability(),
+        # Video capability + reason, same shape. Additive: older clients ignore the extra keys.
+        **video_capability(),
     }
 
 
@@ -1638,13 +1739,20 @@ def get_hardware_info(
     method auto-selection. Sync def (not async): hardware/detail probes can
     shell out, and FastAPI runs sync endpoints in a threadpool.
     """
-    from utils.hardware import get_gpu_summary, get_package_versions, export_capability
+    from utils.hardware import (
+        get_gpu_summary,
+        get_package_versions,
+        export_capability,
+        video_capability,
+    )
 
     body = {
         "gpu": get_gpu_summary(),
         "versions": get_package_versions(),
         # Export capability + torch-aware reason; the Export UI grays out with the message.
         **export_capability(),
+        # Video capability + reason; the Video page shows the message in place of the generator.
+        **video_capability(),
     }
     if include_details:
         from utils.llama_cpp_update import get_installed_llama_version
@@ -1874,7 +1982,37 @@ class _AssetGZipMiddleware(GZipMiddleware):
         await super().__call__(scope, receive, send)
 
 
-def setup_frontend(app: FastAPI, build_path: Path):
+def _is_live_cloudflare_frontend_request(scope, app_state) -> bool:
+    cloudflare_url = getattr(app_state, "cloudflare_url", None)
+    headers = dict(scope.get("headers", ()))
+    if not cloudflare_url or not headers.get(b"cf-connecting-ip"):
+        return False
+    try:
+        expected_host = urlparse(cloudflare_url).hostname
+        request_host = urlparse(f"//{headers.get(b'host', b'').decode('latin-1')}").hostname
+    except (UnicodeDecodeError, ValueError):
+        return False
+    return bool(expected_host) and request_host == expected_host
+
+
+class _TunnelOnlyFrontend:
+    def __init__(self, frontend_app, app_state):
+        self.frontend_app = frontend_app
+        self.app_state = app_state
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or _is_live_cloudflare_frontend_request(scope, self.app_state):
+            await self.frontend_app(scope, receive, send)
+            return
+        await Response(status_code = 404)(scope, receive, send)
+
+
+def setup_frontend(
+    app: FastAPI,
+    build_path: Path,
+    *,
+    tunnel_only: bool = False,
+):
     """Mount frontend static files (optional)"""
     if not build_path.exists():
         return False
@@ -1886,7 +2024,12 @@ def setup_frontend(app: FastAPI, build_path: Path):
             minimum_size = 1024,
             compresslevel = 6,
         )
+        if tunnel_only:
+            assets_app = _TunnelOnlyFrontend(assets_app, app.state)
         app.mount("/assets", assets_app, name = "assets")
+
+    def _frontend_request_allowed(request: Request) -> bool:
+        return not tunnel_only or _is_live_cloudflare_frontend_request(request.scope, app.state)
 
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()
@@ -1911,6 +2054,8 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
     @app.get("/")
     async def serve_root(request: Request):
+        if not _frontend_request_allowed(request):
+            return Response(status_code = 404)
         return _build_index_response(request)
 
     @app.get("/{full_path:path}")
@@ -1919,6 +2064,8 @@ def setup_frontend(app: FastAPI, build_path: Path):
         # for /v1/* ({"detail": ...} for /api/*). The request path is "/" + full_path.
         if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
             raise HTTPException(status_code = 404, detail = "API endpoint not found")
+        if not _frontend_request_allowed(request):
+            return Response(status_code = 404)
 
         file_path = (build_path / full_path).resolve()
 

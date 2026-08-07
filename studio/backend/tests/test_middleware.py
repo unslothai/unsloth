@@ -462,6 +462,52 @@ class TestSecurityHeadersMiddleware:
         nonced = main_module._build_csp("XYZ")
         assert "script-src 'self' 'nonce-XYZ';" in nonced
 
+    def test_docs_csp_allows_swagger_cdn_and_stays_scoped(self, main_module):
+        docs = main_module._build_csp(docs = True)
+        directives = {
+            chunk.strip().split(" ", 1)[0]: chunk.strip()
+            for chunk in docs.split(";")
+            if chunk.strip()
+        }
+        assert main_module._DOCS_CDN in directives["script-src"]
+        assert main_module._DOCS_CDN in directives["style-src"]
+        assert "'unsafe-inline'" in directives["script-src"]
+        assert "blob:" in directives["worker-src"]
+        assert main_module._DOCS_FONT_CSS in directives["style-src"]
+        assert main_module._DOCS_FONT_FILES in directives["font-src"]
+
+        plain = main_module._build_csp()
+        assert main_module._DOCS_CDN not in plain
+        assert main_module._DOCS_FONT_CSS not in plain
+        assert main_module._DOCS_FONT_FILES not in plain
+        assert "worker-src 'self';" in plain
+        assert "font-src 'self' data:;" in plain
+
+    def test_docs_paths_get_the_relaxed_csp(self, main_module):
+        assert "/docs" in main_module._DOCS_PATHS
+        assert "/redoc" in main_module._DOCS_PATHS
+        assert "/docs/oauth2-redirect" in main_module._DOCS_PATHS
+
+    def test_middleware_relaxes_only_the_docs_paths(self, main_module):
+        # _DOCS_PATHS matches scope["path"] exactly, so the trailing-slash twin stays strict.
+        app = _make_csp_app(main_module)
+
+        @app.get("/docs")
+        async def docs():
+            return {"ok": True}
+
+        @app.get("/docs/")
+        async def docs_slash():
+            return {"ok": True}
+
+        c = TestClient(app)
+        relaxed = c.get("/docs").headers["content-security-policy"]
+        assert main_module._DOCS_CDN in relaxed
+
+        for path in ("/docs/", "/plain"):
+            strict = c.get(path).headers["content-security-policy"]
+            assert main_module._DOCS_CDN not in strict, path
+
     def test_img_and_media_allow_https_sources(self, main_module):
         # Model-card READMEs and citation favicons pull images/media from many
         # https origins (HF LFS/XET CDNs, shields/badge hosts, GitHub-hosted
@@ -701,6 +747,29 @@ class TestResearchPortMiddleware:
 
 
 class TestFrontendAssets:
+    def test_desktop_frontend_is_available_only_through_live_tunnel(self, tmp_path, main_module):
+        (tmp_path / "index.html").write_text("<!doctype html><title>remote</title>")
+        assets = tmp_path / "assets"
+        assets.mkdir()
+        (assets / "app.js").write_text("export {};", encoding = "utf-8")
+        app = FastAPI()
+        app.state.cloudflare_url = None
+        assert main_module.setup_frontend(app, tmp_path, tunnel_only = True)
+        client = TestClient(app)
+        remote_client = TestClient(app, base_url = "https://remote.trycloudflare.com")
+        headers = {"CF-Connecting-IP": "198.51.100.7"}
+        assert client.get("/").status_code == 404
+        assert client.get("/assets/app.js").status_code == 404
+        assert remote_client.get("/", headers = headers).status_code == 404
+
+        app.state.cloudflare_url = "https://remote.trycloudflare.com"
+        assert remote_client.get("/", headers = headers).status_code == 200
+        assert remote_client.get("/settings/api", headers = headers).status_code == 200
+        assert remote_client.get("/assets/app.js", headers = headers).status_code == 200
+        assert client.get("/", headers = headers).status_code == 404
+        assert client.get("/settings/api", headers = headers).status_code == 404
+        assert client.get("/").status_code == 404
+
     def test_hashed_assets_are_compressed_and_cached(self, tmp_path, main_module):
         content = b"export const value = 'responsive';\n" * 200
         (tmp_path / "page-abc123.js").write_bytes(content)
