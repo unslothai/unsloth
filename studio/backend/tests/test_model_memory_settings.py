@@ -1995,7 +1995,6 @@ class TestResidencyDoesNotBlockReload:
 
         def residency(on):
             import utils.model_memory_settings as mm
-
             monkeypatch.setattr(mm, "get_keep_resident", lambda: on)
 
         return residency
@@ -2010,7 +2009,6 @@ class TestResidencyDoesNotBlockReload:
 
     def test_but_idle_unload_is_still_configured(self, idle_env):
         import utils.openai_auto_switch_settings as aus
-
         idle_env(True)
         assert aus.idle_unload_is_configured() is True
 
@@ -2065,9 +2063,7 @@ class TestResidencyDoesNotBlockReload:
                 for switch in (False, True):
                     monkeypatch.setattr(aus, "_stored_idle_seconds", lambda s = stored: s)
                     monkeypatch.setattr(aus, "_env_idle_seconds", lambda e = env: e)
-                    monkeypatch.setattr(
-                        aus, "get_openai_auto_switch_enabled", lambda v = switch: v
-                    )
+                    monkeypatch.setattr(aus, "get_openai_auto_switch_enabled", lambda v = switch: v)
                     assert aus.idle_unload_is_configured() == (
                         aus.get_auto_unload_idle_seconds() > 0
                     ), (stored, env, switch)
@@ -2081,4 +2077,3 @@ class TestResidencyDoesNotBlockReload:
         source = inspect.getsource(llama_keepwarm)
         assert "get_auto_unload_idle_seconds" in source
         assert "idle_unload_is_configured" not in source
-
