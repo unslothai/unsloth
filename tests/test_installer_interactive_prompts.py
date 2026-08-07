@@ -57,10 +57,14 @@ APPROVED_PROMPTS: dict[tuple[str, str], str] = {
     ),
 }
 
-_MARKER = re.compile(r"\[\s*[yn]\s*/\s*[yn]\s*\]|\(\s*[yn]\s*/\s*[yn]\s*\)|\byes\s*/\s*no\b", re.IGNORECASE)
+_MARKER = re.compile(
+    r"\[\s*[yn]\s*/\s*[yn]\s*\]|\(\s*[yn]\s*/\s*[yn]\s*\)|\byes\s*/\s*no\b", re.IGNORECASE
+)
 
 # Anything that blocks waiting on a human.
-_POSIX_READ = re.compile(r"(?:^|[\s;&|(])read\s+(?![a-zA-Z_]+=)[^\n]*?(?:<\s*/dev/tty|(?:^|\s)-p(?:\s|\"|'))")
+_POSIX_READ = re.compile(
+    r"(?:^|[\s;&|(])read\s+(?![a-zA-Z_]+=)[^\n]*?(?:<\s*/dev/tty|(?:^|\s)-p(?:\s|\"|'))"
+)
 _PWSH_READ = re.compile(r"Read-Host|PromptForChoice|ReadKey\s*\(", re.IGNORECASE)
 
 _QUOTED = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"' r"|'([^']*)'")
@@ -69,7 +73,9 @@ _QUOTED = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"' r"|'([^']*)'")
 _REGEXY = re.compile(r"\\|\(\?|\^|\$\(|\[0|\{[0-9]|\.\*|\|")
 
 # Stripped so a question built from a format string keys the same as a literal.
-_FORMAT_NOISE = re.compile(r"%[-#0 +]*\d*(?:\.\d+)*[sdfxbq%]|\\[nrte]|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?")
+_FORMAT_NOISE = re.compile(
+    r"%[-#0 +]*\d*(?:\.\d+)*[sdfxbq%]|\\[nrte]|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"
+)
 
 
 def _is_comment(line: str) -> bool:
@@ -177,7 +183,7 @@ def _failure_message(script: str, line_number: int, question: str) -> str:
         f"    environment variable with a non-interactive default instead.\n"
         f"  - If it genuinely is: add\n"
         f"\n"
-        f"        ({script!r}, {question!r}): \"why this prompt is needed\",\n"
+        f'        ({script!r}, {question!r}): "why this prompt is needed",\n'
         f"\n"
         f"    to APPROVED_PROMPTS in tests/test_installer_interactive_prompts.py\n"
         f"    in the same PR, so the decision shows up in the diff.\n"
@@ -189,7 +195,9 @@ def test_no_unapproved_interactive_prompts(script: str):
     path = REPO_ROOT / script
     assert path.is_file(), f"{script} is missing -- update SCANNED_SCRIPTS if it moved"
 
-    for found_script, line_number, question in find_prompts(script, path.read_text(encoding = "utf-8")):
+    for found_script, line_number, question in find_prompts(
+        script, path.read_text(encoding = "utf-8")
+    ):
         if (found_script, question) not in APPROVED_PROMPTS:
             pytest.fail(_failure_message(found_script, line_number, question), pytrace = False)
 
@@ -200,7 +208,9 @@ def test_approved_prompts_all_still_exist():
     live = set()
     for script in SCANNED_SCRIPTS:
         source = (REPO_ROOT / script).read_text(encoding = "utf-8")
-        live.update((found_script, question) for found_script, _, question in find_prompts(script, source))
+        live.update(
+            (found_script, question) for found_script, _, question in find_prompts(script, source)
+        )
 
     stale = sorted(key for key in APPROVED_PROMPTS if key not in live)
     assert not stale, (
@@ -211,8 +221,14 @@ def test_approved_prompts_all_still_exist():
 
 def test_every_installer_script_is_scanned():
     """A prompt in a script nobody scans is the same regression, one step removed."""
-    patterns = ("install*.sh", "install*.ps1", "studio/setup*.sh", "studio/setup*.ps1",
-                "scripts/uninstall*.sh", "scripts/uninstall*.ps1")
+    patterns = (
+        "install*.sh",
+        "install*.ps1",
+        "studio/setup*.sh",
+        "studio/setup*.ps1",
+        "scripts/uninstall*.sh",
+        "scripts/uninstall*.ps1",
+    )
     on_disk = {
         path.relative_to(REPO_ROOT).as_posix()
         for pattern in patterns
@@ -232,6 +248,7 @@ def test_approved_prompts_are_documented():
 
 
 # Detector self-tests: a scan that silently stops matching passes everything.
+
 
 def test_detects_literal_marker_prompt():
     source = 'printf "  Enable telemetry? [Y/n] "\nread -r _reply </dev/tty || _reply="n"\n'
@@ -281,10 +298,10 @@ def test_detects_unlabelled_read():
 
 def test_ignores_comments_and_non_interactive_reads():
     source = (
-        '# Ask the user [Y/n] before doing anything.\n'
+        "# Ask the user [Y/n] before doing anything.\n"
         'read -r _line < "$config_file"\n'
         'while IFS= read -r _entry; do :; done < "$manifest"\n'
-        'read _major _minor <<EOF\n1 2\nEOF\n'
+        "read _major _minor <<EOF\n1 2\nEOF\n"
     )
     assert find_prompts("install.sh", source) == []
 
