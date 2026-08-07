@@ -42,8 +42,10 @@ from hub.utils.gguf import (
 from hub.utils.paths import (
     is_local_path,
     is_valid_repo_id as _is_valid_repo_id,
-    normalize_path,
 )
+# The loader's normalizer, not the hub's: the two disagree on a WSL host with a custom
+# [automount] root, and the answer here has to be the path the load will actually open.
+from utils.paths import normalize_path as _loader_normalize_path
 from hub.services.models.common import (
     _is_mmproj_filename,
     _is_mtp_drafter_path,
@@ -977,7 +979,7 @@ async def get_gguf_variants_answer(
         # must ask about the same path: under WSL a supported "C:\\models\\qwen" maps to
         # /mnt/c/models/qwen, and probing the raw spelling would report nothing loadable
         # for a model the load serves fine.
-        local_id = normalize_path(repo_id) if is_local_path(repo_id) else repo_id
+        local_id = _loader_normalize_path(repo_id) if is_local_path(repo_id) else repo_id
         local_target = None
         try:
             probe = Path(local_id).expanduser()

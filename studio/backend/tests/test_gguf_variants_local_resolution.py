@@ -616,15 +616,34 @@ def test_local_dir_answer_ignores_the_hub_cache_of_the_same_name(in_tmp_cwd, mon
 
 def test_wsl_drive_path_is_normalized_like_the_load(in_tmp_cwd, monkeypatch):
     # from_identifier normalizes before resolving, so under WSL "C:\models\qwen" is served
-    # from /mnt/c/models/qwen. Probing the raw spelling would answer loadable=false for a
+    # from the mapped path. Probing the raw spelling would answer loadable=false for a
     # model the load opens fine, and the Codex gate would reject it.
+    #
+    # Which mapping is the live question: hub.utils.paths honours [automount] root while
+    # the loader hardcodes /mnt, so on a custom-root host they name different files and
+    # only the loader's answer predicts the load. The loader's own root is unwritable from
+    # a test, so it is stood in for here, rooted in the tmp tree; the binding it stands in
+    # for is pinned below. The hub root points at a decoy holding a different quant.
     from hub.utils import paths as hub_paths
+    from hub.services.models import gguf_variants
+    from utils.paths import normalize_path as loader_normalize_path
+
+    assert gguf_variants._loader_normalize_path is loader_normalize_path
 
     monkeypatch.setattr(hub_paths, "_IS_WSL", True)
-    monkeypatch.setattr(hub_paths, "_WSL_AUTOMOUNT_ROOT", f"{in_tmp_cwd}/mnt/")
+    monkeypatch.setattr(hub_paths, "_WSL_AUTOMOUNT_ROOT", f"{in_tmp_cwd}/custom/")
+    monkeypatch.setattr(
+        gguf_variants,
+        "_loader_normalize_path",
+        lambda path: f"{in_tmp_cwd}/mnt/{path[0].lower()}/{path[3:].replace(chr(92), '/')}"
+        if len(path) >= 3 and path[1] == ":" else path,
+    )
     gguf_dir = in_tmp_cwd / "mnt" / "c" / "models" / "qwen"
     gguf_dir.mkdir(parents = True)
     (gguf_dir / "qwen-Q4_K_M.gguf").write_bytes(b"GGUF")
+    decoy = in_tmp_cwd / "custom" / "c" / "models" / "qwen"
+    decoy.mkdir(parents = True)
+    (decoy / "qwen-Q8_0.gguf").write_bytes(b"GGUF")
 
     response = _variants(r"C:\models\qwen")
 
