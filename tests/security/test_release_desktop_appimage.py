@@ -353,6 +353,39 @@ def test_thin_appimage_matches_loader_library_path_separators_and_empty_componen
         assert result.returncode == 0, f"{library_path}: {result.stderr}"
 
 
+# The loader commits to the first file it finds for a name, so a broken copy
+# ahead of a working one fails the dlopen. Skipping to the working copy would
+# pass a host whose tray still crashes during setup.
+def test_thin_appimage_stops_at_a_broken_library_path_candidate(tmp_path):
+    _, app_dir, _ = _build_fake_appimage(tmp_path)
+    fake_bin = _fake_library_host(tmp_path)
+
+    broken_dir = tmp_path / "broken-libraries"
+    broken_dir.mkdir()
+    (broken_dir / "libayatana-appindicator3.so.1").symlink_to("/bin/sh")
+    working_dir = tmp_path / "working-libraries"
+    working_dir.mkdir()
+    (working_dir / "libayatana-appindicator3.so.1").symlink_to("/bin/sh")
+
+    ldd = fake_bin / "ldd"
+    ldd.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        "  */usr/bin/unsloth-studio) exit 0 ;;\n"
+        "  " + str(broken_dir) + "/*) printf '\\tlibmissing.so.0 => not found\\n'; exit 0 ;;\n"
+        "  " + str(tmp_path) + '/*) [ -e "$1" ] && exit 0 || exit 1 ;;\n'
+        "  *) exit 1 ;;\n"
+        "esac\n",
+        encoding = "utf-8",
+    )
+    ldd.chmod(0o755)
+
+    result = _run_apprun(app_dir, fake_bin, f"{broken_dir}:{working_dir}")
+
+    assert result.returncode == 127
+    assert "libayatana-appindicator3.so.1 or libappindicator3.so.1" in result.stderr
+
+
 def test_thin_appimage_accepts_a_readable_tray_library_when_ldd_is_unavailable(tmp_path):
     _, app_dir, _ = _build_fake_appimage(tmp_path)
     fake_bin = _fake_library_host(tmp_path)

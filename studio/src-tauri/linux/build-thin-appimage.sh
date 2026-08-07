@@ -151,7 +151,11 @@ appindicator_is_usable() {
   ! printf '%s\n' "$appindicator_ldd" | grep -q 'not found'
 }
 
-find_appindicator() {
+# Every path the loader would try for one dlopen name, in its order:
+# LD_LIBRARY_PATH, then the ldconfig cache, then the default directories.
+appindicator_candidates() {
+  library_name="$1"
+
   if [ "${LD_LIBRARY_PATH+x}" = x ]; then
     # The loader accepts ':' and ';' separators. An empty component is the
     # current directory. Appending a separator keeps a trailing empty
@@ -161,46 +165,43 @@ find_appindicator() {
       library_dir=${library_path%%[:;]*}
       library_path=${library_path#*[:;]}
       [ -n "$library_dir" ] || library_dir=.
-      for library_name in $appindicator_names; do
-        candidate="$library_dir/$library_name"
-        if appindicator_is_usable "$candidate"; then
-          printf '%s\n' "$candidate"
-          return 0
-        fi
-      done
+      printf '%s\n' "$library_dir/$library_name"
     done
   fi
 
   if command -v ldconfig >/dev/null 2>&1; then
-    cached_paths=$(
-      ldconfig -p 2>/dev/null |
-        awk -v names="$appindicator_names" '
-          BEGIN { split(names, listed, " "); for (i in listed) wanted[listed[i]] = 1 }
-          wanted[$1] { print $NF }
-        '
-    )
-    for cached_path in $cached_paths; do
-      if appindicator_is_usable "$cached_path"; then
-        printf '%s\n' "$cached_path"
-        return 0
-      fi
-    done
+    ldconfig -p 2>/dev/null | awk -v name="$library_name" '$1 == name { print $NF }'
   fi
 
+  printf '%s\n' \
+    /lib/"$library_name" \
+    /lib/*-linux-gnu/"$library_name" \
+    /lib64/"$library_name" \
+    /usr/lib/"$library_name" \
+    /usr/lib/*-linux-gnu/"$library_name" \
+    /usr/lib64/"$library_name" \
+    /usr/local/lib/"$library_name"
+}
+
+find_appindicator() {
   for library_name in $appindicator_names; do
-    for candidate in \
-      /lib/"$library_name" \
-      /lib/*-linux-gnu/"$library_name" \
-      /lib64/"$library_name" \
-      /usr/lib/"$library_name" \
-      /usr/lib/*-linux-gnu/"$library_name" \
-      /usr/lib64/"$library_name" \
-      /usr/local/lib/"$library_name"; do
-      if appindicator_is_usable "$candidate"; then
-        printf '%s\n' "$candidate"
-        return 0
-      fi
-    done
+    # The loader commits to the first file it finds for a name: if that copy
+    # cannot load, the dlopen fails there instead of trying a later directory.
+    # Skipping ahead would pass a host whose tray still crashes.
+    first_candidate=$(
+      appindicator_candidates "$library_name" |
+        while IFS= read -r candidate; do
+          if [ -r "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            break
+          fi
+        done
+    )
+    [ -n "$first_candidate" ] || continue
+    if appindicator_is_usable "$first_candidate"; then
+      printf '%s\n' "$first_candidate"
+      return 0
+    fi
   done
   return 1
 }
