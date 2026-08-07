@@ -5466,12 +5466,14 @@ def test_download_plan_omits_a_gguf_that_is_already_cached(monkeypatch):
 
 def test_the_cached_gguf_check_follows_the_loaders_root_selection(monkeypatch):
     # hf_hub_download_with_xet_fallback(reuse_other_cache_root=True) asks the LIVE root first and
-    # unpinned, and any hit there wins. So a copy at the right sha in the import-time root does not
-    # save a download when the live root holds a stale refs/main: the loader takes the stale one,
-    # revalidates and pulls multi-GB outside the manager. Only a live-root snapshot whose refs/main
-    # already points at the pinned sha means the load moves nothing.
-    # But when the live root misses ENTIRELY the helper does consult the other root and routes the
-    # download through it, moving nothing, so that case has to read as cached (case 4).
+    # unpinned, and any hit there wins; only a total miss sends it to the import-time root, which it
+    # then routes the download through. So the ROOT is chosen by the unpinned probe, and a pinned
+    # copy in a root the loader never selects saves nothing (case 2).
+    # Within the chosen root a stale refs/main does NOT mean a download: hf_hub_download HEADs the
+    # repo, resolves main to the server's commit hash, and returns the pointer for THAT hash if it
+    # exists ("pointer already exists -> immediate return" in huggingface_hub/file_download.py).
+    # The pinned sha here is what model_info just reported, i.e. that same current main, so a
+    # pinned hit in the chosen root is sufficient (cases 3 and 5).
     from core.inference import diffusion as diff
 
     live = "/live-root"
@@ -5504,13 +5506,14 @@ def test_the_cached_gguf_check_follows_the_loaders_root_selection(monkeypatch):
     )
     assert diff._hub_file_cached("unsloth/X-GGUF", "x.gguf", revision = "sha1") is False
 
-    # 3. Live root HAS the pinned sha, but refs/main still points at an older snapshot, so the
-    #    load's unpinned lookup lands on the stale blob and re-fetches.
+    # 3. Live root HAS the pinned sha while refs/main still points at an older snapshot. The load
+    #    HEADs main, resolves it to that same sha, finds the pointer and returns without
+    #    transferring, so the stale local ref costs nothing and this is cached.
     monkeypatch.setattr(
         "huggingface_hub.try_to_load_from_cache",
         _probe({(live, "sha1"): "/blobs/a", (live, None): "/blobs/stale"}),
     )
-    assert diff._hub_file_cached("unsloth/X-GGUF", "x.gguf", revision = "sha1") is False
+    assert diff._hub_file_cached("unsloth/X-GGUF", "x.gguf", revision = "sha1") is True
 
     # 4. The cache folder was changed: the live root has nothing at all, and the import-time root
     #    holds the current file. The helper falls back to that root and routes the download through
@@ -5521,11 +5524,20 @@ def test_the_cached_gguf_check_follows_the_loaders_root_selection(monkeypatch):
     )
     assert diff._hub_file_cached("unsloth/X-GGUF", "x.gguf", revision = "sha1") is True
 
-    # 5. Live root empty and the OTHER root stale: the fallback lands on a blob that is not the
-    #    revision being loaded, so it still re-fetches.
+    # 5. Live root empty and the OTHER root holds the sha behind a stale ref: same as case 3, one
+    #    root over. The fallback selects that root and the HEAD resolves main to the sha already
+    #    there, so nothing transfers.
     monkeypatch.setattr(
         "huggingface_hub.try_to_load_from_cache",
         _probe({(None, "sha1"): "/old/blobs/a", (None, None): "/old/blobs/stale"}),
+    )
+    assert diff._hub_file_cached("unsloth/X-GGUF", "x.gguf", revision = "sha1") is True
+
+    # 6. The chosen root does not hold the pinned sha at all. The HEAD resolves main to a snapshot
+    #    that is not there, so the checkpoint really is fetched and the job must stay.
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        _probe({(live, None): "/blobs/stale"}),
     )
     assert diff._hub_file_cached("unsloth/X-GGUF", "x.gguf", revision = "sha1") is False
 

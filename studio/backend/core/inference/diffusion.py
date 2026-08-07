@@ -751,14 +751,22 @@ def _hub_file_cached(
     So walk the same two roots in the same order and answer for whichever one the loader lands on:
 
       * the first root with an unpinned hit is the one the load will use, and
-      * that hit must be the snapshot at ``revision``, since a stale ``refs/main`` pointing
-        elsewhere means the load revalidates and pulls.
+      * that root must hold the snapshot at ``revision``.
+
+    A stale local ``refs/main`` in the chosen root does NOT mean a download. ``hf_hub_download``
+    HEADs the repo, resolves ``main`` to the server's commit hash, builds the pointer path from
+    THAT hash and returns immediately if it exists
+    (``huggingface_hub/file_download.py``, "pointer already exists -> immediate return"). The local
+    ref is refreshed by that call, never consulted for the decision, and ``revision`` here is the
+    sha ``model_info`` just reported, i.e. the same current ``main``. So requiring the unpinned
+    lookup to resolve to the pinned path would report a multi-GB download that never happens,
+    which is the inflated plan this whole function exists to remove.
 
     Checking only the live root under-reports after a cache-folder change: every asset is then
-    invisible to the live root while the old root still serves it, so the plan advertises a
-    multi-GB checkpoint the load would not transfer. Checking any root that merely holds the bytes
-    over-reports, and skips a job the loader really does run, outside the download manager's disk
-    preflight and progress.
+    invisible to the live root while the old root still serves it. Checking any root that merely
+    holds the bytes over-reports, and skips a job the loader really does run, outside the download
+    manager's disk preflight and progress: the loader commits to ONE root by the unpinned probe, so
+    a pinned hit in a root it never selects saves nothing.
 
     ``revision`` must be the sha the caller means to load; without one the answer is False. This
     probe only ever licenses skipping work, so every unknown resolves to doing the work. Never
@@ -773,12 +781,12 @@ def _hub_file_cached(
             current = try_to_load_from_cache(repo_id, filename, cache_dir = cache_dir)
             if not isinstance(current, str):
                 continue  # this root misses unpinned, exactly as the load asks: try the next
+            # First hit wins: the loader commits to this root, so a pinned hit in the other one
+            # would not spare the transfer.
             pinned = try_to_load_from_cache(
                 repo_id, filename, cache_dir = cache_dir, revision = revision
             )
-            # First hit wins: the loader stops here too, so a later root cannot rescue a
-            # ``refs/main`` that points at the wrong snapshot.
-            return isinstance(pinned, str) and Path(pinned) == Path(current)
+            return isinstance(pinned, str)
         return False
     except Exception:  # noqa: BLE001 -- a cache we cannot read is not evidence of a hit
         return False
