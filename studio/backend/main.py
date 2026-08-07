@@ -1278,7 +1278,7 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str]]]:
 @app.get("/api/liveness")
 async def liveness_check():
     """Cheap process liveness for desktop port validation."""
-    return {
+    alive = {
         "status": "alive",
         "service": "Unsloth UI Backend",
         "desktop_protocol_version": 1,
@@ -1290,6 +1290,19 @@ async def liveness_check():
         "studio_root_id": _studio_root_id(),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
+    # Same unsettled markers /api/health publishes, and for the desktop health watchdog they
+    # are the point of the route: it probes liveness every 15s and holds its startup grace
+    # period open until a reply says the warm-up is over, because the warm thread's
+    # `import torch` holds the GIL and can stall the next probes on a healthy process.
+    # _hardware_snapshot() is a non-blocking read of module-level state, so unlike health
+    # this neither starts detection nor waits on it and the route stays cheap.
+    if _hardware_snapshot() is None:
+        alive["hardware_detecting"] = True
+        if os.environ.get(DISABLE_ENV_VAR) == "1":
+            # Nothing is detecting while the warm is switched off, so the verdict will not
+            # settle on its own. Say so, or the watchdog holds its grace open for nothing.
+            alive["hardware_detection_deferred"] = True
+    return alive
 
 
 @app.get("/api/health")

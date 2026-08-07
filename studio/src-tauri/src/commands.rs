@@ -9,6 +9,20 @@ use tauri::{AppHandle, Emitter};
 const BACKEND_STARTUP_GRACE_PERIOD: Duration = Duration::from_secs(5 * 60);
 const HEALTH_WATCHDOG_INTERVAL: Duration = Duration::from_secs(15);
 const HEALTH_WATCHDOG_MAX_FAILURES: u32 = 3;
+/// Per-probe HTTP budget for the launcher's liveness probe.
+///
+/// Generous on purpose. The backend imports torch and transformers on a background warm
+/// thread, and those C-extension imports hold the GIL, so the event loop can go silent for
+/// seconds at a time on a cold start (3735ms measured on a Mac, with the process quiet for
+/// ~27s around it). A 2s budget turns that into a probe timeout, and three of those in a row
+/// kill a backend that is merely busy. Kept below HEALTH_WATCHDOG_INTERVAL so a slow probe
+/// cannot overlap the next one.
+///
+/// This is not the preflight budget: `preflight::backend::probe_ownerless_spawned_backend`
+/// deliberately keeps its own 2s, because a preflight timeout dead-ends the launch rather
+/// than retrying, and `backend/tests/test_health_answers_within_probe_budget.py` derives
+/// `_HEALTH_DETECT_BUDGET_S` from that number.
+const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn should_count_watchdog_failure(has_seen_healthy: bool, elapsed_since_start: Duration) -> bool {
     has_seen_healthy || elapsed_since_start >= BACKEND_STARTUP_GRACE_PERIOD
@@ -251,12 +265,22 @@ pub async fn stop_server(
     .map_err(|e| format!("stop backend task failed: {e}"))?
 }
 
-/// Check if a healthy Unsloth backend is running on the given port.
-/// Expects JSON response with status=="healthy" AND service=="Unsloth UI Backend".
+/// What one launcher probe learned about the backend process.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct BackendLiveness {
+    /// The port answered with an Unsloth backend reply.
+    alive: bool,
+    /// The backend answered but has not settled its hardware verdict yet, so the torch
+    /// import on its warm thread is still in flight. Alive, but not yet done starting.
+    warming_up: bool,
+}
+
+/// Check if an Unsloth backend is running on the given port.
+/// Expects JSON with status=="alive" (or "healthy") AND service=="Unsloth UI Backend".
 #[tauri::command]
 pub async fn check_health(port: u16) -> Result<bool, String> {
     match check_health_inner(port).await {
-        Ok(healthy) => Ok(healthy),
+        Ok(liveness) => Ok(liveness.alive),
         Err(e) => {
             // Network errors are not command errors — just means not healthy
             info!("Health check on port {} failed: {}", port, e);
@@ -265,24 +289,65 @@ pub async fn check_health(port: u16) -> Result<bool, String> {
     }
 }
 
-async fn check_health_inner(port: u16) -> Result<bool, reqwest::Error> {
-    let url = format!("http://127.0.0.1:{}/api/health", port);
-    let client = crate::loopback_http::client(std::time::Duration::from_secs(2))?;
-    let resp = client.get(&url).send().await?;
-    let json: serde_json::Value = resp.json().await?;
+/// Probe the backend for process liveness.
+///
+/// `/api/liveness` rather than `/api/health`: health awaits hardware detection through
+/// `_await_hardware_detection`, so it deliberately bills the probe for work that says
+/// nothing about whether the process is alive. Liveness reads module-level caches only,
+/// which is the reason it was added. Backends older than that route answer 404, so fall
+/// back to health for them, the same order `process::generic_backend_health_ok` and
+/// `desktop_backend_owner::fetch_liveness` already use.
+async fn check_health_inner(port: u16) -> Result<BackendLiveness, reqwest::Error> {
+    let client = crate::loopback_http::client(HEALTH_PROBE_TIMEOUT)?;
+    let mut json = None;
+    for path in ["/api/liveness", "/api/health"] {
+        let resp = client
+            .get(format!("http://127.0.0.1:{}{}", port, path))
+            .send()
+            .await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND && path == "/api/liveness" {
+            continue;
+        }
+        if !resp.status().is_success() {
+            return Ok(BackendLiveness::default());
+        }
+        json = Some(resp.json::<serde_json::Value>().await?);
+        break;
+    }
+    let Some(json) = json else {
+        return Ok(BackendLiveness::default());
+    };
 
-    let healthy = json
+    // Liveness answers "alive" and health answers "healthy". Accept either, so the fallback
+    // above and a downgraded backend both still validate.
+    let live = json
         .get("status")
         .and_then(|v| v.as_str())
-        .map(|s| s == "healthy")
+        .map(|s| s == "alive" || s == "healthy")
         .unwrap_or(false);
     let correct_service = json
         .get("service")
         .and_then(|v| v.as_str())
         .map(|s| s == "Unsloth UI Backend")
         .unwrap_or(false);
+    // Both routes carry `hardware_detecting` only while the verdict is unsettled, and add
+    // `hardware_detection_deferred` when the warm is switched off and nothing will ever
+    // settle it. A backend too old to send either field reads as settled, which is what
+    // this launcher assumed before, so a downgrade loses the extra grace and nothing else.
+    let detecting = json
+        .get("hardware_detecting")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let deferred = json
+        .get("hardware_detection_deferred")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
-    Ok(healthy && correct_service)
+    let alive = live && correct_service;
+    Ok(BackendLiveness {
+        alive,
+        warming_up: alive && detecting && !deferred,
+    })
 }
 
 async fn check_watchdog_health(
@@ -290,9 +355,9 @@ async fn check_watchdog_health(
     generation: u64,
     port: u16,
     has_adopted: bool,
-) -> bool {
+) -> BackendLiveness {
     if !has_adopted {
-        return check_health_inner(port).await.unwrap_or(false);
+        return check_health_inner(port).await.unwrap_or_default();
     }
 
     let snapshot = match process::owned_backend_snapshot(state) {
@@ -303,15 +368,22 @@ async fn check_watchdog_health(
         {
             snapshot
         }
-        _ => return false,
+        _ => return BackendLiveness::default(),
     };
     let Some(owner) = snapshot.owner else {
-        return false;
+        return BackendLiveness::default();
     };
-    matches!(
+    let verified = matches!(
         crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port), false).await,
         crate::desktop_backend_owner::OwnedBackendProbe::Verified(_)
-    )
+    );
+    // The ownership probe carries no warm-up signal, and it does not need one: an adopted
+    // backend was already serving before this app attached, so its watchdog starts with
+    // count_failures_immediately = true and never consults the startup grace.
+    BackendLiveness {
+        alive: verified,
+        warming_up: false,
+    }
 }
 
 /// Return buffered server logs.
@@ -656,6 +728,7 @@ pub async fn start_managed_repair(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -770,6 +843,172 @@ mod tests {
         assert!(err.contains("Stop that server"));
     }
 
+    /// Stub backend for the launcher probe. `liveness` of `None` models a backend older
+    /// than the route, which answers 404 there. Returns the port and the paths it was asked
+    /// for, so a test can assert which route the probe actually used.
+    async fn probe_test_backend(
+        liveness: Option<String>,
+        health: String,
+    ) -> (u16, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("probe test needs a loopback port");
+        let port = listener.local_addr().unwrap().port();
+        let paths = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&paths);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buffer = [0; 2048];
+                let Ok(n) = stream.read(&mut buffer).await else {
+                    return;
+                };
+                let request = String::from_utf8_lossy(&buffer[..n]);
+                let path = request
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_string();
+                recorded.lock().unwrap().push(path.clone());
+                let (status, body) = match path.as_str() {
+                    "/api/liveness" => match liveness.as_deref() {
+                        Some(body) => ("200 OK", body),
+                        None => ("404 Not Found", ""),
+                    },
+                    "/api/health" => ("200 OK", health.as_str()),
+                    _ => ("404 Not Found", ""),
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+        });
+        (port, paths)
+    }
+
+    #[tokio::test]
+    async fn liveness_is_probed_instead_of_the_detection_gated_health_route() {
+        // /api/health awaits hardware detection on purpose, so probing it bills the
+        // watchdog for a torch import. Liveness must be the only route touched.
+        let (port, paths) = probe_test_backend(
+            Some(r#"{"status":"alive","service":"Unsloth UI Backend"}"#.to_string()),
+            ready_health(false),
+        )
+        .await;
+
+        let liveness = super::check_health_inner(port).await.unwrap();
+
+        assert!(liveness.alive);
+        assert!(!liveness.warming_up);
+        assert_eq!(paths.lock().unwrap().as_slice(), ["/api/liveness"]);
+    }
+
+    #[tokio::test]
+    async fn a_backend_without_the_liveness_route_still_validates_through_health() {
+        // The desktop app talks to backends of varying versions; a downgrade answers
+        // "healthy" from /api/health and 404s liveness.
+        let (port, paths) = probe_test_backend(None, ready_health(false)).await;
+
+        let liveness = super::check_health_inner(port).await.unwrap();
+
+        assert!(liveness.alive);
+        assert_eq!(
+            paths.lock().unwrap().as_slice(),
+            ["/api/liveness", "/api/health"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_warming_backend_is_alive_but_not_finished_starting() {
+        let (port, _) = probe_test_backend(
+            Some(
+                r#"{"status":"alive","service":"Unsloth UI Backend","hardware_detecting":true}"#
+                    .to_string(),
+            ),
+            ready_health(false),
+        )
+        .await;
+
+        let liveness = super::check_health_inner(port).await.unwrap();
+
+        assert!(liveness.alive);
+        assert!(
+            liveness.warming_up,
+            "an unsettled hardware verdict means the torch import is still in flight"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deferred_warm_is_not_reported_as_still_warming_up() {
+        // With the warm switched off nothing will ever settle the verdict, so treating it
+        // as warming up would hold the startup grace open until it expires on its own.
+        let (port, _) = probe_test_backend(
+            Some(
+                r#"{"status":"alive","service":"Unsloth UI Backend","hardware_detecting":true,"hardware_detection_deferred":true}"#
+                    .to_string(),
+            ),
+            ready_health(false),
+        )
+        .await;
+
+        let liveness = super::check_health_inner(port).await.unwrap();
+
+        assert!(liveness.alive);
+        assert!(!liveness.warming_up);
+    }
+
+    #[tokio::test]
+    async fn a_foreign_service_on_the_port_is_not_alive() {
+        let (port, _) = probe_test_backend(
+            Some(r#"{"status":"alive","service":"Some Other App"}"#.to_string()),
+            ready_health(false),
+        )
+        .await;
+
+        assert_eq!(
+            super::check_health_inner(port).await.unwrap(),
+            super::BackendLiveness::default()
+        );
+    }
+
+    #[test]
+    fn the_probe_budget_fits_inside_one_watchdog_interval() {
+        // A probe that outlives the interval would let the next tick start on top of it.
+        assert!(super::HEALTH_PROBE_TIMEOUT < super::HEALTH_WATCHDOG_INTERVAL);
+    }
+
+    #[test]
+    fn the_startup_grace_survives_the_mac_cold_start_timeline() {
+        // Replays the macOS report this grace period exists for. The warm thread held the
+        // GIL through `import torch`, three probes in a row timed out inside the first
+        // minute, and the watchdog SIGTERMed a backend that was starting normally.
+        for (label, elapsed) in [
+            ("no validated port yet", Duration::from_secs(15)),
+            ("probe timeout 1/3", Duration::from_secs(30)),
+            ("probe timeout 2/3", Duration::from_secs(47)),
+            ("probe timeout 3/3", Duration::from_secs(64)),
+        ] {
+            assert!(
+                !super::should_count_watchdog_failure(false, elapsed),
+                "{label} at {}s was counted against a backend still inside the {}s startup grace",
+                elapsed.as_secs(),
+                super::BACKEND_STARTUP_GRACE_PERIOD.as_secs()
+            );
+        }
+        assert!(!super::should_count_watchdog_failure(
+            false,
+            super::BACKEND_STARTUP_GRACE_PERIOD - Duration::from_millis(1)
+        ));
+        assert!(super::should_count_watchdog_failure(
+            false,
+            super::BACKEND_STARTUP_GRACE_PERIOD
+        ));
+    }
+
     #[test]
     fn watchdog_failure_policy_counts_only_after_health_or_grace_period() {
         for (has_seen_healthy, elapsed, expected) in [
@@ -791,9 +1030,9 @@ mod tests {
 
 /// Periodic health check that detects deadlocked or hung backends.
 /// During startup, failures are ignored for a generous grace period so a slow
-/// but legitimate backend boot is not killed. After the backend has answered at
-/// least once, or after the startup grace expires, 3 consecutive failed checks
-/// emit `server-crashed` so the frontend can offer a restart.
+/// but legitimate backend boot is not killed. After the backend has answered a probe
+/// that says its warm-up is finished, or after the startup grace expires, 3 consecutive
+/// failed checks emit `server-crashed` so the frontend can offer a restart.
 async fn health_watchdog(
     app: AppHandle,
     state: BackendState,
@@ -883,8 +1122,21 @@ async fn health_watchdog(
             continue;
         };
 
-        if check_watchdog_health(&state, generation, port, has_adopted).await {
-            has_seen_healthy = true;
+        let liveness = check_watchdog_health(&state, generation, port, has_adopted).await;
+        if liveness.alive {
+            // One answer is proof of life, not proof that startup is over. The backend
+            // imports torch on a warm thread and those C-extension imports hold the GIL, so
+            // a process that replies now can still miss the next three probes while it is
+            // perfectly healthy. Only end the startup grace once the backend reports a
+            // settled hardware verdict, which is the point its heavy imports are done.
+            if liveness.warming_up {
+                info!(
+                    "Health watchdog: backend on port {} is alive but still warming up, holding the startup grace period",
+                    port
+                );
+            } else {
+                has_seen_healthy = true;
+            }
             consecutive_failures = 0;
         } else if !should_count_failure {
             info!(
