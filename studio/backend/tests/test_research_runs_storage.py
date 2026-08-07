@@ -3309,3 +3309,73 @@ def test_merge_scraped_evidence_handles_empty_sides():
     assert _merge_scraped_evidence("only snippets", "") == "only snippets"
     # no raw snippets -> the scraped section is returned
     assert _merge_scraped_evidence("", "only chunk") == "only chunk"
+
+
+def _route_sync(messages, *, prune_missing = False):
+    """Drive the real PUT /threads/{id}/messages against the real database."""
+    from routes import chat_history
+
+    return chat_history.replace_thread_messages(
+        "thread-1",
+        chat_history.ChatMessageSyncRequest(
+            messages = [chat_history.ChatMessage(**message) for message in messages],
+            pruneMissing = prune_missing,
+        ),
+        current_subject = "alice",
+    )
+
+
+def test_route_autosave_survives_drifted_research_content(research_home):
+    # The storage tests cover the filter; this covers the route that the frontend
+    # autosave actually calls, which used to turn one drifted row into a 409 for the
+    # whole batch.
+    _create()
+    replayed = [
+        {**message, "content": [{"type": "text", "text": "HIJACKED"}]}
+        for message in studio_db.list_chat_messages("thread-1")
+    ]
+    replayed.append(
+        {
+            "id": "followup",
+            "threadId": "thread-1",
+            "parentId": "assistant-1",
+            "role": "user",
+            "content": [{"type": "text", "text": "And then?"}],
+            "createdAt": 4,
+        }
+    )
+
+    response = _route_sync(replayed)
+
+    assert {message.id for message in response.messages} == {
+        "user-1",
+        "assistant-1",
+        "followup",
+    }
+    # The unrelated message is saved, and the server's copy of the research turn wins.
+    assert studio_db.get_chat_message("thread-1", "followup") is not None
+    assert studio_db.get_chat_message("thread-1", "user-1")["content"] == [
+        {"type": "text", "text": "What changed?"}
+    ]
+
+
+def test_route_prune_cannot_delete_research_messages(research_home):
+    _create()
+    studio_db.upsert_chat_message(
+        {
+            "id": "chatter",
+            "threadId": "thread-1",
+            "parentId": "assistant-1",
+            "role": "user",
+            "content": [{"type": "text", "text": "unrelated"}],
+            "createdAt": 4,
+        }
+    )
+
+    # A client asking to keep nothing: the research turn still survives, the rest goes.
+    _route_sync([], prune_missing = True)
+
+    assert studio_db.get_chat_message("thread-1", "user-1") is not None
+    assert studio_db.get_chat_message("thread-1", "assistant-1") is not None
+    assert studio_db.get_chat_message("thread-1", "chatter") is None
+    assert research_db.get_run("run-1") is not None
