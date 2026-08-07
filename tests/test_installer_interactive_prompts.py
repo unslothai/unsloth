@@ -175,7 +175,12 @@ def _blank_strings(line: str, script: str = "") -> str:
     return _QUOTED.sub(keep, line)
 
 
-def _is_interactive_read(line: str, script: str, *, loop_input: bool = False) -> bool:
+def _is_interactive_read(
+    line: str,
+    script: str,
+    *,
+    loop_input: bool = False,
+) -> bool:
     """A read that waits on a person: a prompt option, /dev/tty, `select`, `input()`,
     `set /p`, or plain inherited stdin. Redirected and loop reads consume a file, not
     a person. Quoted text is blanked first, so a message naming `Read-Host` is not
