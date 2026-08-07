@@ -2352,9 +2352,10 @@ def test_a_none_valued_token_column_does_not_defeat_the_late_cap():
     assert max(len(r) for r in got["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
 
 
-def test_a_two_dimensional_token_column_is_not_sliced():
-    """A 2-D `position_ids` is one vector per token, so `[:cap]` cuts it along
-    the wrong axis and leaves it misaligned with the truncated `input_ids`."""
+def test_a_token_major_two_dimensional_column_is_sliced():
+    """`[seq_len, channels]` is one vector PER TOKEN, so its first axis is the
+    token axis and `[:cap]` cuts it correctly. Leaving it alone handed a custom
+    collator the old sequence length beside capped tokens."""
     _, tok = _load_plain()
     Stub, seen = _stub_with_stored_eval()
     stub = Stub()
@@ -2368,9 +2369,28 @@ def test_a_two_dimensional_token_column_is_not_sliced():
 
     got = seen["ds"]
     assert max(len(r) for r in got["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
-    # Untouched rather than cut on the wrong axis: nothing else reads it, and a
-    # silently misaligned column is worse than an uncut one.
-    assert len(got["position_ids"][0]) == len(rows[0]["position_ids"])
+    assert len(got["position_ids"][0]) == len(got["input_ids"][0])
+
+
+def test_a_channel_major_two_dimensional_column_is_left_alone():
+    """`[3, seq_len]`, which is what `position_ids` is under mrope. Its first
+    axis is the channel axis, so cutting there would drop whole channels. The
+    length test is what tells the two apart: only the token-major layout is as
+    long as `input_ids`."""
+    _, tok = _load_plain()
+    Stub, seen = _stub_with_stored_eval()
+    stub = Stub()
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
+    rows = _tokenized_dataset(tok).to_list()
+    for row in rows:
+        row["position_ids"] = [list(range(len(row["input_ids"]))) for _ in range(3)]
+    from datasets import Dataset
+
+    stub.evaluate(Dataset.from_list(rows))
+
+    got = seen["ds"]
+    assert max(len(r) for r in got["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
+    assert len(got["position_ids"][0]) == 3, "a channel axis was cut as if it were tokens"
 
 
 @pytest.mark.parametrize(
@@ -2972,3 +2992,101 @@ def test_the_late_evaluation_memo_is_bounded():
         stub.evaluate(eval_dataset = _tokenized_dataset(tok))
     memo = getattr(stub, "_unsloth_eval_cap_memo", {})
     assert 0 < len(memo) <= rl._EVAL_CAP_MEMO_MAX, len(memo)
+
+
+# ── round nineteen ───────────────────────────────────────────────────────────
+def test_a_nullable_value_does_not_break_the_construction_time_truncation():
+    """`_unsloth_is_sequence_column` judges the COLUMN from its first row. An
+    optional field that is a list there and None further in raised TypeError out
+    of `len`, the enclosing handler restored the overlength split, and a run
+    that could have been truncated died on "cannot be enforced"."""
+    block = _padding_free_codegen_block()
+    assert "_unsloth_cut_value(_v, _r)" in block, "the batch map still slices unguarded"
+    import inspect as _inspect
+    import re
+    from unsloth.models import rl
+
+    source = _inspect.getsource(rl)
+    start = source.index('"        def _unsloth_cut_value(_v, _r):\\n"')
+    end = source.index('"        def _unsloth_truncate_rows(_batch):\\n"')
+    lines = re.findall(r'^\s*"(.*?)\\n"\s*$', source[start:end], re.M)
+    scope = {"_unsloth_slice": slice(None, 4)}
+    # Extracted from the generator and executed as written, like the cap scan.
+    exec("\n".join(line[8:] for line in lines), scope)
+    cut = scope["_unsloth_cut_value"]
+    ids = list(range(10))
+    assert cut([1] * 10, ids) == [1] * 4
+    assert cut(None, ids) is None, "a None value was sliced"
+    assert cut(7, ids) == 7, "a scalar value was sliced"
+    assert cut([1] * 3, ids) == [1] * 3, "a misaligned value was cut"
+
+
+def test_completion_only_reads_the_columns_the_split_actually_yields():
+    """`set_format(columns = [...], output_all_columns = False)` yields only the
+    named columns while `column_names` still answers with the whole backing
+    table. Reading the table resolved completion-only True off a `completion`
+    the rows never hand over, TRL resolved False from a yielded row, and the cap
+    then filtered on a mask the collator ignores."""
+    block = _padding_free_codegen_block()
+    for fragment in (
+        "_unsloth_shown = _unsloth_fmt.get('columns')",
+        "if _unsloth_fmt.get('output_all_columns') or not _unsloth_shown:",
+    ):
+        assert fragment in block, fragment
+    # Premise: `datasets` really does keep the backing names under a narrowed format.
+    from datasets import Dataset
+
+    ds = Dataset.from_list([{"prompt": "a", "completion": "b", "input_ids": [1, 2]}])
+    ds.set_format("numpy", columns = ["input_ids"], output_all_columns = False)
+    assert "completion" in ds.column_names
+    assert ds.format.get("columns") == ["input_ids"]
+    assert "completion" not in ds[0]
+
+
+def test_the_fallback_does_not_scan_an_eval_packed_split():
+    """Disabling padding-free keeps `max_length`, and TRL's eval packer owns and
+    chunks the overflow, so an overlength row in a packed eval split is not an
+    unenforced cap. The generated exact-match path already excludes those."""
+    from unsloth.trainer import _cap_is_enforceable_without_padding_free as enforceable
+
+    long_rows = [{"input_ids": list(range(64))}]
+    short = [{"input_ids": [1, 2]}]
+
+    class Config:
+        max_length = 8
+        packing = False
+        eval_packing = None
+
+    config = Config()
+    assert not enforceable(config, short, long_rows), "premise: unpacked evals are scanned"
+    config.eval_packing = True
+    assert enforceable(config, short, long_rows)
+    # `None` means "whatever packing is", which is TRL's own default.
+    config.eval_packing, config.packing = None, True
+    assert enforceable(config, long_rows, long_rows)
+
+
+def test_a_zoo_that_already_normalizes_the_seed_is_left_alone():
+    """A newer unsloth_zoo adopting the replacement itself matched neither
+    anchor, and `required = True` then failed every SFT trainer over behaviour
+    already present. `old` is also a PREFIX of `new` here, so the wide anchor
+    matched the normalized line and appended a second `or 0`."""
+    from unsloth.models import rl_replacements as R
+
+    old = '    max_seq_length = getattr(args, "max_length", 0)'
+    new = '    max_seq_length = getattr(args, "max_length", 0) or 0'
+    done = "def f():\n" + new + "\n"
+    assert R._replace_or_fallback(
+        done, old, new,
+        fallback_pattern = R._ZOO_MAX_LENGTH_SEED,
+        fallback_new = r'\g<indent>max_seq_length = getattr(args, "max_length", 0) or 0',
+        where = "test", required = True,
+    ) == done
+    # And the edit itself still applies to an un-normalized source.
+    todo = "def f():\n" + old + "\n"
+    assert R._replace_or_fallback(
+        todo, old, new,
+        fallback_pattern = R._ZOO_MAX_LENGTH_SEED,
+        fallback_new = r'\g<indent>max_seq_length = getattr(args, "max_length", 0) or 0',
+        where = "test", required = True,
+    ) == done

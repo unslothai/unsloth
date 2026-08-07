@@ -971,11 +971,12 @@ def _sliceable_per_token(
         if name in custom and not _is_token_vector(value, width):
             continue
         try:
-            # As long as `input_ids`, and flat: a nested first element is a
-            # per-token vector that `[:cap]` would cut along the wrong axis.
+            # As long as `input_ids`, which is what makes the FIRST axis the
+            # token axis: a `[seq_len, channels]` field slices correctly there,
+            # and a channel-major one (`position_ids` under mrope is
+            # `[3, seq_len]`) fails this check and is left alone, which is the
+            # shape the nested test used to be aimed at.
             if len(value) != width:
-                continue
-            if len(value) and isinstance(value[0], (list, tuple)):
                 continue
         except Exception:
             continue
@@ -2172,8 +2173,21 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # are not evidence, so ignore them and read a row instead.
                     "    if _unsloth_completion_only is None:\n"
                     "        try:\n"
+                    # A `set_format(columns = [...], output_all_columns = False)`
+                    # split yields only the named columns while `column_names`
+                    # still answers with the whole backing table. Reading the
+                    # table resolved completion-only True off a `completion` the
+                    # rows never hand over, TRL resolved False from a yielded
+                    # row, and the cap then filtered on a `completion_mask` the
+                    # collator ignores -- dropping valid rows, up to emptying the
+                    # split. The format's own column list is what is yielded.
+                    "            _unsloth_fmt = getattr(train_dataset, 'format', None)\n"
+                    "            _unsloth_fmt = _unsloth_fmt if isinstance(_unsloth_fmt, dict) else {}\n"
+                    "            _unsloth_shown = _unsloth_fmt.get('columns')\n"
+                    "            if _unsloth_fmt.get('output_all_columns') or not _unsloth_shown:\n"
+                    "                _unsloth_shown = getattr(train_dataset, 'column_names', None)\n"
                     "            _unsloth_train_sample = {} if _unsloth_is_transformed(train_dataset) else dict.fromkeys(\n"
-                    "                getattr(train_dataset, 'column_names', None) or [])\n"
+                    "                _unsloth_shown or [])\n"
                     "            if not _unsloth_train_sample:\n"
                     "                _unsloth_probe = iter(train_dataset)\n"
                     "                if _unsloth_probe is train_dataset or _unsloth_probe is iter(train_dataset):\n"
@@ -2276,6 +2290,17 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # A packed split carries `seq_lengths` -- document lengths, not tokens
                     # -- and slicing that by the cap left it stale, so padding-free built
                     # position ids for more tokens than the row now holds.
+                    # Per VALUE, because `_unsloth_is_sequence_column` judges the
+                    # column from its first row. An optional field that is a list
+                    # there and None (or a scalar) further in raised TypeError out
+                    # of `len`, the enclosing handler restored the overlength split,
+                    # and a truncatable run died on "cannot be enforced". The late
+                    # cap validates each row for the same reason.
+                    "        def _unsloth_cut_value(_v, _r):\n"
+                    "            try:\n"
+                    "                if len(_v) != len(_r): return _v\n"
+                    "            except Exception: return _v\n"
+                    "            return _v[_unsloth_slice]\n"
                     "        def _unsloth_truncate_rows(_batch):\n"
                     "            _ids = _batch.get('input_ids')\n"
                     "            _out = {}\n"
@@ -2285,7 +2310,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "                elif _ids is None:\n"
                     "                    _out[_k] = [_v[_unsloth_slice] for _v in _col]\n"
                     "                else:\n"
-                    "                    _out[_k] = [(_v[_unsloth_slice] if len(_v) == len(_r) else _v) for _v, _r in zip(_col, _ids)]\n"
+                    "                    _out[_k] = [_unsloth_cut_value(_v, _r) for _v, _r in zip(_col, _ids)]\n"
                     "            return _out\n"
                     # A stream has no length, and `IterableDataset.map` takes no `num_proc`:
                     # passing one raised TypeError, the catch below restored the original,

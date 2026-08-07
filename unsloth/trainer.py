@@ -181,6 +181,12 @@ def _cap_is_enforceable_without_padding_free(config, train, evals) -> bool:
     Raw splits are fine -- prep tokenizes them under `max_length`. Only rows that
     are already tokenized are at risk, so scan for those and let the original
     error propagate when any is over.
+
+    A packed split is fine too: the packer owns the overflow and chunks it, so
+    an overlength row there is not an unenforced cap. `packing` and
+    `eval_packing` are resolved separately because they can differ, and the
+    generated exact-match path already excludes eval-packed splits from its own
+    scan -- scanning them here refused a configuration that path accepts.
     """
     cap = getattr(config, "max_length", None)
     if not cap:
@@ -189,7 +195,13 @@ def _cap_is_enforceable_without_padding_free(config, train, evals) -> bool:
         from unsloth.models.rl import pretokenized_within_cap, splits_within_cap
     except Exception:
         return True  # nothing to check against; do not invent a failure
-    return pretokenized_within_cap(train, cap) and splits_within_cap(evals, cap)
+    packing = bool(getattr(config, "packing", False))
+    # TRL's own default: `eval_packing = None` means "whatever `packing` is".
+    eval_packing = getattr(config, "eval_packing", None)
+    eval_packing = packing if eval_packing is None else bool(eval_packing)
+    if not packing and not pretokenized_within_cap(train, cap):
+        return False
+    return eval_packing or splits_within_cap(evals, cap)
 
 
 def _disable_padding_free(config):

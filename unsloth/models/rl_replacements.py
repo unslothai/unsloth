@@ -543,6 +543,16 @@ def _replace_or_fallback(
     `consequence` says what that absence does, since the warning below speaks only
     about the worker count.
     """
+    # Already done upstream, and checked FIRST. An edit is only missing if its
+    # RESULT is missing, and a Zoo that adopts the replacement itself is the
+    # forward case this has to survive. Ordering matters twice over: `old` is a
+    # prefix of `new` for the max_length seed, so the wide anchor below matches
+    # the already-normalized line and appended a second `or 0` to it, while a
+    # differently spelled upstream form matches no anchor at all and used to
+    # raise under `required = True` -- failing every SFT trainer over behaviour
+    # that is already present.
+    if new in function:
+        return function
     if old in function:
         return function.replace(old, new, 1)
 
