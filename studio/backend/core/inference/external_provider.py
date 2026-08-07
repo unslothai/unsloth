@@ -1688,14 +1688,47 @@ class ExternalProviderClient:
             extra = message.get("extra_content")
             anthropic = extra.get("anthropic") if isinstance(extra, dict) else None
             blocks = anthropic.get("thinking_blocks") if isinstance(anthropic, dict) else None
-            if not isinstance(blocks, list):
-                return []
             return [
                 dict(block)
-                for block in blocks
+                for block in (blocks if isinstance(blocks, list) else [])
                 if isinstance(block, dict)
                 and block.get("type") in ("thinking", "redacted_thinking")
             ]
+
+        def _native_hosted_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
+            """Return provider-hosted blocks that preceded managed calls."""
+
+            hosted_types = {
+                "server_tool_use",
+                "web_search_tool_result",
+                "web_fetch_tool_result",
+                "bash_code_execution_tool_result",
+                "text_editor_code_execution_tool_result",
+                "code_execution_tool_result",
+            }
+            native_blocks: list[dict[str, Any]] = []
+            seen_hosted: set[tuple[Any, Any, Any]] = set()
+            for tool_call in message.get("tool_calls") or []:
+                if not isinstance(tool_call, dict):
+                    continue
+                tool_extra = tool_call.get("extra_content")
+                tool_anthropic = (
+                    tool_extra.get("anthropic") if isinstance(tool_extra, dict) else None
+                )
+                hosted_blocks = (
+                    tool_anthropic.get("hosted_blocks")
+                    if isinstance(tool_anthropic, dict)
+                    else None
+                )
+                for block in hosted_blocks if isinstance(hosted_blocks, list) else []:
+                    if not isinstance(block, dict) or block.get("type") not in hosted_types:
+                        continue
+                    key = (block.get("type"), block.get("id"), block.get("tool_use_id"))
+                    if key in seen_hosted:
+                        continue
+                    seen_hosted.add(key)
+                    native_blocks.append(dict(block))
+            return native_blocks
 
         # Extract system prompt; translate image_url parts to Anthropic format
         system: Optional[str] = None
@@ -1841,6 +1874,10 @@ class ExternalProviderClient:
                             if title:
                                 doc_block["title"] = title
                             anthropic_parts.append(doc_block)
+                # Hosted blocks ran after visible assistant text but before the
+                # managed client calls they accompanied. Restore that order.
+                if msg.get("role") == "assistant":
+                    anthropic_parts.extend(_native_hosted_blocks(msg))
                 # Assistant tool_calls -> Anthropic tool_use blocks appended to
                 # the same message. The native Messages API doesn't accept
                 # OpenAI's top-level `tool_calls` field; the call lives inside a
@@ -1912,6 +1949,7 @@ class ExternalProviderClient:
                     _blocks: list[dict[str, Any]] = _native_thinking_blocks(msg)
                     if isinstance(_text_content, str) and _text_content:
                         _blocks.append({"type": "text", "text": _text_content})
+                    _blocks.extend(_native_hosted_blocks(msg))
                     for _tc in msg["tool_calls"]:
                         if not isinstance(_tc, dict):
                             continue
@@ -2305,6 +2343,7 @@ class ExternalProviderClient:
                 # content-block index rather than sharing hosted-tool state.
                 client_tool_uses: dict[int, dict[str, Any]] = {}
                 thinking_blocks: dict[int, dict[str, Any]] = {}
+                hosted_blocks: dict[int, dict[str, Any]] = {}
                 next_client_tool_index = 0
                 compaction_blocks_seen = 0
                 # Document citations from ``citations_delta`` events. Deduped by
@@ -2505,6 +2544,18 @@ class ExternalProviderClient:
                             block_type = content_block.get("type")
                             block_name = content_block.get("name")
                             block_index = event.get("index")
+                            if isinstance(block_index, int) and (
+                                block_type == "server_tool_use"
+                                or block_type
+                                in {
+                                    "web_search_tool_result",
+                                    "web_fetch_tool_result",
+                                    "bash_code_execution_tool_result",
+                                    "text_editor_code_execution_tool_result",
+                                    "code_execution_tool_result",
+                                }
+                            ):
+                                hosted_blocks[block_index] = dict(content_block)
                             if block_type in ("thinking", "redacted_thinking") and isinstance(
                                 block_index, int
                             ):
@@ -2725,6 +2776,14 @@ class ExternalProviderClient:
                                             ]
                                         }
                                     }
+                                if hosted_blocks:
+                                    anthropic_extra = tool_call.setdefault(
+                                        "extra_content", {}
+                                    ).setdefault("anthropic", {})
+                                    anthropic_extra["hosted_blocks"] = [
+                                        dict(hosted_blocks[index])
+                                        for index in sorted(hosted_blocks)
+                                    ]
                                 chunk = {
                                     "id": completion_id,
                                     "object": "chat.completion.chunk",
@@ -2757,6 +2816,10 @@ class ExternalProviderClient:
                                 tool_use_id = current_server_tool_use["id"]
                                 if tool_use_id in web_search_calls:
                                     web_search_calls[tool_use_id]["query"] = query
+                                if isinstance(block_index, int) and block_index in hosted_blocks:
+                                    hosted_blocks[block_index]["input"] = (
+                                        {"query": query} if query else {}
+                                    )
                                 yield _emit_tool_event(
                                     {
                                         "type": "tool_start",
@@ -2804,6 +2867,8 @@ class ExternalProviderClient:
                                 emit_args = {"kind": kind, **parsed_args}
                                 if tool_use_id in code_execution_calls:
                                     code_execution_calls[tool_use_id]["arguments"] = emit_args
+                                if isinstance(block_index, int) and block_index in hosted_blocks:
+                                    hosted_blocks[block_index]["input"] = parsed_args
                                 yield _emit_tool_event(
                                     {
                                         "type": "tool_start",
@@ -2876,6 +2941,10 @@ class ExternalProviderClient:
                                 tool_use_id = current_web_fetch_use["id"]
                                 if tool_use_id in web_fetch_calls:
                                     web_fetch_calls[tool_use_id]["url"] = url
+                                if isinstance(block_index, int) and block_index in hosted_blocks:
+                                    hosted_blocks[block_index]["input"] = (
+                                        {"url": url} if url else {}
+                                    )
                                 yield _emit_tool_event(
                                     {
                                         "type": "tool_start",
@@ -4773,6 +4842,29 @@ class ExternalProviderClient:
             # server-side builtin cards (builtin name + `_server_tool` marker).
             _tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
             if role == "assistant" and isinstance(_tool_calls, list):
+                continuation_response_id: Optional[str] = None
+                for _tc in _tool_calls:
+                    if not isinstance(_tc, dict):
+                        continue
+                    _extra = _tc.get("extra_content")
+                    _openai_extra = _extra.get("openai") if isinstance(_extra, dict) else None
+                    candidate = (
+                        _openai_extra.get("previous_response_id")
+                        if isinstance(_openai_extra, dict)
+                        else None
+                    )
+                    if isinstance(candidate, str) and candidate:
+                        continuation_response_id = candidate
+                        break
+                if continuation_response_id:
+                    # The prior Responses object already contains its text,
+                    # hosted-tool items, reasoning, and function calls. Link to
+                    # it and send only the new function_call_output items that
+                    # follow this assistant message.
+                    previous_response_id = continuation_response_id
+                    input_items = []
+                    openai_replay_items = []
+                    continue
                 # A manually managed Responses continuation must replay the
                 # native reasoning items that preceded its function calls.
                 replayed_reasoning_ids: set[str] = set()
@@ -5857,9 +5949,16 @@ class ExternalProviderClient:
                                         )
                                         if replay_item is not None
                                     ]
+                                    openai_continuation: dict[str, Any] = {}
                                     if reasoning_items:
+                                        openai_continuation["reasoning_items"] = reasoning_items
+                                    if current_openai_response_id:
+                                        openai_continuation["previous_response_id"] = (
+                                            current_openai_response_id
+                                        )
+                                    if openai_continuation:
                                         tool_call["extra_content"] = {
-                                            "openai": {"reasoning_items": reasoning_items}
+                                            "openai": openai_continuation
                                         }
                                     yield (
                                         "data: "

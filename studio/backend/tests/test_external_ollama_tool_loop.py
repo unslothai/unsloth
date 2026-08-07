@@ -224,6 +224,40 @@ def test_provider_hosted_tools_survive_every_studio_round(monkeypatch):
     ]
 
 
+def test_hosted_tools_remain_enabled_after_one_shot_studio_tool(monkeypatch):
+    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "rendered")
+    render_tool = {
+        "type": "function",
+        "function": {
+            "name": "render_html",
+            "description": "Render HTML.",
+            "parameters": {
+                "type": "object",
+                "properties": {"html": {"type": "string"}},
+                "required": ["html"],
+            },
+        },
+    }
+    client = _FakeClient(
+        [
+            _named_tool_round("render_html", "call_render", '{"html":"<p>Hi</p>"}'),
+            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
+        ]
+    )
+
+    asyncio.run(
+        _collect(
+            client,
+            tools = [render_tool],
+            provider_enabled_tools = ["image_generation"],
+        )
+    )
+
+    assert client.calls[1]["tools"] is None
+    assert client.calls[1]["tool_choice"] == "auto"
+    assert client.calls[1]["enabled_tools"] == ["image_generation"]
+
+
 def test_provider_tool_events_survive_managed_round(monkeypatch):
     monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
     hosted_event = {
@@ -331,6 +365,33 @@ def test_gemini_thought_signature_survives_tool_continuation(monkeypatch):
     assistant = client.calls[1]["messages"][-2]
     assert assistant["tool_calls"][0]["extra_content"] == {
         "google": {"thought_signature": "SIG-ABC"}
+    }
+
+
+def test_gemini_signed_text_survives_tool_continuation(monkeypatch):
+    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
+    first_round = [
+        _chunk(
+            delta = {
+                "content": "I will search.",
+                "extra_content": {"google": {"thought_signature": "SIG-TEXT"}},
+            }
+        ),
+        *_tool_round(),
+    ]
+    client = _FakeClient(
+        [
+            first_round,
+            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
+        ]
+    )
+
+    asyncio.run(_collect(client))
+
+    assistant = client.calls[1]["messages"][-2]
+    assert assistant["content"] == "I will search."
+    assert assistant["extra_content"] == {
+        "google": {"thought_signature": "SIG-TEXT"}
     }
 
 

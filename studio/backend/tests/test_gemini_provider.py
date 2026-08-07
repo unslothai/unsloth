@@ -4442,6 +4442,77 @@ def test_anthropic_role_tool_list_content_translates_to_tool_result(monkeypatch)
     ), msgs
 
 
+def test_anthropic_replays_hosted_blocks_before_managed_tool_call(monkeypatch):
+    captured: dict = {"messages": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        captured["messages"] = body.get("messages")
+        return httpx.Response(
+            200,
+            content = b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+    hosted_block = {
+        "type": "server_tool_use",
+        "id": "srvtoolu_fetch",
+        "name": "web_fetch",
+        "input": {"url": "https://example.com"},
+    }
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "anthropic",
+            base_url = "https://api.anthropic.com",
+            api_key = "sk-ant-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [
+                {"role": "user", "content": "fetch and inspect"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_local",
+                            "type": "function",
+                            "function": {"name": "inspect_local", "arguments": "{}"},
+                            "extra_content": {
+                                "anthropic": {"hosted_blocks": [hosted_block]}
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "content": "local result",
+                    "tool_call_id": "call_local",
+                    "name": "inspect_local",
+                },
+            ],
+            model = "claude-sonnet-4-5",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 64,
+            enabled_tools = ["web_fetch"],
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+
+    assistant = next(message for message in captured["messages"] if message["role"] == "assistant")
+    assert assistant["content"][0] == hosted_block
+    assert assistant["content"][1] == {
+        "type": "tool_use",
+        "id": "call_local",
+        "name": "inspect_local",
+        "input": {},
+    }
+
+
 def test_data_url_non_image_mime_dropped(monkeypatch):
     """Round 20: a `data:text/html;base64,...` image_url must be dropped from
     the Gemini body, not forwarded as `inlineData.mimeType="text/html"` which
@@ -4562,6 +4633,138 @@ def test_openai_responses_assistant_text_serialized_before_function_call(monkeyp
     #   function_call_output (sunny)
     #   user ("thanks")
     assert types == ["user", "assistant", "function_call", "function_call_output", "user"], items
+
+
+def test_openai_responses_uses_previous_response_for_managed_tool_continuation(monkeypatch):
+    captured: dict = {"body": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = b'data: {"type":"response.completed","response":{"output":[]}}\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "sk-test",
+        )
+        async for _ in client.stream_chat_completion(
+            messages = [
+                {"role": "user", "content": "search and inspect"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_local",
+                            "type": "function",
+                            "function": {"name": "inspect_local", "arguments": "{}"},
+                            "extra_content": {
+                                "openai": {"previous_response_id": "resp_hosted"}
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "content": "local result",
+                    "tool_call_id": "call_local",
+                    "name": "inspect_local",
+                },
+            ],
+            model = "gpt-5.5",
+            temperature = 0.7,
+            top_p = 1.0,
+            max_tokens = 16,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+
+    assert captured["body"]["previous_response_id"] == "resp_hosted"
+    assert captured["body"]["input"] == [
+        {
+            "type": "function_call_output",
+            "call_id": "call_local",
+            "output": "local result",
+        }
+    ]
+
+
+def test_openai_responses_function_call_carries_previous_response_id(monkeypatch):
+    events = [
+        {"type": "response.created", "response": {"id": "resp_hosted"}},
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "function_call",
+                "call_id": "call_local",
+                "name": "inspect_local",
+                "arguments": "{}",
+            },
+        },
+        {
+            "type": "response.completed",
+            "response": {
+                "id": "resp_hosted",
+                "output": [],
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        },
+    ]
+    content = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content = content.encode(),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "sk-test",
+        )
+        lines = []
+        async for line in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "go"}],
+            model = "gpt-5.5",
+            temperature = 0.7,
+            top_p = 1.0,
+            max_tokens = 16,
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "inspect_local",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+        ):
+            lines.append(line)
+        await client.close()
+        return lines
+
+    lines = _drive(run())
+    payloads = [json.loads(line.removeprefix("data: ")) for line in lines if line != "data: [DONE]"]
+    call = next(
+        payload["choices"][0]["delta"]["tool_calls"][0]
+        for payload in payloads
+        if payload.get("choices") and payload["choices"][0]["delta"].get("tool_calls")
+    )
+    assert call["extra_content"]["openai"]["previous_response_id"] == "resp_hosted"
 
 
 def test_gemini_tool_choice_none_disables_image_generation(monkeypatch):
@@ -5072,6 +5275,92 @@ def test_anthropic_stream_translates_parallel_client_tool_uses(monkeypatch):
         for payload in payloads
     )
     assert lines[-1] == "data: [DONE]"
+
+
+def test_anthropic_stream_attaches_deferred_hosted_block_to_client_call(monkeypatch):
+    events = [
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "server_tool_use",
+                "id": "srvtoolu_fetch",
+                "name": "web_fetch",
+                "input": {},
+            },
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "input_json_delta",
+                "partial_json": '{"url":"https://example.com"}',
+            },
+        },
+        {"type": "content_block_stop", "index": 0},
+        {
+            "type": "content_block_start",
+            "index": 1,
+            "content_block": {
+                "type": "tool_use",
+                "id": "toolu_local",
+                "name": "inspect_local",
+                "input": {},
+            },
+        },
+        {
+            "type": "content_block_delta",
+            "index": 1,
+            "delta": {"type": "input_json_delta", "partial_json": "{}"},
+        },
+        {"type": "content_block_stop", "index": 1},
+        {"type": "message_delta", "delta": {"stop_reason": "tool_use"}},
+        {"type": "message_stop"},
+    ]
+    content = "".join(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content = content.encode(),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "anthropic",
+            base_url = "https://api.anthropic.com",
+            api_key = "sk-ant-test",
+        )
+        lines = []
+        async for line in client.stream_chat_completion(
+            messages = [{"role": "user", "content": "go"}],
+            model = "claude-sonnet-4-5",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 16,
+        ):
+            lines.append(line)
+        await client.close()
+        return lines
+
+    lines = _drive(run())
+    payloads = [json.loads(line.removeprefix("data: ")) for line in lines if line != "data: [DONE]"]
+    call = next(
+        payload["choices"][0]["delta"]["tool_calls"][0]
+        for payload in payloads
+        if payload.get("choices") and payload["choices"][0]["delta"].get("tool_calls")
+    )
+    assert call["extra_content"]["anthropic"]["hosted_blocks"] == [
+        {
+            "type": "server_tool_use",
+            "id": "srvtoolu_fetch",
+            "name": "web_fetch",
+            "input": {"url": "https://example.com"},
+        }
+    ]
 
 
 def test_openrouter_forced_function_tool_choice_drops_web_plugin(monkeypatch):

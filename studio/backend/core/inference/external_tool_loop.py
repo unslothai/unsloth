@@ -103,7 +103,10 @@ def _merge_tool_call_delta(
 
 
 def _collect_round_delta(
-    payload: object, tool_calls: dict[int, dict[str, Any]], assistant_text: list[str]
+    payload: object,
+    tool_calls: dict[int, dict[str, Any]],
+    assistant_text: list[str],
+    assistant_extra_content: dict[str, Any] | None = None,
 ) -> None:
     if not isinstance(payload, Mapping):
         return
@@ -127,6 +130,22 @@ def _collect_round_delta(
         ) or (isinstance(openai_extra, Mapping) and bool(openai_extra.get("reasoning_display")))
         if isinstance(content, str) and not is_provider_reasoning_display:
             assistant_text.append(content)
+            google_extra = (
+                extra_content.get("google") if isinstance(extra_content, Mapping) else None
+            )
+            thought_signature = (
+                google_extra.get("thought_signature")
+                if isinstance(google_extra, Mapping)
+                else None
+            )
+            if (
+                isinstance(thought_signature, str)
+                and thought_signature
+                and assistant_extra_content is not None
+            ):
+                assistant_extra_content["google"] = {
+                    "thought_signature": thought_signature,
+                }
         raw_calls = delta.get("tool_calls")
         if isinstance(raw_calls, list):
             for raw_call in raw_calls:
@@ -280,6 +299,7 @@ async def stream_external_chat_with_tools(
         active_tools = tool_controller.active_tools()
         round_calls: dict[int, dict[str, Any]] = {}
         assistant_text: list[str] = []
+        assistant_extra_content: dict[str, Any] = {}
         round_finished = False
         round_failed = False
         round_terminal_error: str | None = None
@@ -287,7 +307,7 @@ async def stream_external_chat_with_tools(
             messages = conversation,
             model = model,
             tools = active_tools or None,
-            tool_choice = next_tool_choice if active_tools else "none",
+            tool_choice = next_tool_choice if active_tools or not final_pass else "none",
             stream = True,
             enabled_tools = list(provider_enabled_tools) if provider_enabled_tools else None,
             **dict(request_kwargs),
@@ -328,7 +348,12 @@ async def stream_external_chat_with_tools(
                 if isinstance(payload, Mapping):
                     if "error" in payload:
                         round_failed = True
-                    _collect_round_delta(payload, round_calls, assistant_text)
+                    _collect_round_delta(
+                        payload,
+                        round_calls,
+                        assistant_text,
+                        assistant_extra_content,
+                    )
                     choices = payload.get("choices")
                     if isinstance(choices, list):
                         for choice in choices:
@@ -352,7 +377,12 @@ async def stream_external_chat_with_tools(
                         usage_template = copy.deepcopy(dict(payload))
                         has_usage = True
                 else:
-                    _collect_round_delta(payload, round_calls, assistant_text)
+                    _collect_round_delta(
+                        payload,
+                        round_calls,
+                        assistant_text,
+                        assistant_extra_content,
+                    )
                 forward = _without_tool_transport(
                     payload,
                     has_tool_calls = bool(round_calls),
@@ -426,6 +456,8 @@ async def stream_external_chat_with_tools(
             "role": "assistant",
             "content": "".join(assistant_text),
         }
+        if assistant_extra_content:
+            assistant_message["extra_content"] = copy.deepcopy(assistant_extra_content)
         if executable:
             assistant_calls: list[dict[str, Any]] = []
             for decision, raw_call in executable_pairs:
@@ -456,10 +488,8 @@ async def stream_external_chat_with_tools(
                 ):
                     preserved_thinking_blocks = copy.deepcopy(thinking_blocks)
             if preserved_thinking_blocks:
-                assistant_message["extra_content"] = {
-                    "anthropic": {
-                        "thinking_blocks": preserved_thinking_blocks,
-                    }
+                assistant_message.setdefault("extra_content", {})["anthropic"] = {
+                    "thinking_blocks": preserved_thinking_blocks,
                 }
         if executable or assistant_message["content"]:
             conversation.append(assistant_message)
