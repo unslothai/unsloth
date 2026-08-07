@@ -12,6 +12,7 @@ Needs no GPU, network, or libraries beyond pytest and pydantic.
 
 import io
 import json
+import re
 import struct
 import sys
 import types as _types
@@ -399,6 +400,24 @@ class TestRouteCompleteness:
             idx = end
         return blocks
 
+    def _gets_llama_runtime_fields(self, block: str) -> bool:
+        """True if ``block`` receives the llama runtime fields, inline or via a hoisted dict.
+
+        A call site may have to hoist the call to overwrite one entry before splatting, since
+        passing an overriding keyword alongside ``**fields`` is a TypeError. That is a valid way
+        to receive the fields, so accept it rather than demanding the call be inline.
+        """
+        if "_llama_runtime_fields(llama_backend)" in block:
+            return True
+        for name in re.findall(r"\*\*(\w+)", block):
+            if re.search(
+                rf"^\s*{re.escape(name)}\s*=\s*_llama_runtime_fields\(llama_backend\)",
+                self._source,
+                re.M,
+            ):
+                return True
+        return False
+
     def test_gguf_load_responses_have_field(self):
         """Every GGUF LoadResponse (is_gguf = True) includes native_context_length."""
         blocks = self._find_construction_blocks("LoadResponse")
@@ -438,7 +457,7 @@ class TestRouteCompleteness:
         blocks = self._find_construction_blocks("InferenceStatusResponse")
         found = False
         for block in blocks:
-            if "llama_backend" in block and "_llama_runtime_fields(llama_backend)" in block:
+            if "llama_backend" in block and self._gets_llama_runtime_fields(block):
                 found = True
                 break
         assert found, "No InferenceStatusResponse block with llama_backend has runtime fields"
