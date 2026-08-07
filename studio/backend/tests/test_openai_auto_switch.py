@@ -619,6 +619,51 @@ def test_disabling_idle_unload_purges_saved_kv(monkeypatch, tmp_path):
     assert kw._kv_resume is None and not saved.exists()
 
 
+def test_residency_does_not_purge_saved_kv(monkeypatch, tmp_path):
+    # Residency zeroes the effective TTL, but the user never turned idle unload
+    # off, so saving anything else must leave their saved KV alone.
+    import routes.settings as settings_route
+    from core.inference import llama_keepwarm as kw
+
+    saved = tmp_path / "resume-abc-slot0.bin"
+    saved.write_bytes(b"kv")
+    manifest = {
+        "identity": ("m", None, "m"),
+        "dir": str(tmp_path),
+        "slots": [{"id": 0, "filename": saved.name}],
+    }
+    kw._kv_resume = manifest
+    monkeypatch.setattr(
+        settings_route, "set_openai_auto_switch", lambda *a: (True, 300, True, False)
+    )
+    monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
+    monkeypatch.setattr(settings_route, "idle_unload_is_configured", lambda: True)
+
+    payload = settings_route.OpenAIAutoSwitchPayload(enabled = True)
+    resp = settings_route.update_openai_auto_switch(payload, "tester")
+    try:
+        assert resp.idle_unload_active is False
+        assert kw._kv_resume is manifest and saved.exists()
+    finally:
+        kw._kv_resume = None
+
+
+def test_idle_unload_is_configured_ignores_the_residency_veto(monkeypatch):
+    # The reader the purge uses must report the user's setting, not the veto.
+    import utils.model_memory_settings as mm
+    import utils.openai_auto_switch_settings as settings
+
+    monkeypatch.setattr(settings, "_stored_idle_seconds", lambda: 300)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
+
+    assert settings.get_auto_unload_idle_seconds() == 0
+    assert settings.idle_unload_is_configured() is True
+
+    monkeypatch.setattr(settings, "_stored_idle_seconds", lambda: 0)
+    assert settings.idle_unload_is_configured() is False
+
+
 def test_audio_generate_is_tracked_as_inference_path():
     # Direct GGUF TTS uses the llama backend and can outlive the idle TTL, so
     # the keep-warm middleware must count it as in-flight inference.

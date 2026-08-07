@@ -190,6 +190,20 @@ def get_auto_unload_idle_seconds() -> int:
     return env if env is not None else 0
 
 
+def idle_unload_is_configured() -> bool:
+    """Whether the user has idle unload switched on, ignoring the residency veto.
+
+    Residency zeroes the effective TTL without the user turning idle unload off, so
+    anything deciding whether to DISCARD saved state reads this instead: their KV
+    resume is still theirs the moment residency goes back off.
+    """
+    stored = _stored_idle_seconds()
+    if stored is not None:
+        return _apply_idle_floor(stored) > 0 and get_openai_auto_switch_enabled()
+    env = _env_idle_seconds()
+    return env is not None and env > 0
+
+
 def get_auto_unload_keep_kv() -> bool:
     """Whether the idle unload persists slot KV to disk for restore on reload."""
     parsed = _coerce_bool(_cached_setting(AUTO_UNLOAD_KEEP_KV_SETTING_KEY, None))
