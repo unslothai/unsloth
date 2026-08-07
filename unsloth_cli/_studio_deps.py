@@ -217,6 +217,34 @@ def _scan_paths() -> Dict[str, list]:
     return {"path": paths} if paths else {}
 
 
+# Top-level dirs several wheels write into, so one uninstall deletes another's
+# files and the survivor's RECORD describes a file nothing recreates. einx and
+# torchao both ship test/conftest.py, and install_python_stack.py
+# force-reinstalls torchao every update.
+_SHARED_NON_RUNTIME_ROOTS = frozenset(
+    ("test", "tests", "doc", "docs", "example", "examples", "benchmark", "benchmarks", "sample", "samples")
+)
+
+# Rewritten in place by our own setup: setup.ps1/setup.sh run `npm install`
+# inside the installed tree, and npm dedupes hoisted entries under
+# legacy-peer-deps, shrinking the lockfile below its recorded size.
+_INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
+
+
+def _runtime_irrelevant(rel: str) -> bool:
+    """True when a RECORD row cannot be the import-time damage this scan seeks.
+
+    Applied while reading RECORD, not when reporting, so a filtered row also
+    stays out of the ownership tally and the `limit` budget.
+    """
+    parts = tuple(p for p in rel.replace("\\", "/").split("/") if p and p != ".")
+    if not parts:
+        return False
+    if len(parts) > 1 and parts[0] in _SHARED_NON_RUNTIME_ROOTS:
+        return True
+    return parts[-1] in _INSTALLER_REWRITTEN_NAMES
+
+
 def damaged_installed_files(limit: int = 8) -> List[str]:
     """Installed files that are gone, or shorter than pip recorded.
 
@@ -235,6 +263,10 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
     landed is the one on disk, so its size says nothing about either RECORD --
     in EITHER direction. Sizes are therefore compared after the whole scan, once
     multiply-owned paths are known, rather than during it.
+
+    Rows that cannot be import-time damage are dropped up front; the answer to
+    a finding is "reinstall over the top", so a file no reinstall would change
+    must not produce one. See _runtime_irrelevant.
 
     Scanned over the interpreter's own site-packages rather than all of
     sys.path. distributions() searches every sys.path entry, so a damaged
@@ -272,6 +304,8 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
             # Installer-owned metadata is rewritten in place and drifts from the
             # size recorded inside itself; .pyc is regenerated from source.
             if ".dist-info/" in rel or ".egg-info/" in rel or rel.endswith(".pyc"):
+                continue
+            if _runtime_irrelevant(rel):
                 continue
             # The size field is optional and real wheels do leave it blank. Keep
             # the row anyway with an unknown size: existence is still checkable,

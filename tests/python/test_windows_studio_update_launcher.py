@@ -87,6 +87,7 @@ def _configure_windows(
     monkeypatch.setattr(studio, "_windows_hidden_subprocess_kwargs", lambda: {})
     monkeypatch.setattr(studio, "_refresh_desktop_shortcuts", lambda **_kwargs: None)
     monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda: None)
+    monkeypatch.setattr(studio, "STUDIO_HOME", tmp_path / "studio_home")
     for name in (
         "SKIP_STUDIO_BASE",
         "STUDIO_PACKAGE_NAME",
@@ -278,3 +279,83 @@ def test_non_windows_preserves_call_order_without_launcher_operations(
 
     assert calls == ["setup", "verify", "refresh"]
     assert list(tmp_path.rglob("unsloth.exe*")) == []
+
+
+def _shim(studio, payload = ORIGINAL_LAUNCHER):
+    """The hardlinked PATH shim install.ps1 creates beside the managed venv."""
+    path = studio.STUDIO_HOME / "bin" / "unsloth.exe"
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_bytes(payload)
+    return path
+
+
+def test_a_missing_launcher_is_recovered_from_the_path_shim(monkeypatch, studio, tmp_path):
+    # The old updater renamed the launcher away and then unlinked the .deleteme,
+    # so an affected install has neither. install.ps1 hardlinks the shim to the
+    # same file, so it survives that unlink and can repair the launcher.
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
+    _shim(studio)
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
+
+    _update(studio)
+
+    assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+
+
+def test_an_invalid_launcher_is_recovered_from_the_backup(monkeypatch, studio, tmp_path):
+    # Recovery gated on existence rather than validity left a zero-byte launcher
+    # in place while a usable backup sat beside it. The old updater restored on
+    # exactly this shape (st_size == 0), so gating on exists() regressed it.
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = b"")
+    (scripts / "unsloth.exe.update-backup").write_bytes(ORIGINAL_LAUNCHER)
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
+
+    _update(studio)
+
+    assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+
+
+def test_no_launcher_and_no_recovery_source_still_runs_setup(monkeypatch, studio, tmp_path):
+    # Refusing here would strand exactly the users the transaction exists for:
+    # the previous updater could leave no launcher and no .deleteme, and before
+    # this the update simply carried on and let setup reinstall it.
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
+    ran = []
+
+    def setup(**_kwargs):
+        ran.append(True)
+        launcher.write_bytes(ORIGINAL_LAUNCHER)
+
+    monkeypatch.setattr(studio, "_run_setup_script", setup)
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
+
+    _update(studio)
+
+    assert ran == [True]
+    assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+
+
+def test_a_backup_failure_does_not_abort_the_update(monkeypatch, studio, tmp_path):
+    # A backup is a safety net, not a precondition. Antivirus holding the temp
+    # copy used to surface as a bare OSError traceback before setup ever ran.
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
+    ran = []
+    original = studio._WindowsLauncherUpdateTransaction._atomic_copy
+
+    def refuse_backup(self, source, destination):
+        if destination.name.endswith(".update-backup"):
+            raise OSError("access is denied")
+        return original(self, source, destination)
+
+    monkeypatch.setattr(
+        studio._WindowsLauncherUpdateTransaction, "_atomic_copy", refuse_backup
+    )
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: ran.append(True))
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
+
+    _update(studio)
+
+    assert ran == [True]
+    assert launcher.read_bytes() == ORIGINAL_LAUNCHER

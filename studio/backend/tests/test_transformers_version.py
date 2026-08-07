@@ -1884,6 +1884,22 @@ class TestVenvDirFileIntegrity:
         )
         assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
 
+    def test_shared_non_runtime_and_installer_rewritten_rows_are_ignored(self, tmp_path: Path):
+        """Mirrors _runtime_irrelevant in unsloth_cli/_studio_deps.py.
+
+        A top-level test/ tree is shared, so one wheel's uninstall deletes
+        another's files; a lockfile is rewritten in place by the installer.
+        Neither is importable.
+        """
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            record_extra = [
+                "test/conftest.py,sha256=deadbeef,20650",
+                "studio/backend/core/data_recipe/oxc-validator/package-lock.json,sha256=deadbeef,28473",
+            ],
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
     def test_in_target_script_rows_are_ignored(self, tmp_path: Path):
         """uv records bin/hf, which does resolve -- but pip --upgrade rmtree's a
         colliding directory in the target, so a later install into the same

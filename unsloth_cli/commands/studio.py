@@ -3167,6 +3167,7 @@ class _WindowsLauncherUpdateTransaction:
         self.launcher: Optional[Path] = None
         self.backup: Optional[Path] = None
         self.legacy_backup: Optional[Path] = None
+        self.shim: Optional[Path] = None
         self.lock_path: Optional[Path] = None
         self._lock_file = None
         self._validated = False
@@ -3245,9 +3246,11 @@ class _WindowsLauncherUpdateTransaction:
 
     def _recover_missing_launcher(self) -> None:
         assert self.launcher is not None
-        if self.launcher.exists():
+        # Validity, not existence: a truncated or quarantined launcher is just as
+        # unusable, and the backup beside it can repair either.
+        if self._is_valid_pe(self.launcher):
             return
-        for recovery in (self.backup, self.legacy_backup):
+        for recovery in (self.backup, self.legacy_backup, self.shim):
             if recovery is not None and self._is_valid_pe(recovery):
                 try:
                     self._atomic_copy(recovery, self.launcher)
@@ -3275,9 +3278,15 @@ class _WindowsLauncherUpdateTransaction:
         except OSError:
             return False
 
+    def _retained_backup(self) -> Optional[Path]:
+        """The backup, when it exists and is usable. Nothing to point users at otherwise."""
+        if self.backup is not None and self._is_valid_pe(self.backup):
+            return self.backup
+        return None
+
     def _restore_backup(self) -> bool:
-        assert self.launcher is not None and self.backup is not None
-        if not self._is_valid_pe(self.backup):
+        assert self.launcher is not None
+        if self.backup is None or not self._is_valid_pe(self.backup):
             return False
         # The common setup-failure case leaves the original executable exactly
         # where it was. Avoid replacing that running file on Windows when it
@@ -3329,18 +3338,31 @@ class _WindowsLauncherUpdateTransaction:
         self.backup = scripts / "unsloth.exe.update-backup"
         self.legacy_backup = scripts / "unsloth.exe.deleteme"
         self.lock_path = scripts / "unsloth.exe.update-lock"
+        # install.ps1 hardlinks this to the launcher, so it survives the old
+        # updater's .deleteme unlink and is a valid recovery source.
+        self.shim = STUDIO_HOME / "bin" / "unsloth.exe"
         self._acquire_lock()
         try:
             self._recover_missing_launcher()
             if not self._is_valid_pe(self.launcher):
+                # Warn, do not exit. The previous updater could leave an install
+                # with no launcher and no .deleteme, and refusing here would stop
+                # exactly those users from ever updating again. Setup may well
+                # write a new launcher; validate_launcher still judges the result.
                 typer.echo(
-                    f"Error: the managed Unsloth launcher is missing or invalid: {self.launcher}",
+                    f"Warning: the managed Unsloth launcher is missing or invalid: {self.launcher}",
                     err = True,
                 )
-                if self._is_valid_pe(self.backup):
-                    typer.echo(f"Manual recovery copy retained at: {self.backup}", err = True)
-                raise typer.Exit(1)
-            self._atomic_copy(self.launcher, self.backup)
+                typer.echo("Continuing; setup may reinstall it.", err = True)
+                self.backup = None
+            else:
+                try:
+                    self._atomic_copy(self.launcher, self.backup)
+                except OSError as exc:
+                    # A backup is a safety net, not a precondition. Antivirus or a
+                    # locked-down Scripts dir must not abort the update outright.
+                    typer.echo(f"Warning: could not back up the Unsloth launcher: {exc}", err = True)
+                    self.backup = None
         except BaseException:
             self._release_lock()
             raise
@@ -3349,18 +3371,18 @@ class _WindowsLauncherUpdateTransaction:
     def validate_launcher(self) -> None:
         if not self.enabled:
             return
-        assert self.backup is not None and self.legacy_backup is not None
         error = self._launcher_health_error()
         if error is not None:
             typer.echo(f"Error: Unsloth Studio update failed because {error}.", err = True)
-            restored = self._restore_backup()
-            if restored:
+            if self._restore_backup():
                 typer.echo(f"The previous launcher was restored from: {self.backup}", err = True)
-            else:
+            elif self._retained_backup() is not None:
                 typer.echo(f"Manual recovery copy retained at: {self.backup}", err = True)
             raise typer.Exit(1)
         self._validated = True
         for orphan in (self.backup, self.legacy_backup):
+            if orphan is None:
+                continue
             try:
                 orphan.unlink(missing_ok = True)
             except OSError:
@@ -3369,8 +3391,7 @@ class _WindowsLauncherUpdateTransaction:
     def __exit__(self, exc_type, exc_value, traceback) -> bool:
         try:
             if self.enabled and exc_type is not None and not self._validated:
-                assert self.backup is not None
-                if not self._restore_backup():
+                if not self._restore_backup() and self._retained_backup() is not None:
                     typer.echo(f"Manual recovery copy retained at: {self.backup}", err = True)
         finally:
             self._release_lock()
