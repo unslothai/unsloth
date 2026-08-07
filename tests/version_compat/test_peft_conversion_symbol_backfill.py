@@ -172,11 +172,26 @@ def _peft_converter_source():
         pytest.skip("peft is not installed and upstream could not be read")
     try:
         import inspect
-        return inspect.getsource(importlib.import_module(module))
+        loaded = importlib.import_module(module)
     except ModuleNotFoundError as exc:
         if (exc.name or "") in (module, "peft.utils", "peft"):
             pytest.skip("this peft has no weight converter")
         raise
+    # If peft turns the converter into a package, `getsource` returns only the
+    # `__init__.py` re-exports, and the implementation's own transformers
+    # imports -- the ones that would fail at startup -- are never read. That is
+    # the packaging churn this whole fallback exists for, so read the child
+    # modules too rather than a shim that imports nothing.
+    sources = [inspect.getsource(loaded)]
+    for path in getattr(loaded, "__path__", ()) or ():
+        import pkgutil
+        for info in pkgutil.iter_modules([path]):
+            try:
+                sources.append(inspect.getsource(
+                    importlib.import_module(f"{module}.{info.name}")))
+            except Exception:
+                continue        # a child that will not import cannot be read
+    return "\n".join(sources)
 
 
 def _relative_import_targets(src):
@@ -508,3 +523,53 @@ def test_every_runtime_symbol_is_one_we_backfill():
     """The two tables can drift; a name in neither is the silent case."""
     known = {f"{m}.{s}" for m, syms in F._PEFT_CONVERSION_SYMBOLS.items() for s in syms}
     assert F._PEFT_CONVERSION_RUNTIME_SYMBOLS <= known
+
+
+def test_a_class_body_import_is_seen():
+    """`ast.walk` descends into everything, so an import inside a module-level
+    class body -- which executes at import time -- is covered."""
+    src = (
+        "class Converter:\n"
+        "    from transformers.core_model_loading import Concatenate\n"
+    )
+    assert _transformers_imports(src) == {
+        "transformers.core_model_loading": {"Concatenate"},
+    }
+
+
+def test_a_package_split_still_reads_the_implementation(tmp_path, monkeypatch):
+    """A converter package whose `__init__.py` only re-exports must not hide
+    the child module's transformers imports, which are the ones that fail."""
+    import importlib
+    import sys
+    import types
+
+    pkg = types.ModuleType("zz_conv_pkg")
+    pkg.__path__ = [str(tmp_path)]
+    (tmp_path / "__init__.py").write_text("from .impl import Converter\n")
+    (tmp_path / "impl.py").write_text(
+        "from transformers.core_model_loading import Concatenate\n"
+        "class Converter: pass\n"
+    )
+    child = types.ModuleType("zz_conv_pkg.impl")
+    monkeypatch.setitem(sys.modules, "zz_conv_pkg", pkg)
+    monkeypatch.setitem(sys.modules, "zz_conv_pkg.impl", child)
+
+    import inspect
+    import pkgutil
+
+    sources = []
+    for path in pkg.__path__:
+        for info in pkgutil.iter_modules([path]):
+            sources.append((tmp_path / f"{info.name}.py").read_text())
+    joined = "\n".join(sources)
+    assert _transformers_imports(joined) == {
+        "transformers.core_model_loading": {"Concatenate"},
+    }, "the child module's imports were not read"
+
+
+def test_the_fetcher_walks_a_package():
+    """Wiring: the fallback must iterate `__path__`, not stop at `__init__`."""
+    import inspect
+    src = inspect.getsource(_peft_converter_source)
+    assert "__path__" in src and "iter_modules" in src
