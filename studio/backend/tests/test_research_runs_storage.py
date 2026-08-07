@@ -715,9 +715,8 @@ def test_sync_ignores_client_edits_to_research_messages(research_home):
 
 
 def test_autosave_round_trip_with_client_drift_saves_other_messages(research_home):
-    # The frontend bulk autosave re-serializes loaded messages lossily (drops user
-    # metadata, adds client-only research fields, placeholder empty content). That
-    # drift must not 409 the batch or roll back unrelated messages.
+    # The frontend autosave re-serializes messages lossily; that drift must not 409 the
+    # batch or roll back unrelated messages.
     _create()
     replayed = []
     for message in studio_db.list_chat_messages("thread-1"):
@@ -786,8 +785,7 @@ def test_sync_ignores_research_message_attachment_changes(research_home):
 def test_sync_ignores_research_message_created_at_changes(research_home):
     _create()
     messages = studio_db.list_chat_messages("thread-1")
-    # A changed timestamp would silently reorder the server-managed prompt/response
-    # pair (messages are ordered by created_at), so the server's value wins.
+    # A changed timestamp would reorder the pair (ordered by created_at), so the server wins.
     edited = [
         {**message, "createdAt": 999999} if message["id"] == "user-1" else message
         for message in messages
@@ -3325,9 +3323,7 @@ def _route_sync(messages, *, prune_missing = False):
 
 
 def test_route_autosave_survives_drifted_research_content(research_home):
-    # The storage tests cover the filter; this covers the route that the frontend
-    # autosave actually calls, which used to turn one drifted row into a 409 for the
-    # whole batch.
+    # Through the route autosave actually calls: one drifted row used to 409 the batch.
     _create()
     replayed = [
         {**message, "content": [{"type": "text", "text": "HIJACKED"}]}
@@ -3347,7 +3343,7 @@ def test_route_autosave_survives_drifted_research_content(research_home):
     response = _route_sync(replayed)
 
     assert {message.id for message in response.messages} == {"user-1", "assistant-1", "followup"}
-    # The unrelated message is saved, and the server's copy of the research turn wins.
+    # Unrelated message saved; the server's copy of the research turn wins.
     assert studio_db.get_chat_message("thread-1", "followup") is not None
     assert studio_db.get_chat_message("thread-1", "user-1")["content"] == [
         {"type": "text", "text": "What changed?"}
@@ -3367,7 +3363,7 @@ def test_route_prune_cannot_delete_research_messages(research_home):
         }
     )
 
-    # A client asking to keep nothing: the research turn still survives, the rest goes.
+    # Client asks to keep nothing: the research turn survives, the rest goes.
     _route_sync([], prune_missing = True)
 
     assert studio_db.get_chat_message("thread-1", "user-1") is not None
