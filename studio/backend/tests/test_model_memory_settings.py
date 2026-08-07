@@ -1930,3 +1930,47 @@ class TestThePolicyReadsOneSnapshot:
             assert (
                 separate not in named
             ), f"{separate} is read separately again, so the pair can tear"
+
+
+class TestTheGateDoesNotOverFire:
+    """Pinning where the weights are all on a discrete GPU is the redundant host
+    copy this gate exists to avoid, so the two ways it could over-fire are
+    pinned here: a zero CPU-MoE count, and the ROCm APU probe under Vulkan."""
+
+    @pytest.mark.parametrize("flag", ["--n-cpu-moe", "-ncmoe"])
+    def test_a_zero_cpu_moe_count_places_nothing(self, monkeypatch, flag):
+        """_args_place_tensors_on_cpu already treats 0 as a no-op; the offload
+        proof used flag presence, so the count flipped an all-GPU launch."""
+        assert (
+            TestHostMemoryGate._gate(
+                monkeypatch, extra_args = ["-ngl", "-1", flag, "0"]
+            )
+            is False
+        )
+
+    @pytest.mark.parametrize("extras", [["-cmoe"], ["--n-cpu-moe", "4"], ["-ot", "exps=CPU"]])
+    def test_real_cpu_placement_still_counts(self, monkeypatch, extras):
+        assert (
+            TestHostMemoryGate._gate(monkeypatch, extra_args = ["-ngl", "-1", *extras])
+            is True
+        )
+
+    def test_the_rocm_apu_probe_is_not_consulted_under_vulkan(self, monkeypatch):
+        """gpu_indices are Vulkan ordinals there, which the ROCm helper would
+        read as physical ids and answer for a different device."""
+        assert (
+            TestHostMemoryGate._gate(
+                monkeypatch,
+                extra_args = ["-ngl", "-1"],
+                is_vulkan_backend = True,
+                amd = True,
+                vulkan_igpu = False,
+            )
+            is False
+        )
+
+    def test_the_rocm_apu_probe_still_decides_off_vulkan(self, monkeypatch):
+        assert (
+            TestHostMemoryGate._gate(monkeypatch, extra_args = ["-ngl", "-1"], amd = True)
+            is True
+        )

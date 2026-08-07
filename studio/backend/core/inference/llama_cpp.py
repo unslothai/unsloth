@@ -4581,13 +4581,14 @@ class LlamaCppBackend:
             return True
         # Unified memory: the "VRAM" is host RAM, so the weights stay pageable
         # however fully they are offloaded.
-        return (
-            is_apple_silicon()
-            # Unprobed Vulkan keeps the err-towards-True answer.
-            or (is_vulkan_backend and not probe_vulkan)
-            or self._amd_apu_wants_unified_memory(gpu_indices)
-            or (is_vulkan_backend and self._vulkan_targets_are_igpus(binary, gpu_indices))
-        )
+        if is_apple_silicon():
+            return True
+        if is_vulkan_backend:
+            # gpu_indices are Vulkan ordinals here, which the ROCm APU helper
+            # would read as physical ids and answer for the wrong device. The
+            # Vulkan probe owns device type; unprobed keeps the True answer.
+            return not probe_vulkan or self._vulkan_targets_are_igpus(binary, gpu_indices)
+        return self._amd_apu_wants_unified_memory(gpu_indices)
 
     def _offloads_every_layer(
         self,
@@ -4609,7 +4610,9 @@ class LlamaCppBackend:
             return False
         if self._n_cpu_moe:
             return False
-        if _extra_args_set_any_flag(extra_args, _CPU_PLACEMENT_FLAGS):
+        # The parsed predicate, not flag presence: --n-cpu-moe 0 places nothing,
+        # and answering False here would pin host RAM for an all-GPU launch.
+        if _args_place_tensors_on_cpu(extra_args):
             return False
         requested: Optional[int] = None
         if gpu_memory_mode == "manual" and gpu_layers is not None and gpu_layers >= 0:
