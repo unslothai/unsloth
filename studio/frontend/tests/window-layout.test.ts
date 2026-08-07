@@ -126,6 +126,45 @@ test("fits the non-resizable setup window to the available area", () => {
   );
 });
 
+test("reserves the outer window frame inside the work area", async () => {
+  const monitor = {
+    scaleFactor: 1,
+    workArea: {
+      position: { x: 0, y: 0 },
+      size: {
+        width: 700,
+        height: 500,
+        toLogical: () => ({ width: 700, height: 500 }),
+      },
+    },
+  };
+  const measured = await measureWindowLayout(
+    {
+      currentMonitor: async () => monitor,
+      primaryMonitor: async () => monitor,
+      innerSize: async () => ({ width: 760, height: 560 }),
+      outerSize: async () => ({ width: 776, height: 577 }),
+    },
+    () => true,
+  );
+
+  assert.ok(measured);
+  assert.deepEqual(measured.frameSize, { width: 16, height: 17 });
+  assert.deepEqual(measured.bounds.maximum, { width: 684, height: 483 });
+  const setupSize = fitWindowSize(
+    PREFERRED_SETUP_WINDOW_SIZE,
+    measured.bounds.maximum,
+  );
+  assert.deepEqual(setupSize, { width: 684, height: 483 });
+  assert.deepEqual(
+    calculateCenteredPosition(monitor.workArea, {
+      width: setupSize.width + measured.frameSize.width,
+      height: setupSize.height + measured.frameSize.height,
+    }),
+    { x: 0, y: 0 },
+  );
+});
+
 test("caps an oversized window to a compact work area", () => {
   const bounds = calculateWindowSizeBounds({ width: 1080, height: 550 });
 
@@ -252,6 +291,52 @@ test("remeasures a restored window after show on its compact secondary", async (
   assert.deepEqual(savedSize, { width: 900, height: 556 });
 });
 
+test("waits for restored geometry before enforcing its minimum", async () => {
+  const events: string[] = [];
+  let currentSize = { width: 760, height: 560 };
+  const measured = {
+    bounds: {
+      minimum: { width: 900, height: 600 },
+      maximum: { width: 1920, height: 1040 },
+    },
+    monitor: null,
+    frameSize: { width: 0, height: 0 },
+  };
+
+  await finalizeAppWindowLayout({
+    restored: true,
+    measured,
+    show: async () => {
+      events.push("show");
+    },
+    waitForSettled: async () => {
+      events.push("settled");
+      currentSize = { width: 1200, height: 800 };
+    },
+    measure: async () => {
+      events.push("measure");
+      return measured;
+    },
+    setMinimumConstraints: async () => {
+      events.push("constraints");
+    },
+    enforceBounds: async (bounds) => {
+      events.push("enforce");
+      currentSize = constrainWindowSize(currentSize, bounds.minimum, bounds);
+    },
+    isCurrent: () => true,
+  });
+
+  assert.deepEqual(events, [
+    "show",
+    "settled",
+    "measure",
+    "constraints",
+    "enforce",
+  ]);
+  assert.deepEqual(currentSize, { width: 1200, height: 800 });
+});
+
 test("stale layouts do not show the window", async () => {
   let shown = false;
 
@@ -262,6 +347,7 @@ test("stale layouts do not show the window", async () => {
         minimum: { width: 900, height: 600 },
       },
       monitor: null,
+      frameSize: { width: 0, height: 0 },
     },
     show: async () => {
       shown = true;
