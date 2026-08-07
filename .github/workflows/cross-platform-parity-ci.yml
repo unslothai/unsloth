@@ -12,9 +12,8 @@
 # sub-second, so the matrix is cheap. Linux also runs the POSIX rollback test
 # under dash, matching the supported curl-to-sh installer path.
 #
-# The interactive-prompt guard rides along here for the same reason: it is a
-# text scan over the same installer and setup scripts, and it refuses a new
-# yes/no question in setup (see #7016, reverted in #8040).
+# The interactive-prompt guard rides along for the same reason: a text scan over
+# the same scripts, refusing new yes/no questions (see #7016, reverted in #8040).
 
 name: Cross-platform parity
 

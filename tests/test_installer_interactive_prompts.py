@@ -4,17 +4,16 @@
 """Refuse new interactive yes/no prompts in the installer and setup scripts.
 
 #7016 added `Open Unsloth Studio in your default browser after launch?
-[Y/n]` to the interactive install and had to be reverted in #8040. Extra
-questions stall a piped install and persist an answer nobody can find
-again, so the only preference setup may ask about is whether to start
-Studio when it finishes.
+[Y/n]` and had to be reverted in #8040: extra questions stall a piped
+install and persist an answer nobody can find again. The only preference
+setup may ask about is whether to start Studio when it finishes.
 
 Allowlist, not a ban: every prompt in the tree is listed in
 `APPROVED_PROMPTS` with its reason, so a new one fails with instructions
-instead of landing quietly. Two passes catch it -- literal `[Y/n]`
-markers, and interactive read sites (`read` off /dev/tty or `-p`,
-`Read-Host`) for a marker built from a variable, as #7016's was. Text
-only, so it runs on every platform in the parity matrix.
+instead of landing quietly. Two passes catch it: literal `[Y/n]` markers,
+and interactive read sites (`read` off /dev/tty or `-p`, `Read-Host`) for
+a marker built from a variable, as #7016's was. Text only, so it runs on
+every platform in the parity matrix.
 """
 
 from __future__ import annotations
@@ -26,10 +25,9 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# Everything a user can run to install, update or remove Unsloth. `unsloth studio
-# update` shells out to studio/setup.sh, and install.sh runs (downloading it when
-# absent) scripts/install_rocm_wsl_strixhalo.sh on the automatic WSL path, so a
-# question in either stalls a piped install just the same.
+# Everything a user can run to install, update or remove Unsloth, plus the scripts
+# those shell out to (studio/setup.sh from `unsloth studio update`,
+# install_rocm_wsl_strixhalo.sh from install.sh on WSL), which stall just the same.
 SCANNED_SCRIPTS = (
     "install.sh",
     "install.ps1",
@@ -67,9 +65,8 @@ _MARKER = re.compile(
 )
 
 # Anything that blocks waiting on a human. `-p` is matched as an option word, not
-# anchored on preceding whitespace: it may be bundled (`read -rp`, `read -rsp`)
-# and may sit directly after `read`, where `read\s+` has eaten the only space.
-# The scan stops at `;|&` -- a `mkdir -p` later on the line is another command.
+# anchored on whitespace: it may be bundled (`read -rp`) or follow `read` directly.
+# The scan stops at `;|&`, since a `mkdir -p` later on the line is another command.
 _POSIX_READ = re.compile(
     r"(?:^|[\s;&|(])read\s+(?![a-zA-Z_]+=)"
     r"(?:-[a-zA-Z]*p(?=[\s\"']|$)|[^\n;|&]*?(?:<\s*/dev/tty|\s-[a-zA-Z]*p(?=[\s\"']|$)))"
@@ -88,9 +85,8 @@ _FORMAT_NOISE = re.compile(
 
 
 def _is_comment(line: str) -> bool:
-    """Whole-line `#` comment. Inline ones are left alone: telling a comment from
-    a `#` inside a string needs a parser, and a false positive only costs an
-    unnecessary allowlist entry."""
+    """Whole-line `#` comment. Inline ones need a parser to tell from a `#` inside
+    a string, and a false positive only costs an allowlist entry."""
     return line.lstrip().startswith("#")
 
 
@@ -304,9 +300,9 @@ def test_detects_read_dash_p():
     ),
 )
 def test_detects_read_dash_p_without_a_marker(read_line: str):
-    """`-p` carries the prompt itself, so there is no marker for the first pass and
-    the read pass is all that stands between these and a stalled install. Bundling
-    is the usual bash spelling, so neither may hinge on a space before `-p`."""
+    """`-p` carries the prompt itself, so there is no marker and only the read pass
+    stands between these and a stalled install. Bundling is the usual bash
+    spelling, so it must not hinge on a space before `-p`."""
     assert [question for _, _, question in find_prompts("studio/setup.sh", read_line + "\n")] == [
         "build llama.cpp with cuda support?",
     ]
