@@ -89,7 +89,10 @@ def test_a_leftover_dexie_row_is_not_read_back_as_the_opening_prompt():
     """Deleting a message prunes the backend and leaves the Dexie copy, so the
     repair must not resurrect it into the title."""
     storage = _read(STORAGE)
-    assert "if (!trustsLocalOnlyMessages(isLegacyChatImportDone(), backendCount)) { return []; }" in storage
+    assert (
+        "if (!trustsLocalOnlyMessages(isLegacyChatImportDone(), backendCount)) { return []; }"
+        in storage
+    )
 
 
 def test_a_local_read_is_sorted_like_the_backend_lists_messages():
