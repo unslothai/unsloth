@@ -189,10 +189,22 @@ rm -f "$_HL"
 # ── 3c. A path that cannot be removed must not be reported as gone. The summary names the
 # session, API keys and chat history, so claiming that after a failed rm is a false all-clear. ──
 H=$(new_home)
-mkdir -p "$H/.cache/$BID/locked"
-chmod 500 "$H/.cache/$BID"          # unlink inside it is refused, so rm -rf fails
+mkdir -p "$H/.cache/$BID"
+# An rm stub that refuses this one path, not chmod: root ignores mode bits, so a permission
+# fixture deletes the dir anyway and the cleanup then aborts the suite under set -e.
+REAL_RM=$(command -v rm)
+case "$REAL_RM" in /*) ;; *) REAL_RM=/bin/rm ;; esac
+cat > "$STUB_BIN/rm" <<EOF
+#!/bin/sh
+for _a in "\$@"; do
+    [ "\$_a" = "$H/.cache/$BID" ] && exit 1
+done
+exec "$REAL_RM" "\$@"
+EOF
+chmod +x "$STUB_BIN/rm"
 _out=$(run_uninstall_out "$H" Linux)
-chmod 700 "$H/.cache/$BID"          # let the fixture be cleaned up
+rm -f "$STUB_BIN/rm"
+assert_present "linux: the refused path really did survive" "$H/.cache/$BID"
 case "$_out" in
     *"may"*"still be on disk"*) echo "  PASS: linux: failed removal is not reported as gone"; PASS=$((PASS+1)) ;;
     *) echo "  FAIL: linux: failed removal still claimed the data is gone"; FAIL=$((FAIL+1)) ;;
@@ -200,6 +212,31 @@ esac
 case "$_out" in
     *"are gone."*) echo "  FAIL: linux: summary still asserts the data is gone"; FAIL=$((FAIL+1)) ;;
     *) echo "  PASS: linux: summary drops the 'are gone' claim"; PASS=$((PASS+1)) ;;
+esac
+
+# ── 3e. Same, for a custom root. That removal runs inside a pipeline subshell, so a shell
+# variable set there never reaches the summary; custom roots hold studio.db and the auth data. ──
+H=$(new_home)
+CUSTOM="$_TMP_ROOT/customroot.$$"
+mkdir -p "$CUSTOM/share"
+: > "$CUSTOM/share/studio.conf"          # what _is_studio_root accepts as ownership
+cat > "$STUB_BIN/rm" <<EOF
+#!/bin/sh
+for _a in "\$@"; do
+    [ "\$_a" = "$CUSTOM" ] && exit 1
+done
+exec "$REAL_RM" "\$@"
+EOF
+chmod +x "$STUB_BIN/rm"
+printf '#!/bin/sh\necho Linux\n' > "$STUB_BIN/uname"; chmod +x "$STUB_BIN/uname"
+# Every -u before the first assignment: env stops parsing options at the first VAR=VALUE.
+_out=$(env -u STUDIO_HOME -u XDG_CACHE_HOME -u XDG_DATA_HOME -u XDG_CONFIG_HOME -u XDG_STATE_HOME \
+    UNSLOTH_STUDIO_HOME="$CUSTOM" HOME="$H" PATH="$STUB_BIN:$PATH" sh "$UNINSTALL_SH" 2>/dev/null)
+rm -f "$STUB_BIN/rm"
+assert_present "linux: the refused custom root really did survive" "$CUSTOM"
+case "$_out" in
+    *"are gone."*) echo "  FAIL: linux: custom-root failure still claimed the data is gone"; FAIL=$((FAIL+1)) ;;
+    *) echo "  PASS: linux: custom-root failure reaches the summary"; PASS=$((PASS+1)) ;;
 esac
 
 # ── 4. Nothing to remove is a clean no-op (fresh HOME, exit 0) ──

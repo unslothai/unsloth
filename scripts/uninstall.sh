@@ -188,6 +188,11 @@ $_roots_from_conf"
     fi
 }
 
+# Set by _remove_path when an rm fails, read by the closing summary. Cleared up front so a
+# stale file from an interrupted run cannot make this one report a failure it never had.
+_REMOVE_FAILED_FLAG="${TMPDIR:-/tmp}/.unsloth-uninstall-failed.$$"
+rm -f "$_REMOVE_FAILED_FLAG" 2>/dev/null || true
+
 _remove_path() {
     _p="$1"
     if [ -e "$_p" ] || [ -L "$_p" ]; then
@@ -195,8 +200,9 @@ _remove_path() {
             echo "  removed: $_p"
         else
             echo "  could not remove: $_p" >&2
-            # Read by the closing summary, which must not promise the data is gone.
-            _remove_failed=1
+            # A marker file, not a variable: custom roots are removed inside a pipeline
+            # subshell, where an assignment would never reach the summary below.
+            : > "$_REMOVE_FAILED_FLAG" 2>/dev/null || true
         fi
     fi
 }
@@ -616,7 +622,8 @@ _unsloth_uninstall_main() {
 
     echo ""
     echo "Unsloth Studio uninstalled."
-    if [ "${_remove_failed:-0}" = "1" ]; then
+    if [ -f "$_REMOVE_FAILED_FLAG" ]; then
+        rm -f "$_REMOVE_FAILED_FLAG" 2>/dev/null || true
         echo "Note: some paths could not be removed (see 'could not remove:' above), so the"
         echo "      signed-in session, saved provider API keys and local chat history may"
         echo "      still be on disk. Remove those paths by hand to clear them."

@@ -62,6 +62,8 @@ Environment:
             } catch {
                 if ($attempt -lt 4) { Start-Sleep -Milliseconds 700; continue }
                 _Substep "could not remove: $Path ($($_.Exception.Message))" "Yellow"
+                # Read by the closing summary, which must not promise the data is gone.
+                $script:RemoveFailed = $true
                 return
             }
             # Remove-Item -Recurse can report success yet leave a transiently-locked
@@ -73,6 +75,7 @@ Environment:
             }
             if ($attempt -lt 4) { Start-Sleep -Milliseconds 700; continue }
             _Substep "still present (files held open): $Path" "Yellow"
+            $script:RemoveFailed = $true
         }
     }
 
@@ -626,8 +629,14 @@ Environment:
 
     Write-Host ""
     Write-Host "Unsloth Studio uninstalled."
-    Write-Host "Note: this also removed the app's WebView data, so the signed-in session,"
-    Write-Host "      saved provider API keys and local chat history are gone."
+    if ($script:RemoveFailed) {
+        Write-Host "Note: some paths could not be removed (see 'could not remove:' above), so the"
+        Write-Host "      signed-in session, saved provider API keys and local chat history may"
+        Write-Host "      still be on disk. Remove those paths by hand to clear them."
+    } else {
+        Write-Host "Note: this also removed the app's WebView data, so the signed-in session,"
+        Write-Host "      saved provider API keys and local chat history are gone."
+    }
     Write-Host "Note: Hugging Face model cache at %USERPROFILE%\.cache\huggingface was left in place."
     Write-Host "Remove it manually with 'Remove-Item -Recurse -Force `"$env:USERPROFILE\.cache\huggingface\hub`"' if desired."
     if (-not $env:UNSLOTH_STUDIO_HOME -and -not $env:STUDIO_HOME) {
