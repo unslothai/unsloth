@@ -247,6 +247,42 @@ class TestFailureDegradation:
         assert vt._redact_url("https://up.example/x?sig=secret") == "https://up.example/x"
 
 
+class TestSignedUrlMasking:
+    """The signed upload URL is a credential and is NOT a registered GitHub secret,
+    so the runner will not mask it unless we register it with ::add-mask::."""
+
+    def test_upload_registers_the_signed_url_with_add_mask(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        bundle = tmp_path / "big.exe"
+        bundle.write_bytes(b"payload")
+        signed = "https://upload.virustotal.example/receive?sig=secret-credential"
+        client, _transport = _client({
+            "/files/upload_url": (200, b'{"data": "' + signed.encode() + b'"}'),
+            "upload.virustotal.example": (200, b'{"data": {"id": "an-1"}}'),
+        })
+        client.upload(bundle)
+        out = capsys.readouterr().out
+        assert f"::add-mask::{signed}" in out
+        # Masking must happen before the URL is used, not after.
+        assert out.index("::add-mask::") == 0
+
+    def test_no_workflow_commands_off_the_runner(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.delenv("GITHUB_ACTIONS", raising = False)
+        bundle = tmp_path / "big.exe"
+        bundle.write_bytes(b"payload")
+        client, _transport = _client({
+            "/files/upload_url": (200, b'{"data": "https://up.example/x?sig=s"}'),
+            "up.example": (200, b'{"data": {"id": "an-1"}}'),
+        })
+        client.upload(bundle)
+        assert "::add-mask::" not in capsys.readouterr().out
+
+    def test_empty_value_is_not_registered(self, monkeypatch, capsys):
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+        vt._mask_in_actions("")
+        assert capsys.readouterr().out == ""
+
+
 class TestRenderMarkdown:
     def test_advisory_footer_when_threshold_disabled(self):
         text = vt.render_markdown(

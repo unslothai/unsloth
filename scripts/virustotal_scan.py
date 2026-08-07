@@ -312,6 +312,9 @@ class VirusTotalClient:
         upload_url = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(upload_url, str) or not upload_url:
             raise RuntimeError("VirusTotal did not return an upload URL")
+        # Mask before the URL is ever used, so anything that later echoes it -- a
+        # traceback, a future debug print, a library error string -- is scrubbed.
+        _mask_in_actions(upload_url)
 
         body, content_type = _build_multipart(path)
         _, payload = self.request(
@@ -356,6 +359,23 @@ def _build_multipart(path: Path) -> tuple[bytes, str]:
 def _redact_url(url: str) -> str:
     """Strip the query string before logging: signed upload URLs carry credentials."""
     return url.split("?", 1)[0]
+
+
+def _mask_in_actions(value: str) -> None:
+    """Register `value` with the runner's log scrubber.
+
+    `VT_API_KEY` comes from a repository secret, so Actions masks it everywhere
+    automatically. The signed upload URL does not: VirusTotal mints it per call and
+    its query string is a credential, which makes it exactly the "sensitive
+    information that is not a GitHub secret" the Actions docs say to pass through
+    `::add-mask::`. Without this, the only thing keeping it out of the log is us
+    remembering to call `_redact_url` at every print site, which is a rule that
+    holds right up until someone adds a print or a traceback escapes.
+
+    No-ops off the runner so local runs are not littered with workflow commands.
+    """
+    if value and os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::add-mask::{value}", flush = True)
 
 
 def _attributes(payload: object) -> dict:
