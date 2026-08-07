@@ -20,6 +20,7 @@ from collections.abc import AsyncGenerator, Mapping, Sequence
 from typing import Any, Optional
 
 from loggers import get_logger
+from core.inference.tool_call_parser import RAG_MAX_SEARCHES_PER_TURN, RAG_SEARCH_CAP_NUDGE
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     append_deferred_nudges,
@@ -304,6 +305,7 @@ async def stream_external_chat_with_tools(
     cancel = cancel_event or threading.Event()
     rounds_with_calls = 0
     denied_rounds = 0
+    kb_search_count = 0
     observed_call_rounds = 0
     aggregate_usage: dict[str, Any] = {}
     usage_template: dict[str, Any] | None = None
@@ -360,8 +362,8 @@ async def stream_external_chat_with_tools(
                         yield line
                     continue
                 if payload is _DONE:
-                    round_finished = True
                     if not round_calls:
+                        round_finished = True
                         if aggregate_usage and usage_template is not None and not usage_emitted:
                             yield _combined_usage_line(usage_template, aggregate_usage)
                             usage_emitted = True
@@ -610,46 +612,55 @@ async def stream_external_chat_with_tools(
                 if decision_slot is not None:
                     abort_tool_decision(decision_slot, approval_id)
 
-            def _invoke_tool(output_callback, _decision = decision):
-                kwargs = dict(
-                    cancel_event = cancel,
-                    timeout = timeout,
-                    session_id = session_id,
-                    thread_id = thread_id,
-                    rag_scope = rag_scope,
-                    disable_sandbox = bypass_permissions,
-                )
-                if accepts_output_callback(execute_tool):
-                    kwargs["output_callback"] = output_callback
-                return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)
+            if (
+                decision.tool_name == "search_knowledge_base"
+                and kb_search_count >= RAG_MAX_SEARCHES_PER_TURN
+            ):
+                result = RAG_SEARCH_CAP_NUDGE
+            else:
 
-            tool_stream = stream_tool_execution(
-                _invoke_tool,
-                tool_name = decision.tool_name,
-                tool_call_id = decision.tool_call_id,
-                cancel_event = cancel,
-            )
-            try:
-                while True:
-                    next_task = asyncio.create_task(asyncio.to_thread(_next_sync, tool_stream))
-                    try:
-                        finished, event_or_result = await asyncio.shield(next_task)
-                    except asyncio.CancelledError:
-                        # Let the bounded poll finish before closing the sync
-                        # generator; closing it while ``next`` runs in another
-                        # thread raises ``ValueError: generator already executing``.
-                        cancel.set()
-                        await next_task
-                        raise
-                    if finished:
-                        result = event_or_result
-                        break
-                    yield _event_line(event_or_result)
-            except Exception as exc:
-                logger.exception("External tool %s raised: %s", decision.tool_name, exc)
-                result = f"Error: tool raised an exception: {exc}"
-            finally:
-                tool_stream.close()
+                def _invoke_tool(output_callback, _decision = decision):
+                    kwargs = dict(
+                        cancel_event = cancel,
+                        timeout = timeout,
+                        session_id = session_id,
+                        thread_id = thread_id,
+                        rag_scope = rag_scope,
+                        disable_sandbox = bypass_permissions,
+                    )
+                    if accepts_output_callback(execute_tool):
+                        kwargs["output_callback"] = output_callback
+                    return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)
+
+                tool_stream = stream_tool_execution(
+                    _invoke_tool,
+                    tool_name = decision.tool_name,
+                    tool_call_id = decision.tool_call_id,
+                    cancel_event = cancel,
+                )
+                try:
+                    while True:
+                        next_task = asyncio.create_task(asyncio.to_thread(_next_sync, tool_stream))
+                        try:
+                            finished, event_or_result = await asyncio.shield(next_task)
+                        except asyncio.CancelledError:
+                            # Let the bounded poll finish before closing the sync
+                            # generator; closing it while ``next`` runs in another
+                            # thread raises ``ValueError: generator already executing``.
+                            cancel.set()
+                            await next_task
+                            raise
+                        if finished:
+                            result = event_or_result
+                            break
+                        yield _event_line(event_or_result)
+                except Exception as exc:
+                    logger.exception("External tool %s raised: %s", decision.tool_name, exc)
+                    result = f"Error: tool raised an exception: {exc}"
+                finally:
+                    tool_stream.close()
+                if decision.tool_name == "search_knowledge_base":
+                    kb_search_count += 1
             completion = tool_controller.record_result(decision, result)
             turn_executed_real_tool = True
             yield _event_line(completion.tool_end_event())

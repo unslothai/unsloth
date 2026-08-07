@@ -824,6 +824,35 @@ def test_abrupt_eof_discards_partial_tool_call(monkeypatch):
     assert executed == []
 
 
+def test_done_without_tool_finish_marker_discards_complete_tool_call(monkeypatch):
+    executed = []
+    monkeypatch.setattr(
+        loop_mod,
+        "execute_tool",
+        lambda name, arguments, **_kwargs: executed.append((name, arguments)),
+    )
+    call = _chunk(
+        delta = {
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": "call_unfinished",
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "arguments": '{"query":"Cairo"}',
+                    },
+                }
+            ]
+        }
+    )
+
+    with pytest.raises(RuntimeError, match = "before completing"):
+        asyncio.run(_collect(_FakeClient([[call, "data: [DONE]"]])))
+
+    assert executed == []
+
+
 @pytest.mark.parametrize("finish_reason", ["length", "content_filter", "stop"])
 def test_non_tool_finish_reason_discards_partial_tool_call(monkeypatch, finish_reason):
     executed = []
@@ -981,3 +1010,44 @@ def test_accumulated_usage_is_emitted_before_provider_error(monkeypatch):
     usage = json.loads(output[usage_index][len("data:") :])["usage"]
     assert usage == {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}
     assert usage_index < error_index
+
+
+def test_knowledge_base_searches_are_capped_across_provider_rounds(monkeypatch):
+    executed = []
+
+    def fake_execute(name, arguments, **_kwargs):
+        executed.append((name, arguments))
+        return f"result {len(executed)}"
+
+    monkeypatch.setattr(loop_mod, "execute_tool", fake_execute)
+    kb_tool = {
+        "type": "function",
+        "function": {
+            "name": "search_knowledge_base",
+            "description": "Search the selected knowledge base.",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        },
+    }
+    client = _FakeClient(
+        [
+            _named_tool_round(
+                "search_knowledge_base",
+                f"call_{index}",
+                json.dumps({"query": f"paraphrase {index}"}),
+            )
+            for index in range(loop_mod.RAG_MAX_SEARCHES_PER_TURN + 1)
+        ]
+        + [[_chunk(delta = {"content": "done"}), "data: [DONE]"]]
+    )
+
+    asyncio.run(_collect(client, tools = [kb_tool], rag_scope = "scope-1"))
+
+    assert len(executed) == loop_mod.RAG_MAX_SEARCHES_PER_TURN
+    assert all(name == "search_knowledge_base" for name, _arguments in executed)
+    capped_result = client.calls[loop_mod.RAG_MAX_SEARCHES_PER_TURN + 1]["messages"][-1]
+    assert capped_result["role"] == "tool"
+    assert capped_result["content"] == loop_mod.RAG_SEARCH_CAP_NUDGE
