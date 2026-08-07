@@ -4546,11 +4546,15 @@ class LlamaCppBackend:
         is_vulkan_backend: bool = False,
         binary: Optional[str] = None,
         env: Optional[Mapping[str, str]] = None,
+        probe_vulkan: bool = True,
     ) -> bool:
         """True when the weights will sit in pageable host RAM, so mlock helps.
 
         Only the Model Memory gate uses this, and only to SKIP page-locking, so
         it errs towards True: that is the pre-existing behaviour.
+
+        ``probe_vulkan`` False skips the Vulkan probe, the one subprocess in
+        here, for a bookkeeping-only call; that keeps the conservative True.
         """
         from utils.hardware import is_apple_silicon
 
@@ -4579,6 +4583,8 @@ class LlamaCppBackend:
         # however fully they are offloaded.
         return (
             is_apple_silicon()
+            # Unprobed Vulkan keeps the err-towards-True answer.
+            or (is_vulkan_backend and not probe_vulkan)
             or self._amd_apu_wants_unified_memory(gpu_indices)
             or (is_vulkan_backend and self._vulkan_targets_are_igpus(binary, gpu_indices))
         )
@@ -10848,27 +10854,30 @@ class LlamaCppBackend:
                 # placement guard applies to BOTH: an auto fit that offloads
                 # every layer still leaves weights in RAM if an extra pins them
                 # there, so it cannot short-circuit past the check.
-                # Only asked when page-locking is on the table: the Vulkan probe
-                # inside spawns a subprocess, and the default (both toggles off)
-                # must stay free.
-                _mem_host_resident = True
-                if should_mlock():
-                    # The same view of the environment the child will get: manual
-                    # mode drops the placement vars below, so reading os.environ
-                    # would pin for a CPU-MoE setting the child never sees.
-                    _mem_env = dict(os.environ)
-                    if gpu_memory_mode == "manual":
-                        self._clear_manual_placement_env(_mem_env)
-                    _mem_host_resident = self._weights_in_host_memory(
-                        fully_gpu_offloaded = fully_gpu_offloaded,
-                        gpu_memory_mode = gpu_memory_mode,
-                        gpu_layers = gpu_layers,
-                        extra_args = extra_args,
-                        gpu_indices = gpu_indices,
-                        is_vulkan_backend = is_vulkan_backend,
-                        binary = binary,
-                        env = _mem_env,
-                    )
+                # Asked on EVERY launch, not just when a lock is on the table:
+                # _memory_mlock_applicable is recorded from it, and a LATER
+                # "keep resident" save is compared against that. Assuming host
+                # residency by default made enabling the toggle demand a reload
+                # and reject the duplicate-load fast path, tearing down a healthy
+                # server to relaunch identical argv. Only the Vulkan probe stays
+                # gated, so the default path still spawns nothing.
+                # The same view of the environment the child will get: manual
+                # mode drops the placement vars below, so reading os.environ
+                # would pin for a CPU-MoE setting the child never sees.
+                _mem_env = dict(os.environ)
+                if gpu_memory_mode == "manual":
+                    self._clear_manual_placement_env(_mem_env)
+                _mem_host_resident = self._weights_in_host_memory(
+                    fully_gpu_offloaded = fully_gpu_offloaded,
+                    gpu_memory_mode = gpu_memory_mode,
+                    gpu_layers = gpu_layers,
+                    extra_args = extra_args,
+                    gpu_indices = gpu_indices,
+                    is_vulkan_backend = is_vulkan_backend,
+                    binary = binary,
+                    env = _mem_env,
+                    probe_vulkan = should_mlock(),
+                )
                 _mem_managed, _mem_extras = apply_model_memory_policy(
                     extra_args,
                     supports_load_mode = bool(server_caps.get("supports_load_mode")),

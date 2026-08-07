@@ -1726,3 +1726,84 @@ class TestManualModeIgnoresClearedEnv:
             )
             is True
         )
+
+
+class TestADefaultLaunchRecordsItsApplicability:
+    """_memory_mlock_applicable is recorded from the gate, and a later "keep
+    resident" save is compared against it. Skipping the gate when no lock was on
+    the table recorded the placeholder True, so enabling the toggle on a discrete
+    full offload demanded a reload and relaunched identical argv."""
+
+    def test_the_gate_is_not_skipped_when_should_mlock_is_false(self):
+        import ast
+
+        outer = TestTheRetryCanReadTheGate._load_model_ast()
+        parents = {}
+        for node in ast.walk(outer):
+            for child in ast.iter_child_nodes(node):
+                parents[id(child)] = node
+        calls = [
+            n
+            for n in ast.walk(outer)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "_weights_in_host_memory"
+        ]
+        assert calls, "the gate call vanished"
+        for call in calls:
+            cur = parents.get(id(call))
+            while cur is not None and cur is not outer:
+                if isinstance(cur, ast.If):
+                    named = {
+                        f.func.id
+                        for f in ast.walk(cur.test)
+                        if isinstance(f, ast.Call) and isinstance(f.func, ast.Name)
+                    }
+                    assert "should_mlock" not in named, (
+                        "the gate is behind should_mlock again, so a default "
+                        "launch records a placeholder applicability"
+                    )
+                cur = parents.get(id(cur))
+
+    def test_enabling_residency_after_a_default_full_offload_needs_no_reload(self, monkeypatch):
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+        # What the gate records for a discrete full offload.
+        assert memory_state_satisfies_settings((False, False), False, False) is True
+
+    def test_a_partial_offload_still_demands_the_reload(self, monkeypatch):
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+        assert memory_state_satisfies_settings((False, False), False, True) is False
+
+    def test_the_bookkeeping_call_skips_the_vulkan_probe(self, monkeypatch):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        def boom(binary = None):
+            raise AssertionError("the probe must not run for a bookkeeping call")
+
+        monkeypatch.setattr(LlamaCppBackend, "_run_vulkan_probe", staticmethod(boom))
+        assert (
+            TestHostMemoryGate._gate(
+                monkeypatch,
+                fully_gpu_offloaded = True,
+                is_vulkan_backend = True,
+                probe_vulkan = False,
+            )
+            is True
+        )
+
+    def test_skipping_the_probe_leaves_non_vulkan_alone(self, monkeypatch):
+        assert (
+            TestHostMemoryGate._gate(
+                monkeypatch,
+                fully_gpu_offloaded = True,
+                is_vulkan_backend = False,
+                probe_vulkan = False,
+            )
+            is False
+        )
