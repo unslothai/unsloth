@@ -106,6 +106,7 @@ import {
   providerTypeSupportsVision,
 } from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
+import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
   PLUS_MENU_ORDER,
@@ -793,7 +794,12 @@ export function SharedComposer({
     (showWebFetchPill ? 1 : 0) +
     (artifactsEnabled ? 1 : 0) +
     (mcpEnabledForChat ? 1 : 0);
-  const pillsCompact = isMobile || pillCount > 4;
+  // Under the count threshold the row still overflows on long labels, wrapping
+  // onto a second line inside the action bar. Measuring collapses just enough
+  // to keep it beside the dictate/send controls.
+  const { pillRowRef, pillCompact } = useComposerPillFit(
+    isMobile || pillCount > 4,
+  );
   // Backwards-compatible alias for call sites still referencing
   // `toolsDisabled` (rare; both pills used it before).
   const toolsDisabled = codeDisabled;
@@ -1977,8 +1983,9 @@ export function SharedComposer({
       />
       <div className="composer-action-wrapper">
         <div
+          ref={pillRowRef}
           className="flex min-w-0 flex-wrap items-center gap-0.5"
-          data-pill-compact={pillsCompact ? "true" : undefined}
+          data-pill-compact={pillCompact}
         >
           <input
             ref={fileInputRef}
