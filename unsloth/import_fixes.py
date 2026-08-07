@@ -2447,6 +2447,9 @@ def _recover_conversion_pattern_map(real):
     return best
 
 
+_MISSING = object()
+
+
 class _UnavailableConversionPatternMap(dict):
     """A conversion map that answers only for entries someone put in it, and raises otherwise.
 
@@ -2468,6 +2471,22 @@ class _UnavailableConversionPatternMap(dict):
         "peft that does not need the conversion."
     )
 
+    # Only fused-MoE lookups are unsafe to answer with a silent None. peft reaches
+    # `_convert_peft_config_moe` for ANY model type that has a checkpoint conversion
+    # mapping, not just MoE ones, and for those a None is the correct answer: the function
+    # returns without a MoE target rewrite, which is what it would do with the real map
+    # too. Raising for all of them would break ordinary adapter loads to guard a case they
+    # are not in. Substring hints, because the alias that would tell us exactly is the
+    # thing we lost.
+    _MOE_HINTS = ("moe", "mixtral")
+
+    def _answer(self, key, default):
+        if dict.__contains__(self, key):
+            return dict.__getitem__(self, key)
+        if any(hint in str(key).lower() for hint in self._MOE_HINTS):
+            raise RuntimeError(self._MESSAGE)
+        return default
+
     def copy(self):
         new = type(self)()
         dict.update(new, self)
@@ -2478,14 +2497,13 @@ class _UnavailableConversionPatternMap(dict):
         key,
         default = None,
     ):
-        if dict.__contains__(self, key):
-            return dict.__getitem__(self, key)
-        raise RuntimeError(self._MESSAGE)
+        return self._answer(key, default)
 
     def __getitem__(self, key):
-        if dict.__contains__(self, key):
-            return dict.__getitem__(self, key)
-        raise RuntimeError(self._MESSAGE)
+        answer = self._answer(key, _MISSING)
+        if answer is _MISSING:
+            raise KeyError(key)
+        return answer
 
 
 def _backfill_conversion_symbols_once(builders, added):

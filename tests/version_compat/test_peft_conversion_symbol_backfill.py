@@ -244,6 +244,10 @@ def _peft_converter_source():
         # whatever IT imports relatively, so a transformers import two levels down breaks
         # startup exactly the same way. `seen` keeps a cycle from looping.
         sources = [init]
+        # Each entry is the module's dotted path from the package root. A child's own
+        # relative imports resolve against ITS package, not the root: in a nested split
+        # where `__init__` imports `.sub.core` and `sub/core.py` imports `.ops`, Python
+        # reads that as `sub.ops`, so carry the prefix rather than fetching `ops.py`.
         pending = list(_relative_import_targets(init))
         seen = set()
         while pending:
@@ -252,14 +256,16 @@ def _peft_converter_source():
                 continue
             seen.add(child)
             path = child.replace(".", "/")
-            for candidate in (f"{pkg}{path}.py", f"{pkg}{path}/__init__.py"):
+            for candidate, package in (
+                (f"{pkg}{path}.py", child.rpartition(".")[0]),
+                (f"{pkg}{path}/__init__.py", child),
+            ):
                 text = fetch(candidate)
                 if text is None:
                     continue
                 sources.append(text)
-                # A child's own relative imports are resolved against the package root,
-                # the same base every candidate above is built from.
-                pending.extend(_relative_import_targets(text))
+                prefix = f"{package}." if package else ""
+                pending.extend(prefix + name for name in _relative_import_targets(text))
                 break
         return "\n\n".join(src if src.endswith("\n") else src + "\n" for src in sources)
 
@@ -299,13 +305,34 @@ def _relative_import_targets(src):
     import ast
 
     targets = []
-    for node in ast.parse(src).body:
-        if not isinstance(node, ast.ImportFrom) or not node.level:
-            continue
-        if node.module:
-            targets.append(node.module)
-        else:  # `from . import a, b`
-            targets.extend(alias.name for alias in node.names)
+
+    def visit(body) -> None:
+        for node in body:
+            if isinstance(node, ast.ImportFrom) and node.level:
+                if node.module:
+                    targets.append(node.module)
+                else:  # `from . import a, b`
+                    targets.extend(alias.name for alias in node.names)
+                continue
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Import)):
+                continue
+            if isinstance(node, ast.If) and _is_type_checking(node.test):
+                visit(node.body if isinstance(node.test, ast.UnaryOp) else node.orelse)
+                continue
+            # Same import-time traversal as `_transformers_imports`: a package can pull its
+            # implementation in from inside `if not TYPE_CHECKING:` or a `try:`, and importing
+            # it still runs that, so those children have to be walked too.
+            for field in ("body", "orelse", "finalbody", "handlers"):
+                child = getattr(node, field, None)
+                if not isinstance(child, list):
+                    continue
+                for item in child:
+                    if isinstance(item, ast.stmt):
+                        visit([item])
+                    else:
+                        visit(getattr(item, "body", []))
+
+    visit(ast.parse(src).body)
     return list(dict.fromkeys(targets))
 
 
@@ -503,6 +530,82 @@ def test_the_package_walk_survives_a_circular_relative_import(monkeypatch):
     assert _transformers_imports(_peft_converter_source()) == {"transformers.utils": {"logging"}}
 
 
+def test_a_relative_import_under_an_import_time_block_is_followed(monkeypatch):
+    """A package can pull its implementation in from inside `try:` or `if not TYPE_CHECKING:`.
+
+    Importing it still runs that, so a child reached only that way has to be read, while a
+    typing-only one must not drag in a module that never executes.
+    """
+    import io
+    import urllib.error
+    import urllib.request
+
+    pages = {
+        "transformers_weight_conversion/__init__.py": (
+            "from typing import TYPE_CHECKING\n"
+            "if TYPE_CHECKING:\n"
+            "    from .typing_only import Never\n"
+            "try:\n"
+            "    from .core import build\n"
+            "except ImportError:\n"
+            "    from .fallback import build\n"
+        ),
+        "transformers_weight_conversion/core.py": (
+            "from transformers.core_model_loading import ConversionOps\n"
+        ),
+        "transformers_weight_conversion/fallback.py": "from transformers.legacy import Old\n",
+        "transformers_weight_conversion/typing_only.py": (
+            "from transformers.never_runs import NotThis\n"
+        ),
+    }
+
+    def fake_urlopen(request, timeout = None):
+        for suffix, body in pages.items():
+            if request.full_url.endswith(suffix):
+                return io.BytesIO(body.encode())
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", None, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert _transformers_imports(_peft_converter_source()) == {
+        "transformers.core_model_loading": {"ConversionOps"},
+        "transformers.legacy": {"Old"},
+    }
+
+
+def test_a_nested_package_resolves_relative_imports_from_its_own_path(monkeypatch):
+    """`sub/core.py` doing `from .ops import x` means `sub.ops`, not `ops`.
+
+    Resolving every child against the package root fetched the wrong file, so a
+    transformers import in the nested implementation was never read.
+    """
+    import io
+    import urllib.error
+    import urllib.request
+
+    pages = {
+        "transformers_weight_conversion/__init__.py": "from .sub.core import build\n",
+        "transformers_weight_conversion/sub/core.py": "from .ops import apply\n",
+        "transformers_weight_conversion/sub/ops.py": (
+            "from transformers.nested import DeepOne\n"
+        ),
+        # The wrong resolution would land here instead.
+        "transformers_weight_conversion/ops.py": (
+            "from transformers.wrong_level import NotThis\n"
+        ),
+    }
+
+    def fake_urlopen(request, timeout = None):
+        for suffix, body in pages.items():
+            if request.full_url.endswith(suffix):
+                return io.BytesIO(body.encode())
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", None, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert _transformers_imports(_peft_converter_source()) == {
+        "transformers.nested": {"DeepOne"},
+    }
+
+
 def test_an_unrecoverable_conversion_map_fails_on_use(caplog):
     """An empty map is the one shape that fails silently.
 
@@ -522,11 +625,20 @@ def test_an_unrecoverable_conversion_map_fails_on_use(caplog):
     assert copied.get("mixtral") == "mixtral"
     assert copied["mixtral"] == "mixtral"
 
-    # A lookup we cannot answer honestly raises where it happens.
+    # A fused-MoE lookup we cannot answer honestly raises where it happens.
     with pytest.raises(RuntimeError):
         copied.get("qwen3_moe", None)
     with pytest.raises(RuntimeError):
         copied["qwen3_moe"]
+
+    # But peft reaches _convert_peft_config_moe for ANY model type with a checkpoint
+    # conversion mapping, and for a non-MoE one None IS the right answer: the function
+    # returns without a MoE rewrite, exactly as it would with the real map. Raising there
+    # would break ordinary adapter loads to guard a case they are not in.
+    assert copied.get("llama", None) is None
+    assert copied.get("gemma3", "fallback") == "fallback"
+    with pytest.raises(KeyError):
+        copied["llama"]
 
 
 def test_an_unrecoverable_map_is_what_the_backfill_actually_installs(fake_modules, monkeypatch):
