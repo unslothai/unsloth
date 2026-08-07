@@ -3,8 +3,8 @@ use crate::native_backend_lease::{
     NativePathLeaseResponse, NativePathOperation, NativePathSourceKind, NativePathType,
 };
 use crate::native_path_policy::{
-    classify_artifact_path, classify_native_attachment_path, classify_native_model_path,
-    reveal_target, ClassifiedPath, NativeArtifactKind,
+    classify_artifact_path, classify_native_attachment_path, classify_native_dataset_path,
+    classify_native_model_path, reveal_target, ClassifiedPath, NativeArtifactKind,
 };
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -55,6 +55,7 @@ struct NativePathEntry {
 #[derive(Clone, Copy, Debug)]
 enum NativePathValidationPolicy {
     Model,
+    Dataset,
     Attachment,
     Artifact(NativeArtifactKind),
 }
@@ -132,7 +133,9 @@ impl NativeIntakeState {
     /// Record what the OS dropped on the window. Called from the window event handler,
     /// never from the renderer.
     pub fn note_dropped_paths(&self, paths: &[PathBuf]) {
-        let Ok(mut inner) = self.inner.lock() else { return };
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
         let now = now_ms();
         inner.recent_drops.retain(|_, expires| *expires > now);
         let expires_at = now + DROP_GRACE.as_millis() as u64;
@@ -166,6 +169,18 @@ impl NativeIntakeState {
             source_kind,
             NativePathValidationPolicy::Attachment,
         )
+    }
+
+    fn register_dataset_path(
+        &self,
+        path: impl AsRef<Path>,
+        source_kind: NativePathSourceKind,
+    ) -> Result<NativeIntent, String> {
+        let classified = classify_native_dataset_path(path.as_ref())?;
+        if !self.was_recently_dropped(&classified.canonical_path)? {
+            return Err("Datasets must come from a file dropped on the window.".to_string());
+        }
+        self.register_classified_path(classified, source_kind, NativePathValidationPolicy::Dataset)
     }
 
     fn register_artifact(
@@ -285,6 +300,7 @@ fn validate_entry_path(
 ) -> Result<(), String> {
     let classified = match entry.validation_policy {
         NativePathValidationPolicy::Model => classify_native_model_path(&entry.canonical_path)?,
+        NativePathValidationPolicy::Dataset => classify_native_dataset_path(&entry.canonical_path)?,
         NativePathValidationPolicy::Attachment => {
             classify_native_attachment_path(&entry.canonical_path)?
         }
@@ -365,6 +381,16 @@ pub fn register_native_attachment_path(
 ) -> Result<NativeIntent, String> {
     ensure_main_window(&window)?;
     state.register_attachment_path(path, NativePathSourceKind::Drop)
+}
+
+#[tauri::command]
+pub fn register_native_dataset_path(
+    window: WebviewWindow,
+    state: tauri::State<'_, NativeIntakeState>,
+    path: String,
+) -> Result<NativeIntent, String> {
+    ensure_main_window(&window)?;
+    state.register_dataset_path(path, NativePathSourceKind::Drop)
 }
 
 #[tauri::command]
@@ -542,6 +568,22 @@ mod tests {
             .sign_grant(&intent.path.token, NativePathOperation::DatasetImport)
             .unwrap_err();
         assert!(err.contains("does not allow"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn dataset_token_issues_an_import_grant() {
+        let state = new_native_intake_state();
+        let path = temp_path("dataset").with_extension("jsonl");
+        fs::write(&path, b"{\"text\":\"hello\"}\n").unwrap();
+        state.note_dropped_paths(std::slice::from_ref(&path));
+        let intent = state
+            .register_dataset_path(&path, NativePathSourceKind::Drop)
+            .unwrap();
+        let grant = state
+            .sign_grant(&intent.path.token, NativePathOperation::DatasetImport)
+            .unwrap();
+        assert!(grant.display_label.ends_with(".jsonl"));
         let _ = fs::remove_file(path);
     }
 

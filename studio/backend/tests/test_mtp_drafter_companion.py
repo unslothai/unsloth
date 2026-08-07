@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Separate-file MTP drafter (Gemma 4) contracts.
+"""Separate-file drafter contracts: MTP (Gemma 4) and DSpark (DeepSeek V4 Flash).
 
 Pins: the drafter-path predicate and its two layering mirrors, Gemma
 effective-size extraction, companion classification in variant plans
@@ -36,6 +36,7 @@ from utils.models.model_config import (
     _is_mtp_drafter,
     _local_gguf_companion_search_root,
     detect_gguf_model,
+    detect_dspark_file,
     detect_mtp_file,
     extract_model_size_b,
     list_local_gguf_variants,
@@ -58,6 +59,31 @@ DRAFTER_CASES = [
     ("prompt-mtp-test.gguf", False),
     ("smtp/model.gguf", False),
     ("mtp-readme.txt", False),
+    # DSpark drafters (DeepSeek V4 Flash). Their BF16/Q8_0 tokens make them the
+    # two smallest, most pickable entries in a repo whose real quants are 87 GB+.
+    ("dspark/dspark-DeepSeek-V4-Flash-0731-BF16.gguf", True),
+    ("dspark/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf", True),
+    ("DSPARK/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf", True),
+    ("dspark/whatever.gguf", True),
+    ("dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf", True),
+    # Local scans can hand the predicate a Windows path.
+    ("dspark\\dspark-DeepSeek-V4-Flash-0731-BF16.gguf", True),
+    # Same drafter under its general.architecture name; the prefix carries it,
+    # e.g. ggml-org/Qwen3.6-27B-GGUF ships one at the repo root.
+    ("dflash/dflash-model-Q8_0.gguf", True),
+    ("dflash-model.gguf", True),
+    ("dflash-Qwen3.6-27B-BF16.gguf", True),
+    # ...but dflash is a family name, so the DIRECTORY is not a drafter marker:
+    # no published repo uses a dflash/ companion folder, while users do name a
+    # local folder after the family they downloaded.
+    ("dflash/Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf", False),
+    ("foo/dflash/bar.gguf", False),
+    # Real Hub filenames where dflash/dspark is the family name: each IS the model.
+    ("Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf", False),
+    ("qwen36-35b-a3b-dflash-Q8_0.gguf", False),
+    ("laguna-xs21-dflash-q4.gguf", False),
+    ("xdspark/model.gguf", False),
+    ("dspark/README.md", False),
 ]
 
 
@@ -163,6 +189,109 @@ def test_detect_mtp_file_finds_root_sibling(tmp_path):
 def test_detect_mtp_file_none_without_sibling(tmp_path):
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x")
     assert detect_mtp_file(str(tmp_path / "model-Q4_K_M.gguf")) is None
+
+
+def test_detect_dspark_file_prefers_matching_q8_sidecar(tmp_path):
+    weight = tmp_path / "DeepSeek-V4-Flash-0731-UD-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    folder = tmp_path / "dspark"
+    folder.mkdir()
+    q8 = folder / "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+    q8.write_bytes(b"q8")
+    (folder / "dspark-Other-Model-Q8_0.gguf").write_bytes(b"foreign")
+
+    assert detect_dspark_file(str(weight)) == str(q8.resolve())
+
+
+def test_detect_dspark_file_accepts_the_suffix_naming_scheme(tmp_path):
+    """``<model>-dspark.gguf`` pairs too, the same second scheme MTP accepts."""
+    weight = tmp_path / "model-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    folder = tmp_path / "dspark"
+    folder.mkdir()
+    sidecar = folder / "model-Q8_0-dspark.gguf"
+    sidecar.write_bytes(b"draft")
+
+    assert detect_dspark_file(str(weight)) == str(sidecar.resolve())
+
+
+def test_detect_dspark_file_rejects_a_weight_copy_in_the_dspark_folder(tmp_path):
+    """A published drafter NAME is required even inside ``dspark/``: a weight
+    copy parked there would otherwise launch as --model-draft."""
+    weight = tmp_path / "model-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    folder = tmp_path / "dspark"
+    folder.mkdir()
+    (folder / "model-Q8_0.gguf").write_bytes(b"a full weight, not a sidecar")
+
+    assert detect_dspark_file(str(weight)) is None
+
+
+def test_detect_dspark_file_does_not_cross_attach_a_sibling_family(tmp_path):
+    """A folder holding a model and its "-Lite" sibling must not pair across
+    them: the family has to prefix the weight at a non-alphanumeric boundary."""
+    base = tmp_path / "DeepSeek-V4-Flash-Q4_K_M.gguf"
+    base.write_bytes(b"target")
+    lite_sidecar = tmp_path / "dspark-DeepSeek-V4-Flash-Lite-Q8_0.gguf"
+    lite_sidecar.write_bytes(b"foreign")
+
+    assert detect_dspark_file(str(base)) is None
+
+    own = tmp_path / "dspark-DeepSeek-V4-Flash-Q8_0.gguf"
+    own.write_bytes(b"mine")
+    assert detect_dspark_file(str(base)) == str(own.resolve())
+
+
+def test_detect_dspark_file_skips_an_incomplete_split_set(tmp_path):
+    """A partial split would fail llama-server's draft startup and disable
+    speculation, so a complete lower-precision copy wins instead."""
+    weight = tmp_path / "model-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    (tmp_path / "dspark-model-Q8_0-00001-of-00002.gguf").write_bytes(b"x")
+    complete = tmp_path / "dspark-model-BF16.gguf"
+    complete.write_bytes(b"x")
+
+    assert detect_dspark_file(str(weight)) == str(complete.resolve())
+
+
+def test_detect_dspark_file_sums_shards_so_a_split_cannot_outrank_a_smaller_copy(tmp_path):
+    """Candidates are collapsed to shard 1, so size must be summed across the
+    set or a large split copy outranks a smaller single file at equal precision."""
+    weight = tmp_path / "model-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    folder = tmp_path / "dspark"
+    folder.mkdir()
+    for shard in (1, 2):
+        (folder / f"dspark-model-Q8_0-0000{shard}-of-00002.gguf").write_bytes(b"x" * 4000)
+    single = tmp_path / "dspark-model-Q8_0.gguf"
+    single.write_bytes(b"x" * 5000)
+
+    assert detect_dspark_file(str(weight)) == str(single.resolve())
+
+
+def test_detect_dspark_file_keeps_a_split_sidecar_on_its_snapshot_path(tmp_path):
+    """llama-server opens the sibling shards implicitly, and the blob target of
+    a cache symlink has no sibling shard names, so a split must NOT resolve."""
+    blobs = tmp_path / "blobs"
+    snapshot = tmp_path / "snapshots" / "abc"
+    blobs.mkdir()
+    snapshot.mkdir(parents = True)
+    weight = snapshot / "model-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+
+    first = snapshot / "dspark-model-Q8_0-00001-of-00002.gguf"
+    second = snapshot / "dspark-model-Q8_0-00002-of-00002.gguf"
+    (blobs / "sha_1").write_bytes(b"d" * 4096)
+    (blobs / "sha_2").write_bytes(b"d")
+    try:
+        first.symlink_to(blobs / "sha_1")
+        second.symlink_to(blobs / "sha_2")
+    except OSError:
+        pytest.skip("symlinks unavailable")
+
+    found = detect_dspark_file(str(weight), str(snapshot))
+    assert found == str(first)
+    assert (Path(found).parent / second.name).exists()
 
 
 def test_detect_gguf_model_rejects_drafter_file(tmp_path):
@@ -331,7 +460,7 @@ def test_native_companion_parent_accepts_root_and_mtp_subdir(tmp_path):
     nested_drafter.write_bytes(b"x")
 
     assert native_gguf_companion_parent_allowed(root_drafter, weight)
-    assert native_gguf_companion_parent_allowed(nested_drafter, weight, allow_mtp_subdir = True)
+    assert native_gguf_companion_parent_allowed(nested_drafter, weight, allowed_subdirs = ("mtp",))
 
 
 def test_native_companion_parent_rejects_other_nested_directory(tmp_path):
@@ -360,7 +489,7 @@ def test_native_companion_parent_rejects_mtp_symlink_escape(tmp_path):
         pytest.skip(f"symlinks unavailable: {exc}")
 
     assert not native_gguf_companion_parent_allowed(
-        model_dir / "MTP" / drafter.name, weight, allow_mtp_subdir = True
+        model_dir / "MTP" / drafter.name, weight, allowed_subdirs = ("mtp",)
     )
 
 
@@ -687,6 +816,123 @@ def test_download_mtp_online_skips_cache_reuse(tmp_path, monkeypatch):
     assert reached.get("hit") is True
 
 
+# ── DSpark sidecar fetch is gated on the binary that would launch it ──
+
+
+def _dspark_download_probe(
+    monkeypatch,
+    *,
+    supports_dspark,
+    cached = None,
+):
+    """Run _download_dspark against a stubbed capability probe and an optionally
+    cached sidecar; report whether the ~11 GB fetch (and even the repo listing)
+    was reached."""
+    import core.inference.llama_cpp as llama_cpp_module
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: {"supports_dspark": supports_dspark}),
+    )
+    monkeypatch.setattr(
+        llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: cached
+    )
+    reached = {}
+
+    def _fake_companion(
+        *,
+        hf_repo,
+        hf_token,
+        pick,
+        label,
+        cancel_event = None,
+        near_path = None,
+        outcome = None,
+    ):
+        reached["hit"] = True
+        if outcome is not None:
+            outcome["listed"] = True
+        return "/cache/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+
+    b = LlamaCppBackend()
+    b._download_companion_gguf = _fake_companion
+    got = b._download_dspark(
+        hf_repo = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        near_path = "/cache/snap/DeepSeek-V4-Flash-0731-Q4_K_M.gguf",
+        binary = "/fake/llama-server",
+    )
+    return got, reached.get("hit", False)
+
+
+def test_download_dspark_skips_the_fetch_when_the_binary_cannot_run_it(monkeypatch):
+    """The sidecar is ~11 GB and _build_speculative_flags drops DSpark outright on
+    a binary without --spec-type draft-dspark (every prebuilt in the known-broken
+    window included), so the capability must be checked BEFORE the download."""
+    got, reached = _dspark_download_probe(monkeypatch, supports_dspark = False)
+    assert got is None
+    assert reached is False
+
+
+def test_download_dspark_fetches_when_the_binary_supports_it(monkeypatch):
+    got, reached = _dspark_download_probe(monkeypatch, supports_dspark = True)
+    assert got == "/cache/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+    assert reached is True
+
+
+def test_download_dspark_records_whether_the_repo_publishes_a_sidecar(monkeypatch):
+    """The reuse check retries a failed fetch but must never retry a repo that
+    ships none, so the two "returned None" cases have to stay distinguishable."""
+    import core.inference.llama_cpp as llama_cpp_module
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: {"supports_dspark": True}),
+    )
+    monkeypatch.setattr(
+        llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: None
+    )
+
+    def _companion(listed):
+        def _fake(
+            *,
+            hf_repo,
+            hf_token,
+            pick,
+            label,
+            cancel_event = None,
+            near_path = None,
+            outcome = None,
+        ):
+            if outcome is not None:
+                outcome["listed"] = listed
+            return None
+
+        return _fake
+
+    for listed, expect_absent in ((False, True), (True, False)):
+        b = LlamaCppBackend()
+        b._download_companion_gguf = _companion(listed)
+        assert b._download_dspark(hf_repo = "org/repo", binary = "/fake/llama-server") is None
+        assert b._dspark_sidecar_absent is expect_absent
+
+
+def test_download_dspark_still_reports_a_cached_sidecar_it_cannot_run(monkeypatch):
+    """Skipping the fetch must not hide a sidecar already on disk: the route
+    rediscovers it on every Apply, so answering None would leave the reuse check
+    comparing it against the launched None and reloading the same drafter-free
+    server each time. _build_speculative_flags re-checks and still falls back."""
+    cached = "/cache/snap/dspark/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+    got, reached = _dspark_download_probe(monkeypatch, supports_dspark = False, cached = cached)
+    assert got == cached
+    assert reached is False
+
+
 def test_detect_mtp_file_returns_first_shard_of_split_subdir_drafter(tmp_path):
     """llama-server takes shard 1 as the model path, so a split MTP/ copy must
     not resolve to whichever shard happens to be smallest."""
@@ -880,3 +1126,211 @@ def test_companion_search_root_keeps_non_quant_directories(tmp_path):
         weight = directory / "model.gguf"
         weight.write_bytes(b"x")
         assert _local_gguf_companion_search_root(str(directory), str(weight)) == str(directory)
+
+
+# ── DSpark drafters (DeepSeek V4 Flash) ──────────────────────────────
+
+DEEPSEEK_SIBLINGS = [
+    _sib("UD-Q4_K_XL/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00002.gguf", 9_000, "q4-1"),
+    _sib("UD-Q4_K_XL/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00002-of-00002.gguf", 8_000, "q4-2"),
+    _sib("UD-IQ1_S/DeepSeek-V4-Flash-0731-UD-IQ1_S-00001-of-00002.gguf", 5_000, "iq1-1"),
+    _sib("dspark/dspark-DeepSeek-V4-Flash-0731-BF16.gguf", 1_100, "dspark-bf16"),
+    _sib("dspark/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf", 1_000, "dspark-q8"),
+]
+
+
+def test_dspark_drafters_are_not_quants_and_are_not_auto_fetched():
+    plans = build_gguf_variant_plans(DEEPSEEK_SIBLINGS)
+
+    # The drafters carry BF16/Q8_0 tokens; neither may become a quant. They were
+    # also the two smallest entries, so the fit heuristic used to promote them in
+    # a repo whose real quants are 87 GB+.
+    assert set(plans) == {"ud-q4_k_xl", "ud-iq1_s"}
+
+    # DSpark is opt-in and ~11 GB per file, so unlike the root mtp-*.gguf it must
+    # not be folded into every plan.
+    for plan in plans.values():
+        assert not any(name.startswith("dspark/") for name in plan.target_filenames)
+        assert plan.companion_hashes == frozenset()
+
+    q4 = plans["ud-q4_k_xl"]
+    assert q4.main_size_bytes == 17_000
+    assert q4.download_size_bytes == 17_000
+
+
+def test_a_root_dflash_drafter_is_not_a_quant():
+    """ggml-org/Qwen3.6-27B-GGUF ships a 3 GB dflash- drafter beside the real
+    54 GB BF16; merging them hands llama.cpp the drafter as the model."""
+    plans = build_gguf_variant_plans(
+        [
+            _sib("Qwen3.6-27B-BF16.gguf", 54_000, "bf16"),
+            _sib("dflash-Qwen3.6-27B-BF16.gguf", 3_000, "dflash"),
+        ]
+    )
+    assert set(plans) == {"bf16"}
+    assert plans["bf16"].main_filenames == frozenset({"Qwen3.6-27B-BF16.gguf"})
+    assert plans["bf16"].main_size_bytes == 54_000
+
+
+def test_gemma_mtp_is_still_auto_downloaded():
+    """Filtering only removes drafters from the quant list; the root mtp-*.gguf
+    is still fetched with every variant so MTP speculative decoding works."""
+    plans = build_gguf_variant_plans(GEMMA_SIBLINGS)
+    for plan in plans.values():
+        assert "mtp-gemma-4-12b-it.gguf" in plan.target_filenames
+
+
+def test_a_cached_dspark_drafter_is_never_launched_as_an_mtp_drafter(tmp_path, monkeypatch):
+    """_cached_repo_mtp_drafter uses the predicate inversely, to pick a drafter to
+    launch with --spec-type draft-mtp. DSpark needs draft-dspark, so broadening
+    that predicate must not widen what is launched."""
+    import core.inference.llama_cpp as llama_cpp_module
+
+    def _snapshot(files):
+        snap = tmp_path / f"snap{len(list(tmp_path.iterdir()))}"
+        for rel in files:
+            path = snap / rel
+            path.parent.mkdir(parents = True, exist_ok = True)
+            path.write_bytes(b"x")
+        return snap
+
+    dspark_only = _snapshot(["dspark/dspark-model-Q8_0.gguf", "model-Q4_K_M.gguf"])
+    with_mtp = _snapshot(["mtp-model.gguf", "model-Q4_K_M.gguf"])
+
+    backend = llama_cpp_module.LlamaCppBackend.__new__(llama_cpp_module.LlamaCppBackend)
+    snapshots: list[Path] = []
+    monkeypatch.setattr(
+        "utils.models.model_config._iter_hf_cache_snapshots",
+        lambda *a, **k: list(snapshots),
+    )
+
+    snapshots[:] = [dspark_only]
+    assert backend._cached_repo_mtp_drafter("some/repo") is None
+
+    snapshots[:] = [with_mtp, dspark_only]
+    found = backend._cached_repo_mtp_drafter("some/repo")
+    assert found is not None and found.endswith("mtp-model.gguf")
+
+
+def test_cached_dspark_lookup_prefers_q8_and_excludes_dflash(tmp_path, monkeypatch):
+    import core.inference.llama_cpp as llama_cpp_module
+
+    snap = tmp_path / "snapshot"
+    for rel in (
+        "dspark/dspark-model-BF16.gguf",
+        "dspark/dspark-model-Q8_0.gguf",
+        "dflash-model-Q8_0.gguf",
+    ):
+        path = snap / rel
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_bytes(b"x")
+    monkeypatch.setattr(
+        "utils.models.model_config._iter_hf_cache_snapshots",
+        lambda *a, **k: [snap],
+    )
+    backend = llama_cpp_module.LlamaCppBackend.__new__(llama_cpp_module.LlamaCppBackend)
+
+    assert backend._cached_repo_dspark_drafter("some/repo").endswith(
+        "dspark/dspark-model-Q8_0.gguf"
+    )
+
+
+# ── Deletion: only auto-fetched companions are reclaimed ─────────────
+
+
+def _cache_repo(tmp_path: Path, repo_id: str, names: list[str]):
+    """An HF cache repo: snapshot symlinks pointing at blobs."""
+    repo_dir = tmp_path / f"models--{repo_id.replace('/', '--')}"
+    snap = repo_dir / "snapshots" / "rev1"
+    blobs = repo_dir / "blobs"
+    snap.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    files = []
+    for index, name in enumerate(names):
+        blob = blobs / f"sha{index}"
+        blob.write_bytes(b"x" * 64)
+        link = snap / name
+        link.parent.mkdir(parents = True, exist_ok = True)
+        link.symlink_to(blob)
+        files.append(
+            SimpleNamespace(
+                file_name = name,
+                file_path = str(link),
+                blob_path = str(blob),
+                size_on_disk = 64,
+            )
+        )
+    return SimpleNamespace(
+        repo_id = repo_id,
+        repo_type = "model",
+        repo_path = repo_dir,
+        revisions = [SimpleNamespace(files = files, snapshot_path = str(snap))],
+    ), snap
+
+
+def test_deleting_one_of_several_variants_keeps_the_dspark_drafter(tmp_path):
+    """A sibling quant still uses it, so only the last variant may reclaim it."""
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(
+        tmp_path,
+        "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        [
+            "model-Q4_K_M.gguf",
+            "model-Q8_0.gguf",
+            "dspark/dspark-DeepSeek-V4-Flash-0731-BF16.gguf",
+        ],
+    )
+    _delete_gguf_variant_from_repos(
+        "unsloth/DeepSeek-V4-Flash-0731-GGUF", "Q4_K_M", [repo], None, root = tmp_path
+    )
+
+    assert not (snap / "model-Q4_K_M.gguf").is_symlink()
+    assert (snap / "dspark" / "dspark-DeepSeek-V4-Flash-0731-BF16.gguf").is_symlink()
+
+
+def test_deleting_the_last_variant_reclaims_an_opt_in_dspark_drafter(tmp_path):
+    """Studio downloads the sidecar itself once the user opts in, and companion
+    filtering keeps it out of the variant menu, so leaving it behind is an
+    invisible ~11 GB allocation. Nothing can launch it with no main GGUF left."""
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(
+        tmp_path,
+        "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        ["model-Q4_K_M.gguf", "dspark/dspark-DeepSeek-V4-Flash-0731-BF16.gguf"],
+    )
+    _delete_gguf_variant_from_repos(
+        "unsloth/DeepSeek-V4-Flash-0731-GGUF", "Q4_K_M", [repo], None, root = tmp_path
+    )
+
+    assert not (snap / "model-Q4_K_M.gguf").is_symlink()
+    assert not (snap / "dspark" / "dspark-DeepSeek-V4-Flash-0731-BF16.gguf").is_symlink()
+
+
+def test_deleting_the_last_variant_keeps_a_dflash_weight(tmp_path):
+    """Negative control: dflash is a family name a user picks for real weights,
+    and Studio never fetches it as a companion, so it is not reclaimable."""
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(
+        tmp_path, "org/Model-GGUF", ["model-Q4_K_M.gguf", "dflash-model-Q8_0.gguf"]
+    )
+    _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root = tmp_path)
+
+    assert not (snap / "model-Q4_K_M.gguf").is_symlink()
+    assert (snap / "dflash-model-Q8_0.gguf").is_symlink()
+
+
+def test_deleting_the_last_variant_still_reclaims_mtp_and_mmproj(tmp_path):
+    """Positive control: those ARE fetched with every variant, so they still go."""
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(
+        tmp_path, "org/Model-GGUF", ["model-Q4_K_M.gguf", "mtp-model.gguf", "mmproj-F16.gguf"]
+    )
+    _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root = tmp_path)
+
+    assert not (snap / "model-Q4_K_M.gguf").is_symlink()
+    assert not (snap / "mtp-model.gguf").is_symlink()
+    assert not (snap / "mmproj-F16.gguf").is_symlink()

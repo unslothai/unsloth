@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+import weakref
 from collections import OrderedDict
 from pathlib import Path
 from typing import NamedTuple, Optional
@@ -31,10 +32,10 @@ from hub.utils.gguf import (
     is_big_endian_gguf_path,
     list_empty_gguf_variant_dirs,
     list_gguf_variants,
-    list_gguf_variants_from_hf_cache,
     list_local_gguf_variants,
     list_partial_gguf_variants_from_state,
     pick_best_gguf,
+    select_gguf_cache_snapshot,
 )
 from hub.utils.paths import (
     is_local_path,
@@ -541,13 +542,52 @@ def _complete_quants_under(snapshot: str):
         return None
 
 
-async def get_gguf_variants_response(
+# One scan per identical request in flight. Aborting the HTTP request cannot stop the scan
+# already running in its thread, so the picker's Retry, and reopening a row, would each start
+# another against a filesystem that is not answering: measured 23 retries filling all 20
+# default-executor workers, starving unrelated offloaded work and holding up exit. Joining the
+# running scan costs at most its own duration in staleness, well inside the client's cache TTL.
+_VARIANTS_INFLIGHT: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+async def _shared_variants_scan(key: tuple, compute):
+    """*compute* in a thread, shared with any identical request already running."""
+    loop = asyncio.get_running_loop()
+    inflight = _VARIANTS_INFLIGHT.get(loop)
+    if inflight is None:
+        inflight = {}
+        _VARIANTS_INFLIGHT[loop] = inflight
+
+    task = inflight.get(key)
+    if task is None:
+        task = asyncio.ensure_future(asyncio.to_thread(compute))
+
+        def _release(finished: asyncio.Future) -> None:
+            inflight.pop(key, None)
+            if not finished.cancelled():
+                finished.exception()  # retrieved, so a caller-less failure stays quiet
+
+        inflight[key] = task
+        task.add_done_callback(_release)
+    # Shielded: one caller giving up must not cancel the scan the others are waiting on.
+    return await asyncio.shield(task)
+
+
+class VariantsAnswer(NamedTuple):
+    """The listing, plus the directory it came from so a caller reading metadata reads the
+    same copy. None means no single directory: the repo's caches answered."""
+
+    response: GgufVariantsResponse
+    context_source: Optional[str]
+
+
+async def get_gguf_variants_answer(
     repo_id: str,
     prefer_local_cache: bool = False,
     offline: bool = False,
     local_path: Optional[str] = None,
     hf_token: Optional[str] = None,
-):
+) -> VariantsAnswer:
     """
     List available GGUF quantization variants for a HuggingFace repo
     or a local directory (e.g. LM Studio model folder).
@@ -556,6 +596,9 @@ async def get_gguf_variants_response(
     with file sizes, whether the model supports vision, and the recommended
     default variant.
     """
+    # Set by whichever branch answers, and returned with the listing: the HF cache answers
+    # before local_path, so a caller cannot infer the copy from the request alone.
+    answered_from: list[Optional[str]] = [None]
 
     def _compute() -> GgufVariantsResponse:
         repo_cache_dir = (
@@ -663,6 +706,7 @@ async def get_gguf_variants_response(
         # Local directory path (e.g. LM Studio models) — scan filesystem
         if is_local_path(repo_id):
             variants, has_vision = list_local_gguf_variants(repo_id)
+            answered_from[0] = repo_id
             # The load id is this path, so a quant offered here has to resolve here.
             return _local_response(repo_id, variants, has_vision, _complete_quants_under(repo_id))
 
@@ -678,6 +722,7 @@ async def get_gguf_variants_response(
             variants, has_vision = list_local_gguf_variants(str(snapshot_scope))
             if not (variants or has_vision):
                 return None
+            answered_from[0] = str(snapshot_scope)
             return _with_state_partials(
                 _local_response(
                     repo_id, variants, has_vision, _complete_quants_under(str(snapshot_scope))
@@ -689,9 +734,12 @@ async def get_gguf_variants_response(
             scoped_response = _scoped_local_response()
             if scoped_response is not None:
                 return scoped_response
-            cached = list_gguf_variants_from_hf_cache(repo_id, root = hub_cache)
+            cached = select_gguf_cache_snapshot(repo_id, root = hub_cache)
             if cached is not None:
-                variants, has_vision, complete = cached
+                variants, has_vision, complete, snapshot = cached
+                # Name the answering snapshot: a repo-wide walk could read a different cache's
+                # context length, and a repo-dir walk a sibling revision's.
+                answered_from[0] = str(snapshot)
                 # The lister leaves torn quants in: they stay listed for management, but not ready.
                 return _with_state_partials(
                     _local_response(repo_id, variants, has_vision, complete)
@@ -699,6 +747,7 @@ async def get_gguf_variants_response(
             if local_path and is_local_path(local_path):
                 variants, has_vision = list_local_gguf_variants(local_path)
                 if variants or has_vision:
+                    answered_from[0] = local_path
                     # Same reason as the is_local_path branch above.
                     return _local_response(
                         repo_id, variants, has_vision, _complete_quants_under(local_path)
@@ -720,15 +769,19 @@ async def get_gguf_variants_response(
                     detail = "No cached GGUF variants available while offline.",
                 )
 
-        try:
-            variants, has_vision, siblings = list_gguf_variants(repo_id, hf_token = hf_token)
-        except Exception:
+        def _cache_fallback_response():
+            """Cached answer scoped to the cache this request names, or None.
+
+            The lister's own cache read is repo-wide, so redoing it here pins the listing and,
+            through ``answered_from``, its context metadata to the named copy.
+            """
             scoped_response = _scoped_local_response()
             if scoped_response is not None:
                 return scoped_response
-            cached = list_gguf_variants_from_hf_cache(repo_id, root = hub_cache)
+            cached = select_gguf_cache_snapshot(repo_id, root = hub_cache)
             if cached is not None:
-                variants, has_vision, complete = cached
+                variants, has_vision, complete, snapshot = cached
+                answered_from[0] = str(snapshot)
                 # Same reason as the local_only branch above, state partials included:
                 # an unreachable Hub is exactly when a resume has nowhere else to surface.
                 return _with_state_partials(
@@ -738,7 +791,22 @@ async def get_gguf_variants_response(
             if partial is not None:
                 variants, has_vision = partial
                 return _partial_local_response(repo_id, variants, has_vision)
+            return None
+
+        try:
+            variants, has_vision, siblings = list_gguf_variants(repo_id, hf_token = hf_token)
+        except Exception:
+            fallback = _cache_fallback_response()
+            if fallback is not None:
+                return fallback
             raise
+
+        # siblings is None only when the lister answered from its own repo-wide cache. Falling
+        # through is deliberate: readiness below still counts against this request's own cache.
+        if siblings is None:
+            fallback = _cache_fallback_response()
+            if fallback is not None:
+                return fallback
 
         filenames = [v.filename for v in variants]
         best = pick_best_gguf(filenames)
@@ -990,7 +1058,12 @@ async def get_gguf_variants_response(
             default_variant = default_variant,
         )
 
-    def _compute_with_cleanables() -> GgufVariantsResponse:
+    def _compute_with_cleanables() -> VariantsAnswer:
+        # Returned with the answer, not read from the closure afterwards: coalesced callers
+        # share one computation and must all see the copy it actually answered from.
+        return VariantsAnswer(_compute_response(), answered_from[0])
+
+    def _compute_response() -> GgufVariantsResponse:
         skip = is_local_path(repo_id) or not _is_valid_repo_id(repo_id)
         try:
             response = _compute()
@@ -1016,8 +1089,20 @@ async def get_gguf_variants_response(
             _repo_cache_dir_for_request(repo_id, local_path),
         )
 
+    from utils.hf_cache_settings import configured_cache_key
+
+    inflight_key = (
+        repo_id,
+        bool(prefer_local_cache),
+        bool(offline),
+        local_path or "",
+        hf_cache_scan.token_fingerprint(hf_token),
+        # Switching cache storage must start a fresh scan rather than join one that is
+        # stuck on the old volume.
+        configured_cache_key(),
+    )
     try:
-        return await asyncio.to_thread(_compute_with_cleanables)
+        return await _shared_variants_scan(inflight_key, _compute_with_cleanables)
     except HTTPException:
         raise
     except Exception as e:
@@ -1031,3 +1116,21 @@ async def get_gguf_variants_response(
             status_code = 500,
             detail = "Failed to list GGUF variants: " + scrubbed,
         )
+
+
+async def get_gguf_variants_response(
+    repo_id: str,
+    prefer_local_cache: bool = False,
+    offline: bool = False,
+    local_path: Optional[str] = None,
+    hf_token: Optional[str] = None,
+) -> GgufVariantsResponse:
+    """The listing alone, for callers that do not read metadata off the same copy."""
+    answer = await get_gguf_variants_answer(
+        repo_id,
+        prefer_local_cache = prefer_local_cache,
+        offline = offline,
+        local_path = local_path,
+        hf_token = hf_token,
+    )
+    return answer.response

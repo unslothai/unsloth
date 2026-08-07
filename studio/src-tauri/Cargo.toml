@@ -1,7 +1,13 @@
 [package]
 name = "unsloth-studio"
+# Placeholder, not the released app version. release-desktop.yml rewrites this
+# field (and the unsloth-studio entry in Cargo.lock) to the dispatched
+# studio_version before every release build, so editing it here changes nothing
+# that ships. tauri.conf.json declares no version of its own, which is why the
+# app version comes from this field rather than from there. The stale CalVer
+# below is also the wrong shape: release builds always write SemVer, e.g. 0.1.52-beta.
 version = "2026.4.8"
-description = "Unsloth Studio Desktop App"
+description = "Unsloth Desktop App"
 authors = ["Unsloth AI"]
 edition = "2021"
 

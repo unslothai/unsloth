@@ -29,13 +29,23 @@ on:
       - 'tests/studio/**'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/workflows/studio-ui-smoke.yml'
+      # Every server boot in this workflow shells out to that script, so an edit
+      # to it changes what this workflow actually runs.
+      - '.github/scripts/boot-studio-api-only.sh'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
   push:
     branches: [main, pip]
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Never on main: pushes land in bursts, so cancelling superseded runs there means
+  # a deterministic failure can go unreported for as long as the bursts continue.
+  # The collapsed-row break below sat on main for 14 hours behind four cancelled
+  # runs. On a PR branch cancelling is still what you want.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -71,6 +81,12 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
+      # Static reads, so it runs first and fails fast; nothing else runs it.
+      - name: Playwright locator contract (static)
+        run: |
+          python -m pip install --quiet 'pytest>=8'
+          python -m pytest tests/studio/test_stt_model_search_locator_contract.py -q
+
       - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
         id: cache-hf
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
@@ -92,21 +108,28 @@ jobs:
           bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }}
-        if: always() && steps.prime-hf.outcome == 'success'
+        # Save on main only. Caches created on a PR ref are scoped to that
+        # merge ref -- per GitHub's docs they "can only be restored by re-runs
+        # of the pull request" -- while every PR *can* restore from the default
+        # branch. So a PR-scoped save helps almost nothing and competes for the
+        # 10GB per-repo budget, and when that budget is exceeded GitHub evicts
+        # by least-recently-used, which deletes main's copies that all PRs share.
+        # This repo was measured at 33.3GB across 30 caches, 3.3x over, with the
+        # same 4.6GB model held four times on four different PR refs and no copy
+        # on main at all. That is the thrash loop: PR misses -> downloads ->
+        # saves its own copy -> evicts main's -> next PR misses.
+        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
           key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
       - name: Install Unsloth (--local, --no-torch)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
       - name: Install Playwright browsers
         run: |
@@ -116,11 +139,7 @@ jobs:
       - name: Reset auth + boot Unsloth
         run: |
           # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
-            > logs/studio.log 2>&1 &
-          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
 
       - name: Wait for /api/health
         # 180 s -- a cold runner with venv warm-up + lazy imports has
@@ -194,11 +213,8 @@ jobs:
       # warm install we already did) so this adds little wall time.
       - name: Reset auth + boot Unsloth for extra UI tests (port 18894)
         run: |
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18894 \
-            > logs/studio_extra.log 2>&1 &
-          echo "STUDIO_EXTRA_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port 18894 --log logs/studio_extra.log --pid-var STUDIO_EXTRA_PID
 
       - name: Wait for /api/health on 18894
         run: |
@@ -254,11 +270,8 @@ jobs:
       # (RAG embedder + llama.cpp probe) stay hidden from the picker.
       - name: Reset auth + boot Unsloth for model-config tests (port 18898)
         run: |
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18898 \
-            > logs/studio_modelcfg.log 2>&1 &
-          echo "STUDIO_MODELCFG_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port 18898 --log logs/studio_modelcfg.log --pid-var STUDIO_MODELCFG_PID
 
       - name: Wait for /api/health on 18898
         run: |
@@ -300,11 +313,8 @@ jobs:
       # earlier UI tests. No GGUF -- the bug surface is the composer.
       - name: Reset auth + boot Unsloth for IME / i18n tests (port 18896)
         run: |
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18896 \
-            > logs/studio_ime.log 2>&1 &
-          echo "STUDIO_IME_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port 18896 --log logs/studio_ime.log --pid-var STUDIO_IME_PID
 
       - name: Wait for /api/health on 18896
         run: |
@@ -366,4 +376,7 @@ jobs:
             logs/playwright_modelcfg
             logs/playwright_ime
             logs/studio-permissions-*.log
-          retention-days: 7
+          # 1 day, matching the repository-wide cap. A larger value here is
+          # silently clamped to that cap today, so stating 7 only invites the
+          # artifacts to re-inflate if the cap is ever raised.
+          retention-days: 1

@@ -299,11 +299,11 @@ def test_mtp_decode_probe_wired_under_tensor_parallel():
     guard = src[max(0, probe - 400) : probe]
     assert "self._tensor_parallel" in guard and "_spec_requested_mtp" in guard
     # A hard fault retries FA-off (keeps MTP) before flipping healthy so the
-    # shared MTP-drop fallback fires.
+    # shared drafter-drop fallback fires.
     after = src[probe : probe + 900]
     assert "_with_flash_attn_off" in after and "healthy = False" in after
-    fallback = src.find("if not healthy and _spec_requested_mtp")
-    assert 0 <= probe < fallback, "the probe must precede the MTP-drop fallback"
+    fallback = src.find("and (_spec_requested_mtp or _spec_requested_dspark)")
+    assert 0 <= probe < fallback, "the probe must precede the drafter-drop fallback"
 
 
 def test_probe_mtp_decode_returns_false_on_crash(monkeypatch):
@@ -457,7 +457,8 @@ def test_runtime_recovery_fires_for_user_env_mtp(monkeypatch):
 
 def test_runtime_recovery_strips_user_mtp_extra_args(monkeypatch):
     # A user --spec-type draft-mtp in extra_args must be neutralised on the reload
-    # (append a last-wins --spec-default) so MTP can't re-engage and loop.
+    # so MTP can't re-engage and loop. Appending --spec-default cannot do it:
+    # llama.cpp appends spec types rather than replacing, so the flag has to go.
     b = _recovery_backend()
     b._last_load_intent = replace(
         b._last_load_intent,
@@ -475,7 +476,8 @@ def test_runtime_recovery_strips_user_mtp_extra_args(monkeypatch):
     assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
     assert done.wait(timeout = 5)
     assert captured["speculative_type"] == "off"
-    assert captured["extra_args"][-1] == "--spec-default"
+    assert "--spec-type" not in captured["extra_args"]
+    assert "draft-mtp" not in captured["extra_args"]
 
 
 def test_runtime_recovery_restores_requested_mode(monkeypatch):

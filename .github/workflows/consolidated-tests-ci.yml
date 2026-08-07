@@ -342,6 +342,16 @@ jobs:
         run: |
           python -m pytest -v --tb=short tests/test_callback_signature_drift.py
 
+      - name: python floor compatibility (HARD GATE)
+        # pyproject declares requires-python >=3.9 but every job here pins 3.12,
+        # so nothing ran the floor: registry.py grew a dataclass field annotated
+        # `list[QuantType] | dict[...]`, which evaluates at class creation and is
+        # a TypeError below 3.10. Static AST check, no torch and no network. It
+        # reads the floor from pyproject, so raising requires-python relaxes it
+        # rather than making it lie.
+        run: |
+          python -m pytest -v --tb=short tests/test_python39_compatibility.py
+
       - name: generation correctness guards (HARD GATE)
         # Deterministic CPU guards, each validated to fail on its pre-fix code:
         # leftpad = batched left-padded generation (#1066/#3699, fixed by
@@ -352,6 +362,34 @@ jobs:
           python -m pytest -v --tb=short \
             tests/utils/test_prepare_inputs_leftpad.py \
             tests/utils/test_rope_scaling_drift.py
+
+      - name: dataset_num_proc worker bounds (HARD GATE)
+        # Guards for #2693: Dataset.map() dying with "One of the subprocesses
+        # has abruptly died", which is the OOM killer reaping tokenizer workers
+        # that nothing bounded. These assert the policy that replaced the
+        # unbounded cpu_count + 4 -> 64 heuristic -- the memory clamp, the
+        # 1 -> None normalisation (datasets >= 4.1 builds a Pool(1)), the
+        # non-fork and macOS vetoes, and the UNSLOTH_DATASET_NUM_PROC hatch.
+        #
+        # Their own step rather than Bucket-A: they need no accelerator and no
+        # model, they import the module standalone by path (so they cannot be
+        # masked by unrelated import breakage), and their assertions are pinned
+        # against simulated CPU counts and memory so the result is identical on
+        # a 4-vCPU runner and a 192-core box.
+        #
+        # The Studio file runs here rather than in studio-backend-ci, which
+        # installs studio.txt and so has no unsloth_zoo at all. Note the policy
+        # module is not on unsloth_zoo main either until the companion PR lands,
+        # and this job clones UNSLOTH_ZOO_REF (main by default) -- so those cases
+        # reach the policy through _shared_policy, which falls back to this
+        # repo's own copy. Skipping instead would leave the 14 cases that matter
+        # green while the wiring they guard was inert.
+        run: |
+          python -m pytest -v --tb=short \
+            tests/utils/test_dataset_num_proc.py \
+            tests/utils/test_train_on_responses_only_num_proc.py
+          PYTHONPATH=studio/backend python -m pytest -v --tb=short \
+            studio/backend/tests/test_dataset_map_num_proc.py
 
       - name: unsloth Bucket-A — CPU tests not in Repo tests (CPU)
         # CPU tests across 6 files under tests/saving/, tests/utils/, tests/python/
@@ -2136,6 +2174,7 @@ jobs:
           echo "::endgroup::"
           echo "Consolidated job done. Coverage:"
           echo "  - 17 unsloth Bucket-A tests under tests/saving/ + tests/utils/"
+          echo "  - 168 dataset_num_proc worker-bound guards (#2693)"
           echo "  - unsloth_zoo @ ${UNSLOTH_ZOO_REF} pytest tests/ (5 GPU cases deselected)"
           echo "  - unsloth_zoo.compiler.test_apply_fused_lm_head"
 

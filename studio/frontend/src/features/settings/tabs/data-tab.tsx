@@ -67,6 +67,13 @@ import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { UploadedFilesView } from "../components/uploaded-files-dialog";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+import {
+  type FineTuneAction,
+  useSettingsPanelPrefsStore,
+} from "../stores/settings-panel-prefs-store";
+
+// display order, and the guard against a persisted action this build dropped.
+const FINE_TUNE_ACTIONS: FineTuneAction[] = ["export", "train", "recipes"];
 
 export function DataTab() {
   const t = useT();
@@ -97,18 +104,20 @@ export function DataTab() {
   // the Train tab would upload it and then strand the user; gate the action
   // the same way the sidebar gates Train.
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
-  const [fineTuneAction, setFineTuneAction] = useState<
-    "train" | "recipes" | "export"
-  >(chatOnly ? "export" : "train");
+  const storedFineTuneAction = useSettingsPanelPrefsStore(
+    (s) => s.fineTuneAction,
+  );
+  const setFineTuneAction = useSettingsPanelPrefsStore(
+    (s) => s.setFineTuneAction,
+  );
+  const restoredAction = FINE_TUNE_ACTIONS.includes(storedFineTuneAction)
+    ? storedFineTuneAction
+    : "export";
+  // derived, not corrected: a stored "train" returns when chat-only flips off.
+  const fineTuneAction =
+    chatOnly && restoredAction === "train" ? "export" : restoredAction;
   // Chat Completions (OpenAI messages) is the only export format we ship.
   const fineTuneFormat: FineTuneFormat = "openai";
-
-  // The MLX self-heal can flip chat-only while the dialog is open.
-  useEffect(() => {
-    if (chatOnly) {
-      setFineTuneAction((a) => (a === "train" ? "export" : a));
-    }
-  }, [chatOnly]);
   // Requests can arrive after Data is already mounted (for example from the
   // archive-all toast), so always switch before consuming the flag.
   useEffect(() => {
@@ -152,7 +161,7 @@ export function DataTab() {
       await downloadChatExport();
     } catch (error) {
       if (!isDownloadCancelled(error)) {
-        toast.error("Could not export chats", {
+        toast.error(t("settings.data.exportFailed"), {
           description: error instanceof Error ? error.message : String(error),
         });
       }
@@ -368,7 +377,7 @@ export function DataTab() {
           <button
             type="button"
             onClick={() => setSubpage("main")}
-            aria-label={`Back to ${t("settings.data.title")}`}
+            aria-label={t("settings.data.backToData")}
             className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
             <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
@@ -421,7 +430,7 @@ export function DataTab() {
           <button
             type="button"
             onClick={() => setSubpage("main")}
-            aria-label={`Back to ${t("settings.data.title")}`}
+            aria-label={t("settings.data.backToData")}
             className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
             <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
@@ -480,7 +489,7 @@ export function DataTab() {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
-                {(["export", "train", "recipes"] as const).map((action) => (
+                {FINE_TUNE_ACTIONS.map((action) => (
                   <DropdownMenuItem
                     key={action}
                     disabled={action === "train" && chatOnly}

@@ -531,7 +531,7 @@ pub(crate) fn resolve_backend_binary() -> Result<std::path::PathBuf, String> {
     }
 
     find_unsloth_binary()
-        .ok_or_else(|| "Unsloth binary not found. Please install Unsloth Studio first.".to_string())
+        .ok_or_else(|| "Unsloth binary not found. Please install Unsloth first.".to_string())
 }
 
 fn backend_args(port: u16) -> Vec<String> {
@@ -598,17 +598,6 @@ pub fn start_backend(
             crate::desktop_backend_owner::OWNER_PID_ENV,
             std::process::id().to_string(),
         );
-    }
-
-    // AppImage sets LD_LIBRARY_PATH to its bundled libs, which breaks the spawned
-    // Python process (wrong libpython/libz → "No module named encodings").
-    // Only clear when running inside an AppImage — native package installs may
-    // need these env vars for custom CUDA or conda paths.
-    #[cfg(target_os = "linux")]
-    if std::env::var_os("APPIMAGE").is_some() {
-        cmd.env_remove("LD_LIBRARY_PATH");
-        cmd.env_remove("PYTHONHOME");
-        cmd.env_remove("PYTHONPATH");
     }
 
     // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;

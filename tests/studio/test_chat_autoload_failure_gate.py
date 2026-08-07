@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import subprocess
+import re
 import tempfile
 import textwrap
 from pathlib import Path
@@ -64,6 +65,24 @@ export function setScenario(scenario: Scenario) {
 
 const GPU_LAYERS_AUTO = -1;
 
+// The sliced region now includes the queue-specific empty-model resolver and
+// visible-state snapshot helpers, so their imported contracts must exist even
+// though these scenarios call autoLoadSmallestModel directly.
+async function getInferenceStatus() {
+  return { active_model: null };
+}
+function isExternalModelId(value: unknown) {
+  return typeof value === "string" && value.startsWith("external::");
+}
+function resolveInferenceCheckpointId(status: any) {
+  return status.active_model
+    ? (status.model_identifier ?? status.active_model)
+    : null;
+}
+function snapshotQueuedChatRunSettings(state: any) {
+  return { ...state, params: { ...state.params } };
+}
+
 function makeStore(): any {
   const state: any = {
     hfToken: null,
@@ -81,6 +100,54 @@ function makeStore(): any {
   return state;
 }
 let STORE: any = makeStore();
+
+// Imported by the sliced region from ../hooks/use-chat-model-runtime, so the
+// harness has to supply it or the call is a bare ReferenceError -- which the
+// retry loop below catches and scores as a failed load, making a healthy model
+// look broken. Mirrors the real upsert closely enough for these scenarios: the
+// tests assert on which models are loaded, not on the capability fields.
+// Both sit behind `candidate.kind === "gguf" && (selectedGpuIds != null ||
+// tensorParallel)`, which no scenario here sets, so they are unreached today --
+// but they are the same landmine as syncModelCapabilities was, waiting for the
+// first scenario that turns a GPU option on. Stubbed so the harness is complete
+// rather than complete-by-luck.
+async function prepareHfTokenForUse(token: any) {
+  return { proceed: true, token };
+}
+async function fetchGgufStagedMetadata(_req: any) {
+  // camelCase, matching chat-api.ts: the call site reads `.isDiffusion`, so a
+  // snake_case key here would be silently undefined.
+  return {
+    contextLength: null,
+    layerCount: null,
+    moeLayerCount: null,
+    isDiffusion: false,
+    diffusionUnknown: false,
+  };
+}
+
+function syncModelCapabilities(modelId: string, resp: any) {
+  const store = useChatRuntimeStore.getState();
+  const models = store.models;
+  const synced = {
+    isVision: Boolean(resp.is_vision),
+    isGguf: Boolean(resp.is_gguf),
+    isAudio: Boolean(resp.is_audio),
+    audioType: resp.audio_type ?? null,
+    hasAudioInput: Boolean(resp.has_audio_input),
+  };
+  const idx = models.findIndex((m: any) => m.id === modelId);
+  if (idx === -1) {
+    store.setModels([
+      ...models,
+      { id: modelId, name: resp.display_name || modelId, isLora: Boolean(resp.is_lora), ...synced },
+    ]);
+  } else {
+    const next = [...models];
+    next[idx] = { ...next[idx], ...synced };
+    store.setModels(next);
+  }
+}
 const useChatRuntimeStore = {
   getState: () => STORE,
   setState: (_p: any) => {},
@@ -234,6 +301,57 @@ def _build_harness(run_dir: Path):
     ), "could not locate the auto-load region in chat-adapter.ts"
     body = "\n".join(lines[start:end])
     assert "async function autoLoadSmallestModel" in body
+    # Anything the adapter imports and the sliced region uses has to exist in the
+    # preamble. Otherwise it is a bare ReferenceError at runtime, the retry loop
+    # catches it and scores it as a failed load, and the scenario fails as a
+    # wrong-model assertion that says nothing about the real cause. That is what
+    # #7699 did by adding a syncModelCapabilities call here.
+    imported = set()
+    source = "\n".join(lines)
+    # Default and namespace forms bind a name too, and it is the same
+    # ReferenceError when the harness lacks it. chat-adapter.ts has none today,
+    # so this is for the first one somebody adds.
+    for match in re.finditer(
+        r"^import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s*(?:,|from)", source, re.M
+    ):
+        imported.add(match.group(1))
+    # The optional prefix is the mixed form, `import def, { named } from`, whose
+    # braces a `^import\s+\{` anchor would skip entirely.
+    for match in re.finditer(
+        r"^import\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]*)\}\s+from", source, re.M
+    ):
+        for spec in match.group(1).split(","):
+            spec = spec.strip()
+            # `import { type Foo }` is erased at runtime, so it can never be a
+            # ReferenceError and must not be demanded of the harness.
+            if not spec or spec.startswith("type "):
+                continue
+            name = spec.split(" as ")[-1].strip()
+            if name:
+                imported.add(name)
+    # Any mention, not just a call. useChatRuntimeStore, toast and GPU_LAYERS_AUTO
+    # are all used in this region without a following paren, and each would be the
+    # same ReferenceError; they pass today only because the preamble happens to
+    # define them. Comments are stripped first so a name discussed in prose does
+    # not count as a use.
+    code = re.sub(r"/\*.*?\*/", "", body, flags = re.S)
+    code = re.sub(r"//[^\n]*", "", code)
+    missing = sorted(
+        name
+        for name in imported
+        if re.search(rf"\b{re.escape(name)}\b", code)
+        and not re.search(
+            rf"^(?:export\s+)?(?:async\s+)?"
+            rf"(?:function\s+|const\s+|let\s+|var\s+|class\s+){re.escape(name)}\b",
+            PREAMBLE,
+            re.M,
+        )
+    )
+    assert not missing, (
+        f"the sliced region uses {missing}, imported by chat-adapter.ts but absent "
+        "from this harness. Add a stub to PREAMBLE, or these scenarios will fail as "
+        "wrong-model assertions rather than saying what is actually missing."
+    )
     (run_dir / "harness.ts").write_text(
         "// @ts-nocheck\n" + PREAMBLE + "\n" + body + "\nexport { autoLoadSmallestModel };\n",
         encoding = "utf-8",

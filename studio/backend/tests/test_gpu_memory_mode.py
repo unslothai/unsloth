@@ -943,7 +943,9 @@ def test_start_diffusion_server_resets_tensor_parallel():
     # diffusion re-Apply reloads against stale tensor-parallel state.
     src = inspect.getsource(llama_cpp_module.LlamaCppBackend._start_diffusion_server)
     assert "self._tensor_parallel = False" in src
-    assert "self._requested_gpu_ids = list(self._gpu_ids) if self._gpu_ids else None" in src
+    # Still the collapsed single-device pick, but taken from the request rather than the
+    # effective pin, which a forced-CPU launch on virtualised Metal clears.
+    assert "self._requested_gpu_ids = [sorted(gpu_ids)[0]] if gpu_ids else None" in src
 
 
 # ── Manual tensor split: child enumeration pinned to the picker's order ──────
@@ -1343,4 +1345,104 @@ def test_cmd_companion_ignores_cpu_forced_drafter():
     assert has(cmd, {}) is False
     # mmproj still counts even alongside a CPU drafter.
     cmd = ["llama-server", "-md", "d.gguf", "--spec-draft-ngl", "0", "--mmproj", "p.gguf"]
+    assert has(cmd, {}) is True
+
+
+# ── Zero-offload loads and the GPU arbiter ───────────────────────────
+
+
+@pytest.fixture
+def not_vulkan(monkeypatch):
+    # The Vulkan probe reads the installed prebuilt; pin it so these assert the predicate.
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda *a, **k: False))
+
+
+def test_zero_vram_chat_load_only_for_a_deliberate_cpu_only_offload(not_vulkan):
+    # Manual + gpu_layers=0 is the one shape that launches with the GPUs hidden from the child, so it is the one shape allowed
+    # to skip the GPU arbiter. Auto (or any pinned layer count) puts the model on the GPU and must still evict a pipeline.
+    zero = llama_cpp_module.zero_vram_chat_load
+    assert zero("manual", 0) is True
+    assert zero("auto", 0) is False
+    assert zero("manual", 1) is False
+    assert zero("manual", -1) is False
+
+
+def test_zero_vram_chat_load_refuses_every_gpu_companion(not_vulkan):
+    # The launch-time mask keeps the GPUs visible for a device pin, tensor mode, an mmproj or a drafter, so those loads DO hold
+    # VRAM. --mmproj and --model-draft are added by the backend, so their intent arrives as flags.
+    zero = llama_cpp_module.zero_vram_chat_load
+    assert zero("manual", 0, ["--device", "CUDA0"]) is False
+    assert zero("manual", 0, ["-dev", "CUDA0"]) is False
+    assert zero("manual", 0, ["--split-mode", "tensor"]) is False
+    assert zero("manual", 0, ["--model-draft", "/tmp/draft.gguf"]) is False
+    assert zero("manual", 0, [], True) is False
+    assert zero("manual", 0, [], False, "model") is False
+    # A CPU-pinned device and a CPU-forced drafter keep it zero-VRAM.
+    assert zero("manual", 0, ["--device", "none"]) is True
+    assert zero("manual", 0, ["--model-draft", "/tmp/d.gguf", "--spec-draft-ngl", "0"]) is True
+
+
+def test_zero_vram_chat_load_exempts_disabled_speculation(not_vulkan):
+    # "off" is a canonical mode the UI persists and the resolver emits no drafter for, so a CPU-only load carrying it holds no
+    # VRAM either. Legacy spellings canonicalize the same way, while every mode that MAY resolve to a drafter stays GPU-bearing.
+    zero = llama_cpp_module.zero_vram_chat_load
+    assert zero("manual", 0, [], False, "off") is True
+    assert zero("manual", 0, [], False, " OFF ") is True
+    assert zero("manual", 0, [], False, "") is True
+    assert zero("manual", 0, [], False, "auto") is False
+    assert zero("manual", 0, [], False, "mtp") is False
+    assert zero("manual", 0, [], False, "default") is False
+
+
+def test_zero_vram_chat_load_is_skipped_on_vulkan(monkeypatch):
+    # Vulkan builds are exempt from the CPU-only mask at launch, so the arbiter gate must match.
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda *a, **k: True))
+    assert llama_cpp_module.zero_vram_chat_load("manual", 0) is False
+
+
+def test_holds_no_vram_needs_the_launch_to_have_confirmed_it():
+    # The property reports the LAUNCHED server, so it follows _gpu_offload_active: True and None both keep the normal arbiter path.
+    backend = LlamaCppBackend()
+    backend._gpu_memory_mode = "manual"
+    backend._gpu_layers = 0
+    backend._gpu_offload_active = False
+    assert backend.holds_no_vram is True
+    backend._gpu_offload_active = True
+    assert backend.holds_no_vram is False
+    backend._gpu_offload_active = None
+    assert backend.holds_no_vram is False
+    backend._gpu_offload_active = False
+    backend._gpu_layers = 20
+    assert backend.holds_no_vram is False
+    backend._gpu_layers = 0
+    backend._gpu_memory_mode = "auto"
+    assert backend.holds_no_vram is False
+
+
+def test_a_cpu_only_chat_load_does_not_take_the_gpu_arbiter():
+    # A load that needs no VRAM must not evict a resident Images/Video pipeline, nor leave CHAT recorded as owner (the next GPU
+    # workload would unload it for nothing). The in-flight marker still goes up, and the ownership recheck is gated on the same flag.
+    route_src = (Path(_BACKEND_DIR) / "routes" / "inference.py").read_text(encoding = "utf-8")
+    load_impl = route_src[route_src.index("async def _load_model_impl") :]
+    assert "chat_load_needs_gpu = not (" in load_impl
+    gate = load_impl.index("chat_load_needs_gpu = not (")
+    acquire = load_impl.index("if chat_load_needs_gpu:", gate)
+    # The stale CHAT claim is dropped only AFTER the load: this one may be replacing a GPU-backed chat model, and releasing
+    # earlier would let an image/video load allocate alongside the model not yet unloaded.
+    release = load_impl.index("await asyncio.to_thread(release, CHAT)", acquire)
+    assert load_impl.index("if not chat_load_needs_gpu:", acquire) < release
+    assert load_impl.index("success = await load_with_tensor_fallback(", acquire) < release
+    assert "if chat_load_needs_gpu and current_owner() != CHAT:" in load_impl
+    # The already-loaded fast path re-asserts ownership too; same exemption.
+    assert "if not llama_backend.holds_no_vram:" in load_impl
+
+
+def test_cmd_companion_ignores_a_projector_pinned_off_the_gpu():
+    # --no-mmproj-offload clears mmproj_use_gpu and clip.cpp gates the whole GPU
+    # backend on it, so a CPU-pinned vision server must not look GPU resident.
+    has = LlamaCppBackend._cmd_has_gpu_companion
+    cmd = ["llama-server", "--mmproj", "p.gguf", "--no-mmproj-offload"]
+    assert has(cmd, {}) is False
+    # llama.cpp assigns rather than accumulates for this one, so the last flag wins.
+    cmd = ["llama-server", "--mmproj", "p.gguf", "--no-mmproj-offload", "--mmproj-offload"]
     assert has(cmd, {}) is True
