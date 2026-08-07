@@ -114,10 +114,23 @@ Environment:
     function _RemoveRootRecordingDb {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
+        # Anchor a relative reparse-point target to the link's own parent. Same rule as
+        # the studio.db link below: assigned raw, Join-Path would resolve it from the
+        # uninstaller's working directory and the database test would read false.
+        $resolveTarget = {
+            param($Item, $Fallback)
+            if (-not $Item -or -not $Item.Target) { return $Fallback }
+            $t = @($Item.Target)[0]
+            if ([string]::IsNullOrWhiteSpace($t)) { return $Fallback }
+            if (-not [System.IO.Path]::IsPathRooted($t)) {
+                $t = Join-Path (Split-Path -LiteralPath $Item.FullName -Parent) $t
+            }
+            return $t
+        }
         $real = $Path
         try {
             $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
-            if ($item -and $item.Target) { $real = @($item.Target)[0] }
+            $real = & $resolveTarget $item $Path
         } catch { }
         # The database itself can be a reparse point out of the tree, the same shape as
         # the root: the delete unlinks the link and the target survives.
@@ -126,16 +139,7 @@ Environment:
         if ($hadDb) {
             try {
                 $dbItem = Get-Item -LiteralPath $dbPath -Force -ErrorAction SilentlyContinue
-                if ($dbItem -and $dbItem.Target) {
-                    $t = @($dbItem.Target)[0]
-                    # Target can be relative ("..\data\studio.db"). Anchor it to the
-                    # link's own directory, or the post-delete Test-Path resolves it
-                    # against the uninstaller's working directory and always reads absent.
-                    if (-not [System.IO.Path]::IsPathRooted($t)) {
-                        $t = Join-Path (Split-Path -LiteralPath $dbItem.FullName -Parent) $t
-                    }
-                    $dbPath = $t
-                }
+                $dbPath = & $resolveTarget $dbItem $dbPath
             } catch { }
         }
         _RemovePath $Path
