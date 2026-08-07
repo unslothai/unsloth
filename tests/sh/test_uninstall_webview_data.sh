@@ -443,6 +443,35 @@ case "$_out" in
         PASS=$((PASS+1)) ;;
 esac
 
+# ── 3j5b. Same, with `readlink -f` unavailable and a RELATIVE link target. BSD readlink
+# only gained -f in macOS 12.3, so the GNU form fails on older macOS; the resolution has
+# to work from the raw link text. Stub rejects -f the way BSD readlink does. ──
+H=$(new_home)
+mkdir -p "$H/.unsloth/studio/unsloth_studio" "$H/dbdir"
+: > "$H/.unsloth/studio/unsloth_studio/.unsloth-studio-owned"
+: > "$H/dbdir/studio.db"
+ln -s "../../dbdir/studio.db" "$H/.unsloth/studio/studio.db"
+_REAL_READLINK=$(command -v readlink)
+cat > "$STUB_BIN/readlink" <<EOF
+#!/bin/sh
+for _a in "\$@"; do
+    [ "\$_a" = "-f" ] && { echo "readlink: illegal option -- f" >&2; exit 1; }
+done
+exec "$_REAL_READLINK" "\$@"
+EOF
+chmod +x "$STUB_BIN/readlink"
+_out=$(run_uninstall_out "$H" Linux)
+rm -f "$STUB_BIN/readlink"
+assert_present "linux: relative symlinked studio.db survived without readlink -f" \
+    "$H/dbdir/studio.db"
+case "$_out" in
+    *"studio.db it found"*)
+        echo "  FAIL: linux: claimed the database is gone (no readlink -f, relative link)"
+        FAIL=$((FAIL+1)) ;;
+    *)  echo "  PASS: linux: resolves a relative link without readlink -f"
+        PASS=$((PASS+1)) ;;
+esac
+
 # ── 3j6. Provider API keys are NOT in studio.db. providers_db.py: "API keys are NOT
 # stored here: they live only in the browser (localStorage) and are sent encrypted
 # per-request." install.sh runs with TAURI_MODE=false, so the default install serves the

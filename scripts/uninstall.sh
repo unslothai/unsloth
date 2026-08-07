@@ -293,9 +293,21 @@ _remove_root_recording_db() {
         _rrd_had_db=1
         # The database itself can be a symlink out of the tree. -f follows it, but the
         # rm below unlinks the link and leaves the target, so track where the bytes are.
+        # readlink without -f: BSD readlink only gained -f in macOS 12.3, and there the
+        # GNU form fails, leaves the link path in place and the claim goes wrong again.
+        # The raw link text plus cd -P on its directory is portable to both.
         if [ -L "$_rrd_db" ]; then
-            _rrd_db_target=$(readlink -f "$_rrd_db" 2>/dev/null || true)
-            [ -n "$_rrd_db_target" ] && _rrd_db="$_rrd_db_target"
+            _rrd_link=$(readlink "$_rrd_db" 2>/dev/null || true)
+            if [ -n "$_rrd_link" ]; then
+                case "$_rrd_link" in
+                    /*) ;;
+                    *) _rrd_link="$(dirname "$_rrd_db")/$_rrd_link" ;;
+                esac
+                # shellcheck disable=SC1007
+                _rrd_ldir=$(CDPATH= cd -P -- "$(dirname "$_rrd_link")" 2>/dev/null && pwd -P) \
+                    || _rrd_ldir=""
+                [ -n "$_rrd_ldir" ] && _rrd_db="$_rrd_ldir/$(basename "$_rrd_link")"
+            fi
         fi
     fi
     _remove_path "$_rrd_root"

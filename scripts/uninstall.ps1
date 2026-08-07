@@ -119,10 +119,19 @@ Environment:
             $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
             if ($item -and $item.Target) { $real = @($item.Target)[0] }
         } catch { }
-        $hadDb = Test-Path -LiteralPath (Join-Path $real "studio.db") -PathType Leaf
+        # The database itself can be a reparse point out of the tree, the same shape as
+        # the root: the delete unlinks the link and the target survives.
+        $dbPath = Join-Path $real "studio.db"
+        $hadDb = Test-Path -LiteralPath $dbPath -PathType Leaf
+        if ($hadDb) {
+            try {
+                $dbItem = Get-Item -LiteralPath $dbPath -Force -ErrorAction SilentlyContinue
+                if ($dbItem -and $dbItem.Target) { $dbPath = @($dbItem.Target)[0] }
+            } catch { }
+        }
         _RemovePath $Path
         if ($hadDb) {
-            if (Test-Path -LiteralPath (Join-Path $real "studio.db") -PathType Leaf) {
+            if (Test-Path -LiteralPath $dbPath -PathType Leaf) {
                 $script:RemoveFailed = $true
             } else {
                 $script:StudioDbRemoved = $true
