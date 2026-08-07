@@ -369,7 +369,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
             break
         try:
             if not child.is_dir():
-                if child.suffix == ".gguf" and child.is_file():
+                if child.suffix.lower() == ".gguf" and child.is_file():
                     try:
                         updated_at = child.stat().st_mtime
                     except OSError:
@@ -422,7 +422,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                                 updated_at = updated_at,
                             )
                         )
-                    elif model_dir.suffix == ".gguf" and model_dir.is_file():
+                    elif model_dir.suffix.lower() == ".gguf" and model_dir.is_file():
                         try:
                             updated_at = model_dir.stat().st_mtime
                         except OSError:
@@ -626,6 +626,10 @@ def _promote_to_custom_source(model: LocalModelInfo) -> LocalModelInfo:
                 "custom",
                 partial = model.partial,
                 requires_variant = model.capabilities.requires_variant,
+                # Rebuilding from the format alone restored can_chat on rows the
+                # classifier had ruled out. The format is unchanged here, so
+                # carrying the old verdict through is idempotent.
+                can_chat_override = model.capabilities.can_chat,
             ),
         }
     )
