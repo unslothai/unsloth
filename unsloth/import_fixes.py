@@ -2464,6 +2464,19 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
     "solar_open": "qwen2_moe",
 }
 
+# MoE-named model types whose conversion family is NOT one of the two fused ones,
+# so peft's `_convert_peft_config_moe` finds no `_MOE_TARGET_MODULE_MAPPING` entry
+# and returns without a rewrite. The substring hint below raised for all three
+# purely on the name, turning a load that works into a hard error. Every one is a
+# shipping model: `qwen3_5_moe_text` converts as `qwen3_5_text`, and both Granite
+# MoE variants as `granitemoe`. Checked before the hint, never instead of the
+# snapshot above, so a genuinely fused type still refuses.
+_PEFT_MOE_NAMED_NOT_FUSED = frozenset((
+    "granitemoehybrid",
+    "granitemoeshared",
+    "qwen3_5_moe_text",
+))
+
 # How many of those pairs a candidate map has to agree with before we believe it
 # is the conversion map under a new name. Three, so a coincidence does not pass
 # and a version that has renamed or dropped a handful of model types still does.
@@ -2545,6 +2558,8 @@ class _UnavailableConversionPatternMap(dict):
         name = str(key).lower()
         if name in _PEFT_MOE_CONVERSION_PATTERNS:
             return True
+        if name in _PEFT_MOE_NAMED_NOT_FUSED:
+            return False
         return any(hint in name for hint in self._MOE_HINTS)
 
     def _answer(self, key, default):

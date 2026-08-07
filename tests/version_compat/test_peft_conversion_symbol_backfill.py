@@ -1032,3 +1032,86 @@ def test_a_relative_import_above_the_package_root_is_dropped(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     assert _transformers_imports(_peft_converter_source()) == {"transformers.here": {"Kept"}}
+
+
+def test_a_moe_named_model_that_is_not_fused_still_loads():
+    """`_convert_peft_config_moe` is keyed on `mixtral` and `qwen2_moe` alone and
+    returns without a rewrite for anything else, so refusing on the NAME turned
+    three working adapter loads into hard errors. All three ship today:
+    `qwen3_5_moe_text` converts as `qwen3_5_text`, and both Granite MoE variants
+    as `granitemoe`."""
+    stand_in = F._UnavailableConversionPatternMap()
+    for model_type in ("qwen3_5_moe_text", "granitemoehybrid", "granitemoeshared"):
+        assert stand_in.get(model_type) is None, model_type
+        assert stand_in.get(model_type, "fallback") == "fallback", model_type
+
+
+def test_a_fused_moe_model_is_still_refused():
+    """The carve-out must not reach the types that really do need the rewrite."""
+    stand_in = F._UnavailableConversionPatternMap()
+    for model_type in ("qwen3_moe", "minimax", "deepseek_v3", "olmoe"):
+        with pytest.raises(RuntimeError, match = "conversion map"):
+            stand_in.get(model_type)
+
+
+def test_an_unknown_moe_name_is_still_refused():
+    """The hint stays for a fused type added after the snapshot: silently
+    returning the default there mis-converts the adapter."""
+    stand_in = F._UnavailableConversionPatternMap()
+    with pytest.raises(RuntimeError):
+        stand_in.get("some_future_moe_model")
+
+
+def test_the_not_fused_list_matches_upstream():
+    """Derived from the real map, so it cannot drift into guesswork."""
+    src = _fetch_conversion_mapping_source()
+    if src is None:
+        pytest.skip("upstream conversion map unavailable")
+    import re
+    pairs = dict(re.findall(r'"([\w.]+)":\s*"([\w.]+)"', src))
+    named = {k: v for k, v in pairs.items()
+             if "moe" in k.lower() or "mixtral" in k.lower()}
+    if not named:
+        pytest.skip("upstream map shape changed")
+    not_fused = {k for k, v in named.items() if v not in ("mixtral", "qwen2_moe")}
+    assert not_fused == set(F._PEFT_MOE_NAMED_NOT_FUSED), (
+        f"upstream MoE-named non-fused types moved: "
+        f"{not_fused ^ set(F._PEFT_MOE_NAMED_NOT_FUSED)}"
+    )
+
+
+def _fetch_conversion_mapping_source():
+    """The upstream map, over the network, so the canary runs in the job that
+    installs only pytest -- where `transformers` is absent and every comparison
+    against the installed copy silently skips."""
+    import os
+    import urllib.error
+    import urllib.request
+
+    url = ("https://raw.githubusercontent.com/huggingface/transformers/main/"
+           "src/transformers/conversion_mapping.py")
+    request = urllib.request.Request(url)
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(request, timeout = 15) as response:
+            return response.read().decode("utf-8", errors = "replace")
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+        return None
+
+
+def test_the_fused_snapshot_matches_upstream():
+    """The other half of the same canary: a fused MoE alias added upstream and
+    missing here falls through the stand-in silently if its name says nothing
+    about MoE. Runs off the network, so the dependency-free job exercises it."""
+    src = _fetch_conversion_mapping_source()
+    if src is None:
+        pytest.skip("upstream conversion map unavailable")
+    import re
+    pairs = dict(re.findall(r'"([\w.]+)":\s*"([\w.]+)"', src))
+    fused = {k for k, v in pairs.items() if v in ("mixtral", "qwen2_moe")}
+    if not fused:
+        pytest.skip("upstream map shape changed")
+    missing = fused - set(F._PEFT_MOE_CONVERSION_PATTERNS)
+    assert not missing, f"fused MoE types missing from the snapshot: {sorted(missing)}"
