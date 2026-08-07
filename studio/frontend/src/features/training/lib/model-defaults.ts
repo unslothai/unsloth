@@ -1,47 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { usePlatformStore } from "@/config/env";
 import type { BackendModelConfig } from "../api/models-api";
 import type { TrainingConfigState } from "../types/config";
-import { usePlatformStore } from "@/config/env";
-
-type ModelDefaultsPatch = Partial<
-  Pick<
-    TrainingConfigState,
-    | "epochs"
-    | "contextLength"
-    | "learningRate"
-    | "optimizerType"
-    | "lrSchedulerType"
-    | "loraRank"
-    | "loraAlpha"
-    | "loraDropout"
-    | "loraVariant"
-    | "batchSize"
-    | "gradientAccumulation"
-    | "weightDecay"
-    | "warmupSteps"
-    | "maxSteps"
-    | "saveSteps"
-    | "evalSteps"
-    | "packing"
-    | "trainOnCompletions"
-    | "gradientCheckpointing"
-    | "randomSeed"
-    | "visionImageSize"
-    | "enableWandb"
-    | "wandbProject"
-    | "enableTensorboard"
-    | "tensorboardDir"
-    | "logFrequency"
-    | "finetuneVisionLayers"
-    | "trustRemoteCode"
-    | "finetuneLanguageLayers"
-    | "finetuneAttentionModules"
-    | "finetuneMLPModules"
-    | "targetModules"
-  >
->;
+import type { ModelDefaultsPatch } from "./model-defaults-edit-policy";
 
 function toNumber(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -64,7 +27,11 @@ function toStringValue(value: unknown): string | undefined {
 
 function toStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
-  const result = value.filter((item): item is string => typeof item === "string");
+  const result = [
+    ...new Set(
+      value.filter((item): item is string => typeof item === "string"),
+    ),
+  ];
   return result.length > 0 ? result : undefined;
 }
 
@@ -130,16 +97,14 @@ export function mapBackendModelConfigToTrainingPatch(
   const randomSeed = toNumber(training?.random_seed);
   if (randomSeed !== undefined) patch.randomSeed = randomSeed;
 
-  // Only patch when the config carries the key; model-switch reset lives in
-  // setSelectedModel so same-model reloads don't wipe a user's choice.
+  // Only patch when the config carries the key; model-switch reset lives in setSelectedModel.
   if (Object.hasOwn(training ?? {}, "vision_image_size")) {
     const raw = training?.vision_image_size;
     if (raw == null) {
       patch.visionImageSize = null;
     } else {
-      // Mirror studio/backend/models/training.py:_check_vision_image_size:
-      // drop anything outside [_MIN_VISION_IMAGE_SIZE, _MAX_VISION_IMAGE_SIZE]
-      // so the store/UI never show a value the backend would reject.
+      // Mirror studio/backend/models/training.py:_check_vision_image_size: drop anything outside
+      // [_MIN_VISION_IMAGE_SIZE, _MAX_VISION_IMAGE_SIZE] so the UI never shows a rejected value.
       const n = toNumber(raw);
       if (n !== undefined && Number.isInteger(n) && n >= 256 && n <= 2048) {
         patch.visionImageSize = n;

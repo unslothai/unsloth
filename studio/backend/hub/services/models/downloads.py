@@ -309,6 +309,12 @@ async def download_model_response(
             "state": claim_state,
             "accepted": _registry.adoptable(key),
             "generation": generation,
+            # An adopted job keeps the transport it started on, so report it
+            # rather than let the caller assume the one it asked for.
+            "transport": _registry.job_transport(key),
+            # And its cancel marker: a run that fell back from Xet to HTTP
+            # still cancels into a restart-only partial.
+            "cancel_transport": _registry.job_cancel_transport(key),
         }
     download_manifest.clear_cancel_marker(
         "model",
@@ -349,6 +355,10 @@ async def download_model_response(
         "state": state,
         "accepted": True,
         "generation": generation,
+        # The transport that was actually resolved: an explicit "xet" is
+        # downgraded to HTTP where hf_xet is unavailable, and a client that
+        # assumed its request stood would offer the wrong stop control.
+        "transport": transport,
     }
 
 

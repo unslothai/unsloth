@@ -348,6 +348,7 @@ def _cache_inventory_fields(
     gguf_snapshot: Optional[Path] = None,
     repo_info = None,
     hidden_infra: bool = False,
+    companion: bool = False,
 ) -> dict:
     """Load identity plus the capability block for one cache row.
 
@@ -378,6 +379,12 @@ def _cache_inventory_fields(
         capabilities["supports_vision"] = True
     if hidden_infra:
         capabilities["can_chat"] = False
+    # A VAE / text-encoder mirror holds no language model, so it cannot chat whatever its weight
+    # format says. Set HERE rather than left to the row's companion flag alone: startup auto-load
+    # filters on capabilities.can_chat (isChattableCachedRepo), not on that flag, so a row that
+    # only carried the flag was still auto-loadable as a chat model.
+    if companion:
+        capabilities["can_chat"] = False
     return {
         "inventory_id": _local_inventory_id("cache", model_format, repo_id),
         "load_id": identity.load_id,
@@ -398,6 +405,20 @@ def _is_hidden_infra_repo(*values: str | None) -> bool:
     validation probe) that are cached as a side effect of Studio itself and are
     not usable chat models."""
     return is_hidden_model(*values)
+
+
+def _cached_row_companion(repo_id: str) -> bool:
+    """Whether this row is an sd.cpp companion mirror (VAE / text encoders, no denoiser).
+
+    Same classifier the models API uses. The chat picker is backed by THIS endpoint, so a flag set
+    only on the legacy route arrives as undefined here and the filter never fires -- the same trap
+    ``single_file`` fell into below. Best-effort: a classification failure never hides a row.
+    """
+    try:
+        from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
+        return (repo_id or "").strip().lower() in sd_cpp_companion_only_repo_ids()
+    except Exception:  # noqa: BLE001 -- a classification failure never hides a row
+        return False
 
 
 def _cached_row_task(repo_info, *, gguf: bool) -> Optional[str]:
@@ -893,6 +914,9 @@ def _scan_cached_models() -> list[dict]:
                         row_task is not None
                         and not hf_cache_scan.snapshot_has_pipeline_index(load_snapshot)
                     ),
+                    # Listed so tens of GB of companion weights stay visible and deletable, but
+                    # flagged so no picker offers a denoiser-less repo as a load.
+                    "companion": _cached_row_companion(repo_id),
                     **local_metadata,
                 }
                 last_modified = max(
@@ -907,6 +931,7 @@ def _scan_cached_models() -> list[dict]:
                         payload.model_format,
                         identity = identity,
                         partial = bool(row["partial"]),
+                        companion = bool(row["companion"]),
                     )
                 )
                 if _prefer_cache_row(row, existing):

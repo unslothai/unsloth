@@ -2454,9 +2454,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   );
 
   return (
-    <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+    // The chat-style layout gives this page no outer top inset, so clear the custom
+    // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
+    <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
       {/* Top: the model selector, sitting clear of the sidebar and level with the settings column below. Load progress shows in a toast. */}
-      <div className="relative flex h-[48px] shrink-0 items-start justify-between pl-6 pr-2 pt-[11px]">
+      <div className="relative flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
         <div className="flex items-center gap-2">
           {pageMode === "train" ? (
             <TrainBaseSelector
@@ -2487,7 +2489,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           )}
         </div>
         {/* Create | Train page-mode switch, centered on the page rather than tied to the selector width. PillTabs is the app segmented control. */}
-        <div className="pointer-events-none absolute inset-x-0 top-[11px] flex justify-center">
+        <div className="pointer-events-none absolute inset-x-0 top-[var(--studio-chat-header-padding-top,11px)] flex justify-center">
           <PillTabs
             ariaLabel="Page mode"
             value={pageMode}
@@ -2541,30 +2543,36 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       /* Settings column + preview canvas: both on the page background, split by a rule. Each pane pads its own content.
          Full width, so the canvas grows with the window; the settings column stays fixed.
          pl-8 puts its content 40px in, level with the model selector label above and
-         with pr-8 on the other side of the column. */
-      <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-hidden pl-2 pr-5 pt-9 sm:pr-8">
-        <div className="relative flex w-[408px] shrink-0 flex-col overflow-hidden border-r border-border/60 pl-8">
+         with pr-8 on the other side of the column.
+         overflow-x-hidden because an unset overflow-x computes to auto beside overflow-y-auto,
+         which would let a wide row pan the page sideways on a phone. */
+      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pl-2 pr-5 pt-9 sm:pr-8 md:flex-row md:overflow-hidden">
+        <div className="relative flex w-full shrink-0 flex-col border-b border-border/60 pl-8 md:w-[408px] md:overflow-hidden md:border-r md:border-b-0">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-20 pl-0.5 pr-8",
+              // pb-20 at every width: the floating Generate button below is absolutely
+              // positioned over this rail and stands 72px tall (h-11 + pb-7), so a smaller
+              // phone padding puts it on top of the last control.
+              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 pb-20 pl-0.5 pr-8 md:overflow-y-auto",
               settingsFadeClass,
             )}
           >
             {/* The sidebar submenu is the switcher, so name the active workflow over its controls. */}
-            <div className="grid gap-1">
-              {/* h-9 keeps this level with the Video page heading. */}
-              <h2 className="flex h-9 items-center gap-2 font-heading text-base font-medium text-foreground">
+            {/* Icon rides the heading; the line below runs the full width.
+                Same shape on the Video page, so the two stay level. */}
+            <div className="mb-2 grid gap-1.5">
+              <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
                 {/* Same icon the sidebar submenu uses for this workflow. */}
                 <HugeiconsIcon
                   icon={activeWorkflowTab.icon}
-                  className="size-4 shrink-0"
+                  className="size-[18px] shrink-0"
                 />
-                {activeWorkflowTab.label}
+                {activeWorkflowTab.heading ?? activeWorkflowTab.label}
               </h2>
-              <p className="text-ui-11p5 leading-snug text-muted-foreground">
+              <p className="text-xs leading-snug text-muted-foreground">
                 {activeWorkflowTab.hint}
               </p>
             </div>
@@ -2837,7 +2845,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                   )}
                   {loras.map((sel, i) => (
                     <div
-                      key={sel.id || i}
+                      // Key on the index, not sel.id: sel.id is the value of the editable repo-id
+                      // Input below, so keying on it changes the key on the first character typed,
+                      // which remounts the row and drops input focus. The list is index-addressed
+                      // (every mutation matches j === i) and rows are removed explicitly, so the
+                      // index is stable for as long as the row lives.
+                      key={i}
                       className="space-y-1.5 rounded-lg border border-border bg-muted/30 p-2"
                     >
                       <div className="flex items-center gap-2">
@@ -3097,7 +3110,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           </div>
         </div>
 
-        <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden pl-2">
+        <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden pl-2 md:min-h-0">
           {/* With the pane's pl-2, the 40px gutter the settings column has off the page edge. */}
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 pl-8">
             {selected && selectedSrc ? (
@@ -3105,7 +3118,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 <img
                   src={selectedSrc}
                   alt={selected.prompt}
-                  className="max-h-full max-w-full rounded-xl object-contain shadow-sm"
+                  className="max-h-full max-w-full object-contain shadow-sm"
                 />
                 {/* Actions grouped in one glass toolbar so they stay legible over any image. Size/seed live in the Recipe popover. */}
                 <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur">
@@ -3233,7 +3246,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                   )}
                   {/* Selection marker on a non-focusable overlay, so the button own focus state can never mask it. */}
                   {image.id === selected?.id && (
-                    <span className="pointer-events-none absolute inset-0 rounded-lg border-2 border-primary" />
+                    <span className="pointer-events-none absolute inset-0 rounded-[10px] border border-border bg-white/35 dark:border-white/25 dark:bg-white/20" />
                   )}
                 </button>
               ))}
