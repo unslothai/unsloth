@@ -239,6 +239,21 @@ case "$_out" in
     *) echo "  PASS: linux: custom-root failure reaches the summary"; PASS=$((PASS+1)) ;;
 esac
 
+# ── 3f. A custom root the deny list refuses is also incomplete removal. install.sh accepts any
+# writable root (mkdir -p + -w, no deny list), so /var/tmp/studio installs without elevation and
+# then survives uninstall untouched. Uses the fixture HOME, which _is_unsafe_root also refuses. ──
+H=$(new_home)
+mkdir -p "$H/share"
+: > "$H/share/studio.conf"
+printf '#!/bin/sh\necho Linux\n' > "$STUB_BIN/uname"; chmod +x "$STUB_BIN/uname"
+_out=$(env -u STUDIO_HOME -u XDG_CACHE_HOME -u XDG_DATA_HOME -u XDG_CONFIG_HOME -u XDG_STATE_HOME \
+    UNSLOTH_STUDIO_HOME="$H" HOME="$H" PATH="$STUB_BIN:$PATH" sh "$UNINSTALL_SH" 2>/dev/null)
+assert_present "linux: the deny-listed root was left alone" "$H/share/studio.conf"
+case "$_out" in
+    *"are gone."*) echo "  FAIL: linux: deny-listed root still claimed the data is gone"; FAIL=$((FAIL+1)) ;;
+    *) echo "  PASS: linux: deny-listed root counts as incomplete removal"; PASS=$((PASS+1)) ;;
+esac
+
 # ── 4. Nothing to remove is a clean no-op (fresh HOME, exit 0) ──
 H=$(new_home)
 if run_uninstall "$H" Darwin; then

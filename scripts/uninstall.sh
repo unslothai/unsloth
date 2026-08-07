@@ -340,9 +340,14 @@ _unsloth_uninstall_main() {
         [ -n "$_custom_root" ] || continue
         if _is_unsafe_root "$_custom_root"; then
             echo "  refusing to remove unsafe path: $_custom_root" >&2
+            # install.sh accepts any writable root, so this can be a real install under a
+            # path the deny list covers (/var/tmp/studio needs no elevation). Nothing is
+            # deleted, and it holds studio.db and the auth data, so the summary must say so.
+            [ -d "$_custom_root" ] && { : > "$_REMOVE_FAILED_FLAG" 2>/dev/null || true; }
             continue
         fi
         if ! _is_studio_root "$_custom_root"; then
+            # Not ours, so nothing of the user's data is left behind by skipping it.
             echo "  refusing to remove non-Unsloth path: $_custom_root" >&2
             continue
         fi
