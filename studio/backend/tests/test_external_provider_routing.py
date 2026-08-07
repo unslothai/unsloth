@@ -230,6 +230,67 @@ def test_hosted_only_tools_reject_confirmation_without_managed_loop(monkeypatch)
     assert caught.value.detail["error"]["param"] == "confirm_tool_calls"
 
 
+def test_empty_mcp_selection_falls_through_to_plain_provider_proxy(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        inference_mod.providers_db,
+        "get_provider",
+        lambda _provider_id: {
+            "id": "saved-provider",
+            "display_name": "Saved OpenAI-compatible provider",
+            "provider_type": "custom",
+            "base_url": "https://provider.example/v1",
+            "is_enabled": 1,
+            "studio_tool_execution": 1,
+        },
+    )
+
+    async def select_tools(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(inference_mod, "_select_request_tools", select_tools)
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def stream_chat_completion(self, **kwargs):
+            captured["provider_call"] = kwargs
+            yield "data: [DONE]"
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(inference_mod, "ExternalProviderClient", FakeClient)
+    request = SimpleNamespace(
+        state = SimpleNamespace(skip_api_monitor = True),
+        url = SimpleNamespace(path = "/v1/chat/completions"),
+        method = "POST",
+    )
+    payload = ChatCompletionRequest(
+        model = "default",
+        external_model = "compatible-model",
+        messages = [{"role": "user", "content": "hello"}],
+        stream = True,
+        provider_id = "saved-provider",
+        enable_tools = True,
+        mcp_enabled = True,
+        confirm_tool_calls = True,
+    )
+
+    async def run():
+        response = await inference_mod._proxy_to_external_provider(payload, request)
+        return [chunk async for chunk in response.body_iterator]
+
+    chunks = asyncio.run(run())
+
+    assert captured["provider_call"]["tools"] is None
+    assert captured["provider_call"]["enabled_tools"] is None
+    assert any(
+        "[DONE]" in (chunk.decode() if isinstance(chunk, bytes) else chunk) for chunk in chunks
+    )
+
+
 def test_cancelled_managed_loop_marks_monitor_cancelled_without_done(monkeypatch):
     monkeypatch.setattr(
         inference_mod.providers_db,

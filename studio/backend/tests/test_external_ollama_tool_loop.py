@@ -258,6 +258,34 @@ def test_hosted_tools_remain_enabled_after_one_shot_studio_tool(monkeypatch):
     assert client.calls[1]["enabled_tools"] == ["image_generation"]
 
 
+def test_exhausted_one_shot_tool_omits_tool_choice_without_hosted_tools(monkeypatch):
+    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "rendered")
+    render_tool = {
+        "type": "function",
+        "function": {
+            "name": "render_html",
+            "description": "Render HTML.",
+            "parameters": {
+                "type": "object",
+                "properties": {"html": {"type": "string"}},
+                "required": ["html"],
+            },
+        },
+    }
+    client = _FakeClient(
+        [
+            _named_tool_round("render_html", "call_render", '{"html":"<p>Hi</p>"}'),
+            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
+        ]
+    )
+
+    asyncio.run(_collect(client, tools = [render_tool]))
+
+    assert client.calls[1]["tools"] is None
+    assert client.calls[1]["tool_choice"] is None
+    assert client.calls[1]["enabled_tools"] is None
+
+
 def test_provider_tool_events_survive_managed_round(monkeypatch):
     monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
     hosted_event = {
@@ -391,6 +419,54 @@ def test_gemini_signed_text_survives_tool_continuation(monkeypatch):
     assistant = client.calls[1]["messages"][-2]
     assert assistant["content"] == "I will search."
     assert assistant["extra_content"] == {"google": {"thought_signature": "SIG-TEXT"}}
+
+
+def test_gemini_hosted_parts_survive_studio_tool_continuation(monkeypatch):
+    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
+    executable_part = {
+        "executableCode": {"language": "PYTHON", "code": "print(2)"},
+        "thoughtSignature": "SIG-EXEC",
+    }
+    result_part = {
+        "codeExecutionResult": {"outcome": "OUTCOME_OK", "output": "2\n"},
+        "thoughtSignature": "SIG-RESULT",
+    }
+    hosted_start = {
+        "choices": [],
+        "_toolEvent": {
+            "type": "tool_start",
+            "tool_name": "code_execution",
+            "tool_call_id": "code_1",
+            "arguments": {
+                "google": {"native_part": {"parts": [executable_part]}},
+            },
+        },
+    }
+    hosted_end = {
+        "choices": [],
+        "_toolEvent": {
+            "type": "tool_end",
+            "tool_name": "code_execution",
+            "tool_call_id": "code_1",
+            "google": {"native_part": {"parts": [result_part]}},
+        },
+    }
+    first_round = [
+        "data: " + json.dumps(hosted_start),
+        "data: " + json.dumps(hosted_end),
+        *_tool_round(),
+    ]
+    client = _FakeClient(
+        [first_round, [_chunk(delta = {"content": "done"}), "data: [DONE]"]]
+    )
+
+    asyncio.run(_collect(client))
+
+    assistant = client.calls[1]["messages"][-2]
+    assert assistant["extra_content"]["google"]["hosted_parts"] == [
+        executable_part,
+        result_part,
+    ]
 
 
 def test_anthropic_thinking_metadata_is_private_and_replayed(monkeypatch):
@@ -537,6 +613,50 @@ def test_parallel_tool_calls_false_executes_only_the_first_call(monkeypatch):
     assert executed == ["web_search"]
     assistant = client.calls[1]["messages"][-2]
     assert [call["id"] for call in assistant["tool_calls"]] == ["call_first"]
+
+
+def test_openai_response_link_is_removed_when_parallel_calls_are_dropped(monkeypatch):
+    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
+    previous = {"openai": {"previous_response_id": "resp_parallel"}}
+    parallel_round = [
+        _chunk(
+            delta = {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_first",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"query":"first"}',
+                        },
+                        "extra_content": copy.deepcopy(previous),
+                    },
+                    {
+                        "index": 1,
+                        "id": "call_second",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"query":"second"}',
+                        },
+                        "extra_content": copy.deepcopy(previous),
+                    },
+                ]
+            }
+        ),
+        _chunk(delta = {}, finish_reason = "tool_calls"),
+        "data: [DONE]",
+    ]
+    client = _FakeClient(
+        [parallel_round, [_chunk(delta = {"content": "done"}), "data: [DONE]"]]
+    )
+
+    asyncio.run(_collect(client, parallel_tool_calls = False))
+
+    assistant_call = client.calls[1]["messages"][-2]["tool_calls"][0]
+    assert assistant_call["id"] == "call_first"
+    assert "extra_content" not in assistant_call
 
 
 def test_noop_round_does_not_consume_execution_budget(monkeypatch):
@@ -811,3 +931,60 @@ def test_repeated_denial_prompts_once_then_forces_final_answer(monkeypatch):
     assert approvals == ["deny"]
     assert len(client.calls) == 3
     assert client.calls[2]["tools"] is None
+
+
+def test_distinct_denials_are_bounded_by_the_round_limit(monkeypatch):
+    approvals = []
+
+    def deny(*_args):
+        approvals.append("deny")
+        return "deny"
+
+    monkeypatch.setattr(loop_mod, "new_approval_id", lambda: "approval")
+    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda *_args: object())
+    monkeypatch.setattr(loop_mod, "wait_tool_decision", deny)
+    monkeypatch.setattr(
+        loop_mod,
+        "execute_tool",
+        lambda *_args, **_kwargs: pytest.fail("denied tool must not execute"),
+    )
+    client = _FakeClient(
+        [
+            _named_tool_round("web_search", "call_first", '{"query":"Cairo"}'),
+            _named_tool_round("web_search", "call_second", '{"query":"Alexandria"}'),
+            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
+        ]
+    )
+
+    asyncio.run(
+        _collect(
+            client,
+            confirm_tool_calls = True,
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert approvals == ["deny", "deny"]
+    assert len(client.calls) == 3
+    assert client.calls[2]["tools"] is None
+    assert client.calls[2]["tool_choice"] == "none"
+
+
+def test_accumulated_usage_is_emitted_before_provider_error(monkeypatch):
+    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
+    provider_error = "data: " + json.dumps({"error": {"message": "upstream failed"}})
+    client = _FakeClient([_tool_round(), [provider_error]])
+
+    output = asyncio.run(_collect(client))
+
+    usage_index = next(
+        index
+        for index, line in enumerate(output)
+        if line.startswith("data:")
+        and line[len("data:") :].strip() != "[DONE]"
+        and json.loads(line[len("data:") :]).get("usage")
+    )
+    error_index = next(index for index, line in enumerate(output) if "upstream failed" in line)
+    usage = json.loads(output[usage_index][len("data:") :])["usage"]
+    assert usage == {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}
+    assert usage_index < error_index

@@ -3471,6 +3471,25 @@ class ExternalProviderClient:
                                         "thoughtSignature": _msg_sig,
                                     }
                                     break
+            if role == "assistant":
+                _msg_extra = msg.get("extra_content") if isinstance(msg, dict) else None
+                _msg_google = (
+                    _msg_extra.get("google") if isinstance(_msg_extra, dict) else None
+                )
+                _hosted_parts = (
+                    _msg_google.get("hosted_parts")
+                    if isinstance(_msg_google, dict)
+                    else None
+                )
+                for _hosted_part in _hosted_parts if isinstance(_hosted_parts, list) else []:
+                    if not isinstance(_hosted_part, dict):
+                        continue
+                    if not any(
+                        key in _hosted_part
+                        for key in ("executableCode", "codeExecutionResult", "inlineData")
+                    ):
+                        continue
+                    parts.append(dict(_hosted_part))
             # Translate OpenAI tool_calls into Gemini functionCall parts.
             # code_execution / image_generation replay their native parts
             # (executableCode / codeExecutionResult / inlineData) stowed on

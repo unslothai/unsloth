@@ -596,6 +596,52 @@ def test_thought_signature_round_trips_into_gemini_function_call(monkeypatch):
     assert fc_part.get("thoughtSignature") == "SIG-ABC", fc_part
 
 
+def test_hosted_parts_replay_before_studio_function_call(monkeypatch):
+    executable_part = {
+        "executableCode": {"language": "PYTHON", "code": "print(2)"},
+        "thoughtSignature": "SIG-EXEC",
+    }
+    result_part = {
+        "codeExecutionResult": {"outcome": "OUTCOME_OK", "output": "2\n"},
+        "thoughtSignature": "SIG-RESULT",
+    }
+    captured = _capture_body(
+        monkeypatch,
+        messages = [
+            {"role": "user", "content": "calculate, then look up"},
+            {
+                "role": "assistant",
+                "content": "",
+                "extra_content": {
+                    "google": {"hosted_parts": [executable_part, result_part]},
+                },
+                "tool_calls": [
+                    {
+                        "id": "call_lookup",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{}"},
+                        "extra_content": {
+                            "google": {"thought_signature": "SIG-CALL"},
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_lookup",
+                "name": "lookup",
+                "content": "result",
+            },
+        ],
+    )
+
+    model_turn = next(content for content in captured["body"]["contents"] if content["role"] == "model")
+    assert model_turn["parts"][:2] == [executable_part, result_part]
+    function_call = model_turn["parts"][2]
+    assert function_call["functionCall"]["name"] == "lookup"
+    assert function_call["thoughtSignature"] == "SIG-CALL"
+
+
 def test_thought_signature_emitted_in_tool_call_delta(monkeypatch):
     """A Gemini functionCall part with `thoughtSignature` must surface it on
     the outbound OpenAI tool_calls delta via

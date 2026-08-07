@@ -110,6 +110,26 @@ def _collect_round_delta(
 ) -> None:
     if not isinstance(payload, Mapping):
         return
+    tool_event = payload.get("_toolEvent")
+    if isinstance(tool_event, Mapping) and assistant_extra_content is not None:
+        event_google = tool_event.get("google")
+        event_arguments = tool_event.get("arguments")
+        argument_google = (
+            event_arguments.get("google") if isinstance(event_arguments, Mapping) else None
+        )
+        google_metadata = event_google if isinstance(event_google, Mapping) else argument_google
+        native_part = (
+            google_metadata.get("native_part")
+            if isinstance(google_metadata, Mapping)
+            else None
+        )
+        native_parts = native_part.get("parts") if isinstance(native_part, Mapping) else None
+        if isinstance(native_parts, list):
+            google_extra = assistant_extra_content.setdefault("google", {})
+            hosted_parts = google_extra.setdefault("hosted_parts", [])
+            hosted_parts.extend(
+                copy.deepcopy(part) for part in native_parts if isinstance(part, Mapping)
+            )
     choices = payload.get("choices")
     if not isinstance(choices, list):
         return
@@ -285,6 +305,7 @@ async def stream_external_chat_with_tools(
     timeout = None if tool_call_timeout >= 9999 else max(1, int(tool_call_timeout))
     cancel = cancel_event or threading.Event()
     rounds_with_calls = 0
+    denied_rounds = 0
     observed_call_rounds = 0
     aggregate_usage: dict[str, Any] = {}
     usage_template: dict[str, Any] | None = None
@@ -301,11 +322,17 @@ async def stream_external_chat_with_tools(
         round_finished = False
         round_failed = False
         round_terminal_error: str | None = None
+        if final_pass:
+            round_tool_choice = "none"
+        elif active_tools or provider_enabled_tools:
+            round_tool_choice = next_tool_choice
+        else:
+            round_tool_choice = None
         upstream = client.stream_chat_completion(
             messages = conversation,
             model = model,
             tools = active_tools or None,
-            tool_choice = next_tool_choice if active_tools or not final_pass else "none",
+            tool_choice = round_tool_choice,
             stream = True,
             enabled_tools = list(provider_enabled_tools) if provider_enabled_tools else None,
             **dict(request_kwargs),
@@ -381,6 +408,14 @@ async def stream_external_chat_with_tools(
                         assistant_text,
                         assistant_extra_content,
                     )
+                if (
+                    round_failed
+                    and aggregate_usage
+                    and usage_template is not None
+                    and not usage_emitted
+                ):
+                    yield _combined_usage_line(usage_template, aggregate_usage)
+                    usage_emitted = True
                 forward = _without_tool_transport(
                     payload,
                     has_tool_calls = bool(round_calls),
@@ -449,7 +484,26 @@ async def stream_external_chat_with_tools(
             (decision, call) for decision, call in decision_pairs if decision.should_execute
         ]
         executable = [decision for decision, _call in executable_pairs]
+        all_provider_calls_retained = len(decision_pairs) == len(round_calls) and all(
+            decision.should_execute for decision in decisions
+        )
+        if not all_provider_calls_retained:
+            for _decision, raw_call in decision_pairs:
+                extra_content = raw_call.get("extra_content")
+                openai_extra = (
+                    extra_content.get("openai")
+                    if isinstance(extra_content, Mapping)
+                    else None
+                )
+                if not isinstance(openai_extra, dict):
+                    continue
+                openai_extra.pop("previous_response_id", None)
+                if not openai_extra:
+                    extra_content.pop("openai", None)
+                if not extra_content:
+                    raw_call.pop("extra_content", None)
         turn_executed_real_tool = False
+        turn_had_denial = False
         assistant_message: dict[str, Any] = {
             "role": "assistant",
             "content": "".join(assistant_text),
@@ -553,6 +607,7 @@ async def stream_external_chat_with_tools(
                         denied["tool_call_id"] = decision.tool_call_id
                     conversation.append(denied)
                     tool_controller.record_denial(decision)
+                    turn_had_denial = True
                     continue
                 decision_slot = None
             finally:
@@ -609,8 +664,17 @@ async def stream_external_chat_with_tools(
 
         if turn_executed_real_tool:
             rounds_with_calls += 1
+        if turn_had_denial:
+            denied_rounds += 1
 
-        if rounds_with_calls >= max_rounds or tool_controller.force_final_answer:
+        if (
+            rounds_with_calls >= max_rounds
+            # A rejection does not consume the execution budget, so preserve
+            # one opportunity for the model to make a different, approved
+            # call even when max_rounds is one. Still cap denial-only loops.
+            or denied_rounds >= max(2, max_rounds)
+            or tool_controller.force_final_answer
+        ):
             conversation.append(
                 {
                     "role": "user",
