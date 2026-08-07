@@ -84,6 +84,16 @@ def test_normal_404_is_still_logged(logs):
     assert logs.events[0][2]["status_code"] == 404
 
 
+def test_url_in_a_normal_path_is_not_treated_as_a_scanner(logs):
+    _run(
+        LoggingMiddleware(_ok_app)(
+            _scope("/api/metadata/https://huggingface.co/model"), _noop_receive, _send
+        )
+    )
+    assert len(logs.events) == 1
+    assert logs.events[0][1] == "request_completed"
+
+
 def _status_app(status):
     async def app(scope, receive, send):
         await send({"type": "http.response.start", "status": status, "headers": []})
@@ -172,27 +182,23 @@ def _uvicorn_record(msg):
 
 
 def test_uvicorn_drop_filter_drops_invalid_http(monkeypatch):
+    monkeypatch.setattr(logging.getLogger("uvicorn"), "filters", [])
     log = logging.getLogger("uvicorn.error")
-    log.filters = []
-    try:
-        _install_uvicorn_startup_log_rewrite("127.0.0.1", "127.0.0.1")
-        # filter() returns False to drop, else the (truthy) record.
-        assert log.filter(_uvicorn_record("Invalid HTTP request received")) is False
-        # real warnings/errors pass through
-        assert log.filter(_uvicorn_record("Worker failed to boot"))
-    finally:
-        log.filters = []
+    monkeypatch.setattr(log, "filters", [])
+    _install_uvicorn_startup_log_rewrite("127.0.0.1", "127.0.0.1")
+    # filter() returns False to drop, else the (truthy) record.
+    assert log.filter(_uvicorn_record("Invalid HTTP request received")) is False
+    # real warnings/errors pass through
+    assert log.filter(_uvicorn_record("Worker failed to boot"))
 
 
 def test_uvicorn_drop_filter_verbose_keeps_all(monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_VERBOSE", "1")
+    monkeypatch.setattr(logging.getLogger("uvicorn"), "filters", [])
     log = logging.getLogger("uvicorn.error")
-    log.filters = []
-    try:
-        _install_uvicorn_startup_log_rewrite("127.0.0.1", "127.0.0.1")
-        assert log.filter(_uvicorn_record("Invalid HTTP request received"))
-    finally:
-        log.filters = []
+    monkeypatch.setattr(log, "filters", [])
+    _install_uvicorn_startup_log_rewrite("127.0.0.1", "127.0.0.1")
+    assert log.filter(_uvicorn_record("Invalid HTTP request received"))
 
 
 # ── library quieting (B1) ──────────────────────────────────────────────
@@ -203,9 +209,12 @@ def test_setup_logging_quiets_libraries(monkeypatch):
         logging.getLogger(name).setLevel(logging.NOTSET)
     monkeypatch.delenv("UNSLOTH_STUDIO_VERBOSE", raising = False)
     monkeypatch.setenv("LOG_LEVEL", "INFO")
+    captured = []
+    monkeypatch.setattr(logging, "captureWarnings", captured.append)
     LogConfig.setup_logging()
     assert logging.getLogger("httpx").level == logging.WARNING
     assert logging.getLogger("transformers").level == logging.WARNING
+    assert captured == [False]
 
 
 def test_setup_logging_verbose_does_not_quiet(monkeypatch):

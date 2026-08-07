@@ -1404,9 +1404,6 @@ class InferenceOrchestrator:
                     if isinstance(_tpl_info, dict):
                         self.models[self.active_model_name]["chat_template_info"] = _tpl_info
                     self.loading_models.discard(model_name)
-                    # Clear the heartbeat state so the next load logs its first
-                    # status line immediately instead of being throttled.
-                    progress_throttle.reset(("inference-load", id(self)))
                     logger.info("Model '%s' loaded successfully in subprocess", model_name)
                     return True
                 else:
@@ -1429,6 +1426,11 @@ class InferenceOrchestrator:
             self.active_model_name = None
             self.models.clear()
             raise
+        finally:
+            # A load can end through success, a worker failure, a stall, or a
+            # concurrent cancellation. Do not let its last status heartbeat
+            # suppress the first diagnostic line of the next attempt.
+            progress_throttle.reset(("inference-load", id(self)))
 
     def cancel_load(self, model_name: str) -> bool:
         """Abort an in-flight load by terminating its subprocess.
@@ -1460,6 +1462,9 @@ class InferenceOrchestrator:
         # leaves a window where load_model reads the marker still set, passes its pre-spawn
         # recheck, and loads the model after /unload reported it cancelled. Clear first.
         self.loading_models.discard(target)
+        # Make an immediate retry log its first heartbeat even while the
+        # cancelled load is still unwinding its response wait.
+        progress_throttle.reset(("inference-load", id(self)))
         self.active_model_name = None
         self.models.clear()
         self._shutdown_subprocess(timeout = 0.5)

@@ -118,7 +118,12 @@ class LogConfig:
         if not logs_verbose():
             for name in _NOISY_LIBS:
                 logging.getLogger(name).setLevel(logging.WARNING)
-            logging.captureWarnings(True)
+
+        # Structlog owns Studio's output and the stdlib root logger has no
+        # handler. Capturing warnings would therefore send them to
+        # ``py.warnings``' NullHandler and lose meaningful runtime warnings.
+        # Keep the standard warnings stream connected to stderr instead.
+        logging.captureWarnings(False)
 
         # Drop transformers' cosmetic "`torch_dtype` is deprecated" warning_once (see
         # filter). It is emitted at WARNING, so the _NOISY_LIBS level bump above does

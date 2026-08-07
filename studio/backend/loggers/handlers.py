@@ -257,7 +257,7 @@ class LoggingMiddleware:
         # noise too. Both are quiet even on 4xx. Status/progress polls
         # (_EXCLUDED_PATHS) are quiet on success but still log on error. A normal
         # GET/POST 404 is real signal and stays. Verbose keeps everything.
-        scanner = method not in _STANDARD_METHODS or "://" in path
+        scanner = method not in _STANDARD_METHODS or path.startswith(("http://", "https://"))
         static = path.startswith("/assets/") or path.endswith(_EXCLUDED_SUFFIXES)
         success_poll = path in _EXCLUDED_PATHS
         start_time = time.perf_counter()
