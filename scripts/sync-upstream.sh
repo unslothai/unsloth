@@ -43,7 +43,9 @@ BASE_BRANCH="${BASE_BRANCH:-develop}"
 KEEP_PREFIX="${KEEP_PREFIX:-studio/frontend/}"
 # Repo-root files kept, but always at the base branch's version. Upstream's
 # README describes the whole project, which is not what this repo is.
-KEEP_FILES=".gitignore README.md"
+# This script lives outside KEEP_PREFIX, so without listing it here the trim
+# step git-rm's it mid-run and the merge stages its own deletion.
+KEEP_FILES=".gitignore README.md scripts/sync-upstream.sh"
 # Locales this fork ships. src/i18n/messages.ts declares only these, so a new
 # upstream locale file would merge cleanly and then fail i18n:check.
 KEEP_LOCALES="${KEEP_LOCALES:-en.ts}"
