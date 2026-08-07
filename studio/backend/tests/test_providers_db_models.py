@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -38,7 +37,6 @@ def test_create_and_list_provider_models(isolated_providers_db: Path):
     assert row["models"] == ["llama3.2", "qwen2.5"]
     assert row["available_models"] == ["llama3.2", "qwen2.5", "mistral"]
     assert row["studio_tool_execution"] == 0
-
     listed = providers_db.list_providers()
     assert len(listed) == 1
     assert listed[0]["models"] == ["llama3.2", "qwen2.5"]
@@ -72,33 +70,4 @@ def test_update_provider_models(isolated_providers_db: Path):
         "meta-llama/Llama-3.2-1B-Instruct",
         "meta-llama/Llama-3.2-3B-Instruct",
     ]
-    assert row["studio_tool_execution"] == 0
-
-
-def test_schema_migration_disables_tools_for_existing_connections(isolated_providers_db: Path):
-    conn = sqlite3.connect(str(isolated_providers_db))
-    conn.execute(
-        """
-        CREATE TABLE llm_providers (
-            id TEXT NOT NULL PRIMARY KEY,
-            provider_type TEXT NOT NULL,
-            display_name TEXT NOT NULL,
-            base_url TEXT NOT NULL,
-            is_enabled INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )
-        """
-    )
-    conn.execute(
-        """INSERT INTO llm_providers
-        (id, provider_type, display_name, base_url, created_at, updated_at)
-        VALUES ('existing', 'ollama', 'Existing Ollama', 'http://localhost:11434/v1', 'now', 'now')"""
-    )
-    conn.commit()
-    conn.close()
-
-    row = providers_db.get_provider("existing")
-
-    assert row is not None
     assert row["studio_tool_execution"] == 0

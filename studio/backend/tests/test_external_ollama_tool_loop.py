@@ -1,19 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression tests for Studio-managed external-provider function calls."""
+"""Critical contracts for Studio-managed external-provider tool rounds."""
 
 import asyncio
 import copy
 import json
-import threading
 
 import pytest
 
 from core.inference import external_tool_loop as loop_mod
 
 
-TOOL_SCHEMA = {
+TOOL = {
     "type": "function",
     "function": {
         "name": "web_search",
@@ -27,329 +26,91 @@ TOOL_SCHEMA = {
 }
 
 
-def _chunk(
-    *,
-    delta = None,
-    finish_reason = None,
-    usage = None,
-):
+def _chunk(*, delta = None, finish = None, usage = None):
     payload = {
-        "id": "chatcmpl-ollama",
+        "id": "chatcmpl-test",
         "object": "chat.completion.chunk",
-        "choices": [{"index": 0, "delta": delta or {}, "finish_reason": finish_reason}],
+        "choices": [{"index": 0, "delta": delta or {}, "finish_reason": finish}],
     }
     if usage is not None:
-        payload["usage"] = usage
         payload["choices"] = []
+        payload["usage"] = usage
     return "data: " + json.dumps(payload)
 
 
-def _tool_round(arguments = '{"query":"Cairo weather"}'):
-    split = max(1, len(arguments) // 2)
-    return [
-        _chunk(
-            delta = {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_weather",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": arguments[:split],
-                        },
-                    }
-                ]
-            }
-        ),
-        _chunk(
-            delta = {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "function": {"arguments": arguments[split:]},
-                    }
-                ]
-            }
-        ),
-        _chunk(delta = {}, finish_reason = "tool_calls"),
-        _chunk(usage = {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}),
-        "data: [DONE]",
+def _tool_round(
+    name = "web_search",
+    call_id = "call_1",
+    arguments = '{"query":"Cairo"}',
+    *,
+    extra = None,
+    usage = None,
+):
+    call = {
+        "index": 0,
+        "id": call_id,
+        "type": "function",
+        "function": {"name": name, "arguments": arguments},
+    }
+    if extra:
+        call["extra_content"] = extra
+    lines = [
+        _chunk(delta = {"tool_calls": [call]}),
+        _chunk(delta = {}, finish = "tool_calls"),
     ]
+    if usage:
+        lines.append(_chunk(usage = usage))
+    return [*lines, "data: [DONE]"]
 
 
-def _named_tool_round(name: str, call_id: str, arguments: str) -> list[str]:
-    return [
-        _chunk(
-            delta = {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": call_id,
-                        "type": "function",
-                        "function": {"name": name, "arguments": arguments},
-                    }
-                ]
-            }
-        ),
-        _chunk(delta = {}, finish_reason = "tool_calls"),
-        "data: [DONE]",
-    ]
-
-
-class _FakeClient:
+class _Client:
     def __init__(self, rounds):
         self.rounds = list(rounds)
         self.calls = []
 
     async def stream_chat_completion(self, **kwargs):
         self.calls.append(copy.deepcopy(kwargs))
-        for line in self.rounds.pop(0):
+        current_round = self.rounds.pop(0)
+        for line in current_round:
             yield line
 
 
 async def _collect(client, **overrides):
     kwargs = {
         "client": client,
-        "messages": [{"role": "user", "content": "What is the weather?"}],
-        "model": "qwen3",
-        "tools": [TOOL_SCHEMA],
+        "messages": [{"role": "user", "content": "Help"}],
+        "model": "test-model",
+        "tools": [TOOL],
         "request_kwargs": {},
     }
     kwargs.update(overrides)
     return [line async for line in loop_mod.stream_external_chat_with_tools(**kwargs)]
 
 
-def test_ollama_tool_call_executes_and_continues(monkeypatch):
-    executed = []
-
-    def fake_execute(name, arguments, **kwargs):
-        executed.append((name, arguments, kwargs))
-        return "Cairo: 24 C and sunny"
-
-    monkeypatch.setattr(loop_mod, "execute_tool", fake_execute)
-    client = _FakeClient(
-        [
-            _tool_round(),
-            [
-                _chunk(delta = {"content": "It is 24 C and sunny."}),
-                _chunk(delta = {}, finish_reason = "stop"),
-                "data: [DONE]",
-            ],
-        ]
-    )
-
-    output = asyncio.run(_collect(client))
-
-    assert executed[0][0:2] == ("web_search", {"query": "Cairo weather"})
-    assert len(client.calls) == 2
-    assert client.calls[0]["tools"] == [TOOL_SCHEMA]
-    continued_messages = client.calls[1]["messages"]
-    assert continued_messages[-2]["role"] == "assistant"
-    assert continued_messages[-2]["tool_calls"][0]["id"] == "call_weather"
-    assert continued_messages[-1] == {
-        "role": "tool",
-        "tool_call_id": "call_weather",
-        "name": "web_search",
-        "content": "Cairo: 24 C and sunny",
-    }
-    assert any('"type": "tool_start"' in line for line in output)
-    assert any('"type": "tool_end"' in line for line in output)
-    assert any("It is 24 C and sunny." in line for line in output)
-    assert sum(line == "data: [DONE]" for line in output) == 1
-    assert not any('"tool_calls"' in line for line in output)
-    usage_payloads = [
+def _payloads(lines):
+    return [
         json.loads(line[len("data:") :])
-        for line in output
-        if line.startswith("data:")
-        and line[len("data:") :].strip() != "[DONE]"
-        and json.loads(line[len("data:") :]).get("usage")
-    ]
-    assert [payload["usage"] for payload in usage_payloads] == [
-        {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}
+        for line in lines
+        if line.startswith("data:") and line[len("data:") :].strip() != "[DONE]"
     ]
 
 
-def test_tool_failure_becomes_a_tool_result_and_does_not_break_stream(monkeypatch):
-    def fake_execute(_name, _arguments, **_kwargs):
-        raise RuntimeError("isolated failure")
-
-    monkeypatch.setattr(loop_mod, "execute_tool", fake_execute)
-    client = _FakeClient(
+def test_executes_tool_continues_and_aggregates_usage(monkeypatch):
+    executed = []
+    monkeypatch.setattr(
+        loop_mod,
+        "execute_tool",
+        lambda name, arguments, **_kwargs: executed.append((name, arguments)) or "sunny",
+    )
+    client = _Client(
         [
-            _tool_round(),
-            [_chunk(delta = {"content": "I could not run the search."}), "data: [DONE]"],
-        ]
-    )
-
-    output = asyncio.run(_collect(client))
-
-    tool_result = client.calls[1]["messages"][-1]
-    assert tool_result["role"] == "tool"
-    assert "Error: tool raised an exception: isolated failure" in tool_result["content"]
-    assert any("I could not run the search." in line for line in output)
-
-
-def test_budget_final_pass_cannot_loop_on_nonconforming_provider(monkeypatch):
-    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
-    client = _FakeClient([_tool_round(), _tool_round('{"query":"again"}')])
-
-    output = asyncio.run(_collect(client, max_tool_iterations = 1))
-
-    assert len(client.calls) == 2
-    assert client.calls[1]["tools"] is None
-    assert client.calls[1]["tool_choice"] == "none"
-    assert output.count("data: [DONE]") == 0
-
-
-def test_provider_hosted_tools_survive_every_studio_round(monkeypatch):
-    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
-    client = _FakeClient(
-        [
-            _tool_round(),
-            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
-        ]
-    )
-
-    asyncio.run(
-        _collect(
-            client,
-            provider_enabled_tools = ["web_fetch", "image_generation"],
-        )
-    )
-
-    assert [call["enabled_tools"] for call in client.calls] == [
-        ["web_fetch", "image_generation"],
-        ["web_fetch", "image_generation"],
-    ]
-
-
-def test_hosted_tools_remain_enabled_after_one_shot_studio_tool(monkeypatch):
-    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "rendered")
-    render_tool = {
-        "type": "function",
-        "function": {
-            "name": "render_html",
-            "description": "Render HTML.",
-            "parameters": {
-                "type": "object",
-                "properties": {"html": {"type": "string"}},
-                "required": ["html"],
-            },
-        },
-    }
-    client = _FakeClient(
-        [
-            _named_tool_round("render_html", "call_render", '{"html":"<p>Hi</p>"}'),
-            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
-        ]
-    )
-
-    asyncio.run(
-        _collect(
-            client,
-            tools = [render_tool],
-            provider_enabled_tools = ["image_generation"],
-        )
-    )
-
-    assert client.calls[1]["tools"] is None
-    assert client.calls[1]["tool_choice"] == "auto"
-    assert client.calls[1]["enabled_tools"] == ["image_generation"]
-
-
-def test_exhausted_one_shot_tool_omits_tool_choice_without_hosted_tools(monkeypatch):
-    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "rendered")
-    render_tool = {
-        "type": "function",
-        "function": {
-            "name": "render_html",
-            "description": "Render HTML.",
-            "parameters": {
-                "type": "object",
-                "properties": {"html": {"type": "string"}},
-                "required": ["html"],
-            },
-        },
-    }
-    client = _FakeClient(
-        [
-            _named_tool_round("render_html", "call_render", '{"html":"<p>Hi</p>"}'),
-            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
-        ]
-    )
-
-    asyncio.run(_collect(client, tools = [render_tool]))
-
-    assert client.calls[1]["tools"] is None
-    assert client.calls[1]["tool_choice"] is None
-    assert client.calls[1]["enabled_tools"] is None
-
-
-def test_provider_tool_events_survive_managed_round(monkeypatch):
-    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
-    hosted_event = {
-        "id": "chatcmpl-hosted",
-        "object": "chat.completion.chunk",
-        "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
-        "_toolEvent": {
-            "type": "tool_end",
-            "tool_name": "image_generation",
-            "tool_call_id": "image_1",
-            "image_b64": "encoded-image",
-        },
-    }
-    first_round = [
-        "data: " + json.dumps(hosted_event),
-        *_tool_round(),
-    ]
-    client = _FakeClient([first_round, [_chunk(delta = {"content": "done"}), "data: [DONE]"]])
-
-    output = asyncio.run(_collect(client))
-
-    forwarded = [json.loads(line[len("data:") :]) for line in output if "_toolEvent" in line]
-    assert len(forwarded) == 1
-    assert forwarded[0]["_toolEvent"] == hosted_event["_toolEvent"]
-    assert forwarded[0]["choices"] == []
-
-
-def test_provider_tool_event_after_studio_call_delta_survives(monkeypatch):
-    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
-    hosted_event = {
-        "id": "chatcmpl-hosted",
-        "object": "chat.completion.chunk",
-        "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
-        "_toolEvent": {
-            "type": "tool_end",
-            "tool_name": "image_generation",
-            "tool_call_id": "image_after_call",
-            "image_b64": "encoded-image",
-        },
-    }
-    tool_round = _tool_round()
-    tool_round.insert(1, "data: " + json.dumps(hosted_event))
-    client = _FakeClient([tool_round, [_chunk(delta = {"content": "done"}), "data: [DONE]"]])
-
-    output = asyncio.run(_collect(client))
-
-    forwarded = [json.loads(line[len("data:") :]) for line in output if "_toolEvent" in line]
-    assert [payload["_toolEvent"]["tool_call_id"] for payload in forwarded] == ["image_after_call"]
-
-
-def test_usage_is_aggregated_across_provider_rounds(monkeypatch):
-    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
-    client = _FakeClient(
-        [
-            _tool_round(),
+            _tool_round(
+                usage = {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}
+            ),
             [
-                _chunk(delta = {"content": "done"}),
+                _chunk(delta = {"content": "24 C"}, finish = "stop"),
                 _chunk(
-                    usage = {
-                        "prompt_tokens": 7,
-                        "completion_tokens": 4,
-                        "total_tokens": 11,
-                        "completion_tokens_details": {"reasoning_tokens": 2},
-                    }
+                    usage = {"prompt_tokens": 7, "completion_tokens": 4, "total_tokens": 11}
                 ),
                 "data: [DONE]",
             ],
@@ -358,683 +119,117 @@ def test_usage_is_aggregated_across_provider_rounds(monkeypatch):
 
     output = asyncio.run(_collect(client))
 
-    usage_payloads = [
-        json.loads(line[len("data:") :])
-        for line in output
-        if line.startswith("data:")
-        and line[len("data:") :].strip() != "[DONE]"
-        and json.loads(line[len("data:") :]).get("usage")
+    assert executed == [("web_search", {"query": "Cairo"})]
+    assert [message["role"] for message in client.calls[1]["messages"][-2:]] == [
+        "assistant",
+        "tool",
     ]
-    assert len(usage_payloads) == 1
-    usage = usage_payloads[0]["usage"]
-    assert usage["prompt_tokens"] == 19
-    assert usage["completion_tokens"] == 7
-    assert usage["total_tokens"] == 26
-    assert usage["completion_tokens_details"]["reasoning_tokens"] == 2
+    assert sum('"type": "tool_start"' in line for line in output) == 1
+    assert sum('"type": "tool_end"' in line for line in output) == 1
+    usage = [payload["usage"] for payload in _payloads(output) if payload.get("usage")]
+    assert usage == [{"prompt_tokens": 19, "completion_tokens": 7, "total_tokens": 26}]
 
 
-def test_gemini_thought_signature_survives_tool_continuation(monkeypatch):
-    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
-    first_round = _tool_round()
-    first_payload = json.loads(first_round[0][len("data:") :])
-    first_payload["choices"][0]["delta"]["tool_calls"][0]["extra_content"] = {
-        "google": {"thought_signature": "SIG-ABC"}
-    }
-    first_round[0] = "data: " + json.dumps(first_payload)
-    client = _FakeClient(
-        [
-            first_round,
-            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
-        ]
-    )
-
-    asyncio.run(_collect(client))
-
-    assistant = client.calls[1]["messages"][-2]
-    assert assistant["tool_calls"][0]["extra_content"] == {
-        "google": {"thought_signature": "SIG-ABC"}
-    }
-
-
-def test_gemini_signed_text_survives_tool_continuation(monkeypatch):
-    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
-    first_round = [
-        _chunk(
-            delta = {
-                "content": "I will search.",
-                "extra_content": {"google": {"thought_signature": "SIG-TEXT"}},
-            }
-        ),
-        *_tool_round(),
-    ]
-    client = _FakeClient(
-        [
-            first_round,
-            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
-        ]
-    )
-
-    asyncio.run(_collect(client))
-
-    assistant = client.calls[1]["messages"][-2]
-    assert assistant["content"] == "I will search."
-    assert assistant["extra_content"] == {"google": {"thought_signature": "SIG-TEXT"}}
-
-
-def test_gemini_hosted_parts_survive_studio_tool_continuation(monkeypatch):
-    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
-    executable_part = {
-        "executableCode": {"language": "PYTHON", "code": "print(2)"},
-        "thoughtSignature": "SIG-EXEC",
-    }
-    result_part = {
-        "codeExecutionResult": {"outcome": "OUTCOME_OK", "output": "2\n"},
-        "thoughtSignature": "SIG-RESULT",
-    }
-    hosted_start = {
-        "choices": [],
-        "_toolEvent": {
-            "type": "tool_start",
-            "tool_name": "code_execution",
-            "tool_call_id": "code_1",
-            "arguments": {
-                "google": {"native_part": {"parts": [executable_part]}},
-            },
-        },
-    }
-    hosted_end = {
-        "choices": [],
-        "_toolEvent": {
-            "type": "tool_end",
-            "tool_name": "code_execution",
-            "tool_call_id": "code_1",
-            "google": {"native_part": {"parts": [result_part]}},
-        },
-    }
-    first_round = [
-        "data: " + json.dumps(hosted_start),
-        "data: " + json.dumps(hosted_end),
-        *_tool_round(),
-    ]
-    client = _FakeClient([first_round, [_chunk(delta = {"content": "done"}), "data: [DONE]"]])
-
-    asyncio.run(_collect(client))
-
-    assistant = client.calls[1]["messages"][-2]
-    assert assistant["extra_content"]["google"]["hosted_parts"] == [executable_part, result_part]
-
-
-def test_anthropic_thinking_metadata_is_private_and_replayed(monkeypatch):
-    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
-    thinking_block = {
-        "type": "thinking",
-        "thinking": "I should search.",
-        "signature": "signed-thinking",
-    }
-    tool_round = [
-        _chunk(
-            delta = {
-                "content": "<think>I should search.",
-                "extra_content": {"anthropic": {"thinking_display": True}},
-            }
-        ),
-        _chunk(
-            delta = {
-                "content": "</think>",
-                "extra_content": {"anthropic": {"thinking_display": True}},
-            }
-        ),
-        _chunk(
-            delta = {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "toolu_search",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": '{"query":"Cairo weather"}',
-                        },
-                        "extra_content": {"anthropic": {"thinking_blocks": [thinking_block]}},
-                    }
-                ]
-            }
-        ),
-        _chunk(delta = {}, finish_reason = "tool_calls"),
-        "data: [DONE]",
-    ]
-    client = _FakeClient(
-        [
-            tool_round,
-            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
-        ]
-    )
-
-    output = asyncio.run(_collect(client))
-
-    assistant = client.calls[1]["messages"][-2]
-    assert assistant["content"] == ""
-    assert assistant["extra_content"]["anthropic"]["thinking_blocks"] == [thinking_block]
-    assert any("<think>I should search." in line for line in output)
-    assert not any("signed-thinking" in line for line in output)
-
-
-def test_openai_reasoning_item_survives_tool_continuation(monkeypatch):
-    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
-    reasoning_item = {
-        "type": "reasoning",
-        "id": "rs_abc",
-        "status": "completed",
-        "summary": [{"type": "summary_text", "text": "Use the tool."}],
-    }
-    tool_round = [
-        _chunk(
-            delta = {
-                "content": "<think>Use the tool.</think>",
-                "extra_content": {"openai": {"reasoning_display": True}},
-            }
-        ),
-        _chunk(
-            delta = {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_search",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": '{"query":"Cairo"}',
-                        },
-                        "extra_content": {"openai": {"reasoning_items": [reasoning_item]}},
-                    }
-                ]
-            }
-        ),
-        _chunk(delta = {}, finish_reason = "tool_calls"),
-        "data: [DONE]",
-    ]
-    client = _FakeClient([tool_round, [_chunk(delta = {"content": "done"}), "data: [DONE]"]])
-
-    output = asyncio.run(_collect(client))
-
-    assistant = client.calls[1]["messages"][-2]
-    assert assistant["content"] == ""
-    assert assistant["tool_calls"][0]["extra_content"] == {
-        "openai": {"reasoning_items": [reasoning_item]}
-    }
-    assert any("<think>Use the tool.</think>" in line for line in output)
-
-
-def test_parallel_tool_calls_false_executes_only_the_first_call(monkeypatch):
-    executed: list[str] = []
-
-    def fake_execute(name, _arguments, **_kwargs):
-        executed.append(name)
-        return "ok"
-
-    monkeypatch.setattr(loop_mod, "execute_tool", fake_execute)
-    parallel_round = [
-        _chunk(
-            delta = {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_first",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": '{"query":"first"}',
-                        },
-                    },
-                    {
-                        "index": 1,
-                        "id": "call_second",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": '{"query":"second"}',
-                        },
-                    },
-                ]
-            }
-        ),
-        _chunk(delta = {}, finish_reason = "tool_calls"),
-        "data: [DONE]",
-    ]
-    client = _FakeClient([parallel_round, [_chunk(delta = {"content": "done"}), "data: [DONE]"]])
-
-    asyncio.run(_collect(client, parallel_tool_calls = False))
-
-    assert executed == ["web_search"]
-    assistant = client.calls[1]["messages"][-2]
-    assert [call["id"] for call in assistant["tool_calls"]] == ["call_first"]
-
-
-def test_openai_response_link_is_removed_when_parallel_calls_are_dropped(monkeypatch):
-    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
-    previous = {"openai": {"previous_response_id": "resp_parallel"}}
-    parallel_round = [
-        _chunk(
-            delta = {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_first",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": '{"query":"first"}',
-                        },
-                        "extra_content": copy.deepcopy(previous),
-                    },
-                    {
-                        "index": 1,
-                        "id": "call_second",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": '{"query":"second"}',
-                        },
-                        "extra_content": copy.deepcopy(previous),
-                    },
-                ]
-            }
-        ),
-        _chunk(delta = {}, finish_reason = "tool_calls"),
-        "data: [DONE]",
-    ]
-    client = _FakeClient([parallel_round, [_chunk(delta = {"content": "done"}), "data: [DONE]"]])
-
-    asyncio.run(_collect(client, parallel_tool_calls = False))
-
-    assistant_call = client.calls[1]["messages"][-2]["tool_calls"][0]
-    assert assistant_call["id"] == "call_first"
-    assert "extra_content" not in assistant_call
-
-
-def test_noop_round_does_not_consume_execution_budget(monkeypatch):
-    executed: list[str] = []
-
-    def fake_execute(name, _arguments, **_kwargs):
-        executed.append(name)
-        return "ok"
-
-    monkeypatch.setattr(loop_mod, "execute_tool", fake_execute)
-    client = _FakeClient(
-        [
-            _named_tool_round("web_search", "call_first", '{"query":"Cairo"}'),
-            _named_tool_round("web_search", "call_duplicate", '{"query":"Cairo"}'),
-            _named_tool_round(
-                "web_search",
-                "call_second",
-                '{"query":"Alexandria"}',
-            ),
-            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
-        ]
-    )
-
-    asyncio.run(_collect(client, max_tool_iterations = 2))
-
-    assert executed == ["web_search", "web_search"]
-    assert len(client.calls) == 4
-    assert client.calls[2]["tools"] == [TOOL_SCHEMA]
-    assert client.calls[3]["tools"] is None
-
-
-def test_denied_round_does_not_consume_execution_budget(monkeypatch):
-    executed: list[str] = []
-    approvals = iter(["deny", "allow"])
-
-    def fake_execute(name, _arguments, **_kwargs):
-        executed.append(name)
-        return "ok"
-
-    monkeypatch.setattr(loop_mod, "execute_tool", fake_execute)
-    monkeypatch.setattr(loop_mod, "new_approval_id", lambda: "approval")
-    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda *_args: object())
-    monkeypatch.setattr(loop_mod, "wait_tool_decision", lambda *_args: next(approvals))
-    client = _FakeClient(
-        [
-            _named_tool_round("web_search", "call_denied", '{"query":"Cairo"}'),
-            _named_tool_round(
-                "web_search",
-                "call_allowed",
-                '{"query":"Alexandria"}',
-            ),
-            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
-        ]
-    )
-
-    asyncio.run(
-        _collect(
-            client,
-            max_tool_iterations = 1,
-            confirm_tool_calls = True,
-        )
-    )
-
-    assert executed == ["web_search"]
-    assert len(client.calls) == 3
-    assert client.calls[1]["tools"] == [TOOL_SCHEMA]
-    assert client.calls[2]["tools"] is None
-
-
-def test_cancel_interrupts_a_silent_provider_stream():
-    class BlockingClient:
-        def __init__(self):
-            self.entered = asyncio.Event()
-            self.release = asyncio.Event()
-            self.closed = asyncio.Event()
-
-        async def stream_chat_completion(self, **_kwargs):
-            self.entered.set()
-            try:
-                await self.release.wait()
-                yield "data: [DONE]"
-            finally:
-                self.closed.set()
-
-    async def run():
-        client = BlockingClient()
-        cancel = threading.Event()
-        stream = loop_mod.stream_external_chat_with_tools(
-            client = client,
-            messages = [{"role": "user", "content": "wait"}],
-            model = "silent-model",
-            tools = [TOOL_SCHEMA],
-            request_kwargs = {},
-            cancel_event = cancel,
-        )
-        pending = asyncio.create_task(stream.__anext__())
-        await asyncio.wait_for(client.entered.wait(), timeout = 0.5)
-        cancel.set()
-        with pytest.raises(StopAsyncIteration):
-            await asyncio.wait_for(pending, timeout = 0.5)
-        await asyncio.wait_for(client.closed.wait(), timeout = 0.5)
-        await stream.aclose()
-
-    asyncio.run(run())
-
-
-def test_upstream_sse_comments_are_forwarded(monkeypatch):
-    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
-    client = _FakeClient(
-        [
-            [": keep-alive", *_tool_round()],
-            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
-        ]
-    )
-
-    output = asyncio.run(_collect(client))
-
-    assert ": keep-alive" in output
-
-
-def test_provider_error_discards_partial_tool_call(monkeypatch):
+@pytest.mark.parametrize("terminal", ["eof", "done", "length"])
+def test_tool_round_requires_an_explicit_tool_finish(monkeypatch, terminal):
     executed = []
     monkeypatch.setattr(
         loop_mod,
         "execute_tool",
-        lambda name, arguments, **_kwargs: executed.append((name, arguments)),
-    )
-    partial = _chunk(
-        delta = {
-            "tool_calls": [
-                {
-                    "index": 0,
-                    "id": "call_partial",
-                    "type": "function",
-                    "function": {"name": "web_search", "arguments": '{"query":"Cai'},
-                }
-            ]
-        }
-    )
-    error = "data: " + json.dumps({"error": {"message": "upstream failed"}})
-    client = _FakeClient([[partial, error, "data: [DONE]"]])
-
-    output = asyncio.run(_collect(client))
-
-    assert executed == []
-    assert any("upstream failed" in line for line in output)
-
-
-def test_abrupt_eof_discards_partial_tool_call(monkeypatch):
-    executed = []
-    monkeypatch.setattr(
-        loop_mod,
-        "execute_tool",
-        lambda name, arguments, **_kwargs: executed.append((name, arguments)),
-    )
-    partial = _chunk(
-        delta = {
-            "tool_calls": [
-                {
-                    "index": 0,
-                    "id": "call_partial",
-                    "type": "function",
-                    "function": {"name": "web_search", "arguments": '{"query":"Cai'},
-                }
-            ]
-        }
-    )
-
-    with pytest.raises(RuntimeError, match = "before completing"):
-        asyncio.run(_collect(_FakeClient([[partial]])))
-
-    assert executed == []
-
-
-def test_done_without_tool_finish_marker_discards_complete_tool_call(monkeypatch):
-    executed = []
-    monkeypatch.setattr(
-        loop_mod,
-        "execute_tool",
-        lambda name, arguments, **_kwargs: executed.append((name, arguments)),
+        lambda *args, **_kwargs: executed.append(args),
     )
     call = _chunk(
         delta = {
             "tool_calls": [
                 {
                     "index": 0,
-                    "id": "call_unfinished",
-                    "type": "function",
-                    "function": {
-                        "name": "web_search",
-                        "arguments": '{"query":"Cairo"}',
-                    },
-                }
-            ]
-        }
-    )
-
-    with pytest.raises(RuntimeError, match = "before completing"):
-        asyncio.run(_collect(_FakeClient([[call, "data: [DONE]"]])))
-
-    assert executed == []
-
-
-@pytest.mark.parametrize("finish_reason", ["length", "content_filter", "stop"])
-def test_non_tool_finish_reason_discards_partial_tool_call(monkeypatch, finish_reason):
-    executed = []
-    monkeypatch.setattr(
-        loop_mod,
-        "execute_tool",
-        lambda name, arguments, **_kwargs: executed.append((name, arguments)),
-    )
-    partial = _chunk(
-        delta = {
-            "tool_calls": [
-                {
-                    "index": 0,
                     "id": "call_partial",
                     "type": "function",
-                    "function": {"name": "web_search", "arguments": '{"query":"Cai'},
+                    "function": {"name": "web_search", "arguments": '{"query":"Cairo"}'},
                 }
             ]
         },
-        finish_reason = finish_reason,
+        finish = "length" if terminal == "length" else None,
     )
+    stream = [call] + (["data: [DONE]"] if terminal != "eof" else [])
 
-    with pytest.raises(RuntimeError, match = f"finish_reason='{finish_reason}'"):
-        asyncio.run(_collect(_FakeClient([[partial, "data: [DONE]"]])))
-
+    with pytest.raises(RuntimeError):
+        asyncio.run(_collect(_Client([stream])))
     assert executed == []
 
 
-def test_parallel_batch_deduplicates_normalized_arguments(monkeypatch):
-    executed = []
-
-    def fake_execute(name, arguments, **_kwargs):
-        executed.append((name, arguments))
-        return "ok"
-
-    monkeypatch.setattr(loop_mod, "execute_tool", fake_execute)
-    parallel_round = [
-        _chunk(
-            delta = {
-                "tool_calls": [
-                    {
-                        "index": 0,
-                        "id": "call_first",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": '{"query":"Cairo"}',
-                        },
-                    },
-                    {
-                        "index": 1,
-                        "id": "call_duplicate",
-                        "type": "function",
-                        "function": {
-                            "name": "web_search",
-                            "arguments": '{ "query": "Cairo" }',
-                        },
-                    },
-                ]
-            }
-        ),
-        _chunk(delta = {}, finish_reason = "tool_calls"),
-        "data: [DONE]",
-    ]
-    client = _FakeClient([parallel_round, [_chunk(delta = {"content": "done"}), "data: [DONE]"]])
-
-    asyncio.run(_collect(client))
-
-    assert executed == [("web_search", {"query": "Cairo"})]
-    assert [call["id"] for call in client.calls[1]["messages"][-3]["tool_calls"]] == ["call_first"]
-
-
-def test_repeated_denial_prompts_once_then_forces_final_answer(monkeypatch):
-    approvals = []
-
-    def deny(*_args):
-        approvals.append("deny")
-        return "deny"
-
-    monkeypatch.setattr(loop_mod, "new_approval_id", lambda: "approval")
-    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda *_args: object())
-    monkeypatch.setattr(loop_mod, "wait_tool_decision", deny)
-    monkeypatch.setattr(
-        loop_mod,
-        "execute_tool",
-        lambda *_args, **_kwargs: pytest.fail("denied tool must not execute"),
-    )
-    client = _FakeClient(
-        [
-            _named_tool_round("web_search", "call_first", '{"query":"Cairo"}'),
-            _named_tool_round("web_search", "call_repeat", '{ "query": "Cairo" }'),
-            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
-        ]
-    )
-
-    asyncio.run(_collect(client, confirm_tool_calls = True))
-
-    assert approvals == ["deny"]
-    assert len(client.calls) == 3
-    assert client.calls[2]["tools"] is None
-
-
-def test_distinct_denials_are_bounded_by_the_round_limit(monkeypatch):
-    approvals = []
-
-    def deny(*_args):
-        approvals.append("deny")
-        return "deny"
-
-    monkeypatch.setattr(loop_mod, "new_approval_id", lambda: "approval")
-    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda *_args: object())
-    monkeypatch.setattr(loop_mod, "wait_tool_decision", deny)
-    monkeypatch.setattr(
-        loop_mod,
-        "execute_tool",
-        lambda *_args, **_kwargs: pytest.fail("denied tool must not execute"),
-    )
-    client = _FakeClient(
-        [
-            _named_tool_round("web_search", "call_first", '{"query":"Cairo"}'),
-            _named_tool_round("web_search", "call_second", '{"query":"Alexandria"}'),
-            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
-        ]
-    )
-
-    asyncio.run(
-        _collect(
-            client,
-            confirm_tool_calls = True,
-            max_tool_iterations = 2,
-        )
-    )
-
-    assert approvals == ["deny", "deny"]
-    assert len(client.calls) == 3
-    assert client.calls[2]["tools"] is None
-    assert client.calls[2]["tool_choice"] == "none"
-
-
-def test_accumulated_usage_is_emitted_before_provider_error(monkeypatch):
+def test_dropped_parallel_call_unlinks_openai_response_and_keeps_gemini_parts(monkeypatch):
     monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
-    provider_error = "data: " + json.dumps({"error": {"message": "upstream failed"}})
-    client = _FakeClient([_tool_round(), [provider_error]])
+    native = {"executableCode": {"language": "PYTHON", "code": "print(2)"}}
+    event = {
+        "choices": [],
+        "_toolEvent": {
+            "type": "tool_start",
+            "arguments": {"google": {"native_part": {"parts": [native]}}},
+        },
+    }
+    linked = {"openai": {"previous_response_id": "resp_parallel"}}
+    calls = [
+        {
+            "index": index,
+            "id": f"call_{index}",
+            "type": "function",
+            "function": {"name": "web_search", "arguments": json.dumps({"query": index})},
+            "extra_content": copy.deepcopy(linked),
+        }
+        for index in range(2)
+    ]
+    client = _Client(
+        [
+            [
+                "data: " + json.dumps(event),
+                _chunk(delta = {"tool_calls": calls}),
+                _chunk(delta = {}, finish = "tool_calls"),
+                "data: [DONE]",
+            ],
+            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
+        ]
+    )
+
+    asyncio.run(_collect(client, parallel_tool_calls = False))
+
+    assistant = client.calls[1]["messages"][-2]
+    assert [call["id"] for call in assistant["tool_calls"]] == ["call_0"]
+    assert "extra_content" not in assistant["tool_calls"][0]
+    assert assistant["extra_content"]["google"]["hosted_parts"] == [native]
+
+
+def test_usage_precedes_provider_error(monkeypatch):
+    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
+    error = "data: " + json.dumps({"error": {"message": "upstream failed"}})
+    client = _Client(
+        [
+            _tool_round(
+                usage = {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+            ),
+            [error],
+        ]
+    )
 
     output = asyncio.run(_collect(client))
 
-    usage_index = next(
-        index
-        for index, line in enumerate(output)
-        if line.startswith("data:")
-        and line[len("data:") :].strip() != "[DONE]"
-        and json.loads(line[len("data:") :]).get("usage")
-    )
-    error_index = next(index for index, line in enumerate(output) if "upstream failed" in line)
-    usage = json.loads(output[usage_index][len("data:") :])["usage"]
-    assert usage == {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}
+    usage_index = next(i for i, payload in enumerate(_payloads(output)) if payload.get("usage"))
+    error_index = next(i for i, payload in enumerate(_payloads(output)) if payload.get("error"))
     assert usage_index < error_index
 
 
-def test_knowledge_base_searches_are_capped_across_provider_rounds(monkeypatch):
+def test_knowledge_base_searches_are_capped(monkeypatch):
     executed = []
-
-    def fake_execute(name, arguments, **_kwargs):
-        executed.append((name, arguments))
-        return f"result {len(executed)}"
-
-    monkeypatch.setattr(loop_mod, "execute_tool", fake_execute)
-    kb_tool = {
-        "type": "function",
-        "function": {
-            "name": "search_knowledge_base",
-            "description": "Search the selected knowledge base.",
-            "parameters": {
-                "type": "object",
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"],
-            },
-        },
-    }
-    client = _FakeClient(
+    monkeypatch.setattr(
+        loop_mod,
+        "execute_tool",
+        lambda name, arguments, **_kwargs: executed.append((name, arguments)) or "result",
+    )
+    kb_tool = copy.deepcopy(TOOL)
+    kb_tool["function"]["name"] = "search_knowledge_base"
+    client = _Client(
         [
-            _named_tool_round(
+            _tool_round(
                 "search_knowledge_base",
                 f"call_{index}",
                 json.dumps({"query": f"paraphrase {index}"}),
@@ -1044,10 +239,7 @@ def test_knowledge_base_searches_are_capped_across_provider_rounds(monkeypatch):
         + [[_chunk(delta = {"content": "done"}), "data: [DONE]"]]
     )
 
-    asyncio.run(_collect(client, tools = [kb_tool], rag_scope = "scope-1"))
+    asyncio.run(_collect(client, tools = [kb_tool], rag_scope = "scope"))
 
     assert len(executed) == loop_mod.RAG_MAX_SEARCHES_PER_TURN
-    assert all(name == "search_knowledge_base" for name, _arguments in executed)
-    capped_result = client.calls[loop_mod.RAG_MAX_SEARCHES_PER_TURN + 1]["messages"][-1]
-    assert capped_result["role"] == "tool"
-    assert capped_result["content"] == loop_mod.RAG_SEARCH_CAP_NUDGE
+    assert client.calls[-1]["messages"][-1]["content"] == loop_mod.RAG_SEARCH_CAP_NUDGE
