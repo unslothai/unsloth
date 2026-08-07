@@ -494,7 +494,9 @@ def _continuation_body(monkeypatch, provider_type: str, base_url: str) -> dict:
 
     async def run():
         client = ExternalProviderClient(
-            provider_type = provider_type, base_url = base_url, api_key = "k",
+            provider_type = provider_type,
+            base_url = base_url,
+            api_key = "k",
         )
         await _collect(
             client.stream_chat_completion(
