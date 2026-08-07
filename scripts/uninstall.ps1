@@ -404,12 +404,21 @@ Environment:
     _StopStudioProcesses -KnownRoots $knownRoots
     # App and the WebView2 helpers holding its profile open must both exit before the EBWebView delete below.
     $webviewProfile = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "ai.unsloth.studio" } else { $null }
-    # Session-scoped, like every other kill here: the NSIS installMode is currentUser, so each
-    # user has their own copy, and an elevated run would otherwise stop another logged-in user's
-    # app. UAC elevation keeps our session, so our own instance still matches.
-    $mySession = (Get-Process -Id $PID).SessionId
-    $studioPids = @(Get-Process -Name "unsloth-studio" -ErrorAction SilentlyContinue |
-        Where-Object { $_.SessionId -eq $mySession } | ForEach-Object { $_.Id })
+    # Account-scoped, like every other kill here. installMode is currentUser, so the profile
+    # removed below is this account's and is shared by all of its sessions: a second console or
+    # RDS session of the same user must die too or it re-creates the profile mid-delete, while
+    # another user's Studio must not be touched. SIDs, so domain and locale do not matter; an
+    # owner we cannot read is skipped, and Stop-Process could not have touched it either.
+    $meSid = try { [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value } catch { $null }
+    $studioPids = @()
+    if ($meSid) {
+        try {
+            foreach ($sp in (Get-CimInstance Win32_Process -Filter "Name = 'unsloth-studio.exe'" -ErrorAction SilentlyContinue)) {
+                $spSid = try { (Invoke-CimMethod -InputObject $sp -MethodName GetOwnerSid -ErrorAction SilentlyContinue).Sid } catch { $null }
+                if ($spSid -eq $meSid) { $studioPids += [int]$sp.ProcessId }
+            }
+        } catch { }
+    }
     if ($webviewProfile) {
         # Unescaped "[" is a wildcard class: would miss our own profile and match others.
         # Trailing \ spares "<bid>2\EBWebView".

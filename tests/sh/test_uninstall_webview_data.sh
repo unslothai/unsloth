@@ -106,6 +106,9 @@ H=$(new_home)
 mkdir -p "$H/.cache/$BID" "$H/.local/share/$BID" "$H/.config/$BID" \
          "$H/.local/state/$BID" "$H/.cache/other.app"
 : > "$XDG_RUNTIME_DIR/unsloth-studio-launcher-$(id -u).lock"
+# Truncate first: every fixture home has this user's uid, so the Darwin run above logged the
+# same argv and the assertion below would pass on it even if Linux emitted no kill at all.
+: > "$PKILL_LOG"
 run_uninstall "$H" Linux
 # Proves the lock sweep hit the fixture runtime dir, not the real one.
 assert_gone "linux: fixture launcher lock removed" \

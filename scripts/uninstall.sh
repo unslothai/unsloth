@@ -101,6 +101,27 @@ _stop_owned_sd_cpp_processes() {
     done
 }
 
+# Numeric owner of $HOME, empty if it cannot be resolved. Not always the caller: macOS
+# ships `env_keep += "HOME MAIL"`, so sudo keeps the invoking user's home while euid is 0.
+_home_uid() {
+    _hu=$(stat -c %u "$HOME" 2>/dev/null || stat -f %u "$HOME" 2>/dev/null || true)
+    case "$_hu" in ''|*[!0-9]*) _hu=$(id -u 2>/dev/null || true) ;; esac
+    case "$_hu" in *[!0-9]*) _hu= ;; esac
+    printf '%s\n' "$_hu"
+}
+
+# Run "$@" as that owner when we are root and it is someone else, so per-user daemons see
+# the right domain. Plain "$@" otherwise, which is every non-elevated run.
+_run_as_home_owner() {
+    _ro=$(_home_uid)
+    if [ "$(id -u 2>/dev/null || echo 0)" = "0" ] && [ -n "$_ro" ] && [ "$_ro" != "0" ] &&
+       command -v launchctl >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
+        launchctl asuser "$_ro" sudo -u "#$_ro" "$@"
+    else
+        "$@"
+    fi
+}
+
 _pkill_studio() {
     # Prefer PID files written by _spawn_terminal so we only touch our own installs.
     for _data_dir in "$HOME/.local/share/unsloth" $(_custom_studio_data_dirs); do
@@ -158,9 +179,7 @@ $_roots_from_conf"
     # $HOME being cleared, not the caller (macOS sudo keeps HOME), so a root run leaves other
     # logged-in users alone. Numeric suits procps and BSD pkill; BSD reads the signal from
     # argv[1] only, so it stays first. Unknown owner skips rather than signalling everyone.
-    _studio_uid=$(stat -c %u "$HOME" 2>/dev/null || stat -f %u "$HOME" 2>/dev/null || true)
-    case "$_studio_uid" in ''|*[!0-9]*) _studio_uid=$(id -u 2>/dev/null || true) ;; esac
-    case "$_studio_uid" in *[!0-9]*) _studio_uid= ;; esac
+    _studio_uid=$(_home_uid)
     if [ -n "$_studio_uid" ]; then
         pkill -TERM -x -u "$_studio_uid" unsloth-studio 2>/dev/null || true
         sleep 0.5
@@ -423,9 +442,11 @@ _unsloth_uninstall_main() {
             _remove_path "$HOME/Library/Saved Application State/$_bid.savedState"
             # defaults, not rm: cfprefsd rewrites the plist from memory after a bare rm.
             # ByHost is a separate domain.
+            # As the home's owner: under sudo, root's defaults edits root's domain and the
+            # target user's cfprefsd still rewrites the plist after the rm below.
             if command -v defaults >/dev/null 2>&1; then
-                defaults delete "$_bid" >/dev/null 2>&1 || true
-                defaults -currentHost delete "$_bid" >/dev/null 2>&1 || true
+                _run_as_home_owner defaults delete "$_bid" >/dev/null 2>&1 || true
+                _run_as_home_owner defaults -currentHost delete "$_bid" >/dev/null 2>&1 || true
             fi
             _remove_path "$HOME/Library/Preferences/$_bid.plist"
             ;;
