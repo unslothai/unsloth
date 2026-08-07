@@ -177,6 +177,33 @@ def test_candidate_disk_gate_spares_an_already_cached_prequant(monkeypatch):
     )
 
 
+def test_the_cached_probe_is_pinned_to_the_active_cache_root(monkeypatch):
+    """Unpinned, cached_checkpoint_path reads only huggingface_hub's import-time constant.
+
+    Studio's cache folder is a setting, so after it changes the retry proves the checkpoint cached
+    in the LIVE root while an unpinned probe here still calls it uncached and re-applies the gate,
+    defeating the moved-cache retry this excuse exists for. The retry and the loader both pin the
+    active root; so must this.
+    """
+    import core.inference.diffusion_auto_policy as ap
+    import core.inference.diffusion_prequant as pq
+    import utils.hf_cache_settings as cache_settings
+
+    seen: list = []
+
+    _patch_selector(monkeypatch, scheme = "int8")
+    monkeypatch.setattr(pq, "usable_prequant_source", lambda *a, **k: object())
+    monkeypatch.setattr(cache_settings, "active_hf_hub_cache", lambda: "/live-root")
+    monkeypatch.setattr(
+        pq,
+        "prequant_checkpoint_cached",
+        lambda _src, **kw: (seen.append(kw.get("cache_dir")), True)[1],
+    )
+    monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: 1024)
+    resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "auto")
+    assert seen == ["/live-root"], seen
+
+
 def test_candidate_disk_gate_unprobeable_disk_passes(monkeypatch):
     # Disk probing must never sink the candidate: unprobeable (None) passes through.
     import core.inference.diffusion_auto_policy as ap
