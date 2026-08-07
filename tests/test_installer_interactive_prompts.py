@@ -115,9 +115,10 @@ _PY_READ = re.compile(
 )
 # In command position: starting the line or a `&`-joined command, after `do`, or
 # as the body of a single-line `if`. Echoing the word `choice` is not a prompt.
+# `pause` asks nothing but waits for a keypress, which stalls setup just the same.
 _BAT_READ = re.compile(
-    r"(?:^\s*|[&(]\s*|\bdo\s+)@?\s*(?:set\s+/p\b|choice\b)"
-    r"|^\s*@?\s*(?:if|else)\b.*?\s(?:set\s+/p\b|choice\b)",
+    r"(?:^\s*|[&(]\s*|\bdo\s+)@?\s*(?:set\s+/p\b|choice\b|pause\b)"
+    r"|^\s*@?\s*(?:if|else)\b.*?\s(?:set\s+/p\b|choice\b|pause\b)",
     re.IGNORECASE,
 )
 
@@ -781,6 +782,12 @@ def test_detects_a_directly_imported_getpass():
     assert [
         question for _, _, question in find_prompts("studio/install_python_stack.py", source)
     ] == ["continue with installation?"]
+
+
+def test_detects_a_batch_pause():
+    """It asks nothing, but an unattended install still stops dead on it."""
+    source = "echo   Review the notes above.\npause\n"
+    assert len(find_prompts("studio/setup.bat", source)) == 1
 
 
 def test_detects_a_batch_prompt_in_a_conditional():
