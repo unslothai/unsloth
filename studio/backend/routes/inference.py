@@ -2399,12 +2399,7 @@ def _prune_pending(now: float) -> None:
 
 
 class _TrackedCancel:
-    """Register cancel_event in _CANCEL_REGISTRY for the block's duration.
-
-    By default, also records the run in state.active_generations so /load and
-    /unload see which local generations a reload would interrupt. Both
-    registries share this event when active-generation tracking is enabled.
-    """
+    """Track cancellation and, optionally, active local generations."""
 
     def __init__(
         self,
