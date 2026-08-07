@@ -72,11 +72,11 @@ export async function copyToClipboard(text: string): Promise<boolean> {
 
   // Native IPC has no activation requirement, which is the whole point: callers that
   // await something before copying have already lost the gesture.
-  if (isTauri && (await copyWithTauriClipboard(text))) {
-    return true;
-  }
-
-  if (webWrite && (await webWrite)) {
+  const nativeOk = isTauri ? await copyWithTauriClipboard(text) : false;
+  // Always settle the armed write, even once native has succeeded: returning with it
+  // still in flight would let it land after the user's next copy and clobber it.
+  const webOk = webWrite ? await webWrite : false;
+  if (nativeOk || webOk) {
     return true;
   }
 

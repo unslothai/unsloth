@@ -24,14 +24,19 @@ type Recorder = {
   appended: number;
   removed: number;
   nativeWrites: string[];
+  /** Resolves a "deferred" web write. */
+  settleWeb: () => void;
 };
 
 type EnvOptions = {
   tauri: boolean;
   /** How the stubbed Tauri plugin behaves once it is reached. */
   stub?: StubMode;
-  /** "absent" drops navigator.clipboard entirely, as an insecure context does. */
-  clipboard?: "ok" | "reject" | "absent";
+  /**
+   * "absent" drops navigator.clipboard entirely, as an insecure context does.
+   * "deferred" leaves the write pending until `settleWeb()` is called.
+   */
+  clipboard?: "ok" | "reject" | "absent" | "deferred";
   execCommandResult?: boolean;
 };
 
@@ -63,6 +68,7 @@ async function load(options: EnvOptions) {
     appended: 0,
     removed: 0,
     nativeWrites: [],
+    settleWeb: () => {},
   };
 
   const windowStub: Record<string, unknown> = {
@@ -105,9 +111,15 @@ async function load(options: EnvOptions) {
         : {
             writeText(text: string) {
               recorder.webWrites.push(text);
-              return clipboard === "reject"
-                ? Promise.reject(new Error("NotAllowedError"))
-                : Promise.resolve();
+              if (clipboard === "reject") {
+                return Promise.reject(new Error("NotAllowedError"));
+              }
+              if (clipboard === "deferred") {
+                return new Promise<void>((resolve) => {
+                  recorder.settleWeb = resolve;
+                });
+              }
+              return Promise.resolve();
             },
           },
   });
@@ -188,6 +200,32 @@ test("Tauri build lets the native write decide the result", async () => {
   assert.equal(await copyToClipboard("model/path.gguf"), true);
   assert.deepEqual(recorder.nativeWrites, ["model/path.gguf"]);
   assert.deepEqual(recorder.execCommands, [], "no need for the deprecated fallback");
+});
+
+test("Tauri build does not return with the armed web write still in flight", async () => {
+  const { copyToClipboard, recorder } = await load({
+    tauri: true,
+    clipboard: "deferred",
+  });
+
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  let settled = false;
+  const pending = copyToClipboard("model/path.gguf").then((ok) => {
+    settled = true;
+    return ok;
+  });
+
+  // Drain past the plugin's dynamic import, so "not settled" below means the call is
+  // genuinely waiting on the web write rather than still loading the native one.
+  for (let i = 0; i < 50 && recorder.nativeWrites.length === 0; i += 1) await tick();
+  assert.deepEqual(recorder.nativeWrites, ["model/path.gguf"], "native write ran");
+  for (let i = 0; i < 5; i += 1) await tick();
+
+  // Returning here would leave the armed write to land on whatever the user copies next.
+  assert.equal(settled, false, "must wait for the armed write to settle");
+
+  recorder.settleWeb();
+  assert.equal(await pending, true);
 });
 
 test("Tauri build arms the web write inside the gesture", async () => {
