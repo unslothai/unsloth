@@ -977,6 +977,67 @@ def test_plain_keepalives_mean_a_silent_backend_and_spend_the_budget(monkeypatch
     assert time.monotonic() - started < 5.0, "must end on the budget, not the wall clock"
 
 
+def test_the_queue_wait_is_not_charged_to_the_model_budget(monkeypatch):
+    """The tail of a queue wait must not eat into the model's own budget.
+
+    Markers are interval-spaced, so anchoring the deadline to the last one charges up to
+    a full interval of queueing against the model. The wait is suspended instead, and the
+    budget starts when the queue says the slot is ours.
+    """
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.3)
+
+    class _QueuedThenAdmitted:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            # One marker, then a queue wait far longer than the budget between markers.
+            yield ": admission-wait"
+            await asyncio.sleep(1.0)
+            yield ": admission-done"
+            yield 'data: {"choices":[{"delta":{"content":"report"}}]}'
+            yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+    _install_fake_client(monkeypatch, [_QueuedThenAdmitted()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    assert _run_stream(supervisor, timeout_seconds = 10.0) == ("report", "", "stop")
+
+
+def test_the_budget_starts_when_admission_ends(monkeypatch):
+    """Once the slot is granted, a silent model is on its own budget again."""
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.1)
+
+    class _AdmittedThenSilent:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            yield ": admission-wait"
+            yield ": admission-done"
+            await asyncio.sleep(30)
+            yield "data: [DONE]"
+
+    _install_fake_client(monkeypatch, [_AdmittedThenSilent()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    started = time.monotonic()
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        _run_stream(supervisor, timeout_seconds = 30.0)
+    assert time.monotonic() - started < 5.0, "the budget must run from admission end"
+
+
 def test_endless_admission_waits_still_end_at_the_wall_clock(monkeypatch):
     """Deferring on the admission marker must not make a stream unbounded."""
     monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.05)

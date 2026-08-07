@@ -156,6 +156,7 @@ _STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
 # routes/inference.py marks an admission wait with this SSE comment, distinct from the
 # plain keepalive it sends whenever the backend itself is silent.
 _ADMISSION_WAIT_COMMENT = ": admission-wait"
+_ADMISSION_DONE_COMMENT = ": admission-done"
 
 
 def _auto_scrape_default() -> int:
@@ -1940,11 +1941,14 @@ class ResearchSupervisor:
                         if self._cancel_event(run["id"]).is_set():
                             await self._check_active(run["id"])
                         if not line.startswith("data:"):
-                            # Only the admission marker defers the budget: queueing for a slot
-                            # is not the model's fault and has no timeout of its own. A plain
-                            # ": keep-alive" means the backend itself is silent, whether that
-                            # is prefill or a wedged model, and that is what the budget bounds.
+                            # Queueing for a slot has no timeout by design, so it is not
+                            # charged at all: suspend while it lasts and start the model's
+                            # budget the moment the queue says the slot is ours. A plain
+                            # ": keep-alive" means the backend itself is silent, whether in
+                            # prefill or wedged, and that is what the budget bounds.
                             if line.startswith(_ADMISSION_WAIT_COMMENT):
+                                first_output_deadline = None
+                            elif line.startswith(_ADMISSION_DONE_COMMENT):
                                 first_output_deadline = loop.time() + first_output_budget
                             continue
                         data = line[5:].strip()
