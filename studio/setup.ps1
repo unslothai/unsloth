@@ -63,26 +63,22 @@ if ($PSVersionTable.PSEdition -ne 'Core' -and $env:SystemRoot) {
 
 # UTF-8 output invariant. 5.1 encodes redirected output with the OEM code page,
 # but the desktop app decodes the pipe as UTF-8 (from_utf8_lossy, install.rs):
-# U+1F9A5 has no OEM form so it prints '??', U+2500 has one so it becomes a bare
-# 0xC4 and arrives as U+FFFD. Must precede the first write, since assigning
-# OutputEncoding rebuilds [Console]::Out. Only the console setter is wrapped: it
-# throws when there is no console (CREATE_NO_WINDOW). ASCII-only, because 5.1
-# parses these BOM-less files as ANSI.
+# U+1F9A5 prints as '??', U+2500 becomes a bare 0xC4 and arrives as U+FFFD.
+# Must precede the first write, since this rebuilds [Console]::Out. ASCII-only,
+# because 5.1 parses these BOM-less files as ANSI.
 $_UnslothUtf8NoBom = New-Object System.Text.UTF8Encoding $false
 try {
     [Console]::OutputEncoding = $_UnslothUtf8NoBom
 } catch {
-    # No console to set a code page on, which is how the desktop app spawns us
-    # (CREATE_NO_WINDOW). The setter P/Invokes SetConsoleOutputCP and drops the
-    # cached writer BEFORE it throws, while assigning OutputEncoding only after,
-    # so [Console]::Out would rebuild on the OLD code page. Bind an explicit
-    # UTF-8 writer instead: redirected step/substep use it as their only sink.
+    # No console (CREATE_NO_WINDOW). The setter P/Invokes SetConsoleOutputCP and
+    # drops the cached writer BEFORE throwing, assigning OutputEncoding only
+    # after, so [Console]::Out would rebuild on the OLD code page. Bind UTF-8
+    # writers instead: redirected step/substep use Out as their only sink, and
+    # Tauri decodes stderr the same way to build its failure text.
     try {
         $_UnslothStdout = New-Object System.IO.StreamWriter -ArgumentList ([Console]::OpenStandardOutput()), $_UnslothUtf8NoBom
         $_UnslothStdout.AutoFlush = $true
         [Console]::SetOut($_UnslothStdout)
-        # Tauri pipes and decodes stderr the same way and folds it into the same
-        # log, and failure text is built from those lines, so it needs it too.
         $_UnslothStderr = New-Object System.IO.StreamWriter -ArgumentList ([Console]::OpenStandardError()), $_UnslothUtf8NoBom
         $_UnslothStderr.AutoFlush = $true
         [Console]::SetError($_UnslothStderr)
@@ -1497,16 +1493,14 @@ function Write-LlamaFailureLog {
         Write-Host "   | $line" -ForegroundColor DarkGray
     }
 }
-# Plain (no ANSI) form of a step/substep message, written straight to the OS
-# stdout handle. Write-Host on 5.1 goes through $Host.UI / the Information
-# stream, which does not survive every install.ps1 -> unsloth.exe -> python ->
-# powershell.exe -> setup.ps1 chain; [Console]::Out always does.
+# Plain (no ANSI) form of a step/substep message on the OS stdout handle.
+# Write-Host on 5.1 goes through the Information stream, which does not survive
+# every install.ps1 -> unsloth.exe -> python -> powershell.exe chain.
 #
-# One half of an either/or: when redirected this is the ONLY sink and
-# step/substep skip Write-Host. It used to run in ADDITION to Write-Host, on the
-# assumption that Write-Host never reached the pipe. It does, because the CLI
-# spawns us as `-Command "& 'setup.ps1' *>&1"` (unsloth_cli/commands/studio.py),
-# so every step printed twice.
+# One half of an either/or: when redirected this is the ONLY sink. It used to
+# run in ADDITION to Write-Host, assuming that never reached the pipe. It does,
+# because the CLI spawns us as `-Command "& 'setup.ps1' *>&1"`, so every step
+# printed twice.
 function Write-StudioStdoutMirror {
     param([Parameter(Mandatory = $true)][string]$Line)
     try {

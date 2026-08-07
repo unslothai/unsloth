@@ -48,22 +48,18 @@ function Install-UnslothStudio {
         }
     }
 
-    # Same UTF-8 invariant as studio/setup.ps1, same ordering constraint:
-    # assigning OutputEncoding rebuilds [Console]::Out, so it precedes the first
-    # write. The console setter throws when there is no console, which is how
-    # the desktop app spawns us (CREATE_NO_WINDOW, install.rs).
+    # Same UTF-8 invariant as studio/setup.ps1, same ordering constraint: this
+    # rebuilds [Console]::Out, so it precedes the first write.
     $_UnslothUtf8NoBom = New-Object System.Text.UTF8Encoding $false
     try {
         [Console]::OutputEncoding = $_UnslothUtf8NoBom
     } catch {
-        # Same no-console fallback as studio/setup.ps1: the setter drops the
-        # cached writer before throwing, so bind a UTF-8 one explicitly.
+        # No console: the setter drops the cached writer before throwing, so
+        # bind UTF-8 ones explicitly. Same fallback as studio/setup.ps1.
         try {
             $_UnslothStdout = New-Object System.IO.StreamWriter -ArgumentList ([Console]::OpenStandardOutput()), $_UnslothUtf8NoBom
             $_UnslothStdout.AutoFlush = $true
             [Console]::SetOut($_UnslothStdout)
-            # Same for stderr: Tauri decodes it identically, and Clear-TauriInstallError
-            # writes its markers there.
             $_UnslothStderr = New-Object System.IO.StreamWriter -ArgumentList ([Console]::OpenStandardError()), $_UnslothUtf8NoBom
             $_UnslothStderr.AutoFlush = $true
             [Console]::SetError($_UnslothStderr)

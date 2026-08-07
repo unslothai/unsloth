@@ -54,9 +54,8 @@ fn build_update_command(bin: &std::path::Path) -> Result<Command, String> {
         // inherited Python search path from shadowing the managed package.
         //
         // -X utf8, not PYTHONUTF8: -I implies -E, so this process ignores every
-        // PYTHON* variable. Without the switch its own non-ASCII output reaches
-        // read_lossy_lines in the locale encoding and lands as U+FFFD. The env
-        // vars set in spawn_update still apply to descendants.
+        // PYTHON* variable and its own output would reach read_lossy_lines in
+        // the locale encoding. The env vars still apply to descendants.
         cmd.args(["-X", "utf8", "-I", "-c", WINDOWS_CLI_ENTRYPOINT, "studio", "update"]);
         cmd.env_remove("PYTHONHOME");
         cmd.env_remove("PYTHONPATH");

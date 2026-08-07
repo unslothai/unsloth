@@ -47,10 +47,8 @@ SLOTH = "\U0001f9a5"
 RULE_CHAR = "─"
 REPLACEMENT = "�"
 
-# Windows PowerShell 5.1 is what the desktop app spawns (install.rs pins
-# System32\WindowsPowerShell\v1.0\powershell.exe). pwsh is a stand-in for the
-# behaviour on other hosts; the OEM-code-page bug itself only reproduces on 5.1,
-# which the staging Windows runner covers.
+# The desktop app spawns Windows PowerShell 5.1; pwsh stands in elsewhere. The
+# OEM-code-page bug only reproduces on 5.1, which the Windows runner covers.
 _PWSH = shutil.which("powershell") if sys.platform == "win32" else shutil.which("pwsh")
 pwsh_only = pytest.mark.skipif(_PWSH is None, reason = "PowerShell is unavailable")
 
@@ -157,10 +155,8 @@ def test_step_label_and_value_stay_on_one_line(use_command_shape: bool) -> None:
     assert matches[0] == "  gpu            none (chat-only / GGUF)"
 
 
-# --------------------------------------------------------------------------
 # Source contracts. These run everywhere, including the Linux backend CI job,
 # so a regression is caught without waiting for a Windows runner.
-# --------------------------------------------------------------------------
 
 
 def _strip_comments(source: str) -> str:
@@ -214,16 +210,14 @@ def test_refresh_environment_cannot_clobber_the_python_encoding_vars() -> None:
 def test_entry_scripts_bind_a_utf8_writer_when_there_is_no_console(path: Path) -> None:
     """The setter needs a console handle, and the desktop spawns us without one.
 
-    It P/Invokes SetConsoleOutputCP and drops the cached writer BEFORE throwing,
-    assigning OutputEncoding only after, so Console.Out would rebuild on the old
-    code page. Swallowing the exception alone leaves redirected step/substep,
-    whose only sink is Console.Out, still emitting locale-encoded bytes.
+    It drops the cached writer BEFORE throwing, assigning OutputEncoding only
+    after, so Console.Out would rebuild on the old code page and redirected
+    step/substep, whose only sink it is, would stay locale-encoded.
     """
     source = path.read_text(encoding = "utf-8")
     assert "[Console]::OpenStandardOutput()" in source
     assert "[Console]::SetOut(" in source
-    # stderr is piped and decoded identically (install.rs), and the user-facing
-    # failure text is built from those lines, so it needs the same writer.
+    # stderr is decoded identically and the failure text is built from it.
     assert "[Console]::OpenStandardError()" in source
     assert "[Console]::SetError(" in source
 
