@@ -323,8 +323,22 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
             cuda_runtime_dirs = []
         try:
             from utils.prebuilt.runtime_libs import vendored_cuda_runtime_dirs
+            from utils.llama_cpp_freshness import read_install_marker as read_llama_install_marker
             from utils.whisper_cpp_freshness import read_install_marker
-            vendored_cuda_dirs = vendored_cuda_runtime_dirs(read_install_marker(binary))
+
+            marker = read_install_marker(binary)
+            # Slim Whisper bundles hardlink the CUDA module from their paired
+            # llama.cpp install. The Whisper artifact can omit runtime_line,
+            # while the paired llama marker records the runtime that selected
+            # that module. Fat bundles keep using their own marker.
+            linked_from = marker.get("linked_from") if isinstance(marker, dict) else None
+            paired_marker = (
+                read_llama_install_marker(linked_from)
+                if isinstance(linked_from, str) and linked_from
+                else None
+            )
+            runtime_marker = paired_marker or marker
+            vendored_cuda_dirs = vendored_cuda_runtime_dirs(runtime_marker)
         except Exception:
             vendored_cuda_dirs = []
     if sys.platform == "win32":
