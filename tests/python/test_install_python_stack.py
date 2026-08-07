@@ -511,3 +511,36 @@ class TestProgressLineNotes:
             and any(isinstance(t, ast.Name) and t.id == "_PROGRESS_LINE_ACTIVE" for t in n.targets)
             for n in ast.walk(fn)
         ), "install_python_stack() must reset _PROGRESS_LINE_ACTIVE"
+
+
+class TestBuildPipCmdUpgradeIntent:
+    """pip has no --upgrade-package, so uv's flag must be translated, not dropped.
+
+    Dropping it made the fallback a no-op on the update path: `studio update`
+    passes --upgrade-package unsloth with a base.txt listing a bare unsloth, so
+    pip found it satisfied, installed nothing, and the update reported success.
+    """
+
+    def test_update_path_keeps_the_upgrade_intent(self):
+        cmd = ips._build_pip_cmd(
+            ("--no-cache-dir", "--upgrade-package", "unsloth", "--upgrade-package", "unsloth-zoo")
+        )
+        assert "--upgrade" in cmd
+        assert "unsloth" in cmd and "unsloth-zoo" in cmd
+        assert "--upgrade-package" not in cmd, "pip does not understand the uv flag"
+
+    def test_torch_is_not_dragged_along(self):
+        # only-if-needed is pip's current default, but it is the load-bearing
+        # part: eager would re-resolve the existing torch build.
+        cmd = ips._build_pip_cmd(("--upgrade-package", "unsloth"))
+        assert cmd[cmd.index("--upgrade-strategy") + 1] == "only-if-needed"
+
+    def test_names_already_present_are_not_duplicated(self):
+        cmd = ips._build_pip_cmd(
+            ("--no-deps", "--upgrade-package", "unsloth", "unsloth")
+        )
+        assert cmd.count("unsloth") == 1
+
+    def test_commands_without_the_flag_are_untouched(self):
+        cmd = ips._build_pip_cmd(("--no-cache-dir", "somepackage"))
+        assert cmd == [sys.executable, "-m", "pip", "install", "--no-cache-dir", "somepackage"]
