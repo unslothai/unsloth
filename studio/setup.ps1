@@ -599,6 +599,62 @@ function Get-NvccMaxArch {
     return $null
 }
 
+# Reserved for the OS, and budgeted per compile job, both in MB. The budget sits
+# above the measured per-translation-unit peak on purpose; see the derivation on
+# _LLAMA_BUILD_* in setup.sh, which these must match and which the shell test
+# pins. MSVC and Windows, where the freeze was reported, need that headroom more.
+$LlamaBuildReserveMb = 2048
+$LlamaBuildMbPerJob = 2048
+
+# The cmake -j count. A negative $TotalMb means RAM was unreadable and keeps the
+# old core-count behaviour. Zero is a reading, not a failure: a box with no
+# memory left is the last one that should get its full core count, so it falls
+# through and floors at 1, as _llama_jobs_for does for a numeric 0.
+# UNSLOTH_LLAMA_BUILD_JOBS wins. Pure, so the tests can drive it.
+function Get-LlamaJobsFor {
+    param([int]$Cores, [long]$TotalMb)
+
+    $override = 0
+    if ($env:UNSLOTH_LLAMA_BUILD_JOBS -and
+        [int]::TryParse($env:UNSLOTH_LLAMA_BUILD_JOBS.Trim(), [ref]$override) -and $override -ge 1) {
+        return $override
+    }
+    if ($Cores -lt 1) { $Cores = 4 }
+    if ($TotalMb -lt 0) { return $Cores }
+    $jobs = [int][Math]::Floor(($TotalMb - $LlamaBuildReserveMb) / $LlamaBuildMbPerJob)
+    if ($jobs -lt 1) { $jobs = 1 }
+    if ($jobs -gt $Cores) { $jobs = $Cores }
+    return $jobs
+}
+
+# Usable RAM in MB; -1 when it cannot be read at all. Available, not installed:
+# a box with 8 GB already resident cannot host a 14 GB compile just because
+# 16 GB is fitted. AvailableMBytes counts the standby list, which the Free
+# counters do not, and the raw perf class is not localized the way Get-Counter
+# paths are; installed RAM stays the fallback. A reading of 0 is returned as 0
+# rather than treated as unreadable, since falling back to installed RAM under
+# real pressure would hand the machine its full core count at the worst moment.
+function Get-UsableMemoryMb {
+    try {
+        $avail = (Get-CimInstance Win32_PerfRawData_PerfOS_Memory -ErrorAction Stop).AvailableMBytes
+        if ($null -ne $avail) { return [long]$avail }
+    } catch { }
+    try {
+        $bytes = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory
+        if ($bytes -gt 0) { return [long]($bytes / 1MB) }
+    } catch { }
+    try {
+        # TotalVisibleMemorySize is in KB and excludes hardware-reserved RAM.
+        $kb = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).TotalVisibleMemorySize
+        if ($kb -gt 0) { return [long]($kb / 1KB) }
+    } catch { }
+    return -1
+}
+
+function Get-LlamaBuildJobs {
+    return (Get-LlamaJobsFor -Cores ([Environment]::ProcessorCount) -TotalMb (Get-UsableMemoryMb))
+}
+
 # Classify the physical NVIDIA inventory for a cu126 fallback: "cu126" when it covers
 # every GPU, "uncovered" for an incompatible mix, empty when no fallback is needed or the
 # inventory is unreadable. CUDA_VISIBLE_DEVICES is ignored because the wheel must support
@@ -5863,13 +5919,12 @@ if ($LocalLlamaCppLinked) {
     }
 
     # -- Step C: Build llama-server --
-    $NumCpu = [Environment]::ProcessorCount
-    if ($NumCpu -lt 1) { $NumCpu = 4 }
+    $NumCpu = Get-LlamaBuildJobs
 
     if ($BuildOk) {
         Write-Host ""
         Write-Host "--- cmake build (llama-server) ---" -ForegroundColor Cyan
-        Write-Host "   Parallel jobs: $NumCpu" -ForegroundColor Gray
+        Write-Host "   Parallel jobs: $NumCpu of $([Environment]::ProcessorCount) cores (RAM-capped; UNSLOTH_LLAMA_BUILD_JOBS overrides)" -ForegroundColor Gray
         Write-Host ""
 
         $output = cmake --build $BuildDir --config Release --target llama-server -j $NumCpu 2>&1 | Out-String
