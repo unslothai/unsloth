@@ -13,6 +13,7 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
 from core.inference import external_provider as ep_mod
 from core.inference.external_provider import (
@@ -517,15 +518,26 @@ def _continuation_body(monkeypatch, provider_type: str, base_url: str) -> dict:
 def test_self_hosted_providers_get_the_continuation_flags(monkeypatch):
     """These apply the template themselves, so a trailing assistant turn alone would
     render closed plus a fresh generation prompt and restart the answer."""
-    for provider_type in ("llama_cpp", "vllm", "ollama", "custom"):
+    for provider_type in ("llama_cpp", "vllm"):
         body = _continuation_body(monkeypatch, provider_type, "http://local.example/v1")
         assert body["continue_final_message"] is True, provider_type
-        # llama-server rejects both being asked for at once.
+        # A server rejects both being asked for at once.
         assert body["add_generation_prompt"] is False, provider_type
 
 
-def test_hosted_providers_do_not_get_the_continuation_flags(monkeypatch):
-    """Their prompt assembly is not ours; the flag would be an unknown field."""
-    body = _continuation_body(monkeypatch, "openai", "https://api.openai.com/v1")
+@pytest.mark.parametrize(
+    ("provider_type", "base_url"),
+    [
+        # Prompt assembly is theirs, so the flag would just be an unknown field.
+        ("openai", "https://api.openai.com/v1"),
+        # Any user-supplied base_url, including a strict endpoint that would 400.
+        ("custom", "http://custom.example/v1"),
+        ("ollama", "http://localhost:11434/v1"),
+    ],
+)
+def test_other_providers_do_not_get_the_continuation_flags(
+    monkeypatch, provider_type, base_url
+):
+    body = _continuation_body(monkeypatch, provider_type, base_url)
     assert "continue_final_message" not in body
     assert "add_generation_prompt" not in body

@@ -27,6 +27,10 @@ import structlog
 # sweeping a local one costs a forged turn.
 _TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom"})
 
+# The subset documenting "continue_final_message" + "add_generation_prompt" on
+# /v1/chat/completions: vLLM (extra_body extensions) and llama-server (server-schema).
+_CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
+
 # structlog so INFO diagnostics reach the backend's JSON log stream (the
 # stdlib root logger defaults to WARNING with no handlers). It accepts the
 # existing printf-style positional args.
@@ -975,12 +979,13 @@ class ExternalProviderClient:
                     tool_choice = None
                 tools = safe_tools
 
-        # Only these servers template here, so only they can resume a trailing assistant
-        # turn; a hosted API would take the flag as an unknown field. Both are set because
-        # llama-server rejects continuing while a generation prompt is still asked for.
+        # Both are set because a server rejects continuing while a generation prompt is
+        # still asked for. Sent only to the two that document the pair: "custom" is any
+        # user-supplied base_url, and a strict endpoint 400s on an unknown field, so it
+        # keeps the trailing assistant turn on its own as before.
         _continue_body = (
             {"continue_final_message": True, "add_generation_prompt": False}
-            if continue_final_message and self.provider_type in _TEMPLATE_APPLYING_PROVIDERS
+            if continue_final_message and self.provider_type in _CONTINUATION_FLAG_PROVIDERS
             else {}
         )
 

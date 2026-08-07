@@ -245,6 +245,10 @@ class _GenerationThreadError(RuntimeError):
 class InferenceBackend:
     """Unified inference backend supporting text, vision, and LoRA models"""
 
+    # Usage + budget exhaustion of the latest generation, shipped on gen_done.
+    # A class attribute as well, so a backend built with __new__ still answers.
+    last_generation_stats = None
+
     def __init__(self):
         self.models = {}
         self.active_model_name = None
@@ -255,6 +259,7 @@ class InferenceBackend:
         self.default_models = get_default_models()
         self.device = get_device().value
         self._audio_codec_manager = AudioCodecManager()
+        self.last_generation_stats = None
 
         # _generation_lock serializes model.generate(). Plain Lock (NOT RLock):
         # RLock reentrancy would let concurrent compare-mode requests race on
@@ -1224,6 +1229,9 @@ class InferenceBackend:
         continue_final_message: bool = False,
     ) -> Generator[str, None, None]:
         """Handle vision model generation with true token-by-token streaming."""
+        # Reset so a failed or uncountable run cannot surface stale stats.
+        self.last_generation_stats = None
+
         model_info = self.models[self.active_model_name]
         model = model_info["model"]
         processor = model_info["processor"]
@@ -1355,10 +1363,11 @@ class InferenceBackend:
             )
             # Presence penalty (GGUF parity) for VLM chat.
             _vision_input_ids = inputs.get("input_ids") if hasattr(inputs, "get") else None
+            prompt_len = (
+                int(_vision_input_ids.shape[1]) if _vision_input_ids is not None else None
+            )
             if _vision_input_ids is not None:
-                _pp = _make_presence_penalty_processor(
-                    presence_penalty, int(_vision_input_ids.shape[1])
-                )
+                _pp = _make_presence_penalty_processor(presence_penalty, prompt_len)
                 if _pp is not None:
                     generation_kwargs["logits_processor"] = _pp
             stopping_criteria = self._cancel_stopping_criteria(cancel_event)
@@ -1367,11 +1376,14 @@ class InferenceBackend:
             active_stop_token_ids = self._generation_stop_token_ids(model, generation_kwargs)
 
             err: dict[str, str] = {}
+            gen_outputs: dict = {}
 
             def generate_fn():
                 with self._generation_lock:
                     try:
-                        model.generate(**generation_kwargs)
+                        # See generate_stream: the returned sequences carry the
+                        # only exact count of generated tokens.
+                        gen_outputs["sequences"] = model.generate(**generation_kwargs)
                     except Exception as e:
                         err["msg"] = str(e)
                         if hasattr(streamer, "abort"):
@@ -1445,6 +1457,20 @@ class InferenceBackend:
                         "Vision generation thread did not exit after cancel/join timeout"
                     )
 
+            if "sequences" in gen_outputs:
+                self._record_generation_stats(
+                    prompt_tokens = prompt_len,
+                    completion_tokens = self._generated_token_count(
+                        model, gen_outputs["sequences"], prompt_len
+                    ),
+                    max_new_tokens = max_new_tokens,
+                    ended_on_stop_token = self._ended_on_stop_token(
+                        gen_outputs["sequences"], active_stop_token_ids
+                    ),
+                    cancelled = not generation_complete
+                    or (cancel_event is not None and cancel_event.is_set()),
+                )
+
             if err.get("msg"):
                 raise _GenerationThreadError(err["msg"])
 
@@ -1475,6 +1501,9 @@ class InferenceBackend:
         """
         import threading
         import numpy as np
+
+        # Reset so a failed or uncountable run cannot surface stale stats.
+        self.last_generation_stats = None
 
         model_info = self.models[self.active_model_name]
         model = model_info["model"]
@@ -1543,7 +1572,12 @@ class InferenceBackend:
                 do_sample = False,
             )
 
+            _audio_input_ids = inputs.get("input_ids") if hasattr(inputs, "get") else None
+            prompt_len = int(_audio_input_ids.shape[1]) if _audio_input_ids is not None else None
+            active_stop_token_ids = self._generation_stop_token_ids(model, generation_kwargs)
+
             err: dict[str, str] = {}
+            gen_outputs: dict = {}
 
             def generate_fn():
                 with self._generation_lock:
@@ -1551,7 +1585,9 @@ class InferenceBackend:
                         # As in the text path: apply under the lock so Base-vs-LoRA
                         # compare doesn't run the adapter on both sides (None = no-op).
                         self._apply_adapter_state(use_adapter)
-                        model.generate(**generation_kwargs)
+                        # See generate_stream: the returned sequences carry the
+                        # only exact count of generated tokens.
+                        gen_outputs["sequences"] = model.generate(**generation_kwargs)
                     except Exception as e:
                         err["msg"] = str(e)
                         logger.error(f"Audio input generation error in thread: {e}")
@@ -1565,6 +1601,9 @@ class InferenceBackend:
             thread.start()
 
             output = ""
+            # This finally always sets cancel_event, so the flag (not the event)
+            # is what tells a user stop apart from a run that reached its end.
+            generation_complete = False
             try:
                 while True:
                     if cancel_event is not None and cancel_event.is_set():
@@ -1572,9 +1611,11 @@ class InferenceBackend:
                     try:
                         new_token = next(streamer)
                     except StopIteration:
+                        generation_complete = True
                         break
                     except Empty:
                         if not thread.is_alive():
+                            generation_complete = True
                             break
                         continue
                     if new_token:
@@ -1588,6 +1629,19 @@ class InferenceBackend:
                     logger.warning(
                         "Audio input generation thread did not exit after cancel/join timeout"
                     )
+
+            if "sequences" in gen_outputs:
+                self._record_generation_stats(
+                    prompt_tokens = prompt_len,
+                    completion_tokens = self._generated_token_count(
+                        model, gen_outputs["sequences"], prompt_len
+                    ),
+                    max_new_tokens = max_new_tokens,
+                    ended_on_stop_token = self._ended_on_stop_token(
+                        gen_outputs["sequences"], active_stop_token_ids
+                    ),
+                    cancelled = not generation_complete,
+                )
 
             if err.get("msg"):
                 raise _GenerationThreadError(err["msg"])
@@ -1607,6 +1661,10 @@ class InferenceBackend:
 
         Uses the pre-built transformers pipeline created at model load.
         """
+        # The pipeline reports no token counts, so clear the previous run's
+        # rather than let gen_done ship a chat turn's stats as this one's.
+        self.last_generation_stats = None
+
         model_info = self.models[self.active_model_name]
         whisper_pipe = model_info.get("whisper_pipeline")
         if not whisper_pipe:
@@ -1733,6 +1791,9 @@ class InferenceBackend:
         if not self.active_model_name:
             raise RuntimeError("No active model")
 
+        # Reset so a failed or uncountable run cannot surface stale stats.
+        self.last_generation_stats = None
+
         model_info = self.models[self.active_model_name]
         model = model_info["model"]
         # For VLMs the stored "tokenizer" is actually the processor. Unwrap to
@@ -1783,10 +1844,9 @@ class InferenceBackend:
                 else tokenizer.pad_token_id,
             )
             active_stop_token_ids = self._generation_stop_token_ids(model, generation_kwargs)
+            prompt_len = int(inputs["input_ids"].shape[1])
             # Presence penalty (GGUF parity); prompt_len excludes prompt tokens.
-            _pp = _make_presence_penalty_processor(
-                presence_penalty, int(inputs["input_ids"].shape[1])
-            )
+            _pp = _make_presence_penalty_processor(presence_penalty, prompt_len)
             if _pp is not None:
                 generation_kwargs["logits_processor"] = _pp
             stopping_criteria = self._cancel_stopping_criteria(cancel_event)
@@ -1798,7 +1858,9 @@ class InferenceBackend:
                     try:
                         if _adapter_state is not None:
                             self._apply_adapter_state(_adapter_state)
-                        model.generate(**generation_kwargs)
+                        # The returned sequences are the only exact token count;
+                        # the streamer only ever sees decoded text.
+                        gen_outputs["sequences"] = model.generate(**generation_kwargs)
                     except Exception as e:
                         err["msg"] = str(e)
                         if hasattr(streamer, "abort"):
@@ -1811,6 +1873,7 @@ class InferenceBackend:
                             pass
 
             err: dict[str, str] = {}
+            gen_outputs: dict = {}
             thread = threading.Thread(target = generate_fn)
             thread.start()
 
@@ -1874,6 +1937,20 @@ class InferenceBackend:
                 thread.join(timeout = join_timeout)
                 if thread.is_alive():
                     logger.warning("Generation thread did not exit after cancel/join timeout")
+
+            if "sequences" in gen_outputs:
+                self._record_generation_stats(
+                    prompt_tokens = prompt_len,
+                    completion_tokens = self._generated_token_count(
+                        model, gen_outputs["sequences"], prompt_len
+                    ),
+                    max_new_tokens = max_new_tokens,
+                    ended_on_stop_token = self._ended_on_stop_token(
+                        gen_outputs["sequences"], active_stop_token_ids
+                    ),
+                    cancelled = not generation_complete
+                    or (cancel_event is not None and cancel_event.is_set()),
+                )
 
             if err.get("msg"):
                 raise _GenerationThreadError(err["msg"])
@@ -2435,6 +2512,74 @@ class InferenceBackend:
             return eos_token_id
         config = getattr(model, "config", None)
         return getattr(config, "eos_token_id", None)
+
+    def _generated_token_count(self, model, outputs, prompt_len) -> Optional[int]:
+        """New tokens ``generate`` produced, or None when the shape says nothing.
+
+        ``generate`` returns prompt + completion for decoder-only models and
+        decoder-start + completion for encoder-decoder ones. Anything else (a
+        stubbed or patched generate that returns None) yields None, which keeps
+        the caller from reporting a token count it did not measure.
+        """
+        sequences = getattr(outputs, "sequences", outputs)
+        shape = getattr(sequences, "shape", None)
+        if shape is None or len(shape) < 2:
+            return None
+        total = int(shape[-1])
+        if getattr(getattr(model, "config", None), "is_encoder_decoder", False):
+            return max(total - 1, 0)
+        if prompt_len is None or total < int(prompt_len):
+            return None
+        return total - int(prompt_len)
+
+    def _ended_on_stop_token(self, outputs, stop_token_ids) -> bool:
+        """Whether the final token is a stop token rather than a token cut off by the cap.
+
+        A response whose last token lands exactly on ``max_new_tokens`` ended
+        naturally; only one that did NOT emit a stop token ran out of budget.
+        """
+        sequences = getattr(outputs, "sequences", outputs)
+        if isinstance(stop_token_ids, int):
+            stop_token_ids = (stop_token_ids,)
+        try:
+            last_id = int(sequences[0, -1])
+            return last_id in {int(token_id) for token_id in (stop_token_ids or ())}
+        except Exception:
+            return False
+
+    def _record_generation_stats(
+        self,
+        *,
+        prompt_tokens,
+        completion_tokens,
+        max_new_tokens,
+        ended_on_stop_token: bool = False,
+        cancelled: bool = False,
+    ) -> None:
+        """Latch usage + budget exhaustion for the worker's gen_done stats channel.
+
+        Left at None when the token count is unknown, so a path that cannot count
+        keeps reporting exactly what it reported before. ``truncated`` is what the
+        route turns into finish_reason "length"; a cancelled run stopped early by
+        request, not at the cap, so it never sets it.
+        """
+        if completion_tokens is None:
+            return
+        completion_tokens = int(completion_tokens)
+        prompt_tokens = int(prompt_tokens or 0)
+        self.last_generation_stats = {
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+            },
+            "truncated": (
+                not cancelled
+                and not ended_on_stop_token
+                and bool(max_new_tokens)
+                and completion_tokens >= int(max_new_tokens)
+            ),
+        }
 
     def _cancel_stopping_criteria(self, cancel_event):
         """Build a Transformers stopping criteria list for user cancellation."""

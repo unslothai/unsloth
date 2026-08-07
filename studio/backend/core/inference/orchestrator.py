@@ -2056,6 +2056,7 @@ class InferenceOrchestrator:
         self,
         audio_array,
         cancel_event = None,
+        stats_holder: Optional[dict] = None,
     ) -> Generator[str, None, None]:
         """Whisper ASR — sends audio to subprocess, yields text."""
         yield from self._generate_audio_input_inner(
@@ -2064,6 +2065,7 @@ class InferenceOrchestrator:
             messages = [],
             system_prompt = "",
             cancel_event = cancel_event,
+            stats_holder = stats_holder,
         )
 
     def generate_audio_input_response(
@@ -2079,6 +2081,7 @@ class InferenceOrchestrator:
         repetition_penalty: float = 1.0,
         use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
+        stats_holder: Optional[dict] = None,
     ) -> Generator[str, None, None]:
         """Audio input generation (e.g. Gemma 3n) — streams text tokens."""
         yield from self._generate_audio_input_inner(
@@ -2094,6 +2097,7 @@ class InferenceOrchestrator:
             repetition_penalty = repetition_penalty,
             use_adapter = use_adapter,
             cancel_event = cancel_event,
+            stats_holder = stats_holder,
         )
 
     def _generate_audio_input_inner(
@@ -2110,8 +2114,13 @@ class InferenceOrchestrator:
         repetition_penalty: float = 1.0,
         use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
+        stats_holder: Optional[dict] = None,
     ) -> Generator[str, None, None]:
-        """Shared inner logic for audio input generation (Whisper + ASR)."""
+        """Shared inner logic for audio input generation (Whisper + ASR).
+
+        ``stats_holder``: as in generate_chat_response — caller-owned, filled on
+        gen_done with the worker's usage / budget-exhaustion report.
+        """
         if not self._ensure_subprocess_alive():
             yield GenStreamError("Error: Inference subprocess is not running", public = True)
             return
@@ -2173,6 +2182,7 @@ class InferenceOrchestrator:
                     lambda: drain(timeout = 5.0),
                     crash_context = "audio input generation",
                     cancel_event = cancel_event,
+                    stats_holder = stats_holder,
                 )
             finally:
                 self._release_worker(cancel_event)

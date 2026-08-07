@@ -626,6 +626,24 @@ def test_a_splice_does_not_resume_the_answer_inside_a_think_block():
     assert prompt.rfind("<think>") <= prompt.rfind("</think>")
 
 
+def test_a_think_typed_into_the_conversation_is_not_treated_as_a_prefill():
+    """It is rendered text, not a generation prompt, so cutting there eats the transcript."""
+    from core.inference.chat_template_helpers import strip_open_reasoning_prefill
+
+    asked = [
+        {"role": "user", "content": "what does <think> mean"},
+        {"role": "assistant", "content": _PARTIAL},
+    ]
+    prompt = render_prompt_with_boundary(
+        _LegacyVisionProcessor(), asked, continue_final_message = True
+    )
+    assert "what does <think> mean" in prompt
+    assert prompt.endswith(_PARTIAL)
+    # Directly: only an opener the prefix ends on is dropped.
+    assert strip_open_reasoning_prefill("a <think> b") == "a <think> b"
+    assert strip_open_reasoning_prefill("a <think>\n") == "a "
+
+
 class _SplitTemplateLegacyTokenizer:
     """Separate tool/default templates, rejecting both ``tools`` and the boundary kwarg.
 
@@ -691,7 +709,7 @@ _RESUMED_PLAIN_EVENTS = [
 ]
 
 
-def _sf_completion(monkeypatch, events, **body):
+def _sf_completion(monkeypatch, events, stats = None, **body):
     """POST a non-streaming safetensors tool-loop chat and return the assistant message."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -709,6 +727,10 @@ def _sf_completion(monkeypatch, events, **body):
         models = {"qwen3": {"chat_template_info": {"template": _THINK_TEMPLATE}}}
 
         def generate_chat_completion_with_tools(self, **kwargs):
+            # The worker fills this on gen_done; the route reads it for usage
+            # and for finish_reason "length".
+            if stats is not None:
+                kwargs["stats_holder"]["stats"] = stats
             yield from events
 
     monkeypatch.setattr(
@@ -742,7 +764,7 @@ def _sf_completion(monkeypatch, events, **body):
         },
     )
     assert resp.status_code == 200, resp.text
-    return resp.json()["choices"][0]["message"]
+    return resp.json()["choices"][0]
 
 
 def test_a_resumed_turn_that_called_a_tool_re_prefills_on_the_final_turn(monkeypatch):
@@ -751,20 +773,21 @@ def test_a_resumed_turn_that_called_a_tool_re_prefills_on_the_final_turn(monkeyp
     The streaming path re-prefills per turn; non-streaming keeps only the last turn's
     text, so it has to pin the mode of the turn that text came from.
     """
-    message = _sf_completion(monkeypatch, _RESUMED_TOOL_EVENTS)
+    message = _sf_completion(monkeypatch, _RESUMED_TOOL_EVENTS)["message"]
     assert message["reasoning_content"] == "Tool says 21C, report it."
     assert message["content"] == "\n\nIt is 21C."
 
 
 def test_a_resumed_turn_without_a_tool_keeps_the_partial_visible(monkeypatch):
     """No turn boundary: the resumed text is the answer, not a thought."""
-    message = _sf_completion(monkeypatch, _RESUMED_PLAIN_EVENTS)
+    message = _sf_completion(monkeypatch, _RESUMED_PLAIN_EVENTS)["message"]
     assert message["content"] == "oven to 200C. leaked"
     assert not message["reasoning_content"]
 
 
-def test_a_tts_model_refuses_a_continuation(monkeypatch):
-    """The TTS branch re-speaks the newest user text before any continuation handling,
+@pytest.mark.parametrize("gguf", [False, True], ids = ["safetensors", "gguf"])
+def test_a_tts_model_refuses_a_continuation(monkeypatch, gguf):
+    """Both TTS branches re-speak the newest user text before any continuation handling,
     so accepting the flag would return a fresh clip labelled as a resumed answer."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -773,15 +796,17 @@ def test_a_tts_model_refuses_a_continuation(monkeypatch):
     from auth.authentication import get_current_subject
     from utils.api_errors import install_api_error_handlers
 
-    class _NoGGUF:
-        is_loaded = False
+    class _GGUF:
+        is_loaded = gguf
         supports_tools = False
+        _is_audio = True
+        context_length = 4096
 
     class _Tts:
         active_model_name = "orpheus"
         models = {"orpheus": {"is_audio": True, "audio_type": "snac"}}
 
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _NoGGUF())
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _GGUF())
     monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Tts())
 
     app = FastAPI()
@@ -801,3 +826,50 @@ def test_a_tts_model_refuses_a_continuation(monkeypatch):
     )
     assert resp.status_code == 400
     assert "audio output" in resp.text
+
+
+_CAPPED_STATS = {
+    "usage": {"prompt_tokens": 12, "completion_tokens": 64, "total_tokens": 76},
+    "truncated": True,
+}
+_WHOLE_STATS = {
+    "usage": {"prompt_tokens": 12, "completion_tokens": 9, "total_tokens": 21},
+    "truncated": False,
+}
+
+
+def test_a_capped_safetensors_turn_reports_length(monkeypatch):
+    """The Continue bar's primary trigger. The route used to hardcode "stop" here, and
+    stats were MLX-only, so a transformers answer cut at Max Tokens looked complete."""
+    choice = _sf_completion(monkeypatch, _RESUMED_PLAIN_EVENTS, stats = _CAPPED_STATS)
+    assert choice["finish_reason"] == "length"
+
+
+def test_an_uncapped_safetensors_turn_still_reports_stop(monkeypatch):
+    for stats in (_WHOLE_STATS, None):
+        choice = _sf_completion(monkeypatch, _RESUMED_PLAIN_EVENTS, stats = stats)
+        assert choice["finish_reason"] == "stop", stats
+
+
+def test_a_tool_call_run_still_reports_its_own_finish(monkeypatch):
+    """The budget of an earlier turn must not relabel the turn that answered."""
+    choice = _sf_completion(monkeypatch, _RESUMED_TOOL_EVENTS, stats = _CAPPED_STATS)
+    assert choice["message"]["content"] == "\n\nIt is 21C."
+
+
+def test_the_backend_only_calls_a_run_truncated_when_it_ran_out_of_budget():
+    """Cancellation and an answer that ended on its stop token are not truncation."""
+    cls = _inference_backend()
+    backend = cls.__new__(cls)
+
+    def stats_for(**kw):
+        backend.last_generation_stats = None
+        cls._record_generation_stats(backend, prompt_tokens = 5, max_new_tokens = 64, **kw)
+        return backend.last_generation_stats
+
+    assert stats_for(completion_tokens = 64)["truncated"] is True
+    assert stats_for(completion_tokens = 64, cancelled = True)["truncated"] is False
+    assert stats_for(completion_tokens = 64, ended_on_stop_token = True)["truncated"] is False
+    assert stats_for(completion_tokens = 63)["truncated"] is False
+    # A path that cannot count tokens reports nothing rather than a guess.
+    assert stats_for(completion_tokens = None) is None

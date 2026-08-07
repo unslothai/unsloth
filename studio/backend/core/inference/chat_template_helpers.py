@@ -2372,9 +2372,14 @@ def strip_open_reasoning_prefill(prefix: str) -> str:
     A splice appends the already-visible partial to this prefix, so on a template that
     prefills an open block (DeepSeek-R1, QwQ, Qwen3-Thinking) the answer would resume
     as reasoning and the model would close the block instead of continuing it.
+
+    Only an opener the generation prompt itself ends on counts: a bare "<think>" typed
+    into an earlier turn is rendered text, and cutting there would eat the transcript.
     """
     open_at = prefix.rfind(_THINK_OPEN)
     if open_at == -1 or open_at < prefix.rfind(_THINK_CLOSE):
+        return prefix
+    if prefix[open_at + len(_THINK_OPEN):].strip():
         return prefix
     return prefix[:open_at]
 
