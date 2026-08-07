@@ -128,7 +128,10 @@ async function fetchOnce(): Promise<HardwareInfo> {
                 notifyHardwareInfo(info);
                 return info;
             }
-            return cached ?? DEFAULT;
+            // Superseded by a later invalidate, so it must not become the cache. It is
+            // still a real 200 though: returning DEFAULT tells every caller riding this
+            // promise that a healthy read failed, and load() reads that as a failed probe.
+            return cached ?? info;
         } catch {
             // Reset so subsequent calls retry (e.g. backend wasn't ready).
             if (generation === cacheGeneration) fetchPromise = null;
@@ -163,7 +166,14 @@ export function useHardwareInfo(): HardwareInfo {
                 if (!cancelled && !hw.loaded) retry = setTimeout(load, RETRY_MS);
             });
         };
-        if (!cached) load();
+        // `info` was seeded from `cached` at render time, but this listener only joins the
+        // set now. A probe that resolved in between notified the listeners registered at
+        // the time -- not this one -- and left `cached` set, so `if (!cached) load()` alone
+        // skipped the fetch and nothing was ever going to call setInfo. The component then
+        // sat on DEFAULT with loaded false for its whole life, which on /video is the
+        // capability gate's "Checking this machine for video support..." for the session.
+        if (cached) listener(cached);
+        else load();
         return () => {
             cancelled = true;
             listeners.delete(listener);

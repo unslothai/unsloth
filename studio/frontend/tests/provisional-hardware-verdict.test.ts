@@ -186,12 +186,23 @@ test("the latch is claimed after the wait, not during it", async () => {
     "utf8",
   );
   const loopStart = src.indexOf("while (res.ok && Date.now() < deadline)");
-  // Located by pattern: the claim carries guards, so a literal anchor goes stale.
-  const loopEnd = src.search(/if \(spendWait[^)]*\) hardwareWaitSpent = true;/);
-  assert.ok(loopStart > 0 && loopEnd > loopStart, "the wait loop or the latch moved");
+  // Anchor on the loop's own closing brace, NOT on the latch. Searching for the latch
+  // made this assertion unfalsifiable: String.prototype.search returns the FIRST match,
+  // so moving the latch inside the loop moved loopEnd with it and the slice ended just
+  // short of the claim either way. The test then passed against the exact regression its
+  // header describes.
+  const loopEnd = src.indexOf("\n    }\n", loopStart);
+  assert.ok(loopStart > 0 && loopEnd > loopStart, "the wait loop moved");
   assert.ok(
     !src.slice(loopStart, loopEnd).includes("hardwareWaitSpent = true"),
     "the latch is claimed inside the loop, so a concurrent caller skips an unfinished window",
+  );
+  // And it must still be claimed somewhere after the loop, or deleting it outright
+  // would satisfy the check above.
+  assert.match(
+    src.slice(loopEnd),
+    /if \(spendWait[^)]*\) hardwareWaitSpent = true;/,
+    "the latch is never claimed after the wait, so the window is never spent",
   );
 });
 
@@ -253,9 +264,10 @@ test("a rejected token stops the wait instead of polling it out", async () => {
     "utf8",
   );
   const loopStart = src.indexOf("while (res.ok && Date.now() < deadline)");
-  // Located by pattern: the claim carries guards, so a literal anchor goes stale.
-  const loopEnd = src.search(/if \(spendWait[^)]*\) hardwareWaitSpent = true;/);
-  assert.ok(loopStart > 0 && loopEnd > loopStart, "the wait loop or the latch moved");
+  // Same brace anchor as above rather than the latch pattern, so the slice cannot move
+  // with the code it is meant to be measuring.
+  const loopEnd = src.indexOf("\n    }\n", loopStart);
+  assert.ok(loopStart > 0 && loopEnd > loopStart, "the wait loop moved");
   const loop = src.slice(loopStart, loopEnd);
   assert.ok(
     /if \(peek\.version === undefined\)\s*\{?[^}]*break;/.test(loop),
@@ -344,10 +356,14 @@ test("the sidebar gates Train and Video on a measured verdict", async () => {
     "the rows still read chatOnly directly, so the UA guess disables them",
   );
   // Every row-level use of the verdict goes through the measured form.
-  for (const field of ["disabled: chatOnly", "if (chatOnly) return"]) {
+  //
+  // `disabled: chatOnly` is an object entry, so the regressed form ends in a comma and
+  // the old `includes("disabled: chatOnly;")` could never match anything. The character
+  // class keeps `disabled: chatOnlyMeasured,` from matching, since "M" is not in it.
+  for (const pattern of [/disabled: chatOnly[,;\s]/, /if \(chatOnly\) return;/]) {
     assert.ok(
-      !src.includes(`${field};`),
-      `${field} still reads the unmeasured verdict`,
+      !pattern.test(src),
+      `${pattern} still reads the unmeasured verdict`,
     );
   }
   // Both rows opt into the pending state rather than rendering a guessed gray-out.
@@ -448,5 +464,29 @@ test("a failed hardware probe is retried, not left unloaded", async () => {
     src,
     /if \(retry !== undefined\) clearTimeout\(retry\);/,
     "the retry outlives the component that scheduled it",
+  );
+});
+
+// The subscribe happens in the effect, one tick after the render read `cached`. A probe
+// that resolves in that gap notifies the listeners registered at the time, which does not
+// include this one, and leaves `cached` set so the fetch is skipped as redundant. Nothing
+// is then scheduled to call setInfo. The PR gates whole pages on `loaded`, so the symptom
+// is a permanent "Checking this machine..." rather than a stale value.
+test("a cache filled between render and subscribe still reaches the component", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(
+    new URL("../src/hooks/use-hardware-info.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    src,
+    /if \(cached\) listener\(cached\);\s*\n\s*else load\(\);/,
+    "a component that missed the notify has no path to the cache it skipped loading for",
+  );
+  // A 200 superseded by a later invalidate must not be reported as a failed probe: load()
+  // reads !loaded as failure and drops the page back to its loading state.
+  assert.ok(
+    !/return cached \?\? DEFAULT;/.test(src),
+    "a superseded but successful read still resolves as an unloaded DEFAULT",
   );
 });
