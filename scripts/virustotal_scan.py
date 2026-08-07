@@ -255,6 +255,20 @@ class VirusTotalClient:
         if remaining > 0:
             self._sleep(remaining)
 
+    def _backoff(self, seconds: float, deadline: float | None = None) -> None:
+        """Sleep between retry attempts, clamped to the remaining budget.
+
+        The retry sleep grows exponentially, so a 429 arriving shortly before the
+        deadline could otherwise sleep well past `--timeout-seconds` before the
+        next iteration notices, delaying the summary the release step depends on.
+        """
+        if deadline is None:
+            self._sleep(seconds)
+            return
+        remaining = min(seconds, deadline - self._clock())
+        if remaining > 0:
+            self._sleep(remaining)
+
     def request(
         self,
         method: str,
@@ -314,12 +328,12 @@ class VirusTotalClient:
                 # Quota or minute-rate exhaustion. Exponential backoff, then retry.
                 last_error = "429 rate limited"
                 if attempt < max_attempts:
-                    self._sleep(backoff * (2 ** (attempt - 1)))
+                    self._backoff(backoff * (2 ** (attempt - 1)), deadline)
                 continue
             if status == 0 or status >= 500:
                 last_error = last_error or f"HTTP {status}"
                 if attempt < max_attempts:
-                    self._sleep(backoff * (2 ** (attempt - 1)))
+                    self._backoff(backoff * (2 ** (attempt - 1)), deadline)
                 continue
             if status >= 400 and status not in allow_status:
                 raise RuntimeError(f"VirusTotal returned HTTP {status} for {_redact_url(url)}")

@@ -1371,16 +1371,20 @@ jobs:
           print('\n'.join(sorted(actual_names)))
           PY
 
-      - name: Create or validate versioned release
+      # Validation runs before the scan so a run with a mismatched release state is
+      # rejected before any bundle is disclosed to VirusTotal. Creating a release
+      # that does not exist yet is deferred to after the scan: `gh release create`
+      # without `--draft` publishes immediately, and doing that here would leave a
+      # public, assetless release for the duration of the scan (and indefinitely if
+      # the run is cancelled part way through).
+      - name: Validate versioned release state
+        id: versioned_release_state
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_DRAFT: ${{ inputs.draft }}
         run: |
           set -euo pipefail
-          notes_file="$RUNNER_TEMP/desktop-release-notes.md"
-          printf '%s\n' "$DESKTOP_RELEASE_NOTES" > "$notes_file"
-
           release_json="$RUNNER_TEMP/versioned-release.json"
           # REST tag lookup omits drafts; `gh release view` also checks pending tags.
           if gh release view "$DESKTOP_RELEASE_TAG" \
@@ -1401,19 +1405,9 @@ jobs:
           if bool(release.get('isPrerelease')) != expected_prerelease:
               sys.exit('Existing desktop release prerelease state does not match the requested version')
           PY
+            echo "create=false" >> "$GITHUB_OUTPUT"
           else
-            release_flags=(
-              --title "Unsloth ${STUDIO_VERSION}"
-              --notes-file "$notes_file"
-              --target "$GITHUB_SHA"
-            )
-            if [ "$RELEASE_DRAFT" = "true" ]; then
-              release_flags+=(--draft)
-            fi
-            if [ "$DESKTOP_PRERELEASE" = "true" ]; then
-              release_flags+=(--prerelease)
-            fi
-            gh release create "$DESKTOP_RELEASE_TAG" "${release_flags[@]}"
+            echo "create=true" >> "$GITHUB_OUTPUT"
           fi
 
       # ── Advisory multi-engine scan of the bundles we are about to publish ──
@@ -1457,6 +1451,32 @@ jobs:
             echo '' >> "$GITHUB_STEP_SUMMARY"
             echo 'The scan step produced no summary.' >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      # Deferred from the validation step above so the release is created directly
+      # ahead of its assets, rather than sitting empty for the length of the scan.
+      - name: Create versioned release
+        if: steps.versioned_release_state.outputs.create == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_DRAFT: ${{ inputs.draft }}
+        run: |
+          set -euo pipefail
+          notes_file="$RUNNER_TEMP/desktop-release-notes.md"
+          printf '%s\n' "$DESKTOP_RELEASE_NOTES" > "$notes_file"
+
+          release_flags=(
+            --title "Unsloth ${STUDIO_VERSION}"
+            --notes-file "$notes_file"
+            --target "$GITHUB_SHA"
+          )
+          if [ "$RELEASE_DRAFT" = "true" ]; then
+            release_flags+=(--draft)
+          fi
+          if [ "$DESKTOP_PRERELEASE" = "true" ]; then
+            release_flags+=(--prerelease)
+          fi
+          gh release create "$DESKTOP_RELEASE_TAG" "${release_flags[@]}"
 
       - name: Publish versioned release assets
         shell: bash

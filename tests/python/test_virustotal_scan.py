@@ -628,6 +628,49 @@ class TestMalformedUploadAcknowledgement:
             client.upload(bundle)
 
 
+class TestRetryBackoffRespectsTheDeadline:
+    """Retry sleeps grow exponentially, so a late 429 could otherwise sleep well
+    past --timeout-seconds before the loop notices and writes its summary."""
+
+    def _client(self, status, now, slept, interval):
+        def transport(method, url, headers, body, timeout = None):
+            return status, b""
+
+        # The retry backoff is seeded from the request interval.
+        return vt.VirusTotalClient(
+            "k",
+            transport = transport,
+            request_interval = interval,
+            sleep = slept.append,
+            clock = lambda: now[0],
+        )
+
+    @pytest.mark.parametrize("status", [429, 503])
+    def test_backoff_never_sleeps_past_the_deadline(self, status):
+        slept = []
+        client = self._client(status, [0.0], slept, interval = 20.0)
+        # 5s of budget left, but an uncapped backoff would sleep 20s, then 40s.
+        with pytest.raises((RuntimeError, TimeoutError)):
+            client.request("GET", "https://api.example/x", deadline = 5.0)
+        assert slept, "expected the retry path to sleep at all"
+        assert max(slept) <= 5.0, slept
+
+    def test_no_remaining_budget_means_no_sleep_at_all(self):
+        slept = []
+        client = self._client(429, [10.0], slept, interval = 20.0)
+        with pytest.raises((RuntimeError, TimeoutError)):
+            client.request("GET", "https://api.example/x", deadline = 10.0)
+        assert slept == []
+
+    def test_backoff_is_unbounded_when_no_deadline_is_set(self):
+        slept = []
+        client = self._client(429, [0.0], slept, interval = 2.0)
+        with pytest.raises(RuntimeError):
+            client.request("GET", "https://api.example/x")
+        # Full exponential backoff is preserved when there is no budget to respect.
+        assert {2.0, 4.0, 8.0} <= set(slept), slept
+
+
 class TestWorkflowOrdering:
     """The scan must not disclose bundles for a release that cannot be published."""
 
@@ -639,8 +682,32 @@ class TestWorkflowOrdering:
 
     def test_scan_runs_after_the_release_is_validated(self):
         names = self._publish_steps()
-        assert names.index("Create or validate versioned release") < names.index(
+        assert names.index("Validate versioned release state") < names.index(
             "VirusTotal pre-flight scan"
+        )
+
+    def test_release_creation_is_deferred_until_after_the_scan(self):
+        # `gh release create` without `--draft` publishes at once, so creating a
+        # new release before the scan would expose an empty release for its
+        # duration, and leave it empty for good if the run were cancelled.
+        names = self._publish_steps()
+        assert names.index("VirusTotal pre-flight scan") < names.index(
+            "Create versioned release"
+        )
+        assert names.index("Create versioned release") < names.index(
+            "Publish versioned release assets"
+        )
+
+    def test_release_creation_is_gated_on_the_validation_step(self):
+        yaml = pytest.importorskip("yaml")
+        workflow = REPO_ROOT / ".github" / "workflows" / "release-desktop.yml"
+        data = yaml.safe_load(workflow.read_text(encoding = "utf-8"))
+        steps = data["jobs"]["publish-release"]["steps"]
+        by_name = {step.get("name"): step for step in steps}
+        assert by_name["Validate versioned release state"]["id"] == "versioned_release_state"
+        assert (
+            by_name["Create versioned release"]["if"]
+            == "steps.versioned_release_state.outputs.create == 'true'"
         )
 
     def test_scan_runs_before_the_assets_are_published(self):
