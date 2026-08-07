@@ -583,7 +583,7 @@ function MlxAdvancedSettings({
         </Select>
       </div>
       {outcome ? (
-        <p className="text-[11px] leading-snug text-muted-foreground">
+        <p className="text-ui-11 leading-snug text-muted-foreground">
           {outcome}
         </p>
       ) : null}
@@ -595,7 +595,7 @@ function MlxAdvancedSettings({
         readOnly={!servedByMlx}
       />
       {templateOutcome ? (
-        <p className="text-[11px] leading-snug text-muted-foreground">
+        <p className="text-ui-11 leading-snug text-muted-foreground">
           {templateOutcome}
         </p>
       ) : null}
