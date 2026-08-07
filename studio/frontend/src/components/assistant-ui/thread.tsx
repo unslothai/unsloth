@@ -99,6 +99,7 @@ import {
   CONTINUATION_RUN_CONFIG_KEY,
   incompleteLabel,
   isContinuableContent,
+  modeAllowsContinuation,
   readIncompleteInfo,
   readTextThoughtSignature,
 } from "@/features/chat/utils/continuation";
@@ -4948,6 +4949,13 @@ const ContinueMessageBar: FC = () => {
   const fromAudioInput = useAuiState(({ thread }) =>
     Boolean(findLatestUserAudioBase64(thread.messages, false)),
   );
+  // An audio-output model regenerates the whole clip and never reads the request.
+  const audioOutputModel = useChatRuntimeStore((s) => {
+    const activeModel = s.models.find((m) => m.id === s.params.checkpoint);
+    return Boolean(activeModel?.isAudio && !activeModel.hasAudioInput);
+  });
+  // Research armed after the cut owns no run yet, so the gates above stay clear.
+  const deepResearchArmed = useChatRuntimeStore((s) => s.deepResearchEnabled);
 
   // Cancelled comes through status (the adapter yields nothing after an abort);
   // the other two are stamped on metadata so they survive a reload.
@@ -4965,7 +4973,11 @@ const ContinueMessageBar: FC = () => {
     researchRunId ||
     researchActive ||
     !continuable ||
-    fromAudioInput ||
+    !modeAllowsContinuation({
+      fromAudioInput,
+      audioOutputModel,
+      deepResearchArmed,
+    }) ||
     !partial.trim()
   ) {
     return null;

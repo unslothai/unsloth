@@ -179,15 +179,37 @@ export function readTextThoughtSignature(
  *
  * Anthropic removed assistant prefill in Claude 4.6 (400 on the last message being
  * assistant) and never allowed it with extended thinking. Gemini requires a multiturn
- * request to end in a user turn or a function response and 400s otherwise. Both get
+ * request to end in a user turn or a function response and 400s otherwise. Mistral
+ * takes a prefill only on an assistant message carrying its own `prefix: true` field,
+ * which neither the outbound message type nor the backend schema has, so a bare one
+ * 400s with "Expected last role User or Tool (or Assistant with prefix True)". All get
  * the partial plus an instruction turn instead, keeping the last message a user turn.
  */
-const PREFILL_REJECTING_PROVIDERS = new Set(["anthropic", "gemini"]);
+const PREFILL_REJECTING_PROVIDERS = new Set(["anthropic", "gemini", "mistral"]);
 
 export function rejectsAssistantPrefill(
   providerType: string | undefined,
 ): boolean {
   return providerType != null && PREFILL_REJECTING_PROVIDERS.has(providerType);
+}
+
+/**
+ * Whether the run this thread would start can resume a partial at all.
+ *
+ * These three answer from scratch before the continuation request is read: audio input
+ * re-listens, an audio-output model regenerates the clip, and armed Deep Research
+ * replaces the turn with a report. Continue would restart there, so it is hidden.
+ */
+export function modeAllowsContinuation({
+  fromAudioInput,
+  audioOutputModel,
+  deepResearchArmed,
+}: {
+  fromAudioInput: boolean;
+  audioOutputModel: boolean;
+  deepResearchArmed: boolean;
+}): boolean {
+  return !(fromAudioInput || audioOutputModel || deepResearchArmed);
 }
 
 /** Asks for a continuation when the partial cannot be sent as a prefill. */

@@ -13,6 +13,7 @@ const {
   isContinuableContent,
   isRestart,
   joinContinuation,
+  modeAllowsContinuation,
   readContinuationRequest,
   readIncompleteInfo,
   readTextThoughtSignature,
@@ -143,11 +144,39 @@ test("text and reasoning parts are continuable, empty text is not", () => {
 
 test("providers that reject a trailing assistant turn get the instruction path", () => {
   // Anthropic 400s on a trailing assistant message since Claude 4.6; Gemini requires
-  // a multiturn request to end in a user turn or a function response.
+  // a multiturn request to end in a user turn or a function response. Mistral answers
+  // "Expected last role User or Tool (or Assistant with prefix True)" unless the turn
+  // carries its `prefix: true` field, which the outbound message type has no room for.
   assert.equal(rejectsAssistantPrefill("anthropic"), true);
   assert.equal(rejectsAssistantPrefill("gemini"), true);
+  assert.equal(rejectsAssistantPrefill("mistral"), true);
   assert.equal(rejectsAssistantPrefill("openai"), false);
   assert.equal(rejectsAssistantPrefill(undefined), false);
+});
+
+test("modes that answer from scratch do not offer Continue", () => {
+  const plain = {
+    fromAudioInput: false,
+    audioOutputModel: false,
+    deepResearchArmed: false,
+  };
+  assert.equal(modeAllowsContinuation(plain), true);
+  assert.equal(
+    modeAllowsContinuation({ ...plain, fromAudioInput: true }),
+    false,
+  );
+  // A stopped TTS turn keeps its "Generating audio..." text, which passes the content
+  // gates; the resumed run would regenerate the whole clip instead of continuing.
+  assert.equal(
+    modeAllowsContinuation({ ...plain, audioOutputModel: true }),
+    false,
+  );
+  // Deep Research armed after the turn was cut: the run researches the user message
+  // and its report replaces the partial.
+  assert.equal(
+    modeAllowsContinuation({ ...plain, deepResearchArmed: true }),
+    false,
+  );
 });
 
 test("the overlap repair can eat a legitimate repeat, so local output skips it", () => {

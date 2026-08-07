@@ -56,8 +56,12 @@ def _inference_backend():
     dependency-light backend CI job installs neither, but the formatters under test
     touch neither either. Stub them rather than skip, or the matrix that would catch
     a restart regression never runs it. Stubs are dropped once the module is bound.
+    Torch and transformers it does need, so a runner without those skips instead.
     """
-    import transformers  # noqa: F401 - resolve optional deps before anything is faked
+    try:
+        import transformers  # noqa: F401 - settle optional-dep probes before faking
+    except ImportError:
+        pass
 
     stubbed = []
     for name in ("unsloth", "unsloth.chat_templates", "peft"):
@@ -70,6 +74,8 @@ def _inference_backend():
             stubbed.append(name)
     try:
         from core.inference.inference import InferenceBackend
+    except ImportError as exc:
+        pytest.skip(f"inference backend unavailable ({exc})")
     finally:
         for name in stubbed:
             sys.modules.pop(name, None)
