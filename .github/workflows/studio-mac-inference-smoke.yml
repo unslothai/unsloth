@@ -155,6 +155,9 @@ jobs:
           echo "GGUF_FILE=gemma-3-270m-it-UD-Q4_K_XL.gguf" >> "$GITHUB_ENV"
           echo "STUDIO_PORT=18888" >> "$GITHUB_ENV"
 
+      # Cross-OS shared entry. The tree under `hf-cache` is byte-identical on
+      # Linux, macOS and Windows, so the key carries no `runner.os`, and
+      # enableCrossOsArchive lets Windows (which tars with --force-local) join it.
       - name: Restore HF_HOME for unsloth/gemma-3-270m-it-GGUF
         id: cache-hf
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
@@ -162,7 +165,8 @@ jobs:
         timeout-minutes: 15
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-unsloth/gemma-3-270m-it-GGUF-UD-Q4_K_XL-v2
+          key: hf-unsloth/gemma-3-270m-it-GGUF-UD-Q4_K_XL-v3
+          enableCrossOsArchive: true
 
       - name: Prime HF_HOME with the GGUF
         id: prime-hf
@@ -195,7 +199,8 @@ jobs:
         timeout-minutes: 15
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-unsloth/gemma-3-270m-it-GGUF-UD-Q4_K_XL-v2
+          key: hf-unsloth/gemma-3-270m-it-GGUF-UD-Q4_K_XL-v3
+          enableCrossOsArchive: true
       - name: Install OpenAI + Anthropic Python SDKs
         timeout-minutes: 5
         run: pip install 'openai>=1.50' 'anthropic>=0.40'
