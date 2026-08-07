@@ -141,7 +141,9 @@ def test_every_step_appears_exactly_once(use_command_shape: bool) -> None:
     raw = _run_capturing_bytes(_harness(redirected_probe = True), use_command_shape)
     text = raw.decode("utf-8")
     for sentinel in ("none (chat-only / GGUF)", "enabled", "installing OXC validator runtime..."):
-        assert text.count(sentinel) == 1, f"{sentinel!r} appeared {text.count(sentinel)} times, expected 1"
+        assert (
+            text.count(sentinel) == 1
+        ), f"{sentinel!r} appeared {text.count(sentinel)} times, expected 1"
 
 
 @pwsh_only
@@ -159,6 +161,7 @@ def test_step_label_and_value_stay_on_one_line(use_command_shape: bool) -> None:
 # Source contracts. These run everywhere, including the Linux backend CI job,
 # so a regression is caught without waiting for a Windows runner.
 # --------------------------------------------------------------------------
+
 
 def _strip_comments(source: str) -> str:
     return re.sub(r"(?m)#.*$", "", source)
@@ -215,4 +218,6 @@ def test_rust_windows_spawns_force_utf8(rust_file: str) -> None:
     """The Rust readers decode as UTF-8, so their Windows children must emit it."""
     source = (REPO_ROOT / "studio" / "src-tauri" / "src" / rust_file).read_text(encoding = "utf-8")
     assert 'cmd.env("PYTHONUTF8", "1");' in source, f"{rust_file} does not force PYTHONUTF8"
-    assert 'cmd.env("PYTHONIOENCODING", "utf-8");' in source, f"{rust_file} does not force PYTHONIOENCODING"
+    assert (
+        'cmd.env("PYTHONIOENCODING", "utf-8");' in source
+    ), f"{rust_file} does not force PYTHONIOENCODING"
