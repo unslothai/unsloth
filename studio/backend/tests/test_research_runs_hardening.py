@@ -985,7 +985,7 @@ def test_admission_keepalives_do_not_spend_the_first_output_budget(monkeypatch):
     _install_fake_client(monkeypatch, [_QueuedThenServedStream()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    assert _run_stream(supervisor, timeout_seconds = 5.0) == ("report", "", "stop")
+    assert _run_stream(supervisor, timeout_seconds = 5.0) == ("report", "", "stop", None)
 
 
 def _comment_only_stream(comment: str):
@@ -1052,7 +1052,7 @@ def test_the_queue_wait_is_not_charged_to_the_model_budget(monkeypatch):
     _install_fake_client(monkeypatch, [_QueuedThenAdmitted()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    assert _run_stream(supervisor, timeout_seconds = 10.0) == ("report", "", "stop")
+    assert _run_stream(supervisor, timeout_seconds = 10.0) == ("report", "", "stop", None)
 
 
 def test_the_budget_starts_when_admission_ends(monkeypatch):
@@ -1528,7 +1528,7 @@ def test_first_output_deadline_disarms_once_output_starts(monkeypatch):
     _install_fake_client(monkeypatch, [_LongGenerationStream()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    report, _reasoning, finish_reason = _run_stream(supervisor, timeout_seconds = 30.0)
+    report, _reasoning, finish_reason, _usage = _run_stream(supervisor, timeout_seconds = 30.0)
     assert finish_reason == "stop"
     assert report.startswith("start w0 w1")
     assert report.endswith("w11")
@@ -1562,7 +1562,7 @@ def test_reasoning_only_prefix_disarms_the_first_output_deadline(monkeypatch):
     _install_fake_client(monkeypatch, [_LongThinkStream()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    report, reasoning, _finish = _run_stream(supervisor, timeout_seconds = 30.0)
+    report, reasoning, _finish, _usage = _run_stream(supervisor, timeout_seconds = 30.0)
     assert report == "answer"
     assert reasoning.startswith("t0 ")
 
@@ -1728,3 +1728,60 @@ def test_stream_completion_rechecks_the_lease_between_transport_retries(monkeypa
         _run_stream(supervisor)
     assert len(sent) == 1
     assert checks == ["run-1"]
+
+
+def test_every_stream_assertion_matches_the_return_arity():
+    """`_stream_completion`'s tuple width, read from its annotation, must match
+    every comparison and unpack in this file.
+
+    #7985 widened the return to carry `usage` and updated most call sites but
+    not four of them, which reddened the whole repo on every open PR: two
+    compared against a 3-tuple and two unpacked into three names. Nothing here
+    tied the two together, so the drift was invisible until CI ran.
+    """
+    import ast
+    import inspect as _inspect
+    import re
+
+    from core import research_runs as _rr
+
+    annotation = str(_inspect.signature(
+        _rr.ResearchSupervisor._stream_completion).return_annotation)
+    # `tuple[a, b, c, d]` -> 4, counting only top-level commas so that a nested
+    # `dict[str, int]` does not read as two extra members.
+    inner = annotation[annotation.index("[") + 1 : annotation.rindex("]")]
+    depth, width = 0, 1
+    for ch in inner:
+        if ch in "[(": depth += 1
+        elif ch in "])": depth -= 1
+        elif ch == "," and depth == 0: width += 1
+
+    source = Path(__file__).read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+
+    def _calls_run_stream(node):
+        return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "_run_stream")
+
+    compared, unpacked = 0, 0
+    for node in ast.walk(tree):
+        # `_run_stream(...) == (a, b, c, d)`
+        if isinstance(node, ast.Compare) and _calls_run_stream(node.left):
+            for other in node.comparators:
+                if isinstance(other, ast.Tuple):
+                    assert len(other.elts) == width, (
+                        f"line {node.lineno}: compares against a "
+                        f"{len(other.elts)}-tuple, but _stream_completion "
+                        f"returns {width} values")
+                    compared += 1
+        # `a, b, c, d = _run_stream(...)`
+        if isinstance(node, ast.Assign) and _calls_run_stream(node.value):
+            for target in node.targets:
+                if isinstance(target, ast.Tuple):
+                    assert len(target.elts) == width, (
+                        f"line {node.lineno}: unpacks {len(target.elts)} names "
+                        f"from a {width}-value return")
+                    unpacked += 1
+
+    # Not a vacuous pass: both shapes are present in this file today.
+    assert compared >= 5 and unpacked >= 2, (compared, unpacked)
