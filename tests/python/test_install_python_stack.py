@@ -295,7 +295,14 @@ class TestProgressLineNotes:
       deps  [=======-------------]  5/14  dependency overrides   torch 2.11...
     """
 
-    def _render(self, emit, *, columns = "100", verbose = False, color = False) -> str:
+    def _render(
+        self,
+        emit,
+        *,
+        columns = "100",
+        verbose = False,
+        color = False,
+    ) -> str:
         buf = io.StringIO()
         with (
             mock.patch.dict(os.environ, {"COLUMNS": columns}),
@@ -501,13 +508,10 @@ class TestProgressLineNotes:
             if isinstance(n, ast.FunctionDef) and n.name == "install_python_stack"
         )
         assert any(
-            isinstance(n, ast.Global) and "_PROGRESS_LINE_ACTIVE" in n.names
-            for n in ast.walk(fn)
+            isinstance(n, ast.Global) and "_PROGRESS_LINE_ACTIVE" in n.names for n in ast.walk(fn)
         ), "install_python_stack() must declare _PROGRESS_LINE_ACTIVE global"
         assert any(
             isinstance(n, ast.Assign)
-            and any(
-                isinstance(t, ast.Name) and t.id == "_PROGRESS_LINE_ACTIVE" for t in n.targets
-            )
+            and any(isinstance(t, ast.Name) and t.id == "_PROGRESS_LINE_ACTIVE" for t in n.targets)
             for n in ast.walk(fn)
         ), "install_python_stack() must reset _PROGRESS_LINE_ACTIVE"
