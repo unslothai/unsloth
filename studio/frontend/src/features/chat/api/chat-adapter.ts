@@ -123,6 +123,7 @@ import {
   joinContinuation,
   readContinuationRequest,
   rejectsAssistantPrefill,
+  resumesExactly,
 } from "../utils/continuation";
 import {
   generateAudio,
@@ -3578,9 +3579,12 @@ export function createOpenAIStreamAdapter(
       // Scan post-prune history so a refused user turn's image/audio
       // doesn't gate or mis-attribute the next turn.
       const imageBase64 = findLatestUserImageBase64(survivingMessages);
+      // A continuation resumes the turn as it was sent, and the Continue gate ignores
+      // pending audio: picking up a clip staged in the composer since would switch the
+      // request onto the audio path the backend refuses to continue.
       const audioBase64 = findLatestUserAudioBase64(
         survivingMessages,
-        !queuedRunSettings,
+        !queuedRunSettings && !continuation,
       );
       const hasOutboundImage = Boolean(imageBase64);
 
@@ -3790,7 +3794,9 @@ export function createOpenAIStreamAdapter(
       // the rest of the answer: trimming an overlap there could only delete words the
       // model meant to write (a sentence legitimately restating the preceding phrase).
       // The repair is for providers that may ignore the prefill and repeat or restart.
-      const repairContinuation = isExternalRequest;
+      // A self-hosted vLLM or llama-server is sent the flags too, so it resumes exactly.
+      const repairContinuation =
+        isExternalRequest && !resumesExactly(externalProvider?.providerType);
       const mergeContinuation = (text: string): string =>
         continuationPartial && repairContinuation
           ? joinContinuation(

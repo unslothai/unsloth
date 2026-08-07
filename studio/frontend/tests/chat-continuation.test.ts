@@ -19,6 +19,7 @@ const {
   readIncompleteInfo,
   readTextThoughtSignature,
   rejectsAssistantPrefill,
+  resumesExactly,
   stripContinuationOverlap,
 } = await import("../src/features/chat/utils/continuation.ts");
 
@@ -296,4 +297,22 @@ test("a continuation carries the Gemini signature of the turn it resumes", () =>
     }),
     { partial: "half" },
   );
+});
+
+test("only the servers sent the flags resume exactly", () => {
+  // The backend forwards continue_final_message + add_generation_prompt to these two
+  // only, so only they skip the lossy overlap repair.
+  for (const providerType of ["vllm", "llama_cpp"]) {
+    assert.equal(resumesExactly(providerType), true, providerType);
+  }
+  // Ollama and any user-supplied base_url get no flags, so they may still restart.
+  for (const providerType of [
+    "ollama",
+    "custom",
+    "openai",
+    "anthropic",
+    undefined,
+  ]) {
+    assert.equal(resumesExactly(providerType), false, String(providerType));
+  }
 });

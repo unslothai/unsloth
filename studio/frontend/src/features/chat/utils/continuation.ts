@@ -223,6 +223,20 @@ export function rejectsAssistantPrefill(
 }
 
 /**
+ * Self-hosted servers the backend sends the continuation flags to.
+ *
+ * Mirrors `_CONTINUATION_FLAG_PROVIDERS` in `core/inference/external_provider.py`: vLLM
+ * and llama-server document `continue_final_message` + `add_generation_prompt`, so they
+ * resume at the exact token boundary like a local model and need no overlap repair.
+ * Every other connection may ignore the trailing assistant turn and restart.
+ */
+const EXACT_RESUME_PROVIDERS = new Set(["vllm", "llama_cpp"]);
+
+export function resumesExactly(providerType: string | undefined): boolean {
+  return providerType != null && EXACT_RESUME_PROVIDERS.has(providerType);
+}
+
+/**
  * Whether the run this thread would start can resume a partial at all.
  *
  * These three answer from scratch before the continuation request is read: audio input
