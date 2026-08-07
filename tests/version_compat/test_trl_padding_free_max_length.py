@@ -2823,3 +2823,145 @@ def test_completion_only_ignores_the_columns_of_a_transformed_split():
     assert guard in source
     # And the probe it falls through to still reads a row rather than giving up.
     assert "_unsloth_train_sample = next(_unsloth_probe, None) or {}" in source
+
+
+def _row(ids, **extra):
+    row = {"input_ids": list(ids), "attention_mask": [1] * len(ids)}
+    row.update(extra)
+    return row
+
+
+def test_a_later_row_that_cannot_take_the_slice_does_not_raise():
+    """`_sliceable_per_token` probes ONE row. An optional column that is a list
+    there and None further in used to raise inside the dataloader -- a failure
+    the caller would not have had without the cap. The `map` path already
+    validates per row; the read-side wrapper has to as well."""
+    from unsloth.models.rl import _CappedRows
+
+    rows = [
+        _row(range(10), token_type_ids = [0] * 10),
+        _row(range(10), token_type_ids = None),
+    ]
+
+    class Split:
+        def __len__(self): return len(rows)
+        def __getitem__(self, i): return rows[i]
+        def __iter__(self): return iter(rows)
+
+    capped = _CappedRows(Split(), slice(None, 4), (), ("input_ids", "attention_mask", "token_type_ids"))
+    out = list(capped)
+    assert [len(r["input_ids"]) for r in out] == [4, 4]
+    assert out[0]["token_type_ids"] == [0] * 4
+    assert out[1]["token_type_ids"] is None, "an unsliceable value must be left alone, not cut"
+
+
+def test_a_misaligned_later_row_keeps_its_own_length():
+    """Same probe, different drift: a column that is aligned in row 0 and a
+    different width in row 1. Cutting it there would report a mask for tokens
+    the row never had."""
+    from unsloth.models.rl import _CappedRows
+
+    # Longer than the tokens, not shorter, so cutting it is visible: a shorter
+    # value comes back unchanged from the slice either way.
+    rows = [_row(range(10), labels = [1] * 10), _row(range(10), labels = [1] * 20)]
+    capped = _CappedRows(rows, slice(None, 4), (), ("input_ids", "labels"))
+    out = list(capped)
+    assert out[0]["labels"] == [1] * 4
+    assert out[1]["labels"] == [1] * 20, "a misaligned value was cut to a width it never had"
+
+
+def test_input_ids_comes_first_so_every_column_is_measured():
+    """`_column_names` returns a SET, and the `map` path reads the width off
+    `input_ids` as it walks this list. A run that ordered `labels` first sliced
+    the labels having compared them to nothing at all."""
+    from unsloth.models.rl import _sliceable_per_token
+
+    # Worst case spelled out, since a set's own order is stable within a run.
+    names = ("labels", "attention_mask", "input_ids")
+    kept = _sliceable_per_token(None, names, 4, _row(range(10), labels = [1] * 10))
+    assert kept[0] == "input_ids", kept
+
+
+def test_a_custom_per_token_column_rides_along_with_the_slice():
+    """`loss_mask` is not on the allow-list, so it kept its full length while
+    `input_ids` was cut and a custom collator got mismatched rows."""
+    from unsloth.models.rl import _sliceable_per_token
+
+    probed = _row(range(10), loss_mask = [1] * 10)
+    kept = _sliceable_per_token(None, set(probed), 4, probed)
+    assert "loss_mask" in kept
+
+
+def test_a_coincidentally_long_text_column_does_not_ride_along():
+    """Alignment alone is not proof: a list of ten strings is ten long too.
+    Only a flat vector of scalars is a per-token field."""
+    from unsloth.models.rl import _sliceable_per_token
+
+    probed = _row(range(10), messages = [{"role": "user"}] * 10, tags = ["a"] * 10, text = "0123456789")
+    kept = _sliceable_per_token(None, set(probed), 4, probed)
+    assert "messages" not in kept and "tags" not in kept and "text" not in kept
+
+
+def test_a_mark_is_not_trusted_after_the_split_is_mutated():
+    """Three of the four `_cap` outcomes mark the CALLER'S object and hand it
+    back. Mutating it -- a `set_transform` that starts yielding longer rows --
+    left the mark in place, so the rescan was skipped and the new rows went
+    through uncapped."""
+    from unsloth.models import rl
+
+    class Split:
+        _fingerprint = "before"
+
+    split = Split()
+    rl._mark_capped(split, 16, True)
+    assert rl._cap_still_holds(split, 16, True)
+    split._fingerprint = "after"
+    assert not rl._cap_still_holds(split, 16, True), "a moved fingerprint still read as capped"
+
+
+def test_an_unfingerprintable_split_is_never_trusted_by_its_mark():
+    """The memo excludes these on purpose because their rows can change under a
+    stable identity. The mark has to reach the same conclusion, or it becomes
+    the way around the memo."""
+    from unsloth.models import rl
+
+    class Plain:
+        pass
+
+    plain = rl._mark_capped(Plain(), 16, True)
+    assert not rl._cap_still_holds(plain, 16, True)
+
+    class Transformed:
+        _fingerprint = "x"
+        format = {"type": "custom"}
+
+    assert not rl._cap_still_holds(rl._mark_capped(Transformed(), 16, True), 16, True)
+
+
+def test_our_own_wrapper_is_still_handed_straight_back():
+    """The mark exists to stop the paired wrappers capping one call twice, and
+    over a one-shot stream the second pass is destructive. A wrapper holds a
+    fixed slice and cannot drift, so it is trusted without a fingerprint."""
+    from unsloth.models import rl
+
+    wrapper = rl._CappedRows([], slice(None, 4), (), ("input_ids",))
+    rl._mark_capped(wrapper, 16, True)
+    assert rl._cap_still_holds(wrapper, 16, True)
+    assert not rl._cap_still_holds(wrapper, 32, True), "a different cap must still rescan"
+
+
+def test_the_late_evaluation_memo_is_bounded():
+    """Every entry pins the original split AND the capped copy for the trainer's
+    lifetime. A caller building a fresh validation subset each epoch grew this
+    dictionary without bound until the host ran out of memory."""
+    from unsloth.models import rl
+
+    _, tok = _load_plain()
+    Stub, seen = _late_cap_helpers()
+    stub = Stub()
+    stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH)
+    for _ in range(rl._EVAL_CAP_MEMO_MAX * 3):
+        # A fresh object each time, as a per-epoch validation subset would be.
+        stub.evaluate(eval_dataset = _tokenized_dataset(tok))
+    memo = getattr(stub, "_unsloth_eval_cap_memo", {})
+    assert 0 < len(memo) <= rl._EVAL_CAP_MEMO_MAX, len(memo)

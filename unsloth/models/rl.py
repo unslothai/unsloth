@@ -645,9 +645,33 @@ class _CappedBase:
         self._per_token = tuple(per_token)
 
     def _slice(self, row):
+        # Per value, per row, exactly as the `map` path does it.
+        # `_sliceable_per_token` judges alignment from ONE probed row, and an
+        # optional column that is a list there can be None -- or a different
+        # width -- further in. Slicing that raised inside the dataloader, which
+        # is a failure the caller would not have had without the cap. Only
+        # `input_ids` is cut unconditionally: it is the column the cap exists
+        # for, and the width every other one is measured against.
         if not isinstance(row, dict):
             return row
-        return {k: (v[self._cut] if k in self._per_token else v) for k, v in row.items()}
+        try:
+            width = len(row["input_ids"])
+        except Exception:
+            width = None
+        out = {}
+        for key, value in row.items():
+            if key not in self._per_token:
+                out[key] = value
+                continue
+            if key == "input_ids":
+                out[key] = value[self._cut]
+                continue
+            try:
+                aligned = width is not None and len(value) == width
+            except Exception:
+                aligned = False
+            out[key] = value[self._cut] if aligned else value
+        return out
 
     def _keep(self, row):
         if not self._supervision or not isinstance(row, dict):
@@ -791,6 +815,7 @@ def splits_within_cap(splits, cap):
 
 
 _CAP_SIGNATURE_ATTR = "_unsloth_cap_signature"
+_EVAL_CAP_MEMO_MAX = 8
 
 
 def _cap_signature(dataset):
@@ -807,12 +832,55 @@ def _cap_signature(dataset):
     return None
 
 
+def _mutation_token(dataset):
+    """What moves when this split's ROWS move, or None if nothing does.
+
+    `datasets` splits are content-addressed by `_fingerprint`. A `with_transform`
+    split has one too, but it covers the backing table and not the transform, so
+    a transform closing over mutable state yields different rows under an
+    unchanged fingerprint; those answer None. Anything else has no answer either.
+    """
+    try:
+        fmt = getattr(dataset, "format", None)
+        kind = fmt.get("type") if isinstance(fmt, dict) else None
+        if (kind or getattr(dataset, "_format_type", None)) == "custom":
+            return None
+    except Exception:
+        return None
+    return getattr(dataset, "_fingerprint", None)
+
+
 def _mark_capped(dataset, cap, drop_unsupervised):
     try:
-        setattr(dataset, _CAP_SIGNATURE_ATTR, (cap, drop_unsupervised))
+        setattr(
+            dataset, _CAP_SIGNATURE_ATTR, (cap, drop_unsupervised, _mutation_token(dataset))
+        )
     except Exception:
         pass  # a split that refuses attributes just gets scanned twice
     return dataset
+
+
+def _cap_still_holds(dataset, cap, drop_unsupervised):
+    """Whether an earlier mark of ours still describes this split.
+
+    Three of the four `_cap` outcomes mark the CALLER'S OWN object and hand it
+    back -- no tokens, packed, already short -- and that object can be mutated
+    between two `evaluate()` calls. A `set_transform` that starts yielding
+    longer `input_ids` is enough, and the mark alone then skipped the rescan and
+    let the new rows through uncapped. Our own wrappers hold a fixed slice and
+    cannot drift, so those are trusted outright; anything else has to still
+    fingerprint the way it did when marked. An unfingerprintable split answers
+    None both times and is simply rescanned, which is the same conclusion the
+    memo reaches for the same reason, and is not destructive: the second pass
+    reads through `_column_names`, which chains its probed row back on.
+    """
+    signature = _cap_signature(dataset)
+    if signature is None:
+        return False
+    if isinstance(dataset, _CappedBase):
+        return tuple(signature[:2]) == (cap, drop_unsupervised)
+    token = _mutation_token(dataset)
+    return token is not None and tuple(signature) == (cap, drop_unsupervised, token)
 
 
 def _first_row_without_consuming(dataset):
@@ -828,6 +896,27 @@ def _first_row_without_consuming(dataset):
     if probe is dataset or probe is iter(dataset):
         return None
     return next(probe, None)
+
+
+def _is_token_vector(value, width):
+    """Whether `value` reads as one number per token, for a row of `width`.
+
+    Only used to decide whether a column NOT on the allow-list rides along with
+    the slice, so it is deliberately narrow: a string is as long as its
+    characters, and a list of messages or of strings can match a row length by
+    coincidence. A flat vector of scalars is what a per-token field actually is.
+    """
+    if isinstance(value, (str, bytes, dict)):
+        return False
+    try:
+        if len(value) != width or width == 0:
+            return False
+    except Exception:
+        return False
+    # By what the entries are NOT, so a numpy or torch scalar still counts.
+    for item in value:
+        return not isinstance(item, (str, bytes, dict, list, tuple, set))
+    return False
 
 
 def _sliceable_per_token(
@@ -848,9 +937,23 @@ def _sliceable_per_token(
     A row that cannot be read without costing it leaves `input_ids` alone: the
     column the cap exists for, and the one every other is measured against.
     """
-    per_token = [c for c in names if c in _PER_TOKEN]
-    if len(per_token) < 2:
-        return per_token
+    # `input_ids` first, and the rest in a fixed order: `names` arrives as a set,
+    # and the `map` path reads the width off `input_ids` as it walks this list,
+    # so a run that happened to order `labels` ahead of it sliced the labels
+    # without ever comparing them to anything.
+    known = [c for c in _PER_TOKEN if c in names]
+    # A user-defined per-token field -- `loss_mask`, `token_weights`, a custom
+    # model input -- is not in the allow-list, so it kept its full length while
+    # `input_ids` was cut. A custom collator (the case where padding-free is off
+    # and this wrapper still runs) then gets mismatched lengths and either fails
+    # or supervises the wrong tokens. Judge those the way the row check below
+    # judges everything else, by alignment, but only accept a flat vector of
+    # scalars: that is what a per-token field is, and it keeps `messages` or a
+    # column of strings that happens to be as long as the row out of the slice.
+    custom = sorted(c for c in names if c not in _PER_TOKEN)
+    per_token = known + custom
+    if len(known) < 2 and not custom:
+        return known
     # `probed` is the row `_column_names` already read. Preferring it is what
     # lets a one-shot stream align every per-token column: reading another row
     # would cost the caller that example, so without it this fell back to
@@ -861,10 +964,14 @@ def _sliceable_per_token(
     try:
         width = len(row.get("input_ids"))
     except Exception:
-        return per_token
+        # Nothing to measure against, so a custom column has no evidence at all
+        # behind it. Fall back to the named ones only.
+        return known
     kept = []
     for name in per_token:
         value = row.get(name)
+        if name in custom and not _is_token_vector(value, width):
+            continue
         try:
             # As long as `input_ids`, and flat: a nested first element is a
             # per-token vector that `[:cap]` would cut along the wrong axis.
@@ -938,7 +1045,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         # hands out a fresh generator over the SAME exhausted source rather than
         # rewinding, so the second pass eats the first rows instead of replaying
         # them. Our own wrapper, capped the same way, is already the answer.
-        if _cap_signature(dataset) == (cap, drop_unsupervised):
+        if _cap_still_holds(dataset, cap, drop_unsupervised):
             return dataset
         names, dataset, probed = _column_names(dataset)
         if "input_ids" not in names:
@@ -1099,17 +1206,10 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         A `with_transform` split is excluded even though it has a fingerprint:
         that covers the backing table, not the transform, so a transform closing
         over mutable state yields different rows under an unchanged fingerprint
-        and the memo would replay a filter decided against the old ones.
+        and the memo would replay a filter decided against the old ones. That is
+        the same question the cap mark asks, so it is the same helper.
         """
-        try:
-            fmt = getattr(dataset, "format", None)
-            kind = fmt.get("type") if isinstance(fmt, dict) else None
-            if (kind or getattr(dataset, "_format_type", None)) == "custom":
-                return None
-        except Exception:
-            return None
-        fingerprint = getattr(dataset, "_fingerprint", None)
-        return None if fingerprint is None else fingerprint
+        return _mutation_token(dataset)
 
     def _cap_cached(
         trainer,
@@ -1144,9 +1244,19 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         )
         seen = memo.get(key)
         if seen is not None and seen[0] is dataset and seen[1] == cap and seen[3] == token:
+            memo[key] = memo.pop(key)  # most recently used goes last
             return seen[2]
         capped = _cap(dataset, cap, trainer.args, drop_unsupervised)
         memo[key] = (dataset, cap, capped, token)
+        # Bounded, because every entry pins BOTH the original split and the
+        # capped copy for the trainer's whole lifetime -- deliberately, so a
+        # later split cannot inherit a freed `id()`. A caller that builds a
+        # fresh validation subset each epoch therefore accumulated Arrow tables
+        # until the host ran out. Evicting the least recently used costs nothing
+        # real: a run evaluates over a handful of splits, which is what the
+        # bound leaves room for.
+        while len(memo) > _EVAL_CAP_MEMO_MAX:
+            memo.pop(next(iter(memo)))
         return capped
 
     def _cap_splits(
