@@ -22,7 +22,12 @@ TOOL = {
 }
 
 
-def _configure(monkeypatch, selected, provider_type = "custom", base_url = None):
+def _configure(
+    monkeypatch,
+    selected,
+    provider_type = "custom",
+    base_url = None,
+):
     captured = {}
     monkeypatch.setattr(
         inference_mod.providers_db,
