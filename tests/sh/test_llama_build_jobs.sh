@@ -10,6 +10,11 @@
 # _LLAMA_BUILD_* in setup.sh for where the per-job budget comes from.
 set -e
 
+# The override is a supported env var, so a developer or CI shell may export it.
+# Every assertion below that is not about the override must not see it;
+# run_jobs sets it explicitly per call, but the direct invocations do not.
+unset UNSLOTH_LLAMA_BUILD_JOBS
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SETUP_SH="$SCRIPT_DIR/../../studio/setup.sh"
 SETUP_PS1="$SCRIPT_DIR/../../studio/setup.ps1"
@@ -76,7 +81,7 @@ assert_eq "junk override ignored" "7" "$(run_jobs 20 16384 "lots")"
 # the process's own path or an ancestor's, and a root-only read sees "max".
 _CG_FILE=$(mktemp)
 for _fn in _cg_read _cg_limit _cg_dirs _cg_unesc_prog _cg_unesc _cg_mounts _cg_rel \
-           _cg_pick_mount _cgroup_free_mb; do
+           _cg_pick_mounts _cgroup_free_mb; do
     sed -n "/^${_fn}()/,/^}/p" "$SETUP_SH" >> "$_CG_FILE"
 done
 if [ ! -s "$_CG_FILE" ]; then
@@ -130,12 +135,18 @@ rm -f "$_TMPD/anc/a/memory.high"
 #     "no limit" budgeted from host memory and took the full core count. Only
 #     memory.high is exercised: memory.max of 0 OOM-kills, so nothing is left
 #     running to read it.
-printf '0\n' > "$_TMPD/anc/a/memory.high"
+#     The fixture carries no other limit, so dropping the zero does not fall
+#     back to an ancestor's number, it falls back to host memory and the full
+#     core count -- which is the behaviour being pinned.
+mkdir -p "$_TMPD/zh/leaf"
+printf 'max\n' > "$_TMPD/zh/memory.max"
+printf 'max\n' > "$_TMPD/zh/leaf/memory.max"
+printf '0\n'   > "$_TMPD/zh/leaf/memory.high"
+printf '0::/leaf\n' > "$_TMPD/zh.proc"
 assert_eq "a zero memory.high is a limit, not the absence of one" "0" \
-    "$(run_cgroup "$_TMPD/anc" "$_TMPD/anc.proc")"
+    "$(run_cgroup "$_TMPD/zh" "$_TMPD/zh.proc")"
 assert_eq "and a zero allowance builds at 1 job, not \$(nproc)" "1" \
-    "$(run_jobs 20 "$(run_cgroup "$_TMPD/anc" "$_TMPD/anc.proc")" "")"
-rm -f "$_TMPD/anc/a/memory.high"
+    "$(run_jobs 20 "$(run_cgroup "$_TMPD/zh" "$_TMPD/zh.proc")" "")"
 
 # 6) v2 "max" everywhere is not a limit.
 mkdir -p "$_TMPD/unl"
@@ -262,6 +273,39 @@ printf '3:memory:/docker/abc/task\n' > "$_TMPD/multiv1.proc"
 assert_eq "v1 picks the containing mount too" "2048" \
     "$(run_cgroup "$_TMPD/multi" "$_TMPD/multiv1.proc" "$_TMPD/multiv1.mnt")"
 
+# 21b) A limit ABOVE the narrower mount's root is invisible through that mount
+#      and visible through the broader one, so taking only the most specific
+#      hides it. The same hierarchy really is mounted twice with different
+#      subtree roots: rootless podman inside rootless podman leaves a
+#      host-derived bind mount beside a namespace-scoped one. Every containing
+#      mount is inspected and the smallest allowance wins.
+mkdir -p "$_TMPD/anc2/broad/slice/job/task" "$_TMPD/anc2/narrow/task"
+printf 'max\n'        > "$_TMPD/anc2/broad/memory.max"
+printf '1073741824\n' > "$_TMPD/anc2/broad/slice/memory.max"
+printf 'max\n'        > "$_TMPD/anc2/broad/slice/job/memory.max"
+printf 'max\n'        > "$_TMPD/anc2/broad/slice/job/task/memory.max"
+printf '8589934592\n' > "$_TMPD/anc2/narrow/memory.max"
+printf 'max\n'        > "$_TMPD/anc2/narrow/task/memory.max"
+printf '0::/slice/job/task\n' > "$_TMPD/anc2.proc"
+{
+    printf '%s\n' "80 30 0:70 / $_TMPD/anc2/broad rw - cgroup2 cgroup2 rw"
+    printf '%s\n' "81 30 0:70 /slice/job $_TMPD/anc2/narrow rw - cgroup2 cgroup2 rw"
+} > "$_TMPD/anc2.mnt"
+assert_eq "an ancestor limit above the narrower mount is still seen" "1024" \
+    "$(run_cgroup "$_TMPD/anc2" "$_TMPD/anc2.proc" "$_TMPD/anc2.mnt")"
+# Order must not matter, since the answer is a minimum over all of them.
+{
+    printf '%s\n' "81 30 0:70 /slice/job $_TMPD/anc2/narrow rw - cgroup2 cgroup2 rw"
+    printf '%s\n' "80 30 0:70 / $_TMPD/anc2/broad rw - cgroup2 cgroup2 rw"
+} > "$_TMPD/anc2rev.mnt"
+assert_eq "and the mount order does not change the answer" "1024" \
+    "$(run_cgroup "$_TMPD/anc2" "$_TMPD/anc2.proc" "$_TMPD/anc2rev.mnt")"
+# The narrower mount still contributes: make its own limit the binding one.
+printf '536870912\n' > "$_TMPD/anc2/narrow/task/memory.max"
+assert_eq "the narrower mount still contributes its own limit" "512" \
+    "$(run_cgroup "$_TMPD/anc2" "$_TMPD/anc2.proc" "$_TMPD/anc2.mnt")"
+printf 'max\n' > "$_TMPD/anc2/narrow/task/memory.max"
+
 # 22) mountinfo escapes space, tab, newline and backslash as octal. Returning
 #     the fields verbatim gave a path that does not exist.
 mkdir -p "$_TMPD/esc/a b/job"
@@ -341,11 +385,18 @@ assert_eq "a trailing newline is not eaten" "1024" \
 # test and the open. These drive the helpers with the real options on.
 _STRICT_FILE=$(mktemp)
 for _fn in _cg_read _cg_limit _cg_dirs _cg_unesc_prog _cg_unesc _cg_mounts \
-           _cg_rel _cg_pick_mount _cgroup_free_mb _vm_stat_avail_mb _usable_ram_mb; do
+           _cg_rel _cg_pick_mounts _cgroup_free_mb _vm_stat_avail_mb _usable_ram_mb; do
     sed -n "/^${_fn}()/,/^}/p" "$SETUP_SH" >> "$_STRICT_FILE"
 done
 sed -n '/^_LLAMA_BUILD_RESERVE_MB=/,/^_LLAMA_BUILD_MB_PER_JOB=/p' "$SETUP_SH" >> "$_STRICT_FILE"
 sed -n '/^_llama_jobs_for()/,/^}/p' "$SETUP_SH" >> "$_STRICT_FILE"
+
+# _usable_ram_mb hardcodes /sys/fs/cgroup, so inside a memory-limited container
+# the assertions about HOST memory would receive the container's allowance
+# instead of the fixture. Anything below that is not testing the cgroup reader
+# itself stubs it out; the reader has its own assertions above, which pass it
+# real fixture trees.
+_NO_CGROUP='_cgroup_free_mb() { :; }; '
 
 # Echoes the exit status of running $1 under the real options.
 run_strict_rc() {
@@ -372,12 +423,15 @@ assert_eq "strict: _cg_unesc does not abort" "0" \
 # The -f guard is not only about failing: reading a FIFO blocks forever, and an
 # install that hangs is worse than one that stops. Nothing in cgroupfs is a
 # FIFO, but the guard is what makes that true of any path handed to the reader.
-if mkfifo "$_TMPD/fifo" 2>/dev/null; then
+if mkfifo "$_TMPD/fifo" 2>/dev/null && command -v timeout >/dev/null 2>&1; then
     _fifo_rc=$(timeout 5 bash -c 'set -euo pipefail; . "$1"; _cg_read "$2" >/dev/null' \
                    _ "$_STRICT_FILE" "$_TMPD/fifo" >/dev/null 2>&1; printf '%s' "$?")
     assert_eq "strict: _cg_read on a FIFO returns instead of blocking" "0" "$_fifo_rc"
 else
-    echo "  SKIP: mkfifo unavailable"
+    # Stock macOS has mkfifo but ships no GNU timeout (it is gtimeout, from
+    # coreutils), and an unbounded read here would hang the suite rather than
+    # fail it.
+    echo "  SKIP: mkfifo or timeout unavailable"
 fi
 
 # Whitespace really is stripped, rather than the trailing newline happening to
@@ -400,8 +454,8 @@ _noawk_rc=$(PATH="$_TMPD/noawk:$PATH" bash -c \
 assert_eq "strict: a failing awk does not abort the install" "0" "$_noawk_rc"
 printf 'MemTotal:       16777216 kB\nMemAvailable:   12582912 kB\n' > "$_TMPD/meminfo-strict"
 _noawk_jobs=$(PATH="$_TMPD/noawk:$PATH" bash -c \
-    'set -euo pipefail; . "$1"; _llama_jobs_for 20 "$(_usable_ram_mb "$2")"' \
-    _ "$_STRICT_FILE" "$_TMPD/meminfo-strict" 2>/dev/null)
+    'set -euo pipefail; . "$1"; eval "$3"; _llama_jobs_for 20 "$(_usable_ram_mb "$2")"' \
+    _ "$_STRICT_FILE" "$_TMPD/meminfo-strict" "$_NO_CGROUP" 2>/dev/null)
 assert_eq "a failing awk falls back to the core count" "20" "$_noawk_jobs"
 assert_eq "strict: _cgroup_free_mb on a real tree does not abort" "0" \
     "$(run_strict_rc '_cgroup_free_mb "'"$_TMPD"'/strict" "'"$_TMPD"'/strict.proc" "'"$_TMPD"'/strict.mnt"')"
@@ -429,10 +483,12 @@ assert_eq "strict: the job count still comes out" "7" \
 # The distinguishing form is the assignment: `v=$(reader)` propagates the
 # reader's failure, while passing it as an argument discards the status. The
 # real call site is NCPU=$(_llama_build_jobs), so pin the assignment form.
-run_posix_assign() {  # $1 = a PATH prefix, $2 = the expression to assign from
+# $1 = a PATH prefix, $2 = the expression to assign from, $3 = a prelude (used
+# to stub the cgroup reader out of the host-memory cases).
+run_posix_assign() {
     PATH="$1:$PATH" bash --posix -c \
-        'set -euo pipefail; . "$1"; shift; v=$(eval "$@"); printf "SURVIVED[%s]" "$v"' \
-        _ "$_STRICT_FILE" "$2" 2>/dev/null
+        'set -euo pipefail; . "$1"; eval "${3:-}"; v=$(eval "$2"); printf "SURVIVED[%s]" "$v"' \
+        _ "$_STRICT_FILE" "$2" "${3:-}" 2>/dev/null
 }
 assert_eq "POSIX mode: a failing awk does not abort _usable_ram_mb" "SURVIVED[]" \
     "$(run_posix_assign "$_TMPD/noawk" '_usable_ram_mb '"$_TMPD"'/meminfo-strict')"
@@ -460,11 +516,11 @@ assert_eq "POSIX mode: the macOS branch survives an unparseable vm_stat" "SURVIV
 # And with a working awk the numbers are still right under POSIX rules.
 # 12288 MiB available -> (12288 - 2048) / 2048 = 5.
 assert_eq "POSIX mode: the normal path still produces the capped count" "5" \
-    "$(bash --posix -c 'set -euo pipefail; . "$1"; _llama_jobs_for 20 "$(_usable_ram_mb "$2")"' \
-        _ "$_STRICT_FILE" "$_TMPD/meminfo-strict" 2>/dev/null)"
+    "$(bash --posix -c 'set -euo pipefail; . "$1"; eval "$3"; _llama_jobs_for 20 "$(_usable_ram_mb "$2")"' \
+        _ "$_STRICT_FILE" "$_TMPD/meminfo-strict" "$_NO_CGROUP" 2>/dev/null)"
 assert_eq "POSIX mode: an unreadable meminfo keeps the core count" "20" \
-    "$(bash --posix -c 'set -euo pipefail; . "$1"; _llama_jobs_for 20 "$(_usable_ram_mb "$2")"' \
-        _ "$_STRICT_FILE" "$_TMPD/nope" 2>/dev/null)"
+    "$(bash --posix -c 'set -euo pipefail; . "$1"; eval "$3"; _llama_jobs_for 20 "$(_usable_ram_mb "$2")"' \
+        _ "$_STRICT_FILE" "$_TMPD/nope" "$_NO_CGROUP" 2>/dev/null)"
 
 rm -f "$_STRICT_FILE"
 

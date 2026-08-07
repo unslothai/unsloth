@@ -438,29 +438,31 @@ _cg_rel() {
     return 0
 }
 
-# Pick one "<root><tab><point>" from the escaped candidates on stdin, and echo
-# it still escaped. A hierarchy can be mounted more than once, and taking the
-# first would step past the binding mount whenever an unrelated subtree is
-# listed ahead of it. Prefer a mount whose root contains the process path, most
-# specific first; else keep the first seen. Args: process cgroup path.
-_cg_pick_mount() {
-    local _rel=$1 _root _point _droot _bestlen=0
-    local _bestroot="" _bestpoint="" _firstroot="" _firstpoint=""
+# Echo EVERY "<root><tab><point>" on stdin whose root contains the process
+# path, still escaped, one per line; or the first seen when none does.
+#
+# A hierarchy can be mounted more than once, and the two mounts can expose
+# different subtree roots of the same superblock -- rootless podman inside
+# rootless podman is the documented case, where a host-derived bind mount sits
+# alongside a namespace-scoped one. Taking the first would step past the binding
+# mount, but so would taking only the most specific: a limit above the narrower
+# mount's root is invisible through it and visible through the broader one.
+# Every mount whose root contains the path genuinely constrains this process, so
+# all of them are inspected and the smallest allowance wins. Order does not
+# matter, because a minimum is order-independent.
+# Args: process cgroup path.
+_cg_pick_mounts() {
+    local _rel=$1 _root _point _droot _any="" _firstroot="" _firstpoint=""
     while IFS=$'\t' read -r _root _point; do
         [ -n "$_point" ] || continue
         if [ -z "$_firstpoint" ]; then _firstroot=$_root; _firstpoint=$_point; fi
         # /proc/self/cgroup is not escaped, so the root is compared decoded.
         _droot=$(_cg_unesc "$_root")
         [ -n "$(_cg_rel "$_droot" "$_rel")" ] || continue
-        if [ -z "$_bestpoint" ] || [ "${#_droot}" -gt "$_bestlen" ]; then
-            _bestroot=$_root; _bestpoint=$_point; _bestlen=${#_droot}
-        fi
+        printf '%s\t%s\n' "$_root" "$_point"
+        _any=1
     done
-    if [ -n "$_bestpoint" ]; then
-        printf '%s\t%s' "$_bestroot" "$_bestpoint"
-    elif [ -n "$_firstpoint" ]; then
-        printf '%s\t%s' "$_firstroot" "$_firstpoint"
-    fi
+    [ -n "$_any" ] || [ -z "$_firstpoint" ] || printf '%s\t%s\n' "$_firstroot" "$_firstpoint"
     return 0
 }
 
@@ -474,7 +476,7 @@ _cg_pick_mount() {
 # process cannot see. The smallest remaining allowance wins.
 _cgroup_free_mb() {
     local _root=$1 _proc=$2 _mnt=${3:-} _rel _dir _used _limit _free _name _min=""
-    local _v2 _v1 _v2root _v1root _v2rel _v1rel
+    local _v2rel _v1rel _v2mnts _v1mnts _mroot _mpoint
     _cg_consider() {
         [ -n "$1" ] || return 0
         if [[ "$2" =~ ^[0-9]+$ ]]; then _free=$(( $1 - $2 )); else _free=$1; fi
@@ -494,37 +496,45 @@ _cgroup_free_mb() {
             b = index(rest, ":"); if (b == 0) next
             if (substr(rest, 1, b - 1) ~ /(^|,)memory(,|$)/) { print substr(rest, b + 1); exit }
         }' "$_proc" 2>/dev/null || true)
-    IFS=$'\t' read -r _v2root _v2 <<< "$(_cg_mounts "$_mnt" cgroup2 | _cg_pick_mount "$_v2rel")"
-    IFS=$'\t' read -r _v1root _v1 <<< "$(_cg_mounts "$_mnt" memory | _cg_pick_mount "$_v1rel")"
-    # Escapes survive the tab- and newline-delimited transport above; a single
-    # path is in hand now, so decode it before touching the filesystem. The
-    # trailing sentinel keeps $() from eating a decoded trailing newline.
-    _v2root=$(_cg_unesc "$_v2root"; printf X); _v2root=${_v2root%X}
-    _v2=$(_cg_unesc "$_v2"; printf X); _v2=${_v2%X}
-    _v1root=$(_cg_unesc "$_v1root"; printf X); _v1root=${_v1root%X}
-    _v1=$(_cg_unesc "$_v1"; printf X); _v1=${_v1%X}
-    [ -n "$_v2" ] || { _v2=$_root; _v2root="/"; }
-    [ -n "$_v1" ] || { _v1="$_root/memory"; _v1root="/"; }
-    if [ -d "$_v2" ]; then
-        # The v2 line is "0::<path>"; systemd hybrid mode adds v1 lines alongside.
-        _rel=$(_cg_rel "$_v2root" "$_v2rel")
+    _v2mnts=$(_cg_mounts "$_mnt" cgroup2 | _cg_pick_mounts "$_v2rel")
+    _v1mnts=$(_cg_mounts "$_mnt" memory | _cg_pick_mounts "$_v1rel")
+    # Fall back to the conventional layout when mountinfo is unreadable.
+    [ -n "$_v2mnts" ] || _v2mnts=$(printf '/\t%s' "$_root")
+    [ -n "$_v1mnts" ] || _v1mnts=$(printf '/\t%s' "$_root/memory")
+
+    # The v2 line is "0::<path>"; systemd hybrid mode adds v1 lines alongside.
+    while IFS=$'\t' read -r _mroot _mpoint; do
+        [ -n "$_mpoint" ] || continue
+        # Escapes survive the tab- and newline-delimited transport above; a
+        # single path is in hand now, so decode it before touching the
+        # filesystem. The sentinel keeps $() from eating a trailing newline.
+        _mroot=$(_cg_unesc "$_mroot"; printf X); _mroot=${_mroot%X}
+        _mpoint=$(_cg_unesc "$_mpoint"; printf X); _mpoint=${_mpoint%X}
+        [ -d "$_mpoint" ] || continue
+        _rel=$(_cg_rel "$_mroot" "$_v2rel")
         while IFS= read -r -d '' _dir; do
             _used=$(_cg_read "$_dir/memory.current")
             for _name in memory.max memory.high; do
                 _limit=$(_cg_limit "$(_cg_read "$_dir/$_name")")
                 _cg_consider "$_limit" "$_used"
             done
-        done < <(_cg_dirs "$_v2" "$_rel")
-    fi
-    if [ -d "$_v1" ]; then
-        # v1 is "<id>:<controllers>:<path>", and mounts are often combined.
-        _rel=$(_cg_rel "$_v1root" "$_v1rel")
+        done < <(_cg_dirs "$_mpoint" "$_rel")
+    done <<< "$_v2mnts"
+
+    # v1 is "<id>:<controllers>:<path>", and mounts are often combined.
+    while IFS=$'\t' read -r _mroot _mpoint; do
+        [ -n "$_mpoint" ] || continue
+        _mroot=$(_cg_unesc "$_mroot"; printf X); _mroot=${_mroot%X}
+        _mpoint=$(_cg_unesc "$_mpoint"; printf X); _mpoint=${_mpoint%X}
+        [ -d "$_mpoint" ] || continue
+        _rel=$(_cg_rel "$_mroot" "$_v1rel")
         while IFS= read -r -d '' _dir; do
             _used=$(_cg_read "$_dir/memory.usage_in_bytes")
             _limit=$(_cg_limit "$(_cg_read "$_dir/memory.limit_in_bytes")")
             _cg_consider "$_limit" "$_used"
-        done < <(_cg_dirs "$_v1" "$_rel")
-    fi
+        done < <(_cg_dirs "$_mpoint" "$_rel")
+    done <<< "$_v1mnts"
+
     [ -n "$_min" ] && printf '%d' "$(( _min / 1048576 ))"
     return 0
 }
