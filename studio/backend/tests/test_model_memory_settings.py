@@ -2196,9 +2196,7 @@ class TestAGpuIdsPinOverridesADeviceFlag:
         )
         assert extra_args == ["-ot", r"\.ffn_.*=CPU"]
         assert (
-            TestHostMemoryGate._gate(
-                monkeypatch, fully_gpu_offloaded = True, extra_args = extra_args
-            )
+            TestHostMemoryGate._gate(monkeypatch, fully_gpu_offloaded = True, extra_args = extra_args)
             is True
         )
 
