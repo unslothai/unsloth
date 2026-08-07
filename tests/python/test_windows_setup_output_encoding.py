@@ -222,6 +222,10 @@ def test_entry_scripts_bind_a_utf8_writer_when_there_is_no_console(path: Path) -
     source = path.read_text(encoding = "utf-8")
     assert "[Console]::OpenStandardOutput()" in source
     assert "[Console]::SetOut(" in source
+    # stderr is piped and decoded identically (install.rs), and the user-facing
+    # failure text is built from those lines, so it needs the same writer.
+    assert "[Console]::OpenStandardError()" in source
+    assert "[Console]::SetError(" in source
 
 
 def test_update_command_uses_the_utf8_switch_not_just_env() -> None:

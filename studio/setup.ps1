@@ -81,6 +81,11 @@ try {
         $_UnslothStdout = New-Object System.IO.StreamWriter -ArgumentList ([Console]::OpenStandardOutput()), $_UnslothUtf8NoBom
         $_UnslothStdout.AutoFlush = $true
         [Console]::SetOut($_UnslothStdout)
+        # Tauri pipes and decodes stderr the same way and folds it into the same
+        # log, and failure text is built from those lines, so it needs it too.
+        $_UnslothStderr = New-Object System.IO.StreamWriter -ArgumentList ([Console]::OpenStandardError()), $_UnslothUtf8NoBom
+        $_UnslothStderr.AutoFlush = $true
+        [Console]::SetError($_UnslothStderr)
     } catch { }
 }
 $OutputEncoding = $_UnslothUtf8NoBom

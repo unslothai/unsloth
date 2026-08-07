@@ -62,6 +62,11 @@ function Install-UnslothStudio {
             $_UnslothStdout = New-Object System.IO.StreamWriter -ArgumentList ([Console]::OpenStandardOutput()), $_UnslothUtf8NoBom
             $_UnslothStdout.AutoFlush = $true
             [Console]::SetOut($_UnslothStdout)
+            # Same for stderr: Tauri decodes it identically, and Clear-TauriInstallError
+            # writes its markers there.
+            $_UnslothStderr = New-Object System.IO.StreamWriter -ArgumentList ([Console]::OpenStandardError()), $_UnslothUtf8NoBom
+            $_UnslothStderr.AutoFlush = $true
+            [Console]::SetError($_UnslothStderr)
         } catch { }
     }
     $OutputEncoding = $_UnslothUtf8NoBom
