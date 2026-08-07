@@ -1385,7 +1385,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            except Exception:\n"
                     "                return False\n"
                     "            if isinstance(_first, (str, bytes)): return False\n"
-                    "            return hasattr(_first, '__len__')\n"
+                    # len(), not hasattr('__len__'): under set_format('torch') a scalar
+                    # column batches to a 1-D tensor whose element is 0-dim, which HAS
+                    # __len__ and raises on it. The later len(_v) then threw TypeError,
+                    # the outer catch restored the overlength dataset, and a truncatable
+                    # run died on "cannot be enforced".
+                    "            try:    len(_first)\n"
+                    "            except Exception: return False\n"
+                    "            return True\n"
                     # Per-token columns only, matched by row length against `input_ids`.
                     # A packed split carries `seq_lengths` -- document lengths, not tokens
                     # -- and slicing that by the cap left it stale, so padding-free built
@@ -1430,9 +1437,19 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # prompt alone fills the cap has every label at -100 and
                     # contributes no loss, so leaving them in feeds batches with no
                     # supervised tokens.
+                    # `labels` is only one of the three ways a row says which tokens
+                    # are supervised. A completion-only or assistant-only row carries
+                    # `completion_mask` / `assistant_masks` instead, and truncating a
+                    # long prompt can leave that mask all zeros; TRL's collator turns
+                    # those into all -100 and a batch made of them has no supervised
+                    # token at all, which is a NaN loss rather than a small one.
+                    "            _unsloth_supervision = ('labels', 'completion_mask', 'assistant_masks')\n"
                     "            try:\n"
-                    "                if 'labels' in (getattr(_new, 'column_names', None) or ()):\n"
-                    "                    _new = _new.filter(lambda _e: any(_l != -100 for _l in _e['labels']), **_kw)\n"
+                    "                _unsloth_cols = getattr(_new, 'column_names', None) or ()\n"
+                    "                for _unsloth_sup in _unsloth_supervision:\n"
+                    "                    if _unsloth_sup not in _unsloth_cols: continue\n"
+                    "                    _unsloth_empty = -100 if _unsloth_sup == 'labels' else 0\n"
+                    "                    _new = _new.filter(lambda _e, _c = _unsloth_sup, _z = _unsloth_empty: any(_l != _z for _l in _e[_c]), **_kw)\n"
                     "            except Exception:\n"
                     "                pass\n"
                     "            return _new, (True if _unsloth_is_stream(_new) else _unsloth_within_cap(_new))\n"
@@ -1481,7 +1498,11 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # nothing downstream enforces the cap. Before this block existed TRL's own
                     # guard made the same configuration a hard error, so an observed overlength
                     # row must stay one rather than become a silently uncapped run.
-                    "        if not _unsloth_skip_prepare and not (_unsloth_within_cap(train_dataset) and _unsloth_splits_within_cap(eval_dataset if 'eval_dataset' in locals() else None)):\n"
+                    # `skip_prepare_dataset` used to exempt this, which made it the one
+                    # way to get a silently uncapped run: TRL then neither truncates nor
+                    # builds its collator with a truncation length, so the oversized rows
+                    # reach the model. The check is what decides, not the flag.
+                    "        if not (_unsloth_within_cap(train_dataset) and _unsloth_splits_within_cap(eval_dataset if 'eval_dataset' in locals() else None)):\n"
                     "            raise ValueError('Unsloth: `max_length = ' + str(args.max_length) + '` cannot be enforced. Your dataset already carries `input_ids` and holds rows longer than that, and nothing downstream truncates pre-tokenized rows. Truncate it yourself before passing it in, or drop `max_length`.')\n"
                     "        print('Unsloth: Turning padding-free batching off, since your dataset is already tokenized and cannot be truncated here. Padding-free batching cannot enforce a `max_length` of ' + str(args.max_length) + '.')\n"
                     "        args.padding_free = False\n"

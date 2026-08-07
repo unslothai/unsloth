@@ -844,3 +844,93 @@ def test_a_column_that_is_not_per_token_is_left_alone(tmp_path, trl_has_guard):
     trainer = _build(tmp_path, dataset = _with_sidecar)
     if "doc_spans" in trainer.train_dataset.column_names:
         assert trainer.train_dataset[0]["doc_spans"] == [1, 2, 3]
+
+
+# --- what the third review round found ---------------------------------------
+
+
+def _scalar_torch_formatted_dataset(tok):
+    """A tokenized split with a scalar id column, read as torch tensors.
+
+    Batched, that column is a 1-D tensor whose elements are 0-dimensional. A
+    0-dim tensor HAS `__len__` and raises on it, so the column read as a
+    sequence and the later `len()` threw.
+    """
+    from datasets import Dataset
+
+    ids = tok("The quick brown fox. " * 200)["input_ids"]
+    assert len(ids) > _MODEL_MAX_SEQ_LENGTH
+    ds = Dataset.from_list([
+        {"input_ids": list(ids), "attention_mask": [1] * len(ids), "sample_id": i}
+        for i in range(4)
+    ])
+    return ds.with_format("torch")
+
+
+def test_a_scalar_column_does_not_defeat_truncation(tmp_path, trl_has_guard):
+    """The token columns are truncatable, so the run must not die on the id."""
+    if not trl_has_guard:
+        pytest.skip("no guard in this TRL: the block under test is not generated at all")
+    trainer = _build(tmp_path, dataset = _scalar_torch_formatted_dataset)
+    assert _longest(trainer) <= _MODEL_MAX_SEQ_LENGTH
+
+
+def _mask_supervised_dataset(tok):
+    """Supervision carried by `completion_mask`, with the completion at the END.
+
+    `keep_start` truncation cuts it away entirely, leaving an all-zero mask that
+    TRL's collator turns into all -100: no supervised token in the row.
+    """
+    from datasets import Dataset
+
+    prompt = tok("The quick brown fox. " * 200)["input_ids"]
+    assert len(prompt) > _MODEL_MAX_SEQ_LENGTH
+    completion = tok(" answer")["input_ids"]
+    ids = list(prompt) + list(completion)
+    mask = [0] * len(prompt) + [1] * len(completion)
+    return Dataset.from_list([
+        {"input_ids": ids, "attention_mask": [1] * len(ids), "completion_mask": mask}
+        for _ in range(4)
+    ])
+
+
+def test_rows_whose_mask_is_truncated_away_are_dropped(tmp_path, trl_has_guard):
+    """Same rule the `labels` filter already applies, for the other two spellings."""
+    if not trl_has_guard:
+        pytest.skip("no guard in this TRL: the block under test is not generated at all")
+    trainer = _build(tmp_path, dataset = _mask_supervised_dataset)
+    for row in trainer.train_dataset:
+        assert any(m != 0 for m in row["completion_mask"]), (
+            "a row with no supervised token survived truncation"
+        )
+
+
+def test_skip_prepare_dataset_does_not_excuse_an_overlength_row(tmp_path, trl_has_guard):
+    """It was the one way to a silently uncapped run: TRL then neither truncates
+    nor builds its collator with a truncation length, so the oversized rows
+    reach the model with `max_length` set and ignored."""
+    if not trl_has_guard:
+        pytest.skip("no guard in this TRL: the block under test is not generated at all")
+    with pytest.raises(ValueError, match = "cannot be enforced"):
+        _build(
+            tmp_path,
+            dataset = _tokenized_dataset,
+            dataset_kwargs = {"skip_prepare_dataset": True},
+        )
+
+
+def test_the_codegen_carries_the_third_round_fixes():
+    """Version-independent: the behavioural tests above only run on a TRL that
+    has the guard, so pin the three changes in the emitted source as well."""
+    block = _padding_free_codegen_block()
+
+    # A 0-dim tensor has __len__ and raises on it, so hasattr is the wrong probe.
+    assert "hasattr(_first, '__len__')" not in block
+    assert "try:    len(_first)" in block
+
+    # Supervision is carried three ways, and only `labels` was filtered.
+    assert "'labels', 'completion_mask', 'assistant_masks'" in block
+
+    # skip_prepare_dataset must not exempt the overlength check.
+    assert "if not _unsloth_skip_prepare and not (_unsloth_within_cap" not in block
+    assert "if not (_unsloth_within_cap(train_dataset)" in block
