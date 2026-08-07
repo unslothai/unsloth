@@ -1919,8 +1919,14 @@ class InferenceBackend:
                 )
             elif audio_type == "bicodec":
                 result = self._generate_bicodec(
-                    model, tokenizer, text, temperature, top_k, max_new_tokens,
-                    stopping_criteria = stopping_criteria, cancel_event = cancel_event,
+                    model,
+                    tokenizer,
+                    text,
+                    temperature,
+                    top_k,
+                    max_new_tokens,
+                    stopping_criteria = stopping_criteria,
+                    cancel_event = cancel_event,
                 )
             elif audio_type == "dac":
                 result = self._generate_dac(
@@ -1943,8 +1949,17 @@ class InferenceBackend:
             return result
 
     def _generate_snac(
-        self, model, tokenizer, text, temperature, top_p, max_new_tokens, repetition_penalty,
-        *, stopping_criteria = None, cancel_event = None,
+        self,
+        model,
+        tokenizer,
+        text,
+        temperature,
+        top_p,
+        max_new_tokens,
+        repetition_penalty,
+        *,
+        stopping_criteria = None,
+        cancel_event = None,
     ):
         """Generate audio using SNAC codec (Orpheus)."""
         device = model.device
@@ -1971,7 +1986,13 @@ class InferenceBackend:
         return self._audio_codec_manager.decode_snac(generated, str(device))
 
     def _generate_csm(
-        self, model, processor, text, max_new_tokens, *, stopping_criteria = None,
+        self,
+        model,
+        processor,
+        text,
+        max_new_tokens,
+        *,
+        stopping_criteria = None,
         cancel_event = None,
     ):
         """Generate audio using CSM (Sesame)."""
@@ -1990,8 +2011,16 @@ class InferenceBackend:
         return self._audio_codec_manager.decode_csm(audio_values)
 
     def _generate_bicodec(
-        self, model, tokenizer, text, temperature, top_k, max_new_tokens,
-        *, stopping_criteria = None, cancel_event = None,
+        self,
+        model,
+        tokenizer,
+        text,
+        temperature,
+        top_k,
+        max_new_tokens,
+        *,
+        stopping_criteria = None,
+        cancel_event = None,
     ):
         """Generate audio using BiCodec (Spark-TTS)."""
         prompt = "<|task_tts|><|start_content|>" + text + "<|end_content|><|start_global_token|>"
@@ -2023,7 +2052,8 @@ class InferenceBackend:
         min_p,
         max_new_tokens,
         repetition_penalty,
-        *, stopping_criteria = None,
+        *,
+        stopping_criteria = None,
         cancel_event = None,
     ):
         """Generate audio using DAC (OuteTTS). Follows Oute_TTS_(1B).ipynb exactly."""
@@ -2071,7 +2101,8 @@ class InferenceBackend:
                     max_new_tokens = max_new_tokens,
                     **(
                         {"stopping_criteria": stopping_criteria}
-                        if stopping_criteria is not None else {}
+                        if stopping_criteria is not None
+                        else {}
                     ),
                 )
         if cancel_event is not None and cancel_event.is_set():

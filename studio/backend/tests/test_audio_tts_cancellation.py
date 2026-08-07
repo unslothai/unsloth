@@ -157,9 +157,7 @@ def test_audio_response_timeout_cancels_and_drains_before_releasing(monkeypatch)
 
     def send(cmd):
         sent.append(cmd)
-        orchestrator._resp_queue.put(
-            {"type": "audio_started", "request_id": cmd["request_id"]}
-        )
+        orchestrator._resp_queue.put({"type": "audio_started", "request_id": cmd["request_id"]})
 
     monkeypatch.setattr(orchestrator, "_send_cmd", send)
     cancel_state = []
@@ -197,9 +195,7 @@ def test_audio_response_timeout_tears_down_unresponsive_worker_before_release(mo
 
     def send(cmd):
         sent.append(cmd)
-        orchestrator._resp_queue.put(
-            {"type": "audio_started", "request_id": cmd["request_id"]}
-        )
+        orchestrator._resp_queue.put({"type": "audio_started", "request_id": cmd["request_id"]})
 
     monkeypatch.setattr(orchestrator, "_send_cmd", send)
     monkeypatch.setattr(orchestrator, "_cancel_generation", lambda: None)

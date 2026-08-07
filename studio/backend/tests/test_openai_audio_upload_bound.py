@@ -33,4 +33,3 @@ def test_openai_transcription_reads_only_one_byte_past_limit(monkeypatch):
 
     assert sizes == [5]
     assert exc.value.status_code == 413
-

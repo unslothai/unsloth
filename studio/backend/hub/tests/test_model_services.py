@@ -1005,9 +1005,7 @@ def test_cached_models_scan_emits_curated_whisper_but_not_custom_whisper(monkeyp
     monkeypatch.setattr(
         cache_inventory,
         "_cached_model_local_metadata",
-        lambda repo_path, _snapshot=None: {
-            "_hidden_stt": "custom-whisper" in str(repo_path)
-        },
+        lambda repo_path, _snapshot = None: {"_hidden_stt": "custom-whisper" in str(repo_path)},
     )
 
     [row] = cache_inventory._scan_cached_models()

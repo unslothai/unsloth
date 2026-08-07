@@ -36,6 +36,7 @@ def test_curated_gguf_dictation_repos_are_hidden():
         is_curated_stt_repo_id,
         is_hidden_model,
     )
+
     for repo in (
         "unslothai/whisper-tiny-GGUF",
         "unslothai/whisper-base-GGUF",

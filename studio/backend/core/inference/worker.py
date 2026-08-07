@@ -498,7 +498,11 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
 
 
 def _drain_skip_generate(
-    cmd: dict, resp_queue: Any, drain_event, *, audio: bool = False
+    cmd: dict,
+    resp_queue: Any,
+    drain_event,
+    *,
+    audio: bool = False,
 ) -> bool:
     """Skip a generate queued behind a cancelled one during an unload.
 
