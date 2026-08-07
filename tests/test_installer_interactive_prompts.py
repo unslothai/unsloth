@@ -25,14 +25,14 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# Everything a user can run to install, update or remove Unsloth, plus the scripts
-# those shell out to (studio/setup.sh from `unsloth studio update`,
-# install_rocm_wsl_strixhalo.sh from install.sh on WSL), which stall just the same.
-SCANNED_SCRIPTS = (
-    "install.sh",
-    "install.ps1",
-    "studio/setup.sh",
-    "studio/setup.ps1",
+# What a user runs to install, update or remove Unsloth. Everything these launch
+# in turn is scanned too (`unsloth studio update` runs setup.sh, which builds
+# whisper.cpp; install.sh fetches and runs the WSL bootstrap), since a question
+# down there stalls the same install.
+ENTRY_POINTS = ("install.sh", "install.ps1", "studio/setup.sh", "studio/setup.ps1")
+
+SCANNED_SCRIPTS = ENTRY_POINTS + (
+    "scripts/build_whisper_cpp.sh",
     "scripts/install_gemma4_mlx.sh",
     "scripts/install_qwen3_6_mlx.sh",
     "scripts/install_rocm_wsl_strixhalo.sh",
@@ -71,7 +71,12 @@ _POSIX_READ = re.compile(
     r"(?:^|[\s;&|(])read\s+(?![a-zA-Z_]+=)"
     r"(?:-[a-zA-Z]*p(?=[\s\"']|$)|[^\n;|&]*?(?:<\s*/dev/tty|\s-[a-zA-Z]*p(?=[\s\"']|$)))"
 )
-_PWSH_READ = re.compile(r"Read-Host|PromptForChoice|ReadKey\s*\(", re.IGNORECASE)
+_PWSH_READ = re.compile(
+    r"Read-Host|PromptForChoice|Console\]::(?:In\.)?Read(?:Line|Key)|ReadKey\s*\(", re.IGNORECASE
+)
+
+# `scripts/<helper>.sh` as an entry point invokes it, quoted or after a path prefix.
+_HELPER_REF = re.compile(r"scripts/([A-Za-z0-9_.-]+\.(?:sh|ps1))")
 
 _QUOTED = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"' r"|'([^']*)'")
 
@@ -248,6 +253,26 @@ def test_every_installer_script_is_scanned():
     )
 
 
+def test_helpers_the_entry_points_invoke_are_scanned():
+    """Naming the helpers by hand only ever covers the ones we thought of, so read
+    them back out of the entry points: whatever they reach, the guard scans."""
+    referenced = {
+        f"scripts/{match.group(1)}"
+        for script in ENTRY_POINTS
+        for line in (REPO_ROOT / script).read_text(encoding = "utf-8").splitlines()
+        if not _is_comment(line)
+        for match in _HELPER_REF.finditer(line)
+    }
+    unscanned = sorted(
+        name for name in referenced - set(SCANNED_SCRIPTS) if (REPO_ROOT / name).is_file()
+    )
+    assert not unscanned, (
+        f"helpers invoked by the installers but not scanned: {unscanned}. "
+        f"Add them to SCANNED_SCRIPTS in tests/test_installer_interactive_prompts.py "
+        f"and to the paths filter in .github/workflows/cross-platform-parity-ci.yml."
+    )
+
+
 def test_approved_prompts_are_documented():
     for key, reason in APPROVED_PROMPTS.items():
         assert reason.strip(), f"APPROVED_PROMPTS[{key}] needs a reason, not an empty string"
@@ -321,6 +346,18 @@ def test_ignores_dash_p_belonging_to_a_later_command():
 
 def test_detects_powershell_read_host():
     source = '$reply = Read-Host "  Install desktop shortcuts? [Y/n]"\n'
+    assert [question for _, _, question in find_prompts("install.ps1", source)] == [
+        "install desktop shortcuts?",
+    ]
+
+
+def test_detects_powershell_console_readline():
+    """Read-Host is the usual spelling, but the console reads block just as hard and
+    can carry their question in a variable, out of the marker pass's reach."""
+    source = (
+        'Write-Host "  Install desktop shortcuts? $_hint" -NoNewline\n'
+        "$reply = [Console]::ReadLine()\n"
+    )
     assert [question for _, _, question in find_prompts("install.ps1", source)] == [
         "install desktop shortcuts?",
     ]
