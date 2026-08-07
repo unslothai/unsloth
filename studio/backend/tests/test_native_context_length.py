@@ -37,6 +37,9 @@ sys.modules.setdefault("loggers", _loggers_stub)
 
 # structlog
 _structlog_stub = _types.ModuleType("structlog")
+_structlog_stub.get_logger = lambda *a, **kw: __import__("logging").getLogger(
+    a[0] if a else __name__
+)
 sys.modules.setdefault("structlog", _structlog_stub)
 
 # httpx -- stub only names referenced at import / class-definition time
