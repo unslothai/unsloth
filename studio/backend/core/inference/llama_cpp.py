@@ -3188,7 +3188,6 @@ class LlamaCppBackend:
         # spawned, so a save landing in that window still has a launch to
         # compare against.
         self._memory_launch_pending: bool = False
-        self._mlock_enabled: bool = False
         self._n_ubatch: int = self._DEFAULT_N_UBATCH
         self._flash_attn_enabled: bool = True
         self._effective_cache_types: tuple[str, str] = ("f16", "f16")
@@ -7092,7 +7091,6 @@ class LlamaCppBackend:
         self._cache_type_kv = None
         self._swa_full = False
         self._kv_cache_unified = False
-        self._mlock_enabled = False
         self._memory_state = None
         self._memory_policy_active = False
         self._memory_mlock_applicable = True
@@ -11016,12 +11014,12 @@ class LlamaCppBackend:
                 # suppressed a requested one, or scrubbed an inherited env var.
                 # Turning both toggles off must relaunch to undo any of those,
                 # but must not fight a launch it never touched.
-                self._memory_policy_active = (
-                    bool(_mem_managed)
-                    or bool(_mem_scrubbed)
-                    or _mem_extras != list(extra_args or [])
+                # Split out: the fit-off retry can drop _mem_managed, and what is
+                # left decides whether that child still differs from an unmanaged one.
+                _mem_policy_touched_extras = (
+                    bool(_mem_scrubbed) or _mem_extras != list(extra_args or [])
                 )
-                self._mlock_enabled = self._memory_state[0]
+                self._memory_policy_active = bool(_mem_managed) or _mem_policy_touched_extras
                 # Omitting --threads relies on llama.cpp's physical-core default, so
                 # drop an inherited LLAMA_ARG_THREADS that would otherwise feed the
                 # arg handler and silently force hardware_concurrency(). #5692
@@ -11339,6 +11337,11 @@ class LlamaCppBackend:
                                     # compared against a lock this launch dropped,
                                     # which would demand a pointless reload.
                                     self._memory_mlock_applicable = False
+                                    # The managed flag was the policy's only mark on
+                                    # this child unless it also scrubbed or stripped,
+                                    # and a child equal to an unmanaged one must not
+                                    # be torn down when the toggles go off.
+                                    self._memory_policy_active = _mem_policy_touched_extras
                                     logger.info(
                                         "Model Memory: dropping the page-lock for "
                                         "the --fit off retry; it offloads every layer."
@@ -12410,7 +12413,6 @@ class LlamaCppBackend:
             self._prompt_cache_disabled = False
             self._swa_full = False
             self._kv_cache_unified = False
-            self._mlock_enabled = False
             self._memory_state = None
             self._memory_policy_active = False
             self._memory_mlock_applicable = True

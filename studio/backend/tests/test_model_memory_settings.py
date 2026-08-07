@@ -2281,7 +2281,10 @@ class TestFitOffRetryDropsTheLock:
         src = inspect.getsource(LlamaCppBackend.load_model)
         branch = src.find('run_cmd = [*run_cmd, "--fit", "off"]')
         assert branch != -1, "the --fit off retry moved"
-        tail = src[branch : branch + 2200]
+        # To the end of the retry block, not a fixed width: the branch grows.
+        end = src.find("return False", branch)
+        assert end != -1
+        tail = src[branch:end]
         for needle in (
             "self._weights_in_host_memory(",
             "fully_gpu_offloaded = True",
@@ -2291,3 +2294,91 @@ class TestFitOffRetryDropsTheLock:
             "resolve_effective_memory_state(run_cmd, env)",
         ):
             assert needle in tail, needle
+
+
+class TestFitOffRetryClearsPolicyActivity:
+    """Dropping the lock can leave the child identical to an unmanaged launch.
+    Keeping policy_active set from the first attempt then makes turning the
+    toggles off demand a reload that would relaunch the very same argv."""
+
+    @staticmethod
+    def _satisfied(monkeypatch, *, policy_active):
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+        # The retry child: lock dropped, so no lock and no reservation.
+        return memory_state_satisfies_settings((False, False), policy_active, False)
+
+    def test_an_untouched_child_is_left_alone(self, monkeypatch):
+        assert self._satisfied(monkeypatch, policy_active = False) is True
+
+    def test_a_still_touched_child_is_relaunched(self, monkeypatch):
+        """A scrub or a strip survives the drop, so that one must still reload."""
+        assert self._satisfied(monkeypatch, policy_active = True) is False
+
+    def test_the_launch_recomputes_activity_without_the_managed_flag(self):
+        """Source check: the retry must reuse the non-managed half of the launch
+        expression, not leave the first attempt's verdict standing."""
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        assert (
+            "self._memory_policy_active = bool(_mem_managed) or _mem_policy_touched_extras" in src
+        )
+        branch = src.find('run_cmd = [*run_cmd, "--fit", "off"]')
+        assert branch != -1
+        end = src.find("return False", branch)
+        assert end != -1
+        assert "self._memory_policy_active = _mem_policy_touched_extras" in src[branch:end]
+
+
+class TestNoDeadMemoryBookkeeping:
+    """Every _memory_* marker the launch records is read by something. A
+    write-only one silently goes stale on the retry paths, which is how the
+    fit-off retry's activity marker was missed."""
+
+    def test_the_launch_records_nothing_unread(self):
+        import ast
+        from pathlib import Path
+
+        backend = Path(__file__).resolve().parent.parent
+        target = backend / "core" / "inference" / "llama_cpp.py"
+
+        def attrs(tree, ctx):
+            return {
+                n.attr
+                for n in ast.walk(tree)
+                if isinstance(n, ast.Attribute) and isinstance(n.ctx, ctx)
+            }
+
+        written = {
+            a
+            for a in attrs(ast.parse(target.read_text(encoding = "utf-8")), ast.Store)
+            if a.startswith("_memory_") or a.endswith("_mlock_enabled")
+        }
+        assert written, "no markers found; the scan is looking in the wrong place"
+
+        read: set[str] = set()
+        for path in backend.rglob("*.py"):
+            try:
+                tree = ast.parse(path.read_text(encoding = "utf-8"))
+            except (SyntaxError, UnicodeDecodeError, OSError):
+                continue
+            read |= attrs(tree, ast.Load)
+            # routes read some of these dynamically:
+            # getattr(backend, "_memory_policy_active", False).
+            read |= {
+                n.args[1].value
+                for n in ast.walk(tree)
+                if isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Name)
+                and n.func.id == "getattr"
+                and len(n.args) >= 2
+                and isinstance(n.args[1], ast.Constant)
+                and isinstance(n.args[1].value, str)
+            }
+        unread = sorted(written - read)
+        assert not unread, f"written but never read, so they go stale on retries: {unread}"
