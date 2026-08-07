@@ -212,11 +212,7 @@ def test_archive_download_enforces_deadline_with_read1(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match = "Timed out downloading"):
         source._download_archive("https://example.invalid/archive.tar.gz", tmp_path / "out", spec)
 
-    assert calls == {
-        "read": 0,
-        "read1": 2,
-        "timeout": source._ARCHIVE_SOCKET_TIMEOUT_SECONDS,
-    }
+    assert calls == {"read": 0, "read1": 2, "timeout": source._ARCHIVE_SOCKET_TIMEOUT_SECONDS}
 
 
 @pytest.mark.parametrize(
@@ -229,12 +225,7 @@ def test_archive_download_enforces_deadline_with_read1(monkeypatch, tmp_path):
         ("Fixture-" + "2" * 40 + "/sparktts/link.py", tarfile.SYMTYPE),
     ),
 )
-def test_source_archive_rejects_unsafe_members(
-    monkeypatch,
-    tmp_path,
-    member_name,
-    member_type,
-):
+def test_source_archive_rejects_unsafe_members(monkeypatch, tmp_path, member_name, member_type):
     revision = "2" * 40
     archive = tmp_path / "unsafe.tar.gz"
     with tarfile.open(archive, mode = "w:gz") as bundle:
@@ -269,9 +260,9 @@ def test_installs_the_exact_revision_instead_of_repository_head(monkeypatch, tmp
 
     installed = source.ensure_spark_tts_source()
 
-    assert installed == (
-        cache / "third-party-sources" / "Spark-TTS" / pinned / "runtime-v1"
-    ).resolve()
+    assert (
+        installed == (cache / "third-party-sources" / "Spark-TTS" / pinned / "runtime-v1").resolve()
+    )
     assert (installed / "sparktts" / "models" / "audio_tokenizer.py").read_text(
         encoding = "utf-8"
     ) == "VALUE = 'pinned'\n"
@@ -513,10 +504,7 @@ def test_import_replaces_a_module_from_outside_the_pinned_source(monkeypatch, tm
                 sys.modules.pop(name, None)
 
 
-def test_generated_init_prevents_a_later_regular_package_from_taking_over(
-    monkeypatch,
-    tmp_path,
-):
+def test_generated_init_prevents_a_later_regular_package_from_taking_over(monkeypatch, tmp_path):
     repository, pinned = _repository(tmp_path)
     _configure(monkeypatch, tmp_path, repository, pinned)
     installed = source.ensure_spark_tts_source()
@@ -593,10 +581,7 @@ def test_import_rejects_any_loaded_package_module_from_outside(monkeypatch, tmp_
     with pytest.raises(RuntimeError, match = "sparktts.injected"):
         source.import_sparktts_module("sparktts.models.origin_injector", installed)
 
-    assert not any(
-        name == "sparktts" or name.startswith("sparktts.")
-        for name in sys.modules
-    )
+    assert not any(name == "sparktts" or name.startswith("sparktts.") for name in sys.modules)
     assert str(installed) not in sys.path
 
 

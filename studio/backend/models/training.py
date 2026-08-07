@@ -246,9 +246,7 @@ class TrainingStartRequest(BaseModel):
         if not v:
             return None
         if len(v) > MAX_HF_DATASET_OPTION_LENGTH:
-            raise ValueError(
-                f"subset is too long (max {MAX_HF_DATASET_OPTION_LENGTH} chars)"
-            )
+            raise ValueError(f"subset is too long (max {MAX_HF_DATASET_OPTION_LENGTH} chars)")
         if not valid_hf_dataset_config_name(v):
             raise ValueError("subset contains invalid characters")
         return v
@@ -283,9 +281,7 @@ class TrainingStartRequest(BaseModel):
         if not v:
             return None
         if len(v) > MAX_HF_DATASET_OPTION_LENGTH:
-            raise ValueError(
-                f"split name is too long (max {MAX_HF_DATASET_OPTION_LENGTH} chars)"
-            )
+            raise ValueError(f"split name is too long (max {MAX_HF_DATASET_OPTION_LENGTH} chars)")
         if not valid_hf_dataset_split_instruction(v):
             raise ValueError("split name contains invalid characters")
         return v

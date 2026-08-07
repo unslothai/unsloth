@@ -134,10 +134,7 @@ def _git(arguments: list[str], *, source_name: str) -> subprocess.CompletedProce
 
 
 def _git_bytes(
-    arguments: list[str],
-    *,
-    source_name: str,
-    input_data: bytes,
+    arguments: list[str], *, source_name: str, input_data: bytes
 ) -> subprocess.CompletedProcess:
     env = child_env_without_native_path_secret()
     env["GIT_TERMINAL_PROMPT"] = "0"
@@ -184,10 +181,7 @@ def _package_path_parts(relative: str, spec: PinnedSource, *, kind: str) -> tupl
 
 
 def _configured_package_paths(
-    relatives: tuple[str, ...],
-    spec: PinnedSource,
-    *,
-    kind: str,
+    relatives: tuple[str, ...], spec: PinnedSource, *, kind: str
 ) -> tuple[str, ...]:
     validated = []
     seen = set()
@@ -244,9 +238,7 @@ def _tracked_package_blobs(checkout: Path, spec: PinnedSource) -> dict[str, str]
 
 
 def _pinned_blob_digests(
-    checkout: Path,
-    object_ids: tuple[str, ...],
-    spec: PinnedSource,
+    checkout: Path, object_ids: tuple[str, ...], spec: PinnedSource
 ) -> dict[str, str]:
     unique_object_ids = tuple(dict.fromkeys(object_ids))
     if not unique_object_ids:
@@ -280,9 +272,7 @@ def _pinned_blob_digests(
             or result[content_end : content_end + 1] != b"\n"
         ):
             raise ValueError(f"Invalid pinned blob data for {spec.name}")
-        digests[expected_object_id] = hashlib.sha256(
-            result[content_start:content_end]
-        ).hexdigest()
+        digests[expected_object_id] = hashlib.sha256(result[content_start:content_end]).hexdigest()
         offset = content_end + 1
     if offset != len(result):
         raise ValueError(f"Invalid pinned blob data for {spec.name}")
@@ -319,9 +309,7 @@ def _checkout_manifest(checkout: Path, spec: PinnedSource) -> dict[str, str]:
         path = _package_file(checkout, relative, spec)
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         if digest != pinned_digests[object_id]:
-            raise ValueError(
-                f"Tracked file does not match the pinned {spec.name} blob: {relative}"
-            )
+            raise ValueError(f"Tracked file does not match the pinned {spec.name} blob: {relative}")
         if relative not in excluded:
             manifest[relative] = digest
     return manifest
@@ -342,9 +330,9 @@ def _filesystem_source_manifest(source: Path, spec: PinnedSource) -> dict[str, s
     package_root = source / spec.package
     if package_root.is_symlink() or not package_root.is_dir():
         raise ValueError(f"Missing {spec.package} package")
-    excluded = set(
-        _configured_package_paths(spec.omitted_files, spec, kind = "omitted")
-    ) | set(_generated_file_contents(spec))
+    excluded = set(_configured_package_paths(spec.omitted_files, spec, kind = "omitted")) | set(
+        _generated_file_contents(spec)
+    )
     manifest = {}
     for path in sorted(package_root.rglob("*")):
         relative = path.relative_to(source).as_posix()
@@ -408,10 +396,14 @@ def _valid_checkout(path: Path, spec: PinnedSource) -> bool:
             required = path.joinpath(*_package_path_parts(relative, spec, kind = "required"))
             if required.is_symlink() or not required.is_file():
                 return False
-        head = _git(
-            ["-C", str(path), "rev-parse", "HEAD"],
-            source_name = spec.name,
-        ).stdout.strip().lower()
+        head = (
+            _git(
+                ["-C", str(path), "rev-parse", "HEAD"],
+                source_name = spec.name,
+            )
+            .stdout.strip()
+            .lower()
+        )
         branch = _git(
             ["-C", str(path), "rev-parse", "--abbrev-ref", "HEAD"],
             source_name = spec.name,
@@ -496,10 +488,14 @@ def _install_checkout(destination: Path, spec: PinnedSource) -> None:
             ],
             source_name = spec.name,
         )
-        fetched = _git(
-            ["-C", str(checkout), "rev-parse", "FETCH_HEAD^{commit}"],
-            source_name = spec.name,
-        ).stdout.strip().lower()
+        fetched = (
+            _git(
+                ["-C", str(checkout), "rev-parse", "FETCH_HEAD^{commit}"],
+                source_name = spec.name,
+            )
+            .stdout.strip()
+            .lower()
+        )
         if fetched != spec.revision:
             raise RuntimeError(f"{spec.name} returned a different revision than the pinned source")
         _git(
@@ -695,11 +691,7 @@ def _valid_runtime(
             spec,
             kind = "omitted",
         )
-        top_level = {
-            path.name
-            for path in runtime.iterdir()
-            if path.name != "__pycache__"
-        }
+        top_level = {path.name for path in runtime.iterdir() if path.name != "__pycache__"}
         if top_level != {spec.package}:
             return False
         for relative in required_files:
@@ -754,9 +746,7 @@ def _install_runtime(runtime: Path, checkout: Path, spec: PinnedSource) -> None:
 
 
 def ensure_pinned_source(
-    spec: PinnedSource,
-    *,
-    legacy_sources: tuple[Path | str, ...] = (),
+    spec: PinnedSource, *, legacy_sources: tuple[Path | str, ...] = ()
 ) -> Path:
     revision = spec.revision.lower()
     if _REVISION_PATTERN.fullmatch(revision) is None or revision != spec.revision:
@@ -868,9 +858,7 @@ def _default_legacy_dac_weights_path() -> Path | None:
     return Path.home() / ".cache" / "outeai" / "dac" / _DAC_FILENAME
 
 
-def ensure_dac_speech_weights(
-    legacy_path: Path | str | None = None,
-) -> Path:
+def ensure_dac_speech_weights(legacy_path: Path | str | None = None) -> Path:
     from huggingface_hub import hf_hub_download
     from utils.hf_cache_settings import active_hf_hub_cache
     from utils.utils import hf_env_offline
@@ -901,9 +889,7 @@ def ensure_dac_speech_weights(
                 return destination.resolve()
 
             legacy = (
-                Path(legacy_path)
-                if legacy_path is not None
-                else _default_legacy_dac_weights_path()
+                Path(legacy_path) if legacy_path is not None else _default_legacy_dac_weights_path()
             )
             if legacy is not None and _artifact_matches(
                 legacy,
@@ -985,12 +971,7 @@ def _remove_package_modules(package: str) -> None:
             sys.modules.pop(name, None)
 
 
-def import_pinned_module(
-    module_name: str,
-    *,
-    package: str,
-    source: Path | str,
-) -> ModuleType:
+def import_pinned_module(module_name: str, *, package: str, source: Path | str) -> ModuleType:
     if module_name != package and not module_name.startswith(f"{package}."):
         raise ValueError(f"Only {package} modules can be imported from this pinned source")
     source_root = Path(source).resolve()

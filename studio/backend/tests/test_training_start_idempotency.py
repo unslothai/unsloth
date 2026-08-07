@@ -442,8 +442,7 @@ def test_cancel_accepted_start_stops_and_resets_only_its_job(monkeypatch):
 
 @pytest.mark.parametrize("failure_stage", ["stop", "reset"])
 def test_cancel_accepted_start_releases_tombstone_capacity_after_failure(
-    monkeypatch,
-    failure_stage,
+    monkeypatch, failure_stage
 ):
     import core.training.training as training_module
 

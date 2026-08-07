@@ -1736,8 +1736,7 @@ async def start_training(
 
 @router.post("/stop", response_model = TrainingStopResponse)
 async def stop_training(
-    body: TrainingStopRequest,
-    current_subject: str = Depends(get_current_subject),
+    body: TrainingStopRequest, current_subject: str = Depends(get_current_subject)
 ):
     """
     Stop the currently running training job.

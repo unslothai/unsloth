@@ -1118,9 +1118,7 @@ class TrainingBackend:
         self.current_job_id: Optional[str] = None
         self.current_start_request_id: Optional[str] = None
         self._start_requests: dict[str, TrainingStartRequestRecord] = {}
-        self._start_cancel_tombstones: dict[
-            str, tuple[float, TrainingStartRequestRecord]
-        ] = {}
+        self._start_cancel_tombstones: dict[str, tuple[float, TrainingStartRequestRecord]] = {}
         self._start_cancel_tombstone_reservations: dict[str, int] = {}
         self._pending_start_request_id: Optional[str] = None
         self._status_start_request_id: Optional[str] = None
@@ -1300,8 +1298,8 @@ class TrainingBackend:
                         return "superseded", existing
                     existing = latest
                     if not reserved_cancel_tombstone:
-                        reserved_cancel_tombstone = (
-                            self._reserve_start_cancel_tombstone_locked(start_request_id)
+                        reserved_cancel_tombstone = self._reserve_start_cancel_tombstone_locked(
+                            start_request_id
                         )
                     owns_current = (
                         self.current_start_request_id == start_request_id
@@ -1448,8 +1446,7 @@ class TrainingBackend:
             self._start_cancel_tombstone_reservations[start_request_id] = reservation_count + 1
             return True
         if (
-            len(self._start_cancel_tombstones)
-            + len(self._start_cancel_tombstone_reservations)
+            len(self._start_cancel_tombstones) + len(self._start_cancel_tombstone_reservations)
             >= _MAX_START_CANCEL_TOMBSTONES
         ):
             raise TrainingStartCancellationCapacityError(
@@ -1459,9 +1456,7 @@ class TrainingBackend:
         return True
 
     def _commit_start_cancel_tombstone_locked(
-        self,
-        start_request_id: str,
-        record: TrainingStartRequestRecord,
+        self, start_request_id: str, record: TrainingStartRequestRecord
     ) -> None:
         self._start_cancel_tombstone_reservations.pop(start_request_id, None)
         self._start_cancel_tombstones[start_request_id] = (
@@ -1825,9 +1820,7 @@ class TrainingBackend:
                 expected_job_id = expected_job_id,
             )
 
-    def _stop_training_with_lifecycle_reserved(
-        self, save: bool, expected_job_id: str
-    ) -> bool:
+    def _stop_training_with_lifecycle_reserved(self, save: bool, expected_job_id: str) -> bool:
         with self._run_intent_lock:
             with self._lock:
                 if not expected_job_id or self.current_job_id != expected_job_id:

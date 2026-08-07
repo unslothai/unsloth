@@ -179,9 +179,7 @@ def test_resolve_loaded_trc_falls_back_to_raw_auto_map(monkeypatch):
     ],
 )
 def test_requires_trc_checks_bicodec_load_subdirectory(
-    monkeypatch,
-    model_identifier,
-    expected_target,
+    monkeypatch, model_identifier, expected_target
 ):
     import utils.inference as inference_utils
     import utils.models.model_config as model_config
@@ -196,7 +194,12 @@ def test_requires_trc_checks_bicodec_load_subdirectory(
         lambda *_a, **_k: {"audio_type": "bicodec"},
     )
 
-    def config_has_auto_map(target, token, *, load_subdirs = ()):
+    def config_has_auto_map(
+        target,
+        token,
+        *,
+        load_subdirs = (),
+    ):
         calls.append((target, token, load_subdirs))
         return True
 

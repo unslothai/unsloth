@@ -2204,9 +2204,7 @@ async def scan_model_remote_code(
             if _target not in consent_load_subdirs:
                 security_targets.append(_target)
                 consent_load_subdirs[_target] = ()
-            _subdirs = tuple(
-                dict.fromkeys((*consent_load_subdirs[_target], *_subdirs))
-            )
+            _subdirs = tuple(dict.fromkeys((*consent_load_subdirs[_target], *_subdirs)))
             consent_load_subdirs[_target] = _subdirs
         # Record every repo OUR scan is first to pull into the cache (adapter, base, and external
         # auto_map repos), so a decline purges exactly what was downloaded. Computed BEFORE the

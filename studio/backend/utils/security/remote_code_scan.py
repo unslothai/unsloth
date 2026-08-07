@@ -468,6 +468,7 @@ def repo_remote_code_files(
 
         if is_local_path(model_name):
             root = Path(normalize_path(model_name)).expanduser()
+
             # Walk ALL .py, not just the auto_map entry's static import closure. This is
             # DELIBERATE (see the remote-branch note): the entry can reach a sibling via
             # an absolute import, importlib, or exec, which a relative-import closure

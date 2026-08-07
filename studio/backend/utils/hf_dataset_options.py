@@ -68,9 +68,7 @@ def hf_dataset_split_instruction_names(value: str) -> tuple[str, ...]:
         if match is None:
             return ()
         name, start, end, rounding = match.groups()
-        uses_percent = bool(
-            (start and start.endswith("%")) or (end and end.endswith("%"))
-        )
+        uses_percent = bool((start and start.endswith("%")) or (end and end.endswith("%")))
         if (
             not _valid_percent_boundary(start, uses_percent)
             or not _valid_percent_boundary(end, uses_percent)

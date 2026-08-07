@@ -2875,9 +2875,7 @@ class UnslothTrainer:
             from core.training.eval_dataset import EVAL_SPLIT_CANDIDATES, MIN_EVAL_ROWS
 
             excluded_splits = (
-                {excluded_split}
-                if isinstance(excluded_split, str)
-                else set(excluded_split or ())
+                {excluded_split} if isinstance(excluded_split, str) else set(excluded_split or ())
             )
             for candidate in EVAL_SPLIT_CANDIDATES:
                 if candidate in available_splits and candidate not in excluded_splits:

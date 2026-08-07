@@ -730,9 +730,7 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
         if target not in consent_load_subdirs:
             targets.append(target)
             consent_load_subdirs[target] = ()
-        load_subdirs = tuple(
-            dict.fromkeys((*consent_load_subdirs[target], *load_subdirs))
-        )
+        load_subdirs = tuple(dict.fromkeys((*consent_load_subdirs[target], *load_subdirs)))
         consent_load_subdirs[target] = load_subdirs
         decision = evaluate_file_security(
             target,
