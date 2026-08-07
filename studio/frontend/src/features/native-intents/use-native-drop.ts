@@ -165,6 +165,11 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
             });
             return;
           }
+          // Hold the send gate across registration too. Between the drop and the
+          // intents reaching the queue there is nothing for the composer to see,
+          // so an Enter in that window would send the text without the image.
+          const store = useNativeIntentStore.getState();
+          if (needsImages) store.beginImageDropRegistration();
           try {
             const { docs, images } = await registerDroppedAttachments(dropped);
             if (disposed) return;
@@ -183,6 +188,8 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
             toast.error("Could not attach dropped files", {
               description: error instanceof Error ? error.message : String(error),
             });
+          } finally {
+            if (needsImages) store.endImageDropRegistration();
           }
           return;
         }

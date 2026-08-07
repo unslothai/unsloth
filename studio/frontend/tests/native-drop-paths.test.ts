@@ -12,6 +12,13 @@ import {
 import { classifyDropPaths, CHAT_IMAGE_DROP_ACCEPT, SUPPORTED_DROP_HINT } from "../src/features/native-intents/drop-paths.ts";
 import type { NativeIntent } from "../src/features/native-intents/types.ts";
 import { RAG_UPLOAD_ACCEPT } from "../src/features/rag/types/rag.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
+
+registerBundlerResolver();
+
+const { useNativeIntentStore } = await import(
+  "../src/features/native-intents/store.ts"
+);
 
 const BACKEND_UPLOAD_EXTS_RE = /UPLOAD_EXTS\s*=\s*\{([^}]+)\}/s;
 const RUST_ATTACHMENT_EXTS_RE = /ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
@@ -123,6 +130,29 @@ test("attachment batches stay bound to the chat that received the drop", () => {
     ["doc"],
   );
   assert.deepEqual(remaining, {});
+});
+
+// The queue can't cover the window between the drop and the intents reaching it:
+// registration crosses into Rust first, and a send in that gap would go out
+// without the image.
+test("registering image drops hold the gate before the queue can", () => {
+  const store = useNativeIntentStore.getState();
+  assert.equal(store.registeringImageDrops, 0);
+
+  store.beginImageDropRegistration();
+  assert.equal(useNativeIntentStore.getState().registeringImageDrops, 1);
+
+  // Two drops can be in flight at once; the first to finish can't open the gate.
+  store.beginImageDropRegistration();
+  store.endImageDropRegistration();
+  assert.equal(useNativeIntentStore.getState().registeringImageDrops, 1);
+
+  store.endImageDropRegistration();
+  assert.equal(useNativeIntentStore.getState().registeringImageDrops, 0);
+
+  // A stray end can't drive it negative and wedge the gate shut.
+  store.endImageDropRegistration();
+  assert.equal(useNativeIntentStore.getState().registeringImageDrops, 0);
 });
 
 test("frontend, backend, and Rust accept the same document extensions", () => {

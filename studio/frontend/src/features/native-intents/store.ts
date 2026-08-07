@@ -12,11 +12,18 @@ interface NativeIntentState {
   // async Rust boundary, so the active chat may change before these arrive.
   pendingAttachments: PendingNativeAttachments;
   pendingImageAttachments: PendingNativeAttachments;
+  // Image drops registering with Rust, before they have a queue to sit in. Not
+  // keyed: until the intents land there is no settled target -- an implicit
+  // single chat re-keys from "single:new" the moment the thread is created --
+  // and the OS drop went to the window, which has one composer to send from.
+  registeringImageDrops: number;
   addIntent: (intent: NativeIntent) => void;
   addAttachments: (targetKey: string, intents: NativeIntent[]) => void;
   addImageAttachments: (targetKey: string, intents: NativeIntent[]) => void;
   takeAttachments: (targetKey: string) => NativeIntent[];
   takeImageAttachments: (targetKey: string) => NativeIntent[];
+  beginImageDropRegistration: () => void;
+  endImageDropRegistration: () => void;
   clearModelIntent: (intentId?: string) => void;
 }
 
@@ -24,6 +31,7 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
   pendingModelIntent: null,
   pendingAttachments: {},
   pendingImageAttachments: {},
+  registeringImageDrops: 0,
   addAttachments: (targetKey, intents) => {
     const current = get().pendingAttachments;
     const pendingAttachments = enqueueNativeAttachments(
@@ -67,6 +75,12 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
       set({ pendingImageAttachments });
     }
     return queued;
+  },
+  beginImageDropRegistration: () => {
+    set({ registeringImageDrops: get().registeringImageDrops + 1 });
+  },
+  endImageDropRegistration: () => {
+    set({ registeringImageDrops: Math.max(0, get().registeringImageDrops - 1) });
   },
   addIntent: (intent) => {
     if (intent.kind !== "model") {
