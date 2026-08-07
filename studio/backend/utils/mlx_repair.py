@@ -241,10 +241,17 @@ def _mlx_install_env() -> dict[str, str]:
 
     VIRTUAL_ENV is set from sys.prefix rather than forwarded from os.environ, for
     the same reason: it names the environment uv must install into, and taking it
-    from the process env would let a caller redirect the install elsewhere. It is
-    the second half of the dangling-symlink recovery in _uv_python_target -- with
-    it uv can identify the target environment even when bin/python no longer
-    resolves."""
+    from the process env would let a caller redirect the install elsewhere.
+
+    It does NOT rescue a venv whose bin/python has stopped resolving. An explicit
+    --python outranks VIRTUAL_ENV, so uv reports the same unresolved-interpreter
+    error either way; this once claimed otherwise, and named an interpreter-probe
+    helper that was deleted with it. Nothing passable to `uv pip install` recovers
+    that state -- --target and --prefix do exit 0, but resolve against whatever
+    ambient interpreter uv finds and write a wrong-ABI or off-sys.path install,
+    which is worse than staying chat-only because it defeats the
+    mlx_stack_available() gate. That case is detected and reported instead: see
+    the _UNRESOLVED_PYTHON_MARKER branch in attempt_mlx_repair."""
     env = {key: os.environ[key] for key in _MLX_ENV_ALLOWLIST if key in os.environ}
     if (venv_root := _venv_root()) is not None:
         env["VIRTUAL_ENV"] = venv_root
