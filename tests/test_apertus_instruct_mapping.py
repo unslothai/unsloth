@@ -55,10 +55,14 @@ def test_apertus_instruct_upstream_is_the_instruct_repo():
 
         # The base upstream must not be redirected to the instruct model.
         assert float_to_int.get(base_upstream) != unsloth_4bit, base_upstream
-        assert map_to_16bit.get(base_upstream) != f"unsloth/Apertus-{size}-Instruct-2509", base_upstream
+        assert (
+            map_to_16bit.get(base_upstream) != f"unsloth/Apertus-{size}-Instruct-2509"
+        ), base_upstream
 
     # 8B has a published Unsloth 16bit repo, so the redirect stays.
-    assert map_to_16bit.get("swiss-ai/Apertus-8B-Instruct-2509") == "unsloth/Apertus-8B-Instruct-2509"
+    assert (
+        map_to_16bit.get("swiss-ai/Apertus-8B-Instruct-2509") == "unsloth/Apertus-8B-Instruct-2509"
+    )
 
 
 def test_no_apertus_lookup_points_at_the_unpublished_70b_16bit_repo():
