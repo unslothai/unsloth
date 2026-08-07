@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
+import { openingTag } from "./helpers/tsx-ast.ts";
+
 // No DOM renderer here and the frame pulls in React plus the runtime store, so
 // assert the wiring in the source the way artifact-source-key.test.ts does.
 const sourceFile = (relative: string): ts.SourceFile => {
@@ -24,97 +26,63 @@ const sourceFile = (relative: string): ts.SourceFile => {
 const SURFACE = "../src/features/chat/artifacts/artifact-surface.tsx";
 const FRAME = "../src/features/chat/artifacts/html-frame.tsx";
 
-/** The opening tag of `node`, for both `<x>` and `<x />`. */
-const openingTag = (node: ts.Node): ts.JsxOpeningLikeElement | null => {
-  if (ts.isJsxSelfClosingElement(node)) return node;
-  if (ts.isJsxElement(node)) return node.openingElement;
-  return null;
-};
-
-/** The `allowNetworkAccess` expression on the surface's frame, or null. */
-function readAllowNetworkAccessProp(): string | null {
+/** Every `<ArtifactHtmlFrame>` opening tag in the artifact surface. */
+function readFrameOpeningTags(): string[] {
   const source = sourceFile(SURFACE);
-  let value: string | null = null;
+  const tags: string[] = [];
   const visit = (node: ts.Node): void => {
     const opening = openingTag(node);
     if (opening?.tagName.getText() === "ArtifactHtmlFrame") {
-      for (const attribute of opening.attributes.properties) {
-        if (
-          ts.isJsxAttribute(attribute) &&
-          attribute.name.getText() === "allowNetworkAccess"
-        ) {
-          value = attribute.initializer?.getText() ?? "";
-        }
-      }
+      tags.push(opening.getText());
     }
     node.forEachChild(visit);
   };
   source.forEachChild(visit);
-  return value;
+  return tags;
 }
 
-// The bug: a ```html fence is source "fence", so gating on "tool" left every
+// The bug: a fenced html block is source "fence", so gating on "tool" left every
 // fenced canvas on the strict CSP and a CDN import (three.js) silently died.
-test("the preview frame is offered network access regardless of canvas source", () => {
-  const value = readAllowNetworkAccessProp();
-  assert.ok(value, "<ArtifactHtmlFrame> has no allowNetworkAccess prop");
-  assert.doesNotMatch(
-    value,
-    /\bsource\b/,
-    "allowNetworkAccess must not discriminate on artifact.source",
+// Every call site is checked, so a source-gated one cannot hide behind an
+// ungated one that happens to be visited later.
+test("no canvas preview is gated on the artifact source", () => {
+  const tags = readFrameOpeningTags();
+  assert.ok(
+    tags.length > 0,
+    "<ArtifactHtmlFrame> not found in the artifact surface",
   );
-  assert.equal(value, "{true}");
+  for (const tag of tags) {
+    assert.doesNotMatch(
+      tag,
+      /\bsource\b/,
+      "the preview frame must not discriminate on artifact.source",
+    );
+  }
 });
 
-/** The `if` condition guarding the `allow_network` query flag, or null. */
-function readAllowNetworkGuard(): string | null {
+/** Every condition guarding an `allow_network` query flag in the frame. */
+function readAllowNetworkGuards(): string[] {
   const source = sourceFile(FRAME);
-  let condition: string | null = null;
-  const visit = (node: ts.Node): void => {
-    if (ts.isIfStatement(node) && node.thenStatement.getText().includes("allow_network")) {
-      condition = node.expression.getText();
-    }
-    node.forEachChild(visit);
-  };
-  source.forEachChild(visit);
-  return condition;
-}
-
-// Without this the suite passes with the setting ignored, which would hand every
-// canvas the permissive CSP whether or not the user opted in.
-test("the permissive CSP still requires the user's network setting", () => {
-  const condition = readAllowNetworkGuard();
-  assert.ok(condition, "no guard found around the allow_network flag");
-  assert.match(condition, /\bnetworkAccessEnabled\b/);
-  assert.match(condition, /\ballowNetworkAccess\b/);
-});
-
-/** The default for the frame's `allowNetworkAccess` parameter, or null. */
-function readAllowNetworkAccessDefault(): string | null {
-  const source = sourceFile(FRAME);
-  let initializer: string | null = null;
+  const conditions: string[] = [];
   const visit = (node: ts.Node): void => {
     if (
-      ts.isFunctionDeclaration(node) &&
-      node.name?.getText() === "ArtifactHtmlFrame"
+      ts.isIfStatement(node) &&
+      node.thenStatement.getText().includes("allow_network")
     ) {
-      const binding = node.parameters[0]?.name;
-      if (binding && ts.isObjectBindingPattern(binding)) {
-        for (const element of binding.elements) {
-          if (element.name.getText() === "allowNetworkAccess") {
-            initializer = element.initializer?.getText() ?? "";
-          }
-        }
-      }
+      conditions.push(node.expression.getText());
     }
     node.forEachChild(visit);
   };
   source.forEachChild(visit);
-  return initializer;
+  return conditions;
 }
 
-// A future caller that forgets the prop must land on the strict CSP, not inherit
-// the permissive one.
-test("the frame defaults to no network access", () => {
-  assert.equal(readAllowNetworkAccessDefault(), "false");
+// The permissive CSP is opt-in, and that setting is the whole gate. Asserting the
+// condition exactly is the point: a second operand is how the gate gets defeated
+// (an || that short-circuits past it, or a source check smuggled back in), and
+// there is no legitimate reason for one here.
+test("the permissive CSP is gated on the user's network setting alone", () => {
+  const conditions = readAllowNetworkGuards();
+  assert.equal(conditions.length, 1, "expected exactly one allow_network guard");
+  assert.equal(conditions[0], "networkAccessEnabled");
 });

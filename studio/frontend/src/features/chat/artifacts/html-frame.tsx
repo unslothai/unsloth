@@ -35,16 +35,14 @@ export function ArtifactHtmlFrame({
   title = "HTML canvas preview",
   className,
   fill = false,
-  // Fail closed: a caller must opt in before the user setting is even consulted.
-  allowNetworkAccess = false,
 }: {
   code: string;
   title?: string;
   className?: string;
   fill?: boolean;
-  allowNetworkAccess?: boolean;
 }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  // Every canvas honors this, fence or tool. Off by default, and the only gate.
   const networkAccessEnabled = useChatRuntimeStore(
     (state) => state.allowArtifactNetworkAccess,
   );
@@ -53,11 +51,11 @@ export function ArtifactHtmlFrame({
   const src = useMemo(() => {
     const query = new URLSearchParams({ v: hashArtifactCode(code) });
     // Never put the auth token in the URL: in-frame code can read location.href.
-    if (allowNetworkAccess && networkAccessEnabled) {
+    if (networkAccessEnabled) {
       query.set("allow_network", "1");
     }
     return apiUrl(`/api/inference/artifact-preview-frame?${query.toString()}`);
-  }, [allowNetworkAccess, networkAccessEnabled, code]);
+  }, [networkAccessEnabled, code]);
   // Feed only parent-initiated loads, so a self-navigated frame can't self-upgrade.
   const pendingPostRef = useRef(false);
   useEffect(() => {
