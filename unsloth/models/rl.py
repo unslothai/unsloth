@@ -620,7 +620,12 @@ def _column_names(dataset):
         row = None
     if isinstance(row, dict):
         names.update(row.keys())
-    return tuple(names), source
+    # The row too: it was read either way, and on a one-shot stream it is the
+    # ONLY row anything may look at. Without it `_sliceable_per_token` had no
+    # widths to compare and fell back to `input_ids` alone, leaving `labels`
+    # and `attention_mask` at their overlength size -- rows whose supervision
+    # no longer lines up with the tokens they describe.
+    return tuple(names), source, (row if isinstance(row, dict) else None)
 
 
 class _CappedBase:
@@ -682,16 +687,23 @@ class _CappedRows(_CappedBase):
 
     def __init__(self, inner, cut, supervision, per_token):
         super().__init__(inner, cut, supervision, per_token)
-        self._index = [i for i in range(len(inner)) if self._keep(self._slice(inner[i]))]
+        # No supervision columns means `_keep` is True for every row, so the
+        # index would be `range(len(inner))` -- and building it read and
+        # transformed every item, which for a `with_transform` split is a whole
+        # extra tokenization pass before the dataloader can even start, plus an
+        # O(n) list. Stay lazy and let `__getitem__` map straight through.
+        self._index = None if not self._supervision else [
+            i for i in range(len(inner)) if self._keep(self._slice(inner[i]))]
 
     def __len__(self):
-        return len(self._index)
+        return len(self._inner) if self._index is None else len(self._index)
 
     def __getitem__(self, i):
-        return self._slice(self._inner[self._index[i]])
+        return self._slice(
+            self._inner[i if self._index is None else self._index[i]])
 
     def __iter__(self):
-        for i in range(len(self._index)):
+        for i in range(len(self)):
             yield self[i]
 
 
@@ -768,7 +780,7 @@ def _first_row_without_consuming(dataset):
     return next(probe, None)
 
 
-def _sliceable_per_token(dataset, names, cap):
+def _sliceable_per_token(dataset, names, cap, probed = None):
     """The token columns whose VALUES can be sliced alongside `input_ids`.
 
     Presence is not enough. An optional column stored as `token_type_ids = None`
@@ -784,7 +796,11 @@ def _sliceable_per_token(dataset, names, cap):
     per_token = [c for c in names if c in _PER_TOKEN]
     if len(per_token) < 2:
         return per_token
-    row = _first_row_without_consuming(dataset)
+    # `probed` is the row `_column_names` already read. Preferring it is what
+    # lets a one-shot stream align every per-token column: reading another row
+    # would cost the caller that example, so without it this fell back to
+    # `input_ids` alone and left the masks and labels overlength.
+    row = probed if isinstance(probed, dict) else _first_row_without_consuming(dataset)
     if not isinstance(row, dict):
         return ["input_ids"] if "input_ids" in names else []
     try:
@@ -869,7 +885,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         # them. Our own wrapper, capped the same way, is already the answer.
         if _cap_signature(dataset) == (cap, drop_unsupervised):
             return dataset
-        names, dataset = _column_names(dataset)
+        names, dataset, probed = _column_names(dataset)
         if "input_ids" not in names:
             # No tokens here yet, so there is nothing to cut. TRL does not
             # tokenize a late split either -- `_prepare_dataset` runs only from
@@ -896,9 +912,18 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             # TRL slices [-max_length:] for `keep_end`, and so does the
             # construction-time cap. Always keeping the prefix evaluates the wrong
             # half of every long row for callers whose completion sits at the tail.
-            keep_end = getattr(args, "truncation_mode", "keep_start") == "keep_end"
-            cut = slice(-cap, None) if keep_end else slice(None, cap)
-            per_token = _sliceable_per_token(dataset, names, cap)
+            mode = getattr(args, "truncation_mode", "keep_start")
+            # keep_start and keep_end are the only two slices there are, and a
+            # third value silently became keep_start here, cutting every late
+            # row from the side the caller asked us not to. The construction
+            # path already refuses those; this one has to as well, and refusing
+            # means handing the split back untouched so the caller still has it.
+            if mode not in ("keep_start", "keep_end"):
+                print(f"Unsloth: `truncation_mode = {mode}` is not one of "
+                      "keep_start / keep_end, so this split is left uncapped.")
+                return dataset
+            cut = slice(-cap, None) if mode == "keep_end" else slice(None, cap)
+            per_token = _sliceable_per_token(dataset, names, cap, probed)
             # Never on the predict path. Dropping rows is right for a loss, which
             # is meaningless over a row with no supervised token, and wrong for
             # `predict`, whose contract is one prediction per row IN ORDER: a
@@ -1029,7 +1054,11 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                 trainer._unsloth_eval_cap_memo = memo
             except Exception:
                 return _cap(dataset, cap, trainer.args, drop_unsupervised)
-        key = (id(dataset), drop_unsupervised)
+        # `truncation_mode` shapes the SLICE, so it belongs in the key: without
+        # it, evaluating once with keep_start and again with keep_end handed
+        # back the cached prefixes for both.
+        key = (id(dataset), drop_unsupervised,
+               getattr(trainer.args, "truncation_mode", "keep_start"))
         seen = memo.get(key)
         if seen is not None and seen[0] is dataset and seen[1] == cap and seen[3] == token:
             return seen[2]
@@ -1065,7 +1094,18 @@ def _wrap_sft_evaluate_cap(trainer_cls):
     def _make(original, keyword, drop_unsupervised):
         def wrapped(self, *args, **kwargs):
             cap = getattr(getattr(self, "args", None), "max_seq_length", None)
-            if not cap or getattr(self.args, "max_length", None) is not None:
+            retained = getattr(getattr(self, "args", None), "max_length", None)
+            # A retained `max_length` is NOT proof the cap is enforced
+            # downstream. It is exactly what the construction block leaves
+            # behind when it turns padding-free OFF instead of clearing the
+            # cap, and TRL's collator does not truncate rows that already carry
+            # `input_ids`. `_prepare_dataset` runs only from `__init__`, so a
+            # split handed over later is never prepared either: skipping on a
+            # retained `max_length` let an overlength late split reach the model
+            # with nothing enforcing anything. Cap to whichever value is set.
+            if retained is not None:
+                cap = retained
+            if not cap:
                 return original(self, *args, **kwargs)
             given = kwargs.get(keyword, args[0] if args else None)
             if given is not None:

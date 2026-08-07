@@ -1050,16 +1050,35 @@ def test_evaluate_caps_a_pretokenized_split_handed_over_later():
     assert all(len(a) == len(i) for a, i in zip(got["attention_mask"], got["input_ids"]))
 
 
-def test_evaluate_leaves_a_split_alone_when_trl_still_holds_the_cap():
-    """`max_length` set means TRL truncates in its own prep; capping here too
-    would be a second, invisible truncation on a path that already works."""
+def test_a_retained_max_length_does_not_excuse_a_late_split():
+    """This test used to assert the opposite, on the premise that `max_length`
+    being set means TRL truncates in its own prep. That premise does not hold
+    for the path this wrapper exists for: `_prepare_dataset` runs only from
+    `__init__`, so a split handed to `evaluate()` afterwards is never prepared,
+    and TRL's collator does not truncate rows that already carry `input_ids`.
+    A retained `max_length` is also exactly what the construction block leaves
+    behind when it turns padding-free OFF, so reading it as proof of
+    enforcement let an overlength late split reach the model uncapped."""
     _, tok = _load_plain()
     late = _tokenized_dataset(tok)
     Stub, seen = _stub_trainer_class()
     stub = Stub()
     stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, _MODEL_MAX_SEQ_LENGTH)
     stub.evaluate(eval_dataset = late)
-    assert seen["ds"] is late
+    assert max(len(r) for r in seen["ds"]["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
+
+
+def test_a_raw_late_split_is_still_left_alone_with_max_length_set():
+    """The control for the change above: no `input_ids` means there is nothing
+    to cut, and prep will tokenize it with the cap applied there."""
+    from datasets import Dataset
+
+    raw = Dataset.from_list([{"text": "The quick brown fox. " * 200}] * 2)
+    Stub, seen = _stub_trainer_class()
+    stub = Stub()
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, _MODEL_MAX_SEQ_LENGTH)
+    stub.evaluate(eval_dataset = raw)
+    assert seen["ds"] is raw
 
 
 def test_evaluate_leaves_a_raw_text_split_alone():
@@ -1897,7 +1916,7 @@ def test_probing_a_generator_does_not_eat_its_first_row():
         for i in range(3):
             yield {"input_ids": [i] * 4, "attention_mask": [1] * 4}
 
-    names, source = _column_names(_gen())
+    names, source, _probed = _column_names(_gen())
     assert "input_ids" in names
     assert [r["input_ids"][0] for r in source] == [0, 1, 2], "the first row was eaten"
 
@@ -1908,7 +1927,7 @@ def test_probing_a_rewindable_split_hands_it_straight_back():
     from unsloth.models.rl import _column_names
 
     ds = Dataset.from_list([{"input_ids": [1, 2], "attention_mask": [1, 1]}])
-    names, source = _column_names(ds)
+    names, source, _probed = _column_names(ds)
     assert "input_ids" in names and source is ds
 
 
@@ -2090,7 +2109,7 @@ def test_the_schema_probe_replays_a_shared_iterator_row():
     from unsloth.models.rl import _column_names
 
     rows = [{"input_ids": [i]} for i in range(3)]
-    names, source = _column_names(_shared_iterator_split(rows))
+    names, source, _probed = _column_names(_shared_iterator_split(rows))
 
     assert "input_ids" in names, "the probe still has to read the schema"
     assert [r["input_ids"] for r in source] == [[0], [1], [2]], "row 0 was eaten"
@@ -2104,7 +2123,7 @@ def test_a_rewindable_stream_is_not_chained():
     from unsloth.models.rl import _column_names
 
     split = Dataset.from_dict({"input_ids": [[0], [1], [2]]}).to_iterable_dataset()
-    names, source = _column_names(split)
+    names, source, _probed = _column_names(split)
 
     assert "input_ids" in names
     assert [r["input_ids"] for r in source] == [[0], [1], [2]], "row 0 duplicated"
@@ -2477,3 +2496,111 @@ def test_a_transformed_eval_split_keeps_its_cap(tmp_path, trl_has_guard):
         max_length = _MODEL_MAX_SEQ_LENGTH,
     )
     assert trainer.args.max_length is not None, "nothing else truncates the yielded rows"
+
+
+# ── round fifteen: alignment, laziness, the cache key, and unknown modes ─────
+
+
+def test_a_one_shot_stream_slices_every_aligned_column():
+    """`_column_names` already read a row off the stream, and discarding it left
+    `_sliceable_per_token` with nothing to measure, so it cut `input_ids` alone
+    and left `labels`/`attention_mask` overlength -- supervision that no longer
+    lines up with the tokens it describes."""
+    from unsloth.models.rl import _wrap_sft_evaluate_cap
+
+    _, tok = _load_plain()
+    ids = tok("The quick brown fox. " * 200)["input_ids"]
+    rows = [{"input_ids": list(ids), "attention_mask": [1] * len(ids),
+             "labels": list(ids)} for _ in range(3)]
+    seen = {}
+
+    class Stub:
+        def evaluate(self, eval_dataset = None, **kw):
+            seen["rows"] = list(eval_dataset)
+
+    _wrap_sft_evaluate_cap(Stub)
+    stub = Stub()
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
+    stub.evaluate(_SharedIteratorStream(rows))
+
+    assert len(seen["rows"]) == len(rows), "the probe ate a row"
+    for row in seen["rows"]:
+        width = len(row["input_ids"])
+        assert width <= _MODEL_MAX_SEQ_LENGTH
+        for name in ("attention_mask", "labels"):
+            assert len(row[name]) == width, f"{name} is not aligned with input_ids"
+
+
+def test_an_unfiltered_map_style_split_is_not_scanned_up_front():
+    """With no supervision columns every row survives, so building an identity
+    index read and transformed the whole split before the dataloader could
+    start -- a second on-access tokenization pass for no information."""
+    from unsloth.models.rl import _CappedRows
+
+    reads = []
+
+    class Split:
+        def __len__(self): return 500
+        def __getitem__(self, i):
+            reads.append(i)
+            return {"input_ids": list(range(40))}
+
+    capped = _CappedRows(Split(), slice(None, 8), (), ("input_ids",))
+    assert not reads, f"constructor read {len(reads)} rows before anything asked"
+    assert len(capped) == 500
+    assert len(capped[0]["input_ids"]) == 8
+    assert reads == [0], "indexing did not map straight through"
+
+
+def test_a_filtered_split_still_drops_its_unsupervised_rows():
+    """The control: supervision present means the index is real, and the rows
+    with no supervised token still go."""
+    from unsloth.models.rl import _CappedRows
+
+    rows = [{"input_ids": [1, 2, 3], "labels": [-100, -100, -100]},
+            {"input_ids": [4, 5, 6], "labels": [4, 5, 6]}]
+
+    class Split:
+        def __len__(self): return len(rows)
+        def __getitem__(self, i): return rows[i]
+
+    capped = _CappedRows(Split(), slice(None, 3), ("labels",), ("input_ids", "labels"))
+    assert len(capped) == 1
+    assert capped[0]["labels"] == [4, 5, 6]
+
+
+def test_switching_truncation_mode_re_caps_the_same_split():
+    """The memo keyed on identity, cap and filtering mode but not on the SLICE,
+    so evaluating with keep_start and then keep_end handed back the cached
+    prefixes for both."""
+    _, tok = _load_plain()
+    late = _tokenized_dataset(tok)
+    Stub, seen = _stub_trainer_class()
+    stub = Stub()
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
+
+    stub.args.truncation_mode = "keep_start"
+    stub.evaluate(eval_dataset = late)
+    starts = list(seen["ds"]["input_ids"][0])
+
+    stub.args.truncation_mode = "keep_end"
+    stub.evaluate(eval_dataset = late)
+    ends = list(seen["ds"]["input_ids"][0])
+
+    full = list(late["input_ids"][0])
+    assert starts == full[:_MODEL_MAX_SEQ_LENGTH]
+    assert ends == full[-_MODEL_MAX_SEQ_LENGTH:]
+    assert starts != ends, "keep_end reused the cached keep_start prefix"
+
+
+def test_the_late_cap_refuses_a_truncation_mode_it_cannot_honour():
+    """The construction path already refuses a third value; the late cap took
+    it as keep_start and cut every row from the side the caller ruled out."""
+    _, tok = _load_plain()
+    late = _tokenized_dataset(tok)
+    Stub, seen = _stub_trainer_class()
+    stub = Stub()
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
+    stub.args.truncation_mode = "keep_middle"
+    stub.evaluate(eval_dataset = late)
+    assert seen["ds"] is late, "the split was cut under a mode we cannot honour"
