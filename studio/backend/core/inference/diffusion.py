@@ -742,17 +742,23 @@ def _hub_file_cached(
     """Whether the loader would resolve ``filename`` of ``repo_id`` at ``revision`` with no download.
 
     Answers what the LOADER will do, not merely whether the bytes exist somewhere. The load fetches
-    through ``hf_hub_download_with_xet_fallback(..., reuse_other_cache_root = True)``, which asks
-    the live root FIRST and unpinned: any hit there wins and the other root is never consulted. So
-    bytes sitting at ``revision`` in the import-time root do not save a download when the live root
-    holds a stale ``refs/main`` for the same file. Both conditions are therefore required:
+    through ``hf_hub_download_with_xet_fallback(..., reuse_other_cache_root = True)``, and the call
+    site passes no revision, so it resolves UNPINNED. That helper asks the live root first; only if
+    that misses does it look in huggingface_hub's import-time root, and on a hit there it routes the
+    download through that root and moves no bytes
+    (``studio/backend/utils/hf_xet_fallback.py``).
 
-      * the live root has a snapshot at ``revision``, and
-      * its ``refs/main`` already points there, since the load resolves unpinned.
+    So walk the same two roots in the same order and answer for whichever one the loader lands on:
 
-    Then the load's own lookup lands on the same blob and moves nothing. Either half alone licenses
-    skipping a job the loader will actually run, which is a multi-GB pull outside the download
-    manager's disk preflight and progress.
+      * the first root with an unpinned hit is the one the load will use, and
+      * that hit must be the snapshot at ``revision``, since a stale ``refs/main`` pointing
+        elsewhere means the load revalidates and pulls.
+
+    Checking only the live root under-reports after a cache-folder change: every asset is then
+    invisible to the live root while the old root still serves it, so the plan advertises a
+    multi-GB checkpoint the load would not transfer. Checking any root that merely holds the bytes
+    over-reports, and skips a job the loader really does run, outside the download manager's disk
+    preflight and progress.
 
     ``revision`` must be the sha the caller means to load; without one the answer is False. This
     probe only ever licenses skipping work, so every unknown resolves to doing the work. Never
@@ -762,14 +768,18 @@ def _hub_file_cached(
     try:
         from huggingface_hub import try_to_load_from_cache
 
-        live = hub_cache_dir()
-        pinned = try_to_load_from_cache(repo_id, filename, cache_dir = live, revision = revision)
-        if not isinstance(pinned, str):
-            return False
-        # Unpinned, exactly as the load asks. A different path (or a miss) means refs/main points
-        # elsewhere and the load will revalidate and pull.
-        current = try_to_load_from_cache(repo_id, filename, cache_dir = live)
-        return isinstance(current, str) and Path(current) == Path(pinned)
+        # None is huggingface_hub's import-time root, the fallback the helper tries second.
+        for cache_dir in (hub_cache_dir(), None):
+            current = try_to_load_from_cache(repo_id, filename, cache_dir = cache_dir)
+            if not isinstance(current, str):
+                continue  # this root misses unpinned, exactly as the load asks: try the next
+            pinned = try_to_load_from_cache(
+                repo_id, filename, cache_dir = cache_dir, revision = revision
+            )
+            # First hit wins: the loader stops here too, so a later root cannot rescue a
+            # ``refs/main`` that points at the wrong snapshot.
+            return isinstance(pinned, str) and Path(pinned) == Path(current)
+        return False
     except Exception:  # noqa: BLE001 -- a cache we cannot read is not evidence of a hit
         return False
 

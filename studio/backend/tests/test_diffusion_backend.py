@@ -5470,6 +5470,8 @@ def test_the_cached_gguf_check_follows_the_loaders_root_selection(monkeypatch):
     # save a download when the live root holds a stale refs/main: the loader takes the stale one,
     # revalidates and pulls multi-GB outside the manager. Only a live-root snapshot whose refs/main
     # already points at the pinned sha means the load moves nothing.
+    # But when the live root misses ENTIRELY the helper does consult the other root and routes the
+    # download through it, moving nothing, so that case has to read as cached (case 4).
     from core.inference import diffusion as diff
 
     live = "/live-root"
@@ -5507,6 +5509,23 @@ def test_the_cached_gguf_check_follows_the_loaders_root_selection(monkeypatch):
     monkeypatch.setattr(
         "huggingface_hub.try_to_load_from_cache",
         _probe({(live, "sha1"): "/blobs/a", (live, None): "/blobs/stale"}),
+    )
+    assert diff._hub_file_cached("unsloth/X-GGUF", "x.gguf", revision = "sha1") is False
+
+    # 4. The cache folder was changed: the live root has nothing at all, and the import-time root
+    #    holds the current file. The helper falls back to that root and routes the download through
+    #    it, so the load transfers no bytes and the plan must not advertise the checkpoint.
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        _probe({(None, "sha1"): "/old/blobs/a", (None, None): "/old/blobs/a"}),
+    )
+    assert diff._hub_file_cached("unsloth/X-GGUF", "x.gguf", revision = "sha1") is True
+
+    # 5. Live root empty and the OTHER root stale: the fallback lands on a blob that is not the
+    #    revision being loaded, so it still re-fetches.
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        _probe({(None, "sha1"): "/old/blobs/a", (None, None): "/old/blobs/stale"}),
     )
     assert diff._hub_file_cached("unsloth/X-GGUF", "x.gguf", revision = "sha1") is False
 
