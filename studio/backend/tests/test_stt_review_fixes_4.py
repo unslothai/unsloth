@@ -120,6 +120,53 @@ def test_a_reaping_server_stays_visible_to_training_admission(monkeypatch):
     assert sidecar._process is None
 
 
+def test_a_starting_load_is_announced_before_the_probe_and_the_reap():
+    """is_loading() has to be true across the cache probe and the old reap.
+
+    Training admission reads it lock-free, so a False there sends it to unload(),
+    which waits out the whole startup instead of cancelling the load.
+    """
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    probing = threading.Event()
+    release = threading.Event()
+
+    def slow_probe(model_id):
+        probing.set()
+        release.wait(timeout = 10)
+        raise RuntimeError("the probe is where the test stops")
+
+    sidecar._ensure_model_downloaded = slow_probe
+
+    def load():
+        try:
+            sidecar._load_locked("qwen3-asr-0.6b", "llama-server")
+        except Exception:
+            pass
+
+    loading = threading.Thread(target = load, daemon = True)
+    loading.start()
+    try:
+        assert probing.wait(timeout = 5)
+        assert sidecar.is_loading() is True, "the load was not announced before the probe"
+        assert sidecar.cancel_pending_load() is True, "training could not cancel this load"
+    finally:
+        release.set()
+        loading.join(timeout = 10)
+    # The load never started a server, so it must not leave _loading set.
+    assert sidecar.is_loading() is False
+    assert sidecar._load_cancel_event is None
+
+
+def test_device_never_contradicts_the_loaded_model():
+    """Mid-publish _process is set and _model_id is not; the two must agree."""
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    sidecar._process = _SlowlyDyingProcess(threading.Event())
+    sidecar._port = 12345
+    sidecar._model_id = None
+    assert sidecar.loaded_model is None
+    assert sidecar.device is None, "the status route would ship a device with no model"
+
+
 def test_status_reads_do_not_block_during_a_llama_cpp_update():
     """update_maintenance() holds _lock for the whole install; polls continue."""
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
