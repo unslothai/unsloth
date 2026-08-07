@@ -574,6 +574,62 @@ def _wrap_grpo_generate_and_score(trainer_cls):
     trainer_cls._generate_and_score_completions = wrapped
 
 
+def _wrap_sft_evaluate_cap(trainer_cls):
+    """Cap a pre-tokenized eval split handed to `evaluate()` after construction.
+
+    The padding-free branch caps the init-time splits itself and then clears
+    `args.max_length`, because that is what TRL's guard demands. Only the splits
+    present at construction went through it, so `evaluate(eval_dataset = ...)`
+    prepares a later one with `max_length = None`, and Zoo's prep leaves rows
+    that already carry `input_ids` alone: overlength rows reach the collator
+    with nothing enforcing the cap. The cap itself survives on
+    `args.max_seq_length`, so apply it here to exactly the rows nothing else
+    will truncate.
+    """
+    if not hasattr(trainer_cls, "evaluate"):
+        return
+    original = trainer_cls.evaluate
+    if getattr(original, "_unsloth_eval_cap_wrapped", False):
+        return
+
+    def _cap(dataset, cap):
+        names = getattr(dataset, "column_names", None) or ()
+        if "input_ids" not in names:
+            return dataset          # raw text: prep tokenizes it with the cap
+        try:
+            first = dataset[0]["input_ids"]
+            if len(first) <= cap and max(
+                    len(r) for r in dataset["input_ids"]) <= cap:
+                return dataset
+            per_token = [c for c in names
+                         if c in ("input_ids", "attention_mask", "labels",
+                                  "completion_mask", "assistant_masks",
+                                  "token_type_ids", "position_ids")]
+            return dataset.map(
+                lambda e: {c: e[c][:cap] for c in per_token})
+        except Exception:
+            return dataset          # never turn an eval call into a hard error
+
+    def wrapped(self, *args, **kwargs):
+        cap = getattr(getattr(self, "args", None), "max_seq_length", None)
+        given = kwargs.get("eval_dataset",
+                           args[0] if args else None)
+        if (cap and given is not None
+                and getattr(self.args, "max_length", None) is None):
+            if isinstance(given, dict):
+                capped = {k: _cap(v, cap) for k, v in given.items()}
+            else:
+                capped = _cap(given, cap)
+            if "eval_dataset" in kwargs:
+                kwargs["eval_dataset"] = capped
+            else:
+                args = (capped,) + tuple(args[1:])
+        return original(self, *args, **kwargs)
+
+    wrapped._unsloth_eval_cap_wrapped = True
+    trainer_cls.evaluate = wrapped
+
+
 _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER = "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__"
 _UNSLOTH_GRPO_HIDDEN_STATES_WRAPPED_ATTR = "_unsloth_grpo_hidden_states_forward_wrapped"
 _UNSLOTH_GRPO_HIDDEN_STATES_WARNING_ATTR = "_unsloth_grpo_hidden_states_warning_issued"
@@ -2239,6 +2295,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             )
     except Exception:
         pass
+
+    if trainer_file == "sft_trainer":
+        try:
+            _wrap_sft_evaluate_cap(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(
+                f"Unsloth: Could not wrap evaluate for {RLTrainer_name}: {e}"
+            )
 
     if trainer_file == "grpo_trainer":
         try:

@@ -978,3 +978,91 @@ def test_the_codegen_carries_the_third_round_fixes():
     # skip_prepare_dataset must not exempt the overlength check.
     assert "if not _unsloth_skip_prepare and not (_unsloth_within_cap" not in block
     assert "if not (_unsloth_within_cap(train_dataset)" in block
+
+
+def _stub_trainer_class():
+    """A minimal class carrying `evaluate`, wrapped the way rl.py wraps it."""
+    from unsloth.models.rl import _wrap_sft_evaluate_cap
+
+    seen = {}
+
+    class Stub:
+        def evaluate(self, eval_dataset = None, **kw):
+            seen["ds"] = eval_dataset
+
+    _wrap_sft_evaluate_cap(Stub)
+    return Stub, seen
+
+
+class _Args:
+    def __init__(self, max_seq_length, max_length):
+        self.max_seq_length = max_seq_length
+        self.max_length = max_length
+
+
+def test_evaluate_caps_a_pretokenized_split_handed_over_later():
+    """The init-time splits are capped and `max_length` is then cleared, so a
+    pre-tokenized split passed to `evaluate()` afterwards had nothing enforcing
+    the cap: TRL prepares it with `max_length = None` and Zoo's prep leaves rows
+    that already carry `input_ids` alone. Version-independent: the wrapper is
+    exercised directly, since the surrounding branch needs a guarded TRL."""
+    _, tok = _load_plain()
+    late = _tokenized_dataset(tok)
+    cap = _MODEL_MAX_SEQ_LENGTH
+    assert max(len(r) for r in late["input_ids"]) > cap
+
+    Stub, seen = _stub_trainer_class()
+    stub = Stub()
+    stub.args = _Args(cap, None)
+    stub.evaluate(eval_dataset = late)
+
+    got = seen["ds"]
+    assert max(len(r) for r in got["input_ids"]) <= cap
+    # The per-token sidecars move with `input_ids`, or the mask stops lining up.
+    assert all(len(a) == len(i) for a, i
+               in zip(got["attention_mask"], got["input_ids"]))
+
+
+def test_evaluate_leaves_a_split_alone_when_trl_still_holds_the_cap():
+    """`max_length` set means TRL truncates in its own prep; capping here too
+    would be a second, invisible truncation on a path that already works."""
+    _, tok = _load_plain()
+    late = _tokenized_dataset(tok)
+    Stub, seen = _stub_trainer_class()
+    stub = Stub()
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, _MODEL_MAX_SEQ_LENGTH)
+    stub.evaluate(eval_dataset = late)
+    assert seen["ds"] is late
+
+
+def test_evaluate_leaves_a_raw_text_split_alone():
+    """No `input_ids` means prep will tokenize it, with the cap applied there."""
+    from datasets import Dataset
+
+    raw = Dataset.from_list([{"text": "The quick brown fox. " * 200}] * 2)
+    Stub, seen = _stub_trainer_class()
+    stub = Stub()
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
+    stub.evaluate(eval_dataset = raw)
+    assert seen["ds"] is raw
+
+
+def test_evaluate_caps_every_split_of_a_dict():
+    _, tok = _load_plain()
+    Stub, seen = _stub_trainer_class()
+    stub = Stub()
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
+    stub.evaluate(eval_dataset = {"a": _tokenized_dataset(tok),
+                                  "b": _tokenized_dataset(tok)})
+    for split in seen["ds"].values():
+        assert max(len(r) for r in split["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
+
+
+def test_wrapping_evaluate_twice_is_a_no_op():
+    """The patch runs again on a second FastLanguageModel call in one process."""
+    from unsloth.models.rl import _wrap_sft_evaluate_cap
+
+    Stub, _ = _stub_trainer_class()
+    first = Stub.evaluate
+    _wrap_sft_evaluate_cap(Stub)
+    assert Stub.evaluate is first
