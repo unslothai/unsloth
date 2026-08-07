@@ -387,6 +387,18 @@ def parse_gpu_layers_override(args: Optional[Iterable[str]]) -> Optional[int]:
     return value
 
 
+def fit_is_enabled_in(args: Optional[Iterable[str]]) -> bool:
+    """Whether the last ``--fit`` in extras turns the fitter ON.
+
+    Only ``--fit on`` hands placement back to llama.cpp; ``--fit off`` disables
+    it and so cannot move weights to the CPU. Upstream requires a value and
+    rejects anything that is neither truthy nor falsey, so an absent or
+    unreadable value is not an enable.
+    """
+    raw_value = _last_flag_value(args, _FIT_FLAGS)
+    return raw_value is not None and raw_value.strip().lower() in _ENV_TRUE_VALUES
+
+
 def parse_cache_override_per_axis(
     args: Optional[Iterable[str]],
 ) -> tuple[Optional[str], Optional[str]]:

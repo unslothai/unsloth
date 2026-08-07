@@ -1138,9 +1138,24 @@ class TestHostMemoryGate:
         last-wins, so the prediction is void and the weights are in RAM."""
         assert self._gate(monkeypatch, fully_gpu_offloaded = True, extra_args = [flag, count]) is True
 
-    def test_a_pass_through_fit_beats_the_auto_full_offload_prediction(self, monkeypatch):
+    @pytest.mark.parametrize("extras", [["--fit", "on"], ["--fit=on"], ["-fit", "1"]])
+    def test_a_pass_through_fit_on_beats_the_auto_full_offload_prediction(
+        self, monkeypatch, extras
+    ):
         """--fit on re-enables the fitter, which may leave a prefix on the CPU."""
-        assert self._gate(monkeypatch, fully_gpu_offloaded = True, extra_args = ["--fit", "on"]) is True
+        assert self._gate(monkeypatch, fully_gpu_offloaded = True, extra_args = extras) is True
+
+    @pytest.mark.parametrize("extras", [["--fit", "off"], ["-fit", "off"], ["--fit=off"]])
+    def test_a_pass_through_fit_off_leaves_the_prediction_alone(self, monkeypatch, extras):
+        """It restates what we already pass, and a disabled fitter cannot move
+        anything to the CPU, so pinning here is the redundant host copy."""
+        assert self._gate(monkeypatch, fully_gpu_offloaded = True, extra_args = extras) is False
+
+    def test_the_fit_value_is_last_wins(self, monkeypatch):
+        on_last = ["--fit", "off", "--fit", "on"]
+        off_last = ["--fit", "on", "--fit", "off"]
+        assert self._gate(monkeypatch, fully_gpu_offloaded = True, extra_args = on_last) is True
+        assert self._gate(monkeypatch, fully_gpu_offloaded = True, extra_args = off_last) is False
 
     def test_a_pass_through_full_offload_still_skips_the_lock(self, monkeypatch):
         """The guard must not over-fire: -ngl above the block count is a real

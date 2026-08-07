@@ -45,6 +45,7 @@ from typing import (
 import httpx
 
 from core.inference.llama_server_args import (
+    _GPU_LAYER_FLAGS,
     _LAYER_OFFLOAD_FLAGS,
     _MOE_OFFLOAD_FLAGS,
     _effective_tensor_parallel,
@@ -52,6 +53,7 @@ from core.inference.llama_server_args import (
     _tensor_parallel_matches_loaded,
     apply_model_memory_policy,
     extra_args_disable_mmproj,
+    fit_is_enabled_in,
     memory_state_satisfies_settings,
     resolve_effective_memory_state,
     scrub_memory_env,
@@ -4567,10 +4569,12 @@ class LlamaCppBackend:
             return True
         # fully_gpu_offloaded predicts OUR "-ngl -1 --fit off", but auto keeps the
         # user's extras and appends them after, and llama.cpp is last-wins, so an
-        # -ngl 0 lands the model in RAM. Same guard the launch path already uses
-        # for full_offload_tuning_active; without it that load records itself as
-        # deliberately unpinnable.
-        if _extra_args_set_any_flag(extra_args, _GPU_OFFLOAD_OVERRIDE_FLAGS):
+        # -ngl 0 lands the model in RAM. Only a fit that is switched ON voids the
+        # prediction: "--fit off" is what we already pass, and a disabled fitter
+        # cannot move anything to the CPU.
+        if _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS) or fit_is_enabled_in(
+            extra_args
+        ):
             fully_gpu_offloaded = False
         all_on_gpu = fully_gpu_offloaded or self._offloads_every_layer(
             gpu_memory_mode = gpu_memory_mode,
