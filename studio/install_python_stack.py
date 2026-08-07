@@ -2741,7 +2741,7 @@ def _ensure_rocm_torch() -> None:
                 _inferred_linux_gfx, ("torch", "torchvision", "torchaudio")
             )
             _safe_print(
-                f"\n   {_inferred_linux_gfx} inferred (ROCm runtime not visible) -- "
+                f"   {_inferred_linux_gfx} inferred (ROCm runtime not visible) -- "
                 f"installing torch from {_strip_index_url_credentials(index_url)}\n"
                 f"   AMD wheels bundle their own ROCm runtime; install the kernel stack "
                 f"for native GPU compute.\n"
@@ -2815,7 +2815,7 @@ def _ensure_rocm_torch() -> None:
                     "torchaudio>=2.11.0,<2.12.0",
                 )
                 _safe_print(
-                    f"\n   {_selected_gfx} (AMD Strix) is the runtime target with ROCm "
+                    f"   {_selected_gfx} (AMD Strix) is the runtime target with ROCm "
                     f"{ver[0]}.{ver[1]}.\n"
                     f"   Routing torch install to AMD's arch-specific index\n"
                     f"   ({_strix_override_url}) which serves torch 2.11.0+rocm7.13.0\n"
@@ -2825,7 +2825,7 @@ def _ensure_rocm_torch() -> None:
             else:
                 _gfx_str = ", ".join(sorted(_detected_strix))
                 _safe_print(
-                    f"\n   Strix GPU ({_gfx_str}) present but HIP_VISIBLE_DEVICES "
+                    f"   Strix GPU ({_gfx_str}) present but HIP_VISIBLE_DEVICES "
                     f"selects a non-Strix runtime target ({_runtime_gfx});\n"
                     f"   skipping AMD per-gfx index override.\n"
                 )
@@ -2849,7 +2849,7 @@ def _ensure_rocm_torch() -> None:
     )
     if _gfx906_override:
         _safe_print(
-            f"\n   gfx906 (MI50 / Radeon VII / Vega 20) is the runtime target with ROCm "
+            f"   gfx906 (MI50 / Radeon VII / Vega 20) is the runtime target with ROCm "
             f"{ver[0]}.{ver[1]}.\n"
             f"   Routing torch install to the {_GFX906_LEGACY_TAG} index: the last wheel\n"
             f"   family that runs on gfx906 (newer rocm wheels ship without gfx906 BLAS\n"
@@ -3265,7 +3265,9 @@ def _end_progress_line() -> None:
     try:
         sys.stdout.write("\n")
         sys.stdout.flush()
-    except OSError:
+    # Every _safe_print() lands here, so a detached (None) or closed stdout must not
+    # take down a message bound for stderr.
+    except (AttributeError, OSError, ValueError):
         pass
     _PROGRESS_LINE_ACTIVE = False
 
@@ -3278,7 +3280,8 @@ def _note(message: str, color_fn = None) -> None:
     """
     if color_fn is None:
         color_fn = _dim
-    prefix = " " * (_INDENT + _COL)
+    # Verbose prints no bar and no step line, so there is no value column to align to.
+    prefix = "   " if VERBOSE else " " * (_INDENT + _COL)
     wrap_width = max(24, shutil.get_terminal_size((100, 20)).columns - len(prefix))
     lines = textwrap.wrap(
         message,
@@ -3761,8 +3764,11 @@ def _has_working_git() -> bool:
 
 
 def install_python_stack() -> int:
-    global USE_UV, _STEP, _TOTAL
+    global USE_UV, _STEP, _TOTAL, _PROGRESS_LINE_ACTIVE
     _STEP = 0
+    # An aborted earlier run in this process would leave it set, and every
+    # _safe_print() now consumes it -- the first message would get a stray newline.
+    _PROGRESS_LINE_ACTIVE = False
 
     # install.sh sets SKIP_STUDIO_BASE=1 to avoid reinstalling base packages;
     # `studio update` does NOT, so unsloth + unsloth-zoo are reinstalled to pick
@@ -4193,7 +4199,6 @@ def install_python_stack() -> int:
         )
         is None
     ):
-        _end_progress_line()
         _safe_print(
             f"error: could not write {install_manifest.MANIFEST_NAME} to "
             f"{install_manifest.venv_root()}",

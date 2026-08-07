@@ -8,6 +8,7 @@ import glob
 import importlib
 import io
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -294,11 +295,14 @@ class TestProgressLineNotes:
       deps  [=======-------------]  5/14  dependency overrides   torch 2.11...
     """
 
-    def _render(self, emit) -> str:
+    def _render(self, emit, *, columns = "100", verbose = False, color = False) -> str:
         buf = io.StringIO()
         with (
-            mock.patch.dict(os.environ, {"COLUMNS": "100"}),
-            mock.patch.object(ips, "VERBOSE", False),
+            mock.patch.dict(os.environ, {"COLUMNS": columns}),
+            mock.patch.object(ips, "VERBOSE", verbose),
+            # _HAS_COLOR is resolved once at import from the tty, so without this the
+            # assertions below break under FORCE_COLOR=1 or `pytest -s` in a terminal.
+            mock.patch.object(ips, "_HAS_COLOR", color),
             mock.patch.object(ips, "_TOTAL", 14),
             mock.patch.object(ips, "_STEP", 4),
             mock.patch.object(ips, "_PROGRESS_LINE_ACTIVE", False),
@@ -390,3 +394,120 @@ class TestProgressLineNotes:
             f"install_python_stack.py:{offenders} call print() directly; "
             "use _safe_print() or _note() so an open progress bar line is closed first"
         )
+
+    def test_no_direct_stdout_writes(self):
+        """print() is not the only way to bypass the line-close: _progress() writes
+        the bar with sys.stdout.write, and copying that idiom elsewhere would glue
+        onto the bar again while passing test_no_bare_print_calls."""
+        tree = ast.parse(Path(ips.__file__).read_text(encoding = "utf-8"))
+        allowed = [
+            (n.lineno, n.end_lineno)
+            for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name in {"_progress", "_end_progress_line"}
+        ]
+        offenders = [
+            n.lineno
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr in {"write", "flush"}
+            and isinstance(n.func.value, ast.Attribute)
+            and n.func.value.attr == "stdout"
+            and not any(lo <= n.lineno <= hi for lo, hi in allowed)
+        ]
+        assert not offenders, (
+            f"install_python_stack.py:{offenders} write to sys.stdout directly; "
+            "only _progress()/_end_progress_line() may, everything else uses _safe_print()"
+        )
+
+    def test_no_message_starts_with_a_newline(self):
+        """_safe_print() closes the bar itself now, so a message whose literal still
+        opens with \\n emits a second newline and a blank line. Four ROCm messages
+        carried one from when the leading \\n was the only line terminator."""
+        tree = ast.parse(Path(ips.__file__).read_text(encoding = "utf-8"))
+
+        def leads_with_newline(node) -> bool:
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                return node.value.startswith("\n")
+            if isinstance(node, ast.JoinedStr) and node.values:
+                return leads_with_newline(node.values[0])
+            return False
+
+        offenders = [
+            n.lineno
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id in {"_safe_print", "_note"}
+            and n.args
+            and leads_with_newline(n.args[0])
+        ]
+        assert not offenders, (
+            f"install_python_stack.py:{offenders} start a message with a newline; "
+            "_safe_print() already closes the progress bar line, so this blank-lines the output"
+        )
+
+    def test_note_wraps_at_the_value_column_on_a_narrow_terminal(self):
+        """Wrapping is the only thing separating _note() from _safe_print(), and no
+        other test makes it wrap: every message here fits on one line at COLUMNS=100."""
+        msg = (
+            "AMD GPU detected but ROCm PyTorch could not be auto-installed. Manual install "
+            "may be required. See: https://docs.unsloth.ai/get-started/install-and-update/amd"
+        )
+        out = self._render(lambda: ips._note(msg), columns = "60")
+        lines = [ln for ln in out.split("\n") if ln.strip()]
+        assert len(lines) > 1, f"expected the message to wrap, got {out!r}"
+        for line in lines:
+            assert len(line) - len(line.lstrip()) == ips._INDENT + ips._COL, repr(line)
+        assert " ".join(ln.strip() for ln in lines) == msg
+        # break_long_words = False keeps the URL clickable rather than splitting it.
+        assert any("https://docs.unsloth.ai" in ln for ln in lines), out
+
+    def test_note_falls_back_to_the_flat_indent_in_verbose_mode(self):
+        """Verbose prints no bar and no step line, so aligning to the value column
+        would indent under nothing while neighbouring messages sit at column 3."""
+        out = self._render(lambda: ips._note("hello"), verbose = True)
+        assert out == "   hello\n", repr(out)
+
+    def test_note_still_aligns_when_colour_is_on(self):
+        """The layout has to survive a colour-enabled terminal, where every line
+        carries ANSI codes that do not occupy columns."""
+        out = self._render(lambda: ips._note("hello"), color = True)
+        assert "\033[" in out, "expected ANSI codes with _HAS_COLOR on"
+        plain = re.sub(r"\033\[[0-9;]*m", "", out)
+        assert plain == f"{' ' * (ips._INDENT + ips._COL)}hello\n", repr(plain)
+
+    def test_safe_print_to_stderr_survives_a_closed_stdout(self):
+        """_safe_print() touches stdout on every call now, so the manifest error
+        paths that write to stderr must not die on an unrelated stdout failure."""
+        closed = io.StringIO()
+        closed.close()
+        err = io.StringIO()
+        with (
+            mock.patch.object(ips, "VERBOSE", False),
+            mock.patch.object(ips, "_PROGRESS_LINE_ACTIVE", True),
+            mock.patch.object(ips.sys, "stdout", closed),
+        ):
+            ips._safe_print("error: boom", file = err)
+        assert err.getvalue() == "error: boom\n"
+
+    def test_install_entry_clears_a_stale_progress_line(self):
+        """_PROGRESS_LINE_ACTIVE outlives an aborted run. On main only _step() read
+        it; now every _safe_print() does, so a stale flag newlines the next run."""
+        src = Path(ips.__file__).read_text(encoding = "utf-8")
+        fn = next(
+            n
+            for n in ast.walk(ast.parse(src))
+            if isinstance(n, ast.FunctionDef) and n.name == "install_python_stack"
+        )
+        assert any(
+            isinstance(n, ast.Global) and "_PROGRESS_LINE_ACTIVE" in n.names
+            for n in ast.walk(fn)
+        ), "install_python_stack() must declare _PROGRESS_LINE_ACTIVE global"
+        assert any(
+            isinstance(n, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id == "_PROGRESS_LINE_ACTIVE" for t in n.targets
+            )
+            for n in ast.walk(fn)
+        ), "install_python_stack() must reset _PROGRESS_LINE_ACTIVE"
