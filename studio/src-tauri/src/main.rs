@@ -18,6 +18,7 @@ mod preflight;
 mod process;
 mod update;
 mod windows_job;
+mod x11_threads;
 
 use log::{info, warn};
 use process::new_backend_state;
@@ -463,6 +464,11 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() {
+    // Before anything can open an X display: GTK3 does not call XInitThreads
+    // itself, and this process has more than one thread on X. See x11_threads
+    // for the crash that leaves behind.
+    x11_threads::init_x11_threads();
+
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
