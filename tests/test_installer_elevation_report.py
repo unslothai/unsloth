@@ -46,7 +46,9 @@ def test_diag_marker_prefix_is_still_parsed_and_reported():
     markers become invisible without either file changing."""
     assert '"[TAURI:DIAG] "' in _read(INSTALL_RS), "install.rs no longer parses [TAURI:DIAG]"
     assert "record_diag_marker" in _read(INSTALL_RS), "the marker is parsed but not recorded"
-    assert "installer_diag_markers" in _read(REPORT_RS), "the support report no longer prints markers"
+    assert "installer_diag_markers" in _read(
+        REPORT_RS
+    ), "the support report no longer prints markers"
 
 
 # ── Elevation ──
@@ -67,7 +69,9 @@ def test_install_ps1_reports_elevation():
 
 def test_install_ps1_elevation_state_covers_unreadable_tokens():
     src = _read(INSTALL_PS1)
-    block = src[src.index("function Get-ElevationState") : src.index("function Write-ElevationNotice")]
+    block = src[
+        src.index("function Get-ElevationState") : src.index("function Write-ElevationNotice")
+    ]
     assert '"unknown"' in block, "an unreadable token must report unknown, not a confident false"
     for value in ('"true"', '"false"'):
         assert value in block, f"Get-ElevationState must be able to return {value}"
@@ -82,9 +86,9 @@ def test_install_ps1_warns_before_any_install_work():
         "uv venv $VenvDir --python",
         'step "setup" "running unsloth studio setup..."',
     ):
-        assert notice_idx < src.index(marker), (
-            f"the elevation notice must be printed before {marker!r}"
-        )
+        assert notice_idx < src.index(
+            marker
+        ), f"the elevation notice must be printed before {marker!r}"
 
 
 def test_install_ps1_warning_names_the_folder_that_outlives_uninstall():
@@ -118,9 +122,9 @@ def test_degraded_llama_cpp_is_recorded_not_only_flashed():
         assert "llama_cpp=unavailable" in src, f"{path.name} does not record the degraded verdict"
         progress_idx = src.index("llama.cpp unavailable; GGUF inference is disabled")
         marker_idx = src.index("llama_cpp=unavailable")
-        assert marker_idx > progress_idx, (
-            f"{path.name} must keep the user-facing progress line and add the marker beside it"
-        )
+        assert (
+            marker_idx > progress_idx
+        ), f"{path.name} must keep the user-facing progress line and add the marker beside it"
 
 
 def test_degraded_llama_cpp_still_fails_outside_tauri_mode():
