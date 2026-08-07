@@ -646,13 +646,13 @@ function GgufAdvancedSettings({
     config.nBatch != null &&
     config.nUbatch != null &&
     config.nUbatch > config.nBatch;
-  // A batch below the slot count aborts llama-server, so the loader raises it. Only shown
-  // when both are pinned; with Slots blank the count is the server default this page
-  // cannot see, and the loader carries the floor either way.
-  const batchBelowSlots =
-    config.nBatch != null &&
-    config.nParallel != null &&
-    config.nBatch < config.nParallel;
+  // llama-server aborts below 2 (GGML_ASSERT(n_tokens_all <= cparams.n_batch)) and below
+  // the slot count (GGML_ASSERT(n_outputs_max <= cparams.n_outputs_max)), so the loader
+  // raises the emitted value to max(slots, 2). Surfaced so the number typed here is not
+  // silently different from the one that runs. With Slots blank the count is the server
+  // default this page cannot see, so only the hard floor of 2 is asserted.
+  const batchFloor = Math.max(2, config.nParallel ?? 2);
+  const batchBelowFloor = config.nBatch != null && config.nBatch < batchFloor;
   return (
     <>
       <div className={ROW_CLASS}>
@@ -835,14 +835,16 @@ function GgufAdvancedSettings({
                 }
               }}
               aria-label="Prompt batch size"
-              aria-describedby={batchBelowSlots ? batchAdviceId : undefined}
+              aria-describedby={batchBelowFloor ? batchAdviceId : undefined}
               className={NUMBER_INPUT_CLASS}
             />
           </div>
-          {batchBelowSlots && (
+          {batchBelowFloor && (
             <p id={batchAdviceId} className="text-ui-12 text-muted-foreground">
-              Below the parallel slot count, so the load will raise it to{" "}
-              {config.nParallel}. llama-server needs one output slot per batch entry.
+              Too small for llama-server, so the load will raise it to {batchFloor}.
+              {config.nParallel != null && config.nParallel > 2
+                ? " It needs one output slot per parallel slot."
+                : " It cannot run a batch below 2."}
             </p>
           )}
         </div>

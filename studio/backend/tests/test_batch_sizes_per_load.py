@@ -371,6 +371,29 @@ def test_batch_bounds_stay_standard_json_schema():
             assert schema["maximum"] == BATCH_MAX
 
 
+@pytest.mark.parametrize(
+    "n_batch,n_parallel,expected",
+    [
+        (1, 1, 2),      # GGML_ASSERT(n_tokens_all <= cparams.n_batch); a slots-only
+        (1, 2, 2),      # floor would emit 1 here and abort
+        (2, 1, 2),
+        (1, 8, 8),      # GGML_ASSERT(n_outputs_max <= cparams.n_outputs_max)
+        (4, 8, 8),
+        (7, 8, 8),
+        (8, 8, 8),
+        (32, 64, 64),
+        (64, 64, 64),
+        (64, 1, 64),    # already above both floors: untouched
+        (4096, 8, 4096),
+    ],
+)
+def test_emitted_batch_clears_both_llama_server_floors(n_batch, n_parallel, expected):
+    """Measured against the bundled binary: b1/p1 and b1/p2 abort, b2/p1 and b2/p2 load,
+    b4/p8 aborts, b8/p8 loads, b32/p64 aborts, b64/p64 loads. So the floor is
+    max(slots, 2). The per-field bounds cannot express it, so the loader raises instead."""
+    assert max(int(n_batch), max(2, int(n_parallel))) == expected
+
+
 def test_remote_guard_drops_the_split_mask_when_pipelining_is_disabled():
     # The local rule gates the 4x KQ-mask multiplier on _pipeline_parallel_disabled_by_args.
     # Without the same gate remotely, -ot / -ncmoe on a 2-GPU pin is charged 4x while the

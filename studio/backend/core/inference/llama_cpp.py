@@ -10148,15 +10148,19 @@ class LlamaCppBackend:
 
                 # emitted before user extras so a pass-through -b / -ub still last-wins-overrides
                 if n_batch is not None:
-                    # A batch too small to hold one output per slot trips
-                    # GGML_ASSERT(n_outputs_max <= cparams.n_outputs_max) and aborts the
-                    # server (-b 4 --parallel 8, or -b 1 at the default slots). The 1..65536
-                    # bounds are per-field, so raise it here rather than fail the load.
-                    _emit_batch = max(int(n_batch), max(1, int(n_parallel)))
+                    # Two separate aborts, both reachable from the picker since the input
+                    # clamps into BATCH_MIN = 1 rather than rejecting:
+                    #   -b < --parallel  -> GGML_ASSERT(n_outputs_max <= cparams.n_outputs_max)
+                    #   -b 1 (any slots) -> GGML_ASSERT(n_tokens_all <= cparams.n_batch)
+                    # Measured: b1/p1 and b1/p2 abort, b2/p1 and b2/p2 load, b4/p8 aborts,
+                    # b8/p8 loads. So the floor is max(slots, 2), not slots alone. The
+                    # bounds are per-field and cannot express it, so raise here instead of
+                    # failing the load.
+                    _emit_batch = max(int(n_batch), max(2, int(n_parallel)))
                     if _emit_batch != n_batch:
                         logger.warning(
-                            "Raising --batch-size from %s to %s: llama-server aborts when the "
-                            "batch is smaller than the %s parallel slot(s) it serves.",
+                            "Raising --batch-size from %s to %s: llama-server aborts below "
+                            "2 and below the %s parallel slot(s) it serves.",
                             n_batch,
                             _emit_batch,
                             n_parallel,
