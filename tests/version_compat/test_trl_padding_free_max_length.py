@@ -2678,10 +2678,10 @@ def _cap_scan_shapes():
         (None, True),
         (fits, True),
         (over, False),
-        (raw, True),                     # not tokenized: prep still truncates it
+        (raw, True),  # not tokenized: prep still truncates it
         ([{"input_ids": [1, 2]}], True),
         ([{"input_ids": [1, 2, 3, 4]}], False),
-        (one_shot(), False),             # single-pass: unverifiable reads False
+        (one_shot(), False),  # single-pass: unverifiable reads False
     ]
 
 
@@ -2713,7 +2713,9 @@ def test_an_unscannable_split_never_reads_as_capped():
     from unsloth.models.rl import pretokenized_within_cap, splits_within_cap
 
     class Angry:
-        def __len__(self): return 2
+        def __len__(self):
+            return 2
+
         def __iter__(self):
             yield {"input_ids": [1]}
             raise RuntimeError("no")
@@ -2732,18 +2734,30 @@ def test_every_eval_split_counts_towards_the_cap():
     assert splits_within_cap({"a": fits, "b": over}, 3) is False
 
 
-def _padding_free_fallback(train = None, evals = None, max_length = 3):
+def _padding_free_fallback(
+    train = None,
+    evals = None,
+    max_length = 3,
+):
     """Run the auto-padding-free retry with an init that rejects padding-free.
 
     Returns the number of `original_init` calls, or the propagated error.
     """
     from types import SimpleNamespace
     from unsloth.trainer import (
-        _bound_splits, _cap_is_enforceable_without_padding_free,
+        _bound_splits,
+        _cap_is_enforceable_without_padding_free,
     )
 
-    def original_init(self, model = None, args = None, data_collator = None,
-                      train_dataset = None, eval_dataset = None, **kw):
+    def original_init(
+        self,
+        model = None,
+        args = None,
+        data_collator = None,
+        train_dataset = None,
+        eval_dataset = None,
+        **kw,
+    ):
         pass
 
     config = SimpleNamespace(max_length = max_length, padding_free = True)
@@ -2759,6 +2773,7 @@ def test_the_padding_free_fallback_refuses_a_split_it_cannot_cap():
     padding-free off keeps `max_length` for a collator that does not truncate, so
     retrying would turn a hard error into a silently uncapped run."""
     from datasets import Dataset
+
     over = Dataset.from_dict({"input_ids": [[1, 2], [3, 4, 5, 6]]})
     assert _padding_free_fallback(train = over) is False
     assert _padding_free_fallback(evals = {"validation": over}) is False
@@ -2768,10 +2783,9 @@ def test_the_padding_free_fallback_still_runs_when_the_cap_holds():
     """Raw text and already-short rows are both fine: prep truncates the first
     and the second needs no truncating. The fallback must not become a wall."""
     from datasets import Dataset
-    assert _padding_free_fallback(
-        train = Dataset.from_dict({"input_ids": [[1, 2]]})) is True
-    assert _padding_free_fallback(
-        train = Dataset.from_dict({"text": ["hello"]})) is True
+
+    assert _padding_free_fallback(train = Dataset.from_dict({"input_ids": [[1, 2]]})) is True
+    assert _padding_free_fallback(train = Dataset.from_dict({"text": ["hello"]})) is True
     assert _padding_free_fallback(train = None, max_length = None) is True
 
 
@@ -2780,8 +2794,14 @@ def test_the_fallback_reads_splits_through_the_signature():
     the data collator on the version that did."""
     from unsloth.trainer import _bound_splits
 
-    def moved(self, model = None, processing_class = None, args = None,
-              train_dataset = None, eval_dataset = None):
+    def moved(
+        self,
+        model = None,
+        processing_class = None,
+        args = None,
+        train_dataset = None,
+        eval_dataset = None,
+    ):
         pass
 
     train, evals = _bound_splits(moved, (None, "tok", "args", "TRAIN", "EVAL"), {})
@@ -2797,7 +2817,9 @@ def test_completion_only_ignores_the_columns_of_a_transformed_split():
     from unsloth.models import rl
 
     source = _inspect.getsource(rl)
-    guard = "_unsloth_train_sample = {} if _unsloth_is_transformed(train_dataset) else dict.fromkeys("
+    guard = (
+        "_unsloth_train_sample = {} if _unsloth_is_transformed(train_dataset) else dict.fromkeys("
+    )
     assert guard in source
     # And the probe it falls through to still reads a row rather than giving up.
     assert "_unsloth_train_sample = next(_unsloth_probe, None) or {}" in source

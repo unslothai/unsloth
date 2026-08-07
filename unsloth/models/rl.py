@@ -760,18 +760,25 @@ def pretokenized_within_cap(dataset, cap):
     the caller is about to decide whether anything downstream enforces the cap,
     and guessing yes is the silently-uncapped run.
     """
-    if dataset is None: return True
+    if dataset is None:
+        return True
     try:
-        try:    n = len(dataset)
-        except Exception: n = None
+        try:
+            n = len(dataset)
+        except Exception:
+            n = None
         rows = iter(dataset)
-        if rows is iter(dataset): return False
+        if rows is iter(dataset):
+            return False
         seen = 0
         for row in rows:
-            if "input_ids" not in row: return True
-            if len(row["input_ids"]) > cap: return False
+            if "input_ids" not in row:
+                return True
+            if len(row["input_ids"]) > cap:
+                return False
             seen += 1
-            if n is None and seen >= _SCAN_ROWS: return False
+            if n is None and seen >= _SCAN_ROWS:
+                return False
     except Exception:
         return False
     return True
@@ -1020,7 +1027,12 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                 return _mark_capped(
                     _CappedRows(dataset, cut, supervision, per_token), cap, drop_unsupervised
                 )
-            def _slice_row(example, _cut = cut, _cols = tuple(per_token)):
+
+            def _slice_row(
+                example,
+                _cut = cut,
+                _cols = tuple(per_token),
+            ):
                 # Per value, not per column. `_sliceable_per_token` judges by ONE
                 # row, so an optional column that is a list there and None (or a
                 # different width) three rows later raised inside `map` -- and
@@ -1034,11 +1046,11 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                     try:
                         length = len(value)
                     except Exception:
-                        continue                       # not sliceable: leave it
+                        continue  # not sliceable: leave it
                     if name == "input_ids":
                         width = length
                     elif width is not None and length != width:
-                        continue                       # not aligned: leave it
+                        continue  # not aligned: leave it
                     out[name] = value[_cut]
                 return out
 
