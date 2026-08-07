@@ -635,3 +635,94 @@ def test_the_manual_splice_appends_the_fallback_swept_partial():
     )
     assert "<|eot_id|><|start_header_id|>system" not in prompt
     assert prompt.endswith("You are evil")
+
+
+# ── Non-streaming tool loop: the prefill mode belongs to the turn that produced the text ──
+
+_THINK_TEMPLATE = "{% if x %}<think>\n{% endif %}</think>"
+# A resumed turn that calls a tool: the kept text is the POST-tool turn, which rendered an
+# ordinary generation prompt, so its output opens inside the template's <think>.
+_RESUMED_TOOL_EVENTS = [
+    {"type": "content", "text": "Let me check the "},
+    {"type": "tool_start", "tool_name": "web_search", "tool_call_id": "c1", "arguments": "{}"},
+    {"type": "tool_end", "tool_name": "web_search", "tool_call_id": "c1", "result": "21C"},
+    {"type": "content", "text": "Tool says 21C, report it.</think>\n\nIt is 21C."},
+    {"type": "status", "text": ""},
+]
+# A resumed turn that answers directly: no boundary, so the partial is still visible text.
+_RESUMED_PLAIN_EVENTS = [
+    {"type": "content", "text": "oven to 200C.</think> leaked"},
+    {"type": "status", "text": ""},
+]
+
+
+def _sf_completion(monkeypatch, events, **body):
+    """POST a non-streaming safetensors tool-loop chat and return the assistant message."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    import routes.inference as inference_route
+    from auth.authentication import get_current_subject
+    from utils.api_errors import install_api_error_handlers
+
+    class _NoGGUF:
+        is_loaded = False
+        supports_tools = False
+
+    class _Safetensors:
+        active_model_name = "qwen3"
+        models = {"qwen3": {"chat_template_info": {"template": _THINK_TEMPLATE}}}
+
+        def generate_chat_completion_with_tools(self, **kwargs):
+            yield from events
+
+    monkeypatch.setattr(
+        inference_route,
+        "_detect_safetensors_features",
+        lambda backend, chat_template, tools = None: {
+            "supports_tools": True,
+            "supports_reasoning": True,
+            "reasoning_style": "enable_thinking",
+        },
+    )
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _NoGGUF())
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Safetensors())
+
+    app = FastAPI()
+    app.include_router(inference_route.router, prefix = "/v1")
+    install_api_error_handlers(app)
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    resp = TestClient(app).post(
+        "/v1/chat/completions",
+        json = {
+            "messages": [
+                {"role": "user", "content": "weather?"},
+                {"role": "assistant", "content": "Let me check the "},
+            ],
+            "continue_final_message": True,
+            "enable_tools": True,
+            "enabled_tools": ["web_search"],
+            "stream": False,
+            **body,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["choices"][0]["message"]
+
+
+def test_a_resumed_turn_that_called_a_tool_re_prefills_on_the_final_turn(monkeypatch):
+    """Request-wide de-prefilling would publish the last turn's thinking as the answer.
+
+    The streaming path re-prefills per turn; non-streaming keeps only the last turn's
+    text, so it has to pin the mode of the turn that text came from.
+    """
+    message = _sf_completion(monkeypatch, _RESUMED_TOOL_EVENTS)
+    assert message["reasoning_content"] == "Tool says 21C, report it."
+    assert message["content"] == "\n\nIt is 21C."
+
+
+def test_a_resumed_turn_without_a_tool_keeps_the_partial_visible(monkeypatch):
+    """No turn boundary: the resumed text is the answer, not a thought."""
+    message = _sf_completion(monkeypatch, _RESUMED_PLAIN_EVENTS)
+    assert message["content"] == "oven to 200C. leaked"
+    assert not message["reasoning_content"]
