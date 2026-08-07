@@ -429,3 +429,77 @@ class TestRenderMarkdown:
         )
         assert "Flagging engines" in text
         assert "AlphaAV (Trojan)" in text
+
+
+class TestFailClosedOnMalformedLookup:
+    """A 200 whose body does not parse must not be read as 'never seen'.
+
+    Returning None there is indistinguishable from a 404 and uploads the bundle,
+    which is an unnecessary disclosure of an unreleased build.
+    """
+
+    def test_malformed_200_does_not_upload(self, tmp_path):
+        bundle = tmp_path / "draft.exe"
+        bundle.write_bytes(b"unreleased build")
+        client, transport = _client({
+            "/files/upload_url": (200, b'{"data": "https://up.example/x"}'),
+            "up.example": (200, b'{"data": {"id": "an-1"}}'),
+            "/files/": (200, b"<html>proxy error page</html>"),
+        })
+        report = vt.scan_file(client, bundle, deadline = float("inf"))
+        assert report.source == "unavailable"
+        assert "malformed" in report.note
+        assert not any("up.example" in url for _m, url, _h, _n in transport.calls)
+
+    def test_malformed_200_is_distinguishable_from_404(self, tmp_path):
+        client, _ = _client({"/files/": (200, b"not json")})
+        with pytest.raises(RuntimeError, match = "malformed"):
+            client.lookup_hash("a" * 64)
+
+        client, _ = _client({"/files/": (404, b"{}")})
+        assert client.lookup_hash("a" * 64) is None
+
+
+class TestDeadlineIsNotOverrunByThrottling:
+    """Pacing sleeps between the deadline check and the network call."""
+
+    def _clocked_client(self, routes, interval = 20.0):
+        now = [1000.0]
+        transport = FakeTransport(routes)
+
+        def sleep(seconds):
+            now[0] += seconds
+
+        client = vt.VirusTotalClient(
+            "k",
+            transport = transport,
+            request_interval = interval,
+            sleep = sleep,
+            clock = lambda: now[0],
+        )
+        return client, transport, now
+
+    def test_transport_never_starts_after_the_deadline(self):
+        client, transport, now = self._clocked_client({"x.example": (200, b"{}")})
+        client._last_request_at = now[0]          # force a full interval of pacing
+        deadline = now[0] + 5.0                   # less budget than the pacing needs
+        with pytest.raises(TimeoutError, match = "pacing"):
+            client.request("GET", "https://x.example/y", deadline = deadline)
+        assert transport.calls == []
+
+    def test_throttle_sleep_is_capped_by_the_deadline(self):
+        client, _transport, now = self._clocked_client({"x.example": (200, b"{}")})
+        client._last_request_at = now[0]
+        deadline = now[0] + 5.0
+        client._throttle(deadline)
+        # Capped at the 5s of remaining budget, not the full 20s interval.
+        assert now[0] == pytest.approx(1005.0)
+
+    def test_a_request_with_budget_left_still_proceeds(self):
+        client, transport, now = self._clocked_client({"x.example": (200, b"{}")})
+        client._last_request_at = now[0]
+        status, _payload = client.request(
+            "GET", "https://x.example/y", deadline = now[0] + 600.0
+        )
+        assert status == 200
+        assert len(transport.calls) == 1

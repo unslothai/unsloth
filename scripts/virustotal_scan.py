@@ -231,11 +231,22 @@ class VirusTotalClient:
         self._clock = clock
         self._last_request_at: float | None = None
 
-    def _throttle(self) -> None:
+    def _throttle(self, deadline: float | None = None) -> None:
+        """Pace requests, without ever sleeping past the caller's budget.
+
+        Capping matters because the sleep sits between the caller's deadline check
+        and the network call: an uncapped sleep can carry execution past the
+        deadline and start a request that then blocks for the full socket timeout.
+        The caller re-checks the deadline once this returns.
+        """
         if self._last_request_at is None:
             return
         elapsed = self._clock() - self._last_request_at
         remaining = self._request_interval - elapsed
+        if remaining <= 0:
+            return
+        if deadline is not None:
+            remaining = min(remaining, max(0.0, deadline - self._clock()))
         if remaining > 0:
             self._sleep(remaining)
 
@@ -271,7 +282,12 @@ class VirusTotalClient:
         for attempt in range(1, max_attempts + 1):
             if deadline is not None and self._clock() >= deadline:
                 raise TimeoutError(f"deadline reached before {method} {_redact_url(url)}")
-            self._throttle()
+            self._throttle(deadline)
+            # Re-check: pacing sleeps between the check above and the call below, so
+            # without this a request could start after the deadline and then block
+            # for the full socket timeout, overrunning the step's own budget.
+            if deadline is not None and self._clock() >= deadline:
+                raise TimeoutError(f"deadline reached while pacing before {method} {_redact_url(url)}")
             try:
                 status, payload = self._transport(method, url, headers, body)
             except Exception as error:  # network layer, DNS, TLS, truncated read
@@ -323,6 +339,14 @@ class VirusTotalClient:
         )
         if status == 404:
             return None
+        if not isinstance(payload, dict):
+            # A 200 whose body did not parse (a proxy error page, a truncated read)
+            # proves nothing about whether VirusTotal holds this file. Returning None
+            # here would be indistinguishable from a 404 and would upload the bundle,
+            # which is the one outcome the lookup exists to avoid: an unnecessary
+            # disclosure of an unreleased build. Fail closed and let the caller
+            # record the asset as unavailable instead.
+            raise RuntimeError("VirusTotal hash lookup returned a malformed body")
         return payload
 
     def upload(
