@@ -267,9 +267,9 @@ class TestMemoryEnv:
         ("var", "value"),
         [
             ("LLAMA_ARG_MLOCK", "1"),
-            ("LLAMA_ARG_MMAP", "off"),       # mmap disabled -> mode none
-            ("LLAMA_ARG_NO_MMAP", "0"),      # presence alone -> mode none
-            ("LLAMA_ARG_DIO", "off"),        # DirectIO disabled -> mode none
+            ("LLAMA_ARG_MMAP", "off"),  # mmap disabled -> mode none
+            ("LLAMA_ARG_NO_MMAP", "0"),  # presence alone -> mode none
+            ("LLAMA_ARG_DIO", "off"),  # DirectIO disabled -> mode none
             ("LLAMA_ARG_NO_DIO", "0"),
             ("LLAMA_ARG_LOAD_MODE", "none"),
             ("LLAMA_ARG_LOAD_MODE", "mlock"),
@@ -286,9 +286,9 @@ class TestMemoryEnv:
     @pytest.mark.parametrize(
         ("var", "value"),
         [
-            ("LLAMA_ARG_MLOCK", "0"),        # measured: falsy does not lock
-            ("LLAMA_ARG_MMAP", "1"),         # mmap: maps, holds no full copy
-            ("LLAMA_ARG_DIO", "1"),          # DirectIO: streams
+            ("LLAMA_ARG_MLOCK", "0"),  # measured: falsy does not lock
+            ("LLAMA_ARG_MMAP", "1"),  # mmap: maps, holds no full copy
+            ("LLAMA_ARG_DIO", "1"),  # DirectIO: streams
             ("LLAMA_ARG_LOAD_MODE", "mmap"),
             ("LLAMA_ARG_LOAD_MODE", "dio"),
             ("LLAMA_ARG_LOAD_MODE", "future-mode"),  # unknown: leave it alone
@@ -305,8 +305,11 @@ class TestMemoryEnv:
     def test_a_kept_choice_really_does_satisfy_no_reserve(self, toggles):
         """Otherwise keeping it would just make the reload hint fire forever."""
         toggles(False, True)
-        for env in ({"LLAMA_ARG_DIO": "1"}, {"LLAMA_ARG_LOAD_MODE": "dio"},
-                    {"LLAMA_ARG_MMAP": "1"}):
+        for env in (
+            {"LLAMA_ARG_DIO": "1"},
+            {"LLAMA_ARG_LOAD_MODE": "dio"},
+            {"LLAMA_ARG_MMAP": "1"},
+        ):
             scrub_memory_env(dict(env))
             assert resolve_effective_memory_state([], env) == (False, False)
 
@@ -1599,7 +1602,7 @@ class TestCpuMoeCountIsParsed:
             (["--n-cpu-moe=4"], True),
             (["--n-cpu-moe", "-1"], False),
             (["--n-cpu-moe", "nonsense"], False),
-            (["--n-cpu-moe"], False),           # trailing, no value
+            (["--n-cpu-moe"], False),  # trailing, no value
             # No value to parse: presence is the whole signal.
             (["--cpu-moe"], True),
             (["-cmoe"], True),
@@ -1609,7 +1612,6 @@ class TestCpuMoeCountIsParsed:
     )
     def test_the_predicate(self, extras, expected):
         from core.inference.llama_cpp import _args_place_tensors_on_cpu
-
         assert _args_place_tensors_on_cpu(extras) is expected
 
     def test_it_is_the_same_predicate_the_pipeline_check_uses(self):
@@ -1700,4 +1702,3 @@ class TestManualModeIgnoresClearedEnv:
             )
             is True
         )
-
