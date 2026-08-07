@@ -4789,3 +4789,28 @@ def test_lmstudio_scan_matches_gguf_suffix_case_insensitively(tmp_path, layout):
     found = {Path(row.path).name for row in local_inventory._scan_lmstudio_dir(lm_dir)}
 
     assert found == {"lower.gguf", "UPPER.GGUF", "Mixed.GguF"}
+
+
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        ({"model_type": "bert", "architectures": ["BertModel"]}, False),
+        ({"model_type": "clip", "architectures": ["CLIPModel"]}, False),
+        ({"model_type": "llama", "architectures": ["LlamaForCausalLM"]}, True),
+    ],
+)
+def test_custom_promotion_keeps_the_classifier_verdict(tmp_path, config, expected):
+    """Promotion rebuilt capabilities from the format alone, which restored
+    can_chat on rows the classifier had ruled out, so a BERT in a scan folder was
+    auto-loadable again and small enough to sort ahead of a real chat model."""
+    model_dir = tmp_path / "scan" / "model"
+    model_dir.mkdir(parents = True)
+    (model_dir / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    (model_dir / "model.safetensors").write_bytes(b"x" * 1024)
+
+    rows = local_inventory._scan_custom_folder(tmp_path / "scan")
+    assert rows, "the scan produced no row"
+    for row in rows:
+        promoted = local_inventory._promote_to_custom_source(row)
+        assert promoted.source == "custom"
+        assert promoted.capabilities.can_chat is expected
