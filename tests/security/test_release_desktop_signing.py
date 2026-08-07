@@ -28,10 +28,27 @@ def _verify_step():
     )
 
 
-def test_the_check_exits_non_zero_on_both_failure_paths():
+def test_the_check_exits_non_zero_on_every_failure_path():
     run = _verify_step()["run"]
-    # One for "not on PATH", one for "on PATH but exited non-zero".
-    assert run.count("exit 1") == 2
+    # Not on PATH, cannot be started, and started but exited non-zero.
+    assert run.count("exit 1") == 3
+
+
+def test_a_binary_that_cannot_start_is_caught():
+    # A truncated cache entry gives "Exec format error", which is a terminating
+    # PowerShell error, not a native exit code. Without the catch the step dies
+    # on that line and never prints the cache-bump recovery.
+    run = _verify_step()["run"]
+    assert "try {" in run
+    assert "catch {" in run
+
+
+def test_the_launch_error_is_flattened_to_one_line():
+    # A PowerShell error spans message, offending line and caret. An annotation
+    # is truncated at the first newline, so an unflattened message would drop
+    # the recovery guidance that follows it.
+    run = _verify_step()["run"]
+    assert "-replace '\\s+', ' '" in run
 
 
 def test_failures_are_not_swallowed_by_a_fallback_message():
@@ -51,7 +68,7 @@ def test_the_operator_is_told_how_to_recover_from_a_bad_cache():
     # entry survives until the key changes. Failing closed without saying that
     # would turn a rare cache fault into an unexplained release outage.
     run = _verify_step()["run"]
-    assert run.count("bump the key") == 2
+    assert run.count("bump the key") == 3
 
 
 def test_the_check_still_only_runs_on_windows():

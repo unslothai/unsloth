@@ -752,10 +752,25 @@ jobs:
           }
           Write-Output "resolved: $($cli.Source)"
 
-          # Call through the resolved path and read $LASTEXITCODE explicitly:
-          # a native binary that exits non-zero does not raise, so
-          # $ErrorActionPreference alone would not catch it.
-          & $cli.Source --version
+          # Two different failure modes, and neither one covers the other:
+          #   * the binary cannot be started at all (a truncated cache entry
+          #     gives "Exec format error"). That raises a terminating error
+          #     under $ErrorActionPreference = "Stop", so it has to be caught
+          #     or the step dies here, before the recovery message below.
+          #   * the binary starts and exits non-zero. That does NOT raise, so
+          #     $LASTEXITCODE has to be read explicitly.
+          try {
+            & $cli.Source --version
+          }
+          catch {
+            # The PowerShell error spans several lines (message, offending line,
+            # caret). An annotation is truncated at the first newline, so flatten
+            # it, and put the recovery ahead of the detail so it survives even if
+            # the annotation is clipped for length.
+            $detail = ($_.Exception.Message -replace '\s+', ' ').Trim()
+            Write-Output "::error::trusted-signing-cli could not be started. If the cache restored a bad entry, bump the key in 'Restore trusted-signing-cli' to force a rebuild. Underlying error: $detail"
+            exit 1
+          }
           if ($LASTEXITCODE -ne 0) {
             Write-Output "::error::trusted-signing-cli is on PATH but exited $LASTEXITCODE. If the cache restored a bad entry, bump the key in 'Restore trusted-signing-cli' to force a rebuild."
             exit 1
