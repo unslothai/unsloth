@@ -368,10 +368,20 @@ def test_the_verify_help_does_not_promise_an_import_check():
 
 def _run_update(monkeypatch, argv, verified):
     studio = _studio()
+
+    class _NoopLauncherUpdate:
+        def __enter__(self):
+            return self
+
+        def validate_launcher(self):
+            pass
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
     monkeypatch.setattr(studio, "_ensure_studio_env_exported", lambda *a, **k: None)
+    monkeypatch.setattr(studio, "_WindowsLauncherUpdateTransaction", _NoopLauncherUpdate)
     monkeypatch.setattr(studio, "_run_setup_script", lambda *a, **k: None)
-    monkeypatch.setattr(studio, "_release_self_exe_lock_windows", lambda *a, **k: None)
-    monkeypatch.setattr(studio, "_cleanup_self_exe_lock_windows", lambda *a, **k: None)
     monkeypatch.setattr(studio, "_refresh_desktop_shortcuts", lambda *a, **k: None)
     monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda: verified.append(True))
     return CliRunner().invoke(studio.studio_app, ["update", *argv])

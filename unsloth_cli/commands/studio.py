@@ -3140,90 +3140,239 @@ def update(
     else:
         os.environ["STUDIO_LOCAL_INSTALL"] = "0"
         os.environ.pop("STUDIO_LOCAL_REPO", None)
-    _release_self_exe_lock_windows()
-    try:
+    with _WindowsLauncherUpdateTransaction() as launcher_update:
         _run_setup_script(verbose = verbose, repo_root = repo_root)
-    except BaseException:
-        # Restore unsloth.exe from .deleteme if setup failed before pip
-        # produced a replacement; otherwise the user has no CLI for recovery.
-        _restore_self_exe_lock_windows()
-        raise
-    # On Windows clear the .deleteme orphan now that pip wrote a fresh
-    # unsloth.exe; on next update os.replace would overwrite it anyway,
-    # but leaving a stale binary around invites cross-version restore
-    # confusion from _restore_self_exe_lock_windows.
-    _cleanup_self_exe_lock_windows()
-    if verify:
-        _fail_if_install_damaged()
-    # Tauri desktop owns its own bundle entries; skip CLI launcher refresh
-    # so a Tauri-initiated update doesn't create duplicate shortcuts.
-    if os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":
-        if verbose:
-            typer.echo("  refresh-launcher  skipped (Tauri update)")
-        return
-    _refresh_desktop_shortcuts(verbose = verbose)
-
-
-def _release_self_exe_lock_windows() -> None:
-    """Rename running unsloth.exe so pip can replace it. setup.ps1 also retries."""
-    if platform.system() != "Windows":
-        return
-    try:
-        venv_scripts = Path(sys.executable).resolve().parent
-    except OSError:
-        return
-    exe = venv_scripts / "unsloth.exe"
-    if not exe.exists():
-        return
-    stale = exe.with_suffix(".exe.deleteme")
-    try:
-        # os.replace is atomic-overwrite on Windows; os.rename would raise
-        # FileExistsError if a prior aborted update left a .deleteme behind.
-        os.replace(exe, stale)
-    except OSError as e:
-        # Not fatal; setup.ps1 retries from a sibling process.
-        print(f"[update] could not rename {exe.name} -> {stale.name}: {e}")
-
-
-def _restore_self_exe_lock_windows() -> None:
-    """If setup failed before pip wrote a working unsloth.exe, restore .deleteme."""
-    if platform.system() != "Windows":
-        return
-    try:
-        venv_scripts = Path(sys.executable).resolve().parent
-    except OSError:
-        return
-    exe = venv_scripts / "unsloth.exe"
-    stale = exe.with_suffix(".exe.deleteme")
-    if not stale.exists():
-        return
-    # Treat a missing or zero-byte exe as "pip didn't produce a usable
-    # replacement"; otherwise leave the new binary alone.
-    if exe.exists():
-        try:
-            if exe.stat().st_size > 0:
-                return
-        except OSError:
+        # This deliberately runs even with --no-verify: the broad package scan
+        # is optional, but a successful update must leave its own launcher usable.
+        launcher_update.validate_launcher()
+        if verify:
+            _fail_if_install_damaged()
+        # Tauri desktop owns its own bundle entries; skip CLI launcher refresh
+        # so a Tauri-initiated update doesn't create duplicate shortcuts.
+        if os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":
+            if verbose:
+                typer.echo("  refresh-launcher  skipped (Tauri update)")
             return
-    try:
-        os.replace(stale, exe)
-    except OSError as e:
-        print(f"[update] could not restore {stale.name} -> {exe.name}: {e}")
+        _refresh_desktop_shortcuts(verbose = verbose)
 
 
-def _cleanup_self_exe_lock_windows() -> None:
-    """Remove the .deleteme orphan after a successful update on Windows."""
-    if platform.system() != "Windows":
-        return
-    try:
-        venv_scripts = Path(sys.executable).resolve().parent
-    except OSError:
-        return
-    stale = (venv_scripts / "unsloth.exe").with_suffix(".exe.deleteme")
-    try:
-        stale.unlink(missing_ok = True)
-    except OSError:
-        pass
+class _WindowsLauncherUpdateTransaction:
+    """Keep the managed Windows launcher recoverable during a Python update."""
+
+    _VERSION_TIMEOUT_SECONDS = 10
+    _RESTORE_ATTEMPTS = 3
+
+    def __init__(self) -> None:
+        self.enabled = platform.system() == "Windows"
+        self.launcher: Optional[Path] = None
+        self.backup: Optional[Path] = None
+        self.legacy_backup: Optional[Path] = None
+        self.lock_path: Optional[Path] = None
+        self._lock_file = None
+        self._validated = False
+
+    @staticmethod
+    def _is_valid_pe(path: Path) -> bool:
+        try:
+            if not path.is_file() or path.stat().st_size < 2:
+                return False
+            with path.open("rb") as handle:
+                return handle.read(2) == b"MZ"
+        except OSError:
+            return False
+
+    @staticmethod
+    def _atomic_copy(source: Path, destination: Path) -> None:
+        """Publish a sibling copy without exposing a partial destination."""
+        fd, temporary_name = tempfile.mkstemp(
+            prefix = f".{destination.name}.",
+            suffix = ".tmp",
+            dir = str(destination.parent),
+        )
+        temporary = Path(temporary_name)
+        try:
+            with source.open("rb") as source_handle, os.fdopen(fd, "wb") as target_handle:
+                fd = -1
+                while True:
+                    chunk = source_handle.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    target_handle.write(chunk)
+                target_handle.flush()
+                os.fsync(target_handle.fileno())
+            os.replace(temporary, destination)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            try:
+                temporary.unlink(missing_ok = True)
+            except OSError:
+                pass
+
+    def _acquire_lock(self) -> None:
+        import msvcrt
+
+        assert self.lock_path is not None
+        lock_file = self.lock_path.open("a+b")
+        try:
+            lock_file.seek(0, os.SEEK_END)
+            if lock_file.tell() == 0:
+                lock_file.write(b"\0")
+                lock_file.flush()
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            lock_file.close()
+            typer.echo(
+                "Error: another Unsloth Studio update is already running for this environment.",
+                err = True,
+            )
+            raise typer.Exit(1)
+        self._lock_file = lock_file
+
+    def _release_lock(self) -> None:
+        if self._lock_file is None:
+            return
+        try:
+            import msvcrt
+
+            self._lock_file.seek(0)
+            msvcrt.locking(self._lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        finally:
+            self._lock_file.close()
+            self._lock_file = None
+
+    def _recover_missing_launcher(self) -> None:
+        assert self.launcher is not None
+        if self.launcher.exists():
+            return
+        for recovery in (self.backup, self.legacy_backup):
+            if recovery is not None and self._is_valid_pe(recovery):
+                try:
+                    self._atomic_copy(recovery, self.launcher)
+                except OSError as exc:
+                    typer.echo(
+                        f"Error: could not recover {self.launcher} from {recovery}: {exc}",
+                        err = True,
+                    )
+                    typer.echo(f"Manual recovery copy retained at: {recovery}", err = True)
+                    raise typer.Exit(1)
+                return
+
+    @staticmethod
+    def _files_match(left: Path, right: Path) -> bool:
+        try:
+            if left.stat().st_size != right.stat().st_size:
+                return False
+            with left.open("rb") as left_handle, right.open("rb") as right_handle:
+                while True:
+                    left_chunk = left_handle.read(1024 * 1024)
+                    if left_chunk != right_handle.read(1024 * 1024):
+                        return False
+                    if not left_chunk:
+                        return True
+        except OSError:
+            return False
+
+    def _restore_backup(self) -> bool:
+        assert self.launcher is not None and self.backup is not None
+        if not self._is_valid_pe(self.backup):
+            return False
+        # The common setup-failure case leaves the original executable exactly
+        # where it was. Avoid replacing that running file on Windows when it
+        # already is the backup byte-for-byte.
+        if self._is_valid_pe(self.launcher) and self._files_match(self.launcher, self.backup):
+            return True
+        last_error: Optional[OSError] = None
+        for attempt in range(self._RESTORE_ATTEMPTS):
+            try:
+                self._atomic_copy(self.backup, self.launcher)
+                return self._is_valid_pe(self.launcher)
+            except OSError as exc:
+                last_error = exc
+                if attempt + 1 < self._RESTORE_ATTEMPTS:
+                    time.sleep(0.1)
+        if last_error is not None:
+            typer.echo(f"Error: could not restore the Unsloth launcher: {last_error}", err = True)
+        return False
+
+    def _launcher_health_error(self) -> Optional[str]:
+        assert self.launcher is not None
+        if not self._is_valid_pe(self.launcher):
+            return "the updated launcher is missing or is not a non-empty PE file"
+        try:
+            result = subprocess.run(
+                [str(self.launcher), "--version"],
+                check = False,
+                capture_output = True,
+                timeout = self._VERSION_TIMEOUT_SECONDS,
+                **_windows_hidden_subprocess_kwargs(),
+            )
+        except subprocess.TimeoutExpired:
+            return f"the updated launcher timed out after {self._VERSION_TIMEOUT_SECONDS} seconds"
+        except OSError as exc:
+            return f"the updated launcher could not run --version ({exc})"
+        if result.returncode != 0:
+            return f"the updated launcher returned {result.returncode} for --version"
+        return None
+
+    def __enter__(self):
+        if not self.enabled:
+            return self
+        try:
+            scripts = Path(sys.executable).resolve().parent
+        except (OSError, RuntimeError) as exc:
+            typer.echo(f"Error: could not resolve the managed Python environment: {exc}", err = True)
+            raise typer.Exit(1)
+        self.launcher = scripts / "unsloth.exe"
+        self.backup = scripts / "unsloth.exe.update-backup"
+        self.legacy_backup = scripts / "unsloth.exe.deleteme"
+        self.lock_path = scripts / "unsloth.exe.update-lock"
+        self._acquire_lock()
+        try:
+            self._recover_missing_launcher()
+            if not self._is_valid_pe(self.launcher):
+                typer.echo(f"Error: the managed Unsloth launcher is missing or invalid: {self.launcher}", err = True)
+                if self._is_valid_pe(self.backup):
+                    typer.echo(f"Manual recovery copy retained at: {self.backup}", err = True)
+                raise typer.Exit(1)
+            self._atomic_copy(self.launcher, self.backup)
+        except BaseException:
+            self._release_lock()
+            raise
+        return self
+
+    def validate_launcher(self) -> None:
+        if not self.enabled:
+            return
+        assert self.backup is not None and self.legacy_backup is not None
+        error = self._launcher_health_error()
+        if error is not None:
+            typer.echo(f"Error: Unsloth Studio update failed because {error}.", err = True)
+            restored = self._restore_backup()
+            if restored:
+                typer.echo(f"The previous launcher was restored from: {self.backup}", err = True)
+            else:
+                typer.echo(f"Manual recovery copy retained at: {self.backup}", err = True)
+            raise typer.Exit(1)
+        self._validated = True
+        for orphan in (self.backup, self.legacy_backup):
+            try:
+                orphan.unlink(missing_ok = True)
+            except OSError:
+                pass
+
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        try:
+            if self.enabled and exc_type is not None and not self._validated:
+                assert self.backup is not None
+                if not self._restore_backup():
+                    typer.echo(f"Manual recovery copy retained at: {self.backup}", err = True)
+        finally:
+            self._release_lock()
+        return False
 
 
 # ── unsloth studio reset-password ────────────────────────────────────
