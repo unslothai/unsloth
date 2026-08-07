@@ -985,7 +985,10 @@ def test_the_codegen_carries_the_third_round_fixes():
     # where they all agree -- and `labels` is in that intersection, not a filter of its
     # own: a row supervised at one position and masked in at another passes two separate
     # filters and still goes out all -100.
-    assert "_unsloth_supervision = (['labels'] if 'labels' in _unsloth_cols else []) + _unsloth_masks" in block
+    assert (
+        "_unsloth_supervision = (['labels'] if 'labels' in _unsloth_cols else []) + _unsloth_masks"
+        in block
+    )
     assert (
         "any(all((_x != -100) if _n == 'labels' else _x for _n, _x in zip(_c, _v)) "
         "for _v in zip(*[_e[_n] for _n in _c]))" in block
