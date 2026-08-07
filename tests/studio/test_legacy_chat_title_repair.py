@@ -23,25 +23,21 @@ def _read(path: Path) -> str:
     return " ".join(path.read_text(encoding = "utf-8").split())
 
 
-def test_the_sidebar_hands_its_messages_to_the_repair():
-    """The with-messages load already fetched every thread's messages, so the
-    repair must not go and fetch the same rows a second time."""
-    storage = _read(STORAGE)
-    assert "export interface ChatThreadsWithMessages" in storage
-    assert (
-        "messagesByThreadId: new Map( entries .filter((e): e is typeof e & { messages: MessageRecord[] } => e.messages !== null, )"
-        in storage
-    )
-    # A read that failed is unknown. Reporting it as an empty chat would let the
-    # repair write the row off for the session.
-    assert "messages: legacy," in storage
-
+def test_the_repair_reads_its_own_messages_as_late_as_it_can():
+    """Not the sidebar's map. That map takes its empty-backend entries from
+    listStoredChatMessages, which merges Dexie rows the backend has pruned, and
+    it is fetched at load time rather than at write time."""
     hook = _read(HOOK)
-    assert "? await listStoredChatThreadsWithMessages(args)" in hook
-    assert "void repairLegacyChatTitles( loaded.threads, loaded.messagesByThreadId, )" in hook
+    assert "void repairLegacyChatTitles(threads).catch(() => undefined);" in hook
 
     repair = _read(REPAIR)
-    assert "messages = known ? known : await batchListChatMessages(ids);" in repair
+    assert "messages = await batchListChatMessages(ids);" in repair
+    assert "export function repairLegacyChatTitles( threads: ThreadRecord[], ): Promise<number> {" in repair
+
+    storage = _read(STORAGE)
+    # The shared list function keeps its original shape: nothing hands a
+    # message map out of it.
+    assert "messagesByThreadId" not in storage
 
 
 def test_the_repair_reads_only_stored_messages():
@@ -63,7 +59,7 @@ def test_the_next_page_is_scheduled_rather_than_waited_for():
     assert "if (hasMore) { setTimeout(" in repair
     # On `rest`: a row this page unmarked must not be drawn again by the same
     # drain, or a failing PATCH starves every row behind it.
-    assert "void repairLegacyChatTitles(rest, known)" in repair
+    assert "void repairLegacyChatTitles(rest)" in repair
     assert "REPAIR_PAGE_PAUSE_MS" in repair
 
 
@@ -72,7 +68,7 @@ def test_only_one_repair_pass_runs_at_a_time():
     only holds if their passes queue."""
     repair = _read(REPAIR)
     assert "const serial = createSerialQueue();" in repair
-    assert "return serial(() => runRepairPass(threads, known));" in repair
+    assert "return serial(() => runRepairPass(threads));" in repair
 
 
 def test_a_failed_read_leaves_the_rows_retryable():

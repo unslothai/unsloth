@@ -31,18 +31,14 @@ const REPAIR_PAGE_PAUSE_MS = 500;
 const serial = createSerialQueue();
 
 /** Rewrite titles stored pre-cut at 48 chars so they grow with the sidebar
- *  again. `known` is the caller's own message map, when it already has one. */
+ *  again. */
 export function repairLegacyChatTitles(
   threads: ThreadRecord[],
-  known?: Map<string, MessageRecord[]>,
 ): Promise<number> {
-  return serial(() => runRepairPass(threads, known));
+  return serial(() => runRepairPass(threads));
 }
 
-async function runRepairPass(
-  threads: ThreadRecord[],
-  known?: Map<string, MessageRecord[]>,
-): Promise<number> {
+async function runRepairPass(threads: ThreadRecord[]): Promise<number> {
   const { candidates, rest, hasMore } = selectLegacyRepairPage(
     threads,
     attempted,
@@ -54,17 +50,19 @@ async function runRepairPass(
 
   let messages: Map<string, MessageRecord[]>;
   try {
-    // One batched call, and none at all when the caller already fetched them.
-    messages = known ? known : await batchListChatMessages(ids);
+    // Read here, not from a map the caller fetched earlier: the backend's own
+    // view, taken as late as possible, is what the rewrite has to be based on.
+    // One batched call for the page.
+    messages = await batchListChatMessages(ids);
   } catch {
     // Nothing was decided, so let a later refresh try these again.
     for (const id of ids) attempted.delete(id);
     return 0;
   }
 
-  // Stored messages are the only source here. Dexie holds rows the backend has
-  // pruned, since deleting a message never clears them, so reading it could put
-  // a deleted prompt back into a title. A chat whose messages have not been
+  // Backend messages only. Dexie keeps rows the backend has pruned, since
+  // deleting a message never clears them, so anything that merges the two could
+  // put a deleted prompt back into a title. A chat whose messages have not been
   // imported yet reads as unknown below and is retried once they land.
   const repairs = planLegacyTitleRepairs(candidates, messages);
 
@@ -95,7 +93,7 @@ async function runRepairPass(
   // on `rest`, so rows this page unmarked cannot be drawn again by this drain.
   if (hasMore) {
     setTimeout(() => {
-      void repairLegacyChatTitles(rest, known).catch(() => undefined);
+      void repairLegacyChatTitles(rest).catch(() => undefined);
     }, REPAIR_PAGE_PAUSE_MS);
   }
   return repaired;

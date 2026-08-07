@@ -118,29 +118,23 @@ export function useChatSidebarItems(options?: {
 
     async function doLoad(seq: number) {
       try {
+        const listThreads = requireMessages
+          ? listStoredChatThreadsWithMessages
+          : listStoredChatThreads;
         // includeArchived: archived threads are filtered out of Recents by
         // groupThreads, but the hook still needs them for archivedItems.
-        const args = {
+        const threads = await listThreads({
           includeArchived: true,
           projectId: options?.projectId,
-        };
-        const loaded = requireMessages
-          ? await listStoredChatThreadsWithMessages(args)
-          : {
-              threads: await listStoredChatThreads(args),
-              messagesByThreadId: undefined,
-            };
+        });
         // Discard the response if a newer request was scheduled while we
         // were in flight, or if the effect was torn down.
         if (cancelled || seq !== requestSeq) return;
-        setAllThreads(loaded.threads);
+        setAllThreads(threads);
         setLoaded(true);
-        // Older pre-cut titles cannot grow with the sidebar. Pass the messages
-        // this load already fetched so the repair does not refetch them.
-        void repairLegacyChatTitles(
-          loaded.threads,
-          loaded.messagesByThreadId,
-        ).catch(() => undefined);
+        // Older pre-cut titles cannot grow with the sidebar. The repair reads
+        // its own messages, as late as it can, rather than taking this list's.
+        void repairLegacyChatTitles(threads).catch(() => undefined);
       } catch (error) {
         if (isExpectedBackgroundChatStorageError(error)) {
           return;

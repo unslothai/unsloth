@@ -597,19 +597,11 @@ export async function listStoredChatThreads(
     );
 }
 
-export interface ChatThreadsWithMessages {
-  threads: ThreadRecord[];
-  /** Every listed thread's messages, so callers need not fetch them again. */
-  messagesByThreadId: Map<string, MessageRecord[]>;
-}
-
 export async function listStoredChatThreadsWithMessages(
   args: ThreadListArgs = {},
-): Promise<ChatThreadsWithMessages> {
+): Promise<ThreadRecord[]> {
   const threads = await listStoredChatThreads(args);
-  if (threads.length === 0) {
-    return { threads: [], messagesByThreadId: new Map() };
-  }
+  if (threads.length === 0) return [];
   // One batched HTTP call instead of N. Per-thread legacy Dexie fallback
   // only fires when the batch result is empty.
   const threadIds = threads.map((t) => t.id);
@@ -623,27 +615,13 @@ export async function listStoredChatThreadsWithMessages(
     threads.map(async (thread) => {
       const backendMessages = backendByThread.get(thread.id) ?? [];
       if (backendMessages.length > 0) {
-        return { thread, messages: backendMessages, hasContent: true };
+        return { thread, hasContent: true };
       }
       const legacy = await listStoredChatMessages(thread.id).catch(() => null);
-      return {
-        thread,
-        // null is "the read failed", which the map must not report as empty.
-        messages: legacy,
-        hasContent: legacy === null || legacy.length > 0,
-      };
+      return { thread, hasContent: legacy === null || legacy.length > 0 };
     }),
   );
-  return {
-    threads: entries.filter((e) => e.hasContent).map((e) => e.thread),
-    messagesByThreadId: new Map(
-      entries
-        .filter((e): e is typeof e & { messages: MessageRecord[] } =>
-          e.messages !== null,
-        )
-        .map((e) => [e.thread.id, e.messages]),
-    ),
-  };
+  return entries.filter((e) => e.hasContent).map((e) => e.thread);
 }
 
 export async function listStoredChatProjects(
