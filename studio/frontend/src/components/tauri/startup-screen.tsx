@@ -2,13 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  INITIAL_STARTUP_MESSAGE,
   installProgressMessage,
-  SERVER_STARTUP_MESSAGE,
-  SERVER_START_FALLBACK_MS,
+  startupWaitingMessage,
+  STATUS_MESSAGE_ROTATION_MS,
   type StartupMessage,
 } from "@/components/tauri/startup-messages";
-import { ShimmerButton } from "@/components/ui/shimmer-button";
 import { Spinner } from "@/components/ui/spinner";
 import type { BackendStatus } from "@/hooks/use-tauri-backend";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
@@ -169,17 +167,26 @@ function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
         >
           To install Unsloth, click Get Started.
         </p>
-        <ShimmerButton
-          onClick={onInstall}
-          shimmerColor="#a7f3d0"
-          background="oklch(0.696 0.17 162.48)"
-          className="text-sm font-medium"
-        >
+        <ActionButton onClick={onInstall}>
           Get Started
-        </ShimmerButton>
+        </ActionButton>
       </div>
     </div>
   );
+}
+
+function useRotatingMessageIndex(): number {
+  const [messageIndex, setMessageIndex] = useState(0);
+
+  useEffect(() => {
+    const interval = window.setInterval(
+      () => setMessageIndex((current) => current + 1),
+      STATUS_MESSAGE_ROTATION_MS,
+    );
+    return () => window.clearInterval(interval);
+  }, []);
+
+  return messageIndex;
 }
 
 function InstallingContent({
@@ -191,7 +198,8 @@ function InstallingContent({
   currentStepIndex: number;
   progressDetail: string | null;
 }) {
-  const message = installProgressMessage(currentStepIndex);
+  const messageIndex = useRotatingMessageIndex();
+  const message = installProgressMessage(currentStepIndex, messageIndex);
   const detailLines = progressDetail
     ? [...logs, progressDetail]
     : logs;
@@ -341,21 +349,8 @@ function NeedsElevationContent({
 }
 
 function StartingContent({ message }: { message: StartupMessage }) {
-  const [showFallback, setShowFallback] = useState(false);
-
-  useEffect(() => {
-    if (message !== SERVER_STARTUP_MESSAGE) {
-      return;
-    }
-
-    const fallback = window.setTimeout(
-      () => setShowFallback(true),
-      SERVER_START_FALLBACK_MS,
-    );
-    return () => window.clearTimeout(fallback);
-  }, [message]);
-
-  const displayMessage = showFallback ? INITIAL_STARTUP_MESSAGE : message;
+  const messageIndex = useRotatingMessageIndex();
+  const displayMessage = startupWaitingMessage(message, messageIndex);
 
   return (
     <div className="flex h-full flex-col items-center">
