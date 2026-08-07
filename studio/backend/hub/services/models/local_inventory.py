@@ -53,10 +53,15 @@ class _LocalInventorySources(NamedTuple):
     known_hf_caches: tuple[Path, ...]
 
 
-_LocalInventoryKey = tuple[str, _LocalInventorySources, tuple[str, ...]]
+_LocalInventoryKey = tuple[str, _LocalInventorySources, tuple[str, ...], int]
 _local_inventory_flights: dict[
     tuple[asyncio.AbstractEventLoop, _LocalInventoryKey], asyncio.Task[LocalModelListResponse]
 ] = {}
+
+
+class _LocalCacheChanged(RuntimeError):
+    pass
+
 
 # Local aliases keep the extracted code close to the original implementation.
 _is_model_directory = model_common._is_model_directory
@@ -859,8 +864,10 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
     custom_folders = await _load_custom_folders()
     sources = _local_inventory_sources()
 
-    async def scan_and_classify() -> LocalModelListResponse:
+    async def scan_and_classify(expected_epoch: int) -> LocalModelListResponse:
         response = await _scan_local_models_response(models_dir, custom_folders, sources)
+        if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
+            raise _LocalCacheChanged
         # These rows feed the same pickers as /api/models/local. Classify inside the shared
         # worker so retrying waiters do not repeat GGUF metadata reads.
         try:
@@ -874,12 +881,25 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
             logger.warning("Could not classify local model tasks: %s", e)
             return response
 
-    key: _LocalInventoryKey = (
-        _inventory_path_identity(models_dir),
-        sources,
-        tuple(_inventory_path_identity(str(folder.get("path", ""))) for folder in custom_folders),
-    )
-    return await hf_cache_scan.shared_scan(_local_inventory_flights, key, scan_and_classify)
+    # Discard obsolete results and retry their waiters against the current cache epoch.
+    while True:
+        epoch = hf_cache_scan.hf_cache_scans_epoch()
+        key: _LocalInventoryKey = (
+            _inventory_path_identity(models_dir),
+            sources,
+            tuple(
+                _inventory_path_identity(str(folder.get("path", ""))) for folder in custom_folders
+            ),
+            epoch,
+        )
+        try:
+            return await hf_cache_scan.shared_scan(
+                _local_inventory_flights,
+                key,
+                lambda expected_epoch = epoch: scan_and_classify(expected_epoch),
+            )
+        except _LocalCacheChanged:
+            continue
 
 
 def get_models_folder_response() -> dict:

@@ -1042,10 +1042,14 @@ def collect_local_models(
     return [m for m in models if not _is_hidden_model(m.id, m.model_id, m.path)]
 
 
-_CompatLocalInventoryKey = tuple[Path, _CompatLocalInventorySources, tuple[str, ...]]
+_CompatLocalInventoryKey = tuple[Path, _CompatLocalInventorySources, tuple[str, ...], int]
 _compat_local_inventory_flights: dict[
     tuple[asyncio.AbstractEventLoop, _CompatLocalInventoryKey], asyncio.Task[List[LocalModelInfo]]
 ] = {}
+
+
+class _CompatLocalCacheChanged(RuntimeError):
+    pass
 
 
 def _compat_inventory_path_identity(path: object) -> str:
@@ -1069,21 +1073,37 @@ async def _shared_compat_local_inventory_scan(
     except Exception as e:
         logger.warning("Could not load custom scan folders: %s", e)
         custom_folders = []
-    key: _CompatLocalInventoryKey = (
-        Path(_compat_inventory_path_identity(models_root)),
-        sources,
-        tuple(_compat_inventory_path_identity(folder.get("path", "")) for folder in custom_folders),
-    )
-    return await hf_cache_scan.shared_scan(
-        _compat_local_inventory_flights,
-        key,
-        lambda: asyncio.to_thread(
+
+    async def collect(expected_epoch: int) -> List[LocalModelInfo]:
+        models = await asyncio.to_thread(
             collect_local_models,
             models_root,
             custom_folders = custom_folders,
             sources = sources,
-        ),
-    )
+        )
+        if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
+            raise _CompatLocalCacheChanged
+        return models
+
+    # Discard obsolete results and retry their waiters against the current cache epoch.
+    while True:
+        epoch = hf_cache_scan.hf_cache_scans_epoch()
+        key: _CompatLocalInventoryKey = (
+            Path(_compat_inventory_path_identity(models_root)),
+            sources,
+            tuple(
+                _compat_inventory_path_identity(folder.get("path", "")) for folder in custom_folders
+            ),
+            epoch,
+        )
+        try:
+            return await hf_cache_scan.shared_scan(
+                _compat_local_inventory_flights,
+                key,
+                lambda expected_epoch = epoch: collect(expected_epoch),
+            )
+        except _CompatLocalCacheChanged:
+            continue
 
 
 @router.get("/local", response_model = LocalModelListResponse)

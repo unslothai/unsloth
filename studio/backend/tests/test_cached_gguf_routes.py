@@ -195,7 +195,8 @@ def test_compat_local_inventory_requests_share_scan(monkeypatch, tmp_path):
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         assert len(workers) == 1
-        assert sources in next(iter(models_route._compat_local_inventory_flights))[1]
+        key = next(iter(models_route._compat_local_inventory_flights))[1]
+        assert sources in key and isinstance(key[-1], int)
         first.cancel()
         second.cancel()
         await asyncio.gather(first, second, return_exceptions = True)

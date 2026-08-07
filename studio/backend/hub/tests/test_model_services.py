@@ -740,11 +740,14 @@ def test_shared_scan_scopes_tasks_to_event_loop():
     assert results == ["ok", "ok"] and flights == {}
 
 
-def test_local_inventory_requests_share_scan(monkeypatch):
+@pytest.mark.parametrize("change_kind", ["folders", "epoch"])
+def test_local_inventory_requests_share_scan(monkeypatch, change_kind):
     assert local_inventory._inventory_path_identity("\0") == "\0"
     assert local_inventory._inventory_path_identity("\ud800") == "\ud800"
-    calls, started, release = 0, [asyncio.Event(), asyncio.Event()], asyncio.Event()
-    loaded, both_loaded, task_calls = 0, asyncio.Event(), []
+    event = asyncio.Event
+    calls, started, releases = 0, [event(), event()], [event(), event()]
+    loaded, both_loaded, task_calls, epoch = 0, event(), [], [0]
+    epoch_reads, retried = [0], event()
     model = SimpleNamespace(id = "model")
     model.model_copy = lambda update: SimpleNamespace(id = model.id, task = update["task"])
     response = SimpleNamespace(models = [model])
@@ -762,7 +765,7 @@ def test_local_inventory_requests_share_scan(monkeypatch):
         index = calls
         calls += 1
         started[index].set()
-        await release.wait()
+        await releases[index].wait()
         return response
 
     async def load_folders():
@@ -770,10 +773,18 @@ def test_local_inventory_requests_share_scan(monkeypatch):
         loaded += 1
         if loaded == 2:
             both_loaded.set()
-        return [] if loaded < 4 else [{"path": "/changed"}]
+        return [] if loaded < 4 or change_kind == "epoch" else [{"path": "/changed"}]
 
     monkeypatch.setattr(local_inventory, "_load_custom_folders", load_folders)
     monkeypatch.setattr(local_inventory, "_scan_local_models_response", scan)
+
+    def current_epoch():
+        epoch_reads[0] += bool(epoch[0])
+        if epoch_reads[0] == 3:
+            retried.set()
+        return epoch[0]
+
+    monkeypatch.setattr(local_inventory.hf_cache_scan, "hf_cache_scans_epoch", current_epoch)
 
     async def run_requests():
         first = asyncio.create_task(local_inventory.list_local_models_response("./models"))
@@ -789,14 +800,19 @@ def test_local_inventory_requests_share_scan(monkeypatch):
         await asyncio.gather(first, second, return_exceptions = True)
         second = asyncio.create_task(local_inventory.list_local_models_response())
         await asyncio.sleep(0)
+        epoch[0] += change_kind == "epoch"
         changed = asyncio.create_task(local_inventory.list_local_models_response())
         await asyncio.wait_for(started[1].wait(), 1)
         assert calls == 2
-        release.set()
+        releases[0].set()
+        if change_kind == "epoch":
+            await asyncio.wait_for(retried.wait(), 1)
+        releases[1].set()
         return await asyncio.gather(second, changed)
 
     assert [response.models[0].task for response in asyncio.run(run_requests())] == ["task"] * 2
-    assert task_calls == ["model", "model"] and not local_inventory._local_inventory_flights
+    expected_calls = ["model"] * (1 if change_kind == "epoch" else 2)
+    assert task_calls == expected_calls and not local_inventory._local_inventory_flights
 
 
 def test_local_inventory_indexes_registered_hf_state_once(monkeypatch, tmp_path):
