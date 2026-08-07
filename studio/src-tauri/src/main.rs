@@ -141,10 +141,17 @@ fn exec_quoted(binary: &str) -> String {
     let mut quoted = String::with_capacity(binary.len() + 2);
     quoted.push('"');
     for c in binary.chars() {
-        if matches!(c, '"' | '`' | '$' | '\\') {
-            quoted.push('\\');
+        // The string escape rule runs before the quoting rule, so the escaping
+        // backslash must itself be escaped: a value written with a single one
+        // is an invalid escape sequence and launchers drop the whole Exec.
+        match c {
+            '"' | '`' | '$' => {
+                quoted.push_str("\\\\");
+                quoted.push(c);
+            }
+            '\\' => quoted.push_str("\\\\\\\\"),
+            _ => quoted.push(c),
         }
-        quoted.push(c);
     }
     quoted.push('"');
     quoted
@@ -175,7 +182,12 @@ fn hardened_autostart_entry(entry: &str) -> Option<String> {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    Some(format!("{hardened}\nTryExec={binary}"))
+    // TryExec skips the Exec quoting rule but is still a string value, so a
+    // literal backslash has to go through the string escape rule.
+    Some(format!(
+        "{hardened}\nTryExec={}",
+        binary.replace('\\', "\\\\")
+    ))
 }
 
 fn linux_autostart_entry_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
@@ -924,7 +936,26 @@ mod tests {
     fn autostart_hardening_escapes_exec_reserved_characters() {
         let entry = "[Desktop Entry]\nExec=/opt/a\"b$c/app --hidden";
         let hardened = hardened_autostart_entry(entry).expect("guard must be added");
-        assert!(hardened.contains("Exec=\"/opt/a\\\"b\\$c/app\" --hidden\n"));
+        // Doubled: the string escape rule is undone before the quoting rule.
+        assert!(hardened.contains(r#"Exec="/opt/a\\"b\\$c/app" --hidden"#));
+    }
+
+    /// A single escaping backslash is an invalid string escape, so launchers
+    /// discard the Exec value and the entry silently never starts.
+    #[test]
+    fn autostart_hardening_doubles_the_escaping_backslash() {
+        let entry = "[Desktop Entry]\nExec=/opt/a b`c$d/app --hidden";
+        let hardened = hardened_autostart_entry(entry).expect("guard must be added");
+        assert!(hardened.contains(r#"Exec="/opt/a b\\`c\\$d/app" --hidden"#));
+    }
+
+    #[test]
+    fn autostart_hardening_escapes_a_literal_backslash_in_both_fields() {
+        let entry = "[Desktop Entry]\nExec=/opt/a b\\c/app --hidden";
+        let hardened = hardened_autostart_entry(entry).expect("guard must be added");
+        // Four in Exec (string rule then quoting rule), two in the plain TryExec.
+        assert!(hardened.contains(r#"Exec="/opt/a b\\\\c/app" --hidden"#));
+        assert!(hardened.ends_with(r"TryExec=/opt/a b\\c/app"));
     }
 
     #[test]
