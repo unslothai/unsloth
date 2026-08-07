@@ -5083,7 +5083,7 @@ def _fake_hf_api(
     monkeypatch.setattr(
         DiffusionBackend,
         "_hub_file_is_cached",
-        staticmethod(lambda repo_id, filename, revision = None: False),
+        staticmethod(lambda repo_id, filename, revision = None, expected_size = None: False),
     )
 
 
@@ -5150,7 +5150,7 @@ def test_download_plan_omits_a_cached_gguf_but_keeps_missing_companions(monkeypa
         DiffusionBackend,
         "_hub_file_is_cached",
         staticmethod(
-            lambda repo_id, filename, revision = None: repo_id == "unsloth/FLUX.1-dev-GGUF"
+            lambda repo_id, filename, revision = None, expected_size = None: repo_id == "unsloth/FLUX.1-dev-GGUF"
             and filename == "flux1-dev-Q4_K_M.gguf"
         ),
     )
@@ -5186,7 +5186,7 @@ def test_download_plan_is_empty_when_every_required_file_is_cached(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend,
         "_hub_file_is_cached",
-        staticmethod(lambda repo_id, filename, revision = None: True),
+        staticmethod(lambda repo_id, filename, revision = None, expected_size = None: True),
     )
 
     plan = DiffusionBackend().download_plan(
@@ -5233,6 +5233,47 @@ def test_download_plan_sizes_the_checkpoint_when_the_base_is_the_same_repo(monke
     assert entry["bytes"] == plan["required_bytes"] == 7 * GB + 2 * GB + 1300
 
 
+def _write_hub_cache(root, repo_id, filename, sha, size, *, symlink = True):
+    """The tree hf_hub_download leaves behind: blobs/ + snapshots/<sha>/ + refs/main."""
+    import os
+
+    repo_dir = (root / f"models--{repo_id.replace('/', '--')}").resolve()
+    blobs, snaps, refs = repo_dir / "blobs", repo_dir / "snapshots" / sha, repo_dir / "refs"
+    for d in (blobs, (snaps / filename).parent, refs):
+        d.mkdir(parents = True, exist_ok = True)
+    blob = blobs / "etag"
+    blob.write_bytes(b"\0" * size)
+    target = snaps / filename
+    if symlink:
+        os.symlink(os.path.relpath(blob, target.parent), target)
+    else:
+        import shutil
+
+        shutil.copyfile(blob, target)
+    (refs / "main").write_text(sha)
+
+
+@pytest.mark.parametrize("symlink", [True, False], ids = ["posix_links", "windows_copies"])
+def test_a_cached_file_survives_an_unrelated_commit_to_its_repo(tmp_path, monkeypatch, symlink):
+    # model_info().sha is the REPO head, so a README commit moves it while every weight stays
+    # byte identical. Calling those files missing would re-stage the whole footprint and can fail
+    # a disk preflight for space nobody needs, so the size the plan declared has the last word.
+    repo, name = "black-forest-labs/FLUX.1-dev", "text_encoder/model.safetensors"
+    _write_hub_cache(tmp_path, repo, name, "a" * 40, 4096, symlink = symlink)
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path))
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "unused"))
+
+    assert DiffusionBackend._hub_file_is_cached(repo, name, "a" * 40, 4096)
+    assert DiffusionBackend._hub_file_is_cached(repo, name, "b" * 40, 4096), (
+        "an unrelated repo commit must not invalidate a file the plan sized identically"
+    )
+    assert not DiffusionBackend._hub_file_is_cached(repo, name, "b" * 40, 9999), (
+        "a republished file has a different declared size and must be fetched through the manager"
+    )
+    # Nothing declared to compare against: trust the ref rather than call a present file missing.
+    assert DiffusionBackend._hub_file_is_cached(repo, name, "b" * 40, 0)
+
+
 def test_download_plan_probes_the_cache_at_the_revision_it_sized(monkeypatch):
     # An unpinned probe answers from the LOCAL main ref, so a republished companion reads as
     # present and the loader fetches it inline, outside the download manager.
@@ -5258,7 +5299,7 @@ def test_download_plan_probes_the_cache_at_the_revision_it_sized(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend,
         "_hub_file_is_cached",
-        staticmethod(lambda repo_id, filename, revision = None: bool(seen.append(revision))),
+        staticmethod(lambda repo_id, filename, revision = None, expected_size = None: bool(seen.append(revision))),
     )
 
     DiffusionBackend().download_plan(

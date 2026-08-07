@@ -221,7 +221,7 @@ def _plan_sees_an_empty_cache(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend,
         "_hub_file_is_cached",
-        staticmethod(lambda repo_id, filename, revision = None: False),
+        staticmethod(lambda repo_id, filename, revision = None, expected_size = None: False),
     )
 
 
@@ -248,7 +248,7 @@ def test_download_plan_skips_assets_already_in_the_cache(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend,
         "_hub_file_is_cached",
-        staticmethod(lambda repo_id, filename, revision = None: filename.endswith(".gguf")),
+        staticmethod(lambda repo_id, filename, revision = None, expected_size = None: filename.endswith(".gguf")),
     )
 
     plan = b.download_plan(
@@ -273,7 +273,7 @@ def test_download_plan_is_empty_when_every_native_asset_is_cached(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend,
         "_hub_file_is_cached",
-        staticmethod(lambda repo_id, filename, revision = None: True),
+        staticmethod(lambda repo_id, filename, revision = None, expected_size = None: True),
     )
 
     plan = b.download_plan(

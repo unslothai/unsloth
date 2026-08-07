@@ -1597,7 +1597,13 @@ class DiffusionBackend:
             same repo would fight the first over progress, manifest and cancellation.
             """
             revision = revisions.get(repo)
-            missing = [name for name in files if not self._hub_file_is_cached(repo, name, revision)]
+            missing = [
+                name
+                for name in files
+                if not self._hub_file_is_cached(
+                    repo, name, revision, declared_sizes.get(name)
+                )
+            ]
             if not missing:
                 return
             for entry in entries:
@@ -1651,19 +1657,44 @@ class DiffusionBackend:
         repo_id: str,
         filename: str,
         revision: Optional[str] = None,
+        expected_size: Optional[int] = None,
     ) -> bool:
         """Whether ``filename`` is complete in either cache root the loader reuses.
 
-        ``try_to_load_from_cache`` is network-free. Pinned to ``revision`` it answers for the
-        commit the plan was sized against; unpinned it resolves the LOCAL ``main`` ref, which a
-        republished companion leaves stale. A string alone is not enough on Windows, where a
-        broken snapshot link can survive a cancelled download, so the target must still be a file.
+        ``try_to_load_from_cache`` is network-free. Two probes, because neither alone is safe:
+
+        Pinned to ``revision`` it answers for the exact commit the plan was sized against, so a
+        hit needs no further proof. A miss proves nothing though -- ``revision`` is the REPO
+        head, so an unrelated commit (a README fix) names a snapshot a healthy cache never
+        downloaded, and treating that as missing would re-stage the whole footprint and can fail
+        a disk preflight for space nobody needs.
+
+        So a pinned miss falls back to the local ``main`` ref and corroborates with the size the
+        same lookup declared: identical size means the file did not change, a different one means
+        it was republished and must be fetched through the manager rather than inline mid-load. A
+        republish that keeps the byte count exactly is indistinguishable here and reads as cached.
+
+        A string alone is not enough on Windows, where a broken snapshot link can survive a
+        cancelled download, so the target must still be a real file.
         """
         try:
             from huggingface_hub import try_to_load_from_cache
-            for root in (hub_cache_dir(), None):
-                hit = try_to_load_from_cache(repo_id, filename, cache_dir = root, revision = revision)
-                if isinstance(hit, str) and Path(hit).is_file():
+
+            roots = (hub_cache_dir(), None)
+            def hits(rev: Optional[str]):
+                for root in roots:
+                    hit = try_to_load_from_cache(
+                        repo_id, filename, cache_dir = root, revision = rev
+                    )
+                    if isinstance(hit, str) and Path(hit).is_file():
+                        yield hit
+
+            if revision is not None and any(hits(revision)):
+                return True
+            for hit in hits(None):
+                if not expected_size or expected_size <= 0:
+                    return True  # nothing declared to check against; trust the ref
+                if Path(hit).stat().st_size == expected_size:
                     return True
         except Exception:  # noqa: BLE001 -- an unreadable cache is a miss, never a plan failure
             pass
