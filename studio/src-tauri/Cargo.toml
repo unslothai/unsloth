@@ -52,6 +52,7 @@ gdk-pixbuf = "0.18"
 glib = "0.18"
 gtk = "0.18"
 elevated-command = "1.1.2"
+webkit2gtk-sys = "2.0.2"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.10"

@@ -5754,6 +5754,7 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
+ "webkit2gtk-sys",
  "windows 0.62.2",
  "windows-sys 0.61.2",
  "winreg 0.10.1",
