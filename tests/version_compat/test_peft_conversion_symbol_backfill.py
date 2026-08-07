@@ -149,23 +149,55 @@ def _peft_converter_source():
         raise
 
 
+def _transformers_imports(src):
+    """{module: {symbol}} for every `from transformers... import ...` in `src`.
+
+    AST, not a regex over the source. A regex for the parenthesised form alone
+    read `from transformers.core_model_loading import A, B` as importing
+    nothing, and looking up only the modules already in the table never
+    examined a third transformers module at all. Either one leaves the drift
+    this file exists to catch reporting green.
+    """
+    import ast
+
+    out = {}
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("transformers"):
+            out.setdefault(node.module, set()).update(a.name for a in node.names)
+    return out
+
+
+def test_both_import_spellings_are_parsed():
+    """peft writes either, and reformatting one must not blind the guard."""
+    src = (
+        "from transformers.core_model_loading import Concatenate, ConversionOps\n"
+        "from transformers.utils import (\n    logging,\n    is_torch_available,\n)\n"
+        "import os\n"
+        "from peft.utils import something\n"
+    )
+    assert _transformers_imports(src) == {
+        "transformers.core_model_loading": {"Concatenate", "ConversionOps"},
+        "transformers.utils": {"logging", "is_torch_available"},
+    }
+
+
 def test_the_symbol_list_matches_what_peft_imports():
     """Two lists that can drift; peft's own source is the authority."""
     # Not `importorskip`: on pytest 8 to 9.0 that also swallows an ImportError
     # raised INSIDE an existing converter, which is exactly the drift this test
     # exists to catch -- peft adding an import we do not backfill would report
     # as a skip. Skip only when the module is genuinely absent.
-    src = _peft_converter_source()
-    import re
-
-    for name, symbols in F._PEFT_CONVERSION_SYMBOLS.items():
-        block = re.search(rf"from {re.escape(name)} import \(([^)]*)\)", src)
-        if block is None:
-            continue
-        imported = {s.strip().rstrip(",") for s in block.group(1).split() if s.strip().rstrip(",")}
-        assert imported <= set(
-            symbols
-        ), f"{name}: peft imports {imported - set(symbols)}, which we do not backfill"
+    imports = _transformers_imports(_peft_converter_source())
+    known = F._PEFT_CONVERSION_SYMBOLS
+    for module, imported in imports.items():
+        assert module in known, (
+            f"peft imports from {module}, which is not in _PEFT_CONVERSION_SYMBOLS, "
+            f"so its ImportError is neither recognised nor backfilled"
+        )
+        assert imported <= set(known[module]), (
+            f"{module}: peft imports {imported - set(known[module])}, "
+            f"which we do not backfill"
+        )
 
 
 def test_the_backfill_runs_from_the_guard():
