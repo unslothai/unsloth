@@ -64,8 +64,8 @@ def test_runtime_gate_handoff_is_one_shot(monkeypatch):
 def _slice_between(source, start, end):
     """The text from `start` up to `end`, naming the anchor when one moved.
 
-    `str.index` reports a rename as a bare `ValueError: substring not found`,
-    which is how #8092 read as an unexplained repo-wide red.
+    Bare `str.index` reports a rename as `ValueError: substring not found`, which
+    is how #8092 read as an unexplained repo-wide red.
     """
     for anchor in (start, end):
         assert anchor in source, f"anchor moved or was renamed: {anchor!r}"

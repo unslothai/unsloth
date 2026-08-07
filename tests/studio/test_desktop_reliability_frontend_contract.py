@@ -545,8 +545,8 @@ def _provider_css_px(name):
     """The px value the provider sets for a CSS custom property.
 
     Read rather than pinned: #8102 nudged the mac titlebar 2px and reddened the
-    repo because these assertions spelled the number out. The layout depends on
-    the row keeping its shape, so that is what is asserted below.
+    repo because these assertions spelled the number out. What matters is the
+    row keeping its shape, so that is what the callers assert.
     """
     import re
 
@@ -563,8 +563,7 @@ def test_mac_chat_header_controls_share_the_titlebar_row():
     assert "shouldUseNativeMacWindowTitlebar" not in source
     assert "[--studio-content-top-inset:var(--studio-mac-titlebar-height" not in source
     assert source.count("var(--studio-mac-traffic-light-inset") == 2
-    # The header and the titlebar navigation move together; this gap is what
-    # keeps them on the same visual line.
+    # This gap is what keeps the header and the titlebar navigation on one line.
     assert (
         _provider_css_px("--studio-chat-header-padding-top")
         - _provider_css_px("--studio-titlebar-navigation-offset-y")
