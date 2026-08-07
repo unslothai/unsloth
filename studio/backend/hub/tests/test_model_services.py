@@ -4606,3 +4606,19 @@ def test_real_conditional_generation_chat_models_are_unaffected(tmp_path, config
     """Guard on the list above: multimodal and seq2seq chat models must stay."""
     path = _write_local_model(tmp_path, "row", config)
     assert model_common._local_transformers_can_chat(path) is True
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"architectures": ["ViTModel"], "model_type": "vit"},
+        {"architectures": ["Dinov2Model"], "model_type": "dinov2"},
+        {"architectures": ["SwinModel"], "model_type": "swin"},
+        {"architectures": ["Wav2Vec2Model"], "model_type": "wav2vec2"},
+    ],
+)
+def test_bare_vision_and_audio_backbones_are_not_chat_capable(tmp_path, config):
+    """Their class names carry no task suffix, so only the model type gives
+    them away, and they are small enough to be tried before a chat model."""
+    path = _write_local_model(tmp_path, "row", config)
+    assert model_common._local_transformers_can_chat(path) is False

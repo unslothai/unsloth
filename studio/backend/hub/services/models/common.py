@@ -202,6 +202,32 @@ _ENCODER_ONLY_MODEL_TYPES = frozenset(
         "squeezebert",
         "vision-text-dual-encoder",
         "xlm-roberta",
+        # Vision and audio backbones. Their bare ``*Model`` class names carry no
+        # task suffix, so only the model type identifies them, and they are
+        # small enough to be tried before a real chat model.
+        "beit",
+        "convnext",
+        "convnextv2",
+        "data2vec-audio",
+        "data2vec-vision",
+        "deit",
+        "dinov2",
+        "dpt",
+        "efficientnet",
+        "hubert",
+        "mobilevit",
+        "regnet",
+        "resnet",
+        "segformer",
+        "swin",
+        "swinv2",
+        "videomae",
+        "vit",
+        "vit_mae",
+        "vit_msn",
+        "wav2vec2",
+        "wavlm",
+        "whisper",
     }
 )
 

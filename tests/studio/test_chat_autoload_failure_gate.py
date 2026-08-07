@@ -1243,3 +1243,54 @@ def test_a_server_reported_chat_only_platform_still_gates():
         f"scenario({{ chatOnly: true, platformFetched: true, localModels: [{safetensors}] }})"
     )
     assert _loaded_paths(out) == [DEFAULT_MODEL]
+
+
+def test_the_default_is_validated_before_its_download_starts():
+    """Active training or the GPU placement guard can refuse the default.
+    Finding that out after several gigabytes costs bandwidth and a long wait
+    for nothing."""
+    out = _run(
+        "scenario({ validate: () => ({ requires_trust_remote_code: false,"
+        " requires_security_review: false, requires_transformers_upgrade: true }) })"
+    )
+
+    assert _downloads_started(out) == []
+    assert _loaded_paths(out) == []
+    assert out["result"]["loaded"] is False
+
+
+def test_a_cleared_default_still_downloads_and_loads():
+    """Control: the preflight must not block the normal path."""
+    out = _run("scenario({})")
+    kinds = [event["kind"] for event in out["events"]]
+    assert kinds.index("download.start") < kinds.index("loadModel")
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
+
+
+def test_a_chat_only_backend_skips_cached_non_gguf_rows():
+    """The picker hides cached non-GGUF rows outright in chat-only mode, so the
+    cascade must not auto-select a format the UI calls unrunnable."""
+    out = _run(
+        "scenario({ chatOnly: true, platformFetched: true,"
+        " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }] })"
+    )
+    assert "org/st" not in _loaded_paths(out)
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
+
+
+def test_a_full_install_still_uses_cached_non_gguf_rows():
+    """Control for the gate above."""
+    out = _run(
+        "scenario({ chatOnly: false,"
+        " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }] })"
+    )
+    assert _loaded_paths(out) == ["org/st"]
+
+
+def test_a_provisional_platform_does_not_hide_cached_non_gguf_rows():
+    """Before the probe lands the chatOnly flag is a browser guess."""
+    out = _run(
+        "scenario({ chatOnly: true, platformFetched: false,"
+        " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }] })"
+    )
+    assert _loaded_paths(out) == ["org/st"]

@@ -2722,3 +2722,38 @@ def test_format_gates_wait_for_the_server_reported_platform():
     src = _read("features/chat/api/chat-adapter.ts")
     gate = src.split("function runsOnThisPlatform", 1)[1].split("\n}", 1)[0]
     assert "if (!platform.fetched || !platform.isChatOnly()) return true;" in gate
+
+
+def test_the_default_is_preflighted_before_the_managed_download():
+    """A refusal from the training or placement guard must not cost several
+    gigabytes first."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    fallback = src.split("// Nothing on the device:", 1)[1]
+    fallback = fallback.split("export function createOpenAIStreamAdapter", 1)[0]
+    assert fallback.index("canAutoLoad({") < fallback.index(
+        "ensureDefaultModelDownloaded("
+    )
+    # One GPU snapshot feeds both, so the load sends what was cleared.
+    assert fallback.index("const rt = useChatRuntimeStore.getState();") < fallback.index(
+        "canAutoLoad({"
+    )
+
+
+def test_cached_non_gguf_rows_get_the_chat_only_platform_gate():
+    """The picker hides them outright there (visibleCachedModelRows)."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    gate = src.split("function cachedModelsRunOnThisPlatform", 1)[1].split("\n}", 1)[0]
+    assert "return !platform.fetched || !platform.isChatOnly();" in gate
+    assert "cachedModelsRunOnThisPlatform()\n          ? allModelRepos.filter(" in src
+    # GGUF runs everywhere, so those rows stay ungated.
+    assert "allGgufRepos.filter(isChattableCachedRepo)," in src
+
+
+def test_bare_vision_and_audio_backbones_are_classified_non_chat():
+    """A ViTModel class name has no task suffix, so only the model type
+    identifies it."""
+    src = _read_backend("hub/services/models/common.py")
+    encoders = src.split("_ENCODER_ONLY_MODEL_TYPES = frozenset(", 1)[1]
+    encoders = encoders.split(")", 1)[0]
+    for model_type in ('"vit"', '"dinov2"', '"swin"', '"wav2vec2"', '"resnet"'):
+        assert model_type in encoders, model_type

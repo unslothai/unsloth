@@ -1935,6 +1935,16 @@ function runsOnThisPlatform(row: LocalModelInfo): boolean {
 }
 
 /**
+ * Chat-only installs cannot run a cached non-GGUF repo, and the picker hides
+ * those rows outright there (visibleCachedModelRows). Same wait-for-the-server
+ * rule as runsOnThisPlatform.
+ */
+function cachedModelsRunOnThisPlatform(): boolean {
+  const platform = usePlatformStore.getState();
+  return !platform.fetched || !platform.isChatOnly();
+}
+
+/**
  * One loadable thing on this device, from any inventory. `listVariants` is
  * lazy, so only the repos the cascade actually reaches are scanned.
  */
@@ -2770,7 +2780,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     const sources = orderAutoLoadSources(
       buildAutoLoadSources(
         allGgufRepos.filter(isChattableCachedRepo),
-        allModelRepos.filter(isChattableCachedRepo),
+        cachedModelsRunOnThisPlatform()
+          ? allModelRepos.filter(isChattableCachedRepo)
+          : [],
         localList.models.filter(isAutoLoadableLocalRow),
         store.params.maxSeqLength,
         options?.abortSignal,
@@ -2866,6 +2878,34 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     // Nothing on the device: fetch the default as a managed download job, and
     // only hand it to /api/inference/load once the bytes are here.
     try {
+      const rt = useChatRuntimeStore.getState();
+      if (rt.selectedGpuIds != null) {
+        await ensureGpuDeviceCache();
+      }
+      const defaultGpuIds = reconcilePersistedGpuIds(
+        rt.selectedGpuIds,
+        rt.selectedGpuIndexKind,
+      );
+      // Preflight BEFORE the transfer. Active training or the GPU placement
+      // guard can refuse this model, and finding that out after several
+      // gigabytes have been pulled costs the user bandwidth and a long wait
+      // for nothing. The load below reuses this snapshot so it sends exactly
+      // what was cleared here.
+      if (
+        !(await canAutoLoad({
+          model_path: DEFAULT_CHAT_MODEL_REPO,
+          max_seq_length: 0,
+          is_lora: false,
+          gguf_variant: DEFAULT_CHAT_MODEL_VARIANT,
+          // The same live-store GPU pick the load below sends (a fresh default
+          // model has no remembered settings to prefer).
+          gpu_ids: defaultGpuIds ?? undefined,
+          gpu_memory_mode: rt.gpuMemoryMode,
+        }))
+      ) {
+        toast.dismiss(toastId);
+        return { loaded: false, blockedByTrustRemoteCode };
+      }
       const download = await ensureDefaultModelDownloaded(
         hfToken,
         options?.abortSignal,
@@ -2892,29 +2932,6 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         `Loading ${DEFAULT_CHAT_MODEL_LABEL}…`,
         `${DEFAULT_CHAT_MODEL_REPO} (${DEFAULT_CHAT_MODEL_VARIANT})`,
       );
-      const rt = useChatRuntimeStore.getState();
-      if (rt.selectedGpuIds != null) {
-        await ensureGpuDeviceCache();
-      }
-      const defaultGpuIds = reconcilePersistedGpuIds(
-        rt.selectedGpuIds,
-        rt.selectedGpuIndexKind,
-      );
-      if (
-        !(await canAutoLoad({
-          model_path: DEFAULT_CHAT_MODEL_REPO,
-          max_seq_length: 0,
-          is_lora: false,
-          gguf_variant: DEFAULT_CHAT_MODEL_VARIANT,
-          // The same live-store GPU pick the load below sends (a fresh default
-          // model has no remembered settings to prefer).
-          gpu_ids: defaultGpuIds ?? undefined,
-          gpu_memory_mode: rt.gpuMemoryMode,
-        }))
-      ) {
-        toast.dismiss(toastId);
-        return { loaded: false, blockedByTrustRemoteCode };
-      }
       loadAttempts += 1;
       options?.abortSignal?.throwIfAborted();
       const loadResp = await loadModel({
