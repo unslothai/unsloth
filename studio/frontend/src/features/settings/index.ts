@@ -47,6 +47,7 @@ export { useMonitorOverlayStore } from "./stores/monitor-overlay-store";
 export {
   type MonitorFrame,
   stackBottomInset,
+  stackMaxHeight,
   useMonitorFrameStore,
   useStackBottomInset,
 } from "./stores/monitor-frame-store";

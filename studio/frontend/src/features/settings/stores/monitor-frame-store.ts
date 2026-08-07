@@ -42,8 +42,8 @@ export const useMonitorFrameStore = create<MonitorFrameState>((set) => ({
 // The corner stack's own inset, and the gap left between it and the monitor.
 const STACK_INSET = 16;
 const STACK_GAP = 8;
-// Widest overlay the stack holds (the download panel and update banners).
-const STACK_WIDTH = 400;
+// Widest overlay the stack holds: the update banners, at max-w-[448px].
+const STACK_WIDTH = 448;
 // Never lift so far that the stack itself is pushed off the top.
 const MIN_STACK_ROOM = 120;
 
@@ -71,6 +71,15 @@ export function stackBottomInset(
     STACK_INSET,
     Math.min(lifted, viewportHeight - MIN_STACK_ROOM),
   );
+}
+
+/**
+ * How tall the stack may grow while sitting on `bottomInset`, keeping its own
+ * margin at the top. Lifting the stack over the monitor shortens it by the same
+ * amount, or a long download list plus the card runs off the top of the screen.
+ */
+export function stackMaxHeight(bottomInset: number): string {
+  return `calc(100dvh - ${bottomInset + STACK_INSET}px)`;
 }
 
 /** `stackBottomInset` in px, recomputed as the monitor moves or resizes. */

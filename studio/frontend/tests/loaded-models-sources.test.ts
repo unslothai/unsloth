@@ -169,6 +169,54 @@ test("image and video rows omit the parts the backend did not report", () => {
   assert.equal(video.detail, "wan · GGUF · cuda");
 });
 
+test("a row names the precision the pipeline actually loaded at", () => {
+  const [image] = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/FLUX.1-dev",
+    family: "flux",
+    dtype: "bfloat16",
+    device: "cuda",
+  } as never);
+  assert.equal(image.detail, "flux · BF16 · cuda");
+
+  // The dense transformer's quantisation is what tells the builds apart, so it
+  // wins over the pipeline dtype.
+  const [video] = describeVideoStatus({
+    loaded: true,
+    repo_id: "unsloth/Wan2.2-T2V-A14B",
+    family: "wan",
+    dtype: "bfloat16",
+    transformer_quant: "fp8",
+    device: "cuda",
+  } as never);
+  assert.equal(video.detail, "wan · FP8 · cuda");
+});
+
+test("a bf16 video load falls back to the pipeline dtype", () => {
+  const [video] = describeVideoStatus({
+    loaded: true,
+    repo_id: "unsloth/Wan2.2-T2V-A14B",
+    family: "wan",
+    dtype: "bfloat16",
+    // "none" is the backend's word for plain bf16, not a precision to print.
+    transformer_quant: "none",
+    device: "cuda",
+  } as never);
+  assert.equal(video.detail, "wan · BF16 · cuda");
+});
+
+test("a GGUF image load does not print GGUF twice", () => {
+  const [image] = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/FLUX.1-dev-GGUF",
+    family: "flux",
+    model_kind: "gguf",
+    dtype: "gguf",
+    device: "cuda",
+  } as never);
+  assert.equal(image.detail, "flux · GGUF · cuda");
+});
+
 test("every runtime's rows appear together, in a fixed order", () => {
   const merged = mergeLoadedModels([
     describeInferenceStatus(

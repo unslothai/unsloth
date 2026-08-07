@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   type MonitorFrame,
   stackBottomInset,
+  stackMaxHeight,
 } from "../src/features/settings/stores/monitor-frame-store.ts";
 
 const W = 1440;
@@ -53,6 +54,24 @@ test("a monitor dragged to the top right is not dodged", () => {
     bottom: 316,
   };
   assert.equal(stackBottomInset(frame, W, H), 16);
+});
+
+// The update banners are max-w-[448px], wider than the download panel, so the
+// column has to be measured from them.
+test("a monitor beside the download panel but under a banner is dodged", () => {
+  const frame: MonitorFrame = {
+    left: W - 16 - 430,
+    top: H - 316,
+    right: W - 16 - 410,
+    bottom: H - 16,
+  };
+  assert.ok(stackBottomInset(frame, W, H) > 16);
+});
+
+// Lifting the stack without shortening it pushes its top off the screen.
+test("lifting the stack shortens it by the same amount", () => {
+  assert.equal(stackMaxHeight(16), "calc(100dvh - 32px)");
+  assert.equal(stackMaxHeight(324), "calc(100dvh - 340px)");
 });
 
 test("a monitor filling the height still leaves the stack room", () => {

@@ -132,6 +132,21 @@ export function describeInferenceStatus(
   return entries;
 }
 
+/**
+ * The precision a pipeline actually loaded at, short enough for the row. Images
+ * report a torch dtype, video a resolved quantisation ("none" being plain
+ * bf16). Anything unrecognised is shown as the backend spelled it, upper-cased.
+ */
+export function precisionLabel(value: string | null | undefined): string | null {
+  if (!value || value === "none") return null;
+  const known: Record<string, string> = {
+    bfloat16: "BF16",
+    float16: "FP16",
+    float32: "FP32",
+  };
+  return known[value] ?? value.toUpperCase();
+}
+
 export function describeDiffusionStatus(
   status: DiffusionStatus | null,
 ): LoadedModelEntry[] {
@@ -145,6 +160,8 @@ export function describeDiffusionStatus(
       detail: joinDetail(
         status.family,
         status.model_kind === "gguf" ? "GGUF" : null,
+        // A GGUF load reports "gguf" here too; joinDetail drops the repeat.
+        precisionLabel(status.dtype),
         status.device,
       ),
     },
@@ -164,6 +181,10 @@ export function describeVideoStatus(
       detail: joinDetail(
         status.family,
         status.model_kind === "gguf" ? "GGUF" : null,
+        // The dense transformer's own precision when one engaged, since that is
+        // what distinguishes the build; otherwise the pipeline dtype.
+        precisionLabel(status.transformer_quant) ??
+          precisionLabel(status.dtype),
         status.device,
       ),
     },

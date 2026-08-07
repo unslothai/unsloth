@@ -21,6 +21,7 @@ import { LoadedModelsIndicator } from "@/features/loaded-models";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import {
   applyCustomizationToDocument,
+  stackMaxHeight,
   useAppearanceCustomStore,
   useStackBottomInset,
   useTheme,
@@ -261,8 +262,11 @@ function TauriUpdateLayer({
   ) : (
     // Capped like the browser stack: the download panel shares it, so both must fit.
     <div
-      className="pointer-events-none fixed right-4 z-[9998] flex max-h-[calc(100dvh_-_2rem)] flex-col items-end gap-2"
-      style={{ bottom: stackBottomInset }}
+      className="pointer-events-none fixed right-4 z-[9998] flex flex-col items-end gap-2"
+      style={{
+        bottom: stackBottomInset,
+        maxHeight: stackMaxHeight(stackBottomInset),
+      }}
     >
       <UpdateBanner
         status={update.status}
@@ -511,8 +515,11 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         {/* Capped to the viewport, or a long download list plus expanded notes
             pushes the top of the stack off screen. */}
         <div
-          className="pointer-events-none fixed right-4 z-[9998] flex max-h-[calc(100dvh_-_2rem)] flex-col items-end gap-2"
-          style={{ bottom: stackBottomInset }}
+          className="pointer-events-none fixed right-4 z-[9998] flex flex-col items-end gap-2"
+          style={{
+            bottom: stackBottomInset,
+            maxHeight: stackMaxHeight(stackBottomInset),
+          }}
         >
           <WebUpdateBanner
             positioned={false}

@@ -210,6 +210,23 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
     };
   }, [constraintsElement]);
 
+  // ResizeObserver never fires for a position-only change, so dragging alone
+  // would leave the published frame at the monitor's old corner and the overlay
+  // stack dodging where it used to be. Re-publish once each layout is committed.
+  useLayoutEffect(() => {
+    const monitor = monitorRef.current;
+    if (!(monitor && constraintsElement)) {
+      return;
+    }
+    const box = monitor.getBoundingClientRect();
+    useMonitorFrameStore.getState().setFrame({
+      left: box.left,
+      top: box.top,
+      right: box.right,
+      bottom: box.bottom,
+    });
+  }, [layout, constraintsElement]);
+
   function startDrag(event: PointerEvent<HTMLDivElement>) {
     const monitor = monitorRef.current;
     if (event.button !== 0 || !(monitor && constraintsElement)) {

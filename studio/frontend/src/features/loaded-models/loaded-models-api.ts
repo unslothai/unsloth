@@ -99,7 +99,9 @@ async function ejectChatRow(entry: LoadedModelEntry): Promise<string | null> {
     unload: (modelPath) => unloadModel({ model_path: modelPath }),
     matches: modelIdsMatch,
   });
-  clearChatSelectionFor(unloadedAliases);
+  // Only when the row's model is really gone. A reload during the run leaves it
+  // resident and still usable, so emptying the picker would be wrong.
+  if (stillResident === null) clearChatSelectionFor(unloadedAliases);
   return stillResident;
 }
 

@@ -71,6 +71,9 @@ test("a target that survives its own unload is reported still resident", async (
   // Two passes, then it gives up and names it rather than looping.
   assert.deepEqual(unloaded, ["unsloth/Qwen3-4B", "unsloth/Qwen3-4B"]);
   assert.equal(result.stillResident, "unsloth/Qwen3-4B");
+  // Both are set together here, so the caller must key the picker clear on
+  // stillResident: the aliases alone would empty it while the model still runs.
+  assert.ok(result.unloadedAliases.length > 0);
 });
 
 test("a cached row with nothing resident is still unloaded by name", async () => {
