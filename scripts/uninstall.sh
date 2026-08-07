@@ -188,24 +188,50 @@ $_roots_from_conf"
     fi
 }
 
-# Set by _remove_path when an rm fails, read by the closing summary. Cleared up front so a
-# stale file from an interrupted run cannot make this one report a failure it never had.
-_REMOVE_FAILED_FLAG="${TMPDIR:-/tmp}/.unsloth-uninstall-failed.$$"
-rm -f "$_REMOVE_FAILED_FLAG" 2>/dev/null || true
-
-# Set when a removed install root actually held studio.db, read by the closing summary.
+# Two pieces of state the closing summary needs, carried in files rather than variables:
+# custom roots are removed inside a pipeline subshell, where an assignment would never
+# reach the summary.
+#   remove-failed  an rm failed, or a root was skipped while still holding data
+#   db-removed     a removed install root actually held studio.db
 # studio.db is what holds chat_threads/chat_messages and the saved provider keys
 # (backend/storage/studio_db.py, providers_db.py, both via studio_root()), and it lives
 # under the install root, so an env-mode install keeps it inside the custom root. A bare
 # run with neither variable exported cannot discover that root, so the summary must not
-# claim the history is gone unless a database was really deleted. Also a marker file, not
-# a variable: custom roots are removed inside a pipeline subshell.
-_DB_REMOVED_FLAG="${TMPDIR:-/tmp}/.unsloth-uninstall-db-removed.$$"
-rm -f "$_DB_REMOVED_FLAG" 2>/dev/null || true
+# claim the history is gone unless a database was really deleted.
+#
+# mktemp -d, not a PID-derived name under $TMPDIR: the directory is private (0700) and
+# unpredictable, so the markers cannot collide with, or be pre-created by, anything else.
+_MARKER_DIR=$(mktemp -d 2>/dev/null || true)
+_REMOVE_FAILED_FLAG=""
+_DB_REMOVED_FLAG=""
+if [ -n "$_MARKER_DIR" ] && [ -d "$_MARKER_DIR" ]; then
+    _REMOVE_FAILED_FLAG="$_MARKER_DIR/remove-failed"
+    _DB_REMOVED_FLAG="$_MARKER_DIR/db-removed"
+fi
+
+# `printf`, never `: > "$f"`. `:` is a POSIX special builtin, so a redirection error on it
+# terminates a non-interactive shell outright, and `2>/dev/null || true` does not stop it:
+# dash exits 2 and busybox ash exits 1, aborting the uninstall partway through. printf is
+# a regular builtin, so the same failure is just a nonzero status.
+_set_marker() {
+    [ -n "$1" ] || return 0
+    printf '' > "$1" 2>/dev/null || true
+    return 0
+}
+_marker_set() { [ -n "$1" ] && [ -f "$1" ]; }
+
+# EXIT, not a line at the end of main: --help returns early, an unknown argument exits
+# non-zero, and `set -e` can fire partway through, none of which would reach it.
+_cleanup_markers() {
+    if [ -n "$_MARKER_DIR" ]; then
+        rm -rf "$_MARKER_DIR" 2>/dev/null || true
+    fi
+}
+trap _cleanup_markers EXIT
 
 # Record whether the install root about to be removed carries a studio.db.
 _note_studio_db() {
-    [ -f "$1/studio.db" ] && { : > "$_DB_REMOVED_FLAG" 2>/dev/null || true; }
+    [ -f "$1/studio.db" ] && _set_marker "$_DB_REMOVED_FLAG"
     return 0
 }
 
@@ -218,7 +244,7 @@ _remove_path() {
             echo "  could not remove: $_p" >&2
             # A marker file, not a variable: custom roots are removed inside a pipeline
             # subshell, where an assignment would never reach the summary below.
-            : > "$_REMOVE_FAILED_FLAG" 2>/dev/null || true
+            _set_marker "$_REMOVE_FAILED_FLAG"
         fi
     fi
 }
@@ -359,7 +385,7 @@ _unsloth_uninstall_main() {
             # install.sh accepts any writable root, so this can be a real install under a
             # path the deny list covers (/var/tmp/studio needs no elevation). Nothing is
             # deleted, and it holds studio.db and the auth data, so the summary must say so.
-            [ -d "$_custom_root" ] && { : > "$_REMOVE_FAILED_FLAG" 2>/dev/null || true; }
+            [ -d "$_custom_root" ] && _set_marker "$_REMOVE_FAILED_FLAG"
             continue
         fi
         if ! _is_studio_root "$_custom_root"; then
@@ -662,12 +688,11 @@ _unsloth_uninstall_main() {
 
     echo ""
     echo "Unsloth Studio uninstalled."
-    if [ -f "$_REMOVE_FAILED_FLAG" ]; then
-        rm -f "$_REMOVE_FAILED_FLAG" 2>/dev/null || true
+    if _marker_set "$_REMOVE_FAILED_FLAG"; then
         echo "Note: some paths could not be removed (see 'could not remove:' above), so the"
         echo "      signed-in session, saved provider API keys and local chat history may"
         echo "      still be on disk. Remove those paths by hand to clear them."
-    elif [ -f "$_DB_REMOVED_FLAG" ]; then
+    elif _marker_set "$_DB_REMOVED_FLAG"; then
         echo "Note: this also removed the app's WebView data and studio.db, so the signed-in"
         echo "      session, saved provider API keys and local chat history are gone."
     else
@@ -678,7 +703,6 @@ _unsloth_uninstall_main() {
         echo "      No studio.db was found, so any saved provider API keys and chat history in"
         echo "      an install root this run did not see are still on disk."
     fi
-    rm -f "$_DB_REMOVED_FLAG" 2>/dev/null || true
     echo "Note: Hugging Face model cache at ~/.cache/huggingface was left in place."
     echo "Remove it manually with 'rm -rf ~/.cache/huggingface/hub' if desired."
     # Env-mode installs leave no breadcrumb in $HOME, so a custom root can

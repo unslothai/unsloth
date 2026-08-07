@@ -10,6 +10,13 @@
 function Uninstall-UnslothStudio {
     $ErrorActionPreference = "Continue"
 
+    # Reset both summary flags at entry. The documented form is `irm ... | iex`, which
+    # defines this function in the caller's session, so a second run in the same window
+    # would otherwise inherit the first run's state: a past failure would keep reporting
+    # failure, and a past studio.db removal would claim the keys and history are gone.
+    $script:RemoveFailed = $false
+    $script:StudioDbRemoved = $false
+
     function _Usage {
         Write-Host @'
 Unsloth Studio uninstaller (Windows PowerShell).
@@ -441,10 +448,33 @@ Environment:
         # Trailing \ spares "<bid>2\EBWebView".
         $pattern = "*" + [System.Management.Automation.WildcardPattern]::Escape($webviewProfile) + "\*"
         try {
-            foreach ($proc in (Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe'" -ErrorAction SilentlyContinue)) {
+            $wvProcs = @(Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe'" -ErrorAction SilentlyContinue)
+            # Parent lookup for the ancestor walk below. Built from the WebView2 processes
+            # themselves, which is all the chain ever passes through.
+            $parentOf = @{}
+            foreach ($p in $wvProcs) { $parentOf[[int]$p.ProcessId] = [int]$p.ParentProcessId }
+            # WebView2 is Chromium's process model: one browser process per host app, and the
+            # renderer, GPU and utility helpers are children of THAT browser process, not of
+            # unsloth-studio.exe. Checking only the immediate parent therefore matches the
+            # browser and misses every helper, and Stop-Process is not recursive, so the
+            # helpers keep files under EBWebView locked until _RemovePath gives up.
+            # Depth-capped so a PID-reuse cycle cannot spin here.
+            $isOurs = {
+                param($StartPid)
+                $cur = $StartPid
+                for ($hop = 0; $hop -lt 12; $hop++) {
+                    if (-not $parentOf.ContainsKey($cur)) { return $false }
+                    $parent = $parentOf[$cur]
+                    if ($studioPids -contains $parent) { return $true }
+                    if ($parent -eq $cur -or $parent -le 0) { return $false }
+                    $cur = $parent
+                }
+                return $false
+            }
+            foreach ($proc in $wvProcs) {
                 # CommandLine is null across an elevation boundary: fall back to the parent chain.
                 $mine = if ($proc.CommandLine) { $proc.CommandLine -ilike $pattern }
-                        else { $studioPids -contains [int]$proc.ParentProcessId }
+                        else { & $isOurs ([int]$proc.ProcessId) }
                 if ($mine) { try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue } catch { } }
             }
         } catch { }
@@ -561,8 +591,24 @@ Environment:
     # Runtime data, created at first launch rather than by install.ps1: LOCALAPPDATA holds the
     # EBWebView profile (a leftover copy serves a stale frontend), APPDATA the app config dir.
     _Step "Removing WebView caches and app data (ai.unsloth.studio)..."
-    if ($env:LOCALAPPDATA) { _RemovePath (Join-Path $env:LOCALAPPDATA "ai.unsloth.studio") }
-    if ($env:APPDATA) { _RemovePath (Join-Path $env:APPDATA "ai.unsloth.studio") }
+    # Fall back to the known folder when the variable is missing (service and CI contexts
+    # drop them), and count an unresolvable one as incomplete cleanup: silently skipping it
+    # would leave the profile on disk while the summary reports the session as gone.
+    foreach ($known in @(
+        @{ Var = $env:LOCALAPPDATA; Folder = 'LocalApplicationData' },
+        @{ Var = $env:APPDATA;      Folder = 'ApplicationData' }
+    )) {
+        $base = $known.Var
+        if ([string]::IsNullOrWhiteSpace($base)) {
+            $base = try { [Environment]::GetFolderPath($known.Folder) } catch { $null }
+        }
+        if ([string]::IsNullOrWhiteSpace($base)) {
+            _Substep "could not resolve $($known.Folder); WebView data may remain" "Yellow"
+            $script:RemoveFailed = $true
+            continue
+        }
+        _RemovePath (Join-Path $base "ai.unsloth.studio")
+    }
 
     # ── Remove desktop and Start Menu shortcuts ──
     _Step "Removing desktop and Start Menu shortcuts..."

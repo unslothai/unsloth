@@ -302,6 +302,86 @@ case "$_out" in
     *) echo "  PASS: linux: deny-listed root counts as incomplete removal"; PASS=$((PASS+1)) ;;
 esac
 
+# ── 3i. An unusable TMPDIR must not abort the run. The summary markers are written with
+# `printf`, not `: >`: `:` is a POSIX special builtin, so a redirection error on it kills a
+# non-interactive shell outright (dash exits 2, busybox ash 1) and `2>/dev/null || true`
+# does not stop it. The uninstall would then stop partway with most of the tree still there. ──
+H=$(new_home)
+mkdir -p "$H/.cache/$BID" "$H/.unsloth/studio/unsloth_studio"
+: > "$H/.unsloth/studio/unsloth_studio/.unsloth-studio-owned"
+: > "$H/.unsloth/studio/studio.db"
+printf '#!/bin/sh\necho Linux\n' > "$STUB_BIN/uname"; chmod +x "$STUB_BIN/uname"
+for _sh in sh dash busybox; do
+    command -v "$_sh" >/dev/null 2>&1 || continue
+    _H2=$(new_home)
+    mkdir -p "$_H2/.cache/$BID" "$_H2/.unsloth/studio/unsloth_studio"
+    : > "$_H2/.unsloth/studio/unsloth_studio/.unsloth-studio-owned"
+    _rc=0
+    # busybox needs its applet name as a separate argument; spelled out per branch
+    # rather than word-splitting one variable.
+    if [ "$_sh" = busybox ]; then
+        env -u UNSLOTH_STUDIO_HOME -u STUDIO_HOME \
+            -u XDG_CACHE_HOME -u XDG_DATA_HOME -u XDG_CONFIG_HOME -u XDG_STATE_HOME \
+            TMPDIR="$_TMP_ROOT/no-such-tmpdir" HOME="$_H2" PATH="$STUB_BIN:$PATH" \
+            busybox sh "$UNINSTALL_SH" >/dev/null 2>&1 || _rc=$?
+    else
+        env -u UNSLOTH_STUDIO_HOME -u STUDIO_HOME \
+            -u XDG_CACHE_HOME -u XDG_DATA_HOME -u XDG_CONFIG_HOME -u XDG_STATE_HOME \
+            TMPDIR="$_TMP_ROOT/no-such-tmpdir" HOME="$_H2" PATH="$STUB_BIN:$PATH" \
+            "$_sh" "$UNINSTALL_SH" >/dev/null 2>&1 || _rc=$?
+    fi
+    if [ "$_rc" = 0 ]; then
+        echo "  PASS: $_sh: unusable TMPDIR did not abort the run"; PASS=$((PASS+1))
+    else
+        echo "  FAIL: $_sh: unusable TMPDIR aborted with rc=$_rc"; FAIL=$((FAIL+1))
+    fi
+    assert_gone "$_sh: cleanup still completed with an unusable TMPDIR" "$_H2/.cache/$BID"
+done
+
+# ── 3j. The marker directory is private and removed on the way out, not left in $TMPDIR ──
+H=$(new_home)
+_before=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'tmp.*' 2>/dev/null | wc -l)
+run_uninstall "$H" Linux
+_after=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'tmp.*' 2>/dev/null | wc -l)
+if [ "$_before" = "$_after" ]; then
+    echo "  PASS: linux: marker directory cleaned up on exit"; PASS=$((PASS+1))
+else
+    echo "  FAIL: linux: leaked a temp dir ($_before -> $_after)"; FAIL=$((FAIL+1))
+fi
+
+# ── 3k. _set_marker itself must survive a write it cannot perform. 3i only proves the
+# mktemp -d guard holds, since an unusable TMPDIR leaves the marker path empty and the
+# redirection never runs. This drives the redirection directly: the marker directory
+# exists at startup and is gone by the time the write happens, which is what an operator
+# clearing /tmp mid-run looks like. With `: >` the shell dies here and takes the rest of
+# the uninstall with it. ──
+_SM_FILE=$(mktemp "$_TMP_ROOT/setmarker.XXXXXX")
+sed -n '/^_set_marker() {/,/^}/p' "$UNINSTALL_SH" > "$_SM_FILE"
+if [ ! -s "$_SM_FILE" ]; then
+    echo "  FAIL: could not extract _set_marker"; FAIL=$((FAIL+1))
+else
+    for _sh in dash busybox sh; do
+        command -v "$_sh" >/dev/null 2>&1 || continue
+        _probe=$(mktemp "$_TMP_ROOT/probe.XXXXXX")
+        {
+            cat "$_SM_FILE"
+            echo '_set_marker "'"$_TMP_ROOT"'/gone-dir/marker"'
+            echo 'echo SURVIVED'
+        } > "$_probe"
+        if [ "$_sh" = busybox ]; then
+            _got=$(busybox sh "$_probe" 2>/dev/null)
+        else
+            _got=$("$_sh" "$_probe" 2>/dev/null)
+        fi
+        if [ "$_got" = "SURVIVED" ]; then
+            echo "  PASS: $_sh: _set_marker survives an impossible write"; PASS=$((PASS+1))
+        else
+            echo "  FAIL: $_sh: _set_marker killed the shell (special-builtin redirection)"
+            FAIL=$((FAIL+1))
+        fi
+    done
+fi
+
 # ── 4. Nothing to remove is a clean no-op (fresh HOME, exit 0) ──
 H=$(new_home)
 if run_uninstall "$H" Darwin; then
