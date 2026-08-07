@@ -1809,3 +1809,147 @@ def test_a_split_is_only_scanned_once():
 
     assert len(reads) == after_one, "the split was scanned again"
     assert seen["ds"] is first, "the same split gave a different answer"
+
+
+# --- round 7: pickling, mutation, predict's contract, single-pass probes -----
+
+
+def _late_cap_helpers():
+    """`evaluate`/`predict` wrapped onto a stub, so the late cap can be driven
+    without standing up a real trainer."""
+    from unsloth.models.rl import _wrap_sft_evaluate_cap
+
+    seen = {}
+
+    class Stub:
+        def evaluate(self, eval_dataset = None, **kw):
+            seen["ds"] = eval_dataset
+
+        def predict(self, test_dataset = None, **kw):
+            seen["ds"] = test_dataset
+
+    _wrap_sft_evaluate_cap(Stub)
+    return Stub, seen
+
+
+class _EvalArgs:
+    def __init__(self, cap, max_length = None):
+        self.max_seq_length = cap
+        self.max_length = max_length
+        self.eval_packing = None
+        self.packing = False
+        self.completion_only_loss = None
+        self.assistant_only_loss = False
+        self.truncation_mode = "keep_start"
+
+
+
+def test_the_capped_wrappers_are_picklable():
+    """A DataLoader worker under `spawn` pickles the split. Defined inside
+    `_wrap_sft_evaluate_cap`, the classes carry a `<locals>` qualname and worker
+    startup dies before a single row is evaluated."""
+    import pickle
+
+    from unsloth.models import rl
+
+    for name in ("_CappedBase", "_CappedRows"):
+        cls = getattr(rl, name)
+        assert "<locals>" not in cls.__qualname__, f"{name} is not at module scope"
+
+    rows = [{"input_ids": list(range(8)), "attention_mask": [1] * 8}]
+    wrapper = rl._CappedRows(rows, slice(None, 4), (), ("input_ids", "attention_mask"))
+    revived = pickle.loads(pickle.dumps(wrapper))
+    assert [r["input_ids"] for r in revived] == [[0, 1, 2, 3]]
+
+
+def test_the_stream_wrapper_is_picklable_too():
+    import pickle
+
+    from unsloth.models import rl
+
+    rows = [{"input_ids": list(range(8)), "attention_mask": [1] * 8}]
+    stream = rl._capped_stream(rows, slice(None, 4), (), ("input_ids", "attention_mask"))
+    assert "<locals>" not in type(stream).__qualname__
+    revived = pickle.loads(pickle.dumps(stream))
+    assert [r["input_ids"] for r in revived] == [[0, 1, 2, 3]]
+
+
+def test_probing_a_generator_does_not_eat_its_first_row():
+    """`iter(gen) is gen`, so reading a row off it consumes that row for good
+    and the split silently evaluates one example short."""
+    from unsloth.models.rl import _column_names
+
+    def _gen():
+        for i in range(3):
+            yield {"input_ids": [i] * 4, "attention_mask": [1] * 4}
+
+    names, source = _column_names(_gen())
+    assert "input_ids" in names
+    assert [r["input_ids"][0] for r in source] == [0, 1, 2], "the first row was eaten"
+
+
+def test_probing_a_rewindable_split_hands_it_straight_back():
+    from datasets import Dataset
+
+    from unsloth.models.rl import _column_names
+
+    ds = Dataset.from_list([{"input_ids": [1, 2], "attention_mask": [1, 1]}])
+    names, source = _column_names(ds)
+    assert "input_ids" in names and source is ds
+
+
+def test_predict_keeps_every_row_it_was_given():
+    """`predict` returns one prediction per row IN ORDER. Dropping the
+    unsupervised ones silently shortens and shifts the output relative to the
+    dataset the caller zipped it back onto."""
+    from datasets import Dataset
+
+    ids = list(range(8))
+    rows = Dataset.from_list([
+        {"input_ids": ids, "attention_mask": [1] * 8, "labels": list(ids)},
+        {"input_ids": ids, "attention_mask": [1] * 8, "labels": [-100] * 8},
+    ])
+    Stub, seen = _late_cap_helpers()
+    stub = Stub()
+    stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH)
+
+    stub.predict(test_dataset = rows)
+    assert len(seen["ds"]) == 2, "predict dropped a row it must return a prediction for"
+
+    # evaluate still drops it: a loss over an all -100 row is meaningless.
+    stub.evaluate(eval_dataset = rows)
+    assert len(seen["ds"]) == 1
+
+
+def test_the_memo_does_not_serve_a_stale_cap_for_a_mutable_split():
+    """The same list reused across two calls, with rows appended in between."""
+    long_row = list(range(_MODEL_MAX_SEQ_LENGTH * 2))
+
+    def _row():
+        return {"input_ids": list(long_row), "attention_mask": [1] * len(long_row)}
+
+    rows = [_row()]
+    Stub, seen = _late_cap_helpers()
+    stub = Stub()
+    stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH)
+
+    stub.evaluate(eval_dataset = rows)
+    assert len(list(seen["ds"])) == 1
+
+    rows.append(_row())
+    stub.evaluate(eval_dataset = rows)
+    assert len(list(seen["ds"])) == 2, "the memo served a cap taken before the append"
+
+
+def test_the_memo_still_reuses_an_unchanged_datasets_split():
+    """The whole point of the memo: an eval every N steps must not rescan."""
+    _, tok = _load_plain()
+    late = _tokenized_dataset(tok)
+    Stub, seen = _late_cap_helpers()
+    stub = Stub()
+    stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH)
+
+    stub.evaluate(eval_dataset = late)
+    first = seen["ds"]
+    stub.evaluate(eval_dataset = late)
+    assert seen["ds"] is first

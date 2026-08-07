@@ -574,6 +574,149 @@ def _wrap_grpo_generate_and_score(trainer_cls):
     trainer_cls._generate_and_score_completions = wrapped
 
 
+_PER_TOKEN = (
+    "input_ids",
+    "attention_mask",
+    "labels",
+    "completion_mask",
+    "assistant_masks",
+    "token_type_ids",
+    "position_ids",
+)
+
+def _column_names(dataset):
+    """The split's columns, from metadata AND from a row.
+
+    Both, because either alone is wrong. A `torch.utils.data.Dataset`, a list
+    or any custom map-style split carries no `column_names`, and reading that
+    as "raw text, prep will tokenize it" left a pre-tokenized one uncapped on
+    a path where `args.max_length` is already None. And a `with_transform`
+    dataset reports its BACKING columns (`text`) while yielding `input_ids`,
+    so trusting the metadata alone misses it in the other direction.
+
+    Returns the split to actually USE alongside the names. `iter(gen) is gen`
+    for a bare generator or any other single-pass iterator, so reading a row off
+    it consumes that row for good and the split silently evaluates one example
+    short. Those get the probed row chained back on the front instead.
+    """  # noqa: D208
+    names = set(getattr(dataset, "column_names", None) or ())
+    source = dataset
+    try:
+        iterator = iter(dataset)
+        single_pass = iterator is dataset
+        row = next(iterator, None)
+        if single_pass and row is not None:
+            import itertools
+            source = itertools.chain([row], iterator)
+    except Exception:
+        row = None
+    if isinstance(row, dict):
+        names.update(row.keys())
+    return tuple(names), source
+
+class _CappedBase:
+    """A read-side cap for a split that cannot be rewritten in place.
+
+    `map`/`filter` belong to `datasets`; a plain `torch.utils.data.Dataset` or
+    a list has neither, and a `with_transform` dataset has them but rebuilds
+    its rows on every read, so mapping it writes the backing table while the
+    reader keeps handing back the untruncated row. Both reach the collator
+    through iteration, and the map-style subclass below adds indexing.
+    """
+
+    def __init__(self, inner, cut, supervision, per_token):
+        self._inner = inner
+        self._cut = cut
+        self._supervision = tuple(supervision)
+        self._per_token = tuple(per_token)
+
+    def _slice(self, row):
+        if not isinstance(row, dict):
+            return row
+        return {k: (v[self._cut] if k in self._per_token else v) for k, v in row.items()}
+
+    def _keep(self, row):
+        if not self._supervision or not isinstance(row, dict):
+            return True
+        columns = [c for c in self._supervision if c in row]
+        if not columns:
+            return True
+        return any(
+            all((x != -100) if n == "labels" else x for n, x in zip(columns, values))
+            for values in zip(*[row[c] for c in columns])
+        )
+
+    def __iter__(self):
+        for row in self._inner:
+            cut = self._slice(row)
+            if self._keep(cut):
+                yield cut
+
+    def __getattr__(self, attribute):
+        # Anything else the trainer asks for (column_names, features, ...) is
+        # the wrapped split's own answer. Never a dunder, and never our own
+        # state: a DataLoader worker pickles the split, and `__setstate__`
+        # looked up before `__init__` has run would recurse on `_inner`
+        # forever.
+        inner = self.__dict__.get("_inner")
+        if inner is None or attribute.startswith("__"):
+            raise AttributeError(attribute)
+        return getattr(inner, attribute)
+
+class _CappedRows(_CappedBase):
+    """The map-style flavour: a split with a length and an index.
+
+    Rows left with no supervised token are dropped, which changes the length,
+    so the surviving indices are resolved once up front.
+    """
+
+    def __init__(self, inner, cut, supervision, per_token):
+        super().__init__(inner, cut, supervision, per_token)
+        self._index = [i for i in range(len(inner)) if self._keep(self._slice(inner[i]))]
+
+    def __len__(self):
+        return len(self._index)
+
+    def __getitem__(self, i):
+        return self._slice(self._inner[self._index[i]])
+
+    def __iter__(self):
+        for i in range(len(self._index)):
+            yield self[i]
+
+try:
+    from torch.utils.data import IterableDataset as _IterableDatasetBase
+except Exception:      # torch's data stack is optional at import time
+    _IterableDatasetBase = object
+
+
+class _CappedStream(_CappedBase, _IterableDatasetBase):
+    """The iterable-style flavour, and it has to BE one.
+
+    Trainer and DataLoader both split map-style from iterable-style with
+    `isinstance(dataset, IterableDataset)`, not by looking for `__iter__`, so
+    wrapping a stream in a plain object got it a `SequentialSampler` asking for
+    the `len()` a stream never had. Declared here rather than built with `type()`
+    inside a function: a DataLoader worker under `spawn` pickles the split by
+    module and qualified name, and a class with neither is unpicklable.
+    """
+
+
+def _capped_stream(inner, cut, supervision, per_token):
+    return _CappedStream(inner, cut, supervision, per_token)
+
+
+def _is_stream(dataset):
+    """Iterable-style, by the same test the DataLoader applies."""
+    try:
+        from torch.utils.data import IterableDataset
+        if isinstance(dataset, IterableDataset):
+            return True
+    except Exception:
+        pass
+    return not hasattr(dataset, "__len__") or not hasattr(dataset, "__getitem__")
+
+
 def _wrap_sft_evaluate_cap(trainer_cls):
     """Cap a pre-tokenized split handed to `evaluate()`/`predict()` later on.
 
@@ -599,136 +742,6 @@ def _wrap_sft_evaluate_cap(trainer_cls):
     split, drops rows left with no supervised token, and handles a stream.
     """
 
-    _PER_TOKEN = (
-        "input_ids",
-        "attention_mask",
-        "labels",
-        "completion_mask",
-        "assistant_masks",
-        "token_type_ids",
-        "position_ids",
-    )
-
-    def _column_names(dataset):
-        """The split's columns, from metadata AND from a row.
-
-        Both, because either alone is wrong. A `torch.utils.data.Dataset`, a list
-        or any custom map-style split carries no `column_names`, and reading that
-        as "raw text, prep will tokenize it" left a pre-tokenized one uncapped on
-        a path where `args.max_length` is already None. And a `with_transform`
-        dataset reports its BACKING columns (`text`) while yielding `input_ids`,
-        so trusting the metadata alone misses it in the other direction.
-        """
-        names = set(getattr(dataset, "column_names", None) or ())
-        try:
-            row = next(iter(dataset), None)
-        except Exception:
-            row = None
-        if isinstance(row, dict):
-            names.update(row.keys())
-        return tuple(names)
-
-    class _CappedBase:
-        """A read-side cap for a split that cannot be rewritten in place.
-
-        `map`/`filter` belong to `datasets`; a plain `torch.utils.data.Dataset` or
-        a list has neither, and a `with_transform` dataset has them but rebuilds
-        its rows on every read, so mapping it writes the backing table while the
-        reader keeps handing back the untruncated row. Both reach the collator
-        through iteration, and the map-style subclass below adds indexing.
-        """
-
-        def __init__(self, inner, cut, supervision, per_token):
-            self._inner = inner
-            self._cut = cut
-            self._supervision = tuple(supervision)
-            self._per_token = tuple(per_token)
-
-        def _slice(self, row):
-            if not isinstance(row, dict):
-                return row
-            return {k: (v[self._cut] if k in self._per_token else v) for k, v in row.items()}
-
-        def _keep(self, row):
-            if not self._supervision or not isinstance(row, dict):
-                return True
-            columns = [c for c in self._supervision if c in row]
-            if not columns:
-                return True
-            return any(
-                all((x != -100) if n == "labels" else x for n, x in zip(columns, values))
-                for values in zip(*[row[c] for c in columns])
-            )
-
-        def __iter__(self):
-            for row in self._inner:
-                cut = self._slice(row)
-                if self._keep(cut):
-                    yield cut
-
-        def __getattr__(self, attribute):
-            # Anything else the trainer asks for (column_names, features, ...) is
-            # the wrapped split's own answer. Never a dunder, and never our own
-            # state: a DataLoader worker pickles the split, and `__setstate__`
-            # looked up before `__init__` has run would recurse on `_inner`
-            # forever.
-            inner = self.__dict__.get("_inner")
-            if inner is None or attribute.startswith("__"):
-                raise AttributeError(attribute)
-            return getattr(inner, attribute)
-
-    class _CappedRows(_CappedBase):
-        """The map-style flavour: a split with a length and an index.
-
-        Rows left with no supervised token are dropped, which changes the length,
-        so the surviving indices are resolved once up front.
-        """
-
-        def __init__(self, inner, cut, supervision, per_token):
-            super().__init__(inner, cut, supervision, per_token)
-            self._index = [i for i in range(len(inner)) if self._keep(self._slice(inner[i]))]
-
-        def __len__(self):
-            return len(self._index)
-
-        def __getitem__(self, i):
-            return self._slice(self._inner[self._index[i]])
-
-        def __iter__(self):
-            for i in range(len(self._index)):
-                yield self[i]
-
-    _stream_class = []
-
-    def _capped_stream(inner, cut, supervision, per_token):
-        """The iterable-style flavour, and it has to BE one.
-
-        Trainer and DataLoader both split map-style from iterable-style with
-        `isinstance(dataset, IterableDataset)`, not by looking for `__iter__`:
-        Trainer skips building a sampler only for the iterable case. So wrapping
-        a stream in a plain object got it a `SequentialSampler`, which asks for
-        the `len()` a stream never had, and the eval call died there instead of
-        yielding capped rows. Built lazily and once, so that the class exists
-        even where torch's data stack does not import.
-        """
-        if not _stream_class:
-            try:
-                from torch.utils.data import IterableDataset
-                _stream_class.append(type("_CappedStream", (_CappedBase, IterableDataset), {}))
-            except Exception:
-                _stream_class.append(_CappedBase)
-        return _stream_class[0](inner, cut, supervision, per_token)
-
-    def _is_stream(dataset):
-        """Iterable-style, by the same test the DataLoader applies."""
-        try:
-            from torch.utils.data import IterableDataset
-            if isinstance(dataset, IterableDataset):
-                return True
-        except Exception:
-            pass
-        return not hasattr(dataset, "__len__") or not hasattr(dataset, "__getitem__")
-
     def _supervision_columns(args, names):
         """Columns that decide whether a row still has a supervised token.
 
@@ -750,8 +763,8 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             columns.append("assistant_masks")
         return columns
 
-    def _cap(dataset, cap, args):
-        names = _column_names(dataset)
+    def _cap(dataset, cap, args, drop_unsupervised = True):
+        names, dataset = _column_names(dataset)
         if "input_ids" not in names:
             # No tokens here yet, so there is nothing to cut. TRL does not
             # tokenize a late split either -- `_prepare_dataset` runs only from
@@ -781,7 +794,12 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             keep_end = getattr(args, "truncation_mode", "keep_start") == "keep_end"
             cut = slice(-cap, None) if keep_end else slice(None, cap)
             per_token = [c for c in names if c in _PER_TOKEN]
-            supervision = _supervision_columns(args, names)
+            # Never on the predict path. Dropping rows is right for a loss, which
+            # is meaningless over a row with no supervised token, and wrong for
+            # `predict`, whose contract is one prediction per row IN ORDER: a
+            # caller zipping the output back onto its own dataframe would silently
+            # get a shorter, shifted column.
+            supervision = _supervision_columns(args, names) if drop_unsupervised else []
             # A stream has no length and cannot be rewound, so there is no prefix
             # scan to skip the work with, and indexing it does not even fail
             # loudly: on datasets 4.x `dataset[0]` reads 0 as a COLUMN name and
@@ -852,7 +870,22 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         except Exception:
             return dataset  # never turn an eval call into a hard error
 
-    def _cap_cached(trainer, dataset, cap):
+    def _memo_token(dataset):
+        """What makes this split's cap reusable, or None if nothing does.
+
+        Identity alone is not enough: the same list or custom map-style split can
+        be appended to or shortened between two `evaluate()` calls, and the memo
+        would hand back a wrapper whose snapshotted indices no longer describe
+        it -- rows silently missing, or an index that raises during loading.
+        `datasets` splits are content-addressed by `_fingerprint`, which moves
+        whenever the rows do, so those are safe to keep. Anything else is
+        recomputed, which is the cheap case anyway: the scan this memo exists to
+        skip needs a materialised `input_ids` column that these do not have.
+        """
+        fingerprint = getattr(dataset, "_fingerprint", None)
+        return None if fingerprint is None else fingerprint
+
+    def _cap_cached(trainer, dataset, cap, drop_unsupervised = True):
         """Cap a split once per object.
 
         `evaluate()` runs at every eval step of a training run, and the scan that
@@ -860,36 +893,41 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         column each time. Keep the answer, keyed on the split object and holding a
         reference to it, so a later split cannot inherit its `id()`.
         """
+        token = _memo_token(dataset)
+        if token is None:
+            return _cap(dataset, cap, trainer.args, drop_unsupervised)
         memo = getattr(trainer, "_unsloth_eval_cap_memo", None)
         if memo is None:
             memo = {}
             try:
                 trainer._unsloth_eval_cap_memo = memo
             except Exception:
-                return _cap(dataset, cap, trainer.args)
-        seen = memo.get(id(dataset))
-        if seen is not None and seen[0] is dataset and seen[1] == cap:
+                return _cap(dataset, cap, trainer.args, drop_unsupervised)
+        key = (id(dataset), drop_unsupervised)
+        seen = memo.get(key)
+        if seen is not None and seen[0] is dataset and seen[1] == cap and seen[3] == token:
             return seen[2]
-        capped = _cap(dataset, cap, trainer.args)
-        memo[id(dataset)] = (dataset, cap, capped)
+        capped = _cap(dataset, cap, trainer.args, drop_unsupervised)
+        memo[key] = (dataset, cap, capped, token)
         return capped
 
-    def _cap_splits(trainer, given, cap):
+    def _cap_splits(trainer, given, cap, drop_unsupervised = True):
         if isinstance(given, dict):
-            capped = {k: _cap_cached(trainer, v, cap) for k, v in given.items()}
+            capped = {k: _cap_cached(trainer, v, cap, drop_unsupervised)
+                      for k, v in given.items()}
             if all(capped[k] is v for k, v in given.items()):
                 return given
             return capped
-        return _cap_cached(trainer, given, cap)
+        return _cap_cached(trainer, given, cap, drop_unsupervised)
 
-    def _make(original, keyword):
+    def _make(original, keyword, drop_unsupervised):
         def wrapped(self, *args, **kwargs):
             cap = getattr(getattr(self, "args", None), "max_seq_length", None)
             if not cap or getattr(self.args, "max_length", None) is not None:
                 return original(self, *args, **kwargs)
             given = kwargs.get(keyword, args[0] if args else None)
             if given is not None:
-                capped = _cap_splits(self, given, cap)
+                capped = _cap_splits(self, given, cap, drop_unsupervised)
                 if keyword in kwargs:
                     kwargs[keyword] = capped
                 else:
@@ -902,7 +940,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             stored = getattr(self, keyword, None) if keyword == "eval_dataset" else None
             if stored is None:
                 return original(self, *args, **kwargs)
-            capped = _cap_splits(self, stored, cap)
+            capped = _cap_splits(self, stored, cap, drop_unsupervised)
             if capped is stored:
                 return original(self, *args, **kwargs)
             # Swapped onto the trainer rather than passed down as an argument,
@@ -920,11 +958,15 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         wrapped._unsloth_eval_cap_wrapped = True
         return wrapped
 
-    for name, keyword in (("evaluate", "eval_dataset"), ("predict", "test_dataset")):
+    # `predict` keeps every row: its contract is one prediction per row in order.
+    for name, keyword, drop_unsupervised in (
+        ("evaluate", "eval_dataset", True),
+        ("predict", "test_dataset", False),
+    ):
         original = getattr(trainer_cls, name, None)
         if original is None or getattr(original, "_unsloth_eval_cap_wrapped", False):
             continue
-        setattr(trainer_cls, name, _make(original, keyword))
+        setattr(trainer_cls, name, _make(original, keyword, drop_unsupervised))
 
 
 _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER = "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__"
