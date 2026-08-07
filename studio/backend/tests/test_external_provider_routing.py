@@ -22,12 +22,7 @@ TOOL = {
 }
 
 
-def _configure(
-    monkeypatch,
-    selected,
-    provider_type = "custom",
-    base_url = "https://provider.example/v1",
-):
+def _configure(monkeypatch, selected, provider_type = "custom", base_url = None):
     captured = {}
     monkeypatch.setattr(
         inference_mod.providers_db,
@@ -36,7 +31,7 @@ def _configure(
             "id": "saved",
             "display_name": "Saved provider",
             "provider_type": provider_type,
-            "base_url": base_url,
+            "base_url": base_url or "https://provider.example/v1",
             "is_enabled": 1,
             "studio_tool_execution": 1,
         },
