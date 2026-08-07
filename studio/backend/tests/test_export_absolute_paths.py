@@ -515,6 +515,45 @@ def test_gguf_export_relocates_gguf_written_into_the_model_path(tmp_path, monkey
     assert list(save_dir.glob("_tmp_model_*")) == []
 
 
+def test_gguf_export_rejects_symlink_inside_its_owned_temp_tree(tmp_path, monkeypatch):
+    _install_export_backend_stubs(monkeypatch)
+    export_mod = _load_module(
+        "test_core_export_backend_symlinked_output", "core/export/export.py", monkeypatch
+    )
+
+    save_dir = tmp_path / "export"
+    user_owned_gguf = tmp_path / "user-owned.gguf"
+    user_owned_gguf.write_bytes(b"keep")
+    monkeypatch.setattr(export_mod, "resolve_export_write_dir", lambda _value: save_dir)
+
+    class _Model:
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            output_dir = Path(f"{model_save_path}_gguf")
+            output_dir.mkdir(parents = True)
+            link = output_dir / "converted.gguf"
+            try:
+                link.symlink_to(user_owned_gguf)
+            except OSError as exception:
+                pytest.skip(f"symlinks unavailable: {exception}")
+            return {"gguf_files": [str(link)]}
+
+    backend = export_mod.ExportBackend.__new__(export_mod.ExportBackend)
+    backend.current_model = _Model()
+    backend.current_tokenizer = object()
+    backend.current_checkpoint = None
+
+    success, message, output_path = backend.export_gguf(str(save_dir), "Q4_K_M")
+
+    assert success is False
+    assert "symlink" in message
+    assert output_path is None
+    assert user_owned_gguf.read_bytes() == b"keep"
+    assert not (save_dir / "converted.gguf").exists()
+    roots = list(save_dir.glob("_tmp_model_*"))
+    assert len(roots) == 1
+    assert (roots[0] / "model_gguf" / "converted.gguf").is_symlink()
+
+
 def test_gguf_export_relocates_only_reported_files_from_outside_the_owned_root(
     tmp_path, monkeypatch
 ):

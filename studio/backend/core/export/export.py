@@ -1078,32 +1078,38 @@ class ExportBackend:
 
                     # Scan only the owned root; exact reported paths cover external outputs.
                     reported = result if isinstance(result, dict) else {}
-                    produced = {p.resolve() for p in model_tmp_path.rglob("*.gguf") if p.is_file()}
-                    produced.update(
-                        Path(f).resolve()
-                        for f in reported.get("gguf_files") or []
-                        if f and Path(f).is_file()
-                    )
+                    produced = {p for p in model_tmp_path.rglob("*.gguf") if p.is_file()}
+                    produced.update(Path(f) for f in _reported_gguf_files(result) or [])
                     modelfiles = {
-                        p.resolve() for p in model_tmp_path.rglob("Modelfile") if p.is_file()
+                        p for p in model_tmp_path.rglob("Modelfile") if p.is_file()
                     }
                     reported_modelfile = reported.get("modelfile_location")
                     if reported_modelfile and Path(reported_modelfile).is_file():
-                        modelfiles.add(Path(reported_modelfile).resolve())
+                        modelfiles.add(Path(os.path.abspath(os.fspath(reported_modelfile))))
 
                     relocated_ggufs = []
                     for src in sorted(produced):
+                        if src.is_symlink():
+                            raise RuntimeError(
+                                f"GGUF conversion produced a symlink, refusing to relocate it: {src}"
+                            )
                         dest = os.path.join(abs_save_dir, src.name)
                         shutil.move(str(src), dest)
                         relocated_ggufs.append(dest)
                         logger.info(f"Relocated GGUF: {src.name} → {abs_save_dir}/")
                     if not relocated_ggufs:
                         raise RuntimeError(
-                            "GGUF conversion produced no files in its output directory"
+                            "GGUF conversion produced no files: no .gguf outputs for "
+                            f"{abs_save_dir}"
                         )
 
                     if modelfiles:
                         modelfile = sorted(modelfiles)[0]
+                        if modelfile.is_symlink():
+                            raise RuntimeError(
+                                "GGUF conversion produced a symlinked Modelfile, "
+                                f"refusing to relocate it: {modelfile}"
+                            )
                         shutil.move(str(modelfile), os.path.join(abs_save_dir, "Modelfile"))
                         logger.info(f"Relocated Modelfile → {abs_save_dir}/")
                 finally:
