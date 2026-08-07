@@ -1499,7 +1499,7 @@ class TestTheRetryCanReadTheGate:
         from pathlib import Path
 
         src = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
-        for node in ast.walk(ast.parse(src.read_text())):
+        for node in ast.walk(ast.parse(src.read_text(encoding = "utf-8"))):
             if isinstance(node, ast.FunctionDef) and node.name == "load_model":
                 return node
         raise AssertionError("load_model not found")
