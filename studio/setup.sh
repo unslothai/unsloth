@@ -639,14 +639,21 @@ else
     STUDIO_HOME="$HOME/.unsloth/studio"
 fi
 
-# The override is validated, so a typo can no longer cost the cache. Still before
-# any install work: the caches must go while the old frontend is the one on disk.
-_clear_webview_caches
-
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
 VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
 VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"
 VENV_T5_510_DIR="$STUDIO_HOME/.venv_t5_510"
+
+# The override is validated and points at a real installation, so a typo can no longer
+# cost the cache. Gated on the venv because validating the directory is not enough: an
+# override that exists and is writable but holds no Studio install aborts at the venv
+# check further down, and clearing first would make that path cost the cache for a run
+# that then does nothing. A genuinely fresh install has neither a venv nor a cache, so
+# the guard skips nothing real. Still before any install work, which is the ordering
+# that matters: the caches must go while the old frontend is the one on disk.
+if [ -x "$VENV_DIR/bin/python" ]; then
+    _clear_webview_caches
+fi
 
 _STUDIO_OWNED_MARKER=".unsloth-studio-owned"
 _LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"

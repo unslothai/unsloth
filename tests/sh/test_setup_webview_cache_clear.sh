@@ -184,7 +184,7 @@ SETUP_PS1="$SCRIPT_DIR/../../studio/setup.ps1"
 if [ ! -f "$SETUP_PS1" ]; then
     echo "  FAIL: setup.ps1 not found"; FAIL=$((FAIL+1))
 else
-    _ps_call=$(grep -n '^Clear-WebViewCaches[[:space:]]*$' "$SETUP_PS1" | head -n1 | cut -d: -f1)
+    _ps_call=$(grep -n '^[[:space:]]*Clear-WebViewCaches[[:space:]]*$' "$SETUP_PS1" | head -n1 | cut -d: -f1)
     _ps_validate=$(grep -n 'does not exist"$' "$SETUP_PS1" | tail -n1 | cut -d: -f1)
     if [ -z "$_ps_call" ]; then
         echo "  FAIL: setup.ps1 never calls Clear-WebViewCaches"; FAIL=$((FAIL+1))
@@ -197,6 +197,28 @@ else
         FAIL=$((FAIL+1))
     fi
 fi
+
+# ── 7c. An override that EXISTS and is writable but holds no Studio install. Validating
+# the directory is not enough: setup aborts later at the venv check, and clearing first
+# would cost the cache for a run that then does nothing. ──
+_novenv_home=$(new_home)
+_novenv_root="$_TMP_ROOT/exists-but-empty.$$"
+mkdir -p "$_novenv_root"
+mkdir -p "$_novenv_home/.local/share/$BID/WebKitCache"
+: > "$_novenv_home/.local/share/$BID/WebKitCache/asset.js"
+_novenv_out=$(
+    cd "$(dirname "$SETUP_SH")" &&
+    env -u XDG_DATA_HOME -u STUDIO_HOME \
+        HOME="$_novenv_home" UNSLOTH_STUDIO_HOME="$_novenv_root" \
+        UNSLOTH_TAURI_MODE=0 bash "$SETUP_SH" 2>&1
+) && _novenv_rc=0 || _novenv_rc=$?
+if [ "$_novenv_rc" = 0 ]; then
+    echo "  FAIL: override without a venv did not abort"; FAIL=$((FAIL+1))
+else
+    echo "  PASS: override without a venv aborts (rc=$_novenv_rc)"; PASS=$((PASS+1))
+fi
+assert_present "existing-but-empty override leaves the cache alone" \
+    "$_novenv_home/.local/share/$BID/WebKitCache/asset.js"
 
 # ── 8. a bad override must not cost the user their cache ──
 # Every case above extracts the function, so none of them sees where the call sits.
