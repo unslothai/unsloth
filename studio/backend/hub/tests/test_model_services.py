@@ -4469,10 +4469,9 @@ def test_dataset_status_includes_generation(monkeypatch):
 
 @pytest.mark.parametrize("layout", ["flat", "publisher_child"])
 def test_lmstudio_scan_matches_gguf_suffix_case_insensitively(tmp_path, layout):
-    """The custom and models-dir scans lower() the suffix; these two branches did
-    not, so an LM Studio file named .GGUF was invisible only here. Windows and
-    macOS treat the two spellings as one name, so the file is reachable but
-    unlisted."""
+    """The custom and models-dir scans lower() the suffix; these two did not, so a
+    .GGUF was invisible only here. Windows and macOS treat the two spellings as one
+    name, so the file is reachable but unlisted."""
     lm_dir = tmp_path / "models"
     holder = lm_dir if layout == "flat" else lm_dir / "publisher"
     holder.mkdir(parents = True)
