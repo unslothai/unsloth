@@ -10704,8 +10704,7 @@ class LlamaCppBackend:
                     if _paravirtual_cpu_forced and _paravirtual_mmproj_pinnable(server_caps):
                         _pv_mmproj_cpu_pin = ["--no-mmproj-offload"]
                         logger.warning(
-                            "Disabling mmproj GPU offload: this Mac's Metal device "
-                            "is virtualised."
+                            "Disabling mmproj GPU offload: this Mac's Metal device is virtualised."
                         )
 
                 # Option C: --api-key for direct client access when enabled
