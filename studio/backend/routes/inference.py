@@ -2401,9 +2401,9 @@ def _prune_pending(now: float) -> None:
 class _TrackedCancel:
     """Register cancel_event in _CANCEL_REGISTRY for the block's duration.
 
-    Also records the run in state.active_generations so /load and /unload can
-    see which chats a reload would interrupt. Both registries share this event,
-    so either one cancels down the same per-request path.
+    By default, also records the run in state.active_generations so /load and
+    /unload see which local generations a reload would interrupt. Both
+    registries share this event when active-generation tracking is enabled.
     """
 
     def __init__(
@@ -2413,23 +2413,29 @@ class _TrackedCancel:
         thread_id = None,
         model = None,
         kind = "chat",
+        track_active_generation = True,
     ):
         self.event = event
         self.keys = tuple(k for k in keys if k)
         # kind reaches the swap prompt: embeddings and raw completions have no conversation, so
         # naming them chats would offer to stop something the user never started from a thread.
-        self._active = active_generations.ActiveGeneration(
-            event, thread_id = thread_id, model = model, kind = kind
+        self._active = (
+            active_generations.ActiveGeneration(
+                event, thread_id = thread_id, model = model, kind = kind
+            )
+            if track_active_generation
+            else None
         )
 
     @classmethod
-    def for_payload(cls, event: threading.Event, payload, *keys):
+    def for_payload(cls, event: threading.Event, payload, *keys, track_active_generation = True):
         """Track the run against the conversation its request names."""
         return cls(
             event,
             *keys,
             thread_id = getattr(payload, "thread_id", None),
             model = getattr(payload, "model", None),
+            track_active_generation = track_active_generation,
         )
 
     def __enter__(self):
@@ -2444,7 +2450,8 @@ class _TrackedCancel:
             for k in self.keys:
                 if k and _PENDING_CANCELS.pop(k, None) is not None:
                     should_cancel = True
-        self._active.__enter__()
+        if self._active is not None:
+            self._active.__enter__()
         if should_cancel:
             self.event.set()
         return self.event
@@ -2458,7 +2465,8 @@ class _TrackedCancel:
                 bucket.discard(self.event)
                 if not bucket:
                     _CANCEL_REGISTRY.pop(k, None)
-        self._active.__exit__(*exc)
+        if self._active is not None:
+            self._active.__exit__(*exc)
         return False
 
 
@@ -9143,6 +9151,7 @@ async def _proxy_to_external_provider(
                 payload,
                 payload.cancel_id,
                 payload.session_id,
+                track_active_generation = False,
             )
             _external_tracker.__enter__()
         try:

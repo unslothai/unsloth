@@ -57,7 +57,8 @@ def _configure(monkeypatch, selected):
 
     class Tracker:
         @classmethod
-        def for_payload(cls, *_args, **_kwargs):
+        def for_payload(cls, *_args, **kwargs):
+            captured["tracker"] = kwargs
             return cls()
 
         def __enter__(self):
@@ -117,5 +118,6 @@ def test_saved_opt_in_owns_routing_and_empty_selection_falls_through(monkeypatch
     assert path in captured
     if path == "managed":
         assert captured["managed"]["tools"] == [TOOL]
+        assert captured["tracker"]["track_active_generation"] is False
         with pytest.raises(inference_mod.HTTPException):
             _run(_payload(stream = False))

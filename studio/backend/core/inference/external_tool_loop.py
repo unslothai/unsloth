@@ -95,6 +95,7 @@ def _collect_round_delta(
     tool_calls: dict[int, dict[str, Any]],
     assistant_text: list[str],
     assistant_extra_content: dict[str, Any] | None = None,
+    assistant_compaction_blocks: list[dict[str, Any]] | None = None,
     assistant_reasoning_details: list[dict[str, Any]] | None = None,
     assistant_reasoning_content: list[str] | None = None,
 ) -> None:
@@ -102,6 +103,16 @@ def _collect_round_delta(
         return
     tool_event = payload.get("_toolEvent")
     if isinstance(tool_event, Mapping) and assistant_extra_content is not None:
+        compaction_content = tool_event.get("content")
+        if (
+            tool_event.get("type") == "compaction_block"
+            and isinstance(compaction_content, str)
+            and compaction_content
+            and assistant_compaction_blocks is not None
+        ):
+            assistant_compaction_blocks.append(
+                {"type": "compaction", "content": compaction_content}
+            )
         event_google = tool_event.get("google")
         event_arguments = tool_event.get("arguments")
         argument_google = (
@@ -157,9 +168,9 @@ def _collect_round_delta(
                 and thought_signature
                 and assistant_extra_content is not None
             ):
-                assistant_extra_content["google"] = {
-                    "thought_signature": thought_signature,
-                }
+                assistant_extra_content.setdefault("google", {})["thought_signature"] = (
+                    thought_signature
+                )
         raw_calls = delta.get("tool_calls")
         if isinstance(raw_calls, list):
             for raw_call in raw_calls:
@@ -324,6 +335,7 @@ async def stream_external_chat_with_tools(
         round_calls: dict[int, dict[str, Any]] = {}
         assistant_text: list[str] = []
         assistant_extra_content: dict[str, Any] = {}
+        assistant_compaction_blocks: list[dict[str, Any]] = []
         assistant_reasoning_details: list[dict[str, Any]] = []
         assistant_reasoning_content: list[str] = []
         round_finished = False
@@ -387,6 +399,7 @@ async def stream_external_chat_with_tools(
                         round_calls,
                         assistant_text,
                         assistant_extra_content,
+                        assistant_compaction_blocks,
                         assistant_reasoning_details,
                         assistant_reasoning_content,
                     )
@@ -420,6 +433,7 @@ async def stream_external_chat_with_tools(
                         round_calls,
                         assistant_text,
                         assistant_extra_content,
+                        assistant_compaction_blocks,
                         assistant_reasoning_details,
                         assistant_reasoning_content,
                     )
@@ -523,9 +537,14 @@ async def stream_external_chat_with_tools(
                 if not extra_content:
                     raw_call.pop("extra_content", None)
         turn_had_denial = False
+        assistant_content: Any = "".join(assistant_text)
+        if assistant_compaction_blocks:
+            assistant_content = copy.deepcopy(assistant_compaction_blocks)
+            if assistant_text:
+                assistant_content.append({"type": "text", "text": "".join(assistant_text)})
         assistant_message: dict[str, Any] = {
             "role": "assistant",
-            "content": "".join(assistant_text),
+            "content": assistant_content,
         }
         if assistant_extra_content:
             assistant_message["extra_content"] = copy.deepcopy(assistant_extra_content)
@@ -562,7 +581,7 @@ async def stream_external_chat_with_tools(
                 assistant_message.setdefault("extra_content", {})["anthropic"] = {
                     "thinking_blocks": preserved_thinking_blocks,
                 }
-        if executable or assistant_message["content"]:
+        if executable or assistant_content:
             conversation.append(assistant_message)
 
         deferred_noops: list[dict[str, Any]] = []

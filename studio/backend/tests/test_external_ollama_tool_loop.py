@@ -182,9 +182,12 @@ def test_dropped_over_budget_call_unlinks_openai_response_and_keeps_gemini_parts
         [
             [
                 "data: " + json.dumps(event),
+                'data: {"choices":[],"_toolEvent":{"type":"compaction_block","content":"summary"}}',
                 _chunk(
                     delta = {
                         "tool_calls": calls,
+                        "content": "signed",
+                        "extra_content": {"google": {"thought_signature": "sig"}},
                         "reasoning_details": reasoning,
                         "reasoning_content": "think",
                     }
@@ -204,7 +207,11 @@ def test_dropped_over_budget_call_unlinks_openai_response_and_keeps_gemini_parts
     ][-1]
     assert [call["id"] for call in assistant["tool_calls"]] == ["call_0"]
     assert "extra_content" not in assistant["tool_calls"][0]
-    assert assistant["extra_content"]["google"]["hosted_parts"] == [native]
+    assert assistant["extra_content"]["google"] == {"hosted_parts": [native], "thought_signature": "sig"}
+    assert assistant["content"] == [
+        {"type": "compaction", "content": "summary"},
+        {"type": "text", "text": "signed"},
+    ]
     assert assistant["reasoning_details"] == reasoning
     assert assistant["reasoning_content"] == "think"
 
