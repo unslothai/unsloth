@@ -1181,12 +1181,10 @@ def _restore_progress_bars(were_disabled):
 
 
 def _out_of_memory_error(exc):
-    """True if exc, or something it wraps, is an out-of-memory error.
+    """True if exc, or something it wraps, is out of memory.
 
-    The offline retry loads the whole model a second time, which is why the
-    caller collects and empties the cache first, and a large VLM can still
-    exhaust memory there. That is the retry's OWN news: it says nothing about
-    the network error that caused the retry, and must not be reported as one.
+    The offline retry loads the model a second time and a large VLM can exhaust
+    memory there. That is the retry's own news, not the network's.
     """
     types = [MemoryError]
     for holder in (torch, getattr(torch, "cuda", None)):
@@ -1241,19 +1239,12 @@ def _offline_aware_load(fn):
             with _force_hf_offline():
                 return fn(*args, **kwargs)
         except Exception as e:
-            # Report what actually went wrong, which is the ONLINE error: this
-            # retry only runs because that one happened, and it can only succeed
-            # on what is already cached. Its own failure describes an empty
-            # cache, and describes it badly -- under offline mode Transformers
-            # skips the "does not appear to have a file named ..." raise and
-            # falls through with `resolved_archive_file = None`, so what reaches
-            # the user is `AttributeError: 'NoneType' object has no attribute
-            # 'endswith'` from inside `from_pretrained`, with no mention of the
-            # network at all. Seen on Kaggle against a 7B VLM, where the whole
-            # cause was a dropped connection during the download.
-            # The original type is preserved, so a caller retrying on network
-            # errors still sees one, and the offline attempt stays attached as
-            # the cause rather than being thrown away.
+            # Report the ONLINE error: this retry only runs because of it, and
+            # only succeeds on what is cached. Its own failure describes an empty
+            # cache badly -- offline mode skips Transformers' "does not appear to
+            # have a file named" raise, leaving `resolved_archive_file = None`, so
+            # the user got `AttributeError: 'NoneType' ... 'endswith'` with no
+            # mention of the network. Type preserved; the retry stays as __cause__.
             surfaced = e if _out_of_memory_error(e) else online_error
             # Tag so an enclosing _offline_aware_load skips its own redundant retry.
             try:
