@@ -1183,8 +1183,8 @@ def _restore_progress_bars(were_disabled):
 def _out_of_memory_error(exc):
     """True if exc, or something it wraps, is out of memory.
 
-    The offline retry loads the model a second time and a large VLM can exhaust
-    memory there. That is the retry's own news, not the network's.
+    The retry loads the model again and a large VLM can exhaust memory there,
+    which is the retry's own news, not the network's.
     """
     types = [MemoryError]
     for holder in (torch, getattr(torch, "cuda", None)):
@@ -1239,12 +1239,11 @@ def _offline_aware_load(fn):
             with _force_hf_offline():
                 return fn(*args, **kwargs)
         except Exception as e:
-            # Report the ONLINE error: this retry only runs because of it, and
-            # only succeeds on what is cached. Its own failure describes an empty
-            # cache badly -- offline mode skips Transformers' "does not appear to
-            # have a file named" raise, leaving `resolved_archive_file = None`, so
-            # the user got `AttributeError: 'NoneType' ... 'endswith'` with no
-            # mention of the network. Type preserved; the retry stays as __cause__.
+            # Report the ONLINE error: this retry only runs because of it. Its own
+            # failure names an empty cache badly, since offline mode skips
+            # Transformers' "does not appear to have a file named" raise and leaves
+            # `resolved_archive_file = None` -- the user saw `AttributeError:
+            # 'NoneType' ... 'endswith'`. The retry stays as __cause__.
             surfaced = e if _out_of_memory_error(e) else online_error
             # Tag so an enclosing _offline_aware_load skips its own redundant retry.
             try:

@@ -545,12 +545,9 @@ def test_resolve_tokenizer_vlm_with_processor_uses_local_dir(tmp_path):
 
 
 def test_the_online_error_is_what_surfaces_when_the_cache_is_empty(monkeypatch):
-    """The retry can only succeed on what is already cached, so its own failure
-    describes an empty cache -- and describes it badly. Under offline mode
-    Transformers skips its "does not appear to have a file named" raise and
-    falls through with `resolved_archive_file = None`, so the user saw
-    `AttributeError: 'NoneType' object has no attribute 'endswith'` from inside
-    `from_pretrained` with no mention of the network at all."""
+    """The retry only succeeds on what is cached, so its own failure names an empty
+    cache badly: offline mode skips Transformers' "does not appear to have a file
+    named" raise, so the user saw `AttributeError: 'NoneType' ... 'endswith'`."""
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     calls = []
@@ -571,8 +568,8 @@ def test_the_online_error_is_what_surfaces_when_the_cache_is_empty(monkeypatch):
 
 
 def test_the_surfaced_error_is_tagged_so_an_outer_wrapper_does_not_retry(monkeypatch):
-    """Two stacked loaders must not reload the whole model twice more. The tag
-    has to travel on whichever exception actually leaves."""
+    """Stacked loaders must not reload twice more, so the tag has to travel on
+    whichever exception actually leaves."""
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     calls = []
@@ -593,9 +590,8 @@ def test_the_surfaced_error_is_tagged_so_an_outer_wrapper_does_not_retry(monkeyp
 
 
 def test_an_out_of_memory_retry_reports_itself(monkeypatch):
-    """The retry loads the whole model a second time, which is why the caller
-    collects first, and a large VLM can still exhaust memory there. That says
-    nothing about the network, so it must not be replaced by the network error."""
+    """A large VLM can exhaust memory on the retry's second load. That says nothing
+    about the network, so it must not be replaced by the network error."""
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     calls = []
@@ -634,8 +630,7 @@ def test_a_wrapped_out_of_memory_retry_is_recognised(monkeypatch):
 
 
 def test_a_successful_retry_is_unchanged(monkeypatch):
-    """The whole point of the retry: a cached model still loads after the
-    network drops, and nothing here may get in the way of that."""
+    """The point of the retry: a cached model still loads after the network drops."""
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     calls = []
