@@ -218,7 +218,6 @@ def test_asset_specs_cover_required_files(fam_name, expect_kinds):
 def _plan_sees_an_empty_cache(monkeypatch):
     """Plan tests describe their cache state, so a developer's real one cannot drop an entry."""
     from core.inference.diffusion import DiffusionBackend
-
     monkeypatch.setattr(
         DiffusionBackend,
         "_hub_file_is_cached",

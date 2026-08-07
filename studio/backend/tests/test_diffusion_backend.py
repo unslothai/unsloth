@@ -5038,7 +5038,11 @@ class _FakeSibling:
 
 
 class _FakeInfo:
-    def __init__(self, siblings, sha = None):
+    def __init__(
+        self,
+        siblings,
+        sha = None,
+    ):
         self.siblings = siblings
         self.sha = sha
 
@@ -5057,7 +5061,11 @@ _FLUX_BASE_SIBLINGS = [
 ]
 
 
-def _fake_hf_api(monkeypatch, repos, shas = None):
+def _fake_hf_api(
+    monkeypatch,
+    repos,
+    shas = None,
+):
     """Point HfApi.model_info at a canned sibling list per repo id."""
 
     class _Api:
@@ -5073,7 +5081,9 @@ def _fake_hf_api(monkeypatch, repos, shas = None):
     # Download-plan tests describe their cache state explicitly. Never let a developer's real
     # Studio cache make an entry disappear from these otherwise hermetic tests.
     monkeypatch.setattr(
-        DiffusionBackend, "_hub_file_is_cached", staticmethod(lambda repo_id, filename, revision = None: False)
+        DiffusionBackend,
+        "_hub_file_is_cached",
+        staticmethod(lambda repo_id, filename, revision = None: False),
     )
 
 

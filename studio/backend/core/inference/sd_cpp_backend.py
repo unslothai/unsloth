@@ -732,6 +732,7 @@ class SdCppDiffusionBackend:
         # Imported here, not at module scope: diffusion.py is the heavier module and the routes
         # already load this one on its own.
         from core.inference.diffusion import DiffusionBackend
+
         for repo, names in by_repo.items():
             total += int(sum(sizes.get((repo, n), 0) for n in names))
             # Same missing-file filter the diffusers planner applies: _fetch_assets already reads

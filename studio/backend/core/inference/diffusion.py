@@ -1597,9 +1597,7 @@ class DiffusionBackend:
             same repo would fight the first over progress, manifest and cancellation.
             """
             revision = revisions.get(repo)
-            missing = [
-                name for name in files if not self._hub_file_is_cached(repo, name, revision)
-            ]
+            missing = [name for name in files if not self._hub_file_is_cached(repo, name, revision)]
             if not missing:
                 return
             for entry in entries:
@@ -1650,7 +1648,9 @@ class DiffusionBackend:
 
     @staticmethod
     def _hub_file_is_cached(
-        repo_id: str, filename: str, revision: Optional[str] = None
+        repo_id: str,
+        filename: str,
+        revision: Optional[str] = None,
     ) -> bool:
         """Whether ``filename`` is complete in either cache root the loader reuses.
 
@@ -1662,9 +1662,7 @@ class DiffusionBackend:
         try:
             from huggingface_hub import try_to_load_from_cache
             for root in (hub_cache_dir(), None):
-                hit = try_to_load_from_cache(
-                    repo_id, filename, cache_dir = root, revision = revision
-                )
+                hit = try_to_load_from_cache(repo_id, filename, cache_dir = root, revision = revision)
                 if isinstance(hit, str) and Path(hit).is_file():
                     return True
         except Exception:  # noqa: BLE001 -- an unreadable cache is a miss, never a plan failure
