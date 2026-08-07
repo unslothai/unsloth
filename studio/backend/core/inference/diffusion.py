@@ -742,7 +742,6 @@ def _cached_blob_id(pointer: str) -> Optional[str]:
     ``lfs.sha256``. So the basename on the other side of the link identifies the CONTENT, across
     every commit that shipped it."""
     import os
-
     try:
         return os.path.basename(os.path.realpath(pointer)) or None
     except Exception:  # noqa: BLE001 -- an unreadable link is simply unknown
@@ -819,9 +818,7 @@ def _hub_file_cached(
                 return True
             return bool(blob_id) and _cached_blob_id(current) == blob_id
         # Neither root answers unpinned, so the load stays in the live root: ask it directly.
-        pinned = try_to_load_from_cache(
-            repo_id, filename, cache_dir = live, revision = revision
-        )
+        pinned = try_to_load_from_cache(repo_id, filename, cache_dir = live, revision = revision)
         return isinstance(pinned, str)
     except Exception:  # noqa: BLE001 -- a cache we cannot read is not evidence of a hit
         return False
