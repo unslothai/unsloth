@@ -434,12 +434,36 @@ class TestRouteCompleteness:
             ), f"Non-GGUF LoadResponse should set context_length:\n{block[:200]}"
 
     def test_status_path(self):
-        """InferenceStatusResponse construction with llama_backend has the field."""
+        """InferenceStatusResponse construction with llama_backend has the field.
+
+        Matched on the spread rather than on the _llama_runtime_fields(...) call appearing
+        literally inside the constructor. #8074 hoisted that call into a local so it could
+        add chat_template_override before spreading, which left the fields reaching the
+        response exactly as before while this assertion, which only ever searched the text
+        between InferenceStatusResponse( and its closing paren, could no longer see it.
+        """
+        import re
+
         blocks = self._find_construction_blocks("InferenceStatusResponse")
         found = False
         for block in blocks:
-            if "llama_backend" in block and "_llama_runtime_fields(llama_backend)" in block:
-                found = True
+            if "llama_backend" not in block:
+                continue
+            if "_llama_runtime_fields(llama_backend)" in block:
+                found = True  # called inline
+                break
+            # Spread from a prepared local: tie that exact name back to its assignment,
+            # so a local built from anything else (or from {}) is not mistaken for this.
+            # A bare source-wide search is not enough -- there is another call site, and
+            # it would vouch for a spread that never touched llama_backend.
+            for name in re.findall(r"\*\*(\w+)", block):
+                if re.search(
+                    rf"{re.escape(name)}\s*=\s*_llama_runtime_fields\(llama_backend\)",
+                    self._source,
+                ):
+                    found = True
+                    break
+            if found:
                 break
         assert found, "No InferenceStatusResponse block with llama_backend has runtime fields"
         assert "for name in _InferenceRuntimeFields.model_fields" in self._source
