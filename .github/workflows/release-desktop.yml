@@ -350,7 +350,7 @@ jobs:
             args: ''
             label: Linux (x64)
             artifact: linux-x64
-          - platform: windows-latest
+          - platform: windows-2022
             args: ''
             label: Windows (x64)
             artifact: windows-x64
@@ -647,14 +647,14 @@ jobs:
 
       # ── Windows: install Azure Trusted Signing CLI ──
       - name: Install trusted-signing-cli
-        if: matrix.platform == 'windows-latest'
+        if: matrix.platform == 'windows-2022'
         run: |
           cargo install trusted-signing-cli --version 0.10.0 --locked
           echo "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # ── Windows: verify signing CLI is accessible ──
       - name: Verify trusted-signing-cli
-        if: matrix.platform == 'windows-latest'
+        if: matrix.platform == 'windows-2022'
         run: |
           Write-Output "PATH: $env:PATH"
           Get-Command trusted-signing-cli -ErrorAction SilentlyContinue || Write-Output "trusted-signing-cli NOT in PATH"
@@ -844,7 +844,7 @@ jobs:
       # runs it first. Sign before the build packs it in; the signature is an
       # appended comment block, so the repo copy for `irm ... | iex` is unaffected.
       - name: Sign the bundled install script
-        if: matrix.platform == 'windows-latest'
+        if: matrix.platform == 'windows-2022'
         shell: pwsh
         env:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -862,7 +862,7 @@ jobs:
 
       - name: Build Windows app
         id: build_windows
-        if: matrix.platform == 'windows-latest'
+        if: matrix.platform == 'windows-2022'
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -883,7 +883,7 @@ jobs:
       # so restore it and verify the restore took; "!ml" is a cloud verdict, so
       # MAPS must be on; MpCmdRun exit codes are ambiguous, so read the output.
       - name: Scan Windows bundles with Defender
-        if: matrix.platform == 'windows-latest'
+        if: matrix.platform == 'windows-2022'
         # A custom MpCmdRun scan defaults to a one-day timeout.
         timeout-minutes: 20
         shell: pwsh
@@ -1066,7 +1066,7 @@ jobs:
       # Later steps carry an implicit success(), so on a detection the flagged
       # bundle would be discarded with the runner.
       - name: Preserve flagged Windows bundles
-        if: failure() && matrix.platform == 'windows-latest'
+        if: failure() && matrix.platform == 'windows-2022'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: flagged-windows-bundles-${{ matrix.artifact }}
@@ -1078,7 +1078,7 @@ jobs:
       # ── Windows: every executable in the bundle must be signed ──
       # NSIS runs its plugin DLLs from $PLUGINSDIR; signing the installer misses them.
       - name: Verify every executable in the Windows bundles is signed
-        if: matrix.platform == 'windows-latest'
+        if: matrix.platform == 'windows-2022'
         shell: pwsh
         env:
           ARTIFACT_PATHS: ${{ steps.build_windows.outputs.artifactPaths }}
@@ -1092,7 +1092,7 @@ jobs:
       # The WDSI portal is a web form with no API, so this cannot be automated,
       # but pre-filling the lookups makes submitting a build take seconds.
       - name: Prepare Microsoft submission packet
-        if: (success() || failure()) && matrix.platform == 'windows-latest' && steps.build_windows.outcome == 'success'
+        if: (success() || failure()) && matrix.platform == 'windows-2022' && steps.build_windows.outcome == 'success'
         shell: pwsh
         env:
           ARTIFACT_PATHS: ${{ steps.build_windows.outputs.artifactPaths }}
