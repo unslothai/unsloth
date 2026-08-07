@@ -195,8 +195,7 @@ def test_the_symbol_list_matches_what_peft_imports():
             f"so its ImportError is neither recognised nor backfilled"
         )
         assert imported <= set(known[module]), (
-            f"{module}: peft imports {imported - set(known[module])}, "
-            f"which we do not backfill"
+            f"{module}: peft imports {imported - set(known[module])}, " f"which we do not backfill"
         )
 
 
