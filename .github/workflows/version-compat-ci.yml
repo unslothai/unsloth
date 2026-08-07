@@ -121,10 +121,13 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
+      # packaging as well as pytest: the backfill suite loads unsloth/import_fixes.py by
+      # file path, and that module imports packaging.version at the top. It pulls in
+      # nothing heavier, which is why it can run in this dependency-free job at all.
       - name: Install pytest only
         run: |
           python -m pip install --upgrade pip
-          pip install 'pytest>=8'
+          pip install 'pytest>=8' packaging
       - name: Run peft-compat suite
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -132,6 +135,7 @@ jobs:
           PYTHONPATH=. python -m pytest \
             tests/version_compat/test_peft_pinned_symbols.py \
             tests/version_compat/test_unsloth_zoo_save_merged_pinned_symbols.py \
+            tests/version_compat/test_peft_conversion_symbol_backfill.py \
             -v --tb=short
 
   st-pinned-symbols:

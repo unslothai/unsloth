@@ -240,14 +240,27 @@ def _peft_converter_source():
     pkg = base + "transformers_weight_conversion/"
     init = fetch(pkg + "__init__.py")
     if init is not None:
+        # Breadth-first, not one level: importing the package runs `.core`, which runs
+        # whatever IT imports relatively, so a transformers import two levels down breaks
+        # startup exactly the same way. `seen` keeps a cycle from looping.
         sources = [init]
-        for child in _relative_import_targets(init):
+        pending = list(_relative_import_targets(init))
+        seen = set()
+        while pending:
+            child = pending.pop(0)
+            if child in seen:
+                continue
+            seen.add(child)
             path = child.replace(".", "/")
             for candidate in (f"{pkg}{path}.py", f"{pkg}{path}/__init__.py"):
                 text = fetch(candidate)
-                if text is not None:
-                    sources.append(text)
-                    break
+                if text is None:
+                    continue
+                sources.append(text)
+                # A child's own relative imports are resolved against the package root,
+                # the same base every candidate above is built from.
+                pending.extend(_relative_import_targets(text))
+                break
         return "\n\n".join(src if src.endswith("\n") else src + "\n" for src in sources)
 
     module = "peft.utils.transformers_weight_conversion"
@@ -277,7 +290,7 @@ def _peft_converter_source():
 
 
 def _relative_import_targets(src):
-    """Submodule names a package `__init__.py` imports relatively, at import time.
+    """Submodule names a module imports relatively, at import time.
 
     `from .core import X` and `from . import core` both name `core`. Only the
     modules the package actually pulls in are followed, so a package that
@@ -433,6 +446,107 @@ def test_the_package_layout_is_fetched_when_the_module_layout_is_gone(monkeypatc
     src = _peft_converter_source()
     assert "ConversionOps" in src
     assert len(tried) == 2 and tried[1].endswith("transformers_weight_conversion/__init__.py")
+
+
+def test_a_package_split_is_followed_more_than_one_level(monkeypatch):
+    """Importing the package runs `.core`, which runs whatever IT imports.
+
+    Fetching only the immediate children left a transformers import two levels down
+    invisible, so the authority check stayed green while startup could still fail on it.
+    """
+    import io
+    import urllib.error
+    import urllib.request
+
+    pages = {
+        "transformers_weight_conversion/__init__.py": "from .core import build\n",
+        "transformers_weight_conversion/core.py": (
+            "from .ops import apply\nfrom transformers.core_model_loading import ConversionOps\n"
+        ),
+        "transformers_weight_conversion/ops.py": "from transformers.deep import TwoLevelsDown\n",
+    }
+
+    def fake_urlopen(request, timeout = None):
+        for suffix, body in pages.items():
+            if request.full_url.endswith(suffix):
+                return io.BytesIO(body.encode())
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", None, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert _transformers_imports(_peft_converter_source()) == {
+        "transformers.core_model_loading": {"ConversionOps"},
+        "transformers.deep": {"TwoLevelsDown"},
+    }
+
+
+def test_the_package_walk_survives_a_circular_relative_import(monkeypatch):
+    """Two children importing each other must not loop the fetch."""
+    import io
+    import urllib.error
+    import urllib.request
+
+    pages = {
+        "transformers_weight_conversion/__init__.py": "from .a import x\n",
+        "transformers_weight_conversion/a.py": "from .b import y\n",
+        "transformers_weight_conversion/b.py": (
+            "from .a import x\nfrom transformers.utils import logging\n"
+        ),
+    }
+
+    def fake_urlopen(request, timeout = None):
+        for suffix, body in pages.items():
+            if request.full_url.endswith(suffix):
+                return io.BytesIO(body.encode())
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", None, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert _transformers_imports(_peft_converter_source()) == {
+        "transformers.utils": {"logging"},
+    }
+
+
+def test_an_unrecoverable_conversion_map_fails_on_use(caplog):
+    """An empty map is the one shape that fails silently.
+
+    peft copies it at import and then calls `.get(model_type, None)`; a None makes
+    `_convert_peft_config_moe` return early, so every affected adapter loads with its
+    legacy targets unconverted and nothing is logged. Every other runtime symbol here is
+    backfilled fail-on-use for that reason.
+    """
+    stand_in = F._UnavailableConversionPatternMap()
+
+    # peft's own line: `_MODEL_TO_CONVERSION_PATTERN = _MODEL_TO_CONVERSION_PATTERN.copy()`
+    copied = stand_in.copy()
+    assert isinstance(copied, F._UnavailableConversionPatternMap), "a plain copy is silent again"
+
+    # ...then `_MODEL_TO_CONVERSION_PATTERN["mixtral"] = "mixtral"`, which must still work.
+    copied["mixtral"] = "mixtral"
+    assert copied.get("mixtral") == "mixtral"
+    assert copied["mixtral"] == "mixtral"
+
+    # A lookup we cannot answer honestly raises where it happens.
+    with pytest.raises(RuntimeError):
+        copied.get("qwen3_moe", None)
+    with pytest.raises(RuntimeError):
+        copied["qwen3_moe"]
+
+
+def test_an_unrecoverable_map_is_what_the_backfill_actually_installs(fake_modules, monkeypatch):
+    """The stand-in only helps if the backfill installs it instead of an empty dict."""
+    monkeypatch.setattr(F, "_recover_conversion_pattern_map", lambda _real: None)
+    assert F._backfill_missing_conversion_symbols() is True
+    installed = getattr(fake_modules["transformers.conversion_mapping"], "_MODEL_TO_CONVERSION_PATTERN")
+    assert isinstance(installed, F._UnavailableConversionPatternMap), (
+        "an empty dict here is the silent mis-conversion this exists to stop"
+    )
+
+    # And a real map still comes through as an ordinary dict.
+    monkeypatch.setattr(F, "_recover_conversion_pattern_map", lambda _real: {"qwen3_moe": "qwen3"})
+    delattr(fake_modules["transformers.conversion_mapping"], "_MODEL_TO_CONVERSION_PATTERN")
+    assert F._backfill_missing_conversion_symbols() is True
+    recovered = getattr(fake_modules["transformers.conversion_mapping"], "_MODEL_TO_CONVERSION_PATTERN")
+    assert recovered == {"qwen3_moe": "qwen3"}
+    assert not isinstance(recovered, F._UnavailableConversionPatternMap)
 
 
 def test_a_re_exporting_package_is_followed_to_its_implementation(monkeypatch):

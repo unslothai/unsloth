@@ -2447,6 +2447,43 @@ def _recover_conversion_pattern_map(real):
     return best
 
 
+class _UnavailableConversionPatternMap(dict):
+    """A conversion map that answers only for entries someone put in it, and raises otherwise.
+
+    Stands in when transformers has REMOVED the model-type map rather than renamed it, so
+    there is nothing to recover. Importing peft's converter still works, which is the point
+    of the backfill, but a lookup we cannot answer honestly raises where it happens instead
+    of returning None and letting the adapter load mis-converted.
+
+    ``copy`` returns another one of these because peft copies the map at import
+    (`_MODEL_TO_CONVERSION_PATTERN = _MODEL_TO_CONVERSION_PATTERN.copy()`) and a plain dict
+    copy would be silent again. Writes still work, so peft's own `["mixtral"] = "mixtral"`
+    lands and answers normally.
+    """
+
+    _MESSAGE = (
+        "Unsloth: this transformers exports no model-type conversion map, so peft cannot "
+        "convert legacy LoRA targets for fused MoE checkpoints. Re-save the adapter with a "
+        "transformers that still ships transformers.conversion_mapping, or load it with a "
+        "peft that does not need the conversion."
+    )
+
+    def copy(self):
+        new = type(self)()
+        dict.update(new, self)
+        return new
+
+    def get(self, key, default = None):
+        if dict.__contains__(self, key):
+            return dict.__getitem__(self, key)
+        raise RuntimeError(self._MESSAGE)
+
+    def __getitem__(self, key):
+        if dict.__contains__(self, key):
+            return dict.__getitem__(self, key)
+        raise RuntimeError(self._MESSAGE)
+
+
 def _backfill_conversion_symbols_once(builders, added):
     """One pass over the modules. Returns True if any was left unimportable.
 
@@ -2491,7 +2528,19 @@ def _backfill_conversion_symbols_once(builders, added):
                         "targets for fused MoE checkpoints. Adapters for other "
                         "architectures are unaffected."
                     )
-                setattr(real, symbol, dict(recovered) if recovered else {})
+                # An empty dict is the one shape that fails SILENTLY. peft does
+                # `_MODEL_TO_CONVERSION_PATTERN.copy()` at import and then
+                # `.get(model_type, None)`, and a None makes `_convert_peft_config_moe`
+                # return early, so every affected adapter loads with its legacy targets
+                # unconverted and no message anywhere. Every other runtime symbol here is
+                # backfilled as fail-on-use for exactly that reason; this one now matches.
+                setattr(
+                    real,
+                    symbol,
+                    dict(recovered)
+                    if recovered
+                    else _UnavailableConversionPatternMap(),
+                )
                 added.append(qualified)
                 continue
             if qualified in _PEFT_CONVERSION_RUNTIME_SYMBOLS:
