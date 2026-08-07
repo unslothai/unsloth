@@ -2282,8 +2282,8 @@ class TestResponsesStreamHealing:
 
 
 def test_healed_responses_tool_call_stamps_first_token(monkeypatch):
-    # Healed output bypasses append_reply, so a text-form tool call would
-    # otherwise go untimed until the item closes near end-of-stream.
+    # Healed output bypasses append_reply, so a text-form tool call would go untimed
+    # until the item closes near end-of-stream.
     from core.inference.api_monitor import api_monitor
 
     xml = TestResponsesStreamHealing._XML

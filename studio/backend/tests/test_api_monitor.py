@@ -729,8 +729,7 @@ def test_set_perf_records_stats_and_snapshot_reports_them():
 
 
 def test_measured_ttft_wins_over_engine_prefill():
-    # Queue wait happens before llama-server sees the request, so prompt_ms
-    # (prefill only) would under-report TTFT for a request that queued for seconds.
+    # Queue wait precedes llama-server, so prefill-only prompt_ms under-reports TTFT.
     monitor = ApiMonitor(max_entries = 3)
     entry_id = monitor.start(
         endpoint = "/v1/chat/completions",
@@ -833,8 +832,8 @@ def test_mark_first_token_stamps_ttft_for_reasoning_only_streams():
 
 
 def test_queue_state_counts_direct_overflow_as_queued(monkeypatch):
-    # Direct calls hold no admission lease, so overflow past the slot count must
-    # count as queued, not get clamped out of the readout.
+    # Direct calls hold no lease, so overflow past capacity must show as queued,
+    # not get clamped out of the readout.
     from types import SimpleNamespace
 
     import routes.inference as inf
@@ -899,10 +898,9 @@ def test_parked_tool_resume_counts_as_queued():
 
 
 def test_free_never_reports_a_slot_admission_would_refuse():
-    """`free` is what a new arrival could take, so it must track _can_admit_locked.
-
-    A resume ticket holds a slot back from new arrivals, so counting it in `queued`
-    without subtracting it from `free` prints free slots next to a queued request.
+    """`free` is what a new arrival could take, so it must track _can_admit_locked:
+    a resume ticket holds a slot back, so counting it in `queued` without dropping it
+    from `free` prints free slots next to a queued request.
     """
     from core.inference.llama_admission import LlamaAdmissionQueue
     for capacity, held, tickets in itertools.product(range(1, 5), range(0, 5), range(0, 3)):
@@ -950,10 +948,9 @@ def test_queue_panel_never_shows_a_free_slot_next_to_a_resume(monkeypatch):
 
 
 def test_set_perf_survives_an_out_of_range_engine_number():
-    """float() on a huge int raises OverflowError, which is not ValueError.
-
-    These helpers run inside streaming generators, where a raise truncates the
-    user's response, and the values come off an arbitrary upstream payload.
+    """float() on a huge upstream int raises OverflowError, which is not ValueError,
+    and these helpers run inside streaming generators where a raise truncates the
+    user's response.
     """
     monitor = ApiMonitor(max_entries = 3)
     entry_id = monitor.start(
@@ -1003,10 +1000,9 @@ def test_monitor_chunk_never_raises_on_a_malformed_upstream_chunk(monkeypatch, c
 
 
 def test_direct_llama_counter_is_started_last_before_its_guarding_try():
-    """Anything between started() and the try leaks a permanent +1 if it raises.
-
-    There is no reset hook for this counter (unlike reset_llama_admission_queues),
-    so one leak pins the monitor's slot panel at busy until the process restarts.
+    """Anything between started() and the try leaks a permanent +1 if it raises, and
+    this counter has no reset hook, so one leak pins the slot panel at busy until the
+    process restarts.
     """
     import ast
     import inspect

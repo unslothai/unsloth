@@ -2734,8 +2734,8 @@ def test_claim_order_matches_send_order_under_concurrent_dispatch():
 
 
 def test_responses_stream_reports_reasoning_ttft_and_stop_reason(monkeypatch):
-    # This adapter parses SSE itself, so it must stamp/forward TTFT and stop reason
-    # or a reasoning-first turn would time from the visible text instead.
+    # This adapter parses SSE itself, so without its own stamp a reasoning-first
+    # turn would time from the visible text instead.
     import asyncio
 
     from core.inference.api_monitor import api_monitor

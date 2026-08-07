@@ -3037,8 +3037,8 @@ def _monitor_usage(
     timings: Optional[dict] = None,
     stop_reason: Optional[str] = None,
 ):
-    # isinstance, not truthiness: a malformed non-dict usage would raise on .get()
-    # into the streaming generator and abort the user's response.
+    # isinstance, not truthiness: a non-dict usage would raise on .get() into the
+    # streaming generator and abort the user's response.
     if isinstance(usage, dict) and usage:
         api_monitor.set_usage(
             monitor_id,
@@ -3119,7 +3119,7 @@ def _monitor_openai_chunk(
     if not isinstance(choices, list) or not choices:
         return
     if isinstance(data, dict) and data.get("_toolEvent"):
-        # Tool cards ride the chunk itself, sibling of choices with an empty delta; already seen.
+        # Tool cards ride the chunk beside choices with an empty delta; already seen.
         api_monitor.mark_first_token(monitor_id)
     reply_parts: list[tuple[int, str]] = []
     for idx, choice in enumerate(choices):
@@ -3475,7 +3475,7 @@ def _close_load_event(
     api_monitor.finish(entry_id)
 
 
-# Direct llama-server calls (completions/embeddings) skip admission but occupy a slot; counted here.
+# Direct calls (completions/embeddings) skip admission but still occupy a slot.
 _direct_llama_inflight = 0
 _direct_llama_inflight_lock = threading.Lock()
 
@@ -3494,8 +3494,8 @@ def _direct_llama_request_finished() -> None:
 
 def _monitor_queue_state() -> Optional[dict]:
     """Live slot/queue occupancy of the loaded llama-server, for the API monitor."""
-    # Disabled admission never takes leases and stays at capacity 1, which would
-    # misreport a multi-slot server.
+    # Disabled admission takes no leases and stays at capacity 1, so a multi-slot
+    # server would be misreported.
     if not llama_admission_config_from_env().enabled:
         return None
     llama_backend = get_llama_cpp_backend()
@@ -3513,11 +3513,11 @@ def _monitor_queue_state() -> Optional[dict]:
         return {
             "capacity": snapshot.capacity,
             "active": active,
-            # Direct calls hold no lease, so anything past capacity is waiting inside
-            # llama-server and counts as queued, not clamped away into a readout that looks idle.
+            # Direct calls hold no lease, so overflow is waiting inside llama-server:
+            # queued, not clamped away into a readout that looks idle.
             "queued": snapshot.queued + max(0, busy - snapshot.capacity),
-            # From the snapshot, not capacity - active: the queue already holds slots
-            # back for approved resumes, so recomputing would show free next to queued.
+            # From the snapshot, not capacity - active: it already holds slots back for
+            # approved resumes, so recomputing would show free next to queued.
             "free": max(0, snapshot.free - direct),
         }
     capacity = _positive_int_or_none(getattr(llama_backend, "effective_parallel_slots", None)) or 1
@@ -9340,8 +9340,8 @@ async def _proxy_to_external_provider(
                 monitor_event = _monitor_openai_sse_line(monitor_id, line)
                 if monitor_event is None:
                     try:
-                        # Only stamp for a real delta stream; a stream:false response arrives as
-                        # one full line, which would be end-to-end latency, not TTFT.
+                        # Only stamp a real delta stream: a stream:false response is one
+                        # full line, so end-to-end latency, not TTFT.
                         _monitor_openai_chunk(
                             monitor_id, json.loads(line), streaming = bool(payload.stream)
                         )
@@ -10588,7 +10588,7 @@ async def openai_chat_completions(
 
                         if event["type"] in ("tool_start", "tool_end"):
                             if event["type"] == "tool_start":
-                                # Tool card is client-visible output; time a tool-opening turn here.
+                                # Tool card is client-visible output; stamp the turn here.
                                 api_monitor.mark_first_token(monitor_id)
                                 for chunk in _flush_reasoning_extractor():
                                     yield chunk
@@ -11645,8 +11645,8 @@ async def openai_chat_completions(
                         "total_tokens": _prompt_tokens + _sum_completion,
                     },
                     _monitor_context_length(),
-                    # Omit for n > 1: totals are summed across choices but _last_timings
-                    # is only the final one, so its speed would match neither.
+                    # Omit for n > 1: totals sum all choices but _last_timings is only
+                    # the final one, so its speed would match neither.
                     timings = _last_timings if len(_monitor_replies) <= 1 else None,
                     stop_reason = _clamp_finish_reason(_last_finish) if _last_finish else None,
                 )
@@ -13192,8 +13192,8 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             # nothing behind (see _responses_stream). No thread_id: public API surface, not a chat.
             _tracker = _TrackedCancel(disconnect_event, model = monitor_model, kind = "completions")
             _tracker.__enter__()
-            # Last statement before the try whose finally decrements it: anything that
-            # raised in between would leak a permanent +1, and there is no reset hook.
+            # Must stay the last statement before the try that decrements it: a raise in
+            # between leaks a permanent +1, and there is no reset hook.
             _direct_llama_request_started()
             try:
                 req = client.build_request(
@@ -14288,7 +14288,7 @@ async def _responses_stream(
         full_reasoning = ""
         input_tokens = 0
         output_tokens = 0
-        # Terminal reason from the chat chunks; applied once before finish, order-independent.
+        # From the chat chunks; applied once before finish, so chunk order does not matter.
         stream_finish_reason: Optional[str] = None
         extractor = _ResponsesReasoningExtractor(
             parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend)
@@ -14786,8 +14786,8 @@ async def _responses_stream(
                     delta.get("reasoning_content"),
                 )
                 if reasoning_delta:
-                    # Stamp here, not on visible text: the client already has this output,
-                    # so waiting would time from the end of the thinking block instead.
+                    # Not on visible text: the client already has this, so waiting would
+                    # time from the end of the thinking block instead.
                     api_monitor.mark_first_token(monitor_id)
                     for event in _ensure_reasoning_open():
                         yield event
@@ -14820,8 +14820,8 @@ async def _responses_stream(
                         healed_events = healer.feed(visible_delta)
                     visible_delta = ""
                     if healed_events:
-                        # Sent here, not via append_reply below: this is where the client
-                        # first sees the promoted tool call or its surrounding text.
+                        # Not append_reply below: this is where the client first sees
+                        # the promoted tool call or its surrounding text.
                         api_monitor.mark_first_token(monitor_id)
                     for event in _healed_event_sse(healed_events):
                         yield event
@@ -14843,7 +14843,7 @@ async def _responses_stream(
                     )
 
                 if delta.get("tool_calls"):
-                    # Tool call is output the client already received; time it here too.
+                    # A tool call is output the client already received; stamp it too.
                     api_monitor.mark_first_token(monitor_id)
                 for tc in delta.get("tool_calls") or []:
                     if (

@@ -338,7 +338,7 @@ export interface ApiMonitorEntry {
   reason?: "manual" | "idle" | "api" | null;
   // 0-100 while a download row is running.
   progress?: number | null;
-  // Server-side time to first token (engine prefill when reported, else measured).
+  // Server-side time to first token (measured, else engine prefill).
   ttft_ms?: number | null;
   tok_per_sec?: number | null;
   stop_reason?: string | null;

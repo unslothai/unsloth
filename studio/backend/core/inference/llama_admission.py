@@ -768,13 +768,12 @@ class LlamaAdmissionQueue:
             key = self.key,
             capacity = self._capacity,
             active = self._held,
-            # Resume tickets are approved tool continuations holding no slot yet; omitting
-            # them would show a full, idle-looking queue while one is still waiting.
+            # Resume tickets are approved continuations holding no slot yet; omitting
+            # them would show a full, idle-looking queue while one still waits.
             queued = len(self._waiters) + len(self._unpark_tickets),
-            # What another caller could actually take, so the admission log never
-            # shows free slots next to queued requests: after a shrink, ids below
-            # the new capacity can be free while holdovers still fill the ceiling,
-            # and resume tickets hold slots back exactly as _can_admit_locked does.
+            # What another caller could actually take, so free never shows next to queued:
+            # after a shrink, ids below the new capacity can be free while holdovers fill
+            # the ceiling, and tickets hold slots back exactly as _can_admit_locked does.
             free = min(
                 len(self._free),
                 max(0, self._capacity - self._held - len(self._unpark_tickets)),

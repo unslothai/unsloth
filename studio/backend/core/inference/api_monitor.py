@@ -19,7 +19,7 @@ _MAX_ENTRIES = 50
 _MAX_PROMPT_CHARS = 12000
 _MAX_REPLY_CHARS = 12000
 _PREVIEW_CHARS = 360
-# Far above any real context window; anything larger is a broken upstream payload.
+# Far above any real context window; larger means a broken upstream payload.
 _MAX_TOKEN_COUNT = 1 << 40
 
 # Opt-in startup kill switch for Studio's in-memory API monitor.
@@ -43,8 +43,7 @@ def _token_count_or_none(value: Any) -> Optional[int]:
 
 
 def _finite_float_or_none(value: Any) -> Optional[float]:
-    # float() on a huge int raises OverflowError, which is neither ValueError nor
-    # TypeError; these values come off arbitrary upstream payloads.
+    # float() on a huge upstream int raises OverflowError, not ValueError/TypeError.
     try:
         number = float(value)
     except (TypeError, ValueError, OverflowError):
@@ -95,7 +94,7 @@ class ApiMonitorEntry:
     shared: bool = False
     # 0-100 for a running download row; None when not applicable.
     progress: Optional[float] = None
-    # Monotonic stamp of the first reply text; snapshot() prefers it over engine timings.
+    # Stamped on the first reply text; snapshot() prefers it over engine timings.
     first_token_monotonic: Optional[float] = None
     prompt_ms: Optional[float] = None
     tok_per_sec: Optional[float] = None
@@ -120,8 +119,8 @@ class ApiMonitorEntry:
             context_usage = min(1.0, max(0.0, self.total_tokens / self.context_length))
         ttft_ms = None
         if self.first_token_monotonic is not None:
-            # Preferred: includes admission-queue wait, unlike engine prompt_ms (prefill only,
-            # measured after llama-server sees the request) which is just the fallback.
+            # Preferred over the prompt_ms fallback: that is prefill only, so it misses
+            # the admission-queue wait before llama-server sees the request.
             ttft_ms = max(0, int((self.first_token_monotonic - self.started_monotonic) * 1000))
         elif self.prompt_ms is not None:
             ttft_ms = max(0, int(self.prompt_ms))
@@ -365,8 +364,8 @@ class ApiMonitor:
     ) -> None:
         if not entry_id:
             return
-        # Coerce outside the lock: these come off arbitrary payloads, and this runs
-        # inside streaming generators where a raise truncates the user's response.
+        # Coerce before locking: arbitrary payloads, and a raise here (this runs inside
+        # streaming generators) would truncate the user's response.
         tok_per_sec = _finite_float_or_none(tok_per_sec)
         prompt_ms = _finite_float_or_none(prompt_ms)
         with self._lock:
@@ -392,7 +391,7 @@ class ApiMonitor:
     ) -> None:
         if not entry_id:
             return
-        # Coerce first: values come from arbitrary payloads and snapshot() does math on them.
+        # Coerce first: snapshot() does math on these arbitrary payload values.
         prompt_tokens = _token_count_or_none(prompt_tokens)
         completion_tokens = _token_count_or_none(completion_tokens)
         total_tokens = _token_count_or_none(total_tokens)
