@@ -218,13 +218,16 @@ def test_every_third_party_bf16_pipeline_the_catalog_offers_is_mirrored():
     ).read_text(encoding = "utf-8")
     # Image side only: the video bases are ungated AND out of this table's scope, and mirroring
     # them is a separate call. Slice at VIDEO_CATALOG so a new video entry does not fail this.
-    images = catalog.split("export const IMAGE_CATALOG", 1)[1].split("export const VIDEO_CATALOG", 1)[0]
+    images = catalog.split("export const IMAGE_CATALOG", 1)[1].split(
+        "export const VIDEO_CATALOG", 1
+    )[0]
     offered = set(re.findall(r'bf16Pipeline\(\s*"([^"]+)"', images))
     mirrored = {u.lower() for u, _m in _GATED_MIRROR_PAIRS}
     # Anything under unsloth/ is already ours, and the deliberate Hunyuan exception is recorded
     # beside the table with the territorial reason it cannot be mirrored.
     missing = sorted(
-        repo for repo in offered
+        repo
+        for repo in offered
         if not repo.lower().startswith("unsloth/")
         and "hunyuan" not in repo.lower()
         and repo.lower() not in mirrored
