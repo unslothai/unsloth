@@ -41,10 +41,13 @@ function normalizedRotationIndex(index: number, length: number): number {
 export function installProgressMessage(
   currentStepIndex: number,
   rotationIndex = 0,
+  progressDetail?: string | null,
 ): InstallProgressMessage {
   const phaseIndex =
     currentStepIndex < 2 ? 0 : currentStepIndex < 4 ? 1 : currentStepIndex < 6 ? 2 : 3;
   const phaseMessage = INSTALL_PHASE_MESSAGES[phaseIndex];
+  const liveSubtitle = progressDetail?.trim();
+  if (liveSubtitle) return { title: phaseMessage.title, subtitle: liveSubtitle };
   if (rotationIndex === 0) return phaseMessage;
 
   return {

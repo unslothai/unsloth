@@ -48,6 +48,13 @@ test("installer progress rotates reassurance without changing actual phases", ()
   }
 });
 
+test("installer progress shows live detail over generic phase copy", () => {
+  assert.equal(
+    installProgressMessage(6, 3, "Building llama.cpp for Apple Silicon... ").subtitle,
+    "Building llama.cpp for Apple Silicon...",
+  );
+});
+
 test("startup copy rotates while preserving backend phase transitions", () => {
   assert.equal(startupWaitingMessage(INITIAL_STARTUP_MESSAGE, 0), "Starting Unsloth...");
   assert.equal(startupWaitingMessage(INITIAL_STARTUP_MESSAGE, 1), "Loading projects...");
