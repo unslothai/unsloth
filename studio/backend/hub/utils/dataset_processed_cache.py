@@ -116,6 +116,29 @@ def _resolved_app_processed_dataset_cache_root(*, create: bool) -> Optional[Path
         return None
 
 
+def _symlinked_component(path: Path, root: Path) -> Optional[Path]:
+    """First symlinked component on the way from ``root`` down to ``path``, if any.
+
+    Walks the components rather than testing only the leaf, because a swapped hashed
+    parent redirects the entry just as effectively as a swapped leaf, and ``is_symlink()``
+    on the leaf reports False in that case. Returns None when ``path`` is not lexically
+    under ``root``; the caller's escape check covers that.
+    """
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return None
+    current = root
+    for part in relative.parts:
+        current = current / part
+        try:
+            if current.is_symlink():
+                return current
+        except OSError:
+            return current
+    return None
+
+
 def _cache_root_is_present() -> bool:
     try:
         root_path = app_processed_dataset_cache_root().expanduser()
@@ -206,12 +229,15 @@ def mark_app_processed_dataset_cache_complete(entry: AppProcessedDatasetCache) -
         if _cache_root_is_present():
             raise UnsafeDatasetCachePathError("Dataset cache root is not inside the trusted root")
         raise FileNotFoundError("Dataset cache root is unavailable")
-    # Classify a symlinked entry BEFORE resolving it. A symlink whose target is removed
+    # Classify symlinked components BEFORE resolving. A symlink whose target is removed
     # between the load and here makes strict resolution raise FileNotFoundError, which a
     # best-effort caller reads as "the entry was purged" -- hiding the very swap this
-    # check exists to catch.
-    if entry.path.is_symlink() or entry.cache_dir.is_symlink():
-        raise UnsafeDatasetCachePathError(f"Dataset cache path is a symlink: {entry.path}")
+    # check exists to catch. Every component under the root has to be checked, not just
+    # the leaf: swapping a hashed parent redirects the entry just as effectively.
+    for candidate in (entry.path, entry.cache_dir):
+        linked = _symlinked_component(candidate, root)
+        if linked is not None:
+            raise UnsafeDatasetCachePathError(f"Dataset cache path is a symlink: {linked}")
     entry_path = entry.path.resolve(strict = True)
     try:
         entry_path.relative_to(root)

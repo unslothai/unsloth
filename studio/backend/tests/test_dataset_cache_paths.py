@@ -942,6 +942,33 @@ def test_completion_marking_reports_a_dangling_symlink_as_unsafe(tmp_path):
         dataset_processed_cache.mark_app_processed_dataset_cache_complete(entry)
 
 
+@pytest.mark.parametrize("swap", ["leaf", "parent", "grandparent"])
+def test_completion_marking_reports_a_symlinked_ancestor_as_unsafe(tmp_path, swap):
+    """A swapped hashed parent redirects the entry just as well as a swapped leaf.
+
+    ``is_symlink()`` on the leaf reports False when an ancestor is the link, so checking
+    only the leaf leaves the dangling-ancestor case to strict resolution, which raises
+    ``FileNotFoundError`` and reads as a benign purge.
+    """
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    entry = dataset_processed_cache.prepare_app_processed_dataset_cache(repo_id, snapshot)
+    external = tmp_path / "external"
+    external.mkdir()
+    target = {
+        "leaf": entry.path,
+        "parent": entry.path.parent,
+        "grandparent": entry.path.parent.parent,
+    }[swap]
+    shutil.rmtree(target)
+    target.symlink_to(external, target_is_directory = True)
+    external.rmdir()
+
+    with pytest.raises(dataset_processed_cache.UnsafeDatasetCachePathError):
+        dataset_processed_cache.mark_app_processed_dataset_cache_complete(entry)
+
+
 def test_cached_load_still_fails_on_an_unsafe_cache_path(monkeypatch, tmp_path):
     """Best effort covers a failed write, never a path that left the trusted cache root."""
     repo_id = "Org/Data"
