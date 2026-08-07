@@ -54,9 +54,7 @@ AUDIO_PLAYER = FRONTEND / "components/assistant-ui/audio-player.tsx"
 
 def _named_imports(source, module):
     """Named specifiers imported from ``module``, so adding one does not break a contract."""
-    match = re.search(
-        r"import\s*\{([^}]*)\}\s*from\s*[\"']" + re.escape(module) + r"[\"']", source
-    )
+    match = re.search(r"import\s*\{([^}]*)\}\s*from\s*[\"']" + re.escape(module) + r"[\"']", source)
     if match is None:
         return set()
     return {part.strip() for part in match.group(1).split(",") if part.strip()}
