@@ -154,10 +154,18 @@ $_roots_from_conf"
     _stop_owned_sd_cpp_processes KILL
 
     # The app's WebView helpers re-create the caches removed below, so it has to die here.
-    # -x is exact, so the "unsloth" CLI shim never matches.
-    pkill -TERM -x unsloth-studio 2>/dev/null || true
-    sleep 0.5
-    pkill -KILL -x unsloth-studio 2>/dev/null || true
+    # -x is exact, so the "unsloth" CLI shim never matches. -u scopes to the owner of the
+    # $HOME being cleared, not the caller (macOS sudo keeps HOME), so a root run leaves other
+    # logged-in users alone. Numeric suits procps and BSD pkill; BSD reads the signal from
+    # argv[1] only, so it stays first. Unknown owner skips rather than signalling everyone.
+    _studio_uid=$(stat -c %u "$HOME" 2>/dev/null || stat -f %u "$HOME" 2>/dev/null || true)
+    case "$_studio_uid" in ''|*[!0-9]*) _studio_uid=$(id -u 2>/dev/null || true) ;; esac
+    case "$_studio_uid" in *[!0-9]*) _studio_uid= ;; esac
+    if [ -n "$_studio_uid" ]; then
+        pkill -TERM -x -u "$_studio_uid" unsloth-studio 2>/dev/null || true
+        sleep 0.5
+        pkill -KILL -x -u "$_studio_uid" unsloth-studio 2>/dev/null || true
+    fi
 }
 
 _remove_path() {

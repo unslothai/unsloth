@@ -34,10 +34,17 @@ assert_present() { _l="$1"; if [ -e "$2" ]; then echo "  PASS: $_l"; PASS=$((PAS
 # Kill and macOS pref tools, stubbed so the script leaves the real system alone.
 STUB_BIN="$_TMP_ROOT/stubbin"
 mkdir -p "$STUB_BIN"
-for _tool in pkill defaults; do
-    printf '#!/bin/sh\nexit 0\n' > "$STUB_BIN/$_tool"
-    chmod +x "$STUB_BIN/$_tool"
-done
+printf '#!/bin/sh\nexit 0\n' > "$STUB_BIN/defaults"
+chmod +x "$STUB_BIN/defaults"
+# pkill records its argv so the app kill can be asserted; real pkill exits 1 on no match,
+# so mimic that rather than a blanket 0, which would hide a missing `|| true`.
+PKILL_LOG="$_TMP_ROOT/pkill.args"
+cat > "$STUB_BIN/pkill" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$PKILL_LOG"
+exit 1
+EOF
+chmod +x "$STUB_BIN/pkill"
 # On a WSL host the script's `grep -qi microsoft /proc/version` probe fires even with uname
 # stubbed to Linux, and the real WSL cleanup would touch the host's /mnt/* shortcuts and /etc
 # profile. Fail that one probe, delegate the rest. REAL_GREP must be absolute or the stub
@@ -108,6 +115,14 @@ assert_gone "linux: ~/.local/share/$BID removed" "$H/.local/share/$BID"
 assert_gone "linux: ~/.config/$BID removed"      "$H/.config/$BID"
 assert_gone "linux: ~/.local/state/$BID removed" "$H/.local/state/$BID"
 assert_present "linux: unrelated app cache kept" "$H/.cache/other.app"
+# The app kill must be scoped: unscoped, a root-run uninstall signals every user's
+# unsloth-studio. -u takes the owner of the $HOME being cleared, not just `id -u`.
+_want_uid=$(stat -c %u "$H" 2>/dev/null || stat -f %u "$H")
+if grep -q -- "-x -u $_want_uid unsloth-studio" "$PKILL_LOG" 2>/dev/null; then
+    echo "  PASS: linux: app kill scoped to the \$HOME owner"; PASS=$((PASS+1))
+else
+    echo "  FAIL: linux: app kill not scoped (want '-x -u $_want_uid unsloth-studio')"; FAIL=$((FAIL+1))
+fi
 
 # ── 3. Linux: XDG_*_HOME overrides are honored ──
 H=$(new_home)
