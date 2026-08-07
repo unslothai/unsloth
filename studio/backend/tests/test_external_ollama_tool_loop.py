@@ -102,6 +102,7 @@ def _payloads(lines):
 
 def test_executes_tool_continues_and_aggregates_usage(monkeypatch):
     executed = []
+    monkeypatch.setattr(loop_mod, "wait_tool_decision", lambda *_args: "approve")
     monkeypatch.setattr(
         loop_mod,
         "execute_tool",
@@ -118,7 +119,7 @@ def test_executes_tool_continues_and_aggregates_usage(monkeypatch):
         ]
     )
 
-    output = asyncio.run(_collect(client))
+    output = asyncio.run(_collect(client, confirm_tool_calls = True))
 
     assert executed == [("web_search", {"query": "Cairo"})]
     assert [message["role"] for message in client.calls[1]["messages"][-2:]] == [
@@ -126,6 +127,7 @@ def test_executes_tool_continues_and_aggregates_usage(monkeypatch):
         "tool",
     ]
     assert sum('"type": "tool_start"' in line for line in output) == 1
+    assert any('"awaiting_confirmation": false' in line for line in output)
     assert sum('"type": "tool_end"' in line for line in output) == 1
     usage = [payload["usage"] for payload in _payloads(output) if payload.get("usage")]
     assert usage == [{"prompt_tokens": 19, "completion_tokens": 7, "total_tokens": 26}]
@@ -162,6 +164,7 @@ def test_tool_round_requires_an_explicit_tool_finish(monkeypatch, terminal):
 def test_dropped_parallel_call_unlinks_openai_response_and_keeps_gemini_parts(monkeypatch):
     monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
     native = {"executableCode": {"language": "PYTHON", "code": "print(2)"}}
+    reasoning = [{"type": "reasoning.encrypted", "data": "opaque"}]
     event = {
         "choices": [],
         "_toolEvent": {
@@ -184,7 +187,7 @@ def test_dropped_parallel_call_unlinks_openai_response_and_keeps_gemini_parts(mo
         [
             [
                 "data: " + json.dumps(event),
-                _chunk(delta = {"tool_calls": calls}),
+                _chunk(delta = {"tool_calls": calls, "reasoning_details": reasoning}),
                 _chunk(delta = {}, finish = "tool_calls"),
                 "data: [DONE]",
             ],
@@ -198,6 +201,7 @@ def test_dropped_parallel_call_unlinks_openai_response_and_keeps_gemini_parts(mo
     assert [call["id"] for call in assistant["tool_calls"]] == ["call_0"]
     assert "extra_content" not in assistant["tool_calls"][0]
     assert assistant["extra_content"]["google"]["hosted_parts"] == [native]
+    assert assistant["reasoning_details"] == reasoning
 
 
 def test_usage_precedes_provider_error(monkeypatch):

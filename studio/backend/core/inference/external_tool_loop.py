@@ -98,6 +98,7 @@ def _collect_round_delta(
     tool_calls: dict[int, dict[str, Any]],
     assistant_text: list[str],
     assistant_extra_content: dict[str, Any] | None = None,
+    assistant_reasoning_details: list[dict[str, Any]] | None = None,
 ) -> None:
     if not isinstance(payload, Mapping):
         return
@@ -128,6 +129,11 @@ def _collect_round_delta(
         delta = choice.get("delta")
         if not isinstance(delta, Mapping):
             continue
+        reasoning_details = delta.get("reasoning_details")
+        if isinstance(reasoning_details, list) and assistant_reasoning_details is not None:
+            assistant_reasoning_details.extend(
+                copy.deepcopy(dict(part)) for part in reasoning_details if isinstance(part, Mapping)
+            )
         content = delta.get("content")
         extra_content = delta.get("extra_content")
         anthropic_extra = (
@@ -277,6 +283,15 @@ async def stream_external_chat_with_tools(
 ) -> AsyncGenerator[str, None]:
     """Stream an external chat while executing Studio tools server-side."""
 
+    if permission_mode == "full":
+        bypass_permissions = True
+    elif bypass_permissions:
+        permission_mode = "full"
+    elif permission_mode is None:
+        permission_mode = "auto"
+    elif permission_mode not in ("ask", "auto", "off"):
+        permission_mode = "ask"
+
     conversation = [copy.deepcopy(dict(message)) for message in messages]
     max_rounds = max(0, int(max_tool_iterations))
     final_pass = max_rounds == 0
@@ -302,6 +317,7 @@ async def stream_external_chat_with_tools(
         round_calls: dict[int, dict[str, Any]] = {}
         assistant_text: list[str] = []
         assistant_extra_content: dict[str, Any] = {}
+        assistant_reasoning_details: list[dict[str, Any]] = []
         round_finished = False
         round_failed = False
         round_terminal_error: str | None = None
@@ -361,6 +377,7 @@ async def stream_external_chat_with_tools(
                         round_calls,
                         assistant_text,
                         assistant_extra_content,
+                        assistant_reasoning_details,
                     )
                     choices = payload.get("choices")
                     if isinstance(choices, list):
@@ -390,6 +407,7 @@ async def stream_external_chat_with_tools(
                         round_calls,
                         assistant_text,
                         assistant_extra_content,
+                        assistant_reasoning_details,
                     )
                 if (
                     round_failed
@@ -490,6 +508,8 @@ async def stream_external_chat_with_tools(
         }
         if assistant_extra_content:
             assistant_message["extra_content"] = copy.deepcopy(assistant_extra_content)
+        if assistant_reasoning_details:
+            assistant_message["reasoning_details"] = assistant_reasoning_details
         if executable:
             assistant_calls: list[dict[str, Any]] = []
             for decision, raw_call in executable_pairs:

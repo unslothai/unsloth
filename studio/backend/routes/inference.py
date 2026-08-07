@@ -9020,19 +9020,14 @@ async def _proxy_to_external_provider(
             ),
         )
 
-    if (
-        _use_external_studio_tools
-        and _confirm_gate_needs_stream(payload)
-        and not payload.bypass_permissions
-        and not payload.stream
-    ):
+    if _use_external_studio_tools and not payload.stream:
         raise HTTPException(
             status_code = 400,
             detail = openai_error_body(
-                "confirm_tool_calls requires stream=true for Studio tool execution.",
+                "Studio tool execution requires stream=true.",
                 status = 400,
                 code = "invalid_request_error",
-                param = "confirm_tool_calls",
+                param = "stream",
             ),
         )
 

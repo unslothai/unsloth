@@ -78,7 +78,7 @@ def _payload(**kwargs):
         model = "default",
         external_model = "model",
         messages = [{"role": "user", "content": "hello"}],
-        stream = True,
+        stream = kwargs.pop("stream", True),
         provider_id = "saved",
         provider_type = "ollama",
         provider_base_url = "https://attacker.invalid/v1",
@@ -117,3 +117,5 @@ def test_saved_opt_in_owns_routing_and_empty_selection_falls_through(monkeypatch
     assert path in captured
     if path == "managed":
         assert captured["managed"]["tools"] == [TOOL]
+        with pytest.raises(inference_mod.HTTPException):
+            _run(_payload(stream = False))
