@@ -195,7 +195,16 @@ class SearchRequest(BaseModel):
 @router.get("/knowledge-bases")
 def list_knowledge_bases(subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
-    conn = rag_db.get_connection()
+    try:
+        conn = rag_db.get_connection()
+    except rag_db.RagExtensionUnavailable:
+        # RAG_AVAILABLE only covers the import; the native library can still fail to
+        # load per connection (a missing vec0 binary in the venv). The UI polls this
+        # list on a timer, so 500ing here costs a traceback every few seconds for a
+        # condition that never changes within a session. rag_db has warned once; an
+        # empty list is what a machine without RAG has anyway. Only the unavailable
+        # case degrades: a locked or corrupt database still raises.
+        return {"knowledgeBases": []}
     try:
         kbs = store.list_kbs(conn)
         out = []
