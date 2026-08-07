@@ -28,7 +28,7 @@ on:
       # Same for the /api/health wait that runs after a boot.
       - '.github/scripts/wait-for-health.sh'
   push:
-    branches: [main, pip]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:

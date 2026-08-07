@@ -47,7 +47,7 @@ on:
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
   push:
-    branches: [main, pip]
+    branches: [main]
   # Manual trigger for pre-warming HF_HOME caches on main, or re-running
   # against an arbitrary branch without pushing a no-op commit.
   workflow_dispatch:

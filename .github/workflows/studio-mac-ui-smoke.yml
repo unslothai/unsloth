@@ -50,7 +50,7 @@ on:
       # studio-mac-api-smoke.yml watched is already covered above, and
       # tests/studio/** covers studio_api_smoke.py itself.
   push:
-    branches: [main, pip]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
