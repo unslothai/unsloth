@@ -93,6 +93,17 @@ const CHAT_ONLY_ALLOWED = new Set([
   "/api-monitor",
 ]);
 
+// Paths that render their own "still checking" state and self-gate once the verdict lands.
+// The redirect below is one-way, so acting on the pre-measurement guess strands a healthy host
+// on /chat; these two wait it out instead. Everything else keeps the old behaviour.
+const SELF_GATED_WHILE_UNKNOWN = ["/studio", "/video"];
+
+function waitsOutUnknownVerdict(pathname: string): boolean {
+  return SELF_GATED_WHILE_UNKNOWN.some(
+    (base) => pathname === base || pathname.startsWith(`${base}/`),
+  );
+}
+
 function isChatOnlyAllowed(pathname: string): boolean {
   if (CHAT_ONLY_ALLOWED.has(pathname)) return true;
   if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/"))
@@ -107,8 +118,13 @@ export const Route = createRootRoute({
     // Fetch platform info before the chat-only guard. fetchDeviceType caches,
     // so later navigations are instant.
     await fetchDeviceType();
-    const chatOnly = usePlatformStore.getState().isChatOnly();
-    if (chatOnly && !isChatOnlyAllowed(location.pathname)) {
+    const { isChatOnly, capabilitiesUnknown } = usePlatformStore.getState();
+    const unmeasured = capabilitiesUnknown();
+    if (
+      isChatOnly() &&
+      !isChatOnlyAllowed(location.pathname) &&
+      !(unmeasured && waitsOutUnknownVerdict(location.pathname))
+    ) {
       throw redirect({ to: "/chat" });
     }
   },
