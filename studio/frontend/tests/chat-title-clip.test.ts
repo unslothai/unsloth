@@ -105,7 +105,7 @@ test("repair rewrites legacy rows and leaves every other row untouched", () => {
   ]);
 
   assert.deepEqual(planLegacyTitleRepairs(threads, messages), [
-    { threadId: "a", previousTitle: legacy, title: LONG },
+    { threadId: "a", previousTitle: legacy, openingMessageId: "a-m1", title: LONG },
   ]);
 });
 
@@ -151,8 +151,37 @@ test("the opening message is the earliest one, not the first row returned", () =
       [thread("a", legacy)],
       new Map([["a", [later, opening]]]),
     ),
-    [{ threadId: "a", previousTitle: legacy, title: LONG }],
+    // Guarded on the opening message, not the row the array happens to start on.
+    [{ threadId: "a", previousTitle: legacy, openingMessageId: "a-m1", title: LONG }],
   );
+});
+
+test("two prompts sharing a timestamp break on id, as the backend does", () => {
+  // The write is guarded on this id, so the two have to agree on which message
+  // is the opening one or every such repair would be rejected.
+  const legacy = LONG.slice(0, 48) + "...";
+  const first: MessageRecord = { ...userMessage("a", LONG), id: "a-m1" };
+  const second: MessageRecord = {
+    ...userMessage("a", "a different question"),
+    id: "a-m2",
+  };
+
+  for (const order of [
+    [first, second],
+    [second, first],
+  ]) {
+    assert.deepEqual(
+      planLegacyTitleRepairs([thread("a", legacy)], new Map([["a", order]])),
+      [
+        {
+          threadId: "a",
+          previousTitle: legacy,
+          openingMessageId: "a-m1",
+          title: LONG,
+        },
+      ],
+    );
+  }
 });
 
 test("a page skips rows already tried and reports the leftovers", () => {
@@ -212,7 +241,7 @@ test("a chat with nothing stored is left for a later refresh", () => {
   messages.set("a", [userMessage("a", LONG)]);
   assert.deepEqual(threadsMissingMessages(["a"], messages), []);
   assert.deepEqual(planLegacyTitleRepairs(candidates, messages), [
-    { threadId: "a", previousTitle: legacy, title: LONG },
+    { threadId: "a", previousTitle: legacy, openingMessageId: "a-m1", title: LONG },
   ]);
 });
 
@@ -221,9 +250,9 @@ test("a rename drops the rewrite even where the guard is not enforced", () => {
   // would apply the write. This check is what stops it there.
   const legacy = LONG.slice(0, 48) + "...";
   const repairs = [
-    { threadId: "a", previousTitle: legacy, title: LONG },
-    { threadId: "b", previousTitle: legacy, title: LONG },
-    { threadId: "c", previousTitle: legacy, title: LONG },
+    { threadId: "a", previousTitle: legacy, openingMessageId: "a-m1", title: LONG },
+    { threadId: "b", previousTitle: legacy, openingMessageId: "b-m1", title: LONG },
+    { threadId: "c", previousTitle: legacy, openingMessageId: "c-m1", title: LONG },
   ];
   const current = new Map([
     ["a", legacy],

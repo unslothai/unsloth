@@ -3,7 +3,7 @@ import test from "node:test";
 
 import {
   readGuardProbe,
-  schemaDeclaresExpectedTitle,
+  schemaDeclaresRepairGuards,
 } from "../src/features/chat/utils/openapi-support.ts";
 
 /** The shape FastAPI serves for the patch model. */
@@ -23,19 +23,30 @@ const OLD_PROPERTIES = {
   archived: { type: "boolean" },
 };
 
-test("a backend that declares the field enforces the guard", () => {
-  assert.equal(
-    schemaDeclaresExpectedTitle(
-      documentWith({ ...OLD_PROPERTIES, expectedTitle: { type: "string" } }),
-    ),
-    true,
-  );
+const GUARDED = {
+  ...OLD_PROPERTIES,
+  expectedTitle: { type: "string" },
+  expectedOpeningMessageId: { type: "string" },
+};
+
+test("a backend that declares the fields enforces the guards", () => {
+  assert.equal(schemaDeclaresRepairGuards(documentWith(GUARDED)), true);
 });
 
-test("a backend from before the field does not", () => {
-  // It drops the unknown field and applies the write, so the migration has to
+test("a backend from before the fields does not", () => {
+  // It drops the unknown fields and applies the write, so the migration has to
   // stay off there.
-  assert.equal(schemaDeclaresExpectedTitle(documentWith(OLD_PROPERTIES)), false);
+  assert.equal(schemaDeclaresRepairGuards(documentWith(OLD_PROPERTIES)), false);
+});
+
+test("half the guards is not enough", () => {
+  // Only the pair rejects a repair based on a deleted prompt.
+  assert.equal(
+    schemaDeclaresRepairGuards(
+      documentWith({ ...OLD_PROPERTIES, expectedTitle: { type: "string" } }),
+    ),
+    false,
+  );
 });
 
 test("anything unreadable reads as unsupported", () => {
@@ -51,15 +62,12 @@ test("anything unreadable reads as unsupported", () => {
     { components: { schemas: { ChatThreadPatch: {} } } },
     { components: { schemas: { ChatThreadPatch: { properties: null } } } },
   ]) {
-    assert.equal(schemaDeclaresExpectedTitle(document), false);
+    assert.equal(schemaDeclaresRepairGuards(document), false);
   }
 });
 
 test("a schema that arrived settles the question either way", () => {
-  const supported = readGuardProbe(
-    true,
-    documentWith({ ...OLD_PROPERTIES, expectedTitle: { type: "string" } }),
-  );
+  const supported = readGuardProbe(true, documentWith(GUARDED));
   assert.deepEqual(supported, { supported: true, settled: true });
 
   // An old backend is a real answer, so it is worth remembering.

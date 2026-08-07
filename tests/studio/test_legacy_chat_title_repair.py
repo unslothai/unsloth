@@ -86,7 +86,17 @@ def test_a_rename_wins_even_where_the_guard_is_not_enforced():
     )
     # The write runs over the confirmed set, not the planned one.
     assert "await runWithConcurrency(live, REPAIR_CONCURRENCY," in repair
-    assert "{ expectedTitle: repair.previousTitle }," in repair
+    assert "expectedTitle: repair.previousTitle," in repair
+
+
+def test_the_write_is_guarded_on_the_message_it_took_the_title_from():
+    """Deleting the opening prompt does not change the title, so expectedTitle
+    alone still matches and would expand the deleted text."""
+    repair = _read(REPAIR)
+    assert "expectedOpeningMessageId: repair.openingMessageId," in repair
+
+    backend = (BACKEND / "routes/chat_history.py").read_text(encoding = "utf-8")
+    assert "expectedOpeningMessageId: Optional[str] = None" in backend
 
 
 def test_the_migration_stays_off_where_the_guard_is_not_enforced():
@@ -105,7 +115,8 @@ def test_the_migration_stays_off_where_the_guard_is_not_enforced():
     assert "if (!probe.settled) guardSupport = null;" in repair
 
     backend = (BACKEND / "routes/chat_history.py").read_text(encoding = "utf-8")
-    # The probe reads the schema, so the field has to be declared on the model.
+    # The probe reads the schema, so the fields have to be declared on the
+    # model. It looks for both, and both are what make the write safe.
     assert "expectedTitle: Optional[str] = None" in backend
 
 

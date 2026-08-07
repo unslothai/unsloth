@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A title patch can carry a guard, so a rename beats a background rewrite.
+"""A title patch can carry guards, so a rename or a deleted opening message
+beats a background rewrite.
 
 studio_db imports its siblings by bare name (utils.paths), so the functional
 checks run in a subprocess with studio/backend on PYTHONPATH rather than
@@ -26,6 +27,15 @@ ROUTE = BACKEND / "routes" / "chat_history.py"
 PROBE = r"""
 import json, sys
 from storage import studio_db as db
+
+def message(thread_id, message_id, role, text, created_at):
+    db.upsert_chat_message({
+        "id": message_id,
+        "threadId": thread_id,
+        "role": role,
+        "content": [{"type": "text", "text": text}],
+        "createdAt": created_at,
+    })
 
 def thread(thread_id, title):
     db.upsert_chat_thread({
@@ -56,9 +66,54 @@ try:
         "t3", {"title": "whole first line"}, expected_title = "legacy title..."
     )
     out["guard_stale"] = "no error"
-except db.ChatThreadTitleMismatch:
+except db.ChatThreadPreconditionFailed:
     out["guard_stale"] = "mismatch"
 out["after_stale"] = db.get_chat_thread("t3")["title"]
+
+# The opening message guard, while that message is still the opening one.
+thread("t4", "legacy title...")
+message("t4", "m2", "user", "second", 20)
+message("t4", "m1", "user", "first", 10)
+message("t4", "a1", "assistant", "reply", 15)
+out["opening_match"] = db.update_chat_thread(
+    "t4",
+    {"title": "whole first line"},
+    expected_title = "legacy title...",
+    expected_opening_message_id = "m1",
+)["title"]
+
+# The opening message was deleted after the rewrite read it. Its text must not
+# be expanded into the title.
+thread("t5", "legacy title...")
+message("t5", "t5m1", "user", "first", 10)
+message("t5", "t5m2", "user", "second", 20)
+db.sync_chat_messages("t5", [
+    {"id": "t5m2", "threadId": "t5", "role": "user",
+     "content": [{"type": "text", "text": "second"}], "createdAt": 20},
+], prune_missing = True)
+try:
+    db.update_chat_thread(
+        "t5",
+        {"title": "whole first line"},
+        expected_title = "legacy title...",
+        expected_opening_message_id = "t5m1",
+    )
+    out["opening_deleted"] = "no error"
+except db.ChatThreadPreconditionFailed:
+    out["opening_deleted"] = "mismatch"
+out["after_opening_deleted"] = db.get_chat_thread("t5")["title"]
+
+# A thread whose messages are all gone: the subquery is NULL, still no match.
+thread("t6", "legacy title...")
+try:
+    db.update_chat_thread(
+        "t6",
+        {"title": "whole first line"},
+        expected_opening_message_id = "t6m1",
+    )
+    out["opening_empty"] = "no error"
+except db.ChatThreadPreconditionFailed:
+    out["opening_empty"] = "mismatch"
 
 # A thread that is gone reads as missing, not as a mismatch.
 out["missing"] = db.update_chat_thread(
@@ -108,8 +163,26 @@ def test_a_title_patch_leaves_updated_at_alone(probe):
     assert probe["updated_at"] == 1
 
 
-def test_the_route_turns_a_mismatch_into_409():
+def test_the_opening_guard_matches_the_earliest_user_message(probe):
+    """Earliest by createdAt, not by insertion order, and not the assistant's."""
+    assert probe["opening_match"] == "whole first line"
+
+
+def test_a_prompt_deleted_between_the_read_and_the_write_wins(probe):
+    assert probe["opening_deleted"] == "mismatch"
+    assert probe["after_opening_deleted"] == "legacy title..."
+
+
+def test_a_thread_with_no_messages_left_reads_as_a_mismatch(probe):
+    assert probe["opening_empty"] == "mismatch"
+
+
+def test_the_route_turns_a_failed_precondition_into_409():
     source = ROUTE.read_text(encoding = "utf-8")
     assert 'expected_title = patch.pop("expectedTitle", None)' in source
-    assert "except ChatThreadTitleMismatch:" in source
+    assert (
+        'expected_opening_message_id = patch.pop("expectedOpeningMessageId", None)'
+        in source
+    )
+    assert "except ChatThreadPreconditionFailed:" in source
     assert "status_code = 409," in source

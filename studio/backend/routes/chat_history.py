@@ -17,7 +17,7 @@ from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
     ChatMessageConflictError,
     ChatMessageProtectedError,
-    ChatThreadTitleMismatch,
+    ChatThreadPreconditionFailed,
     CorruptSettingsError,
     clear_chat_history,
     count_chat_threads,
@@ -74,6 +74,9 @@ class ChatThreadPatch(BaseModel):
     # Set to apply the patch only while the row still holds this title, so a
     # rename racing a background rewrite wins.
     expectedTitle: Optional[str] = None
+    # Set to apply it only while this is still the thread's opening user
+    # message, so a title derived from one that was deleted is rejected.
+    expectedOpeningMessageId: Optional[str] = None
     modelType: Optional[Literal["base", "lora", "model1", "model2"]] = None
     modelId: Optional[str] = None
     pairId: Optional[str] = None
@@ -281,6 +284,7 @@ async def patch_thread(
 ):
     patch = payload.model_dump(exclude_unset = True)
     expected_title = patch.pop("expectedTitle", None)
+    expected_opening_message_id = patch.pop("expectedOpeningMessageId", None)
     for field in ("title", "modelType", "modelId", "archived", "createdAt", "updatedAt"):
         if field in patch and patch[field] is None:
             raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
@@ -294,11 +298,12 @@ async def patch_thread(
             thread_id,
             patch,
             expected_title = expected_title,
+            expected_opening_message_id = expected_opening_message_id,
         )
-    except ChatThreadTitleMismatch:
+    except ChatThreadPreconditionFailed:
         raise HTTPException(
             status_code = 409,
-            detail = f"Thread {thread_id} was renamed since it was read",
+            detail = f"Thread {thread_id} changed since it was read",
         )
     if thread is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")

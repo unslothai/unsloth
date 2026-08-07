@@ -125,13 +125,17 @@ async function runRepairPass(threads: ThreadRecord[]): Promise<number> {
   let repaired = 0;
   await runWithConcurrency(live, REPAIR_CONCURRENCY, async (repair) => {
     try {
-      // expectedTitle makes this atomic where the backend enforces it: a
-      // rename landing now answers 409 and keeps the user's title. A title
+      // Both guards make this atomic where the backend enforces them: a
+      // rename or a deleted opening prompt landing now answers 409, so the
+      // user's title stays and no deleted text is expanded into one. A title
       // patch leaves updatedAt alone, so Recents keeps its order.
       await updateStoredChatThread(
         repair.threadId,
         { title: repair.title },
-        { expectedTitle: repair.previousTitle },
+        {
+          expectedTitle: repair.previousTitle,
+          expectedOpeningMessageId: repair.openingMessageId,
+        },
       );
       repaired += 1;
     } catch {

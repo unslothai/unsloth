@@ -729,6 +729,9 @@ export interface UpdateChatThreadOptions {
   /** Apply the patch only while the row still holds this title. The server
    *  answers 409 otherwise, so a rename beats a background rewrite. */
   expectedTitle?: string;
+  /** And only while this is still the thread's opening user message, so a
+   *  title taken from a prompt that was just deleted is rejected. */
+  expectedOpeningMessageId?: string;
 }
 
 export async function updateChatThread(
@@ -736,10 +739,13 @@ export async function updateChatThread(
   patch: Partial<ThreadRecord>,
   options: UpdateChatThreadOptions = {},
 ): Promise<ThreadRecord> {
-  const body =
-    options.expectedTitle === undefined
-      ? patch
-      : { ...patch, expectedTitle: options.expectedTitle };
+  const body: Record<string, unknown> = { ...patch };
+  if (options.expectedTitle !== undefined) {
+    body.expectedTitle = options.expectedTitle;
+  }
+  if (options.expectedOpeningMessageId !== undefined) {
+    body.expectedOpeningMessageId = options.expectedOpeningMessageId;
+  }
   const response = await authFetch(
     `/api/chat/threads/${encodeURIComponent(threadId)}`,
     {

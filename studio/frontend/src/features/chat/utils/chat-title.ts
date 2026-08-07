@@ -82,6 +82,9 @@ export interface LegacyTitleRepair {
   threadId: string;
   /** The clipped title the rewrite is based on, guarding the write. */
   previousTitle: string;
+  /** The message the new title came from, guarding it too: deleting it must
+   *  not leave its text expanded into the title. */
+  openingMessageId: string;
   title: string;
 }
 
@@ -142,22 +145,25 @@ export function planLegacyTitleRepairs(
   for (const thread of threads) {
     const messages = messagesByThreadId.get(thread.id) ?? [];
     // Earliest, not first in the array: a local read is in index order.
+    // Ties break on id, the order the backend reads it in.
     const opening = messages
       .filter((m) => m.role === "user")
-      .reduce<MessageRecord | undefined>(
-        (earliest, m) =>
-          earliest === undefined || m.createdAt < earliest.createdAt
-            ? m
-            : earliest,
-        undefined,
-      );
+      .reduce<MessageRecord | undefined>((earliest, m) => {
+        if (earliest === undefined) return m;
+        if (m.createdAt !== earliest.createdAt) {
+          return m.createdAt < earliest.createdAt ? m : earliest;
+        }
+        return m.id < earliest.id ? m : earliest;
+      }, undefined);
     const userText = textOf(opening);
+    if (opening === undefined) continue;
     if (!isLegacyClippedTitle(thread.title, userText)) continue;
     const title = fallbackTitleFromUserText(userText);
     if (title === thread.title) continue;
     repairs.push({
       threadId: thread.id,
       previousTitle: thread.title,
+      openingMessageId: opening.id,
       title,
     });
   }
