@@ -404,29 +404,6 @@ def test_venv_root_requires_the_marker_file(monkeypatch, tmp_path):
     assert mr._venv_root() == str(tmp_path)
 
 
-def test_uv_target_falls_back_to_venv_when_bin_python_dangles(monkeypatch, tmp_path):
-    # macOS breaks venvs this way: a Homebrew/python.org point upgrade moves the
-    # base interpreter and the venv keeps a dangling bin/python symlink. The
-    # running process survives because it already mapped the binary, so uv is the
-    # first thing to notice.
-    venv = _fake_venv(tmp_path)
-    dangling = venv / "bin" / "python"
-    dangling.symlink_to(tmp_path / "gone" / "python3.13")
-    monkeypatch.setattr(mr.sys, "executable", str(dangling))
-    monkeypatch.setattr(mr.sys, "prefix", str(venv))
-    monkeypatch.setattr(mr.sys, "base_prefix", "/usr")
-
-    assert mr._interpreter_resolves() is False
-    assert mr._uv_python_target() == str(venv)
-
-
-def test_uv_target_prefers_the_interpreter_when_it_resolves(monkeypatch, tmp_path):
-    venv = _fake_venv(tmp_path)
-    monkeypatch.setattr(mr.sys, "prefix", str(venv))
-    monkeypatch.setattr(mr.sys, "base_prefix", "/usr")
-    assert mr._uv_python_target() == sys.executable
-
-
 def test_install_env_names_the_target_venv_for_uv(monkeypatch, tmp_path):
     # VIRTUAL_ENV is set from sys.prefix, never forwarded from os.environ: it names
     # the environment uv installs into, so inheriting it would let a caller
@@ -439,67 +416,6 @@ def test_install_env_names_the_target_venv_for_uv(monkeypatch, tmp_path):
     env = mr._mlx_install_env()
 
     assert env["VIRTUAL_ENV"] == str(venv)
-
-
-def test_repair_retries_against_the_venv_when_uv_rejects_the_interpreter(monkeypatch, tmp_path):
-    # The macOS failure from the field: uv refused sys.executable, the self-heal
-    # gave up, and Train/Export stayed disabled. It must retry against the venv.
-    venv = _fake_venv(tmp_path)
-    monkeypatch.setattr(mr.sys, "prefix", str(venv))
-    monkeypatch.setattr(mr.sys, "base_prefix", "/usr")
-    monkeypatch.setattr(mr, "_uv_executable", lambda: "/usr/bin/uv")
-    monkeypatch.setattr(mr, "_transformers_constraint_args", lambda: ([], None))
-    monkeypatch.setattr(mr, "mlx_stack_available", lambda: True)
-
-    calls = []
-
-    class _Result:
-        def __init__(self, returncode, stdout):
-            self.returncode = returncode
-            self.stdout = stdout
-
-    def _fake_run(cmd, **kwargs):
-        calls.append(cmd)
-        if len(calls) == 1:
-            return _Result(
-                2,
-                "error: No virtual environment or system Python installation found "
-                f"for path `{venv}/bin/python`; run `uv venv` to create an environment\n",
-            )
-        return _Result(0, "")
-
-    monkeypatch.setattr(mr.subprocess, "run", _fake_run)
-
-    assert mr.attempt_mlx_repair() is True
-    assert len(calls) == 2
-    # First attempt names the interpreter, the retry names the environment.
-    assert calls[0][calls[0].index("--python") + 1] == sys.executable
-    assert calls[1][calls[1].index("--python") + 1] == str(venv)
-
-
-def test_repair_does_not_retry_on_an_ordinary_resolver_failure(monkeypatch, tmp_path):
-    # Only the unresolvable-interpreter case gets a second uv run; a genuine
-    # resolution failure must not double the install time.
-    venv = _fake_venv(tmp_path)
-    monkeypatch.setattr(mr.sys, "prefix", str(venv))
-    monkeypatch.setattr(mr.sys, "base_prefix", "/usr")
-    monkeypatch.setattr(mr, "_uv_executable", lambda: "/usr/bin/uv")
-    monkeypatch.setattr(mr, "_transformers_constraint_args", lambda: ([], None))
-
-    calls = []
-
-    class _Result:
-        returncode = 1
-        stdout = "error: no solution found when resolving dependencies\n"
-
-    def _fake_run(cmd, **kwargs):
-        calls.append(cmd)
-        return _Result()
-
-    monkeypatch.setattr(mr.subprocess, "run", _fake_run)
-
-    assert mr.attempt_mlx_repair() is False
-    assert len(calls) == 1
 
 
 def test_unresolvable_venv_reports_the_unsloth_repair_command(monkeypatch, tmp_path, capsys):

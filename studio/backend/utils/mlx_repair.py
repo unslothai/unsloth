@@ -203,9 +203,8 @@ def _uv_executable() -> str | None:
 def _venv_root() -> str | None:
     """The venv directory this interpreter runs from, or None outside a venv.
 
-    `sys.prefix` differs from `sys.base_prefix` exactly when a venv is active, and
-    uv accepts a venv directory wherever it accepts an interpreter. Confirm the
-    marker file so a half-deleted tree is not offered to uv as a target."""
+    `sys.prefix` differs from `sys.base_prefix` exactly when a venv is active.
+    Confirm the marker file so a half-deleted tree is never named as the target."""
     if sys.prefix == sys.base_prefix:
         return None
     try:
@@ -216,37 +215,11 @@ def _venv_root() -> str | None:
     return None
 
 
-def _interpreter_resolves() -> bool:
-    """True when sys.executable is a path uv can still resolve.
-
-    A venv's bin/python is a symlink into the base interpreter. macOS breaks that
-    link routinely -- a Homebrew or python.org point upgrade moves the target and
-    the venv keeps a dangling symlink, at which point uv reports "No virtual
-    environment or system Python installation found for path ...". The running
-    process survives because it already mapped the binary, so this is only
-    detectable by re-resolving the path."""
-    try:
-        return bool(sys.executable) and Path(sys.executable).resolve(strict = True).exists()
-    except (OSError, RuntimeError):
-        return False
-
-
-def _uv_python_target() -> str:
-    """What to hand uv's --python. Prefer the interpreter, fall back to the venv.
-
-    Passing the venv root lets the self-heal still work when bin/python dangles,
-    which is the common macOS failure above; uv reads pyvenv.cfg and installs into
-    that environment's site-packages either way."""
-    if _interpreter_resolves():
-        return sys.executable
-    return _venv_root() or sys.executable
-
-
-def _uv_install_cmd(*args: str, python: str | None = None) -> list[str] | None:
+def _uv_install_cmd(*args: str) -> list[str] | None:
     uv = _uv_executable()
     if not uv:
         return None
-    return [uv, "pip", "install", "--python", python or _uv_python_target(), *args]
+    return [uv, "pip", "install", "--python", sys.executable, *args]
 
 
 def _mlx_install_env() -> dict[str, str]:
@@ -326,14 +299,13 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
     constraint_path = None
     try:
         constraint_args, constraint_path = _transformers_constraint_args()
-        install_args = (
+        cmd = _uv_install_cmd(
             "--upgrade",
             _ONLY_BINARY_ARG,
             *_MLX_REINSTALL_ARGS,
             *constraint_args,
             *MLX_PACKAGES,
         )
-        cmd = _uv_install_cmd(*install_args)
         if cmd is None:
             logger.warning(
                 "MLX self-heal requires uv so Unsloth can apply dependency overrides; "
@@ -341,9 +313,9 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
             )
             return False
         logger.info("MLX self-heal: installing %s", ", ".join(MLX_PACKAGES))
-        env = _mlx_install_env()
-        run_kwargs = dict(
-            env = env,
+        result = subprocess.run(
+            cmd,
+            env = _mlx_install_env(),
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
@@ -351,27 +323,6 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
             errors = "replace",
             timeout = timeout,
         )
-        result = subprocess.run(cmd, **run_kwargs)
-        # uv could not resolve the interpreter we named. _uv_python_target only
-        # falls back when sys.executable fails to re-resolve, and uv rejects paths
-        # for its own reasons too (an unreadable pyvenv.cfg, a venv built by a
-        # since-removed interpreter). Retry once against the venv directory before
-        # giving up, so a broken bin/python does not leave Train disabled forever.
-        if (
-            result.returncode != 0
-            and _UNRESOLVED_PYTHON_MARKER in (result.stdout or "")
-            and (venv_root := _venv_root()) is not None
-            and venv_root != _uv_python_target()
-        ):
-            retry_cmd = _uv_install_cmd(*install_args, python = venv_root)
-            if retry_cmd is not None:
-                logger.info(
-                    "MLX self-heal: uv could not resolve %s; retrying against the "
-                    "environment at %s",
-                    _uv_python_target(),
-                    venv_root,
-                )
-                result = subprocess.run(retry_cmd, **run_kwargs)
     except subprocess.TimeoutExpired:
         logger.warning("MLX self-heal timed out after %ss; staying chat-only", timeout)
         return False
@@ -387,10 +338,13 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
     if result.returncode != 0:
         tail = (result.stdout or "")[-2000:]
         if _UNRESOLVED_PYTHON_MARKER in (result.stdout or ""):
-            # Both attempts failed to name an environment uv accepts, so the venv
-            # itself is broken rather than merely missing MLX. Say which command
-            # repairs it; the raw uv text tells the user to run `uv venv`, which
-            # would build an environment Unsloth does not manage.
+            # uv will not install into this environment at all, so the venv is broken
+            # rather than merely missing MLX, and no install flag recovers it from in
+            # here: `--python <venv>/bin/python`, `--python <venv>` and a bare
+            # VIRTUAL_ENV all report the same error against an interpreter uv cannot
+            # resolve. Only rebuilding the environment fixes it, so name the command
+            # that does. uv's own text says to run `uv venv`, which would build an
+            # environment Unsloth does not manage.
             logger.warning(
                 "MLX self-heal could not use the Unsloth environment at %s: uv did not "
                 "recognise it as a virtual environment. This usually means the venv's "
