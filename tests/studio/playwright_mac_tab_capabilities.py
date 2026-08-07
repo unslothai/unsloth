@@ -115,13 +115,15 @@ class BackendSurvivalPoller:
             for path in ("/api/liveness", "/api/health"):
                 began = time.monotonic()
                 status, body = _get_json(path)
-                self.samples.append({
-                    "t": round(time.monotonic(), 1),
-                    "path": path,
-                    "status": status,
-                    "ms": round((time.monotonic() - began) * 1000, 1),
-                    "hardware_detecting": (body or {}).get("hardware_detecting"),
-                })
+                self.samples.append(
+                    {
+                        "t": round(time.monotonic(), 1),
+                        "path": path,
+                        "status": status,
+                        "ms": round((time.monotonic() - began) * 1000, 1),
+                        "hardware_detecting": (body or {}).get("hardware_detecting"),
+                    }
+                )
             self.stop.wait(POLL_INTERVAL_S)
 
     def finish(self) -> None:
@@ -130,7 +132,8 @@ class BackendSurvivalPoller:
 
     def report(self) -> None:
         (ART / "survival_samples.json").write_text(
-            json.dumps(self.samples, indent = 1), encoding = "utf-8",
+            json.dumps(self.samples, indent = 1),
+            encoding = "utf-8",
         )
         for path in ("/api/liveness", "/api/health"):
             got = [s for s in self.samples if s["path"] == path]
@@ -216,7 +219,9 @@ def drive_tabs(page) -> None:
         if route not in landed:
             detecting = (_get_json("/api/health")[1] or {}).get("hardware_detecting")
             if detecting is True:
-                fail(f"{name}: redirected away from {route} while capabilities were still unmeasured")
+                fail(
+                    f"{name}: redirected away from {route} while capabilities were still unmeasured"
+                )
             else:
                 info(f"{name}: redirected to {landed} after a measured verdict (allowed)")
 
@@ -253,7 +258,10 @@ def main() -> int:
         ctx = browser.new_context(viewport = {"width": 1440, "height": 900})
         install_view_transition_killer(ctx)
         page = ctx.new_page()
-        page.on("pageerror", lambda e: None if is_benign_page_error(str(e)) else fail(f"page error: {e}"))
+        page.on(
+            "pageerror",
+            lambda e: None if is_benign_page_error(str(e)) else fail(f"page error: {e}"),
+        )
 
         step("login")
         page.goto(BASE, wait_until = "domcontentloaded", timeout = 120000)

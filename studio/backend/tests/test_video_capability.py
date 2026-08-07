@@ -29,7 +29,14 @@ def _func_src(rel, name):
     return ast.get_source_segment(src, node)
 
 
-def _patch(monkeypatch, *, torch: bool, device, apple: bool, chat_only_reason = "no_gpu"):
+def _patch(
+    monkeypatch,
+    *,
+    torch: bool,
+    device,
+    apple: bool,
+    chat_only_reason = "no_gpu",
+):
     monkeypatch.setattr(hw, "_has_torch", lambda: torch)
     monkeypatch.setattr(hw, "get_device", lambda: device)
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: apple)
@@ -129,8 +136,8 @@ def test_video_capability_excludes_the_apple_backends():
 
 
 def test_frontend_reads_the_new_fields():
-    hook = (
-        _BACKEND.parent / "frontend" / "src" / "hooks" / "use-hardware-info.ts"
-    ).read_text(encoding = "utf-8")
+    hook = (_BACKEND.parent / "frontend" / "src" / "hooks" / "use-hardware-info.ts").read_text(
+        encoding = "utf-8"
+    )
     for field in ("video_supported", "video_unsupported_reason", "video_unsupported_message"):
         assert field in hook, f"{field} is not consumed by use-hardware-info.ts"

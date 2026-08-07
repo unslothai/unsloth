@@ -55,24 +55,21 @@ def test_import_failure_also_raises_the_typed_error(reset_unavailable_warning, m
         rag_db.get_connection()
 
 
-def test_unavailability_warns_only_once(
-    rag_home, reset_unavailable_warning, monkeypatch, caplog
-):
+def test_unavailability_warns_only_once(rag_home, reset_unavailable_warning, monkeypatch, caplog):
     _break_extension_load(monkeypatch)
     with caplog.at_level("WARNING", logger = rag_db.__name__):
         for _ in range(5):
             with pytest.raises(rag_db.RagExtensionUnavailable):
                 rag_db.get_connection()
-    warnings = [r for r in caplog.records if "sqlite-vec extension could not be loaded" in r.message]
+    warnings = [
+        r for r in caplog.records if "sqlite-vec extension could not be loaded" in r.message
+    ]
     assert len(warnings) == 1
     assert "disabled for this session" in warnings[0].getMessage()
 
 
-def test_list_knowledge_bases_degrades_to_empty(
-    rag_home, reset_unavailable_warning, monkeypatch
-):
+def test_list_knowledge_bases_degrades_to_empty(rag_home, reset_unavailable_warning, monkeypatch):
     from routes import rag as rag_routes
-
     _break_extension_load(monkeypatch)
     assert rag_routes.list_knowledge_bases(subject = "tester") == {"knowledgeBases": []}
 
