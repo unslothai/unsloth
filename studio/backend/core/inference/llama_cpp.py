@@ -13581,6 +13581,7 @@ class LlamaCppBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        continue_final_message: bool = False,
         seed: Optional[int] = None,
         promote_reasoning_only: bool = True,
         _allow_respawn_retry: bool = True,
@@ -13596,9 +13597,15 @@ class LlamaCppBackend:
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
 
-        from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
+        from core.inference.chat_template_helpers import (
+            neutralize_control_markup_in_messages,
+            trailing_assistant_text,
+        )
 
         openai_messages = self._build_openai_messages(messages, image_b64)
+        continue_final_message = continue_final_message and bool(
+            trailing_assistant_text(openai_messages)
+        )
 
         payload = {
             # llama-server applies the chat template itself (#7066).
@@ -13619,6 +13626,10 @@ class LlamaCppBackend:
         )
         if _reasoning_kw is not None:
             payload["chat_template_kwargs"] = _reasoning_kw
+        if continue_final_message:
+            # llama-server applies the template; it rejects both flags set true.
+            payload["continue_final_message"] = True
+            payload["add_generation_prompt"] = False
         # Default cap to the model context when known.
         payload["max_tokens"] = (
             max_tokens
@@ -13771,6 +13782,7 @@ class LlamaCppBackend:
                     enable_thinking = enable_thinking,
                     reasoning_effort = reasoning_effort,
                     preserve_thinking = preserve_thinking,
+                    continue_final_message = continue_final_message,
                     seed = seed,
                     promote_reasoning_only = promote_reasoning_only,
                     _allow_respawn_retry = False,
@@ -13802,6 +13814,7 @@ class LlamaCppBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        continue_final_message: bool = False,
         max_tool_iterations: int = 25,
         auto_heal_tool_calls: bool = True,
         nudge_tool_calls: Optional[bool] = None,
@@ -13862,9 +13875,13 @@ class LlamaCppBackend:
         # retrieval call would actually prompt (ask mode); auto never gates the
         # safe search_knowledge_base tool, so retrieval must still run there.
         # off never prompts either, so it also keeps first-pass retrieval.
+        from core.inference.chat_template_helpers import trailing_assistant_text
+
+        # A resumed turn must keep the partial trailing: autoinject appends a tool call
+        # plus its result, moving the boundary so the model opens a fresh answer.
         _skip_autoinject = (
             confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
-        )
+        ) or bool(continue_final_message and trailing_assistant_text(conversation))
         _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
         if _auto:
             for _ev in _auto["events"]:
@@ -14087,6 +14104,7 @@ class LlamaCppBackend:
             # Build payload -- stream: True so we detect tool signals
             # in the first 1-2 chunks without a non-streaming penalty.
             from core.inference.chat_template_helpers import (
+                append_assistant_turn,
                 neutralize_control_markup_in_messages,
             )
 
@@ -14115,6 +14133,11 @@ class LlamaCppBackend:
             )
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
+            # Re-checked per iteration: once a tool result is appended the partial is
+            # no longer trailing, so later turns are normal.
+            if continue_final_message and trailing_assistant_text(conversation):
+                payload["continue_final_message"] = True
+                payload["add_generation_prompt"] = False
             payload["max_tokens"] = (
                 max_tokens
                 if max_tokens is not None
@@ -14763,11 +14786,12 @@ class LlamaCppBackend:
                                 f"model responded without calling tools "
                                 f"({len(_stripped)} chars)"
                             )
-                            conversation.append(
-                                {
-                                    "role": "assistant",
-                                    "content": _stripped,
-                                }
+                            # Merges into a resumed partial: the nudge that follows is a
+                            # user turn, so a second assistant turn breaks alternation.
+                            append_assistant_turn(
+                                conversation,
+                                {"role": "assistant", "content": _stripped},
+                                continue_final_message = continue_final_message,
                             )
                             available_tool_names = [
                                 (tool.get("function") or {}).get("name")
@@ -14985,7 +15009,11 @@ class LlamaCppBackend:
 
                     if not decision.should_execute:
                         if content_text and not assistant_appended:
-                            conversation.append(assistant_msg)
+                            append_assistant_turn(
+                                conversation,
+                                assistant_msg,
+                                continue_final_message = continue_final_message,
+                            )
                             assistant_appended = True
                         if provisional_match:
                             # A provisional tool card is already on screen for this
@@ -15012,7 +15040,13 @@ class LlamaCppBackend:
 
                     if not assistant_appended:
                         assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
-                        conversation.append(assistant_msg)
+                        # Merges into a resumed partial, so a continued turn that calls
+                        # a tool stays one assistant message.
+                        append_assistant_turn(
+                            conversation,
+                            assistant_msg,
+                            continue_final_message = continue_final_message,
+                        )
                         assistant_appended = True
                     else:
                         assistant_msg.setdefault("tool_calls", []).append(

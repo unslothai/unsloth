@@ -472,6 +472,12 @@ export interface OpenAIChatCompletionsRequest {
     | "xhigh"
     | null;
   preserve_thinking?: boolean | null;
+  /**
+   * Resume the trailing assistant turn rather than opening a new one: the rendered
+   * prompt ends inside the partial answer, so the model emits its next token. Local
+   * models only -- the external-provider proxy forwards an explicit field list.
+   */
+  continue_final_message?: boolean;
   thinking?: { type: "disabled" | "enabled" } | null;
   enable_tools?: boolean | null;
   enabled_tools?: string[];

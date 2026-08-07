@@ -8,6 +8,8 @@ mod desktop_update_policy;
 mod desktop_updater;
 mod diagnostics;
 mod install;
+#[cfg(target_os = "linux")]
+mod linux_webkit;
 mod loopback_http;
 mod native_backend_lease;
 mod native_clipboard;
@@ -876,6 +878,11 @@ fn main() {
     // process drives X from several threads. See x11_threads for the crash.
     x11_threads::init_x11_threads();
 
+    // WebKitGTK's hardware dmabuf path can violate Wayland explicit-sync
+    // protocol on current NVIDIA/Mesa stacks. Select a compatible fallback
+    // before any GTK/WebKit object can be initialized.
+    #[cfg(target_os = "linux")]
+    let webkit_rendering_workaround = linux_webkit::configure_wayland_renderer();
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
@@ -883,6 +890,11 @@ fn main() {
 
     setup_logging();
     info!("Unsloth desktop app starting");
+
+    #[cfg(target_os = "linux")]
+    if let Some(variable) = webkit_rendering_workaround {
+        info!("Wayland detected; set {variable}=1 for WebKitGTK compatibility");
+    }
     windows_job::initialize();
 
     tauri::Builder::default()

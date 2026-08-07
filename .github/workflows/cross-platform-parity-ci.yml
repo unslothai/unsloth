@@ -11,6 +11,11 @@
 # #6166; this matrix keeps that from silently regressing. Pure pytest, no GPU,
 # sub-second, so the matrix is cheap. Linux also runs the POSIX rollback test
 # under dash, matching the supported curl-to-sh installer path.
+#
+# The interactive-prompt guard rides along for the same reason: a text scan over
+# the same scripts, refusing new yes/no questions (see #7016, reverted in #8040).
+# Its paths are globbed, since a newly named installer has to trigger the very
+# check that refuses to let it land unregistered.
 
 name: Cross-platform parity
 
@@ -22,6 +27,28 @@ on:
       - 'unsloth_cli/__init__.py'
       - 'tests/test_installer_skip_autostart.py'
       - 'tests/test_installer_system32_guard.py'
+      - 'tests/test_installer_interactive_prompts.py'
+      - 'install*.sh'
+      - 'install*.ps1'
+      - 'install*.bat'
+      - 'uninstall*.sh'
+      - 'uninstall*.ps1'
+      - 'uninstall*.bat'
+      - 'uninstall*.py'
+      - 'install*.py'
+      - 'studio/setup*.sh'
+      - 'studio/setup*.ps1'
+      - 'scripts/install*.sh'
+      - 'scripts/install*.ps1'
+      - 'scripts/uninstall*.sh'
+      - 'scripts/uninstall*.ps1'
+      - 'scripts/build_whisper_cpp.sh'
+      - 'studio/setup*.bat'
+      - 'setup*.sh'
+      - 'setup*.ps1'
+      - 'setup*.bat'
+      - 'studio/install_*.py'
+      - 'studio/backend/requirements/single-env/patch_metadata.py'
       - 'tests/python/test_cross_platform_parity.py'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
@@ -43,6 +70,28 @@ on:
       - 'unsloth_cli/__init__.py'
       - 'tests/test_installer_skip_autostart.py'
       - 'tests/test_installer_system32_guard.py'
+      - 'tests/test_installer_interactive_prompts.py'
+      - 'install*.sh'
+      - 'install*.ps1'
+      - 'install*.bat'
+      - 'uninstall*.sh'
+      - 'uninstall*.ps1'
+      - 'uninstall*.bat'
+      - 'uninstall*.py'
+      - 'install*.py'
+      - 'studio/setup*.sh'
+      - 'studio/setup*.ps1'
+      - 'scripts/install*.sh'
+      - 'scripts/install*.ps1'
+      - 'scripts/uninstall*.sh'
+      - 'scripts/uninstall*.ps1'
+      - 'scripts/build_whisper_cpp.sh'
+      - 'studio/setup*.bat'
+      - 'setup*.sh'
+      - 'setup*.ps1'
+      - 'setup*.bat'
+      - 'studio/install_*.py'
+      - 'studio/backend/requirements/single-env/patch_metadata.py'
       - 'tests/python/test_cross_platform_parity.py'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
@@ -101,10 +150,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -118,6 +167,7 @@ jobs:
           tests/python/test_windows_python_venv_hardening.py
           tests/test_installer_skip_autostart.py
           tests/test_installer_system32_guard.py
+          tests/test_installer_interactive_prompts.py
           -q
       - name: PowerShell rollback lifecycle tests
         if: runner.os == 'Windows'
