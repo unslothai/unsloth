@@ -48,8 +48,11 @@ def test_a_legacy_only_chat_falls_back_to_a_local_read():
     """A chat still only in Dexie reads empty from the backend. Without the
     local read it would sit in `attempted` with its title still clipped."""
     repair = _read(REPAIR)
-    assert "threadsMissingMessages(ids, messages)" in repair
-    assert "messages.set(id, await listLegacyChatMessages(id))" in repair
+    # Any row no rewrite could be made of, not just an empty one: a chat can be
+    # part imported, holding its opening turn locally and later ones remotely.
+    assert "const unexplained = threadsWithoutRepairs(candidates, repairs);" in repair
+    assert "const local = await listLegacyChatMessages(id);" in repair
+    assert "messages.set(id, mergeMessagesById(messages.get(id) ?? [], local));" in repair
 
     storage = _read(STORAGE)
     assert "export async function listLegacyChatMessages(" in storage

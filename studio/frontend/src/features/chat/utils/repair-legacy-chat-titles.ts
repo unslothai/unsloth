@@ -8,9 +8,11 @@ import {
   updateStoredChatThread,
 } from "./chat-history-storage";
 import {
+  mergeMessagesById,
   planLegacyTitleRepairs,
   selectLegacyRepairPage,
   threadsMissingMessages,
+  threadsWithoutRepairs,
 } from "./chat-title";
 import { runWithConcurrency } from "./run-with-concurrency";
 
@@ -44,32 +46,37 @@ export async function repairLegacyChatTitles(
   for (const id of ids) attempted.add(id);
 
   let messages: Map<string, MessageRecord[]>;
+  let repairs: ReturnType<typeof planLegacyTitleRepairs>;
   try {
     // One batched call, and none at all when the caller already fetched them.
     messages = known
       ? new Map(known)
       : await batchListChatMessages(ids);
-    // A chat still only in Dexie (legacy import pending or failed) reads empty
-    // from the backend, so look locally before writing it off.
-    await runWithConcurrency(
-      threadsMissingMessages(ids, messages),
-      REPAIR_CONCURRENCY,
-      async (id) => {
-        messages.set(id, await listLegacyChatMessages(id));
-      },
-    );
+    repairs = planLegacyTitleRepairs(candidates, messages);
+
+    // A row nothing could be made of may just be missing its opening message
+    // here: a legacy chat can sit in Dexie entirely, or hold its first turn
+    // there while later ones have already been imported. Look locally before
+    // writing any of them off.
+    const unexplained = threadsWithoutRepairs(candidates, repairs);
+    if (unexplained.length > 0) {
+      await runWithConcurrency(unexplained, REPAIR_CONCURRENCY, async (id) => {
+        const local = await listLegacyChatMessages(id);
+        if (local.length === 0) return;
+        messages.set(id, mergeMessagesById(messages.get(id) ?? [], local));
+      });
+      repairs = planLegacyTitleRepairs(candidates, messages);
+    }
   } catch {
     // Nothing was decided, so let a later refresh try these again.
     for (const id of ids) attempted.delete(id);
     return 0;
   }
 
-  // Nothing found anywhere reads as an incomplete answer, not an empty chat:
-  // a clipped title means there was an opening message once. Leave those rows
-  // for a later refresh rather than writing them off for the session.
+  // Nothing known at all reads as an incomplete answer, not an empty chat: a
+  // clipped title means there was an opening message once. Leave those rows for
+  // a later refresh rather than writing them off for the session.
   for (const id of threadsMissingMessages(ids, messages)) attempted.delete(id);
-
-  const repairs = planLegacyTitleRepairs(candidates, messages);
   let repaired = 0;
   await runWithConcurrency(repairs, REPAIR_CONCURRENCY, async (repair) => {
     try {

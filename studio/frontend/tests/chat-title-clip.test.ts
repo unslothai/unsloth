@@ -8,9 +8,11 @@ import type {
 import {
   fallbackTitleFromUserText,
   isLegacyClippedTitle,
+  mergeMessagesById,
   planLegacyTitleRepairs,
   selectLegacyRepairPage,
   threadsMissingMessages,
+  threadsWithoutRepairs,
 } from "../src/features/chat/utils/chat-title.ts";
 
 const LONG =
@@ -176,4 +178,47 @@ test("a thread the backend has nothing for still gets a local read", () => {
     "b",
     "c",
   ]);
+});
+
+test("a part-imported chat is spotted and planned from both sources", () => {
+  // The backend holds a later turn, so the row does not read as empty and the
+  // clipped title cannot be explained from it alone.
+  const legacy = LONG.slice(0, 48) + "...";
+  const candidates = [thread("a", legacy)];
+  const remote: MessageRecord = {
+    ...userMessage("a", "a later question entirely"),
+    id: "a-m9",
+    createdAt: 99,
+  };
+  const local: MessageRecord = {
+    ...userMessage("a", LONG),
+    id: "a-m1",
+    createdAt: 1,
+  };
+
+  const messages = new Map<string, MessageRecord[]>([["a", [remote]]]);
+  const first = planLegacyTitleRepairs(candidates, messages);
+  assert.deepEqual(first, []);
+  // Not empty, so the old empty-only check would never have looked locally.
+  assert.deepEqual(threadsMissingMessages(["a"], messages), []);
+  assert.deepEqual(threadsWithoutRepairs(candidates, first), ["a"]);
+
+  messages.set("a", mergeMessagesById(messages.get("a") ?? [], [local]));
+  assert.deepEqual(planLegacyTitleRepairs(candidates, messages), [
+    { threadId: "a", previousTitle: legacy, title: LONG },
+  ]);
+});
+
+test("merging keeps one copy of a message both sources hold", () => {
+  const shared = userMessage("a", LONG);
+  const other: MessageRecord = {
+    ...userMessage("a", "next"),
+    id: "a-m2",
+    createdAt: 2,
+  };
+  const merged = mergeMessagesById([shared], [shared, other]);
+  assert.deepEqual(
+    merged.map((m) => m.id),
+    ["a-m1", "a-m2"],
+  );
 });
