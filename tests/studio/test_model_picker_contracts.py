@@ -2563,7 +2563,7 @@ def test_download_cancel_survives_the_pending_start_window():
     assert "let cancelIssued = false;" in helper
     assert "if (cancelIssued) return true;" in helper
     assert "if (cancelRequested) {\n          cancelActiveJob();" in helper
-    assert "if (cancelRequested && !cancelActiveJob()) finish(\"cancelled\");" in helper
+    assert 'if (cancelRequested && !cancelActiveJob()) finish("cancelled");' in helper
 
 
 def test_a_failed_quant_is_marked_tried_so_the_repo_continues():

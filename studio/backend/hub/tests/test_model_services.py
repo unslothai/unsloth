@@ -4467,7 +4467,13 @@ def test_dataset_status_includes_generation(monkeypatch):
     assert result.generation == 4
 
 
-def _write_local_model(root: Path, name: str, config: dict, *, modules: bool = False) -> Path:
+def _write_local_model(
+    root: Path,
+    name: str,
+    config: dict,
+    *,
+    modules: bool = False,
+) -> Path:
     path = root / name
     path.mkdir(parents = True)
     (path / "config.json").write_text(json.dumps(config), encoding = "utf-8")

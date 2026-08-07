@@ -959,9 +959,10 @@ def test_a_failed_quant_falls_through_to_the_next_one_in_the_same_repo():
         " load: (p) => p.gguf_variant === 'Q2_K' ? new Error(OOM) : LOADED(p) })"
     )
 
-    assert [
-        event["gguf_variant"] for event in out["events"] if event["kind"] == "loadModel"
-    ] == ["Q2_K", "Q4_K_M"]
+    assert [event["gguf_variant"] for event in out["events"] if event["kind"] == "loadModel"] == [
+        "Q2_K",
+        "Q4_K_M",
+    ]
     assert out["result"]["loaded"] is True
     assert _downloads_started(out) == []
 
