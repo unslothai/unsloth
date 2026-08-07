@@ -1080,9 +1080,7 @@ class ExportBackend:
                     reported = result if isinstance(result, dict) else {}
                     produced = {p for p in model_tmp_path.rglob("*.gguf") if p.is_file()}
                     produced.update(Path(f) for f in _reported_gguf_files(result) or [])
-                    modelfiles = {
-                        p for p in model_tmp_path.rglob("Modelfile") if p.is_file()
-                    }
+                    modelfiles = {p for p in model_tmp_path.rglob("Modelfile") if p.is_file()}
                     reported_modelfile = reported.get("modelfile_location")
                     if reported_modelfile and Path(reported_modelfile).is_file():
                         modelfiles.add(Path(os.path.abspath(os.fspath(reported_modelfile))))
