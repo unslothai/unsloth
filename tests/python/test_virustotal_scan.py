@@ -256,10 +256,12 @@ class TestSignedUrlMasking:
         bundle = tmp_path / "big.exe"
         bundle.write_bytes(b"payload")
         signed = "https://upload.virustotal.example/receive?sig=secret-credential"
-        client, _transport = _client({
-            "/files/upload_url": (200, b'{"data": "' + signed.encode() + b'"}'),
-            "upload.virustotal.example": (200, b'{"data": {"id": "an-1"}}'),
-        })
+        client, _transport = _client(
+            {
+                "/files/upload_url": (200, b'{"data": "' + signed.encode() + b'"}'),
+                "upload.virustotal.example": (200, b'{"data": {"id": "an-1"}}'),
+            }
+        )
         client.upload(bundle)
         out = capsys.readouterr().out
         assert f"::add-mask::{signed}" in out
@@ -270,10 +272,12 @@ class TestSignedUrlMasking:
         monkeypatch.delenv("GITHUB_ACTIONS", raising = False)
         bundle = tmp_path / "big.exe"
         bundle.write_bytes(b"payload")
-        client, _transport = _client({
-            "/files/upload_url": (200, b'{"data": "https://up.example/x?sig=s"}'),
-            "up.example": (200, b'{"data": {"id": "an-1"}}'),
-        })
+        client, _transport = _client(
+            {
+                "/files/upload_url": (200, b'{"data": "https://up.example/x?sig=s"}'),
+                "up.example": (200, b'{"data": {"id": "an-1"}}'),
+            }
+        )
         client.upload(bundle)
         assert "::add-mask::" not in capsys.readouterr().out
 
