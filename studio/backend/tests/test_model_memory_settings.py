@@ -2394,9 +2394,7 @@ class TestAnActiveFitterVoidsTheAllLayersVerdict:
         from core.inference.llama_cpp import LlamaCppBackend
 
         backend = LlamaCppBackend.__new__(LlamaCppBackend)
-        monkeypatch.setattr(
-            type(backend), "n_layers", property(lambda self: 32), raising = False
-        )
+        monkeypatch.setattr(type(backend), "n_layers", property(lambda self: 32), raising = False)
         backend._n_cpu_moe = 0
         return backend._offloads_every_layer(
             gpu_memory_mode = "auto",

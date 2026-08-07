@@ -11065,9 +11065,7 @@ class LlamaCppBackend:
                     probe_vulkan = should_mlock(),
                     # Over the built cmd AND the extras, so Studio's own --fit
                     # counts and a later user --fit still wins by last-arg.
-                    fit_active = fit_is_effectively_on(
-                        [*cmd, *(_mem_extra_args or [])], _mem_env
-                    ),
+                    fit_active = fit_is_effectively_on([*cmd, *(_mem_extra_args or [])], _mem_env),
                 )
                 _mem_managed, _mem_extras = apply_model_memory_policy(
                     extra_args,
