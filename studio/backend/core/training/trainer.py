@@ -844,11 +844,17 @@ class UnslothTrainer:
         local_files_only: bool = False,
         actual_model_repo_id: Optional[str] = None,
         model_revision: Optional[str] = None,
+        use_exact_model_name: Optional[bool] = None,
     ) -> bool:
         """Load model for training (supports both text and vision models)"""
         self.load_in_4bit = load_in_4bit  # For training_meta.json
         self.trust_remote_code = trust_remote_code  # For AutoProcessor etc. used during training
         lookup_name = model_load_name or model_name
+        exact_model_name = (
+            use_exact_model_name
+            if use_exact_model_name is not None
+            else model_revision is not None
+        )
         self.model_load_error = None
         try:
             if self.model is not None:
@@ -1008,7 +1014,7 @@ class UnslothTrainer:
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
                     revision = model_revision,
-                    use_exact_model_name = model_revision is not None,
+                    use_exact_model_name = exact_model_name,
                 )
                 logger.info("Loaded CSM audio model")
 
@@ -1029,7 +1035,7 @@ class UnslothTrainer:
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
                     revision = model_revision,
-                    use_exact_model_name = model_revision is not None,
+                    use_exact_model_name = exact_model_name,
                 )
                 # Generation settings (notebook lines 100-105)
                 self.model.generation_config.language = "<|en|>"
@@ -1050,7 +1056,7 @@ class UnslothTrainer:
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
                     revision = model_revision,
-                    use_exact_model_name = model_revision is not None,
+                    use_exact_model_name = exact_model_name,
                 )
                 logger.info(f"Loaded {self._audio_type} audio model (FastLanguageModel)")
 
@@ -1100,7 +1106,7 @@ class UnslothTrainer:
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
                     revision = model_revision,
-                    use_exact_model_name = model_revision is not None,
+                    use_exact_model_name = exact_model_name,
                 )
                 logger.info("Loaded OuteTTS (dac) model (FastModel)")
 
@@ -1117,7 +1123,7 @@ class UnslothTrainer:
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
                     revision = model_revision,
-                    use_exact_model_name = model_revision is not None,
+                    use_exact_model_name = exact_model_name,
                 )
                 logger.info("Loaded audio VLM model (FastModel)")
 
@@ -1132,7 +1138,7 @@ class UnslothTrainer:
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
                     revision = model_revision,
-                    use_exact_model_name = model_revision is not None,
+                    use_exact_model_name = exact_model_name,
                 )
                 logger.info("Loaded vision model")
 
@@ -1160,7 +1166,7 @@ class UnslothTrainer:
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
                     revision = model_revision,
-                    use_exact_model_name = model_revision is not None,
+                    use_exact_model_name = exact_model_name,
                 )
                 logger.info("Loaded text model")
 
@@ -1210,6 +1216,7 @@ class UnslothTrainer:
                     local_files_only = local_files_only,
                     actual_model_repo_id = actual_model_repo_id,
                     model_revision = model_revision,
+                    use_exact_model_name = use_exact_model_name,
                 )
             error_msg = str(e)
             error_lower = error_msg.lower()
