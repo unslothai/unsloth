@@ -1008,7 +1008,7 @@ def test_direct_llama_counter_is_started_last_before_its_guarding_try():
     import inspect
     import textwrap
 
-    for func_name in ("openai_completions", "openai_embeddings"):
+    for func_name in ("openai_completions", "openai_embeddings", "_direct_llama_request"):
         tree = ast.parse(textwrap.dedent(inspect.getsource(getattr(inference_route, func_name))))
         started = [
             node
@@ -1032,6 +1032,160 @@ def test_direct_llama_counter_is_started_last_before_its_guarding_try():
                     f"followed by the try whose finally decrements it:\n"
                     + "\n".join(ast.unparse(s) for s in block[index : index + 3])
                 )
+
+
+def _llama_slot_readout(
+    monkeypatch,
+    *,
+    is_audio = False,
+    slots = 4,
+):
+    """Point the slot readout at a loaded llama-server with ``slots`` free slots."""
+    from types import SimpleNamespace
+
+    import routes.inference as inf
+
+    backend = SimpleNamespace(
+        is_loaded = True,
+        is_diffusion = False,
+        is_vision = True,
+        base_url = "http://llama.test",
+        effective_parallel_slots = slots,
+        context_length = 4096,
+        model_identifier = "some/tts-GGUF",
+        _is_audio = is_audio,
+        _audio_type = "codec",
+        _auth_headers = None,
+    )
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inf, "peek_llama_admission_snapshot", lambda _base: None)
+    monkeypatch.setattr(inf, "_direct_llama_inflight", 0)
+    return backend
+
+
+def test_queue_state_counts_rag_vision_captioning(monkeypatch):
+    """RAG captioning/OCR reaches llama-server with no lease (see the
+    LlamaAdmissionQueue docstring), so without the direct count the panel reported an
+    idle server for the whole ingestion.
+    """
+    import routes.inference as inf
+    from core.rag import captioner
+
+    _llama_slot_readout(monkeypatch)
+    seen = {}
+
+    class _Resp:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"choices": [{"message": {"content": "a caption"}}]}
+
+    def _fake_post(*_a, **_k):
+        seen["state"] = inf._monitor_queue_state()
+        return _Resp()
+
+    monkeypatch.setattr("httpx.post", _fake_post)
+
+    assert captioner._caption_one("http://llama.test", "local", b"png", 5.0) == "a caption"
+    assert seen["state"] == {"capacity": 4, "active": 1, "queued": 0, "free": 3}
+    assert inf._monitor_queue_state() == {"capacity": 4, "active": 0, "queued": 0, "free": 4}
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_rag_vision_call_balances_the_direct_counter(monkeypatch, fails):
+    """Both outcomes must return the count to zero: a failed vision call is swallowed
+    as non-fatal, so a leak here would pin the panel at busy for the whole session.
+    """
+    import routes.inference as inf
+    from core.rag import captioner
+
+    _llama_slot_readout(monkeypatch)
+
+    class _Resp:
+        status_code = 500
+
+        def raise_for_status(self):
+            raise RuntimeError("llama-server said no")
+
+        def json(self):
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    def _fake_post(*_a, **_k):
+        if fails:
+            raise RuntimeError("connection refused")
+        return _Resp()
+
+    monkeypatch.setattr("httpx.post", _fake_post)
+
+    assert captioner._ocr_one("http://llama.test", "local", b"png", 5.0) is None
+    assert inf._direct_llama_inflight == 0
+
+
+def _run_gguf_tts(monkeypatch, backend, generate):
+    """Drive POST /audio/generate onto the GGUF (llama-server) branch."""
+    import asyncio
+
+    import routes.inference as inf
+    from models.inference import ChatCompletionRequest
+
+    backend.generate_audio_response = generate
+    monkeypatch.setattr(inf, "_llama_public_model_id", lambda *_a, **_k: "some/tts-GGUF")
+    monkeypatch.setattr(inf, "_fill_recommended_sampling_openai", lambda *_a, **_k: None)
+
+    async def _noop_switch(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(inf, "_maybe_auto_switch_model", _noop_switch)
+    payload = ChatCompletionRequest(
+        model = "some/tts-GGUF", messages = [{"role": "user", "content": "hi"}]
+    )
+    return asyncio.run(inf.generate_audio(payload, request = None, current_subject = "t"))
+
+
+def test_queue_state_counts_gguf_tts(monkeypatch):
+    """GGUF TTS holds a llama-server slot for the whole request without a lease."""
+    import routes.inference as inf
+
+    backend = _llama_slot_readout(monkeypatch, is_audio = True)
+    seen = {}
+
+    def _generate(**_kwargs):
+        seen["state"] = inf._monitor_queue_state()
+        return (b"RIFFfake", 24000)
+
+    _run_gguf_tts(monkeypatch, backend, _generate)
+    assert seen["state"] == {"capacity": 4, "active": 1, "queued": 0, "free": 3}
+    assert inf._monitor_queue_state() == {"capacity": 4, "active": 0, "queued": 0, "free": 4}
+
+
+@pytest.mark.parametrize("outcome", ["completed", "raised", "disconnected"])
+def test_gguf_tts_balances_the_direct_counter(monkeypatch, outcome):
+    """Every exit from the TTS branch gives the slot back; the counter has no reset hook."""
+    from fastapi import HTTPException
+
+    import routes.inference as inf
+
+    backend = _llama_slot_readout(monkeypatch, is_audio = True)
+
+    def _generate(**kwargs):
+        if outcome == "raised":
+            raise RuntimeError("llama-server died")
+        if outcome == "disconnected":
+            kwargs["cancel_event"].set()
+            raise RuntimeError("stream closed")
+        return (b"RIFFfake", 24000)
+
+    if outcome == "completed":
+        _run_gguf_tts(monkeypatch, backend, _generate)
+    else:
+        with pytest.raises(HTTPException) as excinfo:
+            _run_gguf_tts(monkeypatch, backend, _generate)
+        assert excinfo.value.status_code == (499 if outcome == "disconnected" else 500)
+
+    assert inf._direct_llama_inflight == 0
 
 
 def test_top_level_provider_tool_event_stamps_first_token(monkeypatch):
@@ -1059,3 +1213,35 @@ def test_top_level_provider_tool_event_stamps_first_token(monkeypatch):
 
     [entry] = monitor.snapshot()
     assert entry["ttft_ms"] is not None
+
+
+def test_disagreeing_choice_finish_reasons_report_no_stop_reason(monkeypatch):
+    # The row aggregates every choice, so one choice's reason is only the request's
+    # when they all agree.
+    import routes.inference as inf
+
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inf, "api_monitor", monitor)
+
+    def row_for(reasons):
+        entry_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "m",
+            prompt = "hi",
+        )
+        inf._monitor_openai_chunk(
+            entry_id,
+            {
+                "choices": [
+                    {"index": i, "message": {"content": "x"}, "finish_reason": r}
+                    for i, r in enumerate(reasons)
+                ]
+            },
+        )
+        monitor.finish(entry_id)
+        return next(r for r in monitor.snapshot() if r["id"] == entry_id)["stop_reason"]
+
+    assert row_for(["stop"]) == "stop"
+    assert row_for(["stop", "stop"]) == "stop"
+    assert row_for(["stop", "length"]) is None

@@ -3104,10 +3104,15 @@ def _monitor_openai_chunk(
     choices = data.get("choices")
     finish_reason = None
     if isinstance(choices, list):
-        for choice in choices:
-            if isinstance(choice, dict) and choice.get("finish_reason"):
-                finish_reason = str(choice["finish_reason"])
-                break
+        # The row covers every choice, so one choice's reason only describes the
+        # request when they all agree; otherwise report none.
+        reasons = {
+            str(choice["finish_reason"])
+            for choice in choices
+            if isinstance(choice, dict) and choice.get("finish_reason")
+        }
+        if len(reasons) == 1:
+            finish_reason = reasons.pop()
     timings = data.get("timings")
     _monitor_usage(
         monitor_id,
@@ -3475,7 +3480,8 @@ def _close_load_event(
     api_monitor.finish(entry_id)
 
 
-# Direct calls (completions/embeddings) skip admission but still occupy a slot.
+# Direct calls skip admission but still occupy a slot: /completions, /embeddings,
+# GGUF TTS and RAG vision (captioning/OCR) all reach llama-server without a lease.
 _direct_llama_inflight = 0
 _direct_llama_inflight_lock = threading.Lock()
 
@@ -3490,6 +3496,24 @@ def _direct_llama_request_finished() -> None:
     global _direct_llama_inflight
     with _direct_llama_inflight_lock:
         _direct_llama_inflight = max(0, _direct_llama_inflight - 1)
+
+
+@contextmanager
+def _direct_llama_request(counted: bool = True):
+    """Hold the direct-call count for the duration of the block.
+
+    The increment is the last statement before the try that decrements it, so no
+    caller can leak a permanent +1 by placing the pair itself. ``counted`` False is
+    a no-op, for callers that pick their backend at runtime.
+    """
+    if not counted:
+        yield
+        return
+    _direct_llama_request_started()
+    try:
+        yield
+    finally:
+        _direct_llama_request_finished()
 
 
 def _monitor_queue_state() -> Optional[dict]:
@@ -8134,7 +8158,10 @@ async def generate_audio(
 
     # Pick backend — both return (wav_bytes, sample_rate)
     llama_backend = get_llama_cpp_backend()
-    if llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False):
+    # GGUF TTS goes straight to llama-server /completion, holding a slot with no
+    # admission lease, so only the direct counter can show it in the slot readout.
+    _direct_llama_tts = bool(llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False))
+    if _direct_llama_tts:
         # Advertised repo id after an auto-switch load, else a clean public id,
         # never the absolute .gguf path.
         model_name = _llama_public_model_id(llama_backend)
@@ -8193,7 +8220,8 @@ async def generate_audio(
         # of the request timeout after the chat had already reported it stopped.
         _audio_watcher = asyncio.create_task(_await_disconnect_then_cancel(request, _audio_cancel))
         try:
-            wav_bytes, sample_rate = await asyncio.to_thread(gen)
+            with _direct_llama_request(_direct_llama_tts):
+                wav_bytes, sample_rate = await asyncio.to_thread(gen)
         except Exception as e:
             if _audio_cancel.is_set():
                 raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
@@ -11645,10 +11673,14 @@ async def openai_chat_completions(
                         "total_tokens": _prompt_tokens + _sum_completion,
                     },
                     _monitor_context_length(),
-                    # Omit for n > 1: totals sum all choices but _last_timings is only
-                    # the final one, so its speed would match neither.
+                    # Omit both for n > 1: totals sum all choices while _last_timings and
+                    # _last_finish are only the final one's, so they describe neither.
                     timings = _last_timings if len(_monitor_replies) <= 1 else None,
-                    stop_reason = _clamp_finish_reason(_last_finish) if _last_finish else None,
+                    stop_reason = (
+                        _clamp_finish_reason(_last_finish)
+                        if _last_finish and len(_monitor_replies) <= 1
+                        else None
+                    ),
                 )
                 api_monitor.finish(monitor_id)
                 return _model_json_response(response)

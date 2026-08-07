@@ -128,12 +128,15 @@ class ApiMonitorEntry:
         if (
             tok_per_sec is None
             and self.completion_tokens
+            # The clock starts at the first token, so it spans only the gaps that
+            # followed it: one token has no gap to measure, hence no rate at all.
+            and self.completion_tokens > 1
             and self.finished_monotonic is not None
             and self.first_token_monotonic is not None
         ):
             gen_s = self.finished_monotonic - self.first_token_monotonic
             if gen_s > 0.05:
-                tok_per_sec = self.completion_tokens / gen_s
+                tok_per_sec = (self.completion_tokens - 1) / gen_s
         payload = {
             "id": self.id,
             "endpoint": self.endpoint,
