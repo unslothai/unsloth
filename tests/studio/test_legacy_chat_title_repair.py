@@ -32,7 +32,10 @@ def test_the_repair_reads_its_own_messages_as_late_as_it_can():
 
     repair = _read(REPAIR)
     assert "messages = await batchListChatMessages(ids);" in repair
-    assert "export function repairLegacyChatTitles( threads: ThreadRecord[], ): Promise<number> {" in repair
+    assert (
+        "export function repairLegacyChatTitles( threads: ThreadRecord[], ): Promise<number> {"
+        in repair
+    )
 
     storage = _read(STORAGE)
     # The shared list function keeps its original shape: nothing hands a
