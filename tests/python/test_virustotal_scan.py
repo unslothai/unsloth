@@ -156,7 +156,11 @@ class TestMissingKey:
         rc = vt.main([str(tmp_path), "--output-markdown", str(summary)])
         assert rc == 0
         assert "Skipped: no API key" in summary.read_text()
-        assert "skipping the scan" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "skipping the scan" in out
+        # The message spells VT_API_KEY out literally to avoid a CodeQL
+        # false positive, so pin that it still matches the constant.
+        assert vt.API_KEY_ENV in out
 
     def test_whitespace_only_key_is_treated_as_missing(self, tmp_path, monkeypatch):
         monkeypatch.setenv(vt.API_KEY_ENV, "   ")

@@ -700,8 +700,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not api_key:
         # A missing secret must never break a release: forks and re-runs by
         # contributors without the org secret still have to be able to publish.
+        # The env var NAME is written out literally rather than interpolated from
+        # API_KEY_ENV. Formatting a constant whose name ends in _KEY into a log
+        # line trips CodeQL's py/clear-text-logging-sensitive-data heuristic, and
+        # this repo uses CodeQL default setup, so there is no config to filter it
+        # on. test_missing_key_skips_without_failing asserts the two stay in step.
         print(
-            f"virustotal_scan: {API_KEY_ENV} is unset or empty; skipping the scan.",
+            "virustotal_scan: VT_API_KEY is unset or empty; skipping the scan.",
             flush = True,
         )
         _write_markdown(
