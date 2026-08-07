@@ -143,6 +143,7 @@ import {
   shouldSubmitDictation,
 } from "@/features/chat/utils/dictation-send";
 import { listThreadDocuments } from "@/features/rag/api/rag-api";
+import { useRagAvailabilityStore } from "@/features/rag/api/rag-availability";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { DocumentPreviewMount } from "@/features/rag/components/document-preview-mount";
@@ -445,7 +446,12 @@ async function targetHasIndexingDocuments(item: PromptQueueItem) {
     // A failed status probe cannot prove that this thread's documents are
     // ready. Keep the queued send pending and retry instead of dispatching
     // without the RAG documents it was explicitly waiting for.
-    return true;
+    //
+    // Unless RAG cannot run on this host at all: the probe can never succeed
+    // there, and dispatchQueuedPrompt reschedules on every "still indexing",
+    // so waiting it out means the queued prompt is never sent. There are no
+    // documents to wait for, so send it.
+    return !useRagAvailabilityStore.getState().isUnavailable();
   }
 }
 
@@ -1889,7 +1895,7 @@ const ThreadWelcome: FC<{
 
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
-      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5vh]">
+      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5dvh]">
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
           {/* Center the greeting (sloth + title) over the composer. */}
           <div className="flex flex-row items-center justify-center gap-[15px]">
@@ -4515,7 +4521,7 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
 
   return (
     <div
-      className="relative z-0 mx-7 mb-[-8px] max-h-[28vh] overflow-y-auto rounded-t-[18px] rounded-b-none border border-border/45 bg-background/90 px-5 py-2 text-muted-foreground shadow-none backdrop-blur-md dark:bg-card/85"
+      className="relative z-0 mx-7 mb-[-8px] max-h-[28dvh] overflow-y-auto rounded-t-[18px] rounded-b-none border border-border/45 bg-background/90 px-5 py-2 text-muted-foreground shadow-none backdrop-blur-md dark:bg-card/85"
       aria-label={`Prompt queue, ${current} of ${total}`}
     >
       <div className="divide-y divide-border/25">
@@ -4931,7 +4937,7 @@ const DiffusionCanvas: FC = () => {
           block {canvas.block + 1} - {stepLabel}
         </span>
       </div>
-      <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-ui-12p5 leading-relaxed text-foreground/90">
+      <pre className="max-h-[60dvh] overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-ui-12p5 leading-relaxed text-foreground/90">
         {canvas.text}
       </pre>
     </div>
@@ -5024,7 +5030,7 @@ const AssistantMessage: FC = () => {
             <textarea
               ref={textareaRef}
               defaultValue={extractTaggedText(messageContent)}
-              className="w-full p-3 rounded-xl bg-muted border border-border text-foreground focus:ring-1 focus:ring-ring outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70vh]"
+              className="w-full p-3 rounded-xl bg-muted border border-border text-foreground focus:ring-1 focus:ring-ring outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70dvh]"
               autoFocus
               onInput={adjustHeight}
               onKeyDown={(e) => {

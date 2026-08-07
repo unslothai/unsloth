@@ -19,6 +19,7 @@
     "core:window:allow-unminimize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
+    "core:window:allow-set-theme",
     "core:tray:default",
     "process:default",
     "deep-link:default",

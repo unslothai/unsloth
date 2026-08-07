@@ -18,15 +18,19 @@ mod preflight;
 mod process;
 mod update;
 mod windows_job;
+mod x11_threads;
 
 use log::{info, warn};
 use process::new_backend_state;
 use simplelog::{
     CombinedLogger, Config, LevelFilter, SharedLogger, TermLogger, TerminalMode, WriteLogger,
 };
+use std::ffi::OsStr;
 use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Once;
+use std::sync::{Once, OnceLock};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
@@ -37,12 +41,425 @@ use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 /// Exactly one runs cleanup; the others block, so the process never exits mid-reap.
 static TERMINATION_CLEANUP: Once = Once::new();
 
+const IN_APP_RELAUNCH_MARKER_FILE: &str = "in-app-relaunch-v1";
+
+/// Resolved once, at setup, where the marker is consumed, so no later caller can flip the answer.
+static LAUNCHED_HIDDEN: OnceLock<bool> = OnceLock::new();
+
+/// Marks the next start as an in-app relaunch, whose inherited `--hidden` is not a login start.
+#[tauri::command]
+fn mark_in_app_relaunch(app: tauri::AppHandle) -> Result<(), String> {
+    // Nothing to suppress without an inherited `--hidden`; the caller stops the restart on failure.
+    if !argv_has_hidden_flag() {
+        return Ok(());
+    }
+    let dir = in_app_relaunch_config_dir(&app)?;
+    fs::create_dir_all(&dir).map_err(|error| {
+        format!(
+            "Failed to create app configuration directory {}: {error}",
+            dir.display()
+        )
+    })?;
+    write_in_app_relaunch_marker(&dir)
+}
+
+/// Undo the marker when its relaunch never happens, so an unrelated later start cannot consume it.
+#[tauri::command]
+fn clear_in_app_relaunch(app: tauri::AppHandle) -> Result<(), String> {
+    let dir = in_app_relaunch_config_dir(&app)?;
+    take_in_app_relaunch_marker(&dir);
+    Ok(())
+}
+
+fn in_app_relaunch_config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_config_dir()
+        .map_err(|error| format!("Could not determine app configuration directory: {error}"))
+}
+
+fn in_app_relaunch_marker_path(config_dir: &Path) -> PathBuf {
+    config_dir.join(IN_APP_RELAUNCH_MARKER_FILE)
+}
+
+fn write_in_app_relaunch_marker(config_dir: &Path) -> Result<(), String> {
+    let path = in_app_relaunch_marker_path(config_dir);
+    fs::write(&path, b"relaunching\n").map_err(|error| {
+        format!(
+            "Failed to write in-app relaunch marker {}: {error}",
+            path.display()
+        )
+    })
+}
+
+/// Consumes the marker. A failed removal can only show a would-be-hidden start, never the reverse.
+fn take_in_app_relaunch_marker(config_dir: &Path) -> bool {
+    let path = in_app_relaunch_marker_path(config_dir);
+    if !path.exists() {
+        return false;
+    }
+    if let Err(error) = fs::remove_file(&path) {
+        warn!(
+            "Could not remove the in-app relaunch marker {}: {error}",
+            path.display()
+        );
+    }
+    true
+}
+
+/// args_os, not args: args panics on non-Unicode argv, e.g. argv[0] under a non-UTF-8 path.
+fn argv_has_hidden_flag() -> bool {
+    std::env::args_os().any(|arg| arg == *OsStr::new("--hidden"))
+}
+
+fn resolve_launched_hidden(app: &tauri::AppHandle) -> bool {
+    // Consume unconditionally, so a marker left by a relaunch that never happened cannot outlive it.
+    let relaunched = in_app_relaunch_config_dir(app)
+        .map(|dir| take_in_app_relaunch_marker(&dir))
+        .unwrap_or(false);
+    argv_has_hidden_flag() && !relaunched
+}
+
+/// True for a login autostart start (window stays in the tray); false for an in-app relaunch,
+/// which inherits `--hidden` without being one.
+#[tauri::command]
+fn was_launched_hidden(app: tauri::AppHandle) -> bool {
+    *LAUNCHED_HIDDEN.get_or_init(|| resolve_launched_hidden(&app))
+}
+
+#[tauri::command]
+fn reveal_main_window(app: tauri::AppHandle) {
+    show_main_window(&app);
+}
+
+#[tauri::command]
+fn get_launch_at_login(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    // is_enabled only checks the entry file exists, so a DE-disabled entry would read as on.
+    if cfg!(target_os = "linux") && linux_autostart_disabled(&app) {
+        return Ok(false);
+    }
+    app.autolaunch()
+        .is_enabled()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let autolaunch = app.autolaunch();
+    let result = if enabled {
+        autolaunch.enable()
+    } else {
+        autolaunch.disable()
+    };
+    result.map_err(|error| error.to_string())?;
+    if enabled {
+        harden_autostart_entry(&app);
+    }
+    autolaunch
+        .is_enabled()
+        .map_err(|error| error.to_string())
+}
+
+fn harden_autostart_entry(app: &tauri::AppHandle) {
+    if cfg!(target_os = "linux") {
+        guard_linux_autostart_entry(app);
+    }
+    #[cfg(windows)]
+    quote_windows_run_value(app);
+    #[cfg(target_os = "macos")]
+    rewrite_macos_launch_agent(app);
+}
+
+/// auto-launch writes the Run value unquoted, so a spaced path resolves to the wrong executable.
+/// None when already quoted.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn quoted_windows_run_command(value: &str) -> Option<String> {
+    if value.starts_with('"') {
+        return None;
+    }
+    let (path, args) = match value.strip_suffix(" --hidden") {
+        Some(path) => (path, " --hidden"),
+        None => (value, ""),
+    };
+    Some(format!("\"{path}\"{args}"))
+}
+
+#[cfg(windows)]
+fn quote_windows_run_value(app: &tauri::AppHandle) {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE};
+    use winreg::RegKey;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let Ok(run) = hkcu.open_subkey_with_flags(
+        r"Software\Microsoft\Windows\CurrentVersion\Run",
+        KEY_QUERY_VALUE | KEY_SET_VALUE,
+    ) else {
+        return;
+    };
+    let name = &app.package_info().name;
+    let Ok(value) = run.get_value::<String, _>(name) else {
+        return;
+    };
+    if let Some(quoted) = quoted_windows_run_command(&value) {
+        let _ = run.set_value(name, &quoted);
+    }
+}
+
+/// Exec is whitespace-delimited: quote a path holding reserved characters, escaping `"`, `` ` ``,
+/// `$` and `\` inside, and double a literal `%` regardless, since it would start a field code.
+fn exec_quoted(binary: &str) -> String {
+    let binary = binary.replace('%', "%%");
+    const RESERVED: &str = " \t\n\"'\\><~|&;$*?#()`";
+    if !binary.chars().any(|c| RESERVED.contains(c)) {
+        return binary;
+    }
+    let mut quoted = String::with_capacity(binary.len() + 2);
+    quoted.push('"');
+    for c in binary.chars() {
+        // The string rule runs before the quoting rule, so the escaping backslash is itself
+        // escaped; a single one is invalid and launchers drop the whole Exec.
+        match c {
+            '"' | '`' | '$' => {
+                quoted.push_str("\\\\");
+                quoted.push(c);
+            }
+            '\\' => quoted.push_str("\\\\\\\\"),
+            _ => quoted.push(c),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
+/// Quote auto-launch's unquoted Exec binary and add TryExec, which launchers skip when missing, so
+/// a removed install goes inert without postrm touching user homes. TryExec stays unquoted.
+fn hardened_autostart_entry(entry: &str) -> Option<String> {
+    if entry.lines().any(|line| line.starts_with("TryExec=")) {
+        return None;
+    }
+    let exec = entry.lines().find_map(|line| line.strip_prefix("Exec="))?;
+    let (binary, args) = match exec.strip_suffix(" --hidden") {
+        Some(binary) => (binary, " --hidden"),
+        None => (exec, ""),
+    };
+    let hardened = entry
+        .lines()
+        .map(|line| {
+            if line.starts_with("Exec=") {
+                format!("Exec={}{}", exec_quoted(binary), args)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    // TryExec skips the quoting rule but is still a string, so backslashes still escape.
+    Some(format!(
+        "{hardened}\nTryExec={}",
+        binary.replace('\\', "\\\\")
+    ))
+}
+
+fn linux_autostart_entry_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    // auto-launch hardcodes ~/.config regardless of XDG_CONFIG_HOME; mirror it or we miss the file.
+    Some(
+        dirs::home_dir()?
+            .join(".config")
+            .join("autostart")
+            .join(format!("{}.desktop", app.package_info().name)),
+    )
+}
+
+/// DE startup UIs disable an entry via Hidden=true or X-GNOME-Autostart-enabled=false, not deletion.
+fn autostart_entry_disabled(entry: &str) -> bool {
+    entry.lines().any(|line| {
+        matches!(
+            line.trim(),
+            "Hidden=true" | "X-GNOME-Autostart-enabled=false"
+        )
+    })
+}
+
+fn linux_autostart_disabled(app: &tauri::AppHandle) -> bool {
+    linux_autostart_entry_path(app)
+        .and_then(|path| fs::read_to_string(path).ok())
+        .is_some_and(|entry| autostart_entry_disabled(&entry))
+}
+
+fn guard_linux_autostart_entry(app: &tauri::AppHandle) {
+    let Some(path) = linux_autostart_entry_path(app) else {
+        return;
+    };
+    let Ok(entry) = fs::read_to_string(&path) else {
+        return;
+    };
+    if let Some(hardened) = hardened_autostart_entry(&entry) {
+        let _ = fs::write(&path, hardened);
+    }
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn xml_escaped(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// The plugin's template, but escaped: it interpolates the path unescaped, so a path with & or <
+/// writes a malformed LaunchAgent.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn macos_launch_agent_plist(label: &str, binary: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\">\n\
+         <dict>\n  \
+         <key>Label</key>\n  \
+         <string>{}</string>\n  \
+         <key>ProgramArguments</key>\n  \
+         <array>\n    \
+         <string>{}</string>\n    \
+         <string>--hidden</string>\n  \
+         </array>\n  \
+         <key>RunAtLoad</key>\n  \
+         <true/>\n\
+         </dict>\n\
+         </plist>",
+        xml_escaped(label),
+        xml_escaped(binary),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn rewrite_macos_launch_agent(app: &tauri::AppHandle) {
+    let Some(home_dir) = dirs::home_dir() else {
+        return;
+    };
+    let name = &app.package_info().name;
+    let path = home_dir
+        .join("Library")
+        .join("LaunchAgents")
+        .join(format!("{name}.plist"));
+    if !path.exists() {
+        return;
+    }
+    let Ok(binary) = std::env::current_exe() else {
+        return;
+    };
+    let plist = macos_launch_agent_plist(name, &binary.display().to_string());
+    let _ = fs::write(&path, plist);
+}
+
+/// A moved or re-downloaded AppImage leaves a stale path that `is_enabled` still accepts, so
+/// repoint the entry at the current executable on every startup.
+fn reconcile_autostart_entry(app: &tauri::AppHandle) {
+    use tauri_plugin_autostart::ManagerExt;
+    // A dev run would repoint the entry at target/debug.
+    if cfg!(debug_assertions) {
+        return;
+    }
+    // enable() would rewrite the file without the user's DE-set disabled marker.
+    if cfg!(target_os = "linux") && linux_autostart_disabled(app) {
+        return;
+    }
+    let autolaunch = app.autolaunch();
+    if !autolaunch.is_enabled().unwrap_or(false) {
+        return;
+    }
+    if autolaunch.enable().is_ok() {
+        harden_autostart_entry(app);
+    }
+}
+
 #[tauri::command]
 fn has_saved_window_state(app: tauri::AppHandle) -> bool {
     let Ok(dir) = app.path().app_config_dir() else {
         return false;
     };
     dir.join(app.filename()).is_file()
+}
+
+/// Append target for `tauri.log` that rotates while the app runs, not only at launch.
+///
+/// The size check used to happen once in `setup_logging`, so a session left open for
+/// days (the backend's own log lines are mirrored here as they arrive) grew the file
+/// past the cap until the next restart. Tracking the byte count as we write applies the
+/// same 5 MiB threshold continuously. Rotation closes the handle before renaming, which
+/// Windows requires and which also means the reopened file is the one being written.
+struct RotatingLogFile {
+    path: PathBuf,
+    rotated_path: PathBuf,
+    max_bytes: u64,
+    file: Option<fs::File>,
+    written: u64,
+}
+
+impl RotatingLogFile {
+    fn open(
+        path: PathBuf,
+        rotated_path: PathBuf,
+        max_bytes: u64,
+    ) -> std::io::Result<RotatingLogFile> {
+        let mut rotating = RotatingLogFile {
+            path,
+            rotated_path,
+            max_bytes,
+            file: None,
+            written: 0,
+        };
+        rotating.reopen()?;
+        Ok(rotating)
+    }
+
+    fn reopen(&mut self) -> std::io::Result<()> {
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+        // Pick up where a previous session left off, so an already-oversized file
+        // rotates on its first write instead of growing for another whole session.
+        self.written = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+        self.file = Some(file);
+        Ok(())
+    }
+
+    /// Move the current log aside and start a fresh one. Best effort: if reopening
+    /// fails we drop lines rather than take the app down over a log file.
+    fn rotate(&mut self) {
+        self.file = None;
+        let _ = fs::remove_file(&self.rotated_path);
+        let _ = fs::rename(&self.path, &self.rotated_path);
+        if self.reopen().is_err() {
+            self.file = None;
+            self.written = 0;
+        }
+    }
+}
+
+impl Write for RotatingLogFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.written >= self.max_bytes {
+            self.rotate();
+        }
+        match self.file.as_mut() {
+            Some(file) => {
+                let written = file.write(buf)?;
+                self.written += written as u64;
+                Ok(written)
+            }
+            // No usable handle: report the bytes as taken so the logger does not spin.
+            None => Ok(buf.len()),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self.file.as_mut() {
+            Some(file) => file.flush(),
+            None => Ok(()),
+        }
+    }
 }
 
 fn setup_logging() {
@@ -63,18 +480,7 @@ fn setup_logging() {
             let log_path = log_dir.join("tauri.log");
             let rotated_path = log_dir.join("tauri.log.1");
             let max_log_bytes = 5 * 1024 * 1024;
-            if fs::metadata(&log_path)
-                .map(|meta| meta.len() >= max_log_bytes)
-                .unwrap_or(false)
-            {
-                let _ = fs::remove_file(&rotated_path);
-                let _ = fs::rename(&log_path, &rotated_path);
-            }
-            if let Ok(file) = fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-            {
+            if let Ok(file) = RotatingLogFile::open(log_path, rotated_path, max_log_bytes) {
                 loggers.push(WriteLogger::new(LevelFilter::Info, Config::default(), file));
             }
         }
@@ -94,7 +500,7 @@ fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-/// A Tauri quit never fires beforeunload, so the frontend mirrors run state here.
+/// A Tauri quit never fires beforeunload, so the frontend mirrors quit protection here.
 pub type TrainingActivityState = std::sync::Arc<std::sync::Mutex<bool>>;
 
 fn new_training_activity_state() -> TrainingActivityState {
@@ -108,7 +514,8 @@ fn set_training_active(state: tauri::State<'_, TrainingActivityState>, active: b
     }
 }
 
-/// Ask before quitting mid-training (true to proceed). request_quit only, as below.
+/// Ask before quitting while training is starting or active (true to proceed).
+/// request_quit only, as below.
 fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -120,8 +527,8 @@ fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
     }
     app.dialog()
         .message(
-            "Training is still running. Quitting now stops the run and the \
-             progress since the last checkpoint is lost.",
+            "Training is starting or still running. Quitting now can stop the \
+             run and lose progress since the last checkpoint.",
         )
         .kind(MessageDialogKind::Warning)
         .title("Training in progress")
@@ -366,6 +773,9 @@ fn setup_unix_termination_signals(app: &tauri::App) -> Result<(), Box<dyn std::e
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
+    // Hidden login starts run as an accessory app (no Dock icon); restore the regular policy.
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -462,6 +872,10 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() {
+    // Must precede any Xlib call: GTK3 never calls XInitThreads and this
+    // process drives X from several threads. See x11_threads for the crash.
+    x11_threads::init_x11_threads();
+
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
@@ -476,6 +890,10 @@ fn main() {
             show_main_window(app);
         }))
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--hidden"]),
+        ))
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -525,9 +943,11 @@ fn main() {
             native_clipboard::read_native_clipboard_png,
             native_file_dialogs::save_native_file,
             native_file_dialogs::pick_native_chat_import,
+            native_file_dialogs::pick_native_training_config,
             native_intents::drain_native_intents,
             native_intents::register_native_model_path,
             native_intents::register_native_attachment_path,
+            native_intents::register_native_dataset_path,
             native_intents::pick_native_model,
             native_intents::pick_hugging_face_cache_dir,
             native_intents::consume_native_path_token,
@@ -535,8 +955,23 @@ fn main() {
             native_intents::reveal_path_token,
             native_intents::open_path_token,
             has_saved_window_state,
+            was_launched_hidden,
+            mark_in_app_relaunch,
+            clear_in_app_relaunch,
+            reveal_main_window,
+            get_launch_at_login,
+            set_launch_at_login,
         ])
         .setup(|app| {
+            // Resolve here, before any window path can ask: this consumes the relaunch marker.
+            let launched_hidden = was_launched_hidden(app.handle().clone());
+            #[cfg(not(target_os = "macos"))]
+            let _ = launched_hidden;
+            #[cfg(target_os = "macos")]
+            if launched_hidden {
+                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            }
+            reconcile_autostart_entry(app.handle());
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
@@ -553,7 +988,7 @@ fn main() {
         })
         .on_window_event(|window, event| {
             // Record real drops here, in Rust, so the renderer can only register paths the
-            // OS actually handed us (see native_intents::register_native_attachment_path).
+            // OS actually handed to the native intake commands.
             if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
                 window
                     .state::<native_intents::NativeIntakeState>()
@@ -595,6 +1030,77 @@ fn main() {
 mod tests {
     use super::*;
 
+    #[test]
+    fn log_file_rotates_mid_session_and_keeps_one_generation() {
+        let directory = tempfile::tempdir().unwrap();
+        let log_path = directory.path().join("tauri.log");
+        let rotated_path = directory.path().join("tauri.log.1");
+
+        let mut file = RotatingLogFile::open(log_path.clone(), rotated_path.clone(), 8).unwrap();
+        file.write_all(b"aaaaaaaaaa").unwrap();
+        file.flush().unwrap();
+        // Still the first generation: the threshold is checked before a write, so the
+        // line that crosses it is written whole rather than split across two files.
+        assert!(!rotated_path.exists());
+
+        file.write_all(b"bbbb").unwrap();
+        file.flush().unwrap();
+        assert_eq!(fs::read_to_string(&rotated_path).unwrap(), "aaaaaaaaaa");
+        assert_eq!(fs::read_to_string(&log_path).unwrap(), "bbbb");
+
+        // A second rotation replaces .1 rather than piling up generations.
+        file.write_all(b"cccccccccc").unwrap();
+        file.write_all(b"dddd").unwrap();
+        file.flush().unwrap();
+        assert_eq!(fs::read_to_string(&rotated_path).unwrap(), "bbbbcccccccccc");
+        assert_eq!(fs::read_to_string(&log_path).unwrap(), "dddd");
+    }
+
+    #[test]
+    fn an_oversized_log_from_a_previous_session_rotates_on_the_first_write() {
+        let directory = tempfile::tempdir().unwrap();
+        let log_path = directory.path().join("tauri.log");
+        let rotated_path = directory.path().join("tauri.log.1");
+        fs::write(&log_path, b"stale-and-oversized").unwrap();
+
+        let mut file = RotatingLogFile::open(log_path.clone(), rotated_path.clone(), 8).unwrap();
+        file.write_all(b"fresh").unwrap();
+        file.flush().unwrap();
+
+        assert_eq!(fs::read_to_string(&rotated_path).unwrap(), "stale-and-oversized");
+        assert_eq!(fs::read_to_string(&log_path).unwrap(), "fresh");
+    }
+
+    /// args() panics on a non-Unicode argv[0], so the flag scan has to run over OsStr.
+    #[test]
+    fn hidden_flag_scan_tolerates_non_unicode_args() {
+        use std::ffi::OsString;
+        #[cfg(unix)]
+        use std::os::unix::ffi::OsStringExt;
+
+        #[cfg(unix)]
+        let args: Vec<OsString> = vec![
+            OsString::from_vec(b"/opt/\xff\xfe/Unsloth".to_vec()),
+            OsString::from("--hidden"),
+        ];
+        #[cfg(not(unix))]
+        let args: Vec<OsString> = vec![OsString::from("Unsloth.exe"), OsString::from("--hidden")];
+
+        assert!(args.iter().any(|arg| arg == OsStr::new("--hidden")));
+        assert!(!args[..1].iter().any(|arg| arg == OsStr::new("--hidden")));
+    }
+
+    #[test]
+    fn relaunch_marker_is_consumed_by_the_next_start() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!take_in_app_relaunch_marker(dir.path()));
+
+        write_in_app_relaunch_marker(dir.path()).unwrap();
+        assert!(take_in_app_relaunch_marker(dir.path()));
+        assert!(!take_in_app_relaunch_marker(dir.path()));
+        assert!(!in_app_relaunch_marker_path(dir.path()).exists());
+    }
+
     // One test, not three: `QUIT_IN_PROGRESS` is process-global and cargo tests run in parallel.
     #[test]
     fn quit_guard_admits_one_quit_and_always_re_arms() {
@@ -622,6 +1128,121 @@ mod tests {
             begin_quit().is_some(),
             "a panicking quit must release the guard"
         );
+    }
+
+    #[test]
+    fn autostart_hardening_appends_the_exec_binary_without_args() {
+        let entry = "[Desktop Entry]\nType=Application\nExec=/usr/bin/unsloth-studio --hidden\nTerminal=false";
+        let hardened = hardened_autostart_entry(entry).expect("guard must be added");
+        assert!(hardened.starts_with(entry));
+        assert!(hardened.ends_with("\nTryExec=/usr/bin/unsloth-studio"));
+    }
+
+    #[test]
+    fn autostart_hardening_quotes_a_binary_path_with_spaces() {
+        let entry = "[Desktop Entry]\nExec=/home/n/My Apps/Unsloth.AppImage --hidden\nTerminal=false";
+        let hardened = hardened_autostart_entry(entry).expect("guard must be added");
+        assert!(hardened.contains("Exec=\"/home/n/My Apps/Unsloth.AppImage\" --hidden\n"));
+        // TryExec is a plain string field, so the path stays unquoted.
+        assert!(hardened.ends_with("\nTryExec=/home/n/My Apps/Unsloth.AppImage"));
+    }
+
+    #[test]
+    fn autostart_hardening_escapes_exec_reserved_characters() {
+        let entry = "[Desktop Entry]\nExec=/opt/a\"b$c/app --hidden";
+        let hardened = hardened_autostart_entry(entry).expect("guard must be added");
+        // Doubled: the string escape rule is undone before the quoting rule.
+        assert!(hardened.contains(r#"Exec="/opt/a\\"b\\$c/app" --hidden"#));
+    }
+
+    /// A single escaping backslash is an invalid escape, so launchers discard the whole Exec.
+    #[test]
+    fn autostart_hardening_doubles_the_escaping_backslash() {
+        let entry = "[Desktop Entry]\nExec=/opt/a b`c$d/app --hidden";
+        let hardened = hardened_autostart_entry(entry).expect("guard must be added");
+        assert!(hardened.contains(r#"Exec="/opt/a b\\`c\\$d/app" --hidden"#));
+    }
+
+    #[test]
+    fn autostart_hardening_escapes_a_literal_backslash_in_both_fields() {
+        let entry = "[Desktop Entry]\nExec=/opt/a b\\c/app --hidden";
+        let hardened = hardened_autostart_entry(entry).expect("guard must be added");
+        // Four in Exec (string rule then quoting rule), two in the plain TryExec.
+        assert!(hardened.contains(r#"Exec="/opt/a b\\\\c/app" --hidden"#));
+        assert!(hardened.ends_with(r"TryExec=/opt/a b\\c/app"));
+    }
+
+    #[test]
+    fn autostart_hardening_is_idempotent() {
+        let entry = "[Desktop Entry]\nExec=/a --hidden\nTryExec=/a";
+        assert!(hardened_autostart_entry(entry).is_none());
+    }
+
+    #[test]
+    fn autostart_hardening_needs_an_exec_line() {
+        assert!(hardened_autostart_entry("[Desktop Entry]\nType=Application").is_none());
+    }
+
+    #[test]
+    fn exec_quoting_escapes_percent_field_codes() {
+        let entry = "[Desktop Entry]\nExec=/home/n/Unsloth%20Studio.AppImage --hidden";
+        let hardened = hardened_autostart_entry(entry).expect("guard must be added");
+        assert!(hardened.contains("Exec=/home/n/Unsloth%%20Studio.AppImage --hidden\n"));
+        // TryExec is a plain string field, so the raw path stays.
+        assert!(hardened.ends_with("\nTryExec=/home/n/Unsloth%20Studio.AppImage"));
+    }
+
+    #[test]
+    fn autostart_disabled_markers_are_detected() {
+        assert!(autostart_entry_disabled("[Desktop Entry]\nHidden=true"));
+        assert!(autostart_entry_disabled(
+            "[Desktop Entry]\nX-GNOME-Autostart-enabled=false"
+        ));
+        assert!(!autostart_entry_disabled("[Desktop Entry]\nExec=/a --hidden"));
+    }
+
+    #[test]
+    fn macos_plist_escapes_xml_metacharacters() {
+        let plist = macos_launch_agent_plist(
+            "Unsloth",
+            "/Applications/AI & ML/Unsloth.app/Contents/MacOS/unsloth-studio",
+        );
+        assert!(plist.contains(
+            "<string>/Applications/AI &amp; ML/Unsloth.app/Contents/MacOS/unsloth-studio</string>"
+        ));
+        assert!(plist.contains("<string>--hidden</string>"));
+        assert!(plist.contains("<key>RunAtLoad</key>"));
+    }
+
+    #[test]
+    fn windows_run_command_quotes_a_spaced_path() {
+        let quoted =
+            quoted_windows_run_command(r"C:\Users\Jane Doe\AppData\Local\Unsloth\Unsloth.exe --hidden");
+        assert_eq!(
+            quoted.as_deref(),
+            Some(r#""C:\Users\Jane Doe\AppData\Local\Unsloth\Unsloth.exe" --hidden"#),
+        );
+    }
+
+    #[test]
+    fn windows_run_command_leaves_quoted_values_alone() {
+        assert!(quoted_windows_run_command(r#""C:\Unsloth\Unsloth.exe" --hidden"#).is_none());
+    }
+
+    #[test]
+    fn windows_run_command_quotes_a_bare_path() {
+        assert_eq!(
+            quoted_windows_run_command(r"C:\Unsloth\Unsloth.exe").as_deref(),
+            Some(r#""C:\Unsloth\Unsloth.exe""#),
+        );
+    }
+
+    #[test]
+    fn autostart_hardening_keeps_foreign_args_untouched() {
+        let entry = "[Desktop Entry]\nExec=/plain/app";
+        let hardened = hardened_autostart_entry(entry).expect("guard must be added");
+        assert!(hardened.contains("Exec=/plain/app\n"));
+        assert!(hardened.ends_with("\nTryExec=/plain/app"));
     }
 
     fn renderer_activity(state: &RendererActivityState) -> (bool, bool) {

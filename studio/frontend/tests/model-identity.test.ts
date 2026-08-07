@@ -12,7 +12,9 @@ import type {
 import {
   isOllamaLinkPath,
   isStandaloneGgufPath,
+  modelDisplayName,
   modelIdsMatch,
+  normalizeModelIdentity,
   publicModelId,
   residentModelIdMatches,
 } from "../src/features/hub/lib/model-identity.ts";
@@ -74,6 +76,13 @@ test("publicModelId mirrors what /status reports for a path-loaded model", () =>
     "unsloth/Qwen3-8B-GGUF",
   );
   assert.equal(publicModelId("C:\\models\\Foo-Q4_K_M.gguf"), "Foo-Q4_K_M");
+  // The selector's label for an unlisted model leans on the Windows cache path.
+  assert.equal(
+    publicModelId(
+      "C:\\Users\\u\\.cache\\huggingface\\hub\\models--unsloth--gemma-4-12B-it-qat-GGUF\\snapshots\\7102bdea",
+    ),
+    "unsloth/gemma-4-12B-it-qat-GGUF",
+  );
   assert.equal(publicModelId("~/models/Foo.gguf"), "Foo");
   assert.equal(publicModelId("/srv/models/repo/"), "repo");
   // A repo id and an already-clean name come back untouched.
@@ -84,8 +93,7 @@ test("publicModelId mirrors what /status reports for a path-loaded model", () =>
 });
 
 test("a resident path-loaded model is matched by the id /status reports", () => {
-  // A loose .gguf: the row is keyed by path and the Hub records the loadable
-  // identifier, so the literal pass answers.
+  // A loose .gguf: the row is keyed by path and the Hub records the loadable identifier.
   assert.equal(
     modelIdsMatch("Qwen3-8B-Q4_K_M", "/srv/models/Qwen3-8B-Q4_K_M.gguf"),
     false,
@@ -195,8 +203,7 @@ test("a standalone gguf keeps one settings identity across surfaces", () => {
     // What hub/services/models/common.py emits for a single scanned file.
     formatVariant: "Q4_K_M",
   } as LocalInventoryRow;
-  // The Chat picker opens the same file with no variant, so adopting the filename
-  // label would leave the two editing different configs.
+  // The Chat picker opens the same file with no variant, so adopting the filename label would split the config.
   assert.equal(settingsGgufVariantForRow(loose), null);
 
   // A GGUF directory still has a variant slot for the quant lookup to fill.
@@ -218,11 +225,9 @@ test("a standalone gguf keeps one settings identity across surfaces", () => {
   assert.equal(settingsGgufVariantForRow(cached), null);
 });
 
-// The backfill matches on the folded identity, which is only unambiguous because storage
-// holds one record per model. These pin that rule rather than the backfill.
+// The backfill matches on the folded identity, unambiguous only because storage holds one record per model.
 test("importing the legacy load settings never doubles up a model", () => {
-  // The legacy casing names the model the v2 record already holds, so the import must
-  // leave it alone rather than add a second record.
+  // The legacy casing names the model the v2 record already holds, so the import must leave it alone.
   assert.deepEqual(listPerModelConfigs().length, 1);
   assert.deepEqual(storedKeys(), [REPO_KEY]);
   assert.equal(
@@ -257,6 +262,11 @@ test("two spellings of one Windows path keep a single stored record", () => {
   assert.equal(listPerModelConfigs().length, 1);
 });
 
+test("a Windows drive root stays distinct from a drive-relative identity", () => {
+  assert.equal(normalizeModelIdentity("C:\\"), "c:/");
+  assert.equal(normalizeModelIdentity("C:"), "c:");
+});
+
 test("a POSIX path is case sensitive, so its two spellings stay separate", () => {
   store.clear();
   savePerModelConfig("/models/Foo.gguf", null, config(4096));
@@ -269,15 +279,14 @@ test("a POSIX path is case sensitive, so its two spellings stay separate", () =>
   );
 });
 
-// Every answer below is the one the backend's split_quant_suffix gives. The backfill folds a
-// stored key with this before comparing, so a disagreement collapses two models onto one key.
+// Every answer below is the backend's split_quant_suffix. The backfill folds a stored key with
+// this before comparing, so a disagreement collapses two models onto one key.
 const CASES: [string, [string, string] | null][] = [
   // A known quant label, with and without the optional bpw modifier.
   ["org/Repo-GGUF:Q4_K_M", ["org/Repo-GGUF", "Q4_K_M"]],
   ["org/Repo-GGUF:IQ4_XS-3.53bpw", ["org/Repo-GGUF", "IQ4_XS-3.53bpw"]],
   ["org/Repo-GGUF:UD-Q4_K_XL", ["org/Repo-GGUF", "UD-Q4_K_XL"]],
-  // A .gguf with no quant token is labelled by its stem, lowercased in storage while
-  // the scanner keeps the filename's casing.
+  // A .gguf with no quant token is labelled by its stem, lowercased in storage.
   ["/models/CustomModel.gguf:custommodel", ["/models/CustomModel.gguf", "custommodel"]],
   ["/models/CustomModel.gguf:CustomModel", ["/models/CustomModel.gguf", "CustomModel"]],
   ["C:\\models\\CustomModel.gguf:custommodel", ["C:\\models\\CustomModel.gguf", "custommodel"]],
@@ -323,8 +332,8 @@ test("splitQuantSuffix answers exactly as the backend's split_quant_suffix", () 
 });
 
 test("a .gguf filename carrying a colon is not folded into a variant", () => {
-  // Two real, distinct files: POSIX allows a colon and is case sensitive. The variant
-  // half of a key is stored lowercased, so folding these strands one file's settings.
+  // Two real, distinct files: POSIX allows a colon and is case sensitive. The variant half of a
+  // key is stored lowercased, so folding these strands one file's settings.
   const upper = "/models/llama.gguf:Bar.gguf";
   const lower = "/models/llama.gguf:bar.gguf";
   assert.equal(splitQuantSuffix(upper), null);
@@ -332,8 +341,8 @@ test("a .gguf filename carrying a colon is not folded into a variant", () => {
   assert.notEqual(modelStorageKey(upper, null), modelStorageKey(lower, null));
 });
 
-// Repo ids ending in .gguf are real on the Hub, an iMat repo among them, and those hold every
-// quant. Reading one as a single file drops the variant, so Q4 and Q8 save under one key.
+// Repo ids ending in .gguf are real on the Hub (an iMat repo among them) and hold every quant,
+// so reading one as a single file would save Q4 and Q8 under one key.
 const STANDALONE_GGUF_CASES: [string, boolean][] = [
   ["/models/llama.gguf", true],
   ["/mnt/c/models/llama.gguf", true],
@@ -357,4 +366,102 @@ test("only a file on this machine counts as a standalone gguf", () => {
   }
   assert.equal(isStandaloneGgufPath(null), false);
   assert.equal(isStandaloneGgufPath(undefined), false);
+});
+
+test("normalizes relative Windows separators without changing path case", () => {
+  assert.equal(
+    normalizeModelIdentity(String.raw`.\models\demo`),
+    normalizeModelIdentity("./models/demo"),
+  );
+  assert.equal(
+    normalizeModelIdentity(String.raw`..\Models\Demo\\`),
+    "../Models/Demo",
+  );
+  assert.notEqual(
+    normalizeModelIdentity("./Models/Demo"),
+    normalizeModelIdentity("./models/demo"),
+  );
+});
+
+test("normalizes tilde path separators without changing path case", () => {
+  assert.equal(
+    normalizeModelIdentity(String.raw`~\Models\Demo\\`),
+    "~/Models/Demo",
+  );
+  assert.equal(
+    normalizeModelIdentity(String.raw`~user\Models\Demo`),
+    "~user/Models/Demo",
+  );
+  assert.notEqual(
+    normalizeModelIdentity(String.raw`~\Models\Demo`),
+    normalizeModelIdentity(String.raw`~\models\demo`),
+  );
+});
+
+test("keeps backslashes in POSIX-shaped paths as filename characters", () => {
+  assert.notEqual(
+    normalizeModelIdentity(String.raw`./models/foo\bar`),
+    normalizeModelIdentity("./models/foo/bar"),
+  );
+  assert.notEqual(
+    normalizeModelIdentity(String.raw`/models/foo\bar`),
+    normalizeModelIdentity("/models/foo/bar"),
+  );
+});
+
+test("preserves existing platform and Hub identity rules", () => {
+  assert.equal(
+    normalizeModelIdentity(String.raw`C:\Models\Demo\\`),
+    "c:/models/demo",
+  );
+  assert.equal(
+    normalizeModelIdentity(String.raw`C:Models\Demo\\`),
+    "c:models/demo",
+  );
+  assert.equal(
+    normalizeModelIdentity(String.raw`\Models\Demo\\`),
+    "/models/demo",
+  );
+  assert.equal(
+    normalizeModelIdentity(String.raw`\\Server\Share\Models\Demo\\`),
+    "//server/share/models/demo",
+  );
+  assert.equal(normalizeModelIdentity("Org/Model"), "org/model");
+});
+
+
+test("labels a model id with the repo leaf, never the raw path", () => {
+  // Reported case: a Windows HF cache path holds no "/", so splitting the raw id
+  // puts the whole home directory in the chat model bar.
+  assert.equal(
+    modelDisplayName(
+      String.raw`C:\Users\An\.cache\huggingface\hub\models--unsloth--DeepSeek-V4-Flash-0731-GGUF\snapshots\57326b941c4603e24d1a5e71c22520c66e086eb8`,
+    ),
+    "DeepSeek-V4-Flash-0731-GGUF",
+  );
+  assert.equal(
+    modelDisplayName(
+      "/home/u/.cache/huggingface/hub/models--unsloth--DeepSeek-V4-Flash-0731-GGUF/snapshots/57326b941c4603e24d1a5e71c22520c66e086eb8",
+    ),
+    "DeepSeek-V4-Flash-0731-GGUF",
+  );
+  assert.equal(
+    modelDisplayName("/srv/models/Qwen3-30B-A3B-Q4_K_M.gguf"),
+    "Qwen3-30B-A3B-Q4_K_M",
+  );
+  assert.equal(modelDisplayName("unsloth/Qwen3-30B-A3B-GGUF"), "Qwen3-30B-A3B-GGUF");
+  assert.equal(modelDisplayName("Qwen3-30B-A3B"), "Qwen3-30B-A3B");
+  assert.equal(modelDisplayName(""), "");
+});
+
+test("keeps .gguf on Hub repo ids, which are not file paths", () => {
+  // These are real repos; the suffix is part of the leaf. Only a >= 2-slash id
+  // names a file inside a repo.
+  assert.equal(
+    modelDisplayName("lex-au/Orpheus-3b-FT-Q8_0.gguf"),
+    "Orpheus-3b-FT-Q8_0.gguf",
+  );
+  assert.equal(modelDisplayName("lex-au/Orpheus-3b-FT/Q8_0.gguf"), "Q8_0");
+  assert.equal(modelDisplayName("/srv/Qwen3-Q4.gguf"), "Qwen3-Q4");
+  assert.equal(modelDisplayName(String.raw`C:\models\Qwen3-Q4.gguf`), "Qwen3-Q4");
 });

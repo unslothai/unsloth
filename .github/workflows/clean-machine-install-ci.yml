@@ -29,7 +29,7 @@
 # Legs left on `overlay: false`:
 #   mac */mask/pipe     the `curl | sh` shape a user runs, kept end-to-end on the
 #                       released package so a broken PyPI release still shows up.
-#   mac macos-14/trace  `notools` asserts the installer never reaches for git, and the
+#   mac macos-15/trace  `notools` asserts the installer never reaches for git, and the
 #                       editable build calls `git rev-parse` / `git archive` itself via
 #                       setuptools-scm's file finder, answering the leg's own question.
 #   linux ubuntu2404-nonroot-notransport  dies at the elevation gate before a venv exists.
@@ -100,7 +100,11 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -132,19 +136,18 @@ jobs:
           #
           # The reported failure, in the shape users run it, with torch because that is
           # what a consumer gets.
-          - {os: macos-14, mode: mask,  delivery: pipe,  flags: '',           experimental: false, overlay: false}
-          - {os: macos-14, mode: mask,  delivery: file,  flags: '',           experimental: false, overlay: true}
+          - {os: macos-15, mode: mask,  delivery: pipe,  flags: '',           experimental: false, overlay: false}
+          - {os: macos-15, mode: mask,  delivery: file,  flags: '',           experimental: false, overlay: true}
           # What the desktop app runs: no tty, stdin closed, TAURI markers on.
-          - {os: macos-14, mode: mask,  delivery: tauri, flags: '',           experimental: false, overlay: true}
+          - {os: macos-15, mode: mask,  delivery: tauri, flags: '',           experimental: false, overlay: true}
           # Toolchain present but logged: does the installer ever reach for it? No
           # overlay: the editable build calls git itself (setuptools-scm), planting the
           # very evidence `notools` looks for.
-          - {os: macos-14, mode: trace, delivery: file,  flags: '',           experimental: false, overlay: false}
+          - {os: macos-15, mode: trace, delivery: file,  flags: '',           experimental: false, overlay: false}
           # --no-torch is the one macOS path that can still want a compiler
           # (sentencepiece has no guaranteed cp313 arm64 wheel), so probe it apart from
           # the default path rather than let it hide the gate under test.
-          - {os: macos-14, mode: mask,  delivery: file,  flags: '--no-torch', experimental: true,  overlay: true}
-          - {os: macos-15, mode: mask,  delivery: pipe,  flags: '',           experimental: false, overlay: false}
+          - {os: macos-15, mode: mask,  delivery: file,  flags: '--no-torch', experimental: true,  overlay: true}
           - {os: macos-26, mode: mask,  delivery: file,  flags: '',           experimental: true,  overlay: true}
           # Intel pins python 3.12 and its /usr/bin/git is not CLT-provided, so it
           # survives masking. Informational only.

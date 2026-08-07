@@ -28,7 +28,7 @@ export function AdvancedDisclosure({
         type="button"
         onClick={() => onOpenChange(!open)}
         aria-expanded={open}
-        className="flex items-center gap-2 rounded-lg px-1 py-1.5 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {/* Icon and label sized to the slider rows above, so it reads as one of them. */}
         <HugeiconsIcon

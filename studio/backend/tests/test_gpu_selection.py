@@ -133,9 +133,8 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
             self.assertEqual(resolve_requested_gpu_ids([]), [1, 3])
 
     def test_vulkan_ordinals_bypass_cuda_parent_visible_validation(self):
-        # Vulkan build on a CPU-only torch host: no CUDA parent-visible set and a
-        # zero physical count, yet a valid Vulkan ordinal must not be rejected as
-        # a CUDA physical id (issue #7239).
+        # Vulkan build on a CPU-only torch host: no CUDA parent-visible set and a zero physical count,
+        # yet a valid Vulkan ordinal must not be rejected as a CUDA physical id (issue #7239).
         with (
             patch.dict(os.environ, {}, clear = True),
             patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 0),
@@ -435,8 +434,7 @@ class TestVisibleGpuUtilization(_GpuCacheResetMixin, unittest.TestCase):
 
         self.assertTrue(result["available"])
         self.assertEqual(result["backend"], "vulkan")
-        # ggml Vulkan ordinals are the space `--device Vulkan<i>` pins, so they
-        # are selectable, unlike a torch-xpu relative ordinal.
+        # ggml Vulkan ordinals are the space `--device Vulkan<i>` pins, so they are selectable.
         self.assertEqual(result["index_kind"], "vulkan")
         self.assertEqual(result["parent_visible_gpu_ids"], [])
         self.assertEqual(
@@ -1327,8 +1325,7 @@ class TestRouteErrors(unittest.TestCase):
         self.assertIn("cpu-only build", exc_info.exception.detail.lower())
 
     def test_diffusion_gguf_on_vulkan_build_rejects_ordinal_pin(self):
-        # The GGUF picker supplies Vulkan ordinals, which cannot be reinterpreted
-        # as the CUDA physical IDs used by the diffusion runner.
+        # The GGUF picker supplies Vulkan ordinals, not the CUDA physical IDs the diffusion runner uses.
         import utils.hardware as hardware_pkg
 
         inference_route = _load_route_module(
@@ -1583,6 +1580,12 @@ class TestRouteErrors(unittest.TestCase):
 
         with (
             patch.object(training_route, "get_training_backend", return_value = DummyBackend()),
+            patch.object(
+                training_route,
+                "_remote_untrainable_model_format",
+                return_value = None,
+            ),
+            patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
             patch(
                 "routes.training_vram.summarize_resident_chat",
                 return_value = {"any": False, "hf": None, "gguf": None},
@@ -1623,6 +1626,12 @@ class TestRouteErrors(unittest.TestCase):
 
         with (
             patch.object(training_route, "get_training_backend", return_value = DummyBackend()),
+            patch.object(
+                training_route,
+                "_remote_untrainable_model_format",
+                return_value = None,
+            ),
+            patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
             patch(
                 "routes.training_vram.summarize_resident_chat",
                 return_value = {"any": False, "hf": None, "gguf": None},
@@ -2216,8 +2225,7 @@ class TestEstimateFp16ModelSizeBytesPrefersLocalWeights(unittest.TestCase):
         self.assertEqual(src, "weight_bytes")
 
     def test_equal_local_and_config_keeps_config_label(self):
-        # Tie-breaker is "local must be strictly larger", so an exact
-        # match keeps the config-derived path.
+        # Tie-breaker is "local must be strictly larger", so an exact match keeps the config-derived path.
         same = 8 * (1 << 30)
         bytes_, src = self._run(
             "/local/equal",
