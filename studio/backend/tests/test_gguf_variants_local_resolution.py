@@ -661,3 +661,26 @@ def test_will_serve_only_treats_definite_absence_as_unloadable(
     # exists() would call every one of these a definite absence.
     monkeypatch.setattr(gguf_variants.Path, "exists", lambda self: False)
     assert gguf_variants._will_serve(os.fspath(gguf)) is serves
+
+
+def test_loadable_variants_stays_unanswered_for_an_unstatable_direct_file(
+    in_tmp_cwd, monkeypatch
+):
+    # An empty list reads as authoritative at the attach gate and rejects the variant, so a
+    # direct file locked by llama-server has to stay unanswered: from_identifier ignores the
+    # variant for a file and would load it regardless.
+    from hub.services.models import gguf_variants
+    from hub.utils.gguf import list_local_gguf_variants
+
+    gguf = in_tmp_cwd / "model-Q4_K_M.gguf"
+    gguf.write_bytes(b"GGUF")
+    variants, _ = list_local_gguf_variants(os.fspath(gguf))
+    assert gguf_variants._loadable_variants(os.fspath(gguf), variants) is None
+
+    def locked(self, *args, **kwargs):
+        raise PermissionError(13, "sharing violation")
+
+    monkeypatch.setattr(gguf_variants.Path, "stat", locked)
+    # is_file() cannot express this: it raises here, and answers False from 3.14.
+    monkeypatch.setattr(gguf_variants.Path, "is_file", lambda self: False)
+    assert gguf_variants._loadable_variants(os.fspath(gguf), variants) is None

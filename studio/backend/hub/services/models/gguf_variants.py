@@ -682,11 +682,18 @@ def _loadable_variants(identifier: str, variants):
 
     # from_identifier only consults the variant for a DIRECTORY; a direct file loads
     # itself regardless. Leave it unanswered here rather than be stricter than the load.
+    # stat(), not is_file(): a file locked by llama-server must stay unanswered, since an
+    # empty list reads as authoritative at the gate and rejects the variant. is_file()
+    # cannot express that -- it raises here and, from 3.14, answers False instead.
+    import stat as _stat
+
     try:
-        if Path(identifier).expanduser().is_file():
+        if _stat.S_ISREG(Path(identifier).expanduser().stat().st_mode):
             return None
-    except OSError:
+    except (FileNotFoundError, NotADirectoryError):
         pass
+    except OSError:
+        return None
 
     # The resolver walks the tree per call, so spellings are deduped against `seen` before
     # asking: measured 2 calls per row (36 for 18 quants, 179ms over 144 files), not one per
