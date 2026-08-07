@@ -19,24 +19,13 @@ from urllib.parse import urlparse
 import httpx
 import structlog
 
-# Local servers, not hosted APIs: each applies the model's own chat template on the way
-# in, so a prompt built here is templated just like an in-process one (#7066). "custom" is
-# a user-supplied OpenAI-compatible base_url (routes/providers.py:207-213), i.e. how a
-# self-hosted vLLM or llama.cpp registers without its preset. Unknown endpoint means assume
-# a template applies: sweeping a hosted API costs a space in delimiter-like text, not
-# sweeping a local one costs a forged turn.
+# Local and custom endpoints apply their own chat template (#7066).
 _TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom"})
 
-# structlog so INFO diagnostics reach the backend's JSON log stream (the
-# stdlib root logger defaults to WARNING with no handlers). It accepts the
-# existing printf-style positional args.
+# Use structlog for backend JSON diagnostics.
 logger = structlog.get_logger(__name__)
 
 
-# Claude 4.7 (Opus/Sonnet/Haiku) removed temperature/top_p/top_k — the API
-# 400s "<param> is deprecated for this model" on a non-default value. 3.x and
-# 4.5/4.6 still accept them, so match the 4-7 line strictly. Ref:
-#   https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7
 def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
     """True iff ``base_url`` points at OpenAI cloud or Azure OpenAI Foundry.
 
@@ -58,6 +47,7 @@ def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
     return host == "api.openai.com" or host.endswith(".openai.azure.com")
 
 
+# Claude 4.7 rejects temperature, top_p, and top_k.
 _ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)")
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
 _OPENAI_REASONING_STATUSES = {"in_progress", "completed", "incomplete"}
@@ -103,12 +93,7 @@ def _sanitize_openai_reasoning_replay_item(item: Any) -> Optional[dict[str, Any]
     return replay_item
 
 
-# OpenAI Responses inline citation markers: `citeSOURCE_ID[id2...][LOCATOR]`
-# using private-use codepoints (see
-# https://developers.openai.com/api/docs/guides/citation-formatting).
-# Group 1 holds delim-separated tokens; each resolvable token expands to
-# `[[N]](URL)`, unresolved tokens (locators, unknown ids) drop silently so
-# no garbled glyph reaches the renderer.
+# OpenAI Responses inline citation marker, encoded with private-use codepoints.
 _OPENAI_CITE_OPEN = "cite"
 _OPENAI_CITE_STOP = ""
 _OPENAI_CITE_DELIM = ""
@@ -151,9 +136,7 @@ def _replace_openai_citation_markers(text: str, url_citations: list[dict[str, An
     by_source = _build_citation_lookup(url_citations)
 
     def _sub(match: re.Match[str]) -> str:
-        # Try every delim-split token; unresolved tokens drop. Handles
-        # multi-source (all resolve) and source+locator (only id resolves,
-        # locator drops). Empty result strips the marker.
+        # Resolve source IDs and drop locators or unknown tokens.
         rendered: list[str] = []
         for tok in match.group(1).split(_OPENAI_CITE_DELIM):
             if not tok:
@@ -196,9 +179,7 @@ def _rewrite_citation_markers_partial(
                 continue
             idx, url = hit
             rendered.append(f"[[{idx}]]({url})")
-        # Leave the whole marker verbatim if any token is unresolved so the
-        # caller can re-run once the late annotation lands; partial emission
-        # would lose unresolved ids once the source text is dropped.
+        # Preserve incomplete markers for a later annotation.
         if any_unresolved:
             has_unresolved = True
             return match.group(0)
@@ -260,12 +241,7 @@ def _anthropic_thinking_spec(model: str) -> Optional[_AnthropicThinkingSpec]:
     return None
 
 
-# Anthropic ships date-pinned tool versions per model family: the newer
-# `_20260209`/`_20260120` variants only run on recent models (400 "tool not
-# supported" elsewhere), and old versions on a new model miss dynamic
-# filtering and free-with-search pricing. Pick the newest combo the model
-# accepts, else the GA `_20250305`/`_20250910`/`_20250825` defaults. Ref:
-# https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-reference
+# Choose the newest Anthropic tool versions supported by each model family.
 _ANTHROPIC_NEW_WEB_PREFIXES = (
     "claude-opus-4-7",
     "claude-opus-4-6",
@@ -304,16 +280,11 @@ def _anthropic_code_execution_version(model: str) -> str:
     )
 
 
-# Anthropic's beta-header flag for code execution does NOT change with the
-# tool version -- both `_20250825` and `_20260120` are unlocked by the same
-# `code-execution-2025-08-25` header per the upstream docs.
+# Anthropic code-execution versions share one beta header.
 _ANTHROPIC_CODE_EXECUTION_BETA = "code-execution-2025-08-25"
 
 
-# Anthropic server-side context compaction (beta compact-2026-01-12), supported
-# on Opus 4.6/4.7, Sonnet 4.6 and Mythos Preview. Same beta header for all; the
-# dated `compact_20260112` type lives in body `context_management.edits`. Models
-# outside the prefix list are silently ignored so we don't 400 upstream.
+# Enable Anthropic context compaction only for supported models.
 _ANTHROPIC_COMPACTION_PREFIXES = (
     "claude-opus-4-7",
     "claude-opus-4-6",
@@ -322,14 +293,11 @@ _ANTHROPIC_COMPACTION_PREFIXES = (
 )
 _ANTHROPIC_COMPACTION_BETA = "compact-2026-01-12"
 _ANTHROPIC_COMPACTION_TYPE = "compact_20260112"
-# The threshold must be >= 50K tokens; lower 400s. Clamp on the way out so
-# a UI slider can't underflow.
+# Anthropic requires a context-compaction threshold of at least 50K.
 _ANTHROPIC_COMPACTION_MIN = 50_000
 
 
-# Anthropic fast-mode beta (Opus 4.6 / 4.7 only, per
-# https://platform.claude.com/docs/en/build-with-claude/fast-mode).
-# Mutually exclusive with the Priority service tier.
+# Anthropic fast mode is incompatible with Priority tier.
 _ANTHROPIC_FAST_MODE_BETA = "fast-mode-2026-02-01"
 _ANTHROPIC_FAST_MODE_PREFIXES = (
     "claude-opus-4-7",
@@ -347,8 +315,7 @@ def _anthropic_supports_fast_mode(model: str) -> bool:
     return any(model == p or model.startswith(f"{p}-") for p in _ANTHROPIC_FAST_MODE_PREFIXES)
 
 
-# Cap on ``cited_text`` forwarded in document_citations tool_events; bounds
-# SSE bytes on multi-KB cited spans (frontend trims to 240 chars anyway).
+# Cap forwarded citation text to bound SSE size.
 _CITED_TEXT_MAX_LEN = 512
 
 
@@ -476,12 +443,9 @@ def _apply_mistral_reasoning_controls(
             body["reasoning_effort"] = "high"
 
 
-# Shared client reused across all requests for HTTP connection pooling.
-# Auth headers and timeouts are passed per-request, so a single client
-# handles every provider without storing credentials.
+# Reuse one client for connection pooling; pass credentials per request.
 def _create_shared_http_client() -> httpx.AsyncClient:
-    # Unsupported env proxy schemes (socks:// etc) raise at construction and
-    # would crash Unsloth startup (#6090); retry ignoring env proxies instead.
+    # Ignore invalid environment proxies to avoid startup failure (#6090).
     try:
         return httpx.AsyncClient()
     except (ImportError, ValueError) as exc:
@@ -698,9 +662,7 @@ async def _safe_fetch_image_for_gemini(
     return await asyncio.to_thread(_safe_fetch_image_for_gemini_sync, url, fallback_mime, max_bytes)
 
 
-# Synthetic-tool names stamped onto outbound _toolEvent.arguments so the
-# frontend can tell provider-side cards from real user-declared tools of the
-# same name. Mirrored on the TS side.
+# Mark provider-side synthetic tool events for the frontend.
 _SERVER_SIDE_BUILTIN_TOOL_NAMES = frozenset(
     {"web_search", "web_fetch", "code_execution", "image_generation"}
 )

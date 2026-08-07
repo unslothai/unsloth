@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unsloth-managed tools for normalized external-provider streams.
-
-ExternalProviderClient translates OpenAI Responses, Anthropic Messages, Gemini,
-and OpenAI-compatible chat streams into the same ``delta.tool_calls`` shape.
-This module executes those calls through Studio's existing tool catalog,
-approval gate, sandbox, cancellation, duplicate protection, and live-output
-events, then continues the provider conversation with the results.
-"""
+"""Execute normalized external-provider tool calls through Studio."""
 
 from __future__ import annotations
 
@@ -76,7 +69,7 @@ def _merge_tool_call_delta(
     )
     call_id = raw_call.get("id")
     if isinstance(call_id, str) and call_id:
-        # IDs are normally sent once. Repeated full IDs must not concatenate.
+        # Do not concatenate repeated IDs.
         if not entry["id"]:
             entry["id"] = call_id
     call_type = raw_call.get("type")
@@ -84,9 +77,7 @@ def _merge_tool_call_delta(
         entry["type"] = call_type
     extra_content = raw_call.get("extra_content")
     if isinstance(extra_content, Mapping):
-        # Provider-native continuation metadata (for example Gemini thought
-        # signatures or Anthropic thinking blocks) is emitted alongside the
-        # normalized tool call. Preserve it without interpreting opaque fields.
+        # Preserve opaque provider continuation metadata.
         entry["extra_content"] = copy.deepcopy(dict(extra_content))
     raw_function = raw_call.get("function")
     if not isinstance(raw_function, Mapping):
@@ -98,8 +89,7 @@ def _merge_tool_call_delta(
     if isinstance(arguments, str):
         entry["function"]["arguments"] += arguments
     elif isinstance(arguments, Mapping):
-        # Defensive support for Ollama-native-shaped arguments leaking through
-        # an OpenAI-compatible proxy.
+        # Support Ollama-style arguments from compatible proxies.
         entry["function"]["arguments"] = json.dumps(arguments, ensure_ascii = False)
 
 
@@ -176,13 +166,7 @@ def _without_tool_transport(
     has_tool_calls: bool,
     strip_usage: bool = False,
 ) -> Optional[str]:
-    """Return a forwardable SSE line with raw function-call deltas removed.
-
-    Studio renders its authoritative ``tool_start``/``tool_end`` events instead
-    of exposing upstream fragments. Intermediate ``finish_reason=tool_calls``
-    must also stay hidden or the browser will treat the first model pass as the
-    end of the response.
-    """
+    """Strip upstream tool-call deltas from a forwardable SSE line."""
 
     if not isinstance(payload, Mapping):
         return None
@@ -206,11 +190,10 @@ def _without_tool_transport(
         if meaningful_delta or choice.get("finish_reason") is not None:
             kept_choices.append(choice)
     cloned["choices"] = kept_choices
-    # Intermediate usage belongs to an internal tool-selection pass, not the
-    # final browser-visible answer. Error payloads must still pass through.
+    # Hide intermediate usage, but keep errors.
     if has_tool_calls and not kept_choices and "error" not in cloned and "_toolEvent" not in cloned:
         return None
-    # Final-pass usage-only chunks remain useful. Stripped fragments do not.
+    # Keep final usage-only chunks.
     if (
         not kept_choices
         and "usage" not in cloned
@@ -447,8 +430,7 @@ async def stream_external_chat_with_tools(
                 yield _combined_usage_line(usage_template, aggregate_usage)
                 usage_emitted = True
             return
-        # The no-tools final pass should not contain calls, but a non-conforming
-        # proxy must not turn that response into an unbounded loop.
+        # A non-conforming final pass must not loop.
         if final_pass:
             if aggregate_usage and usage_template is not None and not usage_emitted:
                 yield _combined_usage_line(usage_template, aggregate_usage)
@@ -518,10 +500,7 @@ async def stream_external_chat_with_tools(
                 assistant_calls.append(assistant_call)
             assistant_message["tool_calls"] = assistant_calls
 
-            # Anthropic's signed thinking blocks belong to the assistant
-            # message rather than an individual tool_use block. The normalized
-            # stream transports them on a tool call so they stay hidden from
-            # browser-visible content; lift them back to message scope here.
+            # Restore Anthropic thinking blocks to message scope.
             preserved_thinking_blocks: list[dict[str, Any]] = []
             for _decision, raw_call in decision_pairs:
                 extra_content = raw_call.get("extra_content")
@@ -644,9 +623,7 @@ async def stream_external_chat_with_tools(
                         try:
                             finished, event_or_result = await asyncio.shield(next_task)
                         except asyncio.CancelledError:
-                            # Let the bounded poll finish before closing the sync
-                            # generator; closing it while ``next`` runs in another
-                            # thread raises ``ValueError: generator already executing``.
+                            # Do not close a generator while another thread advances it.
                             cancel.set()
                             await next_task
                             raise
@@ -676,9 +653,7 @@ async def stream_external_chat_with_tools(
 
         if (
             rounds_with_calls >= max_rounds
-            # A rejection does not consume the execution budget, so preserve
-            # one opportunity for the model to make a different, approved
-            # call even when max_rounds is one. Still cap denial-only loops.
+            # Denials do not consume the execution budget, but remain bounded.
             or denied_rounds >= max(2, max_rounds)
             or tool_controller.force_final_answer
         ):

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared controller state for Unsloth local agentic tool loops.
-
-This module is intentionally dependency-light: it owns only per-response
-ledger state and value objects used by the GGUF and safetensors loops.
-Route/SSE conversion, tool execution, and model streaming stay in the
-backend-specific modules.
-"""
+"""Shared state for local agentic tool loops."""
 
 from __future__ import annotations
 
@@ -58,7 +52,7 @@ class ToolCallDecision:
 
     @property
     def emit_visible_events(self) -> bool:
-        """Only real executions should become frontend-visible tool cards."""
+        """Whether this call produces a visible tool card."""
         return self.should_execute
 
     @property
@@ -68,7 +62,7 @@ class ToolCallDecision:
         return self.action
 
     def tool_start_payload(self) -> dict[str, Any]:
-        """Build the payload fields for a real tool_start event."""
+        """Build a tool_start payload."""
         return {
             "tool_name": self.tool_name,
             "tool_call_id": self.tool_call_id,
@@ -77,11 +71,11 @@ class ToolCallDecision:
         }
 
     def tool_start_event(self) -> dict[str, Any]:
-        """Build the existing backend event shape for a real execution."""
+        """Build a tool_start event."""
         return {"type": "tool_start", **self.tool_start_payload()}
 
     def as_assistant_tool_call(self) -> dict[str, Any]:
-        """Return an OpenAI-style tool_call with normalized arguments."""
+        """Build a normalized OpenAI-style tool call."""
         tool_call: dict[str, Any] = {
             "type": "function",
             "function": {
@@ -109,7 +103,7 @@ class ToolCallCompletion:
     executed: bool = False
 
     def tool_end_payload(self) -> dict[str, Any]:
-        """Build the payload fields for a real tool_end event."""
+        """Build a tool_end payload."""
         return {
             "tool_name": self.decision.tool_name,
             "tool_call_id": self.decision.tool_call_id,
@@ -118,23 +112,17 @@ class ToolCallCompletion:
         }
 
     def tool_end_event(self) -> dict[str, Any]:
-        """Build the existing backend event shape for a real execution result."""
+        """Build a tool_end event."""
         return {"type": "tool_end", **self.tool_end_payload()}
 
     def tool_message(self) -> dict[str, Any]:
-        """Return the OpenAI-compatible tool message for a real execution."""
+        """Build an OpenAI-compatible tool message."""
         if not self.executed:
             raise ValueError("No-op completions are internal nudges, not tool messages")
         return self.model_message()
 
     def model_message(self) -> dict[str, Any]:
-        """Return the internal message appended before the next generation.
-
-        Executed calls keep the existing OpenAI-compatible ``role=tool``
-        continuation. No-op controller decisions are not real tool output, so
-        they are fed back as a hidden user nudge rather than a normal tool
-        result.
-        """
+        """Build the message for the next generation."""
         if not self.executed:
             return {"role": "user", "content": self.result}
 
@@ -212,15 +200,13 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
     if tool_name == "web_search":
         url = str(arguments.get("url") or "").strip()
         if url:
-            # Bare hosts are fetched as https, so normalize first or the badge
-            # stays generic for exactly the URLs the fetch layer accepts.
+            # Normalize bare hosts as HTTPS.
             from core.inference.tools import _normalize_url_scheme
 
             try:
                 parsed = urlparse(_normalize_url_scheme(url))
             except ValueError:
-                # Runs in prepare_call, outside the fetch's exception handler:
-                # raising here kills the turn instead of returning "Blocked:".
+                # Invalid URLs must not abort the turn.
                 return "Reading page..."
             if parsed.scheme in ("http", "https") and parsed.hostname:
                 host = parsed.hostname
@@ -239,11 +225,7 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
 
 
 def awaiting_approval_status(tool_name: str) -> str:
-    """Status text for a call parked on the approval prompt.
-
-    It has not started, so reporting "Running ..." with a climbing timer reads
-    as a hang.
-    """
+    """Status text for a pending approval."""
     if tool_name == "python":
         return "Waiting for approval: Python"
     if tool_name == "terminal":
@@ -256,9 +238,7 @@ def is_tool_error(result: str) -> bool:
 
 
 def _strip_mcp_image_suffix(result: str) -> str:
-    """Drop a trailing __MCP_IMAGES__ envelope only when it is the valid JSON
-    image array appended by _flatten_result, so legit tool text that merely
-    mentions the marker is not truncated."""
+    """Drop a valid trailing MCP image envelope."""
     head, sep, payload = result.rpartition("\n__MCP_IMAGES__:")
     if not sep:
         return result
@@ -279,8 +259,7 @@ def _strip_mcp_image_suffix(result: str) -> str:
 
 
 def strip_result_for_model(result: str) -> str:
-    """Remove frontend-only sentinels (image paths, RAG source map) before
-    feeding the result back to the model."""
+    """Remove frontend-only sentinels before model forwarding."""
     result = _strip_mcp_image_suffix(result)
     for sentinel in ("__IMAGES__:", "__RAG_SOURCES__:"):
         if sentinel in result:
@@ -289,11 +268,7 @@ def strip_result_for_model(result: str) -> str:
 
 
 def append_deferred_nudges(conversation: list, msgs: Sequence[dict]) -> None:
-    """Append a batch's no-op nudges as one deduped ``role=user`` message.
-
-    Deferred to after the batch's tool results so a no-op never splits an
-    assistant's ``tool_calls`` from their ``role=tool`` results.
-    """
+    """Append deduped no-op nudges as one user message."""
     contents = list(dict.fromkeys(msg["content"] for msg in msgs))
     if contents:
         conversation.append({"role": "user", "content": "\n\n".join(contents)})
@@ -368,11 +343,11 @@ class ToolLoopController:
 
     @property
     def force_final_answer(self) -> bool:
-        """True once a terminal no-op should transition to a no-tools pass."""
+        """Whether a terminal no-op requires a no-tools pass."""
         return self._force_final_answer
 
     def active_tools(self) -> list[dict[str, Any]]:
-        """Return tools still worth advertising to the next model call."""
+        """Return tools still worth advertising."""
         if self._force_final_answer:
             return []
         active: list[dict[str, Any]] = []
@@ -432,13 +407,7 @@ class ToolLoopController:
         )
 
     def prepare_batch(self, tool_calls: Sequence[Mapping[str, Any]]) -> list[ToolCallDecision]:
-        """Classify one provider batch while reserving side-effect identities.
-
-        Provider batches are executed sequentially, but every decision must be
-        made before the assistant tool-call message is built. Reserve canonical
-        keys and one-shot names during that classification so whitespace-only
-        JSON differences or two render_html calls cannot bypass the ledger.
-        """
+        """Classify a provider batch while reserving side-effect identities."""
 
         decisions: list[ToolCallDecision] = []
         reserved_keys: set[str] = set()
@@ -469,12 +438,12 @@ class ToolLoopController:
         return decisions
 
     def record_denial(self, decision: ToolCallDecision) -> None:
-        """Remember a user-denied call without consuming execution budget."""
+        """Record a user-denied call without consuming budget."""
 
         self._denied_keys.add(decision.key)
 
     def record_result(self, decision: ToolCallDecision, result: Any) -> ToolCallCompletion:
-        """Record a real tool execution and return model/frontend payload helpers."""
+        """Record an execution and return payload helpers."""
         result_text = result if isinstance(result, str) else str(result)
         failed = is_tool_error(result_text)
         self._history.append(
@@ -497,7 +466,7 @@ class ToolLoopController:
         )
 
     def record_noop(self, decision: ToolCallDecision) -> ToolCallCompletion:
-        """Record a controller no-op without creating visible tool output."""
+        """Record a no-op without visible tool output."""
         self._history.append(
             _ToolCallRecord(
                 key = decision.key,
