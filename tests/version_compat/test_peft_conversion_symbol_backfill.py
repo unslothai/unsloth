@@ -197,9 +197,7 @@ def _transformers_imports(src):
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("transformers"):
                 out.setdefault(node.module, set()).update(a.name for a in node.names)
                 continue
-            if isinstance(
-                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import)
-            ):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import)):
                 continue
             if isinstance(node, ast.If) and _is_type_checking(node.test):
                 # `if TYPE_CHECKING:` never runs; `if not TYPE_CHECKING:` runs the OTHER branch.
