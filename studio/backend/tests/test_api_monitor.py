@@ -1266,9 +1266,8 @@ def test_streamed_choice_finish_reasons_are_compared_across_chunks(monkeypatch):
         for i, reason in enumerate(reasons):
             inf._monitor_openai_sse_line(
                 entry_id,
-                "data: " + json.dumps(
-                    {"choices": [{"index": i, "text": "x", "finish_reason": reason}]}
-                ),
+                "data: "
+                + json.dumps({"choices": [{"index": i, "text": "x", "finish_reason": reason}]}),
             )
         monitor.finish(entry_id)
         return next(r for r in monitor.snapshot() if r["id"] == entry_id)["stop_reason"]

@@ -368,7 +368,12 @@ class _ToolLoopBackend(_ScriptedBackend):
     """Server-side tool loop: the event stream the GGUF loop also emits."""
 
     def generate_chat_completion_with_tools(
-        self, *, messages, tools = None, stats_holder = None, **kwargs
+        self,
+        *,
+        messages,
+        tools = None,
+        stats_holder = None,
+        **kwargs,
     ):
         self.calls.append({"messages": messages, "tools": tools, **kwargs})
         if stats_holder is not None and self._stats is not None:
