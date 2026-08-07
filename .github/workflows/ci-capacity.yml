@@ -110,9 +110,11 @@ env:
   # together or the advertised bound stops being true.
   GUARD_INTERVAL_MINUTES: '30'
 
-  # Ceiling on hold_minutes. A hold longer than MAX_DISABLED_MINUTES outlives
-  # the window the guard is prepared to cover and just pins a runner; GitHub
-  # stops the job at 6h anyway.
+  # Ceiling on hold_minutes for a cancel-only sweep, which has no disable to
+  # outlive and so is bounded only by what pinning one runner is worth; GitHub
+  # stops the job at 6h anyway. `pause` is clamped harder, to the guard's
+  # restore threshold, at the point of use: past that the workflows are back on
+  # and the extra hold is a sweep wearing a pause's name.
   HOLD_MAX_MINUTES: '240'
 
 jobs:
@@ -174,6 +176,14 @@ jobs:
   # ---------------------------------------------------------------------------
   guard:
     name: Re-enable anything left disabled
+    # The complement of the condition on `sweep` below, so each trigger starts
+    # only the job it asked for. Without it every ci-pause dispatch also took a
+    # second ubuntu-22.04 runner out of the pool the sweep in the same run is
+    # trying to free, and ran an enable loop on the one event that is asking for
+    # the opposite. The floor under a pause is the cron, not this job appearing
+    # on unrelated triggers; a manual restore is `mode=resume`, which enables the
+    # whole allowlist rather than only what is past the cutoff.
+    if: ${{ github.event_name == 'schedule' }}
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -339,6 +349,7 @@ jobs:
           [ "$DRY" = 1 ] && echo "::notice::CI_PREEMPT_ENABLED is not 'true'; reporting what would happen and changing nothing"
           PAUSED=0
           PAUSE_FAILED=0
+          RESUMED=0
           # The class list tolerates spaces a few lines down; this is the same
           # tolerance for the event list, which otherwise reads `schedule, push`
           # as one event named ` push` that matches nothing and silently sweeps
@@ -420,9 +431,10 @@ jobs:
           enable_all() {
             local failed=0
             while read -r ID; do
-              [ "$DRY" = 1 ] && { echo "would enable workflow ${ID}"; continue; }
+              [ "$DRY" = 1 ] && { echo "would enable workflow ${ID}"; RESUMED=$(( RESUMED + 1 )); continue; }
               if gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${ID}/enable"; then
                 echo "enabled ${ID}"
+                RESUMED=$(( RESUMED + 1 ))
               else
                 echo "::error::could not enable ${ID}"
                 failed=$(( failed + 1 ))
@@ -437,7 +449,15 @@ jobs:
             # With DRY=1 nothing is enabled and nothing is counted, so this
             # branch still cannot fail a run with CI_PREEMPT_ENABLED unset.
             if enable_all; then
-              echo "resume complete (${REASON})" >> "$GITHUB_STEP_SUMMARY"
+              # Same rule as the pause summary below: the dry state printed
+              # "would enable" and called nothing, so it does not get to say
+              # recovery happened. Nothing here disabled them either, since the
+              # pause path is gated on the same variable.
+              if [ "$DRY" = 1 ]; then
+                echo "resume would have re-enabled ${RESUMED} workflow(s) (${REASON}); none were, CI_PREEMPT_ENABLED is not 'true'" >> "$GITHUB_STEP_SUMMARY"
+              else
+                echo "resume complete (${REASON}): ${RESUMED} workflow(s) re-enabled" >> "$GITHUB_STEP_SUMMARY"
+              fi
               exit 0
             fi
             echo "resume INCOMPLETE (${REASON}): one or more workflows are still disabled. The guard restores them within ${MAX_DISABLED_MINUTES}m of the pause, once it gets a runner" >> "$GITHUB_STEP_SUMMARY"
@@ -581,6 +601,24 @@ jobs:
           else
             echo "::warning::hold_minutes '${RAW_HOLD}' is not a whole number of minutes; sweeping once instead"
             HOLD=0
+          fi
+
+          # A pause cannot outlive its own disable. The guard restores the
+          # allowlist once it is CUT_MINUTES old, MAX_DISABLED_MINUTES minus the
+          # poll interval, and the hold loop only re-runs the cancel pass: it
+          # never disables anything a second time. So every minute of hold past
+          # that point is cancel-only work being reported as a pause, on a pool
+          # that is refilling through the very triggers cancellation cannot
+          # touch, pull_request runs above all. Clamped rather than honoured,
+          # because the alternative, re-disabling to see the hold out, is a job
+          # fighting its own safety floor for hours. A long cancel-only hold is
+          # still available; it is spelled mode=sweep.
+          if [ "$MODE" = "pause" ]; then
+            PAUSE_HOLD_MAX=$(( MAX_DISABLED_MINUTES - GUARD_INTERVAL_MINUTES ))
+            if [ "$HOLD" -gt "$PAUSE_HOLD_MAX" ]; then
+              echo "::warning::hold_minutes ${HOLD} is longer than a pause can last; the guard restores the allowlist at ${PAUSE_HOLD_MAX}m and the hold loop does not disable again. Holding ${PAUSE_HOLD_MAX}m. Use mode=sweep for a longer cancel-only hold"
+              HOLD="$PAUSE_HOLD_MAX"
+            fi
           fi
 
           # A dry run cancels nothing, so nothing leaves status=queued between
