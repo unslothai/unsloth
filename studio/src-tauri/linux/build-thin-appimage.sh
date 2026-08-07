@@ -133,6 +133,14 @@ missing=$(
 # The tray crate loads AppIndicator with dlopen, so it does not appear in the
 # executable's ldd output. Search the same host locations the loader normally
 # uses, including an inherited LD_LIBRARY_PATH.
+#
+# libappindicator-sys prefers the versioned sonames and falls back to the
+# unversioned ones, so a host that only exposes those still starts fine. This
+# guard has to accept every name that loader accepts, or it refuses to launch
+# on a host the tray would have worked on. The order matches the loader's.
+appindicator_names="libayatana-appindicator3.so.1 libappindicator3.so.1"
+appindicator_names="$appindicator_names libayatana-appindicator3.so libappindicator3.so"
+
 appindicator_is_usable() {
   [ -r "$1" ] || return 1
   appindicator_ldd=$(ldd "$1" 2>&1) || return 1
@@ -141,25 +149,30 @@ appindicator_is_usable() {
 
 find_appindicator() {
   if [ -n "${LD_LIBRARY_PATH:-}" ]; then
+    # Split on ':' up front so the name loop below still splits on spaces.
+    # These are the function's own positional parameters, not the script's.
     saved_ifs=$IFS
     IFS=:
-    for library_dir in $LD_LIBRARY_PATH; do
-      for library_name in libayatana-appindicator3.so.1 libappindicator3.so.1; do
+    set -- $LD_LIBRARY_PATH
+    IFS=$saved_ifs
+    for library_dir in "$@"; do
+      for library_name in $appindicator_names; do
         candidate="$library_dir/$library_name"
         if appindicator_is_usable "$candidate"; then
-          IFS=$saved_ifs
           printf '%s\n' "$candidate"
           return 0
         fi
       done
     done
-    IFS=$saved_ifs
   fi
 
   if command -v ldconfig >/dev/null 2>&1; then
     cached_paths=$(
       ldconfig -p 2>/dev/null |
-        awk '$1 == "libayatana-appindicator3.so.1" || $1 == "libappindicator3.so.1" { print $NF }'
+        awk -v names="$appindicator_names" '
+          BEGIN { split(names, listed, " "); for (i in listed) wanted[listed[i]] = 1 }
+          wanted[$1] { print $NF }
+        '
     )
     for cached_path in $cached_paths; do
       if appindicator_is_usable "$cached_path"; then
@@ -169,7 +182,7 @@ find_appindicator() {
     done
   fi
 
-  for library_name in libayatana-appindicator3.so.1 libappindicator3.so.1; do
+  for library_name in $appindicator_names; do
     for candidate in \
       /lib/"$library_name" \
       /lib/*-linux-gnu/"$library_name" \

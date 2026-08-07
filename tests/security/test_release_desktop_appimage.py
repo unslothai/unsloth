@@ -1,6 +1,7 @@
 """Contracts for the host-integrated Linux AppImage release path."""
 
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -76,8 +77,8 @@ def test_thin_appimage_never_injects_a_partial_desktop_runtime():
     ):
         assert library in script
     assert "sudo apt install libayatana-appindicator3-1 libwebkit2gtk-4.1-0 libgtk-3-0" in script
-    assert '"libayatana-appindicator3.so.1"' in script
-    assert '"libappindicator3.so.1"' in script
+    assert "libayatana-appindicator3.so.1 libappindicator3.so.1" in script
+    assert "libayatana-appindicator3.so libappindicator3.so" in script
     assert "zenity --error" in script
     assert "xmessage -center" in script
 
@@ -235,44 +236,98 @@ def test_thin_appimage_preserves_host_xdg_data_dirs(tmp_path):
     assert custom_result.stdout == f"{app_dir}/usr/share:/opt/share:/srv/share"
 
 
-def test_thin_appimage_reports_a_missing_dynamic_tray_library(tmp_path):
-    _, app_dir, _ = _build_fake_appimage(tmp_path)
+def _fake_library_host(tmp_path, ldconfig_lines = ()):
+    """Stub the tools AppRun probes so the build machine's own libraries don't count.
+
+    The AppImage binary always resolves; any other library resolves only when a
+    test planted it under tmp_path. Without this the default-directory search
+    would find the real AppIndicator on any developer or CI box.
+    """
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
-    ldconfig = fake_bin / "ldconfig"
-    ldconfig.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
-    ldconfig.chmod(0o755)
     ldd = fake_bin / "ldd"
     ldd.write_text(
         "#!/bin/sh\n"
         'case "$1" in\n'
         "  */usr/bin/unsloth-studio) exit 0 ;;\n"
+        "  " + str(tmp_path) + '/*) [ -e "$1" ] && exit 0 || exit 1 ;;\n'
         "  *) exit 1 ;;\n"
         "esac\n",
         encoding = "utf-8",
     )
-    ldd.chmod(0o755)
+    cache = "".join(f"printf '%s\\n' {shlex.quote(line)}\n" for line in ldconfig_lines)
+    (fake_bin / "ldconfig").write_text(f"#!/bin/sh\n{cache}exit 0\n", encoding = "utf-8")
     for program in ("zenity", "xmessage"):
-        stub = fake_bin / program
-        stub.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
+        (fake_bin / program).write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
+    for stub in fake_bin.iterdir():
         stub.chmod(0o755)
+    return fake_bin
 
-    env = {
-        **os.environ,
-        "LD_LIBRARY_PATH": str(tmp_path / "missing-libraries"),
-        "PATH": f"{fake_bin}:{os.environ['PATH']}",
-    }
-    result = subprocess.run(
+
+def _run_apprun(app_dir, fake_bin, library_dir):
+    return subprocess.run(
         [app_dir / "AppRun", "-c", "exit 0"],
-        env = env,
+        env = {
+            **os.environ,
+            "LD_LIBRARY_PATH": str(library_dir),
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        },
         check = False,
         capture_output = True,
         text = True,
     )
 
+
+def test_thin_appimage_reports_a_missing_dynamic_tray_library(tmp_path):
+    _, app_dir, _ = _build_fake_appimage(tmp_path)
+    result = _run_apprun(app_dir, _fake_library_host(tmp_path), tmp_path / "missing-libraries")
+
     assert result.returncode == 127
     assert "libayatana-appindicator3.so.1 or libappindicator3.so.1" in result.stderr
     assert "sudo apt install libayatana-appindicator3-1" in result.stderr
+
+
+# libappindicator-sys tries the versioned sonames and then falls back to the
+# unversioned ones, so the preflight has to accept all four. Rejecting the
+# unversioned pair would refuse to launch on a host whose tray works.
+def test_thin_appimage_accepts_every_tray_library_name_the_loader_tries(tmp_path):
+    _, app_dir, _ = _build_fake_appimage(tmp_path)
+    fake_bin = _fake_library_host(tmp_path)
+
+    for library_name in (
+        "libayatana-appindicator3.so.1",
+        "libappindicator3.so.1",
+        "libayatana-appindicator3.so",
+        "libappindicator3.so",
+    ):
+        library_dir = tmp_path / f"host-{library_name}"
+        library_dir.mkdir()
+        (library_dir / library_name).symlink_to("/bin/sh")
+
+        result = _run_apprun(app_dir, fake_bin, library_dir)
+
+        assert result.returncode == 0, f"{library_name}: {result.stderr}"
+
+
+# The cache is how a library outside LD_LIBRARY_PATH and the standard
+# directories gets found, so keep the ldconfig -p parsing covered.
+def test_thin_appimage_finds_a_tray_library_through_the_ldconfig_cache(tmp_path):
+    _, app_dir, _ = _build_fake_appimage(tmp_path)
+    cached_dir = tmp_path / "cached-libraries"
+    cached_dir.mkdir()
+    cached_library = cached_dir / "libappindicator3.so.1"
+    cached_library.symlink_to("/bin/sh")
+    fake_bin = _fake_library_host(
+        tmp_path,
+        ldconfig_lines = (
+            "\tlibunrelated.so.1 (libc6,x86-64) => /usr/lib/libunrelated.so.1",
+            f"\tlibappindicator3.so.1 (libc6,x86-64) => {cached_library}",
+        ),
+    )
+
+    result = _run_apprun(app_dir, fake_bin, tmp_path / "missing-libraries")
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_release_notes_keep_existing_appimage_guidance():
