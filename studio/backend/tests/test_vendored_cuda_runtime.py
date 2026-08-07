@@ -21,7 +21,14 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _make_runtime(root, name: str, *, cudart: bool = True, cublas: bool = True, major = "13"):
+def _make_runtime(
+    root,
+    name: str,
+    *,
+    cudart: bool = True,
+    cublas: bool = True,
+    major = "13",
+):
     directory = root / name
     directory.mkdir(parents = True)
     if cudart:

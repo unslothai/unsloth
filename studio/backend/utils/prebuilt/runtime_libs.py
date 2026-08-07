@@ -49,9 +49,7 @@ _VENDORED_CUDA_ROOTS: tuple[tuple[Path, str], ...] = (
 
 
 def vendored_cuda_runtime_dirs(
-    marker: object,
-    *,
-    roots: Optional[Iterable[tuple[Path, str]]] = None,
+    marker: object, *, roots: Optional[Iterable[tuple[Path, str]]] = None
 ) -> list[str]:
     """CUDA runtime dirs private to another application, for an installed build.
 

@@ -384,7 +384,6 @@ def test_child_env_omits_cuda_runtime_dirs_for_cpu_bundle(monkeypatch, tmp_path)
     assert called["n"] == 0
 
 
-
 def _make_cuda_bundle(tmp_path, *, runtime_line = "cuda13"):
     """A CUDA whisper bundle whose install marker names a CUDA runtime line."""
     bindir = tmp_path / "bin"
@@ -414,9 +413,7 @@ def test_child_env_appends_vendored_cuda_runtime(monkeypatch, tmp_path):
 
     reset_caches()
     monkeypatch.setattr(rl, "python_runtime_dirs", lambda: [str(wheel_dir)])
-    monkeypatch.setattr(
-        rl, "_VENDORED_CUDA_ROOTS", ((tmp_path / "ollama", "cuda_v{major}"),)
-    )
+    monkeypatch.setattr(rl, "_VENDORED_CUDA_ROOTS", ((tmp_path / "ollama", "cuda_v{major}"),))
     env = ggml_module._whisper_server_child_env(str(bindir / "whisper-server"))
     reset_caches()
 
@@ -445,9 +442,7 @@ def test_child_env_omits_vendored_cuda_runtime_for_cpu_bundle(monkeypatch, tmp_p
     (vendored / "libcublas.so.13").write_text("")
 
     reset_caches()
-    monkeypatch.setattr(
-        rl, "_VENDORED_CUDA_ROOTS", ((tmp_path / "ollama", "cuda_v{major}"),)
-    )
+    monkeypatch.setattr(rl, "_VENDORED_CUDA_ROOTS", ((tmp_path / "ollama", "cuda_v{major}"),))
     env = ggml_module._whisper_server_child_env(str(bindir / "whisper-server"))
     reset_caches()
 
