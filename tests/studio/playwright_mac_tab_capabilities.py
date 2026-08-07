@@ -23,6 +23,7 @@ scripts here: BASE_URL, STUDIO_OLD_PW, PW_ART_DIR.
 
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -66,7 +67,6 @@ TABS = [
     ("/export", "export", "Export"),
 ]
 
-STUDIO_USER = os.environ.get("STUDIO_USER", "unsloth")
 # Routes that mean "not signed in". Landing on one invalidates every later assertion,
 # so they are matched explicitly rather than folded into the generic redirect check.
 _SIGNED_OUT_PATHS = ("/login", "/onboarding", "/change-password")
@@ -168,22 +168,42 @@ class BackendSurvivalPoller:
 def log_in(page) -> bool:
     """Sign in and prove it took. Returns False if the app is still signed out.
 
-    The form wants a username as well as a password. Filling only the password
-    leaves the submit a no-op, and the app stays on /login while every later step
-    quietly finds an empty shell, which is a green run that checked nothing.
+    Three things about this form make the obvious version of this helper silently
+    do nothing, and all three cost a green run that checked an empty shell:
+
+    * auth-form.tsx returns null while the auth-status request is in flight, so at
+      domcontentloaded there is no form in the DOM at all. A `count()` reads 0 and
+      does not wait, which is exactly how this fell through to "assuming desktop
+      auth" on the runner. Wait for the field instead.
+    * Login mode renders a password and nothing else -- there is no username box
+      (auth-form.tsx:329-342). Requiring one made the fill a no-op.
+    * The submit button is labelled "Login", not "Sign in".
     """
     page.goto(BASE, wait_until = "domcontentloaded", timeout = 120000)
     try:
-        pw_box = page.get_by_label("Password", exact = False)
-        if pw_box.count() > 0:
-            user_box = page.get_by_label("Username", exact = False)
-            if user_box.count() > 0:
-                user_box.first.fill(STUDIO_USER)
-            pw_box.first.fill(OLD)
-            page.get_by_role("button", name = "Sign in").first.click()
-            page.wait_for_timeout(3000)
-        else:
-            info("no password form; assuming desktop auth")
+        # #password is the login field; the change-password screen uses
+        # #current-password / #new-password, which we never want to touch here.
+        pw_box = page.locator("#password")
+        try:
+            pw_box.wait_for(state = "visible", timeout = 60000)
+        except Exception:
+            # No form after a full minute is either a genuinely password-less
+            # desktop build or a frontend that never rendered. The redirect check
+            # below tells the two apart, so do not conclude anything here.
+            info("no password field appeared within 60s")
+            pw_box = None
+        if pw_box is not None:
+            pw_box.fill(OLD)
+            submit = page.get_by_role("button", name = re.compile(r"^(login|sign in)$", re.I))
+            submit.first.click()
+            # Settle on the post-auth route rather than sleeping a fixed 3s.
+            try:
+                page.wait_for_url(
+                    lambda url: not signed_out(url),
+                    timeout = 60000,
+                )
+            except Exception:
+                info(f"still on {page.url} 60s after submitting the login form")
     except Exception as exc:
         info(f"login form interaction raised {exc!r}")
 
