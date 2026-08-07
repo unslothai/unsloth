@@ -329,6 +329,13 @@ export const de = {
         title: "Passwort ändern",
         description:
           "Geben Sie Ihr aktuelles Passwort ein und wählen Sie ein neues (mindestens {minLength} Zeichen).",
+        setTrigger: "Remote-Passwort festlegen",
+        setTitle: "Remote-Passwort festlegen",
+        setDescription:
+          "Wählen Sie das Passwort, mit dem sich entfernte Browser als unsloth anmelden (mindestens {minLength} Zeichen). Die Unsloth Desktop-App meldet sich weiterhin automatisch an.",
+        setSubmit: "Passwort festlegen",
+        setting: "Wird festgelegt...",
+        setDone: "Passwort festgelegt.",
         currentPassword: "Aktuelles Passwort",
         newPassword: "Neues Passwort",
         confirmPassword: "Neues Passwort bestätigen",

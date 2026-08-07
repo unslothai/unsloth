@@ -136,6 +136,31 @@ def test_chat_settings_payload_accepts_preset_load_config():
     assert dumped["customPresets"][0]["loadConfig"]["kvCacheDtype"] == "q8_0"
 
 
+def test_chat_settings_payload_accepts_mlx_kv_bits():
+    from pydantic import ValidationError
+
+    # extra="forbid" rejects the whole settings write on an undeclared key.
+    payload = chat_history.ChatSettingsPayload.model_validate(
+        {
+            "customPresets": [
+                {
+                    "name": "MLX preset",
+                    "params": {"temperature": 0.7},
+                    "loadConfig": {"mlxKvBits": 8},
+                },
+            ],
+        }
+    )
+    dumped = payload.model_dump(exclude_unset = True)
+    assert dumped["customPresets"][0]["loadConfig"]["mlxKvBits"] == 8
+
+    for width in (4, None):
+        chat_history.ChatPresetLoadConfig.model_validate({"mlxKvBits": width})
+    # Only the widths MLX supports.
+    with pytest.raises(ValidationError):
+        chat_history.ChatPresetLoadConfig.model_validate({"mlxKvBits": 7})
+
+
 def test_chat_settings_payload_accepts_nudge_tool_calls():
     # extra="forbid" 400s PUT /api/chat/settings on unknown keys, so the
     # frontend's persisted nudgeToolCalls needs a payload field (like

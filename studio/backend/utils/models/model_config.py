@@ -1649,6 +1649,115 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
     return str(best[1])
 
 
+def _drafter_pairing_stem(name: str, *, kind: str) -> str:
+    """The model family a drafter filename names, stripped of its own markers.
+
+    Both published schemes are handled: ``<kind>-<model>`` and the older
+    ``<model>-<KIND>``. The shard suffix sits outside the quant token, so it
+    goes first or the anchored quant strip below cannot match. Full quant
+    vocabulary, not a subset: K/IQ/UD/MXFP drafters pair too, and the optional
+    bpw modifier goes with it, as _extract_quant_label does.
+    """
+    stem = Path(name).stem.lower()
+    if stem.startswith(f"{kind}-"):
+        stem = stem[len(kind) + 1 :]
+    stem = re.sub(r"-[0-9]{5}-of-[0-9]{5}$", "", stem)
+    if stem.endswith(f"-{kind}"):
+        stem = stem[: -(len(kind) + 1)]
+    return re.sub(
+        rf"-(?:{_GGUF_KNOWN_QUANT_RE.pattern})(?:-[0-9]+(?:\.[0-9]+)?bpw)?$",
+        "",
+        stem,
+        flags = re.IGNORECASE,
+    )
+
+
+def _drafter_matches_weight(candidate_name: str, weight_name: Optional[str], *, kind: str) -> bool:
+    """Whether a drafter pairs with the weight, by name.
+
+    A multi-model folder must not attach a foreign drafter, so the family the
+    drafter names has to PREFIX the weight filename at a non-alphanumeric
+    boundary. That blocks one direction of a ``DeepSeek-V4-Flash-Lite`` /
+    ``DeepSeek-V4-Flash`` pair but not the other: the shorter family name is a
+    prefix of the longer weight, so a base-family sidecar still matches a
+    longer-named sibling's weights. Exact equality cannot replace the prefix
+    rule -- ``mtp-gemma-4-12B-it.gguf`` really does ship beside
+    ``gemma-4-12B-it-qat-*.gguf`` -- so the remaining direction is settled by
+    ranking: callers prefer the longest matching stem (see _drafter_stem_rank).
+    """
+    if weight_name is None:
+        return True
+    stem = _drafter_pairing_stem(candidate_name, kind = kind)
+    weight = weight_name.lower()
+    return (
+        bool(stem)
+        and weight.startswith(stem)
+        and (len(weight) == len(stem) or not weight[len(stem)].isalnum())
+    )
+
+
+def _drafter_stem_rank(candidate_name: str, *, kind: str) -> int:
+    """Sort key placing the most specific family first (longest stem wins).
+
+    Both ``mtp-DeepSeek-V4-Flash-BF16.gguf`` and
+    ``mtp-DeepSeek-V4-Flash-0731-BF16.gguf`` prefix-match a 0731 weight, and
+    only the second is really its drafter.
+    """
+    return -len(_drafter_pairing_stem(candidate_name, kind = kind) or "")
+
+
+def _drafter_launch_path(candidate: Path) -> str:
+    """The path llama-server should receive for *candidate*.
+
+    llama-server takes shard 1 as the model path, and a split copy must stay on
+    its snapshot path: the blob target has no sibling shard names. Single-file
+    drafters still resolve, as callers expect.
+    """
+    loadable = _local_gguf_load_path(candidate)
+    if _GGUF_SPLIT_FILE_RE.match(loadable.name):
+        return str(loadable)
+    return str(loadable.resolve())
+
+
+def _drafter_split_is_complete(candidate: Path) -> bool:
+    """False for a partial split set, which would fail llama-server's draft
+    startup and disable speculation entirely; skip it so a complete copy wins."""
+    try:
+        _, complete = colocated_split_shards(candidate)
+    except OSError:
+        return False
+    return complete
+
+
+def _drafter_total_size(candidate: Path) -> int:
+    """Bytes across every shard. Candidates are collapsed to shard 1, so a split
+    copy must be summed or it would outrank a smaller single file."""
+    try:
+        shards, _ = colocated_split_shards(candidate)
+        return sum(shard.stat().st_size for shard in shards)
+    except OSError:
+        return sys.maxsize
+
+
+def dspark_precision_rank(name: str) -> int:
+    """Sidecar precision preference: Q8_0 first, the precision the DSpark model
+    card recommends. Shared with the hub download and VRAM-sizing paths so the
+    file Studio budgets for is the file it fetches and launches."""
+    base = Path(name).name.lower()
+    if "-q8_0" in base:
+        return 0
+    if "-q4_0" in base:
+        return 1
+    if "-bf16" in base or "-f16" in base:
+        return 2
+    return 3
+
+
+def dspark_preference_key(name: str) -> tuple[int, str]:
+    """Sort key picking the preferred sidecar by name alone (no filesystem)."""
+    return dspark_precision_rank(name), Path(name).name.lower()
+
+
 def detect_mtp_file(
     path: str,
     search_root: Optional[str] = None,
@@ -1678,58 +1787,18 @@ def detect_mtp_file(
     rejection as no drafter at all.
     """
 
-    def _pairing_stem(name: str) -> str:
-        stem = Path(name).stem.lower()
-        if stem.startswith("mtp-"):
-            stem = stem[len("mtp-") :]
-        # Shard suffix sits outside the quant token, so strip it before the anchored strip below.
-        stem = re.sub(r"-[0-9]{5}-of-[0-9]{5}$", "", stem)
-        if stem.endswith("-mtp"):
-            stem = stem[: -len("-mtp")]
-        # Full quant vocabulary (K/IQ/UD/MXFP drafters pair too), plus the optional bpw modifier.
-        return re.sub(
-            rf"-(?:{_GGUF_KNOWN_QUANT_RE.pattern})(?:-[0-9]+(?:\.[0-9]+)?bpw)?$",
-            "",
-            stem,
-            flags = re.IGNORECASE,
-        )
-
-    def _drafter_launch_path(candidate: Path) -> str:
-        # llama-server takes shard 1 as the model path, and a split copy must stay on its snapshot
-        # path (the blob target has no sibling shard names). Single-file drafters still resolve.
-        loadable = _local_gguf_load_path(candidate)
-        if _GGUF_SPLIT_FILE_RE.match(loadable.name):
-            return str(loadable)
-        return str(loadable.resolve())
-
     def _matches_weight(candidate: Path) -> bool:
-        if weight_name is None:
-            return True
-        stem = _pairing_stem(candidate.name)
-        return (
-            bool(stem)
-            and weight_name.startswith(stem)
-            and (len(weight_name) == len(stem) or not weight_name[len(stem)].isalnum())
-        )
+        return _drafter_matches_weight(candidate.name, weight_name, kind = "mtp")
 
     def _launchable(candidate: Path) -> bool:
-        # An incomplete split set fails llama-server's draft startup; skip it so a complete copy wins.
-        try:
-            _, complete = colocated_split_shards(candidate)
-        except OSError:
-            return False
-        return complete
+        return _drafter_split_is_complete(candidate)
 
-    def _smallest_first(candidate: Path) -> tuple[int, int, str]:
+    def _smallest_first(candidate: Path) -> tuple[int, int, int, str]:
         # Cheapest compatible copy wins. Size first: a fixed precision list ranked unknown quants
         # behind BF16, so a small K-quant lost to a far larger BF16. Precision breaks size ties,
         # name keeps it stable. Split copies collapse to shard 1, so sum across their shards.
+        # MTP prefers Q4_0 where DSpark prefers Q8_0, so the order is its own.
         name = candidate.name.lower()
-        try:
-            shards, _ = colocated_split_shards(candidate)
-            size = sum(shard.stat().st_size for shard in shards)
-        except OSError:
-            size = sys.maxsize
         if "-q4_0" in name:
             precision = 0
         elif "-q8_0" in name:
@@ -1738,7 +1807,15 @@ def detect_mtp_file(
             precision = 2
         else:
             precision = 3
-        return size, precision, name
+        # Family first, for the same reason as DSpark: both a base-family and a
+        # release-specific sidecar prefix-match, and only the longer one is
+        # really this weight's drafter.
+        return (
+            _drafter_stem_rank(candidate.name, kind = "mtp"),
+            _drafter_total_size(candidate),
+            precision,
+            name,
+        )
 
     p = Path(path)
     weight_name = p.name.lower() if p.suffix.lower() == ".gguf" else None
@@ -1746,6 +1823,11 @@ def detect_mtp_file(
     dirs = [start_dir]
     if search_root is not None:
         dirs.append(Path(search_root))
+    # Both tiers are collected before either is emitted: two sidecars can
+    # prefix-match the same weight (mtp-model.gguf and mtp-model_v2-Q8_0.gguf
+    # beside model_v2-*.gguf), across layouts as well as within one, and only the
+    # one naming this family is really its drafter.
+    root_candidates: list[Path] = []
     if not skip_root:
         for d in dirs:
             try:
@@ -1758,15 +1840,17 @@ def detect_mtp_file(
                     continue
                 if not _matches_weight(f):
                     continue
+                # Launchability is settled here, not at emission: an unusable
+                # candidate that outranks everything (a dangling link, a partial
+                # split) would otherwise win the tier comparison below and then
+                # be skipped, handing back a less specific sibling. The subdir
+                # tier is filtered at collection for the same reason.
                 try:
                     if not (f.is_file() and _launchable(f)):
                         continue
-                    launch = _drafter_launch_path(f)
                 except OSError:
                     continue
-                if accept is not None and not accept(launch):
-                    continue
-                return launch
+                root_candidates.append(f)
 
     subdir_candidates: list[Path] = []
     for d in dirs:
@@ -1809,15 +1893,145 @@ def detect_mtp_file(
                 except OSError:
                     continue
 
-    for candidate in sorted(dict.fromkeys(subdir_candidates), key = _smallest_first):
+    def _first_pick(candidates: list[Path]) -> Optional[tuple[int, str]]:
+        """The candidate this tier would really launch, with its specificity.
+
+        Ranking the tier's best NAME would let a file that never launches speak
+        for it: rejected by ``accept`` (out of a native grant) or unresolvable,
+        it is skipped at emission and a less specific sibling goes out instead.
+        So each tier is represented by the first candidate that survives every
+        filter, which is the one actually on offer.
+        """
+        for c in candidates:
+            try:
+                launch = _drafter_launch_path(c)
+            except OSError:
+                continue
+            if accept is not None and not accept(launch):
+                continue
+            return _drafter_stem_rank(c.name, kind = "mtp"), launch
+        return None
+
+    # Ranking is stable, so files of equal specificity keep the scan order.
+    root_pick = _first_pick(
+        sorted(root_candidates, key = lambda c: _drafter_stem_rank(c.name, kind = "mtp"))
+    )
+    subdir_pick = _first_pick(sorted(dict.fromkeys(subdir_candidates), key = _smallest_first))
+
+    # Root keeps its preference at equal specificity, which is every published
+    # layout. It loses only to a strictly more specific companion copy, where
+    # the root file names a different family and is not this weight's drafter.
+    if subdir_pick is not None and (root_pick is None or subdir_pick[0] < root_pick[0]):
+        logger.info(f"Detected MTP subdirectory drafter: {subdir_pick[1]}")
+        return subdir_pick[1]
+    if root_pick is not None:
+        return root_pick[1]
+    return None
+
+
+def detect_dspark_file(
+    path: str,
+    search_root: Optional[str] = None,
+    accept: Optional[Callable[[str], bool]] = None,
+) -> Optional[str]:
+    """Find a DSpark sidecar for a local GGUF model.
+
+    Unsloth publishes these as ``dspark-*.gguf`` in the repository root or
+    under ``dspark/``. Prefer Q8_0, the precision recommended by the model
+    card, while requiring the sidecar family name to match the target model
+    (see _drafter_matches_weight: a folder holding a model and its "-Lite"
+    sibling must not cross-attach their sidecars).
+
+    Requires a published drafter name (``dspark-<model>`` / ``<model>-dspark``)
+    even inside ``dspark/``, mirroring detect_mtp_file: llama_cpp's
+    _drafter_path_kind accepts anything in that directory because it exists to
+    EXCLUDE companions from variant menus, and reusing it here would launch a
+    weight copy someone parked there as --model-draft.
+
+    ``accept`` filters candidates in preference order, so a caller with extra
+    rules (a native lease) keeps scanning instead of treating the first
+    rejection as no sidecar at all.
+    """
+
+    def _rank(candidate: Path) -> tuple[int, int, int, str]:
+        # Most specific family first, so a base-family sidecar cannot win over
+        # the one that names this exact release. Then precision (the model
+        # card's recommendation), then total size so a split copy cannot
+        # outrank a smaller single file, then name for a stable order.
+        return (
+            _drafter_stem_rank(candidate.name, kind = "dspark"),
+            dspark_precision_rank(candidate.name),
+            _drafter_total_size(candidate),
+            candidate.name.lower(),
+        )
+
+    p = Path(path)
+    weight_name = p.name if p.suffix.lower() == ".gguf" else None
+    start_dir = p.parent if p.is_file() else p
+    dirs = [start_dir]
+    if search_root is not None:
+        dirs.append(Path(search_root))
+
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    # dict.fromkeys: search_root is the weight's own parent for a flat layout,
+    # and scanning it twice doubles the directory reads for nothing.
+    for root in dict.fromkeys(dirs):
         try:
-            resolved = _drafter_launch_path(candidate)
+            root_entries = list(root.iterdir())
         except OSError:
             continue
-        if accept is not None and not accept(resolved):
+        # One listing per directory, partitioned into the dspark/ subdir and
+        # the sidecars beside the weight.
+        scan: list[tuple[Path, list[Path]]] = [(root, root_entries)]
+        for entry in root_entries:
+            if entry.name.casefold() != "dspark":
+                continue
+            try:
+                if entry.is_dir():
+                    scan.append((entry, list(entry.iterdir())))
+            except OSError:
+                continue
+        for _directory, entries in scan:
+            for candidate in entries:
+                lower = candidate.name.lower()
+                if not lower.endswith(".gguf"):
+                    continue
+                # Drop the shard suffix first: a split copy under the old
+                # scheme is <model>-Q8_0-dspark-00001-of-00002.gguf, whose
+                # stem does not end in -dspark.
+                stem = re.sub(r"-[0-9]{5}-of-[0-9]{5}$", "", Path(lower).stem)
+                if not (lower.startswith("dspark-") or stem.endswith("-dspark")):
+                    continue
+                if not _drafter_matches_weight(candidate.name, weight_name, kind = "dspark"):
+                    continue
+                try:
+                    # Collapse a split copy to shard 1 before ranking.
+                    launch = _local_gguf_load_path(candidate)
+                    # is_file() follows the link, so this also drops a dangling
+                    # snapshot symlink and a directory named like a sidecar.
+                    # Without it --model-draft gets a path llama-server cannot
+                    # open, which fails the whole load rather than falling back
+                    # to no speculation (detect_mtp_file guards the same way).
+                    if not (launch.is_file() and _drafter_split_is_complete(launch)):
+                        continue
+                    resolved = launch.resolve()
+                except OSError:
+                    continue
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+                candidates.append(launch)
+
+    for candidate in sorted(candidates, key = _rank):
+        try:
+            launch = _drafter_launch_path(candidate)
+        except OSError:
             continue
-        logger.info(f"Detected MTP subdirectory drafter: {resolved}")
-        return resolved
+        if accept is not None and not accept(launch):
+            continue
+        logger.info("Detected DSpark drafter: %s", launch)
+        return launch
     return None
 
 
@@ -3023,6 +3237,7 @@ class ModelConfig:
     gguf_file: Optional[str] = None  # Full path to the .gguf file (local mode)
     gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
     gguf_mtp_file: Optional[str] = None  # Full path to the separate MTP drafter (local mode)
+    gguf_dspark_file: Optional[str] = None  # Full path to a DSpark sidecar (local mode)
     gguf_hf_repo: Optional[str] = (
         None  # HF repo ID for -hf mode (e.g. "unsloth/gemma-3-4b-it-GGUF")
     )
@@ -3125,7 +3340,13 @@ class ModelConfig:
 
         # Auto-detect GGUF models (check before LoRA/vision detection)
         if is_local:
-            if gguf_variant:
+            # A direct GGUF path is already an unambiguous selection. Status
+            # echoes its detected quant back as ``gguf_variant`` on settings
+            # reloads, but variant lookup is directory-only: a loose GGUF has
+            # no config metadata for _resolve_gguf_dir and would otherwise fall
+            # through to the Transformers loader. Only use the variant to pick
+            # a file when the request actually names a directory.
+            if gguf_variant and Path(path).is_dir():
                 gguf_file = _find_local_gguf_by_variant(path, gguf_variant)
             else:
                 gguf_file = detect_gguf_model(path)
@@ -3168,6 +3389,7 @@ class ModelConfig:
                 mtp_file = detect_mtp_file(gguf_file, search_root = companion_root)
                 if mtp_file:
                     logger.info(f"Detected MTP drafter: {mtp_file}")
+                dspark_file = detect_dspark_file(gguf_file, search_root = companion_root)
 
                 return cls(
                     identifier = identifier,
@@ -3181,6 +3403,7 @@ class ModelConfig:
                     gguf_file = gguf_file,
                     gguf_mmproj_file = mmproj_file,
                     gguf_mtp_file = mtp_file,
+                    gguf_dspark_file = dspark_file,
                 )
         else:
             # Does the HF repo contain GGUF files?
@@ -3200,6 +3423,33 @@ class ModelConfig:
                 # list_gguf_variants() detects vision & resolves the variant
                 variants, has_vision = list_gguf_variants(identifier, hf_token = hf_token)
                 variant = gguf_variant
+                if variant:
+                    from core.inference.llama_cpp import (
+                        _gguf_files_for_variant,
+                        cached_gguf_for_load,
+                    )
+
+                    # Reject before the load path unloads the resident model.
+                    # Only a live, complete repo listing can prove the variant
+                    # absent; without one, let the load path resolve it. The
+                    # cache escape mirrors the load path's own reuse predicate.
+                    try:
+                        from huggingface_hub import list_repo_files
+                        repo_files = list_repo_files(identifier, token = hf_token)
+                    except Exception:
+                        repo_files = None
+                    if (
+                        repo_files
+                        and not _gguf_files_for_variant(repo_files, variant)
+                        and not cached_gguf_for_load(
+                            identifier, variant, verify_sizes = True, hf_token = hf_token
+                        )
+                    ):
+                        available = ", ".join(v.quant for v in variants)
+                        raise ValueError(
+                            f"GGUF variant '{variant}' not found in {identifier}. "
+                            f"Available variants: {available}"
+                        )
                 if not variant:  # auto-select best quant
                     variant_filenames = [v.filename for v in variants]
                     best = _pick_best_gguf(variant_filenames)

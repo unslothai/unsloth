@@ -87,13 +87,17 @@ jobs:
           python -m pip install --quiet 'pytest>=8'
           python -m pytest tests/studio/test_stt_model_search_locator_contract.py -q
 
+      # Cross-OS shared entry. The tree under `hf-cache` is byte-identical on
+      # Linux, macOS and Windows, so the key carries no `runner.os`, and
+      # enableCrossOsArchive lets Windows (which tars with --force-local) join it.
       - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
         id: cache-hf
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         continue-on-error: true
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
+          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
+          enableCrossOsArchive: true
 
       - name: Prime HF_HOME with the GGUF
         id: prime-hf
@@ -118,11 +122,12 @@ jobs:
         # same 4.6GB model held four times on four different PR refs and no copy
         # on main at all. That is the thrash loop: PR misses -> downloads ->
         # saves its own copy -> evicts main's -> next PR misses.
-        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success'
+        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
+          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
+          enableCrossOsArchive: true
 
       - name: Install Unsloth (--local, --no-torch)
         uses: ./.github/actions/install-unsloth-local

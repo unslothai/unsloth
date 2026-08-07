@@ -10,9 +10,15 @@ import re
 import sys
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 import typer
+
+# Canonical speculative-decoding modes, mirroring the backend's
+# _CANONICAL_SPEC_MODES. Named once so the CLI's option annotations, the HTTP
+# payload builders and the in-process loader cannot drift apart when a mode is
+# added; typer reads it at runtime to validate --speculative-type.
+SpeculativeType = Literal["auto", "mtp", "dspark", "ngram", "mtp+ngram", "off", "ngram-simple"]
 
 _THINK_OPEN = "<think>"
 _THINK_BLOCK = re.compile(rf"{re.escape(_THINK_OPEN)}.*?</think>", re.DOTALL)
@@ -444,6 +450,8 @@ def _load_gguf_backend(
     hf_token,
     max_seq_length,
     tensor_parallel: bool = False,
+    speculative_type: Optional[SpeculativeType] = None,
+    spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
 ):
     ensure_studio_backend_path()
@@ -465,7 +473,12 @@ def _load_gguf_backend(
             gguf_path = model_config.gguf_file,
             mmproj_path = model_config.gguf_mmproj_file,
             mtp_draft_path = model_config.gguf_mtp_file,
+            dspark_draft_path = model_config.gguf_dspark_file,
         )
+    if speculative_type is not None:
+        intent_fields["speculative_type"] = speculative_type
+    if spec_draft_n_max is not None:
+        intent_fields["spec_draft_n_max"] = spec_draft_n_max
 
     async def _attempt_gguf_load(
         requested_tensor_parallel: bool, attempt_extra_args: Optional[List[str]]
@@ -499,6 +512,8 @@ def load_chat_backend(
     max_seq_length: int,
     load_in_4bit: bool,
     tensor_parallel: bool = False,
+    speculative_type: Optional[SpeculativeType] = None,
+    spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
     model_config = None,
     fresh_backend: bool = False,
@@ -534,6 +549,8 @@ def load_chat_backend(
                 hf_token = hf_token,
                 max_seq_length = max_seq_length,
                 tensor_parallel = tensor_parallel,
+                speculative_type = speculative_type,
+                spec_draft_n_max = spec_draft_n_max,
                 llama_extra_args = llama_extra_args,
             )
 
@@ -741,6 +758,8 @@ class HttpChatBackend:
         max_seq_length,
         load_in_4bit,
         tensor_parallel: bool = False,
+        speculative_type: Optional[SpeculativeType] = None,
+        spec_draft_n_max: Optional[int] = None,
         llama_extra_args: Optional[List[str]] = None,
     ) -> None:
         typer.echo(f"Loading {model} on the Unsloth server", err = True)
@@ -753,6 +772,10 @@ class HttpChatBackend:
         }
         if llama_extra_args:
             payload["llama_extra_args"] = llama_extra_args
+        if speculative_type is not None:
+            payload["speculative_type"] = speculative_type
+        if spec_draft_n_max is not None:
+            payload["spec_draft_n_max"] = spec_draft_n_max
         try:
             # Read the body, don't close at the headers: a slow load commits its 200
             # early and pads until done, so closing here would generate mid-load and
@@ -846,6 +869,8 @@ def connect_studio_server(
     max_seq_length,
     load_in_4bit,
     tensor_parallel: bool = False,
+    speculative_type: Optional[SpeculativeType] = None,
+    spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
 ):
     """Backend on a running Unsloth server, or None (caller loads locally)."""
@@ -890,6 +915,8 @@ def connect_studio_server(
         max_seq_length = max_seq_length,
         load_in_4bit = load_in_4bit,
         tensor_parallel = tensor_parallel,
+        speculative_type = speculative_type,
+        spec_draft_n_max = spec_draft_n_max,
         llama_extra_args = llama_extra_args,
     )
     return backend

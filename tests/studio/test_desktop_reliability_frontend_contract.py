@@ -3,6 +3,7 @@
 
 """Static contracts for focused packaged-desktop reliability behavior."""
 
+import re
 from pathlib import Path
 
 
@@ -37,6 +38,10 @@ APP_PROVIDER = FRONTEND / "app/provider.tsx"
 ROOT_ROUTE = FRONTEND / "app/routes/__root.tsx"
 IMAGES_PAGE = FRONTEND / "features/images/images-page.tsx"
 VIDEO_PAGE = FRONTEND / "features/video/video-page.tsx"
+
+REMOTE_ACCESS_SECTION = FRONTEND / "features/settings/components/remote-access-section.tsx"
+PASSWORD_DIALOG = FRONTEND / "features/settings/components/change-password-dialog.tsx"
+GENERAL_TAB = FRONTEND / "features/settings/tabs/general-tab.tsx"
 
 CLIPBOARD_FILES = FRONTEND / "features/chat/utils/clipboard-files.ts"
 TAURI_CAPABILITIES = REPO / "studio/src-tauri/capabilities/default.json"
@@ -311,6 +316,37 @@ def test_mac_dock_reopens_hidden_main_window():
     assert "show_main_window(app)" in reopen_handler
 
 
+def test_desktop_manages_the_remote_password_through_the_account_dialog():
+    section = REMOTE_ACCESS_SECTION.read_text(encoding = "utf-8")
+    dialog = PASSWORD_DIALOG.read_text(encoding = "utf-8")
+
+    row = section.split("function RemotePasswordRow", 1)[1].split(
+        "export function RemoteAccessSection", 1
+    )[0]
+    assert "if (!(isTauri && status)) {" in row
+    assert "initial={status.passwordPending}" in row
+    assert "<RemotePasswordRow status={status} onDone={refreshStatus} />" in section
+    assert "{isTauri ? null : (" in GENERAL_TAB.read_text(encoding = "utf-8")
+    # A password change rotates credentials outside the polling requests.
+    refresh = section.split("const refreshStatus = useCallback(", 1)[1].split("}, []);", 1)[0]
+    assert "mutationEpoch.current += 1;" in refresh
+    assert "setPollRevision(" in refresh
+    # Initial mode sends no current password; the web flow it serves keeps it.
+    body = dialog.split("function changePasswordBody", 1)[1].split("function dialogCopy", 1)[0]
+    assert '? [["new_password", nextPassword]]' in body
+    assert '["current_password", currentPassword],' in body
+    post = dialog.split("function postChangePassword", 1)[1].split(
+        "async function requestPasswordChange", 1
+    )[0]
+    assert '? "/api/auth/desktop-initial-password"' in post
+    assert ': "/api/auth/change-password",' in post
+    assert "{initial ? null : (" in dialog
+    assert "if (!initial && currentPassword.length < MIN_PASSWORD_LENGTH)" in dialog
+    submitted = dialog.split("async function submit", 1)[1].split("\n  }", 1)[0]
+    assert "storeAuthTokens(accessToken, refreshToken)" in submitted
+    assert "onDone?.()" in submitted
+
+
 def test_desktop_startup_waits_for_auth_without_intermediate_handoff():
     source = APP_PROVIDER.read_text(encoding = "utf-8")
 
@@ -378,7 +414,12 @@ def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
     sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
     header = sidebar.split("<SidebarHeader", 1)[1].split("</SidebarHeader>", 1)[0]
 
-    assert 'import { ArrowLeft, ArrowRight } from "lucide-react";' in titlebar
+    # The names, not the whole import list: #8025 added Minus/Square/X to the
+    # same line for the window controls and this went red on every open PR.
+    lucide = re.search(r"import \{([^}]*)\} from \"lucide-react\";", titlebar)
+    assert lucide is not None, "titlebar no longer imports from lucide-react"
+    icons = {name.strip() for name in lucide.group(1).split(",")}
+    assert {"ArrowLeft", "ArrowRight"} <= icons, icons
     assert "<ArrowLeft" in titlebar
     assert "<ArrowRight" in titlebar
     assert "window.history.back()" in titlebar
