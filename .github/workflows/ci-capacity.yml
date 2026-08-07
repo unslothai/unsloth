@@ -6,6 +6,21 @@ name: CI capacity
 # Frees runner slots in THIS repository so a release pipeline elsewhere in the
 # org stops queueing behind ordinary CI.
 #
+# Before using it, know what the measurements said, because they contradict the
+# reason this was asked for. None of the three release pipelines is macOS
+# starved. In every clean attempt-1 run, macOS was the fastest class to get a
+# runner: llama.cpp on 08-03 saw its two macOS jobs wait 6 seconds while Linux
+# and Windows each piled up ~5h48m of queue, and release-desktop's macOS leg
+# waited 1m54s against 2h54m for Windows. llama.cpp's 08-07 release was run-time
+# bound outright, 1h12m of build behind 3 seconds of queue. The whisper.cpp
+# 6h39m release was the 08-06 GitHub Actions incident, where the whole org sat
+# at 0-6 running jobs against a 1,100 job queue; a concurrency cap does not look
+# like that.
+#
+# So the class worth preempting is linux and windows, which is exactly the class
+# whose runs people are waiting on. That is the trade this file exists to make
+# visible, and the reason it defaults to schedule-only and ships off.
+#
 # Why it lives here and not in the release repo. GitHub's `concurrency:` is
 # scoped to one repository, so it cannot express "llama.cpp is releasing, so
 # unsloth should stand down". Doing that across repos means an explicit API
@@ -55,9 +70,9 @@ on:
         type: string
         default: schedule
       classes:
-        description: 'Runner classes to free, comma separated: macos, linux, windows.'
+        description: 'Runner classes to free, comma separated: macos, linux, windows. macos is measurably not the bottleneck for any of the three release pipelines; linux,windows is where the queue actually is.'
         type: string
-        default: macos
+        default: linux,windows
       hold_minutes:
         description: 'Keep sweeping for this many minutes. 0 sweeps once. New runs queue the moment the sweep stops, so a single pass rarely holds.'
         type: number
