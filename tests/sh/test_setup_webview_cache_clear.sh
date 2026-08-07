@@ -177,6 +177,27 @@ else
     echo "  FAIL: setup.sh never calls _clear_webview_caches"; FAIL=$((FAIL+1))
 fi
 
+# ── 7b. setup.ps1 must have the same ordering. It is not driven here, so this is a
+# source-order assertion: the call has to come after the override validation, or a
+# mistyped UNSLOTH_STUDIO_HOME on Windows wipes the cache and then aborts. ──
+SETUP_PS1="$SCRIPT_DIR/../../studio/setup.ps1"
+if [ ! -f "$SETUP_PS1" ]; then
+    echo "  FAIL: setup.ps1 not found"; FAIL=$((FAIL+1))
+else
+    _ps_call=$(grep -n '^Clear-WebViewCaches[[:space:]]*$' "$SETUP_PS1" | head -n1 | cut -d: -f1)
+    _ps_validate=$(grep -n 'does not exist"$' "$SETUP_PS1" | tail -n1 | cut -d: -f1)
+    if [ -z "$_ps_call" ]; then
+        echo "  FAIL: setup.ps1 never calls Clear-WebViewCaches"; FAIL=$((FAIL+1))
+    elif [ -z "$_ps_validate" ]; then
+        echo "  FAIL: could not find the setup.ps1 override validation"; FAIL=$((FAIL+1))
+    elif [ "$_ps_call" -gt "$_ps_validate" ]; then
+        echo "  PASS: setup.ps1 clears after validating the override"; PASS=$((PASS+1))
+    else
+        echo "  FAIL: setup.ps1 clears at line $_ps_call, before validation at $_ps_validate"
+        FAIL=$((FAIL+1))
+    fi
+fi
+
 # ── 8. a bad override must not cost the user their cache ──
 # Every case above extracts the function, so none of them sees where the call sits.
 # setup.sh runs under `set -euo pipefail` with no trap, so a clear placed before the

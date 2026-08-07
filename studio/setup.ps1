@@ -1626,7 +1626,12 @@ if ($script:StudioVtOk -and -not $env:NO_COLOR) {
 # WebView2 caches keyed by the bundle id can keep serving the previous frontend
 # after an update. Cache-only: storage, cookies, settings, models and the studio
 # database are untouched.
-if ($env:LOCALAPPDATA) {
+#
+# Defined here, called after the UNSLOTH_STUDIO_HOME / STUDIO_HOME override is validated.
+# Clearing first would make a mistyped override wipe the cache and then abort, the same
+# side effect setup.sh delays the call to avoid.
+function Clear-WebViewCaches {
+    if (-not $env:LOCALAPPDATA) { return }
     $wvDefault = Join-Path $env:LOCALAPPDATA "ai.unsloth.studio\EBWebView\Default"
     # Drop the version stamp first. The old WebView still holds these files, which is
     # why the removals below can fail; the app's own clear is the retry, and it is
@@ -3436,6 +3441,12 @@ if ($_studioOverride) {
 } else {
     $StudioHome = Join-Path $env:USERPROFILE ".unsloth\studio"
 }
+
+# The override is known good now, so the clear cannot turn a typo into cache loss.
+# Still before any install work, which is the ordering that matters: the caches have to
+# go while the old frontend is the one on disk.
+Clear-WebViewCaches
+
 $VenvDir = Join-Path $StudioHome "unsloth_studio"
 
 # why: in env-override mode $StudioHome is user-chosen; require the
