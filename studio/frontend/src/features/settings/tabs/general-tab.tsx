@@ -131,6 +131,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_monitor_overlay",
   LOADED_MODELS_PREFERENCE_KEYS.show,
   LOADED_MODELS_PREFERENCE_KEYS.collapsed,
+  LOADED_MODELS_PREFERENCE_KEYS.position,
   // Voice settings
   "unsloth_voice_settings",
 ];

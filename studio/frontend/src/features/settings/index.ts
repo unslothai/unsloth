@@ -44,6 +44,12 @@ export type {
   SidebarNavItemPref,
 } from "./stores/appearance-custom-store";
 export { useMonitorOverlayStore } from "./stores/monitor-overlay-store";
+export {
+  type MonitorFrame,
+  stackBottomInset,
+  useMonitorFrameStore,
+  useStackBottomInset,
+} from "./stores/monitor-frame-store";
 export type {
   Personalization,
   PersonalizationAppearance,

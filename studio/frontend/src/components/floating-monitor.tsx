@@ -3,7 +3,10 @@
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { useMonitorOverlayStore } from "@/features/settings";
+import {
+  useMonitorFrameStore,
+  useMonitorOverlayStore,
+} from "@/features/settings";
 import { aggregateGpuMemoryTotalGb, useSystemInfo } from "@/hooks/use-system";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -167,6 +170,14 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
         session.constraintsHeight = constraintsBox.height;
       }
 
+      // Publish the real box so the overlay stack can keep clear of it.
+      useMonitorFrameStore.getState().setFrame({
+        left: monitorBox.left,
+        top: monitorBox.top,
+        right: monitorBox.right,
+        bottom: monitorBox.bottom,
+      });
+
       setLayout((current) => {
         const next = {
           left,
@@ -191,6 +202,7 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
     }
     return () => {
       observer.disconnect();
+      useMonitorFrameStore.getState().setFrame(null);
       if (remeasureRef.current) {
         cancelAnimationFrame(remeasureRef.current);
         remeasureRef.current = 0;

@@ -11,6 +11,7 @@ import { useSyncExternalStore } from "react";
 export const LOADED_MODELS_PREFERENCE_KEYS = {
   show: "unsloth_show_loaded_models_indicator",
   collapsed: "unsloth_loaded_models_collapsed",
+  position: "unsloth_loaded_models_position",
 } as const;
 
 const STORAGE_KEY = LOADED_MODELS_PREFERENCE_KEYS.show;
