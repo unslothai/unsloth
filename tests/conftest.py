@@ -97,7 +97,10 @@ def _patch_torch_cuda_for_import() -> None:
     (real-tensor tests still run on CPU)."""
     try:
         import torch.cuda.memory as _cuda_memory  # type: ignore
-        _cuda_memory.mem_get_info = lambda *a, **k: (0, 80 * 1024**3)
+        # Free first, then total. Zero free is not a plausible Ampere value: it
+        # is an exhausted card, and code that sizes work against the free pool
+        # treats it as fatal rather than importing.
+        _cuda_memory.mem_get_info = lambda *a, **k: (60 * 1024**3, 80 * 1024**3)
     except Exception:
         pass
     try:

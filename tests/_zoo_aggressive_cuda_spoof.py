@@ -64,7 +64,14 @@ def apply() -> None:
     class _CudaRt:
         @staticmethod
         def cudaMemGetInfo(device: int = 0):
-            return (0, 80 * 1024**3)
+            # FREE first, then total. Zero free is not a state any real idle GPU
+            # reports, and `torch.cuda.mem_get_info` delegates straight to here,
+            # so every consumer that sizes work against the free pool saw an
+            # exhausted card: unsloth_zoo's fused cross entropy divides by half
+            # of it and raises "No or negligible GPU memory available" rather
+            # than chunking, which failed `test_sft_trains_on_cpu` on a host
+            # with four idle GPUs.
+            return (60 * 1024**3, 80 * 1024**3)
 
         @staticmethod
         def cudaGetDeviceCount(*_a, **_k):
@@ -80,7 +87,7 @@ def apply() -> None:
     try:
         import torch.cuda.memory as _cuda_memory  # type: ignore
 
-        _cuda_memory.mem_get_info = lambda *a, **k: (0, 80 * 1024**3)
+        _cuda_memory.mem_get_info = lambda *a, **k: (60 * 1024**3, 80 * 1024**3)
         _cuda_memory.memory_stats = lambda *a, **k: {}
         _cuda_memory.memory_allocated = lambda *a, **k: 0
         _cuda_memory.max_memory_allocated = lambda *a, **k: 0
