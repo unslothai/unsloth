@@ -28,6 +28,7 @@ module instead: additive only, so a transformers that still exports them is
 untouched.
 """
 
+import importlib
 import importlib.util
 import sys
 import types
@@ -105,6 +106,88 @@ def test_a_complete_module_is_untouched(fake_modules):
 def test_it_is_idempotent(fake_modules):
     assert F._backfill_missing_conversion_symbols() is True
     assert F._backfill_missing_conversion_symbols() is False
+
+
+def test_a_module_blocked_by_another_drift_is_retried(monkeypatch):
+    """The two drifts together used to be unrecoverable in one pass.
+
+    `transformers.conversion_mapping` imports names from
+    `transformers.core_model_loading` at its own module top, so while those are
+    missing, importing it raises and the pass skips it. Backfilling
+    core_model_loading later in the SAME pass unblocks that import, but nothing
+    came back for conversion_mapping and `_gpu_init` calls this guard once, so an
+    installation carrying both drifts stayed broken.
+    """
+    names = list(F._PEFT_CONVERSION_SYMBOLS)
+    blocked, unblocker = names[0], names[-1]
+    assert blocked != unblocker, "this test needs two modules to order"
+
+    saved = {n: sys.modules.get(n) for n in names}
+    for name in names:
+        sys.modules.pop(name, None)
+
+    real_import = importlib.import_module
+    attempts = {"blocked": 0}
+
+    def fake_import(name, *a, **kw):
+        if name == blocked:
+            attempts["blocked"] += 1
+            # Importable only once the other module has been backfilled, which
+            # is exactly the real dependency.
+            other = sys.modules.get(unblocker)
+            if other is None or any(
+                not hasattr(other, s) for s in F._PEFT_CONVERSION_SYMBOLS[unblocker]
+            ):
+                raise ImportError(f"cannot import name from {unblocker}")
+            mod = types.ModuleType(name)
+            mod.__file__ = f"<fake {name}>"
+            sys.modules[name] = mod
+            return mod
+        if name == unblocker:
+            mod = types.ModuleType(name)
+            mod.__file__ = f"<fake {name}>"
+            sys.modules[name] = mod
+            return mod
+        return real_import(name, *a, **kw)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import)
+    try:
+        assert F._backfill_missing_conversion_symbols() is True
+        assert attempts["blocked"] >= 2, "the blocked module was never retried"
+        for symbol in F._PEFT_CONVERSION_SYMBOLS[blocked]:
+            assert hasattr(sys.modules[blocked], symbol), f"{blocked}.{symbol} never backfilled"
+    finally:
+        for name, mod in saved.items():
+            if mod is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = mod
+
+
+def test_the_retry_stops_when_a_module_stays_unimportable(monkeypatch):
+    """A module that never imports must not spin the loop."""
+    names = list(F._PEFT_CONVERSION_SYMBOLS)
+    saved = {n: sys.modules.get(n) for n in names}
+    for name in names:
+        sys.modules.pop(name, None)
+
+    calls = {"n": 0}
+
+    def always_fails(name, *a, **kw):
+        calls["n"] += 1
+        raise ImportError("nope")
+
+    monkeypatch.setattr(importlib, "import_module", always_fails)
+    try:
+        assert F._backfill_missing_conversion_symbols() is False
+        # Nothing was added, so the loop breaks after one pass.
+        assert calls["n"] == len(names)
+    finally:
+        for name, mod in saved.items():
+            if mod is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = mod
 
 
 def _peft_converter_source():

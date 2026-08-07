@@ -2447,23 +2447,21 @@ def _recover_conversion_pattern_map(real):
     return best
 
 
-def _backfill_missing_conversion_symbols():
-    """Add only the names a real module is missing, taken from our own stub.
+def _backfill_conversion_symbols_once(builders, added):
+    """One pass over the modules. Returns True if any was left unimportable.
 
-    Never replaces a module and never overwrites a name transformers defines,
-    so this is a no-op on every release that still exports them.
+    Split out so the caller can run it again: a module that could not be
+    imported this time may import fine once a module later in the pass has been
+    backfilled.
     """
-    builders = {
-        "transformers.conversion_mapping": _install_transformers_conversion_mapping_stub,
-        "transformers.core_model_loading": _install_transformers_core_model_loading_stub,
-    }
-    added = []
+    skipped = False
     for name, symbols in _PEFT_CONVERSION_SYMBOLS.items():
         real = sys.modules.get(name)
         if real is None:
             try:
                 real = importlib.import_module(name)
             except Exception:
+                skipped = True
                 continue
         if getattr(real, _UNSLOTH_STUB_SENTINEL, False):
             continue  # ours already, and complete
@@ -2510,6 +2508,34 @@ def _backfill_missing_conversion_symbols():
             if hasattr(donor, symbol):
                 setattr(real, symbol, getattr(donor, symbol))
                 added.append(qualified)
+    return skipped
+
+
+def _backfill_missing_conversion_symbols():
+    """Add only the names a real module is missing, taken from our own stub.
+
+    Never replaces a module and never overwrites a name transformers defines,
+    so this is a no-op on every release that still exports them.
+    """
+    builders = {
+        "transformers.conversion_mapping": _install_transformers_conversion_mapping_stub,
+        "transformers.core_model_loading": _install_transformers_core_model_loading_stub,
+    }
+    added = []
+    # One pass is not enough when the two drifts coincide. conversion_mapping
+    # imports names from core_model_loading at its own module top, so while
+    # core_model_loading is still missing them, importing conversion_mapping
+    # raises and the pass skips it. Backfilling core_model_loading later in the
+    # same pass unblocks that import, but nothing comes back for it, and
+    # _gpu_init calls this guard once, so an installation carrying both drifts
+    # stayed broken. Repeat while a pass both adds a symbol and leaves a module
+    # unimportable; each pass adds at least one symbol, so the bound is the
+    # number of modules and there is no way to spin.
+    for _attempt in range(len(_PEFT_CONVERSION_SYMBOLS) + 1):
+        before = len(added)
+        skipped = _backfill_conversion_symbols_once(builders, added)
+        if not skipped or len(added) == before:
+            break
     if added:
         logger.info(
             "Unsloth: backfilled %s so peft.utils."
