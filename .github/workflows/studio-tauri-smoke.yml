@@ -8,9 +8,11 @@
 #   - Tauri CLI version drift (we pin 2.10.1, matching release-desktop.yml)
 #   - frontend output not picked up by Tauri's distDir
 #
-# Linux-only on a free `ubuntu-latest` runner. Mac and Windows desktop builds
-# stay in release-desktop.yml (manual `workflow_dispatch`) because they need
-# code-signing secrets and ~30 min of runner time each.
+# The build job stays on Linux; signed desktop builds remain in the manual
+# release workflow.
+#
+# A second job covers `#[cfg(windows)]` code, which Linux strips before type
+# checking and cannot cross-compile because `ring` requires MSVC `lib.exe`.
 
 name: Unsloth Tauri CI
 
@@ -160,7 +162,8 @@ jobs:
   windows-unit-tests:
     name: Rust unit tests (windows)
     runs-on: windows-latest
-    timeout-minutes: 25
+    # A cold cache compiles both the debug and the release dependency tree.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
@@ -201,3 +204,10 @@ jobs:
       - name: Rust unit tests (studio/src-tauri)
         working-directory: studio/src-tauri
         run: cargo test --no-fail-fast
+
+      # `cargo test` builds only the debug profile, and the browser guard is
+      # installed under `not(debug_assertions)`, so nothing above compiles its
+      # call site. Check the release profile so that path cannot rot.
+      - name: Rust release type check (studio/src-tauri)
+        working-directory: studio/src-tauri
+        run: cargo check --all-targets --release
