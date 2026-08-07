@@ -18,6 +18,9 @@ const RUST_ATTACHMENT_EXTS_RE = /ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
 const RUST_IMAGE_ATTACHMENT_EXTS_RE = /IMAGE_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
 const DOTTED_EXTENSION_RE = /"(\.[^"]+)"/g;
 const RUST_EXTENSION_RE = /"([^"]+)"/g;
+const RUST_MIME_ARM_RE = /Some\("(image\/[^"]+)"\)/g;
+const VISION_ADAPTER_ACCEPT_RE =
+  /class VisionImageAdapter[^{]*\{\s*accept\s*=\s*"([^"]+)"/s;
 
 function attachmentIntent(id: string): NativeIntent {
   return {
@@ -168,4 +171,33 @@ test("frontend and Rust accept the same chat image extensions", () => {
     .sort();
 
   assert.deepEqual(rust, frontend);
+});
+
+// #7963 was a list reused across two features drifting apart. The drop path has
+// one more seam like it: Rust stamps the File's MIME type, and the composer
+// routes to an adapter by MIME, so a type Rust emits that VisionImageAdapter
+// doesn't claim would land the image on the wrong adapter or nowhere.
+test("every MIME type Rust stamps is one the vision adapter claims", () => {
+  const rustSource = readFileSync(
+    new URL("../../src-tauri/src/native_intents.rs", import.meta.url),
+    "utf8",
+  );
+  const stamped = [
+    ...new Set(
+      [...rustSource.matchAll(RUST_MIME_ARM_RE)].map((match) => match[1]),
+    ),
+  ].sort();
+
+  const providerSource = readFileSync(
+    new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
+    "utf8",
+  );
+  const accepted = providerSource
+    .match(VISION_ADAPTER_ACCEPT_RE)?.[1]
+    .split(",")
+    .map((type) => type.trim())
+    .sort();
+
+  assert.ok(stamped.length > 0, "no image MIME arms found in native_intents.rs");
+  assert.deepEqual(stamped, accepted);
 });
