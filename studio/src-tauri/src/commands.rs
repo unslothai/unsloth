@@ -28,6 +28,20 @@ fn should_count_watchdog_failure(has_seen_healthy: bool, elapsed_since_start: Du
     has_seen_healthy || elapsed_since_start >= BACKEND_STARTUP_GRACE_PERIOD
 }
 
+/// Whether the startup grace has ended, given what the latest probe reported.
+///
+/// A backend that answers while still warming clears the latch instead of leaving it: an
+/// adopted backend starts latched (it was serving before this app attached), so a watchdog
+/// that only declined to *set* it would keep counting failures against a host that has just
+/// said it is still importing the ML stack. A probe that got no answer leaves the latch
+/// alone, since silence says nothing about whether startup finished.
+fn watchdog_seen_healthy_after(previous: bool, alive: bool, warming_up: bool) -> bool {
+    if !alive {
+        return previous;
+    }
+    !warming_up
+}
+
 async fn managed_install_ready_after_repair() -> bool {
     crate::preflight::managed_install_ready().await
 }
@@ -389,12 +403,24 @@ async fn check_watchdog_health(
         crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port), false).await,
         crate::desktop_backend_owner::OwnedBackendProbe::Verified(_)
     );
-    // The ownership probe carries no warm-up signal, and it does not need one: an adopted
-    // backend was already serving before this app attached, so its watchdog starts with
-    // count_failures_immediately = true and never consults the startup grace.
+    // The ownership probe answers "is this still our process", not "is startup over", so
+    // ask the backend itself as well. An adopted backend having served one request before
+    // this app attached is the same fallacy the owned path fixes below: a force-quit during
+    // a cold start leaves the backend running and still importing the ML stack, and the app
+    // relaunches straight onto it. Without a warm-up signal that host is declared dead three
+    // probes later while it is perfectly healthy.
+    //
+    // Only consulted when ownership verified, so a foreign process on the port cannot hold
+    // the grace open. A failed read reports not-warming, which is the conservative answer:
+    // it lets the failure count rather than extending the grace on a backend we cannot read.
+    let warming_up = if verified {
+        check_health_inner(port).await.unwrap_or_default().warming_up
+    } else {
+        false
+    };
     BackendLiveness {
         alive: verified,
-        warming_up: false,
+        warming_up,
     }
 }
 
@@ -1084,6 +1110,48 @@ mod tests {
     }
 
     #[test]
+    fn an_adopted_backend_that_is_still_warming_gets_the_grace_back() {
+        // The other half of the reported crash. A force-quit during a cold start leaves the
+        // backend running and still importing the ML stack, and the relaunched app adopts it
+        // rather than spawning a new one. Adopted watchdogs start latched, so before this the
+        // grace never applied: three GIL-stalled probes cleared the backend at ~45s and put a
+        // "server stopped unexpectedly" screen in front of a host that was starting normally.
+        let mut has_seen_healthy = true; // adopted: count_failures_immediately
+        has_seen_healthy = super::watchdog_seen_healthy_after(has_seen_healthy, true, true);
+        assert!(
+            !has_seen_healthy,
+            "a backend that answered \"still warming\" left the latch set, so the grace stayed off"
+        );
+        for elapsed in [15, 30, 47, 64] {
+            assert!(
+                !super::should_count_watchdog_failure(
+                    has_seen_healthy,
+                    Duration::from_secs(elapsed)
+                ),
+                "a stalled probe at {elapsed}s was counted against an adopted backend that had \
+                 just reported it was still warming"
+            );
+        }
+        // The grace is still bounded: a backend that never finishes warming is not immortal.
+        assert!(super::should_count_watchdog_failure(
+            has_seen_healthy,
+            super::BACKEND_STARTUP_GRACE_PERIOD
+        ));
+    }
+
+    #[test]
+    fn the_latch_tracks_the_last_answer_and_ignores_silence() {
+        // alive + done warming latches; alive + warming clears; no answer changes nothing,
+        // because a probe that timed out says nothing about whether startup finished.
+        assert!(super::watchdog_seen_healthy_after(false, true, false));
+        assert!(!super::watchdog_seen_healthy_after(true, true, true));
+        assert!(super::watchdog_seen_healthy_after(true, false, false));
+        assert!(!super::watchdog_seen_healthy_after(false, false, false));
+        // A warm that finishes after a stall re-latches, so the grace does not linger.
+        assert!(super::watchdog_seen_healthy_after(false, true, false));
+    }
+
+    #[test]
     fn watchdog_failure_policy_counts_only_after_health_or_grace_period() {
         for (has_seen_healthy, elapsed, expected) in [
             (
@@ -1208,9 +1276,9 @@ async fn health_watchdog(
                     "Health watchdog: backend on port {} is alive but still warming up, holding the startup grace period",
                     port
                 );
-            } else {
-                has_seen_healthy = true;
             }
+            has_seen_healthy =
+                watchdog_seen_healthy_after(has_seen_healthy, liveness.alive, liveness.warming_up);
             consecutive_failures = 0;
         } else if !should_count_failure {
             info!(
