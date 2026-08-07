@@ -115,27 +115,37 @@ def _peft_converter_source():
     skip: a new import added upstream would never fail the guard it exists to
     be. The pinned-symbol suites in this directory already read upstream over
     the network, so do the same and fall back to the installed copy.
+
+    Both layouts are tried, the single module and the package, because peft can
+    split this file into `transformers_weight_conversion/__init__.py` at any
+    time. A packaging-only move would 404 the sole URL and drop straight back
+    to the installed copy, which is absent in that job, so the guard would go
+    quiet exactly when upstream churn is highest.
+    `test_peft_pinned_symbols.py` already probes the same pair.
     """
     import os
     import urllib.error
     import urllib.request
 
-    url = (
-        "https://raw.githubusercontent.com/huggingface/peft/main/"
-        "src/peft/utils/transformers_weight_conversion.py"
-    )
-    request = urllib.request.Request(url)
+    base = "https://raw.githubusercontent.com/huggingface/peft/main/src/peft/utils/"
+    urls = [
+        base + "transformers_weight_conversion.py",
+        base + "transformers_weight_conversion/__init__.py",
+    ]
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-    if token:
-        request.add_header("Authorization", f"Bearer {token}")
-    try:
-        with urllib.request.urlopen(request, timeout = 15) as response:
-            return response.read().decode("utf-8", errors = "replace")
-    except urllib.error.HTTPError as exc:
-        if exc.code != 404:
-            pytest.skip(f"GitHub fetch failed ({exc.code}) for {url}")
-    except (urllib.error.URLError, TimeoutError) as exc:
-        pytest.skip(f"GitHub fetch failed ({exc}) for {url}")
+    for url in urls:
+        request = urllib.request.Request(url)
+        if token:
+            request.add_header("Authorization", f"Bearer {token}")
+        try:
+            with urllib.request.urlopen(request, timeout = 15) as response:
+                return response.read().decode("utf-8", errors = "replace")
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                pytest.skip(f"GitHub fetch failed ({exc.code}) for {url}")
+            # 404 means "not this layout": try the other one before giving up.
+        except (urllib.error.URLError, TimeoutError) as exc:
+            pytest.skip(f"GitHub fetch failed ({exc}) for {url}")
 
     module = "peft.utils.transformers_weight_conversion"
     if importlib.util.find_spec("peft") is None:
@@ -149,21 +159,63 @@ def _peft_converter_source():
         raise
 
 
+def _is_type_checking(test) -> bool:
+    """`TYPE_CHECKING`, `typing.TYPE_CHECKING`, or either negated."""
+    import ast
+
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        test = test.operand
+    if isinstance(test, ast.Name):
+        return test.id == "TYPE_CHECKING"
+    return isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING"
+
+
 def _transformers_imports(src):
-    """{module: {symbol}} for every `from transformers... import ...` in `src`.
+    """{module: {symbol}} for every import transformers... executed at module load.
 
     AST, not a regex over the source. A regex for the parenthesised form alone
     read `from transformers.core_model_loading import A, B` as importing
     nothing, and looking up only the modules already in the table never
     examined a third transformers module at all. Either one leaves the drift
     this file exists to catch reporting green.
+
+    Walking the whole tree is equally wrong in the other direction. An import
+    under `if TYPE_CHECKING:` or inside a function body never runs when the
+    converter is imported, so it cannot raise the startup `ImportError` this
+    backfill exists to absorb; requiring it in the table would fail
+    `daily-fresh-fetch` over a type annotation. So descend only through
+    statements that execute at module load: `if`/`try`/`with`/loop bodies yes,
+    typing-only branches and function or class bodies no. A conditional
+    module-level import still counts -- it can run, and that is the bar.
     """
     import ast
 
     out = {}
-    for node in ast.walk(ast.parse(src)):
-        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("transformers"):
-            out.setdefault(node.module, set()).update(a.name for a in node.names)
+
+    def visit(body) -> None:
+        for node in body:
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("transformers"):
+                out.setdefault(node.module, set()).update(a.name for a in node.names)
+                continue
+            if isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import)
+            ):
+                continue
+            if isinstance(node, ast.If) and _is_type_checking(node.test):
+                # `if TYPE_CHECKING:` never runs; `if not TYPE_CHECKING:` runs the OTHER branch.
+                visit(node.body if isinstance(node.test, ast.UnaryOp) else node.orelse)
+                continue
+            for field in ("body", "orelse", "finalbody", "handlers"):
+                child = getattr(node, field, None)
+                if not isinstance(child, list):
+                    continue
+                for item in child:
+                    if isinstance(item, ast.stmt):
+                        visit([item])
+                    else:  # an ExceptHandler holds its own statement list
+                        visit(getattr(item, "body", []))
+
+    visit(ast.parse(src).body)
     return out
 
 
@@ -179,6 +231,66 @@ def test_both_import_spellings_are_parsed():
         "transformers.core_model_loading": {"Concatenate", "ConversionOps"},
         "transformers.utils": {"logging", "is_torch_available"},
     }
+
+
+def test_only_imports_that_run_at_module_load_are_collected():
+    """An import the converter never executes cannot break importing it.
+
+    The backfill absorbs the `ImportError` raised while importing peft's
+    converter, so the drift guard must be scoped to the same thing. A
+    `TYPE_CHECKING` import or a function-local one is invisible at that moment;
+    demanding it in `_PEFT_CONVERSION_SYMBOLS` would redden `daily-fresh-fetch`
+    for an annotation. Anything that can run at load, including under a plain
+    `if` or a `try`, still counts.
+    """
+    src = (
+        "from typing import TYPE_CHECKING\n"
+        "from transformers.core_model_loading import ConversionOps\n"
+        "if TYPE_CHECKING:\n"
+        "    from transformers.annotations import OnlyForTypes\n"
+        "if not TYPE_CHECKING:\n"
+        "    from transformers.runtime import AtRuntime\n"
+        "try:\n"
+        "    from transformers.optional import MaybeThere\n"
+        "except ImportError:\n"
+        "    from transformers.fallback import Instead\n"
+        "def later():\n"
+        "    from transformers.lazy import NotAtImport\n"
+        "class Holder:\n"
+        "    from transformers.classbody import NotEither\n"
+    )
+    assert _transformers_imports(src) == {
+        "transformers.core_model_loading": {"ConversionOps"},
+        "transformers.runtime": {"AtRuntime"},
+        "transformers.optional": {"MaybeThere"},
+        "transformers.fallback": {"Instead"},
+    }
+
+
+def test_the_package_layout_is_fetched_when_the_module_layout_is_gone(monkeypatch):
+    """A packaging-only move upstream must not silently disable this guard.
+
+    `daily-fresh-fetch` installs only pytest, so a 404 on the single module URL
+    falls through to an absent peft and the authority check reports a skip. The
+    fetch therefore has to know both layouts, the same pair
+    `test_peft_pinned_symbols.py` probes.
+    """
+    import io
+    import urllib.error
+    import urllib.request
+
+    tried = []
+
+    def fake_urlopen(request, timeout = None):
+        tried.append(request.full_url)
+        if request.full_url.endswith("transformers_weight_conversion.py"):
+            raise urllib.error.HTTPError(request.full_url, 404, "Not Found", None, None)
+        return io.BytesIO(b"from transformers.core_model_loading import ConversionOps\n")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    src = _peft_converter_source()
+    assert "ConversionOps" in src
+    assert len(tried) == 2 and tried[1].endswith("transformers_weight_conversion/__init__.py")
 
 
 def test_the_symbol_list_matches_what_peft_imports():
