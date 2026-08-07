@@ -258,9 +258,7 @@ def test_failed_load_resets_progress_heartbeat(monkeypatch):
     )
     monkeypatch.setattr(orch_mod, "prepare_gpu_selection", lambda *_args, **_kwargs: ([], {}))
     monkeypatch.setattr(orch_mod, "get_device", lambda: SimpleNamespace(value = "cpu"))
-    monkeypatch.setattr(
-        "utils.transformers_version.needs_transformers_5", lambda _model: False
-    )
+    monkeypatch.setattr("utils.transformers_version.needs_transformers_5", lambda _model: False)
     monkeypatch.setattr("utils.transformers_version.sidecar_swap_kind", lambda: None)
     resets = []
     monkeypatch.setattr(orch_mod.progress_throttle, "reset", resets.append)
