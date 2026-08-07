@@ -476,3 +476,54 @@ def test_openai_responses_stream_emits_usage_chunk_on_incomplete(monkeypatch):
     usages = _usage_chunks(lines)
     assert len(usages) == 1
     assert usages[0]["prompt_tokens_details"]["cached_tokens"] == 768
+
+
+def _continuation_body(monkeypatch, provider_type: str, base_url: str) -> dict:
+    """Send a continuation through one provider and return the upstream body."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            content = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = provider_type, base_url = base_url, api_key = "k",
+        )
+        await _collect(
+            client.stream_chat_completion(
+                messages = [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "It is a bar"},
+                ],
+                model = "Qwen/Qwen3-0.6B",
+                continue_final_message = True,
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    return captured
+
+
+def test_self_hosted_providers_get_the_continuation_flags(monkeypatch):
+    """These apply the template themselves, so a trailing assistant turn alone would
+    render closed plus a fresh generation prompt and restart the answer."""
+    for provider_type in ("llama_cpp", "vllm", "ollama", "custom"):
+        body = _continuation_body(monkeypatch, provider_type, "http://local.example/v1")
+        assert body["continue_final_message"] is True, provider_type
+        # llama-server rejects both being asked for at once.
+        assert body["add_generation_prompt"] is False, provider_type
+
+
+def test_hosted_providers_do_not_get_the_continuation_flags(monkeypatch):
+    """Their prompt assembly is not ours; the flag would be an unknown field."""
+    body = _continuation_body(monkeypatch, "openai", "https://api.openai.com/v1")
+    assert "continue_final_message" not in body
+    assert "add_generation_prompt" not in body

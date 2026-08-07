@@ -17,6 +17,7 @@ from core.inference.chat_template_helpers import (
     markup_for_tokenizer,
     neutralize_control_markup_in_messages,
     normalize_reasoning_snapshots,
+    strip_open_reasoning_prefill,
     trailing_assistant_text,
 )
 from utils.models.model_config import is_audio_input_type
@@ -136,7 +137,8 @@ def _render_registered_vlm_prompt(
         num_audios = num_audios,
     )
     if isinstance(rendered, str) and rendered.strip():
-        return f"{rendered}{partial}" if partial else rendered
+        # A prefilled open "<think>" would resume the answer inside the reasoning block.
+        return f"{strip_open_reasoning_prefill(rendered)}{partial}" if partial else rendered
     raise RuntimeError("mlx-vlm's registered renderer returned an empty prompt.")
 
 

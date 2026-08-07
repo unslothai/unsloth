@@ -9404,6 +9404,7 @@ async def _proxy_to_external_provider(
             tools = payload.tools,
             tool_choice = payload.tool_choice,
             fast_mode = payload.fast_mode,
+            continue_final_message = _continue_final_message(payload),
             stream = payload.stream,
         )
         try:
@@ -9983,6 +9984,13 @@ async def openai_chat_completions(
         # (Whisper is ASR not TTS -- handled below in audio input path)
         model_info = backend.models.get(backend.active_model_name, {})
         if model_info.get("is_audio") and model_info.get("audio_type") != "whisper":
+            # This route re-speaks the newest user text, so there is no partial to resume
+            # from; refuse rather than return a fresh clip labelled as a continuation.
+            if _continue_final_message(payload):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "continue_final_message is not supported with audio output.",
+                )
             return await _monitored_generate_audio(model_name)
 
         # ── Whisper without audio: return clear error ──

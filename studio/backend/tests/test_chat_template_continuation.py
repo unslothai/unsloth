@@ -416,6 +416,41 @@ def test_mlx_registered_vlm_recovery_preserves_the_continuation(monkeypatch):
     assert not resumed.endswith("<assistant>")
 
 
+def test_mlx_registered_vlm_recovery_drops_a_reasoning_prefill(monkeypatch):
+    """Its generation prompt can open a <think>, which would resume inside the block."""
+    import sys
+    import types
+
+    prompt_utils = types.ModuleType("mlx_vlm.prompt_utils")
+    prompt_utils.MODEL_CONFIG = {"fake_vlm": object()}
+    prompt_utils.apply_chat_template = lambda p, c, msgs, add_generation_prompt = True, **kw: (
+        "".join(f"<{m['role']}>{m['content']}" for m in msgs)
+        + ("<assistant><think>" if add_generation_prompt else "")
+    )
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = prompt_utils
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.prompt_utils", prompt_utils)
+
+    from core.inference.mlx_inference import _render_registered_vlm_prompt
+
+    class _Model:
+        config = {"model_type": "fake_vlm"}
+
+    resumed = _render_registered_vlm_prompt(
+        object(),
+        _Model(),
+        [
+            {"role": "user", "content": "what is this"},
+            {"role": "assistant", "content": "It is a bar"},
+        ],
+        1,
+        continue_final_message = True,
+    )
+    assert resumed.endswith("<assistant>It is a bar")
+    assert "<think>" not in resumed
+
+
 def test_the_legacy_vision_splice_uses_the_swept_partial():
     """A raw partial could close the turn or open a role instead of resuming.
 
@@ -726,3 +761,43 @@ def test_a_resumed_turn_without_a_tool_keeps_the_partial_visible(monkeypatch):
     message = _sf_completion(monkeypatch, _RESUMED_PLAIN_EVENTS)
     assert message["content"] == "oven to 200C. leaked"
     assert not message["reasoning_content"]
+
+
+def test_a_tts_model_refuses_a_continuation(monkeypatch):
+    """The TTS branch re-speaks the newest user text before any continuation handling,
+    so accepting the flag would return a fresh clip labelled as a resumed answer."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    import routes.inference as inference_route
+    from auth.authentication import get_current_subject
+    from utils.api_errors import install_api_error_handlers
+
+    class _NoGGUF:
+        is_loaded = False
+        supports_tools = False
+
+    class _Tts:
+        active_model_name = "orpheus"
+        models = {"orpheus": {"is_audio": True, "audio_type": "snac"}}
+
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _NoGGUF())
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Tts())
+
+    app = FastAPI()
+    app.include_router(inference_route.router, prefix = "/v1")
+    install_api_error_handlers(app)
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    resp = TestClient(app).post(
+        "/v1/chat/completions",
+        json = {
+            "messages": [
+                {"role": "user", "content": "say hi"},
+                {"role": "assistant", "content": "Hel"},
+            ],
+            "continue_final_message": True,
+            "stream": False,
+        },
+    )
+    assert resp.status_code == 400
+    assert "audio output" in resp.text
