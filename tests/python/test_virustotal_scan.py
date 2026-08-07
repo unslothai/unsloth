@@ -628,6 +628,95 @@ class TestMalformedUploadAcknowledgement:
             client.upload(bundle)
 
 
+class TestNoCompletedAnalysis:
+    """A known hash with no finished analysis must not read as clean. Reporting
+    zero detections when no engine ran is the worst outcome available here."""
+
+    def _report(self, attributes, completed = False):
+        report = vt.FileReport(name = "a.exe")
+        vt._record(
+            report, "known to VirusTotal (no upload)", *attributes, completed = completed
+        )
+        return report
+
+    def test_a_completed_analysis_is_trusted_without_engine_counts(self):
+        # The upload path polls until status == "completed", so a stats dict is
+        # authoritative there even if the counts are all zero.
+        report = self._report(({"malicious": 0}, {}), completed = True)
+        assert report.stats is not None
+        assert report.source == "known to VirusTotal (no upload)"
+
+    def test_a_completed_analysis_still_needs_a_stats_object(self):
+        assert self._report((None, {}), completed = True).stats is None
+
+    def test_missing_stats_is_not_reported_as_clean(self):
+        report = self._report((None, None))
+        assert report.stats is None
+        assert report.source == "no completed analysis"
+        assert "unscanned rather than clean" in report.note
+
+    def test_all_zero_stats_is_not_reported_as_clean(self):
+        # A stats dict where no engine reported anything means nothing ran.
+        report = self._report(({"malicious": 0, "undetected": 0}, {}))
+        assert report.stats is None
+        assert report.source == "no completed analysis"
+
+    def test_a_real_verdict_is_kept(self):
+        report = self._report(
+            (
+                {"malicious": 0, "undetected": 70},
+                {"AlphaAV": {"category": "undetected"}},
+            )
+        )
+        assert report.stats is not None
+        assert report.stats.undetected == 70
+        assert report.source == "known to VirusTotal (no upload)"
+        assert report.note == ""
+
+    def test_an_unanalysed_row_never_trips_the_gate(self):
+        # stats=None rows are ignored by the threshold, so this stays advisory.
+        assert vt.exceeds_threshold([self._report((None, None))], 1) is False
+
+
+class TestMarkdownEscaping:
+    """The summary is a second sink for third-party text, appended to
+    $GITHUB_STEP_SUMMARY and rendered as Markdown."""
+
+    def _summary(self, report):
+        return vt.render_markdown([report], 0)
+
+    def test_a_newline_cannot_break_out_of_a_table_row(self):
+        report = vt.FileReport(
+            name = "a.exe",
+            stats = vt.ScanStats(malicious = 1, undetected = 1),
+            detections = ["Evil\n| fake | row |"],
+        )
+        body = self._summary(report)
+        bullet = [line for line in body.splitlines() if "Evil" in line]
+        # The newline is flattened, so the detection stays on its own bullet.
+        assert len(bullet) == 1
+        assert "\\|" in bullet[0]
+        assert "| fake | row |" not in body
+
+    def test_html_is_neutralised(self):
+        report = vt.FileReport(name = "a.exe", note = "<img src=x onerror=alert(1)>")
+        body = self._summary(report)
+        assert "&lt;img" in body
+        assert "<img" not in body
+
+    def test_a_backtick_cannot_close_the_code_span(self):
+        report = vt.FileReport(name = "a`.exe")
+        assert "`a'.exe`" in self._summary(report)
+
+    def test_clean_text_renders_unchanged(self):
+        report = vt.FileReport(
+            name = "a.exe",
+            stats = vt.ScanStats(undetected = 70),
+            detections = ["AlphaAV (Trojan.Gen)"],
+        )
+        assert "- `a.exe`: AlphaAV (Trojan.Gen)" in self._summary(report)
+
+
 class TestAnnotationEscaping:
     """Engine names, detection labels and error strings are third-party data.
     Actions truncates an annotation at the first newline, which would drop the

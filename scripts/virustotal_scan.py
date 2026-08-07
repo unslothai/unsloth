@@ -72,6 +72,11 @@ class ScanStats:
     def flagged(self) -> int:
         return self.malicious + self.suspicious
 
+    @property
+    def total(self) -> int:
+        """Engine verdicts of any kind. Zero means nothing has actually run."""
+        return self.malicious + self.suspicious + self.undetected + self.harmless + self.timeout
+
 
 @dataclass
 class FileReport:
@@ -156,6 +161,30 @@ def exceeds_threshold(reports: Sequence[FileReport], threshold: int) -> bool:
     return any(report.stats is not None and report.stats.flagged >= threshold for report in reports)
 
 
+def _md_code(text: str) -> str:
+    """Flatten a value that gets wrapped in a Markdown code span.
+
+    A backslash is literal inside a code span, so a backtick cannot be escaped
+    there; swap it for an apostrophe rather than let it close the span.
+    """
+    return " ".join(text.split()).replace("`", "'")
+
+
+def _md_text(text: str) -> str:
+    """Neutralise third-party text rendered as Markdown in the job summary.
+
+    Engine names and detection labels are third-party data, and the summary is
+    appended to `$GITHUB_STEP_SUMMARY`. A newline ends the table row or bullet,
+    `|` opens a new cell, and `<` starts raw HTML, which GitHub renders, so an
+    engine list could otherwise break out and obscure the report.
+    """
+    flattened = " ".join(text.split())
+    escaped = flattened.replace("\\", "\\\\")
+    for char in ("`", "|", "*", "_", "[", "]", "#"):
+        escaped = escaped.replace(char, "\\" + char)
+    return escaped.replace("<", "&lt;").replace(">", "&gt;")
+
+
 def render_markdown(reports: Sequence[FileReport], threshold: int) -> str:
     """Render the job-summary table. Kept pure so it is unit testable."""
     lines = [
@@ -166,29 +195,32 @@ def render_markdown(reports: Sequence[FileReport], threshold: int) -> str:
     ]
     for report in reports:
         stats = report.stats
+        name = _md_code(report.name)
+        source = _md_text(report.source)
         if stats is None:
-            lines.append(f"| `{report.name}` | - | - | - | - | - | {report.source} |")
+            lines.append(f"| `{name}` | - | - | - | - | - | {source} |")
         else:
             lines.append(
-                f"| `{report.name}` | {stats.malicious} | {stats.suspicious} | "
-                f"{stats.undetected} | {stats.harmless} | {stats.timeout} | {report.source} |"
+                f"| `{name}` | {stats.malicious} | {stats.suspicious} | "
+                f"{stats.undetected} | {stats.harmless} | {stats.timeout} | {source} |"
             )
 
     detected = [report for report in reports if report.detections]
     if detected:
         lines += ["", "#### Flagging engines", ""]
         for report in detected:
-            lines.append(f"- `{report.name}`: {', '.join(report.detections)}")
+            engines = ", ".join(_md_text(detection) for detection in report.detections)
+            lines.append(f"- `{_md_code(report.name)}`: {engines}")
 
     notes = [report for report in reports if report.note]
     if notes:
         lines += ["", "#### Notes", ""]
         for report in notes:
-            lines.append(f"- `{report.name}`: {report.note}")
+            lines.append(f"- `{_md_code(report.name)}`: {_md_text(report.note)}")
 
     lines += ["", "<details><summary>SHA-256</summary>", ""]
     for report in reports:
-        lines.append(f"- `{report.name}`: `{report.sha256 or 'n/a'}`")
+        lines.append(f"- `{_md_code(report.name)}`: `{_md_code(report.sha256 or 'n/a')}`")
     lines += ["</details>", ""]
 
     if threshold > 0:
@@ -504,6 +536,40 @@ def _attributes(payload: object) -> dict:
     return {}
 
 
+def _record(
+    report: FileReport,
+    source: str,
+    raw_stats: object,
+    raw_results: object,
+    *,
+    completed: bool,
+) -> None:
+    """Attach a verdict, but only when an analysis has actually completed.
+
+    A hash can be known to VirusTotal with no finished analysis, in which case
+    `last_analysis_stats` is missing and `parse_stats` yields an all-zero
+    ScanStats. Reporting that as a clean row is the worst failure mode this
+    script has: it looks like 70 engines cleared the bundle when none ran. Leave
+    `stats` as None instead, which renders as dashes and never trips the gate.
+
+    `completed` says whether the caller already has an authoritative completion
+    signal. The upload path polls until `status == "completed"`, so a stats dict
+    is enough there. The hash lookup carries no such field, so it additionally
+    has to see at least one engine verdict before believing the result.
+    """
+    stats = parse_stats(raw_stats)
+    if not isinstance(raw_stats, dict) or (not completed and stats.total == 0):
+        report.source = "no completed analysis"
+        report.note = (
+            "VirusTotal returned no completed analysis for this hash, "
+            "so the bundle is unscanned rather than clean"
+        )
+        return
+    report.source = source
+    report.stats = stats
+    report.detections = parse_detections(raw_results)
+
+
 def scan_file(client: VirusTotalClient, path: Path, deadline: float) -> FileReport:
     """Scan one bundle, degrading to an annotated row rather than raising."""
     report = FileReport(name = path.name, size = path.stat().st_size)
@@ -513,16 +579,25 @@ def scan_file(client: VirusTotalClient, path: Path, deadline: float) -> FileRepo
         existing = client.lookup_hash(report.sha256, deadline = deadline)
         if existing is not None:
             attributes = _attributes(existing)
-            report.source = "known to VirusTotal (no upload)"
-            report.stats = parse_stats(attributes.get("last_analysis_stats"))
-            report.detections = parse_detections(attributes.get("last_analysis_results"))
+            _record(
+                report,
+                "known to VirusTotal (no upload)",
+                attributes.get("last_analysis_stats"),
+                attributes.get("last_analysis_results"),
+                completed = False,
+            )
             return report
 
         analysis_id = client.upload(path, deadline = deadline)
+        # wait_for_analysis only returns once status == "completed".
         attributes = _attributes(client.wait_for_analysis(analysis_id, deadline))
-        report.source = "uploaded"
-        report.stats = parse_stats(attributes.get("stats"))
-        report.detections = parse_detections(attributes.get("results"))
+        _record(
+            report,
+            "uploaded",
+            attributes.get("stats"),
+            attributes.get("results"),
+            completed = True,
+        )
     except TimeoutError as error:
         report.source = "timed out"
         report.note = str(error)
