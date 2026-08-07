@@ -26,7 +26,7 @@ import time
 import uuid
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Generator, Optional, Tuple, Union
+from typing import Any, Generator, Optional, Sequence, Tuple, Union
 from utils.hardware import get_device, prepare_gpu_selection
 from utils.utils import hf_env_offline
 
@@ -59,6 +59,27 @@ _DISPATCH_DRAIN_TIMEOUT = 5.0
 # Max wait for a cancelled generation to release _gen_lock before unload_model
 # tears the subprocess down. Only bounds a wedged worker.
 _UNLOAD_GEN_LOCK_TIMEOUT = 15.0
+
+
+_MLX_RUNTIME_MIRROR_FIELDS = (
+    "mlx_kv_bits",
+    "mlx_kv_bits_requested",
+    "mlx_kv_quant_eligibility",
+    "mlx_kv_quant_reason",
+    "mlx_kv_quant_note",
+    "chat_template_override_requested",
+    "chat_template_override_reason",
+)
+
+
+def _mlx_runtime_mirror_fields(model_info: dict) -> dict:
+    """MLX runtime state the parent mirrors, omitting what was not reported.
+
+    Only the MLX backend sends these. Creating the keys for every backend would
+    make the reload comparison see a None the backend never stored, and reload
+    on every identical request.
+    """
+    return {key: model_info[key] for key in _MLX_RUNTIME_MIRROR_FIELDS if key in model_info}
 
 
 class GenStreamError(str):
@@ -1179,6 +1200,8 @@ class InferenceOrchestrator:
         subject: Optional[str] = None,
         tensor_parallel: bool = False,
         mlx_distributed: bool = False,
+        mlx_kv_bits: Optional[int] = None,
+        chat_template_override: Optional[str] = None,
     ) -> bool:
         """Load a model for inference.
 
@@ -1212,6 +1235,8 @@ class InferenceOrchestrator:
                 "mlx_parallel_mode": ("tensor" if tensor_parallel else "pipeline")
                 if mlx_distributed
                 else None,
+                "mlx_kv_bits": mlx_kv_bits,
+                "chat_template_override": chat_template_override,
             }
             resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
                 gpu_ids,
@@ -1358,6 +1383,9 @@ class InferenceOrchestrator:
                         "has_audio_input": model_info.get("has_audio_input", False),
                         "context_length": model_info.get("context_length"),
                     }
+                    self.models[self.active_model_name].update(
+                        _mlx_runtime_mirror_fields(model_info)
+                    )
                     # Mirror chat_template_info so routes can classify caps
                     # without re-entering the subprocess.
                     _tpl_info = model_info.get("chat_template_info")
@@ -1431,6 +1459,27 @@ class InferenceOrchestrator:
         self.active_model_name = None
         self.models.clear()
         return True
+
+    # --- Dictation models -------------------------------------------------
+    # These run in the STT sidecars (whisper-server, llama-server, Transformers
+    # in process), not the chat worker. Their lifecycle goes through here all
+    # the same, so one object knows everything that is resident and Voice
+    # settings and Model Hub cannot report different things about one model.
+
+    def load_stt_model(self, model: Optional[str], engine: str) -> None:
+        """Make a dictation model resident on its sidecar."""
+        from core.inference import stt_registry
+        stt_registry.load(model, engine)
+
+    def unload_stt_model(self, engines: Optional[Sequence[str]] = None) -> list:
+        """Release dictation models (all engines by default); returns refusals."""
+        from core.inference import stt_registry
+        return stt_registry.unload(engines)
+
+    def resident_stt_model(self) -> dict:
+        """What dictation holds, alongside active_model_name for chat."""
+        from core.inference import stt_registry
+        return stt_registry.resident()
 
     def unload_model(self, model_name: str) -> bool:
         """Unload a model from the subprocess."""

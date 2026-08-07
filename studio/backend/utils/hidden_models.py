@@ -32,11 +32,13 @@ _DEFAULT_EMBEDDING_REPO_IDS = {
 # fallback for Studio's static default embedder only; configured custom repos
 # remain exact-match-only.
 _DEFAULT_EMBEDDING_PATH_BASENAMES = {"bge-small-en-v1.5"}
-# Curated Whisper dictation checkpoints (STT, never chat), hidden from the chat
+# Curated dictation checkpoints (STT, never chat), hidden from the chat
 # inventory and pickers: Transformers safetensors repos (unsloth/whisper-*) and
 # their GGUF companions (unslothai/whisper-*-GGUF). Custom checkpoints are caught
 # by config below, but the GGUF companions carry a raw .bin (no config.json), so
-# they must be listed here by id or they leak into chat pickers.
+# they must be listed here by id or they leak into chat pickers. The Qwen3-ASR
+# GGUFs are listed for the same reason: llama.cpp will happily load one as a
+# chat model, where it only answers with transcripts.
 _HIDDEN_STT_REPO_IDS = frozenset(
     {
         "unsloth/whisper-tiny",
@@ -49,6 +51,8 @@ _HIDDEN_STT_REPO_IDS = frozenset(
         "unslothai/whisper-small-GGUF",
         "unslothai/whisper-large-v3-turbo-GGUF",
         "unslothai/whisper-large-v3-GGUF",
+        "unslothai/Qwen3-ASR-0.6B-GGUF",
+        "unslothai/Qwen3-ASR-1.7B-GGUF",
     }
 )
 

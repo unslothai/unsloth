@@ -73,7 +73,7 @@ import {
 } from "../lib/model-identity";
 import { useHfTokenStore } from "../stores/hf-token-store";
 import { DotTag } from "./dot-tag";
-import { DownloadCancelIndicator } from "./download-cancel-indicator";
+import { DownloadStopIndicator } from "./download-cancel-indicator";
 import {
   CardDivider,
   DeleteConfirmDialog,
@@ -942,9 +942,11 @@ export function GgufDownloadCard({
               className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-full px-3 text-left transition-colors hover:bg-foreground/[0.04] data-[state=open]:bg-foreground/[0.06] dark:hover:bg-white/[0.04] dark:data-[state=open]:bg-white/[0.06]"
             >
               {/* Quant label + status tags travel together as one left-aligned
-                  group so the fit-info icon never floats orphaned from its tags;
-                  only the chevron pins right, the standard select affordance. */}
-              <span className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden text-ui-12 text-muted-foreground">
+                  group so the fit-info icon never floats orphaned from its tags.
+                  The group sizes to its content (it still shrinks when the row
+                  is tight) so the chevron follows the tags instead of stranding
+                  itself at the far edge of a full-width trigger. */}
+              <span className="flex min-w-0 items-center gap-2 overflow-hidden text-ui-12 text-muted-foreground">
                 {selected ? (
                   <QuantBadge
                     quant={selectedLabel ?? selected.quant}
@@ -1119,7 +1121,7 @@ export function GgufDownloadCard({
             </span>
           ) : downloadingThisVariant ? (
             <span className="inline-flex items-center gap-2">
-              <DownloadCancelIndicator />
+              <DownloadStopIndicator mode={downloadAction.stopMode} />
               {downloadAction.progressPercent != null
                 ? `${downloadAction.progressPercent}%`
                 : null}

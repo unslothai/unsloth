@@ -65,6 +65,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.custom.codeFontSize.label",
     "settings.appearance.custom.fontSmoothing.label",
     "settings.appearance.layout.compactSidebar",
+    "settings.appearance.sidebarNav.title",
     "settings.appearance.sidebarMenu.title",
     "settings.appearance.sidebarMenu.darkModeToggle",
   ],
@@ -155,6 +156,21 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.about.shutDownStudio",
   ],
 };
+
+export function createSettingsSearchIndex(
+  desktop: boolean,
+): Record<SettingsTab, TranslationKey[]> {
+  if (!desktop) {
+    return SETTINGS_SEARCH_INDEX;
+  }
+  return {
+    ...SETTINGS_SEARCH_INDEX,
+    general: [...SETTINGS_SEARCH_INDEX.general, "settings.about.updates"],
+    about: SETTINGS_SEARCH_INDEX.about.filter(
+      (key) => key !== "settings.about.updates",
+    ),
+  };
+}
 
 /**
  * Extra terms a row matches on, beyond its own label. The value is a
