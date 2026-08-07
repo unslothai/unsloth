@@ -1887,10 +1887,12 @@ def _plan_api(monkeypatch, repos):
 
 
 def test_h3_native_download_plan_stages_the_complete_runtime(monkeypatch):
+    # The mirror carries the Qwen3-VL encoder quants alongside the denoisers, so one repo covers
+    # both halves of the runtime; the VAEs still come from the component repo.
     _plan_api(
         monkeypatch,
         {
-            "leejet/MiniMax-H3-GGUF": [
+            "unsloth/MiniMax-H3-GGUF": [
                 _PlanSibling("minimax_h3_fl2va-Q4_K_M.gguf", 19),
                 _PlanSibling("qwen3vl_32b_minimax_h3-Q4_K_M.gguf", 18),
             ],
@@ -1902,14 +1904,14 @@ def test_h3_native_download_plan_stages_the_complete_runtime(monkeypatch):
     )
 
     plan = VideoBackend().download_plan(
-        "leejet/MiniMax-H3-GGUF",
+        "unsloth/MiniMax-H3-GGUF",
         gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
         family_override = "minimax-h3",
         model_kind = "gguf",
     )
 
     by_repo = {entry["repo_id"]: entry for entry in plan["entries"]}
-    assert by_repo["leejet/MiniMax-H3-GGUF"]["files"] == [
+    assert by_repo["unsloth/MiniMax-H3-GGUF"]["files"] == [
         "minimax_h3_fl2va-Q4_K_M.gguf",
         "qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
     ]
@@ -2526,6 +2528,42 @@ def test_the_h3_native_load_never_puts_the_vae_on_the_cpu():
 
     assert "--vae-on-cpu" in offload_flags(OFFLOAD_MODEL)
     assert "--vae-on-cpu" not in offload_flags(OFFLOAD_MODEL, vae_on_cpu = False)
+
+
+def test_the_h3_native_repo_matches_the_family_gguf_repo():
+    """The declared pick and the actual download must be the same repo.
+
+    Main's `test_curated_gguf_repos_are_unsloth_mirrors` only inspects `VideoFamily.gguf_repo`,
+    but H3's native path downloads from its own `H3_GGUF_REPO` constant and never reads the
+    family field. So the two can drift apart and that test still passes while the one-click pick
+    resolves to a community repack, which is exactly the failure it exists to prevent.
+
+    Also asserts the transformer and the text encoder come from the same repo, since the mirror
+    has to carry both for the pick to be self-contained.
+    """
+    from core.inference.video_families import detect_video_family
+    from core.inference.video_minimax_h3 import (
+        H3_GGUF_REPO,
+        h3_native_hub_files,
+    )
+
+    family = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert family is not None
+    assert H3_GGUF_REPO == family.gguf_repo, (
+        f"H3 native downloads from {H3_GGUF_REPO} but the family advertises "
+        f"{family.gguf_repo}; the curated-mirror test would pass vacuously"
+    )
+
+    files = h3_native_hub_files("minimax_h3_fl2va_pruned-UD-Q2_K_XL.gguf")
+    transformer_repo, transformer_name = files[0]
+    encoder_repo, encoder_name = files[1]
+    assert transformer_repo == encoder_repo == H3_GGUF_REPO
+    assert transformer_name == "minimax_h3_fl2va_pruned-UD-Q2_K_XL.gguf"
+    # The dynamic rung names must still route to the matching encoder tier.
+    assert encoder_name == "qwen3vl_32b_minimax_h3-Q2_K_M.gguf"
+    assert h3_native_hub_files("minimax_h3_fl2va_pruned-UD-Q3_K_XL.gguf")[1][1] == (
+        "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
+    )
 
 
 def test_the_h3_native_path_pins_cfg_scale_to_one():

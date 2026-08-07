@@ -10,7 +10,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-H3_GGUF_REPO = "leejet/MiniMax-H3-GGUF"
+# Must stay equal to the minimax-h3 family's `gguf_repo`. They are the same one-click pick, and
+# main's test_curated_gguf_repos_are_unsloth_mirrors only checks the family field, so a divergence
+# here would let that test pass while the actual download still came from a community repack.
+# tests/test_video_backend.py::test_the_h3_native_repo_matches_the_family_gguf_repo pins the pair.
+# The mirror carries the Qwen3-VL encoder quants as well as the denoisers, so this repo alone
+# satisfies h3_native_hub_files' first two entries.
+H3_GGUF_REPO = "unsloth/MiniMax-H3-GGUF"
 H3_COMPONENT_REPO = "Comfy-Org/MiniMax-H3"
 H3_VIDEO_VAE = "vae/minimax_h3_video_vae_fp16.safetensors"
 H3_AUDIO_VAE = "vae/minimax_h3_audio_vae_fp32.safetensors"
