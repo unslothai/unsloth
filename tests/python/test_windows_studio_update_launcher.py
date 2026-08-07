@@ -431,3 +431,39 @@ def test_a_replacement_published_by_setup_is_kept(monkeypatch, studio, tmp_path)
     assert launcher.read_bytes() == new_launcher
     assert not (scripts / "unsloth.exe.update-stale").exists()
     assert not (scripts / "unsloth.exe.update-backup").exists()
+
+
+def test_an_invalid_replacement_is_restored_but_still_fails(monkeypatch, studio, tmp_path):
+    # Setup writing an unusable launcher is a real failure. Putting the previous
+    # one back must not turn it into a reported success, which is how a
+    # restore-then-revalidate reads when it cannot tell "published nothing"
+    # from "published something broken".
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: launcher.write_bytes(b""))
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
+
+    with pytest.raises(studio.typer.Exit) as exc:
+        _update(studio, verify = False)
+
+    assert exc.value.exit_code == 1
+    assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+
+
+def test_a_backup_that_cannot_run_falls_back_to_the_moved_aside_copy(monkeypatch, studio, tmp_path):
+    # Backups are taken after only the two-byte header check, so an interrupted
+    # run can leave a PE-shaped but non-runnable one. Preferring it must not
+    # strand the working launcher that this run moved aside.
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
+    bad_backup = b"MZ-unrunnable"
+    (scripts / "unsloth.exe.update-backup").write_bytes(bad_backup)
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+
+    def run(argv, **_kwargs):
+        current = Path(argv[0]).read_bytes()
+        return types.SimpleNamespace(returncode = 7 if current == bad_backup else 0)
+
+    monkeypatch.setattr(studio.subprocess, "run", run)
+
+    _update(studio)
+
+    assert launcher.read_bytes() == ORIGINAL_LAUNCHER

@@ -3304,17 +3304,19 @@ class _WindowsLauncherUpdateTransaction:
             return self.backup
         return None
 
-    def _restore_backup(self) -> bool:
+    def _recovery_candidates(self) -> List[Path]:
+        """Copies that could stand in for the launcher, best first.
+
+        The backup is the last launcher known to run; the moved-aside copy is
+        only this run's unvalidated canonical file.
+        """
+        return [p for p in (self.backup, self.stale) if p is not None and self._is_valid_pe(p)]
+
+    def _restore_from(self, source: Path) -> bool:
         assert self.launcher is not None
-        source = next(
-            (p for p in (self.backup, self.stale) if p is not None and self._is_valid_pe(p)),
-            None,
-        )
-        if source is None:
-            return False
         # The common setup-failure case leaves the original executable exactly
         # where it was. Avoid replacing that running file on Windows when it
-        # already is the backup byte-for-byte.
+        # already is the source byte-for-byte.
         if self._is_valid_pe(self.launcher) and self._files_match(self.launcher, source):
             return True
         last_error: Optional[OSError] = None
@@ -3328,6 +3330,21 @@ class _WindowsLauncherUpdateTransaction:
                     time.sleep(0.1)
         if last_error is not None:
             typer.echo(f"Error: could not restore the Unsloth launcher: {last_error}", err = True)
+        return False
+
+    def _restore_backup(self) -> bool:
+        """Put back the best copy available, without judging whether it runs."""
+        return any(self._restore_from(source) for source in self._recovery_candidates())
+
+    def _restore_runnable(self) -> bool:
+        """Put back the first copy that actually runs.
+
+        Passing the two-byte header check does not make a copy runnable, so a
+        candidate that fails --version must not stop the next one being tried.
+        """
+        for source in self._recovery_candidates():
+            if self._restore_from(source) and self._launcher_health_error() is None:
+                return True
         return False
 
     def _launcher_health_error(self) -> Optional[str]:
@@ -3421,19 +3438,25 @@ class _WindowsLauncherUpdateTransaction:
     def validate_launcher(self) -> None:
         if not self.enabled:
             return
-        # Setup publishing nothing is the case this transaction exists for: a
-        # no-op pip update leaves the freed path empty, and the old updater then
-        # deleted its own .deleteme and left the venv with no launcher at all.
-        if not self._is_valid_pe(self.launcher):
-            self._restore_backup()
+        # Whether setup published anything decides how a bad result is read, so
+        # it has to be sampled before any restore puts a launcher back.
+        published = self.launcher.exists()
         error = self._launcher_health_error()
         if error is not None:
-            typer.echo(f"Error: Unsloth Studio update failed because {error}.", err = True)
-            if self._restore_backup():
-                typer.echo(f"The previous launcher was restored from: {self.backup}", err = True)
-            elif self._retained_backup() is not None:
-                typer.echo(f"Manual recovery copy retained at: {self.backup}", err = True)
-            raise typer.Exit(1)
+            restored = self._restore_runnable()
+            # Setup publishing nothing is the case this transaction exists for:
+            # a no-op pip update leaves the freed path empty, and the old
+            # updater then deleted its own .deleteme, leaving no launcher at
+            # all. Putting the previous one back is success, not failure. A
+            # launcher setup DID write and that cannot run is still a failure,
+            # even though the previous one goes back.
+            if published or not restored:
+                typer.echo(f"Error: Unsloth Studio update failed because {error}.", err = True)
+                if restored:
+                    typer.echo("The previous launcher was restored.", err = True)
+                elif self._retained_backup() is not None:
+                    typer.echo(f"Manual recovery copy retained at: {self.backup}", err = True)
+                raise typer.Exit(1)
         self._validated = True
         for orphan in (self.stale, self.backup, self.legacy_backup):
             if orphan is None:
