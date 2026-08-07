@@ -8,7 +8,7 @@ Chat history API routes backed by studio.db.
 from typing import Annotated, Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from auth.authentication import get_current_subject
 from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, PARALLEL_MAX, PARALLEL_MIN
@@ -180,6 +180,15 @@ class ChatPresetLoadConfig(BaseModel):
     gpuMemoryMode: Optional[Literal["manual"]] = None
     gpuLayers: Optional[int] = None
     nCpuMoe: Optional[int] = Field(default = None, ge = 0)
+
+    @field_validator("nBatch", "nUbatch", mode = "before")
+    @classmethod
+    def _no_booleans(cls, value: Any) -> Any:
+        # Same contract as LoadRequest: bool subclasses int, so lax mode would store
+        # `true` as 1 here while /load 422s it.
+        if isinstance(value, bool):
+            raise ValueError("Expected a number, got a boolean.")
+        return value
 
 
 class ChatPreset(BaseModel):

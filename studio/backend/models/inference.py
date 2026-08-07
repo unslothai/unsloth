@@ -11,7 +11,6 @@ from typing import Annotated, Any, Dict, Literal, Optional, List, Union
 
 from pydantic import (
     BaseModel,
-    BeforeValidator,
     Discriminator,
     Field,
     Tag,
@@ -21,21 +20,6 @@ from pydantic import (
 
 from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, PARALLEL_MAX, PARALLEL_MIN
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
-
-
-def _reject_bool(value):
-    """Refuse a JSON boolean where an int is expected.
-
-    bool is an int subclass, so lax mode turns ``true`` into 1 and the load launches
-    ``--batch-size 1``, which llama-server aborts on: a 500 instead of a 422.
-    normalize_model_override already drops booleans, so /load now agrees with /settings.
-    """
-    if isinstance(value, bool):
-        raise ValueError("must be an integer, not a boolean")
-    return value
-
-
-BatchSizeInt = Annotated[int, BeforeValidator(_reject_bool)]
 
 
 class LoadRequest(BaseModel):
@@ -143,7 +127,7 @@ class LoadRequest(BaseModel):
             "for non-GGUF models."
         ),
     )
-    n_batch: Optional[BatchSizeInt] = Field(
+    n_batch: Optional[int] = Field(
         None,
         ge = BATCH_MIN,
         le = BATCH_MAX,
@@ -153,7 +137,7 @@ class LoadRequest(BaseModel):
             "default (2048). Ignored for non-GGUF models."
         ),
     )
-    n_ubatch: Optional[BatchSizeInt] = Field(
+    n_ubatch: Optional[int] = Field(
         None,
         ge = BATCH_MIN,
         le = BATCH_MAX,
@@ -217,6 +201,18 @@ class LoadRequest(BaseModel):
             "unless gpu_memory_mode is 'manual' with gpu_layers >= 0."
         ),
     )
+
+    @field_validator("n_batch", "n_ubatch", mode = "before")
+    @classmethod
+    def _no_booleans(cls, value: Any) -> Any:
+        # bool subclasses int and pydantic parses non-strictly, so `true` arrives as 1 and
+        # the load launches --batch-size 1, which llama-server aborts on: a 500 rather than
+        # a 422. Mirrors ModelOverrideRequest._no_booleans so /load and /settings agree.
+        # Kept off the annotation: an Annotated BeforeValidator stops the Field constraints
+        # folding into the int core schema, and they leak into OpenAPI as ge/le.
+        if isinstance(value, bool):
+            raise ValueError("Expected a number, got a boolean.")
+        return value
 
     @field_validator("tensor_split")
     @classmethod
@@ -337,7 +333,7 @@ class ValidateModelRequest(BaseModel):
             "server-wide --parallel default."
         ),
     )
-    n_batch: Optional[BatchSizeInt] = Field(
+    n_batch: Optional[int] = Field(
         None,
         ge = BATCH_MIN,
         le = BATCH_MAX,
@@ -346,7 +342,7 @@ class ValidateModelRequest(BaseModel):
             "coexistence estimate sizes the compute buffer like /load."
         ),
     )
-    n_ubatch: Optional[BatchSizeInt] = Field(
+    n_ubatch: Optional[int] = Field(
         None,
         ge = BATCH_MIN,
         le = BATCH_MAX,
@@ -359,6 +355,10 @@ class ValidateModelRequest(BaseModel):
         False,
         description = "Also read the native context length from the local GGUF header. "
         "Opt-in so the normal load preflight doesn't pay for a cache scan it doesn't need.",
+    )
+
+    _no_booleans = field_validator("n_batch", "n_ubatch", mode = "before")(
+        LoadRequest._no_booleans.__func__
     )
     include_chat_template: bool = Field(
         False,

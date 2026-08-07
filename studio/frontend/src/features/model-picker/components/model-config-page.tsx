@@ -530,6 +530,22 @@ function GgufAdvancedSettings({
   gpuLayersInputRef?: Ref<NumericValueInputHandle>;
   moeLayersInputRef?: Ref<NumericValueInputHandle>;
 }) {
+  const batchAdviceId = useId();
+  const ubatchAdviceId = useId();
+  // llama.cpp runs at min(batch, ubatch) and the /status echo is the REQUESTED size, so
+  // the control would otherwise keep showing a value the server never used (batch 8 /
+  // ubatch 4096 measured 8.8x slower).
+  const ubatchExceedsBatch =
+    config.nBatch != null &&
+    config.nUbatch != null &&
+    config.nUbatch > config.nBatch;
+  // A batch below the slot count aborts llama-server, so the loader raises it. Only shown
+  // when both are pinned; with Slots blank the count is the server default this page
+  // cannot see, and the loader carries the floor either way.
+  const batchBelowSlots =
+    config.nBatch != null &&
+    config.nParallel != null &&
+    config.nBatch < config.nParallel;
   return (
     <>
       <div className={ROW_CLASS}>
@@ -676,38 +692,47 @@ function GgufAdvancedSettings({
       </div>
 
       {!isDiffusion && (
-        <div className={ROW_CLASS}>
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className={LABEL_CLASS}>Batch Size</span>
-            <InfoHint>
-              Logical prompt batch size (--batch-size). Leave blank for the
-              llama.cpp default (2048). Rarely needs changing; the micro-batch
-              below is what usually matters.
-            </InfoHint>
+        <div className="space-y-1">
+          <div className={ROW_CLASS}>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className={LABEL_CLASS}>Batch Size</span>
+              <InfoHint>
+                Logical prompt batch size (--batch-size). Leave blank for the
+                llama.cpp default (2048). Rarely needs changing; the micro-batch
+                below is what usually matters.
+              </InfoHint>
+            </div>
+            <input
+              type="number"
+              min={N_BATCH_MIN}
+              max={N_BATCH_MAX}
+              step={1}
+              value={config.nBatch ?? ""}
+              placeholder="auto"
+              onChange={(event) => {
+                const raw = event.target.value;
+                if (raw === "") {
+                  update({ nBatch: null });
+                  return;
+                }
+                const parsed = Number.parseInt(raw, 10);
+                if (Number.isFinite(parsed)) {
+                  update({
+                    nBatch: Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, parsed)),
+                  });
+                }
+              }}
+              aria-label="Prompt batch size"
+              aria-describedby={batchBelowSlots ? batchAdviceId : undefined}
+              className={NUMBER_INPUT_CLASS}
+            />
           </div>
-          <input
-            type="number"
-            min={N_BATCH_MIN}
-            max={N_BATCH_MAX}
-            step={1}
-            value={config.nBatch ?? ""}
-            placeholder="auto"
-            onChange={(event) => {
-              const raw = event.target.value;
-              if (raw === "") {
-                update({ nBatch: null });
-                return;
-              }
-              const parsed = Number.parseInt(raw, 10);
-              if (Number.isFinite(parsed)) {
-                update({
-                  nBatch: Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, parsed)),
-                });
-              }
-            }}
-            aria-label="Prompt batch size"
-            className={NUMBER_INPUT_CLASS}
-          />
+          {batchBelowSlots && (
+            <p id={batchAdviceId} className="text-ui-12 text-muted-foreground">
+              Below the parallel slot count, so the load will raise it to{" "}
+              {config.nParallel}. llama-server needs one output slot per batch entry.
+            </p>
+          )}
         </div>
       )}
 
@@ -744,32 +769,16 @@ function GgufAdvancedSettings({
                 }
               }}
               aria-label="Prompt micro-batch size"
+              aria-describedby={ubatchExceedsBatch ? ubatchAdviceId : undefined}
               className={NUMBER_INPUT_CLASS}
             />
           </div>
-          {/* llama.cpp clamps ubatch to batch silently and the echo is the REQUESTED size,
-              so the control would keep showing a value the server never used (batch 8 /
-              ubatch 4096 measured 8.8x slower). Advisory: the pair is still a legal load. */}
-          {config.nBatch != null &&
-            config.nUbatch != null &&
-            config.nUbatch > config.nBatch && (
-              <p className="text-ui-12 text-muted-foreground">
-                Micro-batch is larger than the batch size, so llama.cpp will run at{" "}
-                {config.nBatch}. Raise the batch size to use {config.nUbatch}.
-              </p>
-            )}
-          {/* A batch below the slot count aborts llama-server outright (-b 4 --parallel 8),
-              and the per-field bounds cannot express the pair. Only asserted when both are
-              pinned; with Slots blank the count is the server default this page cannot see,
-              so the loader carries the floor. */}
-          {config.nBatch != null &&
-            config.nParallel != null &&
-            config.nBatch < config.nParallel && (
-              <p className="text-ui-12 text-destructive">
-                Batch size must be at least the parallel slot count ({config.nParallel}), or
-                llama-server will fail to start.
-              </p>
-            )}
+          {ubatchExceedsBatch && (
+            <p id={ubatchAdviceId} className="text-ui-12 text-muted-foreground">
+              Micro-batch is larger than the batch size, so llama.cpp will run at{" "}
+              {config.nBatch}. Raise the batch size to use {config.nUbatch}.
+            </p>
+          )}
         </div>
       )}
 

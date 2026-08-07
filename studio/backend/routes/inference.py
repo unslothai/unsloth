@@ -4850,6 +4850,11 @@ def _remote_gguf_companion_bytes(
         return 0
 
 
+# Upper bound on any current tokenizer, used to rebuild the compute buffer when a
+# truncated header drops the token array. Above Llama 4 / Gemma 3 (256k), the widest shipping.
+_ASSUMED_MAX_VOCAB = 262144
+
+
 def _estimate_gguf_kv_gb(
     gguf_path: str,
     max_seq_length: int,
@@ -4929,22 +4934,35 @@ def _estimate_gguf_kv_gb(
         devices = max(1, int(n_devices))
 
         def _flat_buffer(per_device_tensor: bool) -> int:
-            """Flat compute buffer, with the loader's missing-dims fallback.
+            """Flat compute buffer, rebuilt when the header is short of a vocab size.
 
-            _estimate_compute_buffer_bytes returns 0 when the header lacks vocab_size or
-            embedding_length, and both loader branches substitute
-            _TENSOR_PARALLEL_BUFFER_RESERVE_MIB there. Reachable on an MLA GGUF, which
-            passes _can_estimate_kv() on _n_layers + _kv_lora_rank alone.
+            _estimate_compute_buffer_bytes returns 0 when vocab_size or embedding_length is
+            missing. Only the first is reachable: _vocab_size is set solely from the
+            tokenizer.ggml.tokens array length, which a truncated header drops while keeping
+            the dims. So rebuild from the real formula with a vocab ceiling rather than
+            substituting the loader's flat reserve. The loader can afford that reserve
+            because over-reserving there just shrinks the context; here it denies the load.
             """
             flat = probe._estimate_compute_buffer_bytes(
                 n_ubatch = effective_ubatch,
                 n_parallel = slots,
                 per_device_tensor = per_device_tensor,
             )
-            if flat <= 0:
-                # getattr: a bare backend double carries no constants.
-                flat = int(getattr(probe, "_TENSOR_PARALLEL_BUFFER_RESERVE_MIB", 0)) * 1024**2
-            return flat
+            if flat > 0:
+                return flat
+            # getattr: a bare backend double carries neither dims nor constants.
+            n_embd = getattr(probe, "_embedding_length", None) or 0
+            if n_embd <= 0:
+                return 0  # nothing to rebuild from; the total is floored below instead
+            ub = max(1, int(effective_ubatch or probe._DEFAULT_N_UBATCH))
+            act_scratch = 4 * n_embd * ub * 4
+            out_buffer = _ASSUMED_MAX_VOCAB * ub * 4
+            raw = (
+                2 * act_scratch + out_buffer * slots
+                if per_device_tensor
+                else act_scratch + out_buffer * max(0, slots - 1)
+            )
+            return int(raw * probe._COMPUTE_BUFFER_SAFETY)
 
         if tensor_parallel:
             # mirrors _plan_tensor_parallel: per-device buffer and ctx growth on every device
@@ -4972,6 +4990,11 @@ def _estimate_gguf_kv_gb(
                     layer_split = devices > 1 and not pipeline_parallel_off,
                 )
             )
+        if compute <= 0:
+            # No embedding_length, so both compute terms are blind while the launch still
+            # reserves buffers. Floor at the loader's flat reserve, charged once: it is an
+            # invented number, and scaling an invention per device has no basis.
+            compute = int(getattr(probe, "_TENSOR_PARALLEL_BUFFER_RESERVE_MIB", 0)) * 1024**2
         return (kv + compute) / (1024**3)
     except Exception as e:
         logger.warning(f"Could not size GGUF KV cache for training guard: {e}")
@@ -5057,10 +5080,19 @@ def _estimate_gguf_required_gb(
                 # A multi-device layer split materialises the KQ mask _CTX_COMPUTE_SPLIT_MULT
                 # times, the same step _compute_buffer_ctx_bytes applies locally; charging
                 # the single-copy rate under-reserved 4x. Tensor mode is already correct
-                # (measured at the single-device rate, replicated per device).
+                # (measured at the single-device rate, replicated per device). n_layers is
+                # None here: the header is unread, so -ngl cannot be resolved, but -ot /
+                # -ncmoe / --no-kv-offload / -sm none still register. Without this gate the
+                # same model 409s while remote and loads once cached.
+                from core.inference.llama_cpp import _pipeline_parallel_disabled_by_args
+
                 split_mult = (
                     LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT
-                    if devices > 1 and not tensor_parallel
+                    if devices > 1
+                    and not tensor_parallel
+                    and not _pipeline_parallel_disabled_by_args(
+                        llama_extra_args, n_layers = None
+                    )
                     else 1
                 )
                 mask_bytes = (

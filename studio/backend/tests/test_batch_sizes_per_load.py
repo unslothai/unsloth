@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sys
 import types as _types
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -210,7 +211,18 @@ def test_slow_path_intent_strips_inherited_batch_flags_when_field_set(monkeypatc
         n_parallel = 1,
     )
     assert intent.extra_args_inherited is False
+    # Match the resident batch too, so the stripped inherited -b is the ONLY reason left to
+    # reload. Without this the batch-field comparison alone satisfies the assert and the
+    # extras are never reached.
+    backend._requested_n_batch = 4096
     assert backend._runtime_matches_intent(intent, ["--top-k", "20"]) is False
+    # Control: with the flag no longer inherited, the same intent dedupes.
+    assert (
+        backend._runtime_matches_intent(
+            replace(intent, extra_args_inherited = True), ["--top-k", "20"]
+        )
+        is True
+    )
 
     # An Apply that does not name the field still inherits the flag untouched.
     plain = LoadRequest(model_path = "owner/repo", max_seq_length = 8192)
@@ -281,6 +293,115 @@ def test_remote_gguf_guard_counts_explicit_micro_batch():
     assert auto_ctx > base + 2.0
     # the diffusion runner ignores the llama-server batch flags, so no reserve
     assert diffusion == pytest.approx(1.0)
+
+
+def _header_reader(**dims):
+    """Stand in for _read_gguf_metadata, which would otherwise reset the dims we set.
+
+    _estimate_gguf_kv_gb builds its own LlamaCppBackend and reads the file, so patching
+    the instance is not enough; the reader itself has to be replaced.
+    """
+
+    def _reader(self, *args, **kwargs):
+        for key, value in dims.items():
+            setattr(self, f"_{key}", value)
+
+    return _reader
+
+
+_QWEN3_8B = dict(
+    vocab_size = 151936, embedding_length = 4096, n_layers = 36, n_heads = 32,
+    n_kv_heads = 8, head_dim = 128, context_length = 262144, architecture = "qwen3",
+)
+
+
+def test_guard_rebuilds_the_compute_buffer_when_the_header_lost_its_vocab():
+    # _vocab_size comes only from the tokenizer.ggml.tokens array length, so a truncated
+    # header keeps the dims and drops the vocab. Substituting the loader's 5 GiB reserve
+    # here charged ~139x the real allocation and 409'd loads that fit.
+    from unittest.mock import patch
+
+    from routes import inference as route
+
+    novocab = dict(_QWEN3_8B, vocab_size = None)
+    with patch.object(LlamaCppBackend, "_read_gguf_metadata", _header_reader(**_QWEN3_8B)):
+        complete = route._estimate_gguf_kv_gb("/x.gguf", 8192, n_parallel = 1)
+    with patch.object(LlamaCppBackend, "_read_gguf_metadata", _header_reader(**novocab)):
+        rebuilt = route._estimate_gguf_kv_gb("/x.gguf", 8192, n_parallel = 1)
+        tensor = route._estimate_gguf_kv_gb(
+            "/x.gguf", 8192, n_parallel = 1, n_devices = 4, tensor_parallel = True
+        )
+    # At one slot the vocab-width term drops out entirely, so the rebuild is exact.
+    assert rebuilt == pytest.approx(complete, abs = 0.01)
+    # And the 5 GiB per device the reserve would have cost never appears.
+    assert tensor < complete + 4.0
+
+
+def test_guard_floors_a_header_with_no_dimensions_at_all():
+    # Nothing to rebuild from: both compute terms are blind, so the loader's flat reserve
+    # is the floor. Charged once, not per device, since it is an invented number.
+    from unittest.mock import patch
+
+    from routes import inference as route
+
+    blind = dict(_QWEN3_8B, vocab_size = None, embedding_length = None, kv_lora_rank = 512)
+    reserve_gb = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB / 1024
+    with patch.object(LlamaCppBackend, "_read_gguf_metadata", _header_reader(**blind)):
+        one = route._estimate_gguf_kv_gb("/x.gguf", 8192, n_parallel = 1)
+        four = route._estimate_gguf_kv_gb(
+            "/x.gguf", 8192, n_parallel = 1, n_devices = 4, tensor_parallel = True
+        )
+    assert one > reserve_gb
+    assert four == pytest.approx(one, abs = 0.01)
+
+
+def test_batch_bounds_stay_standard_json_schema():
+    # An Annotated BeforeValidator stops pydantic folding the Field constraints into the
+    # int core schema, so they leak out as non-standard ge/le and generated clients drop
+    # them. Pin the batch fields against an untouched sibling.
+    from models.inference import LoadRequest, ValidateModelRequest
+
+    for model in (LoadRequest, ValidateModelRequest):
+        props = model.model_json_schema()["properties"]
+        sibling = next(s for s in props["n_parallel"]["anyOf"] if s.get("type") == "integer")
+        for field in ("n_batch", "n_ubatch"):
+            schema = next(s for s in props[field]["anyOf"] if s.get("type") == "integer")
+            assert set(schema) == set(sibling), f"{model.__name__}.{field}: {schema}"
+            assert schema["minimum"] == BATCH_MIN
+            assert schema["maximum"] == BATCH_MAX
+
+
+def test_remote_guard_drops_the_split_mask_when_pipelining_is_disabled():
+    # The local rule gates the 4x KQ-mask multiplier on _pipeline_parallel_disabled_by_args.
+    # Without the same gate remotely, -ot / -ncmoe on a 2-GPU pin is charged 4x while the
+    # model is undownloaded and 1x once cached: same model, same flags, two verdicts.
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from routes import inference as route
+
+    config = SimpleNamespace(
+        gguf_file = None, gguf_mmproj_file = None, gguf_mtp_file = None,
+        gguf_hf_repo = "owner/repo", gguf_variant = "Q4_K_M",
+    )
+    remote_variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 1024**3)
+
+    def _required(extra_args):
+        with (
+            patch(
+                "utils.models.model_config.list_gguf_variants",
+                return_value = ([remote_variant], False),
+            ),
+            patch.object(route, "_remote_gguf_companion_bytes", return_value = 0),
+        ):
+            return route._estimate_gguf_required_gb(
+                config, max_seq_length = 32768, n_ubatch = 2048,
+                n_devices = 2, llama_extra_args = extra_args,
+            )
+
+    split = _required(None)
+    for disabling in (["-ot", r"\.ffn_.*_exps\.=CPU"], ["-ncmoe", "8"], ["--no-kv-offload"]):
+        assert _required(disabling) < split, disabling
 
 
 def test_guard_device_count_follows_the_split_the_loader_would_pick():
