@@ -205,6 +205,87 @@ def test_vulkan_fit_and_mtp_drafter_follow_placement_owner(
     assert ("-dev=Vulkan0" in cmd) is user_device_survives
 
 
+@pytest.mark.parametrize("use_fit", [False, True])
+def test_dspark_composed_argv_respects_placement_fit_decision(tmp_path, use_fit):
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = False,
+        memory = [(0, 24_000, 24_000)],
+    )
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    backend._select_gpus = lambda *args, **kwargs: ((None, True) if use_fit else ([0], False))
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "supports_dspark": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+
+    result = _launch(
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        speculative_type = "dspark",
+    )
+
+    cmd = result["cmd"]
+    assert cmd.count("--fit") == 1
+    assert cmd[cmd.index("--fit") + 1] == ("on" if use_fit else "off")
+    # DSpark engages under either placement: --fit on only means llama.cpp skips
+    # the sidecar's memory reserve, it does not refuse to load it.
+    assert cmd[cmd.index("--model-draft") + 1] == str(sidecar)
+    assert cmd[cmd.index("--spec-type") + 1] == "draft-dspark"
+    assert backend.spec_fallback_reason is None
+
+
+def test_dspark_keeps_a_user_fit_flag(tmp_path):
+    """A caller's --fit is theirs to set: the sidecar loads under either value,
+    so Studio has no reason to rewrite it."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_000, 24_000)])
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    backend._select_gpus = lambda *args, **kwargs: ([0], False)
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "supports_dspark": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+
+    result = _launch(
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        speculative_type = "dspark",
+        extra_args = ["--fit", "on", "--top-k", "5"],
+        gpu_ids = [0],
+    )
+
+    cmd = result["cmd"]
+    assert cmd[len(cmd) - 1 - cmd[::-1].index("--fit") + 1] == "on"
+    assert cmd[cmd.index("--top-k") + 1] == "5"
+    assert cmd[cmd.index("--spec-type") + 1] == "draft-dspark"
+
+
+def test_pass_through_dspark_loads_under_an_auto_fit_placement(tmp_path):
+    """Manual + Auto layers emits --fit on and a user-owned --spec-type returns
+    from _build_speculative_flags early. Nothing rewrites the placement: llama.cpp
+    only skips the sidecar's memory reserve under fitting, it still loads it."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_000, 24_000)])
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+
+    result = _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = -1,
+        extra_args = ["--spec-type", "draft-dspark", "--model-draft", str(sidecar)],
+    )
+
+    cmd = result["cmd"]
+    assert cmd.count("--fit") == 1
+    assert cmd[cmd.index("--fit") + 1] == "on"
+    assert cmd[cmd.index("--spec-type") + 1] == "draft-dspark"
+
+
 def test_cuda_selection_uses_visibility_and_removes_environment_placement(tmp_path, monkeypatch):
     monkeypatch.setenv("LLAMA_ARG_DEVICE", "CUDA0")
     monkeypatch.setenv("LLAMA_ARG_MAIN_GPU", "0")

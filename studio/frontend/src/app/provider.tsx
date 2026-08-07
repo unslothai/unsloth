@@ -334,6 +334,40 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-window-control-inset": "112px",
 } as CSSProperties;
 
+// Mirror the titlebar heights onto <html>: the styles above sit on a wrapper
+// div, so overlays portalled into document.body would read them as empty.
+function DesktopChromeVarsEffect({
+  usesCustomTitlebar,
+  usesNativeMacTitlebar,
+}: {
+  usesCustomTitlebar: boolean;
+  usesNativeMacTitlebar: boolean;
+}) {
+  useEffect(() => {
+    const el = document.documentElement;
+    const set = (name: string, value: string | null) =>
+      value === null
+        ? el.style.removeProperty(name)
+        : el.style.setProperty(name, value);
+    set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null);
+    set("--studio-mac-titlebar-height", usesNativeMacTitlebar ? "34px" : null);
+    set("--studio-window-control-inset", usesCustomTitlebar ? "112px" : null);
+    // How far body-portaled surfaces (dialogs, alert dialogs) must stay clear of the
+    // top: either titlebar paints over them, and neither inherits the wrapper's style.
+    set(
+      "--studio-window-chrome-top",
+      usesCustomTitlebar || usesNativeMacTitlebar ? "34px" : null,
+    );
+    return () => {
+      set("--studio-custom-titlebar-height", null);
+      set("--studio-mac-titlebar-height", null);
+      set("--studio-window-control-inset", null);
+      set("--studio-window-chrome-top", null);
+    };
+  }, [usesCustomTitlebar, usesNativeMacTitlebar]);
+  return null;
+}
+
 function TauriWrapper({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const {
@@ -522,6 +556,13 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     />
   );
 
+  const chromeVars = (
+    <DesktopChromeVarsEffect
+      usesCustomTitlebar={usesCustomTitlebar}
+      usesNativeMacTitlebar={usesNativeMacTitlebar}
+    />
+  );
+
   if (!usesCustomTitlebar) {
     // macOS desktop uses the native titlebar and returns here before the
     // custom-titlebar branch, so mount the updater banner on this path too.
@@ -549,12 +590,18 @@ function TauriWrapper({ children }: { children: ReactNode }) {
               className="pointer-events-auto fixed inset-x-0 top-0 z-50 h-[var(--studio-mac-titlebar-height,34px)] select-none"
             />
           ) : null}
+          {chromeVars}
           {content}
         </div>
       );
     }
 
-    return <>{content}</>;
+    return (
+      <>
+        {chromeVars}
+        {content}
+      </>
+    );
   }
 
   const showSidebarSurface = showApp && !hidesTitlebarSidebar;
@@ -564,6 +611,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       className="relative h-dvh min-h-0 overflow-hidden bg-background"
       style={CUSTOM_CHROME_STYLE}
     >
+      {chromeVars}
       <WindowTitlebar showSidebarSurface={showSidebarSurface} />
       <div className="h-full min-h-0 overflow-hidden">{content}</div>
     </div>
