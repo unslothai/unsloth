@@ -856,10 +856,7 @@ def test_one_broken_inventory_still_loads_a_model_another_one_found(broken):
     # Put the model in a source that is not the one being broken.
     holder = "localModels" if broken != "localModels" else "ggufRepos"
     rows = "[LOCAL_GGUF]" if holder == "localModels" else "[GEMMA]"
-    extra = (
-        "" if holder == "localModels"
-        else ", variants: { [GEMMA.repo_id]: GEMMA_VARIANTS }"
-    )
+    extra = "" if holder == "localModels" else ", variants: { [GEMMA.repo_id]: GEMMA_VARIANTS }"
     out = _run(f"scenario({{ {broken}: 'throw', {holder}: {rows}{extra} }})")
 
     assert out["result"]["loaded"] is True
