@@ -95,6 +95,7 @@ studio = [
     "datasets==4.3.0",
     "pyjwt",
     "huggingface-hub==0.36.2",
+    "truststore>=0.10.4",
     "structlog>=24.1.0",
     "diceware",
     "ddgs",

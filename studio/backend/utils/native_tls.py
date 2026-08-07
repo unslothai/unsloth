@@ -16,8 +16,8 @@ OS store (macOS Security framework, Windows CertStore, OpenSSL dirs on Linux)
 — the runtime counterpart of ``UV_NATIVE_TLS`` in install.sh, and the same
 mechanism pip enables by default since 24.2. Injection is process-wide but
 does not survive into spawned interpreters, so each network-touching entry
-point (main.py, download and training workers) calls
-:func:`activate_native_tls` before its first TLS connection.
+point (main.py and the download, inference, training, and export workers)
+calls :func:`activate_native_tls` before its first TLS connection.
 
 Defaults mirror install.sh: on for macOS and Windows (well-defined OS stores,
 and the fleets where TLS inspection is common), opt-in on Linux via
