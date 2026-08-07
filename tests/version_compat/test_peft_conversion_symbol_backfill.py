@@ -1068,9 +1068,9 @@ def test_the_not_fused_list_matches_upstream():
     if src is None:
         pytest.skip("upstream conversion map unavailable")
     import re
+
     pairs = dict(re.findall(r'"([\w.]+)":\s*"([\w.]+)"', src))
-    named = {k: v for k, v in pairs.items()
-             if "moe" in k.lower() or "mixtral" in k.lower()}
+    named = {k: v for k, v in pairs.items() if "moe" in k.lower() or "mixtral" in k.lower()}
     if not named:
         pytest.skip("upstream map shape changed")
     not_fused = {k for k, v in named.items() if v not in ("mixtral", "qwen2_moe")}
@@ -1088,8 +1088,10 @@ def _fetch_conversion_mapping_source():
     import urllib.error
     import urllib.request
 
-    url = ("https://raw.githubusercontent.com/huggingface/transformers/main/"
-           "src/transformers/conversion_mapping.py")
+    url = (
+        "https://raw.githubusercontent.com/huggingface/transformers/main/"
+        "src/transformers/conversion_mapping.py"
+    )
     request = urllib.request.Request(url)
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if token:
@@ -1109,6 +1111,7 @@ def test_the_fused_snapshot_matches_upstream():
     if src is None:
         pytest.skip("upstream conversion map unavailable")
     import re
+
     pairs = dict(re.findall(r'"([\w.]+)":\s*"([\w.]+)"', src))
     fused = {k for k, v in pairs.items() if v in ("mixtral", "qwen2_moe")}
     if not fused:

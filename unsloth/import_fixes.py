@@ -2471,11 +2471,13 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
 # shipping model: `qwen3_5_moe_text` converts as `qwen3_5_text`, and both Granite
 # MoE variants as `granitemoe`. Checked before the hint, never instead of the
 # snapshot above, so a genuinely fused type still refuses.
-_PEFT_MOE_NAMED_NOT_FUSED = frozenset((
-    "granitemoehybrid",
-    "granitemoeshared",
-    "qwen3_5_moe_text",
-))
+_PEFT_MOE_NAMED_NOT_FUSED = frozenset(
+    (
+        "granitemoehybrid",
+        "granitemoeshared",
+        "qwen3_5_moe_text",
+    )
+)
 
 # How many of those pairs a candidate map has to agree with before we believe it
 # is the conversion map under a new name. Three, so a coincidence does not pass
