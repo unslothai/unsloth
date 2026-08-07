@@ -75,7 +75,9 @@ export interface LegacyTitleRepair {
 
 export interface LegacyRepairPage {
   candidates: ThreadRecord[];
-  /** Rows left for the next page, which the caller has to schedule itself. */
+  /** Everything this page did not take. The next page reads from here, so a
+   *  row this page failed on cannot be picked up again by the same drain. */
+  rest: ThreadRecord[];
   hasMore: boolean;
 }
 
@@ -89,8 +91,11 @@ export function selectLegacyRepairPage(
     (thread) =>
       couldBeLegacyClippedTitle(thread.title) && !attempted.has(thread.id),
   );
+  const candidates = pending.slice(0, limit);
+  const taken = new Set(candidates.map((thread) => thread.id));
   return {
-    candidates: pending.slice(0, limit),
+    candidates,
+    rest: threads.filter((thread) => !taken.has(thread.id)),
     hasMore: pending.length > limit,
   };
 }
@@ -113,7 +118,17 @@ export function planLegacyTitleRepairs(
   const repairs: LegacyTitleRepair[] = [];
   for (const thread of threads) {
     const messages = messagesByThreadId.get(thread.id) ?? [];
-    const userText = textOf(messages.find((m) => m.role === "user"));
+    // Earliest, not first in the array: a local read is in index order.
+    const opening = messages
+      .filter((m) => m.role === "user")
+      .reduce<MessageRecord | undefined>(
+        (earliest, m) =>
+          earliest === undefined || m.createdAt < earliest.createdAt
+            ? m
+            : earliest,
+        undefined,
+      );
+    const userText = textOf(opening);
     if (!isLegacyClippedTitle(thread.title, userText)) continue;
     const title = fallbackTitleFromUserText(userText);
     if (title === thread.title) continue;

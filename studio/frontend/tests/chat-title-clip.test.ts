@@ -90,6 +90,52 @@ test("repair rewrites legacy rows and leaves every other row untouched", () => {
   ]);
 });
 
+test("a drain advances even when a whole page failed and was unmarked", () => {
+  // Failures get unmarked so a later refresh can retry them. If the next page
+  // were selected off the same list it would draw them straight back in and
+  // spin on the failing rows, never reaching the rest.
+  const legacy = LONG.slice(0, 48) + "...";
+  const threads = ["a", "b", "c", "d"].map((id) => thread(id, legacy));
+
+  const first = selectLegacyRepairPage(threads, new Set(), 2);
+  assert.deepEqual(
+    first.candidates.map((t) => t.id),
+    ["a", "b"],
+  );
+  // Every write failed, so nothing stayed marked.
+  const second = selectLegacyRepairPage(first.rest, new Set(), 2);
+  assert.deepEqual(
+    second.candidates.map((t) => t.id),
+    ["c", "d"],
+  );
+  assert.equal(second.hasMore, false);
+  assert.deepEqual(second.rest, []);
+});
+
+test("the opening message is the earliest one, not the first row returned", () => {
+  // A local Dexie read comes back in index order, so the array can start on a
+  // later turn.
+  const later: MessageRecord = {
+    ...userMessage("a", "a later question entirely"),
+    id: "a-m9",
+    createdAt: 99,
+  };
+  const opening: MessageRecord = {
+    ...userMessage("a", LONG),
+    id: "a-m1",
+    createdAt: 1,
+  };
+  const legacy = LONG.slice(0, 48) + "...";
+
+  assert.deepEqual(
+    planLegacyTitleRepairs(
+      [thread("a", legacy)],
+      new Map([["a", [later, opening]]]),
+    ),
+    [{ threadId: "a", previousTitle: legacy, title: LONG }],
+  );
+});
+
 test("a page skips rows already tried and reports the leftovers", () => {
   const legacy = LONG.slice(0, 48) + "...";
   const threads = [

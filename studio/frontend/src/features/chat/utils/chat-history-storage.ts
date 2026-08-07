@@ -540,7 +540,14 @@ export async function listLegacyChatMessages(
 ): Promise<MessageRecord[]> {
   if (isThreadIncognito(threadId)) return [];
   if (isChatThreadDeleted(threadId)) return [];
-  return db.messages.where("threadId").equals(threadId).toArray();
+  const messages = await db.messages
+    .where("threadId")
+    .equals(threadId)
+    .toArray();
+  // Index order, so sort it the way the backend lists messages.
+  return messages.sort(
+    (a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id),
+  );
 }
 
 export async function getStoredChatMessage(
@@ -637,14 +644,21 @@ export async function listStoredChatThreadsWithMessages(
       const legacy = await listStoredChatMessages(thread.id).catch(() => null);
       return {
         thread,
-        messages: legacy ?? [],
+        // null is "the read failed", which the map must not report as empty.
+        messages: legacy,
         hasContent: legacy === null || legacy.length > 0,
       };
     }),
   );
   return {
     threads: entries.filter((e) => e.hasContent).map((e) => e.thread),
-    messagesByThreadId: new Map(entries.map((e) => [e.thread.id, e.messages])),
+    messagesByThreadId: new Map(
+      entries
+        .filter((e): e is typeof e & { messages: MessageRecord[] } =>
+          e.messages !== null,
+        )
+        .map((e) => [e.thread.id, e.messages]),
+    ),
   };
 }
 

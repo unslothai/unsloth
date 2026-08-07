@@ -28,7 +28,10 @@ def test_the_sidebar_hands_its_messages_to_the_repair():
     repair must not go and fetch the same rows a second time."""
     storage = _read(STORAGE)
     assert "export interface ChatThreadsWithMessages" in storage
-    assert "messagesByThreadId: new Map(entries.map((e) => [e.thread.id, e.messages]))" in storage
+    assert "messagesByThreadId: new Map( entries .filter((e): e is typeof e & { messages: MessageRecord[] } => e.messages !== null, )" in storage
+    # A read that failed is unknown. Reporting it as an empty chat would let the
+    # repair write the row off for the session.
+    assert "messages: legacy," in storage
 
     hook = _read(HOOK)
     assert "? await listStoredChatThreadsWithMessages(args)" in hook
@@ -55,8 +58,25 @@ def test_the_next_page_is_scheduled_rather_than_waited_for():
     would come back for the rest of the backlog."""
     repair = _read(REPAIR)
     assert "if (hasMore) { setTimeout(" in repair
-    assert "void repairLegacyChatTitles(threads, known)" in repair
+    # On `rest`: a row this page unmarked must not be drawn again by the same
+    # drain, or a failing PATCH starves every row behind it.
+    assert "void repairLegacyChatTitles(rest, known)" in repair
     assert "REPAIR_PAGE_PAUSE_MS" in repair
+
+
+def test_rows_with_nothing_found_stay_retryable():
+    repair = _read(REPAIR)
+    assert (
+        "for (const id of threadsMissingMessages(ids, messages)) attempted.delete(id);"
+        in repair
+    )
+
+
+def test_a_local_read_is_sorted_like_the_backend_lists_messages():
+    """planLegacyTitleRepairs wants the opening message, and a Dexie read
+    arrives in index order."""
+    storage = _read(STORAGE)
+    assert "messages.sort( (a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id), )" in storage
 
 
 def test_a_failed_read_leaves_the_rows_retryable():

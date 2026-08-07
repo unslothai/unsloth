@@ -34,7 +34,7 @@ export async function repairLegacyChatTitles(
   threads: ThreadRecord[],
   known?: Map<string, MessageRecord[]>,
 ): Promise<number> {
-  const { candidates, hasMore } = selectLegacyRepairPage(
+  const { candidates, rest, hasMore } = selectLegacyRepairPage(
     threads,
     attempted,
     REPAIR_PER_PASS,
@@ -64,6 +64,11 @@ export async function repairLegacyChatTitles(
     return 0;
   }
 
+  // Nothing found anywhere reads as an incomplete answer, not an empty chat:
+  // a clipped title means there was an opening message once. Leave those rows
+  // for a later refresh rather than writing them off for the session.
+  for (const id of threadsMissingMessages(ids, messages)) attempted.delete(id);
+
   const repairs = planLegacyTitleRepairs(candidates, messages);
   let repaired = 0;
   await runWithConcurrency(repairs, REPAIR_CONCURRENCY, async (repair) => {
@@ -83,10 +88,11 @@ export async function repairLegacyChatTitles(
   });
 
   // A page that wrote nothing fires no history update, so the next page has to
-  // be scheduled here rather than left waiting on an unrelated refresh.
+  // be scheduled here rather than left waiting on an unrelated refresh. It runs
+  // on `rest`, so rows this page unmarked cannot be drawn again by this drain.
   if (hasMore) {
     setTimeout(() => {
-      void repairLegacyChatTitles(threads, known).catch(() => undefined);
+      void repairLegacyChatTitles(rest, known).catch(() => undefined);
     }, REPAIR_PAGE_PAUSE_MS);
   }
   return repaired;
