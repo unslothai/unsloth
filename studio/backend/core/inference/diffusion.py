@@ -136,6 +136,13 @@ logger = get_logger(__name__)
 _MODEL_KINDS = frozenset({"gguf", "single_file", "pipeline"})
 
 
+def _record_revision(out: Optional[dict[str, str]], repo_id: str, info: Any) -> None:
+    """Remember the commit a ``model_info`` answer described, when the Hub reports one."""
+    sha = getattr(info, "sha", None)
+    if out is not None and isinstance(sha, str) and sha:
+        out[repo_id] = sha
+
+
 def hub_cache_dir() -> str:
     """The cache root every loader call must be pinned to.
 
@@ -1387,6 +1394,7 @@ class DiffusionBackend:
         include_transformer: bool = False,
         sizes_out: Optional[dict[str, int]] = None,
         file_sizes_out: Optional[dict[str, dict[str, int]]] = None,
+        revisions_out: Optional[dict[str, str]] = None,
         skip_te_components: tuple[str, ...] = (),
     ) -> tuple[int, list[str]]:
         """Total download size for the progress bar, plus the base-repo files to
@@ -1394,6 +1402,8 @@ class DiffusionBackend:
 
         ``sizes_out``, when given, is filled with per-repo byte totals so the download
         plan can size one job per repo off this same single pair of Hub lookups.
+        ``revisions_out`` records the commit each lookup described, so a cache probe can ask
+        about the SAME revision the sizes came from instead of whatever ``main`` is locally.
 
         For a ``pipeline`` load the whole repo IS the pipeline (``base_repo`` is the
         repo itself), so the transformer/ subfolder is INCLUDED -- unlike the GGUF /
@@ -1453,6 +1463,7 @@ class DiffusionBackend:
                             and s.rfilename.rsplit("/", 1)[0] in st_dirs
                         )
                     }
+                _record_revision(revisions_out, repo_id, info)
                 return total, base_files
             # Skip the Hub size lookup for a LOCAL gguf path: model_info raises on a filesystem path.
             if gguf_filename and not Path(repo_id).expanduser().exists():
@@ -1467,6 +1478,7 @@ class DiffusionBackend:
                         for s in info.siblings
                         if s.rfilename == gguf_filename
                     }
+                _record_revision(revisions_out, repo_id, info)
             # A whole-pipeline single file (SDXL) needs only the base's config/tokenizer, not its weights.
             if kind == "single_file" and single_file_is_pipeline:
                 base_filter = _base_config_file_downloaded
@@ -1476,20 +1488,27 @@ class DiffusionBackend:
                     return _base_file_downloaded(rfilename, include_transformer = include_transformer)
 
             base_info = api.model_info(base_repo, files_metadata = True, token = hf_token)
+            # A combined repo (an explicit or card-tagged base that IS the checkpoint repo) would
+            # otherwise list, size and stage the GGUF a second time under the companion entry.
+            counted = {gguf_filename} if base_repo == repo_id and gguf_filename else set()
             base_bytes = 0
+            base_sizes: dict[str, int] = {}
             for s in base_info.siblings:
-                if base_filter(s.rfilename) and not _dense_te_shard(s.rfilename):
-                    base_files.append(s.rfilename)
-                    base_bytes += s.size or 0
+                if not base_filter(s.rfilename) or _dense_te_shard(s.rfilename):
+                    continue
+                if s.rfilename in counted:
+                    continue
+                base_files.append(s.rfilename)
+                base_bytes += s.size or 0
+                base_sizes[s.rfilename] = int(s.size or 0)
             total += base_bytes
+            # ACCUMULATE, never assign: on a combined repo both branches key the same repo id, and
+            # a plain assignment drops the checkpoint's size and file map.
             if sizes_out is not None:
-                sizes_out[base_repo] = base_bytes
+                sizes_out[base_repo] = sizes_out.get(base_repo, 0) + base_bytes
             if file_sizes_out is not None:
-                file_sizes_out[base_repo] = {
-                    s.rfilename: int(s.size or 0)
-                    for s in base_info.siblings
-                    if base_filter(s.rfilename) and not _dense_te_shard(s.rfilename)
-                }
+                file_sizes_out.setdefault(base_repo, {}).update(base_sizes)
+            _record_revision(revisions_out, base_repo, base_info)
         except Exception as exc:  # noqa: BLE001 — estimate is best-effort
             logger.warning("diffusion.size_estimate_failed: %s", exc)
         return total, base_files
@@ -1529,6 +1548,7 @@ class DiffusionBackend:
         te_files = self._te_prequant_plan_files(fam, text_encoder_quant, hf_token)
         sizes: dict[str, int] = {}
         file_sizes: dict[str, dict[str, int]] = {}
+        revisions: dict[str, str] = {}
         required_total, base_files = self._estimate_download_bytes(
             repo_id,
             gguf_filename,
@@ -1541,6 +1561,7 @@ class DiffusionBackend:
             and self._dense_quant_prefetch_needed(fam, {**load_kwargs, "base_repo": base}),
             sizes_out = sizes,
             file_sizes_out = file_sizes,
+            revisions_out = revisions,
             skip_te_components = tuple(te_files),
         )
         # Decided once, from the staged file list, and both probed and reported: a gated base
@@ -1569,9 +1590,25 @@ class DiffusionBackend:
             The picker knows whether its checkpoint is cached, but not whether companion repos
             are. Keeping this decision in the plan makes a cached GGUF + missing text encoder one
             explicit dependency download, and prevents a cached GGUF from being staged again.
+
+            The probe asks about the revision this plan's sizes came from, so a companion that
+            republished a file is a MISS here rather than a silent inline fetch during the load.
+            One entry per repo: same-repo groups share a scope variant, so a second job for the
+            same repo would fight the first over progress, manifest and cancellation.
             """
-            missing = [name for name in files if not self._hub_file_is_cached(repo, name)]
+            revision = revisions.get(repo)
+            missing = [
+                name for name in files if not self._hub_file_is_cached(repo, name, revision)
+            ]
             if not missing:
+                return
+            for entry in entries:
+                if entry["repo_id"] != repo:
+                    continue
+                added = [n for n in missing if n not in entry["files"]]
+                entry["files"].extend(added)
+                entry["bytes"] += int(sum(declared_sizes.get(n, 0) for n in added))
+                entry["gguf_filename"] = entry["gguf_filename"] or gguf
                 return
             entries.append(
                 {
@@ -1612,17 +1649,22 @@ class DiffusionBackend:
         }
 
     @staticmethod
-    def _hub_file_is_cached(repo_id: str, filename: str) -> bool:
+    def _hub_file_is_cached(
+        repo_id: str, filename: str, revision: Optional[str] = None
+    ) -> bool:
         """Whether ``filename`` is complete in either cache root the loader reuses.
 
-        ``try_to_load_from_cache`` is network-free and resolves the current ``main`` snapshot.
-        A string alone is not enough on Windows, where a broken snapshot link can survive a
-        cancelled download, so the target must still be a real file.
+        ``try_to_load_from_cache`` is network-free. Pinned to ``revision`` it answers for the
+        commit the plan was sized against; unpinned it resolves the LOCAL ``main`` ref, which a
+        republished companion leaves stale. A string alone is not enough on Windows, where a
+        broken snapshot link can survive a cancelled download, so the target must still be a file.
         """
         try:
             from huggingface_hub import try_to_load_from_cache
             for root in (hub_cache_dir(), None):
-                hit = try_to_load_from_cache(repo_id, filename, cache_dir = root)
+                hit = try_to_load_from_cache(
+                    repo_id, filename, cache_dir = root, revision = revision
+                )
                 if isinstance(hit, str) and Path(hit).is_file():
                     return True
         except Exception:  # noqa: BLE001 -- an unreadable cache is a miss, never a plan failure

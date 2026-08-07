@@ -1194,6 +1194,12 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       pendingStagedLoad.current = null;
       if (pending) void handleLoadRef.current(pending.repoId, pending.opts);
     },
+    onCancelled: () => {
+      // Same rule as the images page: a plan that ends without every dependency on disk must not
+      // leave an intent for a late completion or a deferred activation to act on.
+      pendingStagedLoad.current = null;
+      stagedLoadDeferred.current = false;
+    },
   });
 
   useEffect(() => {

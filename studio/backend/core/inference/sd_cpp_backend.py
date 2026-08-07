@@ -729,21 +729,29 @@ class SdCppDiffusionBackend:
         sizes = self._plan_file_sizes(by_repo, hf_token)
         entries: list[dict[str, Any]] = []
         total = 0
+        # Imported here, not at module scope: diffusion.py is the heavier module and the routes
+        # already load this one on its own.
+        from core.inference.diffusion import DiffusionBackend
         for repo, names in by_repo.items():
-            repo_bytes = int(sum(sizes.get((repo, n), 0) for n in names))
-            total += repo_bytes
+            total += int(sum(sizes.get((repo, n), 0) for n in names))
+            # Same missing-file filter the diffusers planner applies: _fetch_assets already reads
+            # both cache roots, so staging an asset it can resolve re-downloads it for nothing and
+            # fails offline. required_bytes keeps the UNFILTERED sum -- it is the disk footprint.
+            missing = [n for n in names if not DiffusionBackend._hub_file_is_cached(repo, n)]
+            if not missing:
+                continue
             entries.append(
                 {
                     "repo_id": repo,
-                    "files": names,
-                    "bytes": repo_bytes,
+                    "files": missing,
+                    "bytes": int(sum(sizes.get((repo, n), 0) for n in missing)),
                     # Only the transformer entry carries the GGUF filename; the VAE / encoder entries are plain single files.
                     "gguf_filename": gguf_filename if repo == fetch_repo_id else None,
                 }
             )
         return {
             "entries": entries,
-            "total_bytes": total,
+            "total_bytes": sum(entry["bytes"] for entry in entries),
             "required_bytes": total,
             "checkpoint_bytes": int(sizes.get((fetch_repo_id, gguf_filename), 0)),
         }

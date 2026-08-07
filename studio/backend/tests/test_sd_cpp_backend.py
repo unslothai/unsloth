@@ -214,6 +214,78 @@ def test_asset_specs_cover_required_files(fam_name, expect_kinds):
     assert tr[0] == "unsloth/x-GGUF" and tr[1] == "x-Q4_K_M.gguf"
 
 
+@pytest.fixture(autouse = True)
+def _plan_sees_an_empty_cache(monkeypatch):
+    """Plan tests describe their cache state, so a developer's real one cannot drop an entry."""
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_cached",
+        staticmethod(lambda repo_id, filename, revision = None: False),
+    )
+
+
+def test_download_plan_skips_assets_already_in_the_cache(monkeypatch):
+    # _fetch_assets resolves either cache root, so staging a file it can already open re-downloads
+    # it for nothing and fails offline. required_bytes stays the full footprint regardless.
+    from core.inference.diffusion import DiffusionBackend
+
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    monkeypatch.setattr(
+        SdCppDiffusionBackend,
+        "_plan_file_sizes",
+        staticmethod(
+            lambda by_repo, token: {
+                ("unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q4_K_M.gguf"): 4_000,
+                ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors"): 300,
+                (
+                    "unsloth/Z-Image-Turbo-ComfyUI",
+                    "split_files/text_encoders/qwen_3_4b.safetensors",
+                ): 8_000,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_cached",
+        staticmethod(lambda repo_id, filename, revision = None: filename.endswith(".gguf")),
+    )
+
+    plan = b.download_plan(
+        "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        model_kind = "gguf",
+    )
+
+    assert [e["repo_id"] for e in plan["entries"]] == ["unsloth/Z-Image-Turbo-ComfyUI"]
+    assert plan["total_bytes"] == 8_300
+    assert plan["required_bytes"] == 12_300
+    assert plan["checkpoint_bytes"] == 4_000
+
+
+def test_download_plan_is_empty_when_every_native_asset_is_cached(monkeypatch):
+    from core.inference.diffusion import DiffusionBackend
+
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    monkeypatch.setattr(
+        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: {})
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_cached",
+        staticmethod(lambda repo_id, filename, revision = None: True),
+    )
+
+    plan = b.download_plan(
+        "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        model_kind = "gguf",
+    )
+
+    assert plan["entries"] == [] and plan["total_bytes"] == 0
+
+
 def test_download_plan_stages_exactly_what_sd_cli_opens(monkeypatch):
     # The plan feeds the Hub download manager. Native reads single-file assets, so a native-routed pick must be staged from the asset specs.
     b = SdCppDiffusionBackend(engine = _FakeEngine())

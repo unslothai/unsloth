@@ -33,7 +33,9 @@ export function useStagedDownload({
   /** Scope label for entries that fetch a file subset (e.g. "diffusion"). */
   scopeId: string;
   onReady: () => void;
-  /** Clears the consumer's pending auto-load when the user stops any entry in the plan. */
+  /** Clears the consumer's pending auto-load whenever the plan ends without every entry on disk:
+   * cancelled, failed, or never started. A pick is only an intent until then, and leaving it
+   * behind lets a later completion or a deferred page activation load a model nobody asked for. */
   onCancelled?: () => void;
 }) {
   const [queue, setQueue] = useState<StagedDownloadEntry[] | null>(null);
@@ -80,6 +82,7 @@ export function useStagedDownload({
       if (!isOurs(variant)) return;
       inFlight.current = null;
       setQueue(null);
+      onCancelled?.();
     },
     onCancelled: (variant) => {
       if (!isOurs(variant)) return;
@@ -88,6 +91,14 @@ export function useStagedDownload({
       onCancelled?.();
     },
   });
+
+  // Read through a ref so a consumer's inline callback cannot re-run the start effect and
+  // restart a live download.
+  const onCancelledRef = useRef(onCancelled);
+  onCancelledRef.current = onCancelled;
+  // Announced on the first entry that actually starts, not on stage(): a plan whose start is
+  // refused would otherwise promise a download and then immediately contradict itself.
+  const planToast = useRef<string | null>(null);
 
   useEffect(() => {
     if (!current) return;
@@ -108,33 +119,36 @@ export function useStagedDownload({
       });
       if (!active) return;
       if (outcome === "started") {
+        if (planToast.current) {
+          toast.info("Downloading model requirements", {
+            description: planToast.current,
+          });
+          planToast.current = null;
+        }
         return;
       }
       if (inFlight.current === started) inFlight.current = null;
       // A start that never got off the ground (network failure, rejected scoped request, worker refused) will never complete, so
       // clear the queue instead of leaving the head in place, where the effect never re-runs and onReady never fires.
+      // The pick dies with it, so the consumer's pending auto-load has to go too.
       if (outcome === "error") {
         toast.error("Could not start the download", {
           description: "Check the connection, then select the model again.",
         });
-        setQueue(null);
-        return;
-      }
-      if (outcome === "conflict") {
+      } else if (outcome === "conflict") {
         toast.info("Resume this download from Models", {
           description:
             "An earlier partial download used a different transport. Open the Model hub tab to resume or restart it.",
         });
-        setQueue(null);
-        return;
-      }
-      if (outcome === "busy") {
+      } else if (outcome === "busy") {
         toast.info("Download already in progress", {
           description:
             "Reselect this model once the running download finishes to load it.",
         });
-        setQueue(null);
       }
+      planToast.current = null;
+      setQueue(null);
+      onCancelledRef.current?.();
     })();
     return () => {
       active = false;
@@ -146,6 +160,7 @@ export function useStagedDownload({
     // A fresh plan supersedes whatever was staged, so bump the generation: a callback for the previous plan's job is no longer ours.
     generation.current += 1;
     inFlight.current = null;
+    planToast.current = null;
     if (entries.length > 0) {
       const bytes = entries.reduce(
         (total, entry) => total + Math.max(entry.bytes, 0),
@@ -155,9 +170,7 @@ export function useStagedDownload({
         .map((entry) => entry.ggufFilename || entry.repoId)
         .join(" + ");
       const size = bytes > 0 ? `${formatBytes(bytes)} remaining across ` : "";
-      toast.info("Downloading model requirements", {
-        description: `${size}${entries.length} required ${entries.length === 1 ? "component" : "components"} (${components}). It'll load automatically once all are ready.`,
-      });
+      planToast.current = `${size}${entries.length} required ${entries.length === 1 ? "component" : "components"} (${components}). It'll load automatically once all are ready.`;
     }
     setQueue(entries.length > 0 ? entries : null);
   }, []);
