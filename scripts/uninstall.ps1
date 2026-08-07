@@ -79,6 +79,20 @@ Environment:
         }
     }
 
+    # Record whether the install root about to be removed carries a studio.db. That file
+    # holds chat_threads/chat_messages and the saved provider keys (backend/storage/
+    # studio_db.py, providers_db.py, both via studio_root()) and lives under the install
+    # root, so an env-mode install keeps it inside the custom root. A bare run with neither
+    # variable set cannot discover that root, so the summary must not claim the history is
+    # gone unless a database was really deleted.
+    function _NoteStudioDb {
+        param([string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return }
+        if (Test-Path -LiteralPath (Join-Path $Path "studio.db") -PathType Leaf) {
+            $script:StudioDbRemoved = $true
+        }
+    }
+
     # Remove the shared data dir, but keep unsloth.ico if a WSL shortcut still points
     # at it (else that shortcut blanks); uninstall.sh drops it when WSL is removed.
     function _RemoveDataDirKeepingWslIcon {
@@ -471,6 +485,7 @@ Environment:
             _Substep "refusing to remove non-Unsloth path: $r" "Yellow"
             continue
         }
+        _NoteStudioDb $r
         _RemovePath $r
         # Native diffusion (stable-diffusion.cpp) for a custom/env-mode Studio installs beside
         # the root at <parent>\stable-diffusion.cpp -- find_sd_cpp_binary resolves it from
@@ -489,7 +504,7 @@ Environment:
         }
     }
     # Default install dir (always at %USERPROFILE%\.unsloth\studio when present).
-    if ($defaultStudioHome) { _RemovePath $defaultStudioHome }
+    if ($defaultStudioHome) { _NoteStudioDb $defaultStudioHome; _RemovePath $defaultStudioHome }
     # Default data dir.
     if ($defaultDataDir) { _RemoveDataDirKeepingWslIcon $defaultDataDir }
     # Default-mode shared llama.cpp build + cache (siblings of studio under
@@ -633,9 +648,16 @@ Environment:
         Write-Host "Note: some paths could not be removed (see 'could not remove:' above), so the"
         Write-Host "      signed-in session, saved provider API keys and local chat history may"
         Write-Host "      still be on disk. Remove those paths by hand to clear them."
+    } elseif ($script:StudioDbRemoved) {
+        Write-Host "Note: this also removed the app's WebView data and studio.db, so the signed-in"
+        Write-Host "      session, saved provider API keys and local chat history are gone."
     } else {
-        Write-Host "Note: this also removed the app's WebView data, so the signed-in session,"
-        Write-Host "      saved provider API keys and local chat history are gone."
+        # No studio.db was deleted, so only the WebView-local data is accounted for.
+        # Claiming the keys and history are gone would be false for an env-mode install
+        # whose root this run never discovered.
+        Write-Host "Note: this also removed the app's WebView data, so the signed-in session is gone."
+        Write-Host "      No studio.db was found, so any saved provider API keys and chat history in"
+        Write-Host "      an install root this run did not see are still on disk."
     }
     Write-Host "Note: Hugging Face model cache at %USERPROFILE%\.cache\huggingface was left in place."
     Write-Host "Remove it manually with 'Remove-Item -Recurse -Force `"$env:USERPROFILE\.cache\huggingface\hub`"' if desired."

@@ -193,6 +193,22 @@ $_roots_from_conf"
 _REMOVE_FAILED_FLAG="${TMPDIR:-/tmp}/.unsloth-uninstall-failed.$$"
 rm -f "$_REMOVE_FAILED_FLAG" 2>/dev/null || true
 
+# Set when a removed install root actually held studio.db, read by the closing summary.
+# studio.db is what holds chat_threads/chat_messages and the saved provider keys
+# (backend/storage/studio_db.py, providers_db.py, both via studio_root()), and it lives
+# under the install root, so an env-mode install keeps it inside the custom root. A bare
+# run with neither variable exported cannot discover that root, so the summary must not
+# claim the history is gone unless a database was really deleted. Also a marker file, not
+# a variable: custom roots are removed inside a pipeline subshell.
+_DB_REMOVED_FLAG="${TMPDIR:-/tmp}/.unsloth-uninstall-db-removed.$$"
+rm -f "$_DB_REMOVED_FLAG" 2>/dev/null || true
+
+# Record whether the install root about to be removed carries a studio.db.
+_note_studio_db() {
+    [ -f "$1/studio.db" ] && { : > "$_DB_REMOVED_FLAG" 2>/dev/null || true; }
+    return 0
+}
+
 _remove_path() {
     _p="$1"
     if [ -e "$_p" ] || [ -L "$_p" ]; then
@@ -351,6 +367,7 @@ _unsloth_uninstall_main() {
             echo "  refusing to remove non-Unsloth path: $_custom_root" >&2
             continue
         fi
+        _note_studio_db "$_custom_root"
         _remove_path "$_custom_root"
         # Native diffusion (stable-diffusion.cpp) for a custom/env-mode Studio installs beside
         # the root at <parent>/stable-diffusion.cpp -- find_sd_cpp_binary resolves it from
@@ -369,6 +386,7 @@ _unsloth_uninstall_main() {
             _remove_path "$_custom_sd_cpp"
         fi
     done
+    _note_studio_db "$HOME/.unsloth/studio"
     _remove_path "$HOME/.unsloth/studio"
     # Default-mode shared llama.cpp build + cache are siblings of studio (not removed
     # by deleting it). No-op in env/custom mode (they nest under the custom root) and
@@ -643,10 +661,18 @@ _unsloth_uninstall_main() {
         echo "Note: some paths could not be removed (see 'could not remove:' above), so the"
         echo "      signed-in session, saved provider API keys and local chat history may"
         echo "      still be on disk. Remove those paths by hand to clear them."
+    elif [ -f "$_DB_REMOVED_FLAG" ]; then
+        echo "Note: this also removed the app's WebView data and studio.db, so the signed-in"
+        echo "      session, saved provider API keys and local chat history are gone."
     else
-        echo "Note: this also removed the app's WebView data, so the signed-in session,"
-        echo "      saved provider API keys and local chat history are gone."
+        # No studio.db was deleted, so only the WebView-local data is accounted for.
+        # Claiming the keys and history are gone would be false for an env-mode install
+        # whose root this run never discovered.
+        echo "Note: this also removed the app's WebView data, so the signed-in session is gone."
+        echo "      No studio.db was found, so any saved provider API keys and chat history in"
+        echo "      an install root this run did not see are still on disk."
     fi
+    rm -f "$_DB_REMOVED_FLAG" 2>/dev/null || true
     echo "Note: Hugging Face model cache at ~/.cache/huggingface was left in place."
     echo "Remove it manually with 'rm -rf ~/.cache/huggingface/hub' if desired."
     # Env-mode installs leave no breadcrumb in $HOME, so a custom root can

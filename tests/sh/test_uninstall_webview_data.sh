@@ -249,6 +249,44 @@ case "$_out" in
     *) echo "  PASS: linux: custom-root failure reaches the summary"; PASS=$((PASS+1)) ;;
 esac
 
+# ── 3g. Env-mode install, bare uninstall. An env-mode install writes studio.conf into
+# $STUDIO_HOME/share (install.sh:567), not $HOME, so nothing in $HOME points at the custom
+# root. Running the documented bare uninstaller leaves studio.db (chat_threads,
+# chat_messages, provider keys) untouched, so the summary must not say it is gone. ──
+H=$(new_home)
+CUSTOM2="$_TMP_ROOT/envroot.$$"
+mkdir -p "$CUSTOM2/share"
+: > "$CUSTOM2/share/studio.conf"
+: > "$CUSTOM2/studio.db"
+printf '#!/bin/sh\necho Linux\n' > "$STUB_BIN/uname"; chmod +x "$STUB_BIN/uname"
+_out=$(env -u UNSLOTH_STUDIO_HOME -u STUDIO_HOME \
+    -u XDG_CACHE_HOME -u XDG_DATA_HOME -u XDG_CONFIG_HOME -u XDG_STATE_HOME \
+    HOME="$H" PATH="$STUB_BIN:$PATH" sh "$UNINSTALL_SH" 2>/dev/null)
+assert_present "linux: undiscovered env-mode studio.db survives" "$CUSTOM2/studio.db"
+case "$_out" in
+    *"chat history are gone."*)
+        echo "  FAIL: linux: claimed chat history is gone with studio.db still on disk"
+        FAIL=$((FAIL+1)) ;;
+    *) echo "  PASS: linux: no studio.db removed -> no claim that the history is gone"
+        PASS=$((PASS+1)) ;;
+esac
+
+# ── 3h. The other side of 3g: when a studio.db IS removed, the full claim must return,
+# otherwise the softened wording above would just always fire and assert nothing. ──
+H=$(new_home)
+mkdir -p "$H/.unsloth/studio/unsloth_studio"
+: > "$H/.unsloth/studio/unsloth_studio/.unsloth-studio-owned"
+: > "$H/.unsloth/studio/studio.db"
+_out=$(run_uninstall_out "$H" Linux)
+assert_gone "linux: default-mode studio.db removed" "$H/.unsloth/studio/studio.db"
+case "$_out" in
+    *"chat history are gone."*)
+        echo "  PASS: linux: studio.db removed -> summary states the history is gone"
+        PASS=$((PASS+1)) ;;
+    *) echo "  FAIL: linux: studio.db was removed but the summary never says so"
+        FAIL=$((FAIL+1)) ;;
+esac
+
 # ── 3f. A custom root the deny list refuses is also incomplete removal. install.sh accepts any
 # writable root (mkdir -p + -w, no deny list), so /var/tmp/studio installs without elevation and
 # then survives uninstall untouched. Uses the fixture HOME, which _is_unsafe_root also refuses. ──
