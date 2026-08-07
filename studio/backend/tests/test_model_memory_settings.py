@@ -1865,3 +1865,70 @@ class TestPairedWritesAreInvalidatedTogether:
                 assert (
                     "_invalidate" not in called
                 ), "_invalidate is back in a loop, so the pair is not atomic"
+
+
+class TestThePolicyReadsOneSnapshot:
+    """apply_model_memory_policy decided stripping and locking from separate
+    reads, so a save landing between them produced a launch for a pair that was
+    never stored: no strip for the new no-reserve, and no lock either, leaving a
+    saved --mlock in the extras."""
+
+    def test_a_save_between_the_two_reads_is_not_observable(self, monkeypatch):
+        import utils.model_memory_settings as mm
+
+        # Start at (keep_resident=True, no_ram_reserve=False).
+        store = {
+            mm.KEEP_RESIDENT_SETTING_KEY: True,
+            mm.NO_RAM_RESERVE_SETTING_KEY: False,
+        }
+        monkeypatch.setattr(
+            "storage.studio_db.get_app_setting", lambda key, default = None: store.get(key, default)
+        )
+        monkeypatch.setattr(
+            "storage.studio_db.upsert_app_settings", lambda updates: store.update(updates)
+        )
+        mm._cache.clear()
+        mm._generation.clear()
+
+        # Flip to (False, True) the moment keep_resident has been read.
+        real = mm.get_keep_resident
+        fired: list[bool] = []
+
+        def flip_after_first_read():
+            value = real()
+            if not fired:
+                fired.append(True)
+                store[mm.KEEP_RESIDENT_SETTING_KEY] = False
+                store[mm.NO_RAM_RESERVE_SETTING_KEY] = True
+                mm._invalidate(
+                    mm.KEEP_RESIDENT_SETTING_KEY, mm.NO_RAM_RESERVE_SETTING_KEY
+                )
+            return value
+
+        monkeypatch.setattr(mm, "get_keep_resident", flip_after_first_read)
+        keep_resident, no_ram_reserve = mm.get_model_memory_settings()
+        assert fired, "the write never landed, so this proves nothing"
+        # (True, True) was never stored: the old pair or the new one, not a mix.
+        assert (keep_resident, no_ram_reserve) in {(True, False), (False, True)}
+
+    def test_the_policy_derives_both_from_one_call(self):
+        import ast
+        from pathlib import Path
+
+        src = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_server_args.py"
+        tree = ast.parse(src.read_text(encoding = "utf-8"))
+        fn = next(
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "apply_model_memory_policy"
+        )
+        named = [
+            c.func.id
+            for c in ast.walk(fn)
+            if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+        ]
+        assert named.count("get_model_memory_settings") == 1
+        for separate in ("should_mlock", "get_no_ram_reserve", "get_keep_resident"):
+            assert separate not in named, (
+                f"{separate} is read separately again, so the pair can tear"
+            )

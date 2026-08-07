@@ -105,12 +105,33 @@ def should_mlock() -> bool:
     mlock pins the whole model in host RAM, so it is emitted only when residency
     is on and no-reserve is off. The two conflict, and no-reserve wins.
     """
-    return get_keep_resident() and not get_no_ram_reserve()
+    keep_resident, no_ram_reserve = get_model_memory_settings()
+    return keep_resident and not no_ram_reserve
+
+
+def _pair_generations() -> tuple[int, int]:
+    with _cache_lock:
+        return (
+            _generation.get(KEEP_RESIDENT_SETTING_KEY, 0),
+            _generation.get(NO_RAM_RESERVE_SETTING_KEY, 0),
+        )
 
 
 def get_model_memory_settings() -> tuple[bool, bool]:
-    """``(keep_resident, no_ram_reserve)`` in one call for the settings route."""
-    return get_keep_resident(), get_no_ram_reserve()
+    """``(keep_resident, no_ram_reserve)`` from ONE coherent snapshot.
+
+    Read one after the other, a save landing in between returns a pair that was
+    never stored, and the launch then strips for one setting while locking for
+    the other. The write drops both keys in a single acquisition, so a bumped
+    generation on either side is enough to spot it and read again.
+    """
+    pair = (get_keep_resident(), get_no_ram_reserve())
+    for _attempt in range(_MAX_REREADS):
+        before = _pair_generations()
+        pair = (get_keep_resident(), get_no_ram_reserve())
+        if _pair_generations() == before:
+            return pair
+    return pair
 
 
 def set_model_memory_settings(

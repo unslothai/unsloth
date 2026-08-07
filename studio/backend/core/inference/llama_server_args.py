@@ -637,12 +637,15 @@ def apply_model_memory_policy(
     still applies.
     """
     try:
-        from utils.model_memory_settings import get_no_ram_reserve, should_mlock
+        from utils.model_memory_settings import get_model_memory_settings
     except Exception:
         # Settings unavailable (bare unit-test import): behave as before.
         return [], list(extra_args or [])
 
-    no_ram_reserve = get_no_ram_reserve()
+    # One snapshot for both decisions: read separately, a save landing between
+    # them strips for one setting and locks for the other, so a saved --mlock
+    # could survive a committed no-reserve.
+    keep_resident, no_ram_reserve = get_model_memory_settings()
     tokens = list(extra_args or [])
     if no_ram_reserve:
         tokens = strip_shadowing_flags(
@@ -658,7 +661,7 @@ def apply_model_memory_policy(
         tokens = _strip_reserving_load_modes(tokens)
 
     managed: list[str] = []
-    if should_mlock() and weights_in_host_memory:
+    if keep_resident and not no_ram_reserve and weights_in_host_memory:
         # Before the extras, like the rest of the managed block. mmap+mlock, not
         # bare mlock: it matches what --mlock meant alongside the default mmap.
         managed.extend(["--load-mode", "mmap+mlock"] if supports_load_mode else ["--mlock"])
