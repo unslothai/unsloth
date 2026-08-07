@@ -3,6 +3,7 @@
 
 """Static contracts for focused packaged-desktop reliability behavior."""
 
+import re
 from pathlib import Path
 
 
@@ -49,6 +50,16 @@ TRAINING_CONFIG_ACTIONS = FRONTEND / "features/studio/wizard/config-actions.tsx"
 MARKDOWN_TEXT = FRONTEND / "components/assistant-ui/markdown-text.tsx"
 IMAGE = FRONTEND / "components/assistant-ui/image.tsx"
 AUDIO_PLAYER = FRONTEND / "components/assistant-ui/audio-player.tsx"
+
+
+def _named_imports(source, module):
+    """Named specifiers imported from ``module``, so adding one does not break a contract."""
+    match = re.search(
+        r"import\s*\{([^}]*)\}\s*from\s*[\"']" + re.escape(module) + r"[\"']", source
+    )
+    if match is None:
+        return set()
+    return {part.strip() for part in match.group(1).split(",") if part.strip()}
 
 
 def test_desktop_update_offer_remains_actionable_from_settings():
@@ -413,7 +424,9 @@ def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
     sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
     header = sidebar.split("<SidebarHeader", 1)[1].split("</SidebarHeader>", 1)[0]
 
-    assert 'import { ArrowLeft, ArrowRight } from "lucide-react";' in titlebar
+    imported = _named_imports(titlebar, "lucide-react")
+    assert "ArrowLeft" in imported
+    assert "ArrowRight" in imported
     assert "<ArrowLeft" in titlebar
     assert "<ArrowRight" in titlebar
     assert "window.history.back()" in titlebar
