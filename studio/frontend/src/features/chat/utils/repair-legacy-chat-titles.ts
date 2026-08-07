@@ -2,11 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { batchListChatMessages } from "../api/chat-api";
-import type { ThreadRecord } from "../types";
-import { updateStoredChatThread } from "./chat-history-storage";
+import type { MessageRecord, ThreadRecord } from "../types";
 import {
-  couldBeLegacyClippedTitle,
+  listLegacyChatMessages,
+  updateStoredChatThread,
+} from "./chat-history-storage";
+import {
   planLegacyTitleRepairs,
+  selectLegacyRepairPage,
+  threadsMissingMessages,
 } from "./chat-title";
 import { runWithConcurrency } from "./run-with-concurrency";
 
@@ -14,39 +18,53 @@ import { runWithConcurrency } from "./run-with-concurrency";
  *  the ones that could not be rewritten off every later refresh. */
 const attempted = new Set<string>();
 
-/** Rows per pass, so a long history drains over a few refreshes instead of
- *  putting its whole backlog on the backend at once. */
+/** Rows per pass, so a long history drains in pages instead of putting its
+ *  whole backlog on the backend at once. */
 const REPAIR_PER_PASS = 100;
 
 /** Writes in flight. Each PATCH is a synchronous SQLite call server side. */
 const REPAIR_CONCURRENCY = 4;
 
+/** Breather between pages. */
+const REPAIR_PAGE_PAUSE_MS = 500;
+
 /** Rewrite titles stored pre-cut at 48 chars so they grow with the sidebar
- *  again. Takes whichever threads the caller just loaded. */
+ *  again. `known` is the caller's own message map, when it already has one. */
 export async function repairLegacyChatTitles(
   threads: ThreadRecord[],
+  known?: Map<string, MessageRecord[]>,
 ): Promise<number> {
-  const candidates = threads
-    .filter(
-      (thread) =>
-        couldBeLegacyClippedTitle(thread.title) && !attempted.has(thread.id),
-    )
-    .slice(0, REPAIR_PER_PASS);
+  const { candidates, hasMore } = selectLegacyRepairPage(
+    threads,
+    attempted,
+    REPAIR_PER_PASS,
+  );
   if (candidates.length === 0) return 0;
   const ids = candidates.map((thread) => thread.id);
   for (const id of ids) attempted.add(id);
 
-  let repairs: ReturnType<typeof planLegacyTitleRepairs>;
+  let messages: Map<string, MessageRecord[]>;
   try {
-    // One batched call, not one per row.
-    const messagesByThreadId = await batchListChatMessages(ids);
-    repairs = planLegacyTitleRepairs(candidates, messagesByThreadId);
+    // One batched call, and none at all when the caller already fetched them.
+    messages = known
+      ? new Map(known)
+      : await batchListChatMessages(ids);
+    // A chat still only in Dexie (legacy import pending or failed) reads empty
+    // from the backend, so look locally before writing it off.
+    await runWithConcurrency(
+      threadsMissingMessages(ids, messages),
+      REPAIR_CONCURRENCY,
+      async (id) => {
+        messages.set(id, await listLegacyChatMessages(id));
+      },
+    );
   } catch {
     // Nothing was decided, so let a later refresh try these again.
     for (const id of ids) attempted.delete(id);
     return 0;
   }
 
+  const repairs = planLegacyTitleRepairs(candidates, messages);
   let repaired = 0;
   await runWithConcurrency(repairs, REPAIR_CONCURRENCY, async (repair) => {
     try {
@@ -63,5 +81,13 @@ export async function repairLegacyChatTitles(
       attempted.delete(repair.threadId);
     }
   });
+
+  // A page that wrote nothing fires no history update, so the next page has to
+  // be scheduled here rather than left waiting on an unrelated refresh.
+  if (hasMore) {
+    setTimeout(() => {
+      void repairLegacyChatTitles(threads, known).catch(() => undefined);
+    }, REPAIR_PAGE_PAUSE_MS);
+  }
   return repaired;
 }

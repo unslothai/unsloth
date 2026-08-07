@@ -534,6 +534,15 @@ export async function listStoredChatMessages(
   );
 }
 
+/** Dexie-only read, for callers that already know the backend has nothing. */
+export async function listLegacyChatMessages(
+  threadId: string,
+): Promise<MessageRecord[]> {
+  if (isThreadIncognito(threadId)) return [];
+  if (isChatThreadDeleted(threadId)) return [];
+  return db.messages.where("threadId").equals(threadId).toArray();
+}
+
 export async function getStoredChatMessage(
   threadId: string,
   messageId: string,
@@ -597,11 +606,19 @@ export async function listStoredChatThreads(
     );
 }
 
+export interface ChatThreadsWithMessages {
+  threads: ThreadRecord[];
+  /** Every listed thread's messages, so callers need not fetch them again. */
+  messagesByThreadId: Map<string, MessageRecord[]>;
+}
+
 export async function listStoredChatThreadsWithMessages(
   args: ThreadListArgs = {},
-): Promise<ThreadRecord[]> {
+): Promise<ChatThreadsWithMessages> {
   const threads = await listStoredChatThreads(args);
-  if (threads.length === 0) return [];
+  if (threads.length === 0) {
+    return { threads: [], messagesByThreadId: new Map() };
+  }
   // One batched HTTP call instead of N. Per-thread legacy Dexie fallback
   // only fires when the batch result is empty.
   const threadIds = threads.map((t) => t.id);
@@ -615,13 +632,20 @@ export async function listStoredChatThreadsWithMessages(
     threads.map(async (thread) => {
       const backendMessages = backendByThread.get(thread.id) ?? [];
       if (backendMessages.length > 0) {
-        return { thread, hasContent: true };
+        return { thread, messages: backendMessages, hasContent: true };
       }
       const legacy = await listStoredChatMessages(thread.id).catch(() => null);
-      return { thread, hasContent: legacy === null || legacy.length > 0 };
+      return {
+        thread,
+        messages: legacy ?? [],
+        hasContent: legacy === null || legacy.length > 0,
+      };
     }),
   );
-  return entries.filter((e) => e.hasContent).map((e) => e.thread);
+  return {
+    threads: entries.filter((e) => e.hasContent).map((e) => e.thread),
+    messagesByThreadId: new Map(entries.map((e) => [e.thread.id, e.messages])),
+  };
 }
 
 export async function listStoredChatProjects(

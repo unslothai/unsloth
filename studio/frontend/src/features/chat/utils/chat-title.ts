@@ -73,6 +73,37 @@ export interface LegacyTitleRepair {
   title: string;
 }
 
+export interface LegacyRepairPage {
+  candidates: ThreadRecord[];
+  /** Rows left for the next page, which the caller has to schedule itself. */
+  hasMore: boolean;
+}
+
+/** One page of rows to look at, skipping the ones already tried. */
+export function selectLegacyRepairPage(
+  threads: ThreadRecord[],
+  attempted: ReadonlySet<string>,
+  limit: number,
+): LegacyRepairPage {
+  const pending = threads.filter(
+    (thread) =>
+      couldBeLegacyClippedTitle(thread.title) && !attempted.has(thread.id),
+  );
+  return {
+    candidates: pending.slice(0, limit),
+    hasMore: pending.length > limit,
+  };
+}
+
+/** Threads the backend has nothing for. A chat still only in Dexie reads empty
+ *  there, so it needs a local read before it can be written off. */
+export function threadsMissingMessages(
+  ids: readonly string[],
+  messagesByThreadId: ReadonlyMap<string, MessageRecord[]>,
+): string[] {
+  return ids.filter((id) => (messagesByThreadId.get(id) ?? []).length === 0);
+}
+
 /** Rows to rewrite. A title must be the exact old cut of its own first
  *  message, so a rename ending in "..." is left alone. */
 export function planLegacyTitleRepairs(

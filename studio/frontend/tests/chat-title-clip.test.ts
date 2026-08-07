@@ -9,6 +9,8 @@ import {
   fallbackTitleFromUserText,
   isLegacyClippedTitle,
   planLegacyTitleRepairs,
+  selectLegacyRepairPage,
+  threadsMissingMessages,
 } from "../src/features/chat/utils/chat-title.ts";
 
 const LONG =
@@ -85,5 +87,47 @@ test("repair rewrites legacy rows and leaves every other row untouched", () => {
 
   assert.deepEqual(planLegacyTitleRepairs(threads, messages), [
     { threadId: "a", previousTitle: legacy, title: LONG },
+  ]);
+});
+
+test("a page skips rows already tried and reports the leftovers", () => {
+  const legacy = LONG.slice(0, 48) + "...";
+  const threads = [
+    thread("a", legacy),
+    thread("b", "a plain title"),
+    thread("c", legacy),
+    thread("d", legacy),
+  ];
+
+  const first = selectLegacyRepairPage(threads, new Set(), 2);
+  assert.deepEqual(
+    first.candidates.map((t) => t.id),
+    ["a", "c"],
+  );
+  // Without this the rest of a long history waits on an unrelated refresh.
+  assert.equal(first.hasMore, true);
+
+  const second = selectLegacyRepairPage(threads, new Set(["a", "c"]), 2);
+  assert.deepEqual(
+    second.candidates.map((t) => t.id),
+    ["d"],
+  );
+  assert.equal(second.hasMore, false);
+
+  const done = selectLegacyRepairPage(threads, new Set(["a", "c", "d"]), 2);
+  assert.deepEqual(done.candidates, []);
+  assert.equal(done.hasMore, false);
+});
+
+test("a thread the backend has nothing for still gets a local read", () => {
+  // A legacy chat not yet imported reads empty from the backend, and an id it
+  // has never heard of is missing from the map entirely.
+  const messages = new Map<string, MessageRecord[]>([
+    ["a", [userMessage("a", LONG)]],
+    ["b", []],
+  ]);
+  assert.deepEqual(threadsMissingMessages(["a", "b", "c"], messages), [
+    "b",
+    "c",
   ]);
 });
