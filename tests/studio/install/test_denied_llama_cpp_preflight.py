@@ -105,6 +105,9 @@ def test_the_probe_keeps_all_three_answers() -> None:
     # Listing catches denied directories whose missing marker appears absent.
     assert "Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop" in probe
     assert "Test-AccessDeniedError" in probe
+    # A readable marker is not enough: replacement also needs directory listing.
+    assert '"Present" { return "Readable" }' not in probe
+    assert probe.index("Get-ChildItem -LiteralPath") < probe.rindex('return "Readable"')
     # It runs before anything is installed, so it must not terminate.
     assert probe.count("try {") == 1
     assert "catch" in probe
@@ -223,7 +226,7 @@ def test_a_tree_the_user_pointed_at_is_never_called_a_cache_we_own() -> None:
         "$suppliedDir = if ($WithLlamaCppDir) { $WithLlamaCppDir }"
         " else { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR }" in body
     )
-    # Compare canonical paths, as setup.ps1 does.
+    # Compare canonical paths, including denied paths whose spelling differs.
     assert "(Get-CanonicalDir -Path $suppliedDir) -eq (Get-CanonicalDir -Path $dir)" in body
     assert "$LocalIsCanonical = ($ResolvedLocal -eq $LlamaCppDir)" in SETUP_PS1
     assert (
@@ -246,8 +249,13 @@ def test_the_managed_path_rule_is_not_duplicated_in_the_installer() -> None:
     predicate = _function_source(INSTALL_PS1, "Test-StudioHomeIsCustom")
     assert predicate.count("Get-CanonicalDir -Path") == 2
     # Keep canonicalization in one helper.
-    assert "Resolve-Path -LiteralPath $Path" in _function_source(INSTALL_PS1, "Get-CanonicalDir")
-    assert INSTALL_PS1.count("Resolve-Path -LiteralPath $Path") == 1
+    canonicalizer = _function_source(INSTALL_PS1, "Get-CanonicalDir")
+    assert "Resolve-Path -LiteralPath $trimmedPath" in canonicalizer
+    # A denied path cannot resolve, so compare lexical full paths instead.
+    assert "GetUnresolvedProviderPathFromPSPath" in canonicalizer
+    assert "[System.IO.Path]::GetFullPath($fallbackPath)" in canonicalizer
+    assert "$fullPath.TrimEnd('\\', '/')" in canonicalizer
+    assert INSTALL_PS1.count("Resolve-Path -LiteralPath $trimmedPath") == 1
 
 
 def test_both_entrypoints_resolve_and_reuse_the_same_managed_directory() -> None:

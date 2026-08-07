@@ -586,7 +586,6 @@ function Install-UnslothStudio {
         if ($dirState -eq "Denied") { return "Denied" }
         if ($dirState -ne "Present") { return "Absent" }
         switch (Get-PathState -Path (Join-Path $Path "UNSLOTH_PREBUILT_INFO.json") -PathType Leaf) {
-            "Present" { return "Readable" }
             "Denied"  { return "Denied" }
         }
         try { $null = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop | Select-Object -First 1) }
@@ -649,12 +648,32 @@ function Install-UnslothStudio {
         return "Access denied reading the existing $Label at $Path. Delete or rename that folder (Unsloth reinstalls it) or restore access with takeown/icacls, then re-run setup. Reinstalling the app does not reset it."
     }
 
-    # Canonicalize existing directories for comparison; preserve unresolved paths.
+    # Canonicalize existing directories for comparison. If an unreadable directory
+    # cannot be resolved, normalize its spelling without probing it again.
     function Get-CanonicalDir {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
 
-        if ((Get-PathState -Path $Path -PathType Container) -ne "Present") { return $Path }
-        try { return (Resolve-Path -LiteralPath $Path).Path } catch { return $Path }
+        $trimmedPath = $Path.Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmedPath)) { return $trimmedPath }
+        if ((Get-PathState -Path $trimmedPath -PathType Container) -eq "Present") {
+            try { return (Resolve-Path -LiteralPath $trimmedPath).Path } catch {}
+        }
+        try {
+            $fallbackPath =
+                $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($trimmedPath)
+        } catch {
+            $fallbackPath = [System.Environment]::ExpandEnvironmentVariables($trimmedPath)
+        }
+        try {
+            $fullPath = [System.IO.Path]::GetFullPath($fallbackPath)
+            $root = [System.IO.Path]::GetPathRoot($fullPath)
+            if ($root -and $fullPath.Length -gt $root.Length) {
+                return $fullPath.TrimEnd('\', '/')
+            }
+            return $fullPath
+        } catch {
+            return $fallbackPath.TrimEnd('\', '/')
+        }
     }
 
     # Compare canonical homes so path spelling does not change ownership policy.

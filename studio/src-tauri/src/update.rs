@@ -136,11 +136,19 @@ fn read_lossy_lines<R: std::io::Read>(
     }
 }
 
+fn structured_update_error(text: &str) -> Option<String> {
+    text.strip_prefix("[TAURI:ERROR] ")
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(str::to_owned)
+}
+
 fn stream_output(
     app: &AppHandle,
     progress_event: &'static str,
     diagnostics: DiagnosticsState,
     attempt: AttemptLog,
+    explicit_error: Arc<Mutex<Option<String>>>,
     stdout: Option<std::process::ChildStdout>,
     stderr: Option<std::process::ChildStderr>,
 ) -> Vec<std::thread::JoinHandle<()>> {
@@ -150,6 +158,7 @@ fn stream_output(
         let app_clone = app.clone();
         let diagnostics_clone = diagnostics.clone();
         let attempt_clone = attempt.clone();
+        let explicit_error_clone = explicit_error.clone();
         threads.push(std::thread::spawn(move || {
             if let Err(e) = read_lossy_lines(out, |text| {
                 diagnostics::append_phase_line(&attempt_clone.handle, "stdout", &text);
@@ -159,6 +168,11 @@ fn stream_output(
                     diagnostics::record_progress(&diagnostics_clone, &attempt_clone, progress);
                 } else if let Some(marker) = text.strip_prefix("[TAURI:DIAG] ") {
                     diagnostics::record_diag_marker(&diagnostics_clone, &attempt_clone, marker);
+                }
+                if let Some(message) = structured_update_error(&text) {
+                    if let Ok(mut error) = explicit_error_clone.lock() {
+                        *error = Some(message);
+                    }
                 }
                 info!("[update][stdout] {}", text);
                 let _ = app_clone.emit(progress_event, &text);
@@ -287,11 +301,13 @@ fn run_backend_update_with_terminal_events(
             return Err(msg);
         }
     };
+    let explicit_error = Arc::new(Mutex::new(None));
     let threads = stream_output(
         &app,
         progress_event,
         diagnostics.clone(),
         attempt.clone(),
+        explicit_error.clone(),
         stdout,
         stderr,
     );
@@ -300,6 +316,7 @@ fn run_backend_update_with_terminal_events(
     for handle in threads {
         let _ = handle.join();
     }
+    let explicit_error = explicit_error.lock().ok().and_then(|error| error.clone());
 
     match result {
         Ok((status, _)) if status.success() => {
@@ -331,7 +348,7 @@ fn run_backend_update_with_terminal_events(
         }
         Ok((status, intentional)) => {
             let code = status.code().unwrap_or(-1);
-            let msg = format!("Update exited with code {}", code);
+            let msg = explicit_error.unwrap_or_else(|| format!("Update exited with code {}", code));
             diagnostics::finish_attempt(
                 &diagnostics,
                 &attempt,
@@ -462,6 +479,16 @@ mod tests {
         .unwrap();
 
         assert_eq!(lines, ["bad\u{fffd}", "[TAURI:STEP] next"]);
+    }
+
+    #[test]
+    fn structured_update_error_is_promoted_from_stdout() {
+        assert_eq!(
+            structured_update_error("[TAURI:ERROR] Access denied reading llama.cpp"),
+            Some("Access denied reading llama.cpp".to_string())
+        );
+        assert_eq!(structured_update_error("[TAURI:ERROR]   "), None);
+        assert_eq!(structured_update_error("ordinary update output"), None);
     }
 
     #[cfg(windows)]
