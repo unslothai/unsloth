@@ -1126,7 +1126,10 @@ mod tests {
         // during the very GIL stall the watchdog exists to ride out, so the backend reads as
         // unverified, the warm-up read never runs, and the grace never reopens. Binding the
         // call to HEALTH_PROBE_TIMEOUT here keeps the two from drifting apart again.
-        let src = include_str!("commands.rs");
+        // Normalise line endings first. include_str! embeds the file exactly as checked
+        // out, and on Windows that is CRLF, so a bare "\n}\n" never matches and this
+        // panicked on the Tauri CI runner while passing everywhere else.
+        let src = include_str!("commands.rs").replace("\r\n", "\n");
         let start = src
             .find("async fn check_watchdog_health")
             .expect("check_watchdog_health moved; update this guard");
