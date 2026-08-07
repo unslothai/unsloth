@@ -144,6 +144,8 @@ def _run_amd_smi(*args: str, timeout: int = _AMD_SMI_DEFAULT_TIMEOUT) -> Optiona
             ["amd-smi", *args, "--json"],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = timeout,
             env = _amd_env,
             **windows_hidden_subprocess_kwargs(),

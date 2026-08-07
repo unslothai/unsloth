@@ -60,10 +60,17 @@ _INFERENCE_SUFFIXES = (
     "/completions",
     "/messages",
     "/messages/count_tokens",  # counts via the loaded tokenizer; protect like /messages
+    "/chat/count_tokens",
     "/embeddings",
     "/responses",
     "/generate/stream",  # Unsloth's own streaming route on the same llama-server
     "/audio/generate",  # direct GGUF TTS; can outlive the idle TTL
+    # Image generation holds a multi-GB pipeline for the whole request; tracking it lets other_inference_request_count() see
+    # an in-flight generation so an API-key training start is refused (409). endswith avoids matching *-progress / */cancel.
+    "/images/generate",  # /api/inference/images/generate
+    "/images/generations",  # /v1/images/generations (+ /api/inference/images/generations)
+    # Video runs as a background job (the POST returns at once), so this covers only the brief accept; the training-start guards also probe generate-progress.
+    "/video/generate",  # /api/inference/video/generate
 )
 
 
@@ -345,6 +352,22 @@ def _loaded_identity(backend):
     return (backend.model_identifier, getattr(backend, "hf_variant", None), advertised)
 
 
+def _note_idle_unload_event(freed) -> None:
+    """Monitor row for an idle auto-unload. Best-effort; uses the stash's
+    advertised repo id so the row never shows the on-disk load path."""
+    try:
+        from core.inference.api_monitor import api_monitor
+        from core.inference.model_ids import public_model_id
+
+        identifier, variant, advertised = (list(freed) + [None, None, None])[:3]
+        label = public_model_id(advertised or identifier) or "model"
+        if variant and ":" not in label:
+            label = f"{label}:{variant}"
+        api_monitor.record_lifecycle(event = "unload", model = label, reason = "idle")
+    except Exception as exc:
+        logger.debug("idle unload monitor event failed: %s", exc)
+
+
 async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
     """Unload the loaded GGUF once idle past the configured TTL. Inert when off."""
     from utils.openai_auto_switch_settings import (
@@ -407,6 +430,8 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     elif manifest:
                         _delete_resume_files(manifest)
                     logger.info("Idle auto-unload: freed GGUF after %ss idle", ttl)
+                    # An idle unload stashes for reload and skips note_model_unloaded.
+                    _note_idle_unload_event(freed)
                     seen_model = None
         except Exception as exc:
             logger.debug("idle_unload_loop iteration failed: %s", exc)

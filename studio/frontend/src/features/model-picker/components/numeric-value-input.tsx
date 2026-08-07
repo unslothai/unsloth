@@ -2,7 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { cn } from "@/lib/utils";
-import { useRef, useState } from "react";
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 
 export function snapToStep(
   value: number,
@@ -28,43 +34,108 @@ function sanitizeNumeric(raw: string, allowNegative: boolean): string {
   return `${sign}${head}${tail}`;
 }
 
-export function NumericValueInput({
-  value,
-  min,
-  max,
-  step,
-  onChange,
-  displayValue,
-  className,
-  ariaLabel,
-  size: sizeAttr,
-  disabled = false,
-}: {
-  value: number;
-  min?: number;
-  max?: number;
-  step: number;
-  onChange: (v: number) => void;
-  displayValue?: string;
-  className?: string;
-  ariaLabel?: string;
-  size?: number;
-  disabled?: boolean;
-}) {
+export type NumericValueInputHandle = {
+  /** Commit a valid focused/same-click draft; null when none is pending. */
+  commit: () => number | null;
+};
+
+export const NumericValueInput = forwardRef<
+  NumericValueInputHandle,
+  {
+    value: number;
+    min?: number;
+    max?: number;
+    step: number;
+    onChange: (v: number) => void;
+    displayValue?: string;
+    className?: string;
+    ariaLabel?: string;
+    size?: number;
+    disabled?: boolean;
+  }
+>(function NumericValueInput(
+  {
+    value,
+    min,
+    max,
+    step,
+    onChange,
+    displayValue,
+    className,
+    ariaLabel,
+    size: sizeAttr,
+    disabled = false,
+  },
+  ref,
+) {
   const [focused, setFocused] = useState(false);
   const [draft, setDraft] = useState("");
   const cancelBlurCommitRef = useRef(false);
+  const draftRef = useRef("");
+  const dirtyRef = useRef(false);
+  // Same-click Load: blur commits via onChange and clears dirtyRef before the
+  // button onClick runs, while parent `value` is still stale. Keep the blur
+  // result for one imperative commit(); clear when `value` catches up or on
+  // focus / external edits (Reset, slider).
+  const lastBlurCommittedRef = useRef<number | null>(null);
 
-  const commit = (raw: string) => {
+  // The blur bridge is only valid across the single synchronous gesture that set
+  // it: blur commits during a button's mousedown and that button's onClick
+  // consumes it via commit() before React re-renders. Any settled render means the
+  // gesture is over, so drop the cache on every commit. Keying this on [value]
+  // alone missed a Reset (or other external edit) that restores the shown value
+  // unchanged when the blur did dispatch onChange (final !== value): value nets
+  // back to its prior number, so the effect never re-ran, the stale pin survived,
+  // and the next Load/Save replayed the override Reset had removed.
+  useEffect(() => {
+    lastBlurCommittedRef.current = null;
+  });
+
+  const commitDraft = (raw: string): number | null => {
     const parsed = Number.parseFloat(raw);
     if (!Number.isFinite(parsed)) {
-      return;
+      return null;
     }
     const final = snapToStep(parsed, step, min, max);
     if (final !== value) {
       onChange(final);
     }
+    return final;
   };
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      commit: () => {
+        if (dirtyRef.current) {
+          const raw = draftRef.current;
+          const final = commitDraft(raw);
+          dirtyRef.current = false;
+          lastBlurCommittedRef.current = null;
+          if (final == null) {
+            draftRef.current = String(value);
+          }
+          if (focused) {
+            setFocused(false);
+          }
+          return final;
+        }
+        const blurCommitted = lastBlurCommittedRef.current;
+        if (blurCommitted != null) {
+          lastBlurCommittedRef.current = null;
+          if (focused) {
+            setFocused(false);
+          }
+          return blurCommitted;
+        }
+        if (focused) {
+          setFocused(false);
+        }
+        return null;
+      },
+    }),
+    [draft, focused, max, min, onChange, step, value],
+  );
 
   const displayed = focused ? draft : (displayValue ?? String(value));
 
@@ -82,7 +153,11 @@ export function NumericValueInput({
       aria-label={ariaLabel}
       onFocus={(e) => {
         cancelBlurCommitRef.current = false;
-        setDraft(String(value));
+        dirtyRef.current = false;
+        lastBlurCommittedRef.current = null;
+        const next = String(value);
+        draftRef.current = next;
+        setDraft(next);
         setFocused(true);
         const target = e.currentTarget;
         requestAnimationFrame(() => target.select());
@@ -90,24 +165,47 @@ export function NumericValueInput({
       onBlur={() => {
         if (cancelBlurCommitRef.current) {
           cancelBlurCommitRef.current = false;
-        } else {
-          commit(draft);
+          lastBlurCommittedRef.current = null;
+        } else if (dirtyRef.current) {
+          const final = commitDraft(draftRef.current);
+          dirtyRef.current = false;
+          if (final == null) {
+            draftRef.current = String(value);
+            lastBlurCommittedRef.current = null;
+          } else {
+            draftRef.current = String(final);
+            // Only bridge the still-stale parent value when the blur actually
+            // dispatched onChange (final !== value). When final === value the
+            // parent is already current, so there is nothing to bridge; caching
+            // here would leave a stale pin that a later Reset or external edit
+            // (which doesn't change the displayed value) can never clear, so a
+            // following Load/Save would recreate the override Reset removed.
+            lastBlurCommittedRef.current = final !== value ? final : null;
+          }
         }
         setFocused(false);
       }}
-      onChange={(e) =>
-        setDraft(sanitizeNumeric(e.target.value, (min ?? 0) < 0))
-      }
+      onChange={(e) => {
+        dirtyRef.current = true;
+        lastBlurCommittedRef.current = null;
+        const next = sanitizeNumeric(e.target.value, (min ?? 0) < 0);
+        draftRef.current = next;
+        setDraft(next);
+      }}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
           e.currentTarget.blur();
         } else if (e.key === "Escape") {
           cancelBlurCommitRef.current = true;
-          setDraft(String(value));
+          dirtyRef.current = false;
+          lastBlurCommittedRef.current = null;
+          const next = String(value);
+          draftRef.current = next;
+          setDraft(next);
           e.currentTarget.blur();
         }
       }}
       className={cn(className)}
     />
   );
-}
+});

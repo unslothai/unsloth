@@ -10,9 +10,15 @@ import re
 import sys
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 import typer
+
+# Canonical speculative-decoding modes, mirroring the backend's
+# _CANONICAL_SPEC_MODES. Named once so the CLI's option annotations, the HTTP
+# payload builders and the in-process loader cannot drift apart when a mode is
+# added; typer reads it at runtime to validate --speculative-type.
+SpeculativeType = Literal["auto", "mtp", "dspark", "ngram", "mtp+ngram", "off", "ngram-simple"]
 
 _THINK_OPEN = "<think>"
 _THINK_BLOCK = re.compile(rf"{re.escape(_THINK_OPEN)}.*?</think>", re.DOTALL)
@@ -52,6 +58,78 @@ def urlopen_no_redirect(request, timeout):
     return _no_redirect_opener.open(request, timeout = timeout)
 
 
+# /api/inference/load and /unload pad their body so a proxy cannot time a slow load
+# out, committing the 200 before the work finishes. A failure found after that travels
+# only in-band under this key (studio/backend/routes/inference.py), so a client that
+# treats any 200 as success reports a failed load as a successful one.
+_DEFERRED_ERROR_KEY = "_deferred_error"
+
+
+def raise_for_deferred_error(url: str, body):
+    """Raise the late failure a padded 200 body carries; else return ``body``.
+
+    ``urllib.error.HTTPError`` specifically: it is the class every CLI caller already
+    handles for a plain HTTP failure, so existing ``except`` blocks, messages and exit
+    codes keep working, and ``.read()`` yields the same ``{"detail": ...}`` shape.
+    """
+    if not isinstance(body, dict):
+        return body
+    deferred = body.get(_DEFERRED_ERROR_KEY)
+    if not isinstance(deferred, dict):
+        return body
+
+    import email.message
+    import io
+    import urllib.error
+
+    status = deferred.get("status_code")
+    if not isinstance(status, int) or isinstance(status, bool):
+        status = 500
+    detail = deferred.get("detail")
+    if not isinstance(detail, str) or not detail:
+        detail = "unknown error" if detail is None else json.dumps(detail)
+    headers = email.message.Message()
+    headers["Content-Type"] = "application/json"
+    raise urllib.error.HTTPError(
+        url, status, detail, headers, io.BytesIO(json.dumps({"detail": detail}).encode())
+    )
+
+
+def require_completed_padded_body(url: str, body):
+    """Return ``body``, or raise if it is not the payload a padded route promised.
+
+    A proxy that gives up mid-pad leaves a 200 with an empty or truncated body, so
+    accepting it reports an unfinished load or unload as completed. Only the two padded
+    routes commit their status that early, so only they require a payload; ``{}`` is
+    rejected too, since that is what a blank body decodes to here. Mirrored by
+    ``assertCompletedPaddedBody`` in studio/frontend/src/features/chat/api/padded-response.ts.
+    """
+    if isinstance(body, dict) and body:
+        return body
+    raise RuntimeError(
+        f"{url} did not report completion: the connection closed before the "
+        "server's reply arrived. Check the model's status before retrying."
+    )
+
+
+def read_json_checking_deferred_error(url: str, response):
+    """Drain ``response``, then raise any deferred error its body carries.
+
+    Draining matters on its own: stopping at the headers of a padded /load leaves the
+    load running, so the caller resumes too early. An incomplete JSON payload is a
+    truncated padded reply, not a success (see ``require_completed_padded_body``).
+    """
+    try:
+        raw = response.read()
+    finally:
+        response.close()
+    try:
+        body = json.loads(raw.decode(errors = "replace") or "{}")
+    except ValueError:
+        body = None
+    return require_completed_padded_body(url, raise_for_deferred_error(url, body))
+
+
 def ensure_studio_backend_path() -> None:
     backend_dir = str(Path(__file__).resolve().parents[1] / "studio" / "backend")
     if backend_dir not in sys.path:
@@ -61,14 +139,19 @@ def ensure_studio_backend_path() -> None:
 def configure_quiet_logging() -> None:
     import logging
 
-    import structlog
-
     # The CLI never configures structlog, so without this every backend INFO
     # line prints. LOG_LEVEL is exported so the worker subprocess inherits it.
     level_name = os.environ.setdefault("LOG_LEVEL", "WARNING").upper()
     level = getattr(logging, level_name, logging.WARNING)
-    structlog.configure(wrapper_class = structlog.make_filtering_bound_logger(level))
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
+    # Quieting logs must not fail a command before the import that really needs
+    # structlog gets to report itself.
+    try:
+        import structlog
+    except ModuleNotFoundError:
+        return
+    structlog.configure(wrapper_class = structlog.make_filtering_bound_logger(level))
 
 
 def _parse_nonnegative_int(value: Optional[str]) -> Optional[int]:
@@ -98,9 +181,9 @@ def _json_rank_count_from_env(name: str) -> Optional[int]:
         if value.lstrip().startswith(("[", "{")):
             data = json.loads(value)
         else:
-            with open(value, "r") as f:
+            with open(value, "r", encoding = "utf-8") as f:
                 data = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return None
     if isinstance(data, list):
         return len(data)
@@ -158,7 +241,7 @@ def quiet_if_nonzero_mlx_rank():
     sys.stderr.flush()
     saved_stdout_fd = os.dup(1)
     saved_stderr_fd = os.dup(2)
-    with open(os.devnull, "w") as devnull:
+    with open(os.devnull, "w", encoding = "utf-8") as devnull:
         try:
             os.dup2(devnull.fileno(), 1)
             os.dup2(devnull.fileno(), 2)
@@ -367,40 +450,45 @@ def _load_gguf_backend(
     hf_token,
     max_seq_length,
     tensor_parallel: bool = False,
+    speculative_type: Optional[SpeculativeType] = None,
+    spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
 ):
     ensure_studio_backend_path()
-    from core.inference.llama_cpp import LlamaCppBackend
+    from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
     from core.inference.tensor_fallback import load_with_tensor_fallback
 
     llama_backend = LlamaCppBackend()
     extra_args = _validate_llama_extra_args_or_exit(llama_extra_args)
-    common = dict(
+    intent_fields = dict(
         hf_variant = model_config.gguf_variant,
         model_identifier = model_config.identifier,
         is_vision = model_config.is_vision,
         n_ctx = max_seq_length,
     )
+    if model_config.gguf_hf_repo:
+        intent_fields.update(hf_repo = model_config.gguf_hf_repo, hf_token = hf_token)
+    else:
+        intent_fields.update(
+            gguf_path = model_config.gguf_file,
+            mmproj_path = model_config.gguf_mmproj_file,
+            mtp_draft_path = model_config.gguf_mtp_file,
+            dspark_draft_path = model_config.gguf_dspark_file,
+        )
+    if speculative_type is not None:
+        intent_fields["speculative_type"] = speculative_type
+    if spec_draft_n_max is not None:
+        intent_fields["spec_draft_n_max"] = spec_draft_n_max
 
     async def _attempt_gguf_load(
         requested_tensor_parallel: bool, attempt_extra_args: Optional[List[str]]
     ) -> bool:
-        attempt_common = dict(
-            common,
-            tensor_parallel = requested_tensor_parallel,
-            extra_args = attempt_extra_args,
-        )
-        if model_config.gguf_hf_repo:
-            return llama_backend.load_model(
-                hf_repo = model_config.gguf_hf_repo,
-                hf_token = hf_token,
-                **attempt_common,
-            )
         return llama_backend.load_model(
-            gguf_path = model_config.gguf_file,
-            mmproj_path = model_config.gguf_mmproj_file,
-            mtp_draft_path = model_config.gguf_mtp_file,
-            **attempt_common,
+            GgufLoadIntent(
+                **intent_fields,
+                tensor_parallel = requested_tensor_parallel,
+                extra_args = attempt_extra_args,
+            )
         )
 
     loaded = asyncio.run(
@@ -424,6 +512,8 @@ def load_chat_backend(
     max_seq_length: int,
     load_in_4bit: bool,
     tensor_parallel: bool = False,
+    speculative_type: Optional[SpeculativeType] = None,
+    spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
     model_config = None,
     fresh_backend: bool = False,
@@ -433,7 +523,9 @@ def load_chat_backend(
     fresh_backend uses a private orchestrator so a second model (compare's
     base column) can run alongside the main one.
     """
-    with quiet_if_nonzero_mlx_rank():
+    from unsloth_cli._studio_deps import studio_backend_imports
+
+    with studio_backend_imports("unsloth inference", studio_only = True), quiet_if_nonzero_mlx_rank():
         is_mlx_distributed, rank, _world_size = mlx_distributed_info()
         if model_config is None:
             model_config = resolve_model_config(model, hf_token = hf_token)
@@ -457,6 +549,8 @@ def load_chat_backend(
                 hf_token = hf_token,
                 max_seq_length = max_seq_length,
                 tensor_parallel = tensor_parallel,
+                speculative_type = speculative_type,
+                spec_draft_n_max = spec_draft_n_max,
                 llama_extra_args = llama_extra_args,
             )
 
@@ -664,6 +758,8 @@ class HttpChatBackend:
         max_seq_length,
         load_in_4bit,
         tensor_parallel: bool = False,
+        speculative_type: Optional[SpeculativeType] = None,
+        spec_draft_n_max: Optional[int] = None,
         llama_extra_args: Optional[List[str]] = None,
     ) -> None:
         typer.echo(f"Loading {model} on the Unsloth server", err = True)
@@ -676,12 +772,18 @@ class HttpChatBackend:
         }
         if llama_extra_args:
             payload["llama_extra_args"] = llama_extra_args
+        if speculative_type is not None:
+            payload["speculative_type"] = speculative_type
+        if spec_draft_n_max is not None:
+            payload["spec_draft_n_max"] = spec_draft_n_max
         try:
-            self._request(
-                "POST",
-                "/api/inference/load",
-                payload,
-            ).close()
+            # Read the body, don't close at the headers: a slow load commits its 200
+            # early and pads until done, so closing here would generate mid-load and
+            # discard the only report of a late failure.
+            read_json_checking_deferred_error(
+                self._base + "/api/inference/load",
+                self._request("POST", "/api/inference/load", payload),
+            )
         except Exception as exc:
             typer.echo(f"Model load failed: {exc}", err = True)
             raise typer.Exit(code = 1)
@@ -767,6 +869,8 @@ def connect_studio_server(
     max_seq_length,
     load_in_4bit,
     tensor_parallel: bool = False,
+    speculative_type: Optional[SpeculativeType] = None,
+    spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
 ):
     """Backend on a running Unsloth server, or None (caller loads locally)."""
@@ -811,6 +915,8 @@ def connect_studio_server(
         max_seq_length = max_seq_length,
         load_in_4bit = load_in_4bit,
         tensor_parallel = tensor_parallel,
+        speculative_type = speculative_type,
+        spec_draft_n_max = spec_draft_n_max,
         llama_extra_args = llama_extra_args,
     )
     return backend

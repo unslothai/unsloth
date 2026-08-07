@@ -441,8 +441,9 @@ def test_main_forwards_requested_whisper_tags(tmp_path, monkeypatch):
     monkeypatch.setattr(
         M,
         "resolve_prebuilt",
-        lambda host, **kwargs: seen.update(kwargs)
-        or {"prebuilt_available": False, "repo": "unslothai/whisper.cpp"},
+        lambda host, **kwargs: (
+            seen.update(kwargs) or {"prebuilt_available": False, "repo": "unslothai/whisper.cpp"}
+        ),
     )
     assert M.main(["--resolve-prebuilt", "v1.8.0", "--output-format", "json"]) == 0
     assert seen["whisper_tag"] == "v1.8.0"
@@ -805,6 +806,115 @@ def test_slim_release_tag_skew_has_distinct_compatibility_error(tmp_path, monkey
     manifest = M.parse_manifest(_manifest([_slim_artifact()]))
     with pytest.raises(ReleaseCompatibilityError, match = SLIM_LLAMA_TAG):
         M.select_artifact_with_fallback(manifest, _cuda_host(), "cuda")
+
+
+# A newer llama build that keeps the same ggml commit as SLIM_LLAMA_TAG.
+NEWER_LLAMA_TAG = "b10079-mix-fb3d4ca"
+
+
+@pytest.mark.parametrize(
+    "installed,required,pairs",
+    [
+        (SLIM_LLAMA_TAG, SLIM_LLAMA_TAG, True),  # exact tag
+        (NEWER_LLAMA_TAG, SLIM_LLAMA_TAG, True),  # newer build, same ggml commit
+        ("b10069-mix-0000000", SLIM_LLAMA_TAG, False),  # same build, different ggml
+        (SLIM_LLAMA_TAG, None, False),  # no requirement recorded
+        ("b10069", "b10069", True),  # tag without -mix-, exact only
+        ("b10070", "b10069", False),  # tag without -mix-, no shared key
+    ],
+)
+def test_llama_runtime_pairs_falls_back_to_mix_suffix(installed, required, pairs):
+    # No tree ids either side, so the legacy suffix comparison applies.
+    assert M.llama_runtime_pairs(installed, required) is pairs
+
+
+# Real releases: same -mix-2c8b9c1 suffix, but genuinely different ggml trees.
+SUFFIX_SHARED_A = "b10173-mix-2c8b9c1"
+SUFFIX_SHARED_B = "b10181-mix-2c8b9c1"
+TREE_A = "8f3c6e197debb027f500df9f76e710e137f9fe68"
+TREE_B = "e96ffb0e063f66952b0c54796a74755b6041c867"
+
+
+@pytest.mark.parametrize(
+    "installed,required,installed_tree,required_tree,pairs",
+    [
+        # The bug this fixes: a shared suffix is not a shared ggml.
+        (SUFFIX_SHARED_A, SUFFIX_SHARED_B, TREE_A, TREE_B, False),
+        # Different suffixes, same ggml: ABI-identical.
+        ("b10241-mix-89aa77b", "b10225-mix-345e1e3", TREE_A, TREE_A, True),
+        # A missing tree either side falls back to the suffix, so installs
+        # predating ggml_tree are not stranded.
+        (SUFFIX_SHARED_A, SUFFIX_SHARED_B, None, TREE_B, True),
+        (SUFFIX_SHARED_A, SUFFIX_SHARED_B, TREE_A, None, True),
+        (SUFFIX_SHARED_A, SUFFIX_SHARED_B, "", "", True),
+        # An exact tag pairs before trees are consulted.
+        (SUFFIX_SHARED_A, SUFFIX_SHARED_A, TREE_A, TREE_B, True),
+    ],
+)
+def test_llama_runtime_pairs_prefers_ggml_tree(
+    installed, required, installed_tree, required_tree, pairs
+):
+    assert (
+        M.llama_runtime_pairs(
+            installed,
+            required,
+            installed_ggml_tree = installed_tree,
+            required_ggml_tree = required_tree,
+        )
+        is pairs
+    )
+
+
+def test_installed_llama_ggml_tree_reads_marker(tmp_path):
+    root = tmp_path / "llama.cpp"
+    root.mkdir()
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text(
+        json.dumps({"release_tag": SLIM_LLAMA_TAG, "ggml_tree": TREE_A})
+    )
+    assert M.llama.installed_llama_ggml_tree(root) == TREE_A
+
+
+@pytest.mark.parametrize(
+    "prepare",
+    [
+        lambda root: None,  # no marker: installs predating ggml_tree
+        lambda root: (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{}"),
+        lambda root: (root / "UNSLOTH_PREBUILT_INFO.json").write_text(
+            json.dumps({"ggml_tree": ""})
+        ),
+        lambda root: (root / "UNSLOTH_PREBUILT_INFO.json").write_text("not json"),
+    ],
+)
+def test_installed_llama_ggml_tree_absent_is_none(tmp_path, prepare):
+    root = tmp_path / "llama.cpp"
+    root.mkdir()
+    prepare(root)
+    assert M.llama.installed_llama_ggml_tree(root) is None
+
+
+def test_slim_pairs_across_llama_build_bump_with_same_ggml(tmp_path, monkeypatch):
+    # The live failure: the llama installer advances to a newer build that keeps
+    # the same ggml commit, so the slim bundle's paired runtime is ABI-identical
+    # and must still select rather than degrade to CPU or report unavailable.
+    bin_dir = _fake_llama_bin(tmp_path)
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, NEWER_LLAMA_TAG, "cuda13-newer")
+    )
+    artifact, backend, used_fallback = M.select_artifact_with_fallback(
+        _slim_manifest(), _cuda_host(), "cuda"
+    )
+    assert artifact["asset"] == SLIM_ASSET
+    assert backend == "cuda" and used_fallback is False
+
+
+def test_slim_build_bump_same_ggml_is_not_a_compatibility_error(tmp_path, monkeypatch):
+    # A same-ggml build bump must not surface as a release incompatibility (the
+    # update path reports that as unavailable); only a real ggml skew does.
+    bin_dir = _fake_llama_bin(tmp_path)
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, NEWER_LLAMA_TAG, "cuda13-newer")
+    )
+    assert M._slim_release_incompatibility(_slim_manifest(), _cuda_host()) is None
 
 
 def test_link_ggml_runtime_hardlinks_every_ggml_library(tmp_path):

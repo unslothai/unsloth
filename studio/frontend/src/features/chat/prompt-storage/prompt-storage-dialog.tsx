@@ -1523,7 +1523,7 @@ function PromptCard({
           <BookmarkIcon className="size-3.5 shrink-0 fill-primary text-primary" />
         ) : null}
         <span className="font-semibold text-sm flex-1 truncate tracking-tight">{entry.name}</span>
-        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 transition-opacity">
           <button
             type="button"
             onClick={() => onUse(entry.text)}
@@ -1733,7 +1733,7 @@ function PromptListCard({
         <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-ui-11 font-medium text-muted-foreground">
           {entry.items.length}
         </span>
-        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 pointer-coarse:opacity-100 transition-opacity">
           {onRunList && (
             <button
               type="button"
@@ -2036,7 +2036,7 @@ export function PromptStorageDialog({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent showCloseButton={false} className="sm:max-w-[min(1100px,88vw)] max-h-[94vh] flex flex-col gap-0 p-0 overflow-hidden">
+        <DialogContent showCloseButton={false} className="sm:max-w-[min(1100px,88vw)] max-h-[94dvh] flex flex-col gap-0 p-0 overflow-hidden">
           {/* */}
           <DialogHeader className="px-6 pt-5 pb-4 shrink-0 border-b border-border/50">
             <div className="flex items-center gap-3">

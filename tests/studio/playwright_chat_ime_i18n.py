@@ -241,10 +241,12 @@ with sync_playwright() as p:
 
     # Source-level guard: grep the unmounted edit/compare composers' JSX for dir="auto".
     _repo_root = Path(__file__).resolve().parents[2]
-    _thread_src = (
-        _repo_root / "studio/frontend/src/components/assistant-ui/thread.tsx"
-    ).read_text()
-    _shared_src = (_repo_root / "studio/frontend/src/features/chat/shared-composer.tsx").read_text()
+    _thread_src = (_repo_root / "studio/frontend/src/components/assistant-ui/thread.tsx").read_text(
+        encoding = "utf-8"
+    )
+    _shared_src = (_repo_root / "studio/frontend/src/features/chat/shared-composer.tsx").read_text(
+        encoding = "utf-8"
+    )
     _edit_idx = _thread_src.find("aui-edit-composer-input")
     if _edit_idx == -1 or 'dir="auto"' not in _thread_src[_edit_idx : _edit_idx + 600]:
         soft_fail('edit composer source is missing dir="auto"')

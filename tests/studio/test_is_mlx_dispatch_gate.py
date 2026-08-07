@@ -27,7 +27,7 @@ UNSLOTH_INIT = REPO_ROOT / "unsloth" / "__init__.py"
 
 def test_is_mlx_gate_uses_three_required_predicates():
     """_IS_MLX must AND Darwin+arm64+importable-mlx; dropping any breaks dispatch."""
-    tree = ast.parse(UNSLOTH_INIT.read_text())
+    tree = ast.parse(UNSLOTH_INIT.read_text(encoding = "utf-8"))
 
     target = None
     for node in ast.walk(tree):

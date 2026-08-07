@@ -39,10 +39,29 @@ def _looks_like_path(identifier: str) -> bool:
     return False
 
 
+def hf_cache_repo_id(path: Optional[str]) -> Optional[str]:
+    """``.../models--org--name/snapshots/<sha>`` -> ``org/name``, else None.
+
+    A model loaded from the HF cache is identified by its snapshot dir, whose
+    basename is a commit hash; recover the repo id so callers don't show that.
+    """
+    if not path:
+        return None
+    parts = str(path).replace("\\", "/").split("/")
+    for index, part in enumerate(parts):
+        # Only inside the real cache layout: a "models--" name alone is not a repo id.
+        if part.startswith("models--") and parts[index + 1 : index + 2] == ["snapshots"]:
+            return part[len("models--") :].replace("--", "/")
+    return None
+
+
 def public_model_id(identifier: Optional[str]) -> Optional[str]:
     """Return a clean, path-free public id for *identifier*.
 
-    - Local GGUF path -> the file stem with ``.gguf`` stripped, e.g.
+    - HF cache path -> the repo id it came from, e.g.
+      ``~/.cache/huggingface/hub/models--unsloth--X-GGUF/snapshots/<sha>`` ->
+      ``unsloth/X-GGUF``.
+    - Other local GGUF path -> the file stem with ``.gguf`` stripped, e.g.
       ``/srv/models/Qwen3-30B-A3B-Q4_K_M.gguf`` -> ``Qwen3-30B-A3B-Q4_K_M``.
     - HF repo id (``org/model``) and already-clean names -> returned unchanged.
     - ``None`` / empty -> returned unchanged.
@@ -51,6 +70,9 @@ def public_model_id(identifier: Optional[str]) -> Optional[str]:
         return identifier
     if not _looks_like_path(identifier):
         return identifier
+    repo_id = hf_cache_repo_id(identifier)
+    if repo_id:
+        return repo_id
     name = os.path.basename(identifier.replace("\\", "/").rstrip("/"))
     if name.lower().endswith(_GGUF_SUFFIX):
         name = name[: -len(_GGUF_SUFFIX)]

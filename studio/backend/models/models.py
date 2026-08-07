@@ -143,6 +143,12 @@ class GgufVariantDetail(BaseModel):
     update_available: bool = Field(
         False, description = "Whether a newer version of this variant is available on HF"
     )
+    partial: bool = Field(
+        False,
+        description = "Whether this variant is an interrupted download. The hub service "
+        "already computes it; carry it through so callers can hide a quant whose shards "
+        "are incomplete instead of offering one that cannot load.",
+    )
 
 
 class GgufVariantsResponse(BaseModel):
@@ -194,6 +200,12 @@ class LocalModelInfo(BaseModel):
     updated_at: Optional[float] = Field(
         None,
         description = "Unix timestamp of latest observed update",
+    )
+    task: Optional[str] = Field(
+        None,
+        description = "HF pipeline task inferred from a GGUF's architecture "
+        "('text-to-image' for diffusion, 'text-generation' otherwise). Lets the "
+        "Images picker show only diffusion GGUFs.",
     )
 
 

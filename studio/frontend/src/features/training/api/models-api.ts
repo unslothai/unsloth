@@ -42,6 +42,7 @@ interface BackendLoraDefaults {
   target_modules?: string[];
   use_rslora?: boolean;
   use_loftq?: boolean;
+  use_dora?: boolean;
   finetune_vision_layers?: boolean;
   finetune_language_layers?: boolean;
   finetune_attention_modules?: boolean;
@@ -77,6 +78,11 @@ export interface ModelConfigResponse {
   model_size_bytes?: number | null;
 }
 
+export interface ModelConfigRequestOptions {
+  preferLocalCache?: boolean;
+  localPath?: string | null;
+}
+
 export interface LocalModelInfo {
   id: string;
   display_name: string;
@@ -103,8 +109,9 @@ export async function checkVisionModel(
     headers: hubTokenHeader(hfToken?.trim() || null),
   });
   if (!response.ok) {
-    // If the check fails (e.g. network error), default to non-vision
-    return false;
+    throw new Error(
+      `Failed to check model vision support (${response.status})`,
+    );
   }
   const data = (await response.json()) as VisionCheckResponse;
   return data.is_vision;
@@ -120,7 +127,7 @@ export async function checkEmbeddingModel(
     headers: hubTokenHeader(hfToken?.trim() || null),
   });
   if (!response.ok) {
-    // If the check fails (e.g. network error), default to non-embedding
+    // Check failure (e.g. network error): default to non-embedding.
     return false;
   }
   const data = (await response.json()) as EmbeddingCheckResponse;
@@ -131,12 +138,24 @@ export async function getModelConfig(
   modelName: string,
   signal?: AbortSignal,
   hfToken?: string,
+  options?: ModelConfigRequestOptions,
 ): Promise<ModelConfigResponse> {
   const encoded = encodeURIComponent(modelName);
-  const response = await authFetch(`/api/models/config/${encoded}`, {
-    headers: hubTokenHeader(hfToken?.trim() || null),
-    signal,
-  });
+  const params = new URLSearchParams();
+  if (options?.preferLocalCache) {
+    params.set("prefer_local_cache", "true");
+  }
+  if (options?.localPath) {
+    params.set("local_path", options.localPath);
+  }
+  const query = params.toString();
+  const response = await authFetch(
+    `/api/models/config/${encoded}${query ? `?${query}` : ""}`,
+    {
+      headers: hubTokenHeader(hfToken?.trim() || null),
+      signal,
+    },
+  );
   if (!response.ok) {
     throw new Error(`Failed to fetch model config (${response.status})`);
   }

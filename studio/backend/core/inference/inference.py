@@ -8,6 +8,7 @@ from unsloth.chat_templates import get_chat_template
 from transformers import TextIteratorStreamer, TextStreamer
 from peft import PeftModel, PeftModelForCausalLM
 
+import contextlib
 import json
 import sys
 import torch
@@ -36,6 +37,8 @@ from core.inference.chat_template_helpers import (
     ReasoningChannelNormalizer,
     detect_reasoning_channel_markers,
     detect_think_prefill,
+    neutralize_control_markup_in_messages,
+    neutralize_tts_prompt_text,
 )
 from core.inference.presence_penalty import _make_presence_penalty_processor
 from io import StringIO
@@ -566,7 +569,7 @@ class InferenceBackend:
                         _meta_path = Path(config.path) / "export_metadata.json"
                         try:
                             if _meta_path.exists():
-                                _meta = json.loads(_meta_path.read_text())
+                                _meta = json.loads(_meta_path.read_text(encoding = "utf-8-sig"))
                                 if _meta.get("base_model"):
                                     processor_source = _meta["base_model"]
                         except Exception:
@@ -929,7 +932,29 @@ class InferenceBackend:
         if system_prompt:
             initial = [{"role": "system", "content": system_prompt}] + initial
 
+        # Same profile the renderer uses, so the controller never drops a tool over a
+        # marker this model does not treat as structure. The controller is also given the
+        # catalog safe under every template this turn could select, because the
+        # native-template fallback renders with a different profile (#7066).
+        from core.inference.chat_template_helpers import (
+            mapped_chat_template,
+            markup_for_tokenizer,
+            renderable_tool_catalog,
+        )
+
+        _model_info = self.models.get(self.active_model_name) or {}
+        # Resolved BEFORE the profile: the mapper installs its template during the render.
+        _mapped_tpl = mapped_chat_template(_model_info, self.active_model_name)
+
         yield from run_safetensors_tool_loop(
+            markup = markup_for_tokenizer(_model_info.get("tokenizer"), tools, _mapped_tpl),
+            renderable_tools = renderable_tool_catalog(
+                tools,
+                _model_info.get("tokenizer"),
+                _model_info,
+                active_model_name = self.active_model_name,
+                template = _mapped_tpl,
+            ),
             single_turn = _single_turn,
             messages = initial,
             tools = tools,
@@ -1222,6 +1247,16 @@ class InferenceBackend:
             else:
                 vision_messages = [user_msg]
 
+            # Processor's own template skips the choke point (#7066). Rebind user_msg
+            # so the no-system retry keeps the copy. Profiled from the processor, so a
+            # vision request is gated on the loaded model exactly as the text path is.
+            from core.inference.chat_template_helpers import markup_for_tokenizer
+
+            vision_messages = neutralize_control_markup_in_messages(
+                vision_messages, None, markup_for_tokenizer(processor)
+            )
+            user_msg = vision_messages[-1]
+
             try:
                 input_text = processor.apply_chat_template(
                     vision_messages, add_generation_prompt = True, tokenize = False
@@ -1399,11 +1434,13 @@ class InferenceBackend:
         min_p,
         max_new_tokens,
         repetition_penalty,
+        use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
     ) -> Generator[str, None, None]:
         """Audio-input (ASR) generation: takes an audio numpy array, streams text.
 
         Uses processor.apply_chat_template with audio embedded in messages (Gemma 3n pattern).
+        use_adapter: see _apply_adapter_state; None leaves the loaded state alone.
         """
         import threading
         import numpy as np
@@ -1436,6 +1473,14 @@ class InferenceBackend:
                 ],
             },
         ]
+
+        # Direct processor render like the vision path, so neutralize here too, with
+        # this processor's own profile so another family's marker stays untouched (#7066).
+        from core.inference.chat_template_helpers import markup_for_tokenizer
+
+        audio_messages = neutralize_control_markup_in_messages(
+            audio_messages, None, markup_for_tokenizer(processor)
+        )
 
         # apply_chat_template does audio embedding + tokenization in one step
         inputs = processor.apply_chat_template(
@@ -1472,6 +1517,9 @@ class InferenceBackend:
             def generate_fn():
                 with self._generation_lock:
                     try:
+                        # As in the text path: apply under the lock so Base-vs-LoRA
+                        # compare doesn't run the adapter on both sides (None = no-op).
+                        self._apply_adapter_state(use_adapter)
                         model.generate(**generation_kwargs)
                     except Exception as e:
                         err["msg"] = str(e)
@@ -1833,6 +1881,9 @@ class InferenceBackend:
             raise RuntimeError(f"Model {self.active_model_name} is not an audio model")
 
         top_k = self._normalize_top_k(top_k)
+        # Every codec below concatenates its prompt instead of templating it, so this
+        # is the one choke point for all four (#7066).
+        text = neutralize_tts_prompt_text(text, audio_type)
 
         with self._generation_lock:
             if use_adapter is not None:
@@ -1942,8 +1993,30 @@ class InferenceBackend:
             + text
             + "<|text_end|>\n<|audio_start|><|global_features_start|>\n"
         )
+
         with torch.inference_mode():
-            with torch.amp.autocast("cuda", dtype = model.dtype):
+            # Derive the autocast device from the loaded model, not from the
+            # global backend: a CPU-fallback DAC on an XPU/CUDA host must not
+            # open a GPU autocast context around CPU tensors.
+            device_type = (
+                model.device.type
+                if hasattr(model.device, "type")
+                else str(model.device).split(":", 1)[0]
+            )
+            # Clamp to autocast-supported backends so exotic devices
+            # (e.g. "meta" during accelerate offloaded loading) do not raise.
+            # MPS is autocast-supported since torch 2.3, keep it in the set.
+            if device_type not in ("cuda", "xpu", "mps", "cpu"):
+                device_type = "cpu"
+            # CPU and XPU autocast only accept bfloat16/float16. For a
+            # float32 model, skip autocast entirely to avoid raising or
+            # producing a warning on every generate call.
+            autocast_dtype_supported = model.dtype in (torch.bfloat16, torch.float16)
+            if device_type in ("cpu", "xpu") and not autocast_dtype_supported:
+                autocast_ctx = contextlib.nullcontext()
+            else:
+                autocast_ctx = torch.amp.autocast(device_type, dtype = model.dtype)
+            with autocast_ctx:
                 inputs = tokenizer([prompt], return_tensors = "pt").to(model.device)
                 generated = model.generate(
                     **inputs,
@@ -2079,6 +2152,15 @@ class InferenceBackend:
         if chat_messages and chat_messages[-1]["role"] == "assistant":
             logger.debug("Removing final assistant message to ensure proper alternation")
             chat_messages.pop()
+
+        # Direct tokenizer render bypasses the choke point, and the user sub above
+        # leaves system_prompt and replayed assistant text raw. Profiled off this same
+        # tokenizer, so the sweep matches what the text path would do (#7066).
+        from core.inference.chat_template_helpers import markup_for_tokenizer
+
+        chat_messages = neutralize_control_markup_in_messages(
+            chat_messages, None, markup_for_tokenizer(tokenizer)
+        )
 
         logger.info(f"Sending {len(chat_messages)} messages to tokenizer:")
         for i, msg in enumerate(chat_messages):
@@ -2258,8 +2340,13 @@ class InferenceBackend:
         except Exception as e:
             logger.warning(f"Could not fully reset model state for {model_name}: {e}")
 
-    def reset_generation_state(self):
-        """Reset any cached generation state to prevent hanging after errors"""
+    def reset_generation_state(self, caller_cancel_event = None):
+        """Reset any cached generation state to prevent hanging after errors
+
+        ``caller_cancel_event`` is accepted for signature parity with the
+        orchestrator, which uses it to drop a reset from a request that never
+        started. Nothing here cancels a live generation, so it is unused.
+        """
         try:
             # Clear cached state for ALL loaded models
             for model_name in self.models.keys():

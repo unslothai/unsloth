@@ -33,6 +33,7 @@ import re
 import subprocess
 import sys
 import threading
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Optional
 
@@ -54,6 +55,8 @@ logger = structlog.get_logger(__name__)
 
 DEFAULT_PUBLISHED_REPO = "unslothai/llama.cpp"
 _INSTALL_TIMEOUT_SECONDS = 1800  # 30 min ceiling for download + build/validate
+# install_llama_prebuilt.py EXIT_NO_SPACE: out of disk, retrying will not help.
+_EXIT_NO_SPACE = 4
 
 # Background job state. Single in-flight update at a time, guarded by _job_lock.
 _JOB_IDLE = _flow.JOB_IDLE
@@ -119,7 +122,14 @@ def _installed_build_number(binary: Optional[str]) -> Optional[int]:
     if not binary:
         return None
     try:
-        proc = subprocess.run([binary, "--version"], capture_output = True, text = True, timeout = 20)
+        proc = subprocess.run(
+            [binary, "--version"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 20,
+        )
     except Exception:  # pragma: no cover - defensive
         return None
     m = re.search(r"version:\s*(\d+)", (proc.stderr or "") + (proc.stdout or ""))
@@ -401,6 +411,7 @@ def _run_llama_phase(
     pin_release_tag: Optional[str],
     set_progress,
     force_cpu: bool = False,
+    llama_backend: Optional[str] = None,
 ) -> dict:
     """The llama phase of a chained update: put the backend into a maintenance
     state, run the installer for the latest prebuilt, then refresh caches so the
@@ -411,6 +422,7 @@ def _run_llama_phase(
     of letting it re-resolve "latest" itself (see start_update for why)."""
     backend = None
     model_was_active = False
+    mtmd_guard = ExitStack()
     try:
         # Block loads and free the binary while the installer swaps it.
         try:
@@ -433,6 +445,11 @@ def _run_llama_phase(
             except Exception as exc:
                 logger.debug("llama update: load coordination failed", error = str(exc))
 
+        # The mtmd dictation sidecar serves Qwen3-ASR from this same llama-server
+        # out of this same tree, so a live one locks the exe on Windows and a
+        # concurrent load would start against a half-swapped install.
+        model_was_active = _block_mtmd_sidecar(mtmd_guard) or model_was_active
+
         cmd = [
             sys.executable,
             str(script),
@@ -452,14 +469,15 @@ def _run_llama_phase(
         # updates. A natural fallback (or a legacy marker without the flag) heals to GPU (#6097).
         if force_cpu:
             cmd.append("--force-cpu")
+        if llama_backend == "vulkan":
+            cmd.extend(["--llama-backend", "vulkan"])
         logger.info("llama update: installing", cmd = " ".join(cmd))
         env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
-        # Preserve a Vulkan install across updates: detect_host on a CUDA/ROCm
-        # box would otherwise re-route and silently replace the Vulkan build.
-        # Re-assert it via the same env flag setup uses (mirrors
-        # _rocm_install_args).
-        if asset and "vulkan" in asset.lower():
+        # Preserve a Vulkan install across updates: detect_host on a CUDA/ROCm box would
+        # otherwise re-route and silently replace it. Re-assert via setup's env/CLI flags.
+        if llama_backend == "vulkan" or (asset and "vulkan" in asset.lower()):
             env["UNSLOTH_FORCE_VULKAN"] = "1"
+            env["UNSLOTH_LLAMA_CPP_BACKEND"] = "vulkan"
         _flow.stream_installer(
             cmd,
             env,
@@ -496,16 +514,42 @@ def _run_llama_phase(
                 + (" Reload your model to use it." if model_was_active else "")
             ),
         }
+    except _flow.InstallerExit as exc:
+        # Raw "installer exited 4: <log tail>" says nothing actionable in the UI.
+        if exc.returncode == _EXIT_NO_SPACE:
+            logger.warning("llama update: out of disk space")
+            raise RuntimeError(
+                "Not enough disk space to install llama.cpp. Free up space or point "
+                "UNSLOTH_STUDIO_HOME/TMPDIR at a larger volume, then retry."
+            ) from exc
+        logger.warning("llama update: failed", error = str(exc))
+        raise
     except Exception as exc:
         logger.warning("llama update: failed", error = str(exc))
         raise
     finally:
         # Always clear maintenance state.
+        mtmd_guard.close()
         if backend is not None:
             try:
                 backend._llama_update_in_progress = False
             except Exception:  # pragma: no cover - defensive
                 pass
+
+
+def _block_mtmd_sidecar(stack: ExitStack) -> bool:
+    """Hold the mtmd sidecar's maintenance guard for the install, if it exists.
+
+    Unlike whisper.cpp this is not fail-closed: llama.cpp updates predate this
+    sidecar and must keep working where dictation cannot even be imported.
+    Returns whether a warm dictation server had to be unloaded.
+    """
+    try:
+        from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
+        return stack.enter_context(get_mtmd_stt_sidecar().update_maintenance())
+    except Exception as exc:  # noqa: BLE001 - the update proceeds without it
+        logger.debug("llama update: mtmd coordination failed", error = str(exc))
+        return False
 
 
 # Combined-job progress split when both phases run (download sizes: the llama
@@ -566,6 +610,9 @@ def _plan_llama_phase() -> dict:
         from_tag = marker.get("tag") or marker.get("release_tag")
         asset = marker.get("asset")
         force_cpu = bool(marker.get("force_cpu"))
+        llama_backend = marker.get("llama_backend")
+        if llama_backend == "vulkan" or (asset and "vulkan" in str(asset).lower()):
+            llama_backend = "vulkan"
         # Install exactly the release the banner offered: the installer's own
         # "latest" is commit-date ordered and can lag the published_at pick
         # above, reinstalling the current build in a loop (the #6219 class).
@@ -609,6 +656,7 @@ def _plan_llama_phase() -> dict:
         asset = (res or {}).get("asset")
         # Source builds carry no forced-CPU marker, so nothing to preserve here.
         force_cpu = False
+        llama_backend = None
         # No pin: source-build detection resolves via --resolve-prebuilt latest,
         # the same resolver the unpinned apply uses, so the two already agree.
         pin_release_tag = None
@@ -631,6 +679,7 @@ def _plan_llama_phase() -> dict:
             "pin_release_tag": pin_release_tag,
             "from_tag": from_tag,
             "force_cpu": force_cpu,
+            "llama_backend": llama_backend,
         }
     }
 
@@ -683,6 +732,7 @@ def start_update() -> dict:
                         llama_spec["pin_release_tag"],
                         set_progress,
                         force_cpu = llama_spec.get("force_cpu", False),
+                        llama_backend = llama_spec.get("llama_backend"),
                     )
                 )
                 if llama_spec

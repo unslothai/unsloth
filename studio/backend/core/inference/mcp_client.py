@@ -148,9 +148,9 @@ def stdio_mcp_enabled() -> bool:
     if os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP") != "1":
         return False
     from state.tool_policy import get_tool_policy
-    from utils.host_policy import loopback_default_active
+    from utils.host_policy import loopback_default_active, remote_connector_active
 
-    if loopback_default_active() and get_tool_policy() is False:
+    if loopback_default_active() and (remote_connector_active() or get_tool_policy() is False):
         return False
     return True
 
@@ -971,7 +971,12 @@ def _call_stdio_tool(
                     raise RuntimeError("MCP server connection is not available")
             else:
                 rem = _remaining()
-                coro = _race_tool_call(session.client.call_tool(name, args), rem, cancel_event)
+                # raise_on_error=False for the same reason as the one-shot path.
+                coro = _race_tool_call(
+                    session.client.call_tool(name, args, raise_on_error = False),
+                    rem,
+                    cancel_event,
+                )
                 return session.run(coro, rem)
         except (_MCPCancelled, asyncio.TimeoutError):
             # _race_tool_call cancels the pending call but cancellation is

@@ -18,7 +18,7 @@ MAPPER_PATH = os.path.join(os.path.dirname(__file__), os.pardir, "unsloth", "mod
 
 
 def _load_mappers():
-    with open(MAPPER_PATH) as f:
+    with open(MAPPER_PATH, encoding = "utf-8") as f:
         source = f.read()
     namespace = {}
     exec(compile(source, MAPPER_PATH, "exec"), namespace)

@@ -65,6 +65,7 @@ export function ModelAutoSwitchSection() {
     idleSeconds: number | undefined,
     syncDraft = true,
     keepKv?: boolean,
+    autoDownload?: boolean,
   ) => {
     setIsSaving(true);
     setError(null);
@@ -73,6 +74,7 @@ export function ModelAutoSwitchSection() {
         enabled,
         idleSeconds,
         keepKv,
+        autoDownload,
       );
       setSettings(saved);
       if (syncDraft) {
@@ -117,6 +119,11 @@ export function ModelAutoSwitchSection() {
     void persist(settings.enabled, undefined, false, keepKv);
   };
 
+  const handleAutoDownloadToggle = (autoDownload: boolean) => {
+    if (!settings) return;
+    void persist(settings.enabled, undefined, false, undefined, autoDownload);
+  };
+
   return (
     <SettingsSection title={t("settings.general.modelAutoSwitch.sectionTitle")}>
       <SettingsRow
@@ -127,6 +134,18 @@ export function ModelAutoSwitchSection() {
           checked={settings?.enabled ?? false}
           disabled={!settings || isSaving}
           onCheckedChange={handleToggle}
+        />
+      </SettingsRow>
+      <SettingsRow
+        label={t("settings.general.modelAutoSwitch.autoDownload")}
+        description={t(
+          "settings.general.modelAutoSwitch.autoDownloadDescription",
+        )}
+      >
+        <Switch
+          checked={settings?.autoDownloadModel ?? false}
+          disabled={!settings?.enabled || isSaving}
+          onCheckedChange={handleAutoDownloadToggle}
         />
       </SettingsRow>
       <SettingsRow
@@ -143,7 +162,9 @@ export function ModelAutoSwitchSection() {
                 min={0}
                 step={1}
                 value={draftIdleSeconds}
-                aria-label="Idle auto-unload seconds"
+                aria-label={t(
+                  "settings.general.modelAutoSwitch.idleSecondsAriaLabel",
+                )}
                 disabled={!settings?.enabled || isSaving}
                 onChange={(event) => setDraftIdleSeconds(event.target.value)}
                 className="h-8 w-24"

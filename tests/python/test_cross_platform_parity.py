@@ -68,6 +68,53 @@ class TestInstallShHasGpuDetection:
         ), "install.sh should assign TORCH_INDEX_URL from get_torch_index_url()"
 
 
+class TestPreTuringCapParity:
+    """Every wheel-selection site caps cu128/cu130 on a pre-Turing host (issue #7765).
+
+    PyTorch 2.11 builds those families for sm_75 and newer, so a Maxwell/Pascal/Volta
+    box needs cu126 -- both for torch itself and for the CUDA 12 runtime that gets it
+    a llama.cpp GGUF bundle. Four scripts pick the family; none may be left behind.
+    """
+
+    # (file, call spelling, selection function that must invoke it, its end marker). The
+    # spelling carries the first argument, so a prose mention cannot satisfy the assertion.
+    _SITES = (
+        (INSTALL_SH, '_cap_cuda_family_for_pre_turing "', "get_torch_index_url() {", "\n}"),
+        (
+            INSTALL_PS1,
+            "Get-CudaFamilyCappedForPreTuring $",
+            "function Get-TorchIndexUrl",
+            "\n    }",
+        ),
+        (SETUP_PS1, "Get-CudaFamilyCappedForPreTuring $", "function Get-PytorchCudaTag", "\n}"),
+        (
+            STACK_PY,
+            "_cap_cuda_family_for_pre_turing(",
+            "def _detect_cuda_torch_index_url",
+            "\ndef ",
+        ),
+    )
+
+    def test_cu126_span_agrees_across_the_python_modules(self):
+        # Neither module imports the other (the installer runs before dependencies
+        # exist), so assert the shared span here rather than let it drift silently.
+        span = "_CU126_SM_RANGE = (50, 90)"
+        for path in (STACK_PY, REPO_ROOT / "studio" / "install_llama_prebuilt.py"):
+            assert span in path.read_text(encoding = "utf-8"), f"{path.name} lost {span}"
+
+    @pytest.mark.parametrize("path,call,start,end", _SITES)
+    def test_selection_function_applies_the_cap(self, path, call, start, end):
+        text = path.read_text(encoding = "utf-8")
+        assert start in text, f"{path.name} no longer defines {start!r}"
+        body = text.split(start, 1)[1].split(end, 1)[0]
+        assert call in body, f"{path.name}'s selection function never applies {call!r}"
+
+
+# A ladder rung names its family either as an index-URL suffix ("$base/cu128") or as a
+# variable a later step can still cap ("_cuda_tag=cu128"), so accept both spellings.
+_CUDA_LEAF_RE = r"""[/=]\s*["']?(cu\d+|cpu)"""
+
+
 class TestCudaMappingParity:
     """CUDA version thresholds must match between install.sh and install.ps1."""
 
@@ -84,7 +131,7 @@ class TestCudaMappingParity:
             if in_func and line.startswith("}"):
                 break
             if in_func and ("_major" in line or "_minor" in line):
-                m = re.search(r"/(cu\d+|cpu)", line)
+                m = re.search(_CUDA_LEAF_RE, line)
                 if m:
                     results.append(m.group(1))
         return results
@@ -106,7 +153,7 @@ class TestCudaMappingParity:
                     break
                 # Only match the if-chain lines that compare $major/$minor
                 if "$major" in line or "$minor" in line:
-                    m = re.search(r"/(cu\d+|cpu)", line)
+                    m = re.search(_CUDA_LEAF_RE, line)
                     if m:
                         results.append(m.group(1))
         return results
@@ -249,22 +296,42 @@ class TestTorchIndexOverrideParity:
 
 
 class TestGfx211AllowlistParity:
-    """The gfx per-arch 2.11-floor leaves (gfx120X-all / gfx1151 / gfx1150) must be the
-    SAME set in every installer and its stale/mismatch check. When they diverged, a
-    pinned gfx110X-all / gfx90a / gfx908 wheel (<2.11) was force-reinstalled every update."""
+    """The gfx per-arch 2.11-floor leaves must be the SAME set in every installer
+    and its stale/mismatch check. When they diverged, a pinned gfx110X-all /
+    gfx90a / gfx908 wheel (<2.11) was force-reinstalled every update.
 
-    EXPECTED = {"gfx120x-all", "gfx1151", "gfx1150"}
+    Each test extracts the set each installer actually holds and compares it
+    against EXPECTED, rather than matching one hardcoded ordering. Order and
+    spacing are free; membership is not. The earlier literal-string form had to
+    be edited in four places whenever a leaf was added, which is how adding
+    gfx1152 (Krackan Point) turned this class red without any installer
+    actually disagreeing with another."""
+
+    EXPECTED = {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152"}
+
+    @staticmethod
+    def _leaves(blob: str) -> set[str]:
+        """The gfx leaves named in an allowlist literal, quoting-agnostic."""
+        return set(re.findall(r"gfx[0-9a-z-]+", blob.lower()))
 
     def test_install_sh_allowlist(self):
         text = INSTALL_SH.read_text(encoding = "utf-8").lower()
-        # install.sh: the TORCH_CONSTRAINT case (rocm7.2|gfx120x-all|gfx1151|gfx1150).
-        m = re.search(r"rocm7\.2\|gfx120x-all\|gfx1151\|gfx1150", text)
+        # install.sh: the TORCH_CONSTRAINT case (rocm7.2|gfx...|gfx...).
+        m = re.search(r"^\s*(rocm7\.2\|[a-z0-9|.\-]*)\)", text, re.MULTILINE)
         assert m, "install.sh gfx-2.11 allowlist case not found / changed"
+        assert self._leaves(m.group(1)) == self.EXPECTED, (
+            f"install.sh gfx-2.11 allowlist is {sorted(self._leaves(m.group(1)))}, "
+            f"expected {sorted(self.EXPECTED)}"
+        )
 
     def test_install_ps1_allowlist(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8").lower()
-        m = re.search(r"@\('gfx120x-all',\s*'gfx1151',\s*'gfx1150'\)", text)
+        m = re.search(r"\$_pingfx211\s*=\s*@\(([^)]*)\)", text)
         assert m, "install.ps1 $_pinGfx211 allowlist not found / changed"
+        assert self._leaves(m.group(1)) == self.EXPECTED, (
+            f"install.ps1 $_pinGfx211 is {sorted(self._leaves(m.group(1)))}, "
+            f"expected {sorted(self.EXPECTED)}"
+        )
 
     def test_setup_ps1_defines_single_allowlist_helper(self):
         # setup.ps1 must define the allowlist once (Test-RocmGfx211Leaf) and reuse it, so
@@ -273,9 +340,12 @@ class TestGfx211AllowlistParity:
         assert (
             "function Test-RocmGfx211Leaf" in text
         ), "setup.ps1 should define a single Test-RocmGfx211Leaf allowlist helper"
-        assert re.search(
-            r"@\('gfx120x-all',\s*'gfx1151',\s*'gfx1150'\)", text.lower()
-        ), "Test-RocmGfx211Leaf should hold the gfx-2.11 allowlist"
+        m = re.search(r"function test-rocmgfx211leaf[\s\S]{0,400}?@\(([^)]*)\)", text.lower())
+        assert m, "Test-RocmGfx211Leaf should hold the gfx-2.11 allowlist"
+        assert self._leaves(m.group(1)) == self.EXPECTED, (
+            f"Test-RocmGfx211Leaf holds {sorted(self._leaves(m.group(1)))}, "
+            f"expected {sorted(self.EXPECTED)}"
+        )
         assert "$_pinGfx211 = Test-RocmGfx211Leaf" in text, (
             "setup.ps1 install-spec path should reuse Test-RocmGfx211Leaf, not "
             "re-hardcode the allowlist (they must not diverge)"
@@ -283,9 +353,12 @@ class TestGfx211AllowlistParity:
 
     def test_stack_py_allowlist(self):
         text = STACK_PY.read_text(encoding = "utf-8").lower()
-        assert (
-            '"gfx120x-all", "gfx1151", "gfx1150"' in text
-        ), "install_python_stack.py _ROCM_GFX_TORCH211_LEAVES not found / changed"
+        m = re.search(r"_rocm_gfx_torch211_leaves[^=]*=\s*frozenset\(\s*\{([^}]*)\}", text)
+        assert m, "install_python_stack.py _ROCM_GFX_TORCH211_LEAVES not found / changed"
+        assert self._leaves(m.group(1)) == self.EXPECTED, (
+            f"_ROCM_GFX_TORCH211_LEAVES is {sorted(self._leaves(m.group(1)))}, "
+            f"expected {sorted(self.EXPECTED)}"
+        )
 
 
 class TestCudaLeafDigitParity:
@@ -351,15 +424,21 @@ class TestCudaLeafDigitParity:
 
 class TestKnown211SetParity:
     """The KNOWN-2.11 rocm/gfx set must be identical across all four installers:
-    exactly {rocm7.2} plus the gfx allowlist {gfx120x-all, gfx1151, gfx1150}.
+    exactly {rocm7.2} plus TestGfx211AllowlistParity.EXPECTED.
     rocm7.3 / torch 2.12 do not exist, so no side may floor them speculatively."""
 
     def test_install_sh_known_211_leaf_is_rocm72_and_gfx_allowlist(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        # The 2.11 floor case matches exactly rocm7.2 + the three gfx leaves.
-        assert re.search(
-            r"rocm7\.2\|gfx120x-all\|gfx1151\|gfx1150\)", text
-        ), "install.sh 2.11 floor must be exactly rocm7.2|gfx120x-all|gfx1151|gfx1150"
+        # The 2.11 floor case matches exactly rocm7.2 + the gfx allowlist, in
+        # any order: it is the same set as TestGfx211AllowlistParity.EXPECTED,
+        # asserted here so the rocm-version half cannot drift on its own.
+        m = re.search(r"^\s*(rocm7\.2\|[a-zA-Z0-9|.\-]*)\)", text, re.MULTILINE)
+        assert m, "install.sh 2.11 floor case (rocm7.2|gfx...) not found / changed"
+        alternatives = set(m.group(1).lower().split("|"))
+        assert alternatives == {"rocm7.2"} | TestGfx211AllowlistParity.EXPECTED, (
+            f"install.sh 2.11 floor is {sorted(alternatives)}, expected "
+            f"{sorted({'rocm7.2'} | TestGfx211AllowlistParity.EXPECTED)}"
+        )
         # No speculative rocm7.3 anywhere.
         assert "rocm7.3" not in text, "install.sh must not reference a non-existent rocm7.3"
 
@@ -422,9 +501,12 @@ class TestKnown211SetParity:
             "$_pinCuLeaf" not in text
         ), "install.ps1 must bound companions on every index (no cu-family exemption)"
         # The bounded companions must actually be passed to the install command.
-        assert re.search(
-            r'"torch>=2\.4,<2\.11\.0" \$_pinVisionSpec \$_pinAudioSpec --default-index \$TorchIndexUrl',
-            text,
+        # Specs are splatted, so check both halves: the list is built, and it is passed.
+        assert (
+            '$_torchSpecs = @("torch>=2.4,<2.11.0", $_pinVisionSpec, $_pinAudioSpec)' in text
+        ), "install.ps1 custom-pin install must build the bounded spec list"
+        assert (
+            "@_torchSpecs --default-index $TorchIndexUrl" in text
         ), "install.ps1 custom-pin install must pass the bounded companion specs to uv"
 
     def test_gfx_allowlist_matches_across_installers(self):
@@ -672,9 +754,13 @@ class TestPinnedIndexClearsUvEnvParity:
         assert (
             "if ($TorchIndexPinned -and -not (Test-CudaFamilyLeaf $CuTag)) {" in text
         ), "the custom-leaf trio bounds must be gated on a pinned non-cu-family leaf"
+        # Specs are splatted, so check both halves: the list is built, and it is passed.
         assert (
-            "Fast-Install $cudaTorchSpec $cudaVisionSpec $cudaAudioSpec" in text
-        ), "setup.ps1's CUDA branch must install via the bounded spec variables"
+            "$_cudaTrio = @($cudaTorchSpec, $cudaVisionSpec, $cudaAudioSpec)" in text
+        ), "setup.ps1's CUDA branch must build the trio from the bounded spec variables"
+        assert (
+            "Fast-Install @_cudaTrio @cudaForce" in text
+        ), "setup.ps1's CUDA branch must install the trio it built"
 
     def test_setup_ps1_bounds_pinned_cpu_torch(self):
         """setup.ps1's CPU branch must bound the trio under an explicit pin (parity with
@@ -692,8 +778,11 @@ class TestPinnedIndexClearsUvEnvParity:
             "if ($TorchIndexPinned) {" in text
         ), "the CPU trio bounds must be gated on an explicit pin"
         assert (
-            "Fast-Install $cpuTorchSpec $cpuVisionSpec $cpuAudioSpec @cpuForce" in text
-        ), "setup.ps1's CPU branch must install via the spec variables"
+            "$_torchTrio = @($cpuTorchSpec, $cpuVisionSpec, $cpuAudioSpec)" in text
+        ), "setup.ps1's CPU branch must build the trio from the spec variables"
+        assert (
+            "Fast-Install @_torchTrio @cpuForce" in text
+        ), "setup.ps1's CPU branch must install the trio it built"
         # The ceilings mirror the Python repair spec exactly.
         stack = STACK_PY.read_text(encoding = "utf-8")
         spec_block = re.search(r"_CUDA_TORCH_PKG_SPEC[^(]*\(\s*(.*?)\)", stack, re.DOTALL)
@@ -786,3 +875,120 @@ class TestPipNoIndexScrubParity:
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert "'PIP_NO_INDEX'" in text
         assert "'PIP_INDEX_URL'" in text
+
+
+class TestNoTorchPersistenceParity:
+    """No-torch mode must outlive the process that requested it.
+
+    install.sh / install.ps1 export UNSLOTH_NO_TORCH for their own run only.
+    `unsloth studio update` exports nothing, so both the PowerShell setup and the
+    shared Python stack have to recover the mode from the install manifest, or an
+    update reinstalls PyTorch into a GGUF-only venv. On Windows it is worse than
+    cosmetic: setup.ps1 reads the missing torch as a stale venv and tries to delete
+    the venv it is itself running out of, which fails on a locked python.exe."""
+
+    def test_the_stack_records_the_mode_it_installed(self):
+        text = STACK_PY.read_text(encoding = "utf-8")
+        assert "no_torch = NO_TORCH" in text
+        assert "install_manifest.recorded_no_torch()" in text
+        # Written after the manifest is dropped and before the dependency pass, so
+        # a pass killed part-way still leaves the mode recorded somewhere.
+        assert text.index("install_manifest.set_no_torch_marker(NO_TORCH)") > text.index(
+            "if not install_manifest.remove_manifest():"
+        )
+
+    def test_both_sides_use_the_same_marker_filename(self):
+        manifest = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding = "utf-8")
+        assert 'NO_TORCH_MARKER = ".unsloth-no-torch"' in manifest
+        assert '$NoTorchMarker = ".unsloth-no-torch"' in SETUP_PS1.read_text(encoding = "utf-8")
+
+    def test_setup_ps1_recovers_the_mode_when_no_env_var_is_exported(self):
+        text = SETUP_PS1.read_text(encoding = "utf-8")
+        assert "function Get-PersistedNoTorch" in text
+        assert "function Set-PersistedNoTorch" in text
+        # setup.ps1 drops the manifest before running install_python_stack.py, so
+        # the resolved answer has to be handed down through the environment.
+        assert text.index("Get-PersistedNoTorch -VenvPath $VenvDir") < text.index(
+            '$env:UNSLOTH_NO_TORCH = if ($NoTorchMode) { "true" } else { "false" }'
+        )
+
+    def test_both_sides_accept_the_same_spellings(self):
+        # install.ps1 / install.sh accept 1|true|yes|on; the two consumers must not
+        # be narrower, or a value one layer honours another silently ignores.
+        assert "'^\\s*(?i:true|1|yes|on)\\s*$'" in SETUP_PS1.read_text(encoding = "utf-8")
+        manifest = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding = "utf-8")
+        assert 'NO_TORCH_TRUTHY: Tuple[str, ...] = ("1", "true", "yes", "on")' in manifest
+        assert "install_manifest.NO_TORCH_TRUTHY" in STACK_PY.read_text(encoding = "utf-8")
+
+
+class TestAmdBnbFloorParity:
+    """bitsandbytes <= 0.49.2 NaNs at 4-bit decode shape on every AMD GPU; the ROCm
+    4-bit GEMV fix (bnb #1887) first ships on PyPI in 0.50.0. The `amd` extra,
+    install.sh and the Studio stack resolve bitsandbytes independently, so all three
+    must carry the same floor or an unreachable pre-release wheel silently reinstates
+    the broken range."""
+
+    FLOOR = "0.50.0"
+    PYPROJECT = REPO_ROOT / "pyproject.toml"
+
+    def test_amd_extra_floor(self):
+        text = self.PYPROJECT.read_text(encoding = "utf-8")
+        amd = re.search(r"^amd = \[(.*?)^\]", text, re.S | re.M)
+        assert amd, "pyproject.toml must define an `amd` extra"
+        specs = re.findall(r'"(bitsandbytes[^"]*)"', amd.group(1))
+        assert specs, "the amd extra must pin bitsandbytes"
+        for spec in specs:
+            assert spec.startswith(
+                f"bitsandbytes>={self.FLOOR}"
+            ), f"amd extra bitsandbytes floor must be >={self.FLOOR}, got {spec!r}"
+
+    def test_install_sh_pypi_fallback_floor(self):
+        text = INSTALL_SH.read_text(encoding = "utf-8")
+        assert (
+            f'_BNB_ROCM_PYPI_FALLBACK="bitsandbytes>={self.FLOOR}"' in text
+        ), f"install.sh _install_bnb_rocm PyPI fallback must floor at {self.FLOOR}"
+
+    def test_stack_py_pypi_fallback_floor(self):
+        text = STACK_PY.read_text(encoding = "utf-8")
+        assert (
+            f'_BNB_ROCM_PYPI_FALLBACK = "bitsandbytes>={self.FLOOR}"' in text
+        ), f"install_python_stack.py PyPI fallback must floor at {self.FLOOR}"
+
+    def test_no_installer_still_allows_the_broken_range(self):
+        for path in (INSTALL_SH, INSTALL_PS1, SETUP_PS1, STACK_PY, self.PYPROJECT):
+            text = path.read_text(encoding = "utf-8")
+            for line in text.splitlines():
+                if "bitsandbytes>=0.49" in line and not line.lstrip().startswith(("#", "//")):
+                    raise AssertionError(
+                        f"{path.name} still floors bitsandbytes in the broken ROCm range: {line.strip()!r}"
+                    )
+
+    def test_fallback_is_not_reported_as_broken(self):
+        """The fallback now installs the first fixed release, so neither installer
+        may still call 4-bit decode broken on ROCm."""
+        for path in (INSTALL_SH, STACK_PY):
+            text = path.read_text(encoding = "utf-8")
+            assert (
+                "4-bit decode broken on ROCm" not in text
+            ), f"{path.name} still reports the repaired PyPI fallback as broken"
+            assert (
+                "4-bit decode will be broken on ROCm" not in text
+            ), f"{path.name} still reports the repaired PyPI fallback as broken"
+
+    def test_aarch64_is_not_told_it_has_a_rocm_backend(self):
+        """bitsandbytes ships no ROCm kernels in its aarch64 wheel at any version, so
+        neither installer may hand aarch64 the x86_64 "carries the ROCm 4-bit fix"
+        message, and both must warn that 4-bit needs a source build there."""
+        sh = INSTALL_SH.read_text(encoding = "utf-8")
+        assert "_bnb_rocm_arch_has_binary()" in sh
+        assert "_warn_bnb_no_rocm_binary()" in sh
+        assert (
+            sh.count("_warn_bnb_no_rocm_binary\n") >= 2
+        ), "install.sh must warn on aarch64 after both the pre-release and the fallback install"
+        py = STACK_PY.read_text(encoding = "utf-8")
+        assert "def _bnb_rocm_arch_has_binary(" in py
+        assert "_bnb_rocm_arch_has_binary()" in py
+        for text, name in ((sh, "install.sh"), (py, "install_python_stack.py")):
+            assert (
+                "4-bit QLoRA needs a source build" in text
+            ), f"{name} must tell aarch64 users 4-bit needs a source build"

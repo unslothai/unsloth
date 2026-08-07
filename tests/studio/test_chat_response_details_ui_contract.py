@@ -13,21 +13,26 @@ THREAD_TSX = REPO / "studio/frontend/src/components/assistant-ui/thread.tsx"
 DETAILS_TSX = (
     REPO / "studio/frontend/src/components/assistant-ui/message-response-details-sheet.tsx"
 )
+DOCUMENT_PREVIEW_TSX = (
+    REPO / "studio/frontend/src/features/rag/components/document-preview-sheet.tsx"
+)
+SHEET_TSX = REPO / "studio/frontend/src/components/ui/sheet.tsx"
 REASONING_TSX = REPO / "studio/frontend/src/components/assistant-ui/reasoning.tsx"
 ADAPTER_TS = REPO / "studio/frontend/src/features/chat/api/chat-adapter.ts"
 CHAT_PREFS_TS = REPO / "studio/frontend/src/features/chat/stores/chat-preferences-store.ts"
 CHAT_TAB_TSX = REPO / "studio/frontend/src/features/settings/tabs/chat-tab.tsx"
+EN_LOCALE_TS = REPO / "studio/frontend/src/i18n/locales/en.ts"
 
 
 def test_assistant_more_menu_exposes_response_details_action():
-    src = THREAD_TSX.read_text()
+    src = THREAD_TSX.read_text(encoding = "utf-8")
     assert "MessageResponseDetailsSheet" in src
     assert "See response details" in src
     assert "setDetailsOpen(true)" in src
 
 
 def test_response_details_sheet_uses_unsloth_sheet_and_key_sections():
-    src = DETAILS_TSX.read_text()
+    src = DETAILS_TSX.read_text(encoding = "utf-8")
     assert "SheetContent" in src
     assert "Response details" in src
     assert "MessageResponseModelBadge" in src
@@ -44,18 +49,58 @@ def test_response_details_sheet_uses_unsloth_sheet_and_key_sections():
         assert f'label="{field}"' in src
 
 
+def assert_sheet_close_button_tracks_title_center(src: str) -> None:
+    content_start = src.index("<SheetContent")
+    content_tail = src[content_start:]
+    content_end = re.search(r"(?m)^\s*>\s*$", content_tail)
+    assert content_end is not None
+    content_open = content_tail[: content_end.end()]
+    header = src[src.index("<SheetHeader") : src.index("</SheetHeader>")]
+    close_start = header.index("<SheetCloseButton")
+    close = header[close_start : header.index("/>", close_start)]
+    class_name = re.search(r'className="([^"]+)"', close)
+
+    assert "showCloseButton={false}" in content_open
+    assert '<div className="relative">' in header
+    assert class_name is not None
+    class_tokens = class_name.group(1).split()
+    for token in ["absolute", "top-1/2", "right-0", "-translate-y-1/2"]:
+        assert token in class_tokens
+
+
+def test_sheet_headers_center_the_shared_close_button_on_the_title():
+    assert_sheet_close_button_tracks_title_center(
+        DETAILS_TSX.read_text(encoding = "utf-8"),
+    )
+    assert_sheet_close_button_tracks_title_center(
+        DOCUMENT_PREVIEW_TSX.read_text(encoding = "utf-8"),
+    )
+
+    sheet_src = SHEET_TSX.read_text(encoding = "utf-8")
+    close_button = sheet_src[
+        sheet_src.index("function SheetCloseButton") : sheet_src.index("function SheetPortal")
+    ]
+    assert 'variant="ghost"' in close_button
+    assert 'size="icon-sm"' in close_button
+    assert "Cancel01Icon" in close_button
+    assert '<span className="sr-only">Close</span>' in close_button
+    assert '<SheetCloseButton className="absolute top-4 right-4" />' in sheet_src
+
+
 def test_response_model_badge_is_user_configurable_and_rendered_once_per_message():
-    prefs_src = CHAT_PREFS_TS.read_text()
-    chat_tab_src = CHAT_TAB_TSX.read_text()
-    thread_src = THREAD_TSX.read_text()
-    reasoning_src = REASONING_TSX.read_text()
+    prefs_src = CHAT_PREFS_TS.read_text(encoding = "utf-8")
+    chat_tab_src = CHAT_TAB_TSX.read_text(encoding = "utf-8")
+    thread_src = THREAD_TSX.read_text(encoding = "utf-8")
+    reasoning_src = REASONING_TSX.read_text(encoding = "utf-8")
 
     assert "showResponseModel: boolean" in prefs_src
     assert "showResponseModel: false" in prefs_src
     assert "showResponseModel: saved?.showResponseModel ?? false" in prefs_src
-    assert "Show response model" in chat_tab_src
+    # The visible label lives in the locale file; the tab holds only the key that resolves to it.
+    assert 'showResponseModel: "Show response model"' in EN_LOCALE_TS.read_text(encoding = "utf-8")
+    assert 't("settings.chat.showResponseModel")' in chat_tab_src
     assert "setShowResponseModel" in chat_tab_src
-    details_src = DETAILS_TSX.read_text()
+    details_src = DETAILS_TSX.read_text(encoding = "utf-8")
     assert (
         "aui-response-model-badge pointer-events-none relative inline-flex min-h-5" in details_src
     )
@@ -75,8 +120,33 @@ def test_response_model_badge_is_user_configurable_and_rendered_once_per_message
     assert 'className="min-w-0 flex-1"' in reasoning_src
 
 
+def test_reasoning_keeps_streaming_height_cap_through_automatic_collapse():
+    src = REASONING_TSX.read_text(encoding = "utf-8")
+
+    assert "const [retainStreamingHeight, setRetainStreamingHeight]" in src
+    assert "setRetainStreamingHeight(false)" in src
+    assert "setRetainStreamingHeight(isReasoningStreaming)" in src
+    assert "isReasoningStreaming ? 0 : ANIMATION_DURATION" in src
+    assert "streaming={isReasoningStreaming || retainStreamingHeight}" in src
+
+
+def test_reasoning_clears_manual_open_on_a_new_stream():
+    """A hand-opened block must not stay pinned open when the stream restarts.
+
+    isOpen is `(streaming && !dismissed) || manualOpen` and manualOpen is only
+    settable while idle, so the new-stream reset has to clear it too.
+    """
+    src = REASONING_TSX.read_text(encoding = "utf-8")
+
+    marker = "setDismissedWhileStreaming(false)"
+    start = src.find(marker)
+    assert start != -1, "new-stream reset effect is missing"
+    effect = src[src.rfind("useEffect(() => {", 0, start) : src.find("});", start)]
+    assert "setManualOpen(false)" in effect
+
+
 def test_response_details_metadata_is_persisted_without_backend_schema_change():
-    src = ADAPTER_TS.read_text()
+    src = ADAPTER_TS.read_text(encoding = "utf-8")
     assert "interface ResponseDetailsMetadata" in src
     assert "buildResponseDetails" in src
     assert "responseDetails: buildResponseDetails(finishedAt)" in src

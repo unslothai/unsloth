@@ -105,5 +105,6 @@ def test_shared_mapper_matches_backend_config_keys():
         "lora_dropout",
         "use_rslora",
         "use_loftq",
+        "use_dora",
     ):
         assert key in src, f"run-config mapper lost backend key {key}"

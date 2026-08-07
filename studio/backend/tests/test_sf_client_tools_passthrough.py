@@ -95,7 +95,7 @@ class _ScriptedBackend:
         for snap in snapshots:
             yield snap
 
-    def reset_generation_state(self):
+    def reset_generation_state(self, caller_cancel_event = None):
         self.reset_count += 1
 
 

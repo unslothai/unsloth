@@ -22,6 +22,13 @@ _backend_root = Path(__file__).resolve().parent.parent
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
+# Let the diffusion patch backend lazily import unsloth_zoo on a CPU-only test host: unsloth_zoo runs accelerator
+# detection at import and raises without a GPU unless this is set. setdefault so an explicit override wins.
+os.environ.setdefault("UNSLOTH_ALLOW_CPU", "1")
+# The other half of the same guard: unsloth_zoo.__init__ refuses to import unless this is present, normally set by `import unsloth`. Without it
+# the patch backend's only route to the helpers is that ~940 MB import, which a CPU-only host cannot complete. run.py and main.py do the same.
+os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
+
 
 # Pytest CLI options
 
@@ -56,6 +63,99 @@ def pytest_addoption(parser):
 
 
 # E2E server fixtures
+
+
+@pytest.fixture(scope = "session", autouse = True)
+def _isolate_xet_health_home(tmp_path_factory):
+    """Point HF_HOME at a temp dir for the whole session, before any server is spawned.
+
+    Session scope is load-bearing: pytest builds higher-scoped fixtures first, so setting HF_HOME
+    function-scoped landed AFTER ``studio_server`` snapshotted os.environ, leaving that server
+    rewriting the developer's real unsloth_xet_health.json.
+    """
+    from _pytest.monkeypatch import MonkeyPatch
+
+    from huggingface_hub import constants as hf_constants
+
+    mp = MonkeyPatch()
+    # Pin these to what the hub resolved from the REAL environment before moving HF_HOME, which
+    # also defaults HF_HUB_CACHE, HF_XET_CACHE and HF_TOKEN_PATH: moving it alone would send the
+    # E2E server to an empty cache and token store, so a ~1.1GB GGUF redownload inside the 120s
+    # startup deadline and no credentials for a private --unsloth-model.
+    mp.setenv("HF_HUB_CACHE", hf_constants.HF_HUB_CACHE)
+    mp.setenv("HF_TOKEN_PATH", hf_constants.HF_TOKEN_PATH)
+    xet_cache = getattr(hf_constants, "HF_XET_CACHE", None)
+    if xet_cache:
+        mp.setenv("HF_XET_CACHE", xet_cache)
+    mp.setenv("HF_HOME", str(tmp_path_factory.mktemp("xet_health_home")))
+    yield
+    mp.undo()
+
+
+@pytest.fixture(autouse = True)
+def _isolate_xet_health_state():
+    """Keep the persisted Xet health verdict out of the developer's real HF home.
+
+    The verdict is sticky across sessions (two consecutive failures pin a machine to HTTP for 24h),
+    so a machine that has genuinely stalled starts the ladder on HTTP inside a test expecting Xet.
+    That reproduced: `test_shim_injects_studio_prepare_on_http_retry` saw the fallback without the
+    Xet attempt it asserts. Clean CI runners hide it, developer machines do not.
+    """
+    # Load it the way the shim does: a bare `from unsloth_zoo import ...` raises NotImplementedError
+    # on a CPU-only host (its __init__ runs accelerator detection), so a plain import would skip
+    # this isolation on exactly the hosts the shim's GPU-init retry exists to support.
+    from utils.hf_xet_fallback import _load_optional
+
+    hf_xet_health = _load_optional("unsloth_zoo.hf_xet_health")
+    if hf_xet_health is None:
+        yield
+        return
+    hf_xet_health.clear_xet_health()
+    yield
+    hf_xet_health.clear_xet_health()
+
+
+@pytest.fixture(autouse = True)
+def _no_background_model_scan(monkeypatch):
+    """Keep the /v1 admission hook from scanning the real HF cache during tests.
+
+    The hook warms the local-model index on a background thread: right in a server,
+    wrong here, since it walks the developer's actual caches and the I/O starves the
+    loop under timing-sensitive streaming tests. Warm tests patch it back.
+    """
+    import time
+
+    from core.inference import local_model_resolver
+
+    monkeypatch.setattr(local_model_resolver, "warm_index_soon", lambda: None)
+    # Start from a built, empty index: stubbing only the warm left the cold path
+    # walking those caches inside the admission wait, so on a large install the
+    # assertion became a 503 "still indexing". Cold-path tests reset _scan themselves;
+    # _build_index is untouched so tests calling it directly still walk for real.
+    monkeypatch.setattr(local_model_resolver, "_scan", (time.monotonic(), {}))
+
+
+@pytest.fixture(autouse = True)
+def _assume_bare_metal(monkeypatch):
+    """Pin the virtualised-Metal detector off so the suite is host independent.
+
+    The dedupe comparators consult real hardware, so on a Mac (and on GitHub's macos
+    runners, which are paravirtual) every test of them would normalize the incoming
+    request and mismatch fixture state that was never normalized. Tests that want the
+    fallback patch it back on.
+    """
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: False)
+    # The route rebinds the detector as a module global (its import sits in a module-level
+    # try), so patching llama_cpp alone leaves it on real hardware.
+    try:
+        from routes import inference as routes_inference
+    except Exception:  # optional deps absent on some CI legs
+        return
+    monkeypatch.setattr(
+        routes_inference, "_metal_device_is_paravirtual", lambda: False, raising = False
+    )
 
 
 @pytest.fixture(scope = "session")
@@ -177,3 +277,34 @@ def stub_embeddings(monkeypatch):
     )
     monkeypatch.setattr(embeddings, "warm", lambda model_name = None: None)
     return dim
+
+
+@pytest.fixture
+def dit_train_host(monkeypatch):
+    """Pretend this host can train the DiT families.
+
+    ``family_train_infos()`` and the start preflight both gate on the accelerator / bf16 probes, so
+    on a GPU-less runner every DiT family reports no precision modes, ``supports_compile`` False,
+    and a "needs a GPU" note that replaces any other preflight message. Tests about family metadata
+    or about a different preflight pin the probes here so they assert the same thing on every host;
+    the gate itself is covered by its own tests in test_diffusion_base_precision.py.
+    """
+    import core.training.diffusion_train_common as dtc
+
+    monkeypatch.setattr(dtc, "dit_accelerator_missing_reason", lambda *_a, **_k: None)
+    monkeypatch.setattr(dtc, "bf16_unsupported_reason", lambda *_a, **_k: None)
+    return dtc
+
+
+@pytest.fixture(autouse = True)
+def _reset_optional_module_memo():
+    """Forget the shim's memoised optional-module results between tests.
+
+    ``_load_optional`` caches per module name including failures, so without this one test's fake
+    module would answer the next test's question.
+    """
+    import utils.hf_xet_fallback as _shim
+
+    _shim._reset_optional_module_cache()
+    yield
+    _shim._reset_optional_module_cache()

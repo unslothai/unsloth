@@ -10,6 +10,16 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronLeftIcon, UploadIcon } from "lucide-react";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -56,6 +66,9 @@ export function KnowledgeBaseDialog({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [saving, setSaving] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState<KnowledgeBase | null>(
+    null,
+  );
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -125,13 +138,6 @@ export function KnowledgeBaseDialog({
   }
 
   async function removeKb(kb: KnowledgeBase) {
-    if (
-      !window.confirm(
-        `Delete knowledge base "${kb.name}" and all its documents?`,
-      )
-    ) {
-      return;
-    }
     try {
       await deleteKnowledgeBase(kb.id);
       await refresh();
@@ -210,7 +216,7 @@ export function KnowledgeBaseDialog({
                 No knowledge bases yet.
               </div>
             ) : (
-              <ul className="flex max-h-[60vh] flex-col divide-y overflow-y-auto rounded-md border">
+              <ul className="flex max-h-[60dvh] flex-col divide-y overflow-y-auto rounded-md border">
                 {kbs.map((kb) => (
                   <li
                     key={kb.id}
@@ -242,7 +248,7 @@ export function KnowledgeBaseDialog({
                         type="button"
                         variant="ghost"
                         size="icon"
-                        onClick={() => removeKb(kb)}
+                        onClick={() => setConfirmingDelete(kb)}
                         aria-label="Delete knowledge base"
                       >
                         <HugeiconsIcon icon={Delete02Icon} size={14} />
@@ -255,6 +261,38 @@ export function KnowledgeBaseDialog({
           </div>
         )}
       </DialogContent>
+      <AlertDialog
+        open={confirmingDelete !== null}
+        onOpenChange={(next) => {
+          if (!next) setConfirmingDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete knowledge base</AlertDialogTitle>
+            <AlertDialogDescription>
+              Delete{" "}
+              <span className="font-medium text-foreground">
+                &quot;{confirmingDelete?.name}&quot;
+              </span>{" "}
+              and all its documents? This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                const kb = confirmingDelete;
+                setConfirmingDelete(null);
+                if (kb) void removeKb(kb);
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   );
 }
@@ -312,7 +350,7 @@ function KnowledgeBaseDocuments({
           No documents yet. Upload a PDF, Markdown, DOCX, HTML, or text file.
         </div>
       ) : (
-        <div className="flex max-h-[55vh] flex-wrap gap-1.5 overflow-y-auto pr-0.5">
+        <div className="flex max-h-[55dvh] flex-wrap gap-1.5 overflow-y-auto pr-0.5">
           {documents.map((doc) => (
             <DocumentStatusChip
               key={doc.id}

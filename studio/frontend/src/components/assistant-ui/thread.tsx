@@ -36,6 +36,7 @@ import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
+  pasteClipboardFiles,
   isStudioDictationAvailable,
   notifyStudioDictationUnavailable,
 } from "@/features/chat";
@@ -79,7 +80,18 @@ import {
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
+import { ResearchMessage } from "@/features/chat/components/research-message";
+import {
+  DeepResearchComposerButton,
+  DeepResearchWebsiteAccessDialog,
+} from "@/features/chat/components/deep-research-composer-button";
+import { cancelResearchRun } from "@/features/chat/api/research-api";
+import {
+  ingestResearchUpdate,
+  useResearchRunStore,
+} from "@/features/chat/stores/research-run-store";
 import { parseExternalModelId } from "@/features/chat/external-providers";
+import { toolStatusKind } from "@/features/chat/utils/tool-status";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
@@ -87,16 +99,49 @@ import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-me
 import { PermissionModeComposerPill } from "@/features/chat/permission-mode-select";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
-import { PROMPT_QUEUE_STOP_EVENT } from "@/features/chat/utils/prompt-queue-boundary";
 import {
   PLUS_MENU_ORDER,
+  PROMPT_QUEUE_RUN_FAILED_EVENT,
+  PROMPT_QUEUE_STOP_EVENT,
+  addQueuedChatRunSettingsThreadIds,
+  adoptPreStreamRunReservation,
+  chatHistoryClearBoundary,
+  deleteStoredChatThreads,
+  discardQueuedChatRunSettings,
+  discardQueuedChatRunSettingsForThread,
+  hasPreStreamRunReservation,
+  localPromptQueueModelBoundary,
+  notifyPromptQueueRunFailed,
+  planLocalPromptQueueStop,
+  registerQueuedChatRunSettings,
+  releasePreStreamRunReservation,
+  reservePreStreamRun,
+  shouldAbortPendingQueueForModelBoundary,
+  shouldAbortPendingQueueForSettingsChange,
+  snapshotQueuedChatRunSettings,
   composerDraftKey,
+  markThreadIncognito,
+  markChatThreadDeleted,
+  type PromptQueueRunFailedEventDetail,
+  type PromptQueueStopEventDetail,
+  dictationFailed,
+  dictationProducedTranscript,
   readComposerDraft,
+  type PromptQueueUIEntry,
+  type PromptQueueUIItem,
+  type PromptQueueUIItemStatus,
+  type PromptQueueUIState,
+  usePromptQueueUI,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
   writeComposerDraft,
 } from "@/features/chat";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
+import { updateStoredChatThread } from "@/features/chat/utils/chat-history-storage";
+import {
+  dictationSendBlocked,
+  shouldSubmitDictation,
+} from "@/features/chat/utils/dictation-send";
 import { listThreadDocuments } from "@/features/rag/api/rag-api";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
@@ -140,6 +185,7 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
+  Telescope02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -164,8 +210,8 @@ import {
 } from "lucide-react";
 import {
   type ChangeEvent,
-  type ComponentProps,
   type CompositionEvent,
+  type ClipboardEvent,
   type FC,
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
@@ -179,7 +225,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { create } from "zustand";
 import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/update-thread-message";
 import { useIsMobile } from "@/hooks/use-mobile";
 
@@ -187,50 +232,23 @@ import { useIsMobile } from "@/hooks/use-mobile";
 // can show its "Drop files here" affordance.
 const PageDragContext = createContext(false);
 
-// Single-chat prompt queue. State lives at module level so it survives the
-// Composer remount when the first queued message creates a new thread, and
-// detection subscribes to runningByThreadId instead of aui.thread() so the
-// welcome-screen composer can queue safely before a thread is bound.
-type PromptQueueUIEntry = {
-  current: number;
-  total: number;
-};
-
-type PromptQueueUIItemStatus = "queued" | "next" | "waiting" | "running";
-
-type PromptQueueUIItem = {
-  id: string;
-  prompt: string;
-  position: number;
-  total: number;
-  status: PromptQueueUIItemStatus;
-  threadIds: string[];
-  canEdit: boolean;
-  canRemove: boolean;
-};
-
-interface PromptQueueUIState {
-  byThreadId: Record<string, PromptQueueUIEntry>;
-  current: number;
-  total: number;
-  items: PromptQueueUIItem[];
-  isRunning: boolean;
-}
-
-const usePromptQueueUI = create<PromptQueueUIState>(() => ({
-  byThreadId: {},
-  current: 0,
-  total: 0,
-  items: [],
-  isRunning: false,
-}));
-
+// Prompt queues live at module level so they survive Composer remounts,
+// including the first queued message that creates a new thread. Each chat gets
+// its own queue run; completion detection subscribes to runningByThreadId
+// instead of aui.thread() so queues can keep advancing in the background.
 type PromptQueueTarget = {
   getDocumentThreadId: () => string | null;
   getRunningThreadIds: () => string[];
-  append: (prompt: string) => void;
+  isRunning: () => boolean;
+  append: (prompt: string) => void | Promise<void>;
+  complete: () => void;
   cancel: () => void;
   isIndexing: () => boolean;
+  usesThreadDocuments: boolean;
+  usesLocalModel: boolean;
+  usesDeepResearch: boolean;
+  temporary: boolean;
+  consumeDeepResearch: () => void;
 };
 
 type PromptQueueItem = {
@@ -238,18 +256,32 @@ type PromptQueueItem = {
   prompt: string;
   target: PromptQueueTarget;
   dispatched: boolean;
+  dispatchRetries: number;
+};
+
+type PromptQueueRun = {
+  id: string;
+  items: PromptQueueItem[];
+  index: number;
+  generation: number;
+  prevStoreRunning: boolean;
+  waitingForTargetIdle: boolean;
+  retryTimer: ReturnType<typeof setTimeout> | null;
+  deepResearchConsumed: boolean;
 };
 
 const PROMPT_QUEUE_INDEXING_RETRY_MS = 500;
+const PROMPT_QUEUE_DISPATCH_RETRY_MS = 500;
+const PROMPT_QUEUE_TARGET_STATE_POLL_MS = 50;
+const PROMPT_QUEUE_MAX_DISPATCH_RETRIES = 5;
 
-let promptQueueItems: PromptQueueItem[] = [];
-let promptQueueIndex = 0;
-let promptQueueIsRunning = false;
-let promptQueueGeneration = 0;
-let promptQueuePrevStoreRunning = false;
-let promptQueueWaitingForTargetIdle = false;
+const promptQueueRuns = new Map<string, PromptQueueRun>();
+const promptQueueActiveRunIds = new Set<string>();
+const promptQueueDispatchingRunIds = new Set<string>();
+const promptQueueRunOrder: string[] = [];
 let promptQueueStoreUnsub: (() => void) | null = null;
-let promptQueueRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let promptQueuePumpTimer: ReturnType<typeof setTimeout> | null = null;
+let promptQueueRoundRobinCursor = 0;
 
 function compactIds(ids: Array<string | null | undefined>) {
   return Array.from(new Set(ids.filter((id): id is string => Boolean(id))));
@@ -259,49 +291,145 @@ function createPromptQueueItemId() {
   return `prompt-queue-${crypto.randomUUID()}`;
 }
 
-function stopPromptQueueSubscription({
-  resetRunningState = true,
-}: {
-  resetRunningState?: boolean;
-} = {}) {
+function createPromptQueueRunId() {
+  return `prompt-queue-run-${crypto.randomUUID()}`;
+}
+
+function stopPromptQueueSubscription() {
   if (promptQueueStoreUnsub) {
     promptQueueStoreUnsub();
     promptQueueStoreUnsub = null;
   }
-  if (resetRunningState) {
-    promptQueuePrevStoreRunning = false;
-  }
 }
 
-function resetPromptQueue() {
-  promptQueueGeneration += 1;
-  promptQueueIsRunning = false;
-  promptQueueItems = [];
-  promptQueueIndex = 0;
-  promptQueueWaitingForTargetIdle = false;
-  if (promptQueueRetryTimer) {
-    clearTimeout(promptQueueRetryTimer);
-    promptQueueRetryTimer = null;
+function clearPromptQueuePumpTimer() {
+  if (!promptQueuePumpTimer) {
+    return;
   }
+  clearTimeout(promptQueuePumpTimer);
+  promptQueuePumpTimer = null;
+}
+
+function clearPromptQueueRetryTimer(run: PromptQueueRun) {
+  if (!run.retryTimer) {
+    return;
+  }
+  clearTimeout(run.retryTimer);
+  run.retryTimer = null;
+}
+
+function deletePromptQueueRun(run: PromptQueueRun) {
+  run.generation += 1;
+  clearPromptQueueRetryTimer(run);
+  promptQueueActiveRunIds.delete(run.id);
+  promptQueueDispatchingRunIds.delete(run.id);
+  promptQueueRuns.delete(run.id);
+  const orderIndex = promptQueueRunOrder.indexOf(run.id);
+  if (orderIndex >= 0) {
+    promptQueueRunOrder.splice(orderIndex, 1);
+    if (promptQueueRoundRobinCursor > orderIndex) {
+      promptQueueRoundRobinCursor -= 1;
+    }
+    if (promptQueueRunOrder.length > 0) {
+      promptQueueRoundRobinCursor %= promptQueueRunOrder.length;
+    } else {
+      promptQueueRoundRobinCursor = 0;
+    }
+  }
+  if (promptQueueRuns.size === 0) {
+    clearPromptQueuePumpTimer();
+    stopPromptQueueSubscription();
+  }
+  syncPromptQueueUI();
+}
+
+function resetPromptQueues() {
+  for (const run of promptQueueRuns.values()) {
+    run.generation += 1;
+    clearPromptQueueRetryTimer(run);
+  }
+  promptQueueRuns.clear();
+  promptQueueActiveRunIds.clear();
+  promptQueueDispatchingRunIds.clear();
+  promptQueueRunOrder.length = 0;
+  promptQueueRoundRobinCursor = 0;
+  clearPromptQueuePumpTimer();
   stopPromptQueueSubscription();
   syncPromptQueueUI();
 }
 
-function appendQueuedPrompt(item: PromptQueueItem) {
-  item.dispatched = true;
+function requestPromptQueuePumpIfReady(delay = 0) {
+  if (hasReadyPromptQueueRun()) {
+    requestPromptQueuePump(delay);
+  }
+}
+
+function handleQueuedPromptAppendFailure(
+  run: PromptQueueRun,
+  item: PromptQueueItem,
+  error: unknown,
+) {
+  if (!isActivePromptQueueItem(run, item, run.generation)) {
+    return;
+  }
+  item.dispatched = false;
+  promptQueueActiveRunIds.delete(run.id);
   syncPromptQueueUI();
-  item.target.append(item.prompt);
+  item.dispatchRetries += 1;
+  if (item.dispatchRetries > PROMPT_QUEUE_MAX_DISPATCH_RETRIES) {
+    console.error("Prompt queue dispatch failed permanently:", error);
+    try {
+      item.target.cancel();
+    } catch (cleanupError) {
+      console.error("Prompt queue cleanup failed:", cleanupError);
+    }
+    deletePromptQueueRun(run);
+    requestPromptQueuePumpIfReady();
+    return;
+  }
+  item.target.complete();
+  scheduleQueuedPromptDispatch(run, item, PROMPT_QUEUE_DISPATCH_RETRY_MS);
+}
+
+function consumePromptQueueDeepResearch(
+  run: PromptQueueRun,
+  item: PromptQueueItem,
+) {
+  if (run.deepResearchConsumed || !item.target.usesDeepResearch) {
+    return;
+  }
+  run.deepResearchConsumed = true;
+  for (const item of run.items) {
+    item.target.consumeDeepResearch();
+  }
+}
+
+function appendQueuedPrompt(run: PromptQueueRun, item: PromptQueueItem) {
+  item.dispatched = true;
+  promptQueueActiveRunIds.add(run.id);
+  syncPromptQueueUI();
+  try {
+    const result = item.target.append(item.prompt);
+    if (result && typeof result.catch === "function") {
+      void result
+        .then(() => consumePromptQueueDeepResearch(run, item))
+        .catch((error) => {
+          handleQueuedPromptAppendFailure(run, item, error);
+        });
+    } else {
+      consumePromptQueueDeepResearch(run, item);
+    }
+  } catch (error) {
+    handleQueuedPromptAppendFailure(run, item, error);
+  }
+  schedulePromptQueueTargetStatePoll(run);
 }
 
 async function targetHasIndexingDocuments(item: PromptQueueItem) {
   if (item.target.isIndexing()) {
     return true;
   }
-  const state = useChatRuntimeStore.getState();
-  if (
-    !state.ragEnabled ||
-    state.ragSource.type !== "thread"
-  ) {
+  if (!item.target.usesThreadDocuments) {
     return false;
   }
   const threadId = item.target.getDocumentThreadId();
@@ -314,36 +442,118 @@ async function targetHasIndexingDocuments(item: PromptQueueItem) {
       (doc) => doc.status === "pending" || doc.status === "running",
     );
   } catch {
-    return item.target.isIndexing();
+    // A failed status probe cannot prove that this thread's documents are
+    // ready. Keep the queued send pending and retry instead of dispatching
+    // without the RAG documents it was explicitly waiting for.
+    return true;
   }
 }
 
-function isActivePromptQueueItem(item: PromptQueueItem, generation: number) {
-  if (!promptQueueIsRunning || generation !== promptQueueGeneration) {
+function getActivePromptQueueItem(run: PromptQueueRun) {
+  return run.items[Math.max(run.index, 0)];
+}
+
+function isActivePromptQueueItem(
+  run: PromptQueueRun,
+  item: PromptQueueItem,
+  generation: number,
+) {
+  if (promptQueueRuns.get(run.id) !== run || generation !== run.generation) {
     return false;
   }
-  return promptQueueItems[Math.max(promptQueueIndex, 0)] === item;
+  return getActivePromptQueueItem(run) === item;
 }
 
 function scheduleQueuedPromptDispatch(
+  run: PromptQueueRun,
   item: PromptQueueItem,
   delay: number,
-  generation = promptQueueGeneration,
+  generation = run.generation,
 ) {
-  if (promptQueueRetryTimer) {
-    clearTimeout(promptQueueRetryTimer);
-  }
-  promptQueueRetryTimer = setTimeout(() => {
-    promptQueueRetryTimer = null;
-    void dispatchQueuedPrompt(item, generation);
+  clearPromptQueueRetryTimer(run);
+  run.retryTimer = setTimeout(() => {
+    run.retryTimer = null;
+    if (isActivePromptQueueItem(run, item, generation)) {
+      requestPromptQueuePump();
+    }
   }, delay);
 }
 
+function isPromptQueueRunReadyToDispatch(run: PromptQueueRun) {
+  const item = getActivePromptQueueItem(run);
+  return Boolean(
+    item &&
+      run.index >= 0 &&
+      !item.dispatched &&
+      !run.waitingForTargetIdle &&
+      !run.retryTimer &&
+      !promptQueueActiveRunIds.has(run.id) &&
+      !promptQueueDispatchingRunIds.has(run.id),
+  );
+}
+
+function getNextReadyPromptQueueRun() {
+  if (promptQueueRunOrder.length === 0) {
+    return null;
+  }
+  const size = promptQueueRunOrder.length;
+  for (let offset = 0; offset < size; offset += 1) {
+    const orderIndex = (promptQueueRoundRobinCursor + offset) % size;
+    const runId = promptQueueRunOrder[orderIndex];
+    const run = promptQueueRuns.get(runId);
+    if (!run || !isPromptQueueRunReadyToDispatch(run)) {
+      continue;
+    }
+    promptQueueRoundRobinCursor = (orderIndex + 1) % size;
+    return run;
+  }
+  return null;
+}
+
+function requestPromptQueuePump(delay = 0) {
+  if (promptQueuePumpTimer) {
+    return;
+  }
+  promptQueuePumpTimer = setTimeout(() => {
+    promptQueuePumpTimer = null;
+    pumpPromptQueues();
+  }, delay);
+}
+
+function pumpPromptQueues() {
+  ensurePromptQueueSubscription();
+  // A queue is sequential within its own thread, but independent threads may
+  // dispatch together. The inference backend owns its actual concurrency cap
+  // and queues excess local generations.
+  while (true) {
+    const run = getNextReadyPromptQueueRun();
+    if (!run) {
+      return;
+    }
+    const item = getActivePromptQueueItem(run);
+    if (!item) {
+      deletePromptQueueRun(run);
+      continue;
+    }
+    promptQueueDispatchingRunIds.add(run.id);
+    dispatchQueuedPrompt(run, item, run.generation)
+      .catch(() => undefined)
+      .finally(() => {
+        promptQueueDispatchingRunIds.delete(run.id);
+        syncPromptQueueUI();
+        if (!promptQueueActiveRunIds.has(run.id)) {
+          requestPromptQueuePump();
+        }
+      });
+  }
+}
+
 async function dispatchQueuedPrompt(
+  run: PromptQueueRun,
   item: PromptQueueItem,
-  generation = promptQueueGeneration,
+  generation = run.generation,
 ) {
-  if (!isActivePromptQueueItem(item, generation)) {
+  if (!isActivePromptQueueItem(run, item, generation)) {
     return;
   }
   if (
@@ -352,24 +562,31 @@ async function dispatchQueuedPrompt(
       useChatRuntimeStore.getState().runningByThreadId,
     )
   ) {
-    promptQueueWaitingForTargetIdle = true;
-    promptQueuePrevStoreRunning = true;
+    run.waitingForTargetIdle = true;
+    run.prevStoreRunning = true;
+    promptQueueActiveRunIds.delete(run.id);
     syncPromptQueueUI();
-    startPromptQueueSubscription();
+    ensurePromptQueueSubscription();
+    handlePromptQueueRunState(
+      run,
+      useChatRuntimeStore.getState().runningByThreadId,
+    );
+    schedulePromptQueueTargetStatePoll(run);
     return;
   }
   const hasIndexingDocuments = await targetHasIndexingDocuments(item);
-  if (!isActivePromptQueueItem(item, generation)) {
+  if (!isActivePromptQueueItem(run, item, generation)) {
     return;
   }
   if (hasIndexingDocuments) {
-    scheduleQueuedPromptDispatch(item, PROMPT_QUEUE_INDEXING_RETRY_MS);
+    promptQueueActiveRunIds.delete(run.id);
+    scheduleQueuedPromptDispatch(run, item, PROMPT_QUEUE_INDEXING_RETRY_MS);
     return;
   }
-  if (!isActivePromptQueueItem(item, generation)) {
+  if (!isActivePromptQueueItem(run, item, generation)) {
     return;
   }
-  appendQueuedPrompt(item);
+  appendQueuedPrompt(run, item);
 }
 
 function createQueuedPrompt(prompt: string, target: PromptQueueTarget) {
@@ -378,6 +595,7 @@ function createQueuedPrompt(prompt: string, target: PromptQueueTarget) {
     prompt,
     target,
     dispatched: false,
+    dispatchRetries: 0,
   };
 }
 
@@ -394,6 +612,66 @@ function getPromptQueueTargetIds(target: PromptQueueTarget) {
     ...target.getRunningThreadIds(),
     target.getDocumentThreadId(),
   ]);
+}
+
+function getPromptQueueRunTargetIds(run: PromptQueueRun) {
+  return compactIds(
+    run.items.flatMap((item) => getPromptQueueTargetIds(item.target)),
+  );
+}
+
+function promptQueueRunUsesLocalModel(run: PromptQueueRun) {
+  return run.items
+    .slice(Math.max(run.index, 0))
+    .some((item) => item.target.usesLocalModel);
+}
+
+function promptQueueRunIsTemporary(run: PromptQueueRun) {
+  return run.items
+    .slice(Math.max(run.index, 0))
+    .some((item) => item.target.temporary);
+}
+
+function promptQueueRunMatchesThreadIds(
+  run: PromptQueueRun,
+  threadIds: string[],
+) {
+  return getPromptQueueRunTargetIds(run).some((id) => threadIds.includes(id));
+}
+
+function findPromptQueueRunByTarget(target: PromptQueueTarget) {
+  const targetIds = getPromptQueueTargetIds(target);
+  if (targetIds.length === 0) {
+    return null;
+  }
+  for (const run of promptQueueRuns.values()) {
+    if (promptQueueRunMatchesThreadIds(run, targetIds)) {
+      return run;
+    }
+  }
+  return null;
+}
+
+function findPromptQueueRunByItemId(itemId: string) {
+  for (const run of promptQueueRuns.values()) {
+    const itemIndex = run.items.findIndex((item) => item.id === itemId);
+    if (itemIndex >= 0) {
+      return { run, itemIndex, item: run.items[itemIndex] };
+    }
+  }
+  return null;
+}
+
+function findPromptQueueRunByThreadIds(threadIds: string[]) {
+  if (threadIds.length === 0) {
+    return null;
+  }
+  for (const run of promptQueueRuns.values()) {
+    if (promptQueueRunMatchesThreadIds(run, threadIds)) {
+      return run;
+    }
+  }
+  return null;
 }
 
 function findPromptQueueEntry(
@@ -417,15 +695,48 @@ function canRemovePromptQueueItem(item: PromptQueueItem) {
   return !item.dispatched;
 }
 
-function promptQueueItemMatchesThreadIds(
-  item: PromptQueueUIItem,
-  threadIds: string[],
-) {
-  return item.threadIds.some((threadId) => threadIds.includes(threadId));
+function getPromptQueueRunProgress(run: PromptQueueRun) {
+  const activeItemIndex = Math.max(run.index, 0);
+  const total = run.items.length;
+  const current = run.index >= 0 ? Math.min(activeItemIndex + 1, total) : 0;
+  return { activeItemIndex, current, total };
+}
+
+function getPromptQueueItemStatus(
+  run: PromptQueueRun,
+  index: number,
+  activeItemIndex: number,
+): PromptQueueUIItemStatus {
+  if (run.index >= 0 && index === activeItemIndex) {
+    return run.waitingForTargetIdle ? "waiting" : "next";
+  }
+  return "queued";
+}
+
+function getPromptQueueUIItemsForRun(run: PromptQueueRun) {
+  const { activeItemIndex, total } = getPromptQueueRunProgress(run);
+  const items: PromptQueueUIItem[] = [];
+  for (const [index, item] of run.items.entries()) {
+    if (index < activeItemIndex || item.dispatched) {
+      continue;
+    }
+    items.push({
+      id: item.id,
+      runId: run.id,
+      prompt: item.prompt,
+      position: index + 1,
+      total,
+      status: getPromptQueueItemStatus(run, index, activeItemIndex),
+      threadIds: getPromptQueueTargetIds(item.target),
+      canEdit: canEditPromptQueueItem(item),
+      canRemove: canRemovePromptQueueItem(item),
+    });
+  }
+  return items;
 }
 
 function syncPromptQueueUI() {
-  if (!promptQueueIsRunning || promptQueueItems.length === 0) {
+  if (promptQueueRuns.size === 0) {
     usePromptQueueUI.setState({
       byThreadId: {},
       current: 0,
@@ -436,81 +747,33 @@ function syncPromptQueueUI() {
     return;
   }
 
-  const activeItemIndex = Math.max(promptQueueIndex, 0);
-  const total = promptQueueItems.length;
-  const current = promptQueueIndex >= 0 ? Math.min(activeItemIndex + 1, total) : 0;
-  const items = promptQueueItems
-    .map((item, index): PromptQueueUIItem | null => {
-      if (index < activeItemIndex || item.dispatched) {
-        return null;
-      }
-      const threadIds = getPromptQueueTargetIds(item.target);
-      const isActive = promptQueueIndex >= 0 && index === activeItemIndex;
-      const status: PromptQueueUIItemStatus = item.dispatched
-        ? "running"
-        : isActive
-          ? promptQueueWaitingForTargetIdle
-            ? "waiting"
-            : "next"
-          : "queued";
-      return {
-        id: item.id,
-        prompt: item.prompt,
-        position: index + 1,
-        total,
-        status,
-        threadIds,
-        canEdit: canEditPromptQueueItem(item),
-        canRemove: canRemovePromptQueueItem(item),
-      };
-    })
-    .filter((item): item is PromptQueueUIItem => Boolean(item));
-  const groups: Array<{
-    ids: Set<string>;
-    current: number;
-    total: number;
-    active: boolean;
-  }> = [];
+  const items: PromptQueueUIItem[] = [];
+  const byThreadId: Record<string, PromptQueueUIEntry> = {};
+  let current = 0;
+  let total = 0;
 
-  for (const [index, item] of promptQueueItems.entries()) {
-    const ids = getPromptQueueTargetIds(item.target);
+  for (const run of promptQueueRuns.values()) {
+    const { current: runCurrent, total: runTotal } =
+      getPromptQueueRunProgress(run);
+    current += runCurrent;
+    total += runTotal;
+    items.push(...getPromptQueueUIItemsForRun(run));
+
+    const ids = getPromptQueueRunTargetIds(run);
     if (ids.length === 0) {
       continue;
     }
-    let group = groups.find((candidate) =>
-      ids.some((id) => candidate.ids.has(id)),
-    );
-    if (!group) {
-      group = {
-        ids: new Set<string>(),
-        current: 0,
-        total: 0,
-        active: false,
-      };
-      groups.push(group);
-    }
-    ids.forEach((id) => group.ids.add(id));
-    group.total += 1;
-    if (promptQueueIndex >= 0 && index <= promptQueueIndex) {
-      group.current += 1;
-    }
-    if (index === activeItemIndex) {
-      group.active = true;
-    }
-  }
-
-  const byThreadId: Record<string, PromptQueueUIEntry> = {};
-  for (const group of groups) {
-    if (!group.active && group.current >= group.total) {
-      continue;
-    }
     const entry = {
-      current: Math.min(group.current, group.total),
-      total: group.total,
+      runId: run.id,
+      current: runCurrent,
+      total: runTotal,
+      local: promptQueueRunUsesLocalModel(run),
+      temporary: promptQueueRunIsTemporary(run),
+      dispatched: Boolean(getActivePromptQueueItem(run)?.dispatched),
     };
-    group.ids.forEach((id) => {
+    for (const id of ids) {
       byThreadId[id] = entry;
-    });
+    }
   }
 
   usePromptQueueUI.setState({
@@ -527,13 +790,11 @@ function editPromptQueueItem(itemId: string, prompt: string) {
   if (!nextPrompt) {
     return false;
   }
-  const itemIndex = promptQueueItems.findIndex(
-    (candidate) => candidate.id === itemId,
-  );
-  if (itemIndex < 0) {
+  const match = findPromptQueueRunByItemId(itemId);
+  if (!match) {
     return false;
   }
-  const item = promptQueueItems[itemIndex];
+  const { item } = match;
   if (!canEditPromptQueueItem(item)) {
     return false;
   }
@@ -542,48 +803,41 @@ function editPromptQueueItem(itemId: string, prompt: string) {
   return true;
 }
 
-function clearPromptQueueRetryTimer() {
-  if (!promptQueueRetryTimer) {
-    return;
-  }
-  clearTimeout(promptQueueRetryTimer);
-  promptQueueRetryTimer = null;
-}
-
 function removePromptQueueItem(itemId: string) {
-  const itemIndex = promptQueueItems.findIndex((item) => item.id === itemId);
-  if (itemIndex < 0) {
+  const match = findPromptQueueRunByItemId(itemId);
+  if (!match) {
     return false;
   }
-  const item = promptQueueItems[itemIndex];
+  const { run, itemIndex, item } = match;
   if (!canRemovePromptQueueItem(item)) {
     return false;
   }
 
-  const wasActive =
-    promptQueueIndex >= 0 && itemIndex === Math.max(promptQueueIndex, 0);
-  promptQueueItems.splice(itemIndex, 1);
-  if (promptQueueItems.length === 0) {
-    resetPromptQueue();
+  const wasActive = itemIndex === Math.max(run.index, 0);
+  run.items.splice(itemIndex, 1);
+  if (run.items.length === 0) {
+    deletePromptQueueRun(run);
     return true;
   }
 
-  if (itemIndex < promptQueueIndex) {
-    promptQueueIndex -= 1;
+  if (itemIndex < run.index) {
+    run.index -= 1;
   }
-  if (wasActive && promptQueueIndex >= promptQueueItems.length) {
-    resetPromptQueue();
+  if (wasActive && run.index >= run.items.length) {
+    deletePromptQueueRun(run);
     return true;
   }
 
   syncPromptQueueUI();
   if (wasActive) {
-    clearPromptQueueRetryTimer();
-    promptQueueWaitingForTargetIdle = false;
-    promptQueuePrevStoreRunning = false;
-    const next = promptQueueItems[promptQueueIndex];
+    clearPromptQueueRetryTimer(run);
+    if (run.index < 0 || run.waitingForTargetIdle) {
+      return true;
+    }
+    run.prevStoreRunning = false;
+    const next = run.items[run.index];
     if (next) {
-      scheduleQueuedPromptDispatch(next, 50);
+      scheduleQueuedPromptDispatch(run, next, 50);
     }
   }
   return true;
@@ -593,6 +847,17 @@ function isPromptQueueTargetRunning(
   target: PromptQueueTarget,
   runningByThreadId: Record<string, boolean>,
 ) {
+  // assistant-ui marks a run synchronously when append starts, while the
+  // shared store is set later after model loading and request validation.
+  // Reading the target closes the rapid-submit window where another append
+  // would otherwise cancel the run that just started.
+  try {
+    if (target.isRunning()) {
+      return true;
+    }
+  } catch {
+    // Fall back to the shared store if the thread runtime is remounting.
+  }
   const runningIds = Object.keys(runningByThreadId);
   if (runningIds.length === 0) {
     return false;
@@ -600,78 +865,138 @@ function isPromptQueueTargetRunning(
 
   const targetIds = target.getRunningThreadIds();
   if (targetIds.length === 0) {
-    return runningIds.length > 0;
+    // Never borrow another chat's running state. A queue without a resolved
+    // target should retry its own dispatch instead of becoming globally gated.
+    return false;
   }
 
   return runningIds.some((threadId) => targetIds.includes(threadId));
 }
 
-function isActivePromptQueueTargetRunning(
+function isPromptQueueRunTargetRunning(
+  run: PromptQueueRun,
   runningByThreadId: Record<string, boolean>,
 ) {
-  const activeItem = promptQueueItems[Math.max(promptQueueIndex, 0)];
+  const activeItem = getActivePromptQueueItem(run);
   if (!activeItem) {
     return false;
   }
   return isPromptQueueTargetRunning(activeItem.target, runningByThreadId);
 }
 
-function advancePromptQueue() {
-  const nextIndex = promptQueueIndex + 1;
-  if (nextIndex >= promptQueueItems.length) {
-    resetPromptQueue();
+function advancePromptQueue(run: PromptQueueRun) {
+  clearPromptQueueRetryTimer(run);
+  promptQueueActiveRunIds.delete(run.id);
+  getActivePromptQueueItem(run)?.target.complete();
+  const nextIndex = run.index + 1;
+  if (nextIndex >= run.items.length) {
+    deletePromptQueueRun(run);
     return;
   }
-  promptQueueIndex = nextIndex;
+  run.index = nextIndex;
+  run.waitingForTargetIdle = false;
+  run.prevStoreRunning = false;
   syncPromptQueueUI();
-  const next = promptQueueItems[nextIndex];
-  promptQueueWaitingForTargetIdle = false;
-  promptQueuePrevStoreRunning = false;
-  scheduleQueuedPromptDispatch(next, 100);
+  requestPromptQueuePump(100);
 }
 
-function startPromptQueueSubscription() {
-  const wasWaitingForRun = promptQueuePrevStoreRunning;
-  stopPromptQueueSubscription({ resetRunningState: false });
-  promptQueuePrevStoreRunning = wasWaitingForRun;
+function shouldPollPromptQueueTargetState(run: PromptQueueRun) {
+  return (
+    run.waitingForTargetIdle ||
+    run.index < 0 ||
+    Boolean(getActivePromptQueueItem(run)?.dispatched)
+  );
+}
+
+function schedulePromptQueueTargetStatePoll(run: PromptQueueRun) {
+  const isWaitingForTargetState = shouldPollPromptQueueTargetState(run);
+  if (run.retryTimer || !isWaitingForTargetState) {
+    return;
+  }
+  const generation = run.generation;
+  run.retryTimer = setTimeout(() => {
+    run.retryTimer = null;
+    if (
+      promptQueueRuns.get(run.id) !== run ||
+      generation !== run.generation ||
+      !shouldPollPromptQueueTargetState(run)
+    ) {
+      return;
+    }
+    handlePromptQueueRunState(
+      run,
+      useChatRuntimeStore.getState().runningByThreadId,
+    );
+    if (
+      promptQueueRuns.get(run.id) === run &&
+      shouldPollPromptQueueTargetState(run)
+    ) {
+      schedulePromptQueueTargetStatePoll(run);
+    }
+  }, PROMPT_QUEUE_TARGET_STATE_POLL_MS);
+}
+
+function getRunningThreadCount(runningByThreadId: Record<string, boolean>) {
+  return Object.values(runningByThreadId).filter(Boolean).length;
+}
+
+function hasReadyPromptQueueRun() {
+  return Array.from(promptQueueRuns.values()).some(
+    isPromptQueueRunReadyToDispatch,
+  );
+}
+
+function handlePromptQueueRunState(
+  run: PromptQueueRun,
+  runningByThreadId: Record<string, boolean>,
+) {
+  if (!promptQueueRuns.has(run.id)) {
+    return;
+  }
+  const isRunning = isPromptQueueRunTargetRunning(run, runningByThreadId);
+  const wasRunning = run.prevStoreRunning;
+  run.prevStoreRunning = isRunning;
+  if (!wasRunning || isRunning) {
+    return;
+  }
+  if (run.waitingForTargetIdle) {
+    clearPromptQueueRetryTimer(run);
+    run.waitingForTargetIdle = false;
+    const activeItem = run.items[run.index];
+    if (activeItem) {
+      requestPromptQueuePump(50);
+    }
+    return;
+  }
+  advancePromptQueue(run);
+  requestPromptQueuePump();
+}
+
+function ensurePromptQueueSubscription() {
+  if (promptQueueStoreUnsub) {
+    return;
+  }
   // runningByThreadId tracks the actual thread (not aui.thread()), so detection
   // survives navigation.
+  let previousRunningCount = getRunningThreadCount(
+    useChatRuntimeStore.getState().runningByThreadId,
+  );
+
   promptQueueStoreUnsub = useChatRuntimeStore.subscribe((state) => {
-    if (!promptQueueIsRunning) {
+    if (promptQueueRuns.size === 0) {
       stopPromptQueueSubscription();
       return;
     }
-    const isRunning = isActivePromptQueueTargetRunning(state.runningByThreadId);
-    const wasRunning = promptQueuePrevStoreRunning;
-    promptQueuePrevStoreRunning = isRunning;
-    if (wasRunning && !isRunning) {
-      if (promptQueueWaitingForTargetIdle) {
-        promptQueueWaitingForTargetIdle = false;
-        const activeItem = promptQueueItems[promptQueueIndex];
-        if (activeItem) {
-          scheduleQueuedPromptDispatch(activeItem, 50);
-        }
-        return;
-      }
-      advancePromptQueue();
+    const nextRunningCount = getRunningThreadCount(state.runningByThreadId);
+    for (const run of Array.from(promptQueueRuns.values())) {
+      handlePromptQueueRunState(run, state.runningByThreadId);
     }
-  });
 
-  const isRunningNow = isActivePromptQueueTargetRunning(
-    useChatRuntimeStore.getState().runningByThreadId,
-  );
-  if (promptQueuePrevStoreRunning && !isRunningNow) {
-    promptQueuePrevStoreRunning = false;
-    if (promptQueueWaitingForTargetIdle) {
-      promptQueueWaitingForTargetIdle = false;
-      const activeItem = promptQueueItems[promptQueueIndex];
-      if (activeItem) {
-        scheduleQueuedPromptDispatch(activeItem, 50);
-      }
-      return;
+    if (nextRunningCount < previousRunningCount && hasReadyPromptQueueRun()) {
+      requestPromptQueuePump();
     }
-    advancePromptQueue();
-  }
+    previousRunningCount = nextRunningCount;
+  });
 }
 
 function startPromptQueue(
@@ -684,11 +1009,16 @@ function startPromptQueue(
     return;
   }
 
-  if (promptQueueIsRunning) {
-    promptQueueItems.push(
+  const existingRun = findPromptQueueRunByTarget(target);
+  if (existingRun) {
+    if (existingRun.deepResearchConsumed) {
+      target.consumeDeepResearch();
+    }
+    existingRun.items.push(
       ...filtered.map((prompt) => createQueuedPrompt(prompt, target)),
     );
     syncPromptQueueUI();
+    requestPromptQueuePump();
     return;
   }
 
@@ -696,48 +1026,263 @@ function startPromptQueue(
   const shouldWaitForCurrentRun =
     waitForCurrentRun &&
     isPromptQueueTargetRunning(target, runningByThreadId);
-  promptQueueGeneration += 1;
-  promptQueueItems = filtered.map((prompt) =>
-    createQueuedPrompt(prompt, target),
-  );
-  promptQueueIndex = shouldWaitForCurrentRun ? -1 : 0;
-  promptQueueIsRunning = true;
-  promptQueuePrevStoreRunning = shouldWaitForCurrentRun;
+  const run: PromptQueueRun = {
+    id: createPromptQueueRunId(),
+    items: filtered.map((prompt) => createQueuedPrompt(prompt, target)),
+    index: shouldWaitForCurrentRun ? -1 : 0,
+    generation: 0,
+    prevStoreRunning: shouldWaitForCurrentRun,
+    waitingForTargetIdle: false,
+    retryTimer: null,
+    deepResearchConsumed: false,
+  };
+  promptQueueRuns.set(run.id, run);
+  promptQueueRunOrder.push(run.id);
   syncPromptQueueUI();
-  startPromptQueueSubscription();
-  if (!shouldWaitForCurrentRun) {
-    const first = promptQueueItems[0];
-    if (first) {
-      scheduleQueuedPromptDispatch(first, 50);
+  ensurePromptQueueSubscription();
+  if (shouldWaitForCurrentRun) {
+    handlePromptQueueRunState(
+      run,
+      useChatRuntimeStore.getState().runningByThreadId,
+    );
+    schedulePromptQueueTargetStatePoll(run);
+  } else {
+    requestPromptQueuePump(50);
+  }
+}
+
+function getPromptQueueRunsForThreadIds(threadIds?: string[]) {
+  if (!threadIds || threadIds.length === 0) {
+    return Array.from(promptQueueRuns.values());
+  }
+
+  const runs = new Set<PromptQueueRun>();
+  for (const id of compactIds(threadIds)) {
+    const run = findPromptQueueRunByThreadIds([id]);
+    if (run) {
+      runs.add(run);
+    }
+  }
+  return Array.from(runs);
+}
+
+function stopPromptQueueRun(threadIds?: string[]) {
+  for (const run of getPromptQueueRunsForThreadIds(threadIds)) {
+    const activeItem = getActivePromptQueueItem(run);
+    const activeTarget = activeItem?.target;
+    const shouldCancelActiveRun = Boolean(activeItem?.dispatched);
+    deletePromptQueueRun(run);
+    if (!shouldCancelActiveRun) {
+      continue;
+    }
+    try {
+      activeTarget?.cancel();
+    } catch {
+      // The active run may have already ended.
+    }
+  }
+  requestPromptQueuePumpIfReady();
+}
+
+function stopPromptQueueRunForThreadIds(threadIds: string[]) {
+  stopPromptQueueRun(threadIds);
+}
+
+function waitForPromptQueueTargetIdle(run: PromptQueueRun) {
+  clearPromptQueueRetryTimer(run);
+  promptQueueActiveRunIds.delete(run.id);
+  run.waitingForTargetIdle = true;
+  run.prevStoreRunning = true;
+  syncPromptQueueUI();
+  ensurePromptQueueSubscription();
+}
+
+function refreshPromptQueueTargetIdleWait(run: PromptQueueRun) {
+  handlePromptQueueRunState(
+    run,
+    useChatRuntimeStore.getState().runningByThreadId,
+  );
+  schedulePromptQueueTargetStatePoll(run);
+}
+
+function stopLocalPromptQueueRun(run: PromptQueueRun) {
+  const activeItem = getActivePromptQueueItem(run);
+  const plan = planLocalPromptQueueStop(
+    run.items.map((item) => ({
+      usesLocalModel: item.target.usesLocalModel,
+      dispatched: item.dispatched,
+    })),
+    run.index,
+  );
+  if (plan.retainedItemIndexes.length === run.items.length) {
+    return;
+  }
+
+  run.items = plan.retainedItemIndexes.map((index) => run.items[index]);
+  if (!getActivePromptQueueItem(run)) {
+    deletePromptQueueRun(run);
+    if (!plan.cancelActiveItem) {
+      return;
+    }
+    try {
+      activeItem?.target.cancel();
+    } catch {
+      // The active local run may have already ended.
+    }
+    return;
+  }
+  if (plan.activeItemRemoved) {
+    clearPromptQueueRetryTimer(run);
+  }
+  if (plan.cancelActiveItem) {
+    waitForPromptQueueTargetIdle(run);
+    try {
+      activeItem?.target.cancel();
+    } catch {
+      // The active local run may have already ended.
+    }
+    refreshPromptQueueTargetIdleWait(run);
+    return;
+  }
+  syncPromptQueueUI();
+  if (plan.refreshTargetIdleWait) {
+    refreshPromptQueueTargetIdleWait(run);
+    return;
+  }
+  if (plan.activeItemRemoved && run.index >= 0 && !run.waitingForTargetIdle) {
+    requestPromptQueuePump(50);
+  }
+}
+
+function stopLocalPromptQueueRunsForThreadIds(threadIds: string[]) {
+  if (threadIds.length === 0) {
+    return;
+  }
+  for (const run of getPromptQueueRunsForThreadIds(threadIds)) {
+    stopLocalPromptQueueRun(run);
+  }
+  requestPromptQueuePumpIfReady();
+}
+
+function retainPendingPromptQueueItemsAfterFailure(run: PromptQueueRun) {
+  const activeIndex = Math.max(run.index, 0);
+  const activeItem = run.items[activeIndex];
+  if (run.index < 0 || !activeItem?.dispatched) {
+    return false;
+  }
+
+  activeItem.target.complete();
+  run.items.splice(activeIndex, 1);
+  if (!getActivePromptQueueItem(run)) {
+    deletePromptQueueRun(run);
+    return true;
+  }
+  waitForPromptQueueTargetIdle(run);
+  refreshPromptQueueTargetIdleWait(run);
+  return true;
+}
+
+function cancelPendingPromptQueueFactoriesForStop<
+  T extends { temporary: boolean; cancelled: boolean },
+>(
+  pendingFactories: Map<string, T>,
+  aliases: string[],
+  detail: PromptQueueStopEventDetail,
+) {
+  const { threadIds, temporaryOnly, localOnly } = detail;
+  if (localOnly) {
+    // Advancing the model boundary invalidates local factories once hydrated.
+    // External factories must remain intact.
+    return;
+  }
+  if (
+    threadIds &&
+    threadIds.length > 0 &&
+    !threadIds.some((threadId) => aliases.includes(threadId))
+  ) {
+    return;
+  }
+  for (const [key, reservation] of pendingFactories) {
+    if (temporaryOnly && !reservation.temporary) {
+      continue;
+    }
+    reservation.cancelled = true;
+    pendingFactories.delete(key);
+  }
+}
+
+function stopAllPromptQueueRuns() {
+  const activeRuns = Array.from(promptQueueRuns.values()).map((run) => ({
+    activeItem: getActivePromptQueueItem(run),
+  }));
+  resetPromptQueues();
+  for (const { activeItem } of activeRuns) {
+    const activeTarget = activeItem?.target;
+    const shouldCancelActiveRun = Boolean(activeItem?.dispatched);
+    if (!shouldCancelActiveRun) {
+      continue;
+    }
+    try {
+      activeTarget?.cancel();
+    } catch {
+      // The active run may have already ended.
     }
   }
 }
 
-function stopPromptQueueRun() {
-  const activeItem = promptQueueItems[Math.max(promptQueueIndex, 0)];
-  const activeTarget = activeItem?.target;
-  const shouldCancelActiveRun = Boolean(activeItem?.dispatched);
-  resetPromptQueue();
-  if (!shouldCancelActiveRun) {
-    return;
+function handlePromptQueueRunFailed(threadId?: string | null) {
+  if (threadId) {
+    const failedRun = findPromptQueueRunByThreadIds([threadId]);
+    if (failedRun) {
+      if (!retainPendingPromptQueueItemsAfterFailure(failedRun)) {
+        // A direct-send preflight failure invalidates follow-ups that were
+        // waiting for that run to establish a usable thread.
+        discardQueuedChatRunSettingsForThread(threadId);
+        deletePromptQueueRun(failedRun);
+      }
+    } else {
+      discardQueuedChatRunSettingsForThread(threadId);
+    }
   }
-  try {
-    activeTarget.cancel();
-  } catch {
-    // The active run may have already ended.
-  }
+  // A queued adapter can fail validation before its running flag turns on.
+  // Pump every other ready queue even when no active run matches the event.
+  requestPromptQueuePumpIfReady();
 }
 
 if (typeof window !== "undefined") {
-  window.addEventListener(PROMPT_QUEUE_STOP_EVENT, () => stopPromptQueueRun());
+  window.addEventListener(PROMPT_QUEUE_STOP_EVENT, (event) => {
+    const { threadIds, temporaryOnly, localOnly } =
+      (event as CustomEvent<PromptQueueStopEventDetail>).detail ?? {};
+    if (localOnly) {
+      stopLocalPromptQueueRunsForThreadIds(threadIds ?? []);
+      return;
+    }
+    if (threadIds && threadIds.length > 0) {
+      stopPromptQueueRunForThreadIds(threadIds);
+      return;
+    }
+    if (temporaryOnly) {
+      return;
+    }
+    stopAllPromptQueueRuns();
+  });
+  window.addEventListener(PROMPT_QUEUE_RUN_FAILED_EVENT, (event) => {
+    const { threadId } =
+      (event as CustomEvent<PromptQueueRunFailedEventDetail>).detail ?? {};
+    handlePromptQueueRunFailed(threadId);
+  });
 }
 
 interface PromptQueueCallbacks {
-  startQueue: (items: string[], waitForCurrentRun?: boolean) => void;
+  startQueue: (
+    items: string[],
+    waitForCurrentRun?: boolean,
+    onAborted?: () => void,
+  ) => boolean;
   stopQueue: () => void;
 }
 const noopStartPromptQueue: PromptQueueCallbacks["startQueue"] = () =>
-  undefined;
+  false;
 const noopStopPromptQueue: PromptQueueCallbacks["stopQueue"] = () => undefined;
 const PromptQueueContext = createContext<PromptQueueCallbacks>({
   startQueue: noopStartPromptQueue,
@@ -1190,11 +1735,12 @@ const ThreadComposerDock: FC<{
     activeThreadId,
   ]);
   const queueVisible = usePromptQueueUI(
-    (s) =>
-      Boolean(findPromptQueueEntry(s, promptQueueThreadIds)) &&
-      s.items.some((item) =>
-        promptQueueItemMatchesThreadIds(item, promptQueueThreadIds),
-      ),
+    (s) => {
+      const entry = findPromptQueueEntry(s, promptQueueThreadIds);
+      return Boolean(
+        entry && s.items.some((item) => item.runId === entry.runId),
+      );
+    },
   );
   const showModelDisclaimer = useChatPreferencesStore(
     (s) => s.showModelDisclaimer,
@@ -1343,11 +1889,12 @@ const ThreadWelcome: FC<{
 
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
-      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5vh]">
+      <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5dvh]">
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
           {/* Center the greeting (sloth + title) over the composer. */}
           <div className="flex flex-row items-center justify-center gap-[15px]">
-            {showGreetingSloth && (
+            {/* Temporary chat keeps the title on its own, no mascot. */}
+            {showGreetingSloth && !incognito && (
               <MascotImg
                 src={currentEmojiSrc}
                 className="size-[44px] -translate-y-[2px]"
@@ -1455,23 +2002,82 @@ const Composer: FC<{
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
+  const deepResearchEnabled = useChatRuntimeStore(
+    (s) => s.deepResearchEnabled,
+  );
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const researchThreadId = threadId ?? activeThreadId ?? null;
+  const researchThreadClaimed = useResearchRunStore((state) =>
+    researchThreadId ? Boolean(state.claimedThreadIds[researchThreadId]) : false,
+  );
+  const activeResearchRun = useResearchRunStore((state) => {
+    const runId = researchThreadId
+      ? state.latestRunByThreadId[researchThreadId]
+      : undefined;
+    return runId ? state.sessions[runId]?.run : undefined;
+  });
+  const isResearchActive = Boolean(
+    activeResearchRun &&
+      !["completed", "failed", "cancelled"].includes(activeResearchRun.status),
+  );
+  const hasResearchMessage = useAuiState(({ thread }) =>
+    thread.messages.some((message) => {
+      const custom = (
+        message.metadata as
+          | { custom?: { researchRunId?: unknown } }
+          | undefined
+      )?.custom;
+      return typeof custom?.researchRunId === "string";
+    }),
+  );
+  const researchUsed = researchThreadClaimed || hasResearchMessage;
+  const effectiveDeepResearchEnabled = deepResearchEnabled && !researchUsed;
+  const [researchWebsiteAccessOpen, setResearchWebsiteAccessOpen] =
+    useState(false);
+  useEffect(() => {
+    if (!researchUsed) return;
+    if (hasResearchMessage && researchThreadId) {
+      useResearchRunStore.getState().setThreadClaimed(researchThreadId, true);
+    }
+    if (deepResearchEnabled) {
+      useChatRuntimeStore.getState().setDeepResearchEnabled(false);
+    }
+  }, [deepResearchEnabled, hasResearchMessage, researchThreadId, researchUsed]);
   // More than 4 pills: collapse to icons only. Search, Code, and permissions
-  // always show; Images, RAG, Canvas and MCP are conditional. Narrow viewports
-  // collapse too: the labelled row is wider than a phone-width composer.
+  // always show; Images, RAG, Canvas, MCP and Deep Research are conditional.
+  // Narrow viewports collapse too: the labelled row is wider than a phone composer.
   const isMobile = useIsMobile();
   const pillCount =
     3 +
     (ragEnabled ? 1 : 0) +
     (supportsBuiltinImageGeneration ? 1 : 0) +
     (artifactsEnabled ? 1 : 0) +
-    (mcpEnabledForChat ? 1 : 0);
+    (mcpEnabledForChat ? 1 : 0) +
+    (effectiveDeepResearchEnabled ? 1 : 0);
   const pillsCompact = isMobile || pillCount > 4;
-  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setPendingImageEditReference = useChatRuntimeStore(
     (s) => s.setPendingImageEditReference,
   );
   const { inputProps, isComposing, isComposingRef } =
     useImeComposerInputHandlers({ submitOnEnter: true });
+  const handleFilePaste = useCallback(
+    (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      pasteClipboardFiles(
+        event,
+        async (files) => {
+          await Promise.all(
+            files.map((file) => aui.composer().addAttachment(file)),
+          );
+        },
+        () =>
+          toast.error("Could not paste files.", {
+            description: "The clipboard item is unsupported, unreadable, or over 20 MB.",
+          }),
+      );
+    },
+    [aui],
+  );
+
   const composerText = useAuiState(({ composer }) => composer.text);
   // Expand only once the input wraps to a second line, not on first keystroke.
   // Latch until cleared so it can't flip-flop at the wrap boundary.
@@ -1528,15 +2134,24 @@ const Composer: FC<{
     threadListItemRemoteId,
     threadId,
   ]);
+  const preStreamThreadIds = compactIds([
+    ...promptQueueThreadIds,
+    referenceThreadId,
+  ]);
+  const preStreamRunReservationRef = useRef<symbol | null>(null);
+  useEffect(() => {
+    const token = preStreamRunReservationRef.current;
+    if (!token) {
+      return;
+    }
+    adoptPreStreamRunReservation(token, preStreamThreadIds);
+    // Keep the reservation until the adapter consumes or fails it. React can
+    // expose isRunning before persistence and model preflight finish; releasing
+    // here would hide that accepted send from a concurrent model-change gate.
+  }, [preStreamThreadIds]);
   const promptQueueActive = usePromptQueueUI((s) =>
     Boolean(findPromptQueueEntry(s, promptQueueThreadIds)),
   );
-  useEffect(() => {
-    if (threadId != null || activeThreadId != null) {
-      return;
-    }
-    stopPromptQueueRun();
-  }, [activeThreadId, threadId]);
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
   const canQueueCurrentPrompt =
@@ -1556,6 +2171,7 @@ const Composer: FC<{
   const draftThreadId = referenceThreadId;
   const draftKey = draftThreadId ? composerDraftKey(draftThreadId) : null;
   const lastDraftKeyRef = useRef(draftKey);
+  const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const draft = draftKey ? (readComposerDraft(draftKey) ?? "") : "";
     const composer = aui.composer();
@@ -1574,8 +2190,25 @@ const Composer: FC<{
       return;
     }
     const t = setTimeout(() => writeComposerDraft(draftKey, composerText), 300);
+    draftSaveTimerRef.current = t;
     return () => clearTimeout(t);
   }, [composerText, draftKey]);
+  // Without this the restore effect above puts the sent text back when the
+  // runtime rebinds on the first message.
+  const draftKeyRef = useRef(draftKey);
+  useEffect(() => {
+    draftKeyRef.current = draftKey;
+  }, [draftKey]);
+  const clearStoredDraft = useCallback(() => {
+    if (draftSaveTimerRef.current !== null) {
+      clearTimeout(draftSaveTimerRef.current);
+      draftSaveTimerRef.current = null;
+    }
+    const key = draftKeyRef.current;
+    if (key) {
+      writeComposerDraft(key, "");
+    }
+  }, []);
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
   // leaves a stray blank row. Nudge a resize whenever input width changes.
@@ -1622,6 +2255,46 @@ const Composer: FC<{
   // retrieval covers all of them.
   const [indexingActive, setIndexingActive] = useState(false);
   const indexingActiveRef = useRef(false);
+  const promptQueueTargetMountedRef = useRef(true);
+  const promptQueueStartPendingRef = useRef(
+    new Map<
+      string,
+      {
+        temporary: boolean;
+        cancelled: boolean;
+        localModelBoundaryGeneration: number;
+        queuedSettingsEpoch: number;
+      }
+    >(),
+  );
+  useEffect(() => {
+    promptQueueTargetMountedRef.current = true;
+    return () => {
+      promptQueueTargetMountedRef.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    const cancelPendingQueueFactories = (event: Event) => {
+      const detail =
+        (event as CustomEvent<PromptQueueStopEventDetail>).detail ?? {};
+      const state = aui.threadListItem().getState();
+      cancelPendingPromptQueueFactoriesForStop(
+        promptQueueStartPendingRef.current,
+        compactIds([state.id, state.remoteId, referenceThreadId]),
+        detail,
+      );
+    };
+    window.addEventListener(
+      PROMPT_QUEUE_STOP_EVENT,
+      cancelPendingQueueFactories,
+    );
+    return () => {
+      window.removeEventListener(
+        PROMPT_QUEUE_STOP_EVENT,
+        cancelPendingQueueFactories,
+      );
+    };
+  }, [aui, referenceThreadId]);
   const [pendingSend, setPendingSend] = useState(false);
   const pendingSendRef = useRef(false);
   const waitToastRef = useRef<string | number | null>(null);
@@ -1631,10 +2304,9 @@ const Composer: FC<{
     setIndexingActive(active);
   }, []);
 
-  const createPromptQueueTarget = useCallback((): PromptQueueTarget => {
-    const thread = aui.thread();
-    const threadListItem = aui.threadListItem();
-    const initialState = threadListItem.getState();
+  const createPromptQueueTarget = useCallback(async (): Promise<PromptQueueTarget | null> => {
+    const assistantRuntime = aui.threads().__internal_getAssistantRuntime?.();
+    const initialState = aui.threadListItem().getState();
     const initialRunningThreadIds = [
       initialState.id,
       initialState.remoteId,
@@ -1642,31 +2314,314 @@ const Composer: FC<{
     ].filter((id): id is string => Boolean(id));
     const initialDocumentThreadId =
       initialState.remoteId ?? referenceThreadId ?? null;
+    const historyClearGeneration = chatHistoryClearBoundary.capture();
+    await useChatRuntimeStore.getState().hydratePersistedSettings();
+    if (
+      !promptQueueTargetMountedRef.current ||
+      chatHistoryClearBoundary.capture() !== historyClearGeneration
+    ) {
+      return null;
+    }
+    const currentState = aui.threadListItem().getState();
+    if (
+      !compactIds([currentState.id, currentState.remoteId]).some((id) =>
+        initialRunningThreadIds.includes(id),
+      )
+    ) {
+      return null;
+    }
+    const chatStateAtQueueStart = useChatRuntimeStore.getState();
+    const incognitoAtQueueStart = chatStateAtQueueStart.incognito;
+    const usesThreadDocumentsAtQueueStart =
+      chatStateAtQueueStart.ragEnabled &&
+      chatStateAtQueueStart.ragSource.type === "thread";
+    const runSettingsAtQueueStart =
+      snapshotQueuedChatRunSettings(chatStateAtQueueStart);
+    const getThreadListItemState = () => {
+      const runtime =
+        assistantRuntime ?? aui.threads().__internal_getAssistantRuntime?.();
+      if (!runtime) {
+        return null;
+      }
+      for (const id of initialRunningThreadIds) {
+        try {
+          return runtime.threads.getItemById(id).getState();
+        } catch {
+          // Try the next captured id.
+        }
+      }
+      return null;
+    };
+    const getQueueThreadIds = () => {
+      const state = getThreadListItemState();
+      return compactIds([
+        ...initialRunningThreadIds,
+        state?.id,
+        state?.remoteId,
+      ]);
+    };
+    const getThreadRuntime = () => {
+      const runtime =
+        assistantRuntime ?? aui.threads().__internal_getAssistantRuntime?.();
+      if (!runtime) {
+        return null;
+      }
+      for (const id of getQueueThreadIds()) {
+        try {
+          const thread = runtime.threads.getById(id);
+          thread.getState();
+          return thread;
+        } catch {
+          // Try the next captured id.
+        }
+      }
+      return null;
+    };
+    const isTargetCurrentThread = () => {
+      const state = aui.threadListItem().getState();
+      return compactIds([state.id, state.remoteId]).some((id) =>
+        initialRunningThreadIds.includes(id),
+      );
+    };
+    const pendingSettingsIds = new Set<number>();
+    let cancelled = false;
+    let shouldCorrectPersistedModel: boolean | null = null;
+    let initializedFreshThreadId: string | null = null;
+    let freshThreadAppendAccepted = false;
+    const removeFreshThreadPersistedAfterAbort = () => {
+      const historyWasCleared =
+        chatHistoryClearBoundary.capture() !== historyClearGeneration;
+      if (
+        !initializedFreshThreadId ||
+        freshThreadAppendAccepted ||
+        (!cancelled && !historyWasCleared)
+      ) {
+        return false;
+      }
+      // Tombstone synchronously so a late initializer cannot leave an empty
+      // record visible while backend cleanup completes.
+      markChatThreadDeleted(initializedFreshThreadId);
+      void deleteStoredChatThreads([initializedFreshThreadId]).catch(
+        () => undefined,
+      );
+      if (!historyWasCleared && isTargetCurrentThread()) {
+        void Promise.resolve(aui.threads().switchToNewThread()).catch(
+          () => undefined,
+        );
+      }
+      return true;
+    };
+    const discardOldestPendingSettings = () => {
+      const settingsId = pendingSettingsIds.values().next().value;
+      if (settingsId === undefined) {
+        return;
+      }
+      pendingSettingsIds.delete(settingsId);
+      discardQueuedChatRunSettings(settingsId);
+    };
     return {
       getDocumentThreadId: () => {
-        const state = threadListItem.getState();
-        return state.remoteId ?? referenceThreadId ?? initialDocumentThreadId;
+        const state = getThreadListItemState();
+        return state?.remoteId ?? referenceThreadId ?? initialDocumentThreadId;
       },
       getRunningThreadIds: () => {
-        const state = threadListItem.getState();
-        return Array.from(
-          new Set(
-            [
-              ...initialRunningThreadIds,
-              state.id,
-              state.remoteId,
-              referenceThreadId,
-            ].filter((id): id is string => Boolean(id)),
-          ),
+        return getQueueThreadIds();
+      },
+      isRunning: () =>
+        hasPreStreamRunReservation(getQueueThreadIds()) ||
+        Boolean(getThreadRuntime()?.getState().isRunning),
+      append: async (prompt) => {
+        const thread = getThreadRuntime();
+        if (!thread) {
+          throw new Error("Prompt queue thread runtime is unavailable");
+        }
+        if (incognitoAtQueueStart) {
+          for (const id of getQueueThreadIds()) {
+            markThreadIncognito(id);
+          }
+        }
+        const settingsId = registerQueuedChatRunSettings(
+          getQueueThreadIds(),
+          {
+            ...runSettingsAtQueueStart,
+            params: { ...runSettingsAtQueueStart.params },
+          },
         );
+        pendingSettingsIds.add(settingsId);
+        try {
+          const runtime =
+            assistantRuntime ?? aui.threads().__internal_getAssistantRuntime?.();
+          const state = getThreadListItemState();
+          if (!runtime || !state) {
+            throw new Error("Prompt queue thread item is unavailable");
+          }
+          if (chatHistoryClearBoundary.capture() !== historyClearGeneration) {
+            return;
+          }
+          shouldCorrectPersistedModel ??= !state.remoteId;
+          const initializingFreshThread = !state.remoteId;
+          // A fresh chat receives its remote id during initialization. Await it
+          // before append so the adapter can match the queued settings using
+          // unstable_threadId on its first invocation.
+          const { remoteId } = await runtime.threads
+            .getItemById(state.id)
+            .initialize();
+          if (initializingFreshThread) {
+            initializedFreshThreadId = remoteId;
+          }
+          if (
+            removeFreshThreadPersistedAfterAbort() ||
+            cancelled ||
+            !pendingSettingsIds.has(settingsId)
+          ) {
+            return;
+          }
+          addQueuedChatRunSettingsThreadIds(settingsId, [
+            ...getQueueThreadIds(),
+            remoteId,
+          ]);
+          if (shouldCorrectPersistedModel) {
+            // initialize() persists a fresh thread using the live global model.
+            // Correct that metadata to the model captured for this queued run
+            // before any later navigation or compatibility check can observe it.
+            await updateStoredChatThread(remoteId, {
+              modelId: runSettingsAtQueueStart.params.checkpoint ?? "",
+            });
+            shouldCorrectPersistedModel = false;
+            if (
+              removeFreshThreadPersistedAfterAbort() ||
+              cancelled ||
+              !pendingSettingsIds.has(settingsId)
+            ) {
+              return;
+            }
+          }
+          // Initialization can replace a fresh thread's local id with a remote
+          // id. Refresh queue aliases before the run begins so stop dialogs
+          // deduplicate the two identities.
+          syncPromptQueueUI();
+          const appendResult = thread.append(
+            appendTextToThread(prompt),
+          ) as unknown;
+          freshThreadAppendAccepted = true;
+          // Calling append synchronously accepts the user turn; its promise
+          // follows the whole provider run. Do not turn a later paid/streaming
+          // failure into an automatic duplicate dispatch.
+          if (
+            appendResult &&
+            typeof (appendResult as Promise<void>).catch === "function"
+          ) {
+            void (appendResult as Promise<void>).catch(() => undefined);
+          }
+        } catch (error) {
+          // A setup failure is retryable. Keep the initialized record unless a
+          // concurrent stop or Clear all explicitly invalidated this queue.
+          removeFreshThreadPersistedAfterAbort();
+          pendingSettingsIds.delete(settingsId);
+          discardQueuedChatRunSettings(settingsId);
+          throw error;
+        }
       },
-      append: (prompt) => {
-        thread.append(appendTextToThread(prompt));
+      complete: discardOldestPendingSettings,
+      cancel: () => {
+        cancelled = true;
+        removeFreshThreadPersistedAfterAbort();
+        for (const settingsId of pendingSettingsIds) {
+          discardQueuedChatRunSettings(settingsId);
+        }
+        pendingSettingsIds.clear();
+        getThreadRuntime()?.cancelRun();
       },
-      cancel: () => thread.cancelRun(),
-      isIndexing: () => indexingActiveRef.current,
+      isIndexing: () =>
+        promptQueueTargetMountedRef.current &&
+        isTargetCurrentThread() &&
+        indexingActiveRef.current,
+      usesThreadDocuments: usesThreadDocumentsAtQueueStart,
+      usesLocalModel:
+        parseExternalModelId(runSettingsAtQueueStart.params.checkpoint) === null,
+      usesDeepResearch: runSettingsAtQueueStart.deepResearchEnabled,
+      temporary: incognitoAtQueueStart,
+      consumeDeepResearch: () => {
+        runSettingsAtQueueStart.deepResearchEnabled = false;
+      },
     };
   }, [aui, referenceThreadId]);
+
+  const startHydratedPromptQueue = useCallback(
+    (
+      items: string[],
+      waitForCurrentRun = false,
+      onStarted?: () => void,
+      onAborted?: () => void,
+    ) => {
+      const reservationKey = JSON.stringify([
+        referenceThreadId,
+        items,
+        waitForCurrentRun,
+      ]);
+      if (promptQueueStartPendingRef.current.has(reservationKey)) {
+        return false;
+      }
+      const reservation = {
+        temporary: useChatRuntimeStore.getState().incognito,
+        cancelled: false,
+        localModelBoundaryGeneration:
+          localPromptQueueModelBoundary.capture(),
+        queuedSettingsEpoch:
+          useChatRuntimeStore.getState().queuedSettingsEpoch,
+      };
+      promptQueueStartPendingRef.current.set(reservationKey, reservation);
+      void createPromptQueueTarget()
+        .then((target) => {
+          const currentQueueSettings = useChatRuntimeStore.getState();
+          const modelBoundaryInvalidated = target
+            ? shouldAbortPendingQueueForModelBoundary({
+                capturedGeneration:
+                  reservation.localModelBoundaryGeneration,
+                usesLocalModel: target.usesLocalModel,
+                modelLoading: currentQueueSettings.modelLoading,
+              })
+            : false;
+          const settingsInvalidated =
+            shouldAbortPendingQueueForSettingsChange({
+              capturedEpoch: reservation.queuedSettingsEpoch,
+              currentEpoch: currentQueueSettings.queuedSettingsEpoch,
+              capturedTemporary: reservation.temporary,
+              currentTemporary: currentQueueSettings.incognito,
+            });
+          if (
+            target &&
+            !reservation.cancelled &&
+            !modelBoundaryInvalidated &&
+            !settingsInvalidated &&
+            promptQueueStartPendingRef.current.get(reservationKey) ===
+              reservation
+          ) {
+            startPromptQueue(items, target, waitForCurrentRun);
+            onStarted?.();
+          } else {
+            onAborted?.();
+          }
+        })
+        .catch((error) => {
+          toast.error("Could not start prompt queue", {
+            description:
+              error instanceof Error ? error.message : "Please try again.",
+          });
+          onAborted?.();
+        })
+        .finally(() => {
+          if (
+            promptQueueStartPendingRef.current.get(reservationKey) ===
+            reservation
+          ) {
+            promptQueueStartPendingRef.current.delete(reservationKey);
+          }
+        });
+      return true;
+    },
+    [createPromptQueueTarget, referenceThreadId],
+  );
 
   const dismissWaitToast = useCallback(() => {
     if (waitToastRef.current !== null) {
@@ -1699,6 +2654,48 @@ const Composer: FC<{
     [hasPendingAttachments, hasSendableContent, isComposingRef],
   );
 
+  const sendReservedComposer = useCallback(() => {
+    const assistantRuntime =
+      aui.threads().__internal_getAssistantRuntime?.();
+    let reservationToken: symbol | null = null;
+    reservationToken = reservePreStreamRun(preStreamThreadIds, {
+      usesLocalModel:
+        parseExternalModelId(
+          useChatRuntimeStore.getState().params.checkpoint,
+        ) === null,
+      cancel: (reservedThreadIds) => {
+        if (preStreamRunReservationRef.current === reservationToken) {
+          preStreamRunReservationRef.current = null;
+        }
+        for (const reservedThreadId of reservedThreadIds) {
+          try {
+            assistantRuntime?.threads.getById(reservedThreadId).cancelRun();
+            return;
+          } catch {
+            // Thread hydration can retire an alias; try the next captured id.
+          }
+        }
+      },
+    });
+    if (!reservationToken) {
+      toast.error("Wait for the current response to finish");
+      return;
+    }
+    preStreamRunReservationRef.current = reservationToken;
+    try {
+      aui.composer().send();
+    } catch (error) {
+      if (releasePreStreamRunReservation(reservationToken)) {
+        notifyPromptQueueRunFailed(referenceThreadId);
+      }
+      preStreamRunReservationRef.current = null;
+      toast.error("Could not prepare attachments", {
+        description:
+          error instanceof Error ? error.message : "Please retry the send.",
+      });
+    }
+  }, [aui, preStreamThreadIds, referenceThreadId]);
+
   // Gate for both form submit and the Send button. Returns true when it handled
   // the event (blocked or queued) so callers stop.
   const interceptSend = useCallback(
@@ -1726,9 +2723,17 @@ const Composer: FC<{
     setPendingSend(false);
     dismissWaitToast();
     if (text.trim().length > 0 || attachments.length > 0) {
-      aui.composer().send();
+      clearStoredDraft();
+      sendReservedComposer();
     }
-  }, [pendingSend, indexingActive, aui, dismissWaitToast]);
+  }, [
+    pendingSend,
+    indexingActive,
+    aui,
+    clearStoredDraft,
+    dismissWaitToast,
+    sendReservedComposer,
+  ]);
 
   // Drop any queued send + toast on unmount (e.g. thread switch).
   useEffect(
@@ -1739,14 +2744,129 @@ const Composer: FC<{
     [],
   );
 
+  // Recording bar's send: stop dictating, then submit once the transcript
+  // lands. Going through the form keeps queueing, indexing holds and draft
+  // clearing identical to a typed send.
+  const formRef = useRef<HTMLFormElement | null>(null);
+  const sendAfterDictationRef = useRef(false);
+  const dictationBaseTextRef = useRef("");
+  const dictationComposerRef = useRef("");
+  // Thread switches reuse this composer, so the send has to know where it
+  // started to avoid submitting the destination thread's draft. The list item
+  // id, not referenceThreadId: that one moves from null to the remote id when
+  // a new chat first persists, which is the same composer.
+  const composerIdentity = threadListItemId ?? "";
+  const sendAfterDictation = useCallback(() => {
+    sendAfterDictationRef.current = true;
+    dictationComposerRef.current = composerIdentity;
+    aui.composer().stopDictation();
+  }, [aui, composerIdentity]);
+
+  // One gate for the recording bar's send: it greys the button out, and holds
+  // a pending send when the composer changes under it after the press.
+  const dictationBlocked = dictationSendBlocked({
+    composerDisabled: Boolean(disabled),
+    uploading: hasPendingAttachments,
+    researchActive: isResearchActive,
+    runActive: threadIsRunning || promptQueueActive,
+    queueDisabled: Boolean(disableQueue),
+    hasOverlay: Boolean(overlay),
+    hasAttachments,
+    hasPendingAudio,
+  });
+  const wasDictatingRef = useRef(false);
+  // Composer text while a send waits on dictationBlocked, so an edit can drop it.
+  const heldTextRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (isDictating) {
+      if (wasDictatingRef.current) return;
+      wasDictatingRef.current = true;
+      // A new recording supersedes a send still held for an upload.
+      sendAfterDictationRef.current = false;
+      heldTextRef.current = null;
+      // Text at session start is the dictation base. Anchor on it, not on the
+      // text when send was pressed: the browser engine streams interim results
+      // into the composer, so a final matching its interim would look unchanged.
+      dictationBaseTextRef.current = aui.composer().getState().text;
+      return;
+    }
+    wasDictatingRef.current = false;
+    if (!sendAfterDictationRef.current) return;
+    // A partial transcript (a failed chunk, or an engine error after one
+    // landed) belongs in the composer, but must not send half a message.
+    // Silence, a thread switch mid-transcription, or a plus-menu insertion
+    // with no speech: keep the draft, submit nothing. Settled before the hold
+    // below, so nothing to send never leaves an intent pending.
+    const text = composerText;
+    const sendable =
+      !dictationFailed() &&
+      shouldSubmitDictation({
+        originComposer: dictationComposerRef.current,
+        currentComposer: composerIdentity,
+        producedTranscript: dictationProducedTranscript(),
+        baseText: dictationBaseTextRef.current,
+        text,
+      });
+    if (!sendable) {
+      sendAfterDictationRef.current = false;
+      heldTextRef.current = null;
+      return;
+    }
+    // The plus stays live while transcribing, so an upload or an attachment
+    // can appear after the press. Keep the intent until the composer accepts
+    // a submit again, rather than spending it on one that would bounce.
+    if (dictationBlocked) {
+      // The bar is gone by now, so the hold is invisible. It lasts only as
+      // long as the transcript it was pressed for: editing hands control
+      // back, rather than sending that edit when the block clears.
+      if (heldTextRef.current === null) {
+        heldTextRef.current = text;
+      } else if (heldTextRef.current !== text) {
+        sendAfterDictationRef.current = false;
+        heldTextRef.current = null;
+      }
+      return;
+    }
+    sendAfterDictationRef.current = false;
+    heldTextRef.current = null;
+    formRef.current?.requestSubmit();
+  }, [isDictating, aui, composerIdentity, dictationBlocked, composerText]);
+
   const handleSubmit = useCallback(
-    (event: Parameters<NonNullable<ComponentProps<"form">["onSubmit"]>>[0]) => {
+    (event: {
+      preventDefault: () => void;
+      stopPropagation?: () => void;
+    }) => {
+      if (isResearchActive) {
+        event.preventDefault();
+        return;
+      }
       if (disabled || shouldBlockSend()) {
         event.preventDefault();
         return;
       }
 
-      if (threadIsRunning || promptQueueActive) {
+      // React may not have rendered threadIsRunning yet when several submits
+      // arrive immediately after a send. The imperative runtime is already
+      // current, so use it (and the live queue store) for this decision.
+      const liveThreadIsRunning =
+        threadIsRunning || aui.thread().getState().isRunning;
+      const livePromptQueueActive =
+        promptQueueActive ||
+        Boolean(
+          findPromptQueueEntry(
+            usePromptQueueUI.getState(),
+            promptQueueThreadIds,
+          ),
+        );
+      const livePreStreamRunActive =
+        hasPreStreamRunReservation(preStreamThreadIds);
+
+      if (
+        liveThreadIsRunning ||
+        livePromptQueueActive ||
+        livePreStreamRunActive
+      ) {
         event.preventDefault();
         // Project new-chat composer: never queue, just ask the user to wait.
         if (disableQueue) {
@@ -1756,7 +2876,7 @@ const Composer: FC<{
         if (!canQueueCurrentPrompt) {
           if (overlay || hasAttachments || hasPendingAudio) {
             toast.error(
-              threadIsRunning
+              liveThreadIsRunning
                 ? "Wait for the current response to finish"
                 : "Wait for the prompt queue to finish",
               {
@@ -1768,13 +2888,18 @@ const Composer: FC<{
           return;
         }
         const queuedPrompt = composerText.trim();
-        flushResourcesSync(() => {
-          aui.composer().setText("");
-        });
-        startPromptQueue(
+        startHydratedPromptQueue(
           [queuedPrompt],
-          createPromptQueueTarget(),
-          threadIsRunning,
+          liveThreadIsRunning || livePreStreamRunActive,
+          () => {
+            if (aui.composer().getState().text.trim() !== queuedPrompt) {
+              return;
+            }
+            flushResourcesSync(() => {
+              aui.composer().setText("");
+            });
+            clearStoredDraft();
+          },
         );
         return;
       }
@@ -1804,6 +2929,7 @@ const Composer: FC<{
           closeOverlay();
           return;
         }
+        clearStoredDraft();
         setImageToolsEnabled(true);
         setPendingImageEditReference({
           threadId: overlay.threadId ?? referenceThreadId,
@@ -1821,41 +2947,69 @@ const Composer: FC<{
             );
         });
         closeOverlay();
+        event.preventDefault();
+        sendReservedComposer();
+        return;
       }
+
+      if (hasAttachments || hasPendingAudio) {
+        event.preventDefault();
+        clearStoredDraft();
+        sendReservedComposer();
+        return;
+      }
+      event.preventDefault();
+      clearStoredDraft();
+      sendReservedComposer();
     },
     [
       aui,
       canQueueCurrentPrompt,
+      clearStoredDraft,
       closeOverlay,
       composerText,
-      createPromptQueueTarget,
+      startHydratedPromptQueue,
       disabled,
       disableQueue,
       hasAttachments,
       hasPendingAudio,
       interceptSend,
+      isResearchActive,
       overlay,
       promptQueueActive,
+      promptQueueThreadIds,
+      preStreamThreadIds,
       referenceThreadId,
       setImageToolsEnabled,
       setPendingImageEditReference,
+      sendReservedComposer,
       shouldBlockSend,
       threadIsRunning,
     ],
   );
 
   const stopQueue = useCallback(() => {
-    stopPromptQueueRun();
-  }, []);
+    stopPromptQueueRunForThreadIds(promptQueueThreadIds);
+  }, [promptQueueThreadIds]);
 
   const startQueue = useCallback(
-    (items: string[], waitForCurrentRun = threadIsRunning) => {
+    (
+      items: string[],
+      waitForCurrentRun =
+        threadIsRunning || aui.thread().getState().isRunning,
+      onAborted?: () => void,
+    ) => {
       // Saved-prompt Run-list calls this directly, so honour disableQueue here
       // too: queuing from the project new-chat composer misbinds the thread.
-      if (disableQueue) return;
-      startPromptQueue(items, createPromptQueueTarget(), waitForCurrentRun);
+      if (disableQueue) return false;
+      return startHydratedPromptQueue(
+        items,
+        waitForCurrentRun,
+        undefined,
+        onAborted,
+      );
     },
-    [createPromptQueueTarget, threadIsRunning, disableQueue],
+    [aui, startHydratedPromptQueue, threadIsRunning, disableQueue],
   );
 
   const queueContextValue: PromptQueueCallbacks = { startQueue, stopQueue };
@@ -1888,13 +3042,21 @@ const Composer: FC<{
           className="unsloth-composer-left"
           data-pill-compact={pillsCompact ? "true" : undefined}
         >
-          <ComposerToolsMenu side={effectiveMenuSide} />
+          <ComposerToolsMenu
+            side={effectiveMenuSide}
+            researchAvailable={!researchUsed}
+          />
           {/* While dictating, show only the "+"; hide the pill and tool toggles
               so the waveform is the sole status indicator. */}
           {!isDictating ? (
             <>
               {/* Permission-level pill: always visible, opens the level dropdown. */}
               <PermissionModeComposerPill side={effectiveMenuSide} />
+              {effectiveDeepResearchEnabled ? (
+                <DeepResearchComposerButton
+                  onConfigure={() => setResearchWebsiteAccessOpen(true)}
+                />
+              ) : null}
               <WebSearchToggle />
               <CodeToolsToggle />
               <ImagesToggle />
@@ -1909,7 +3071,13 @@ const Composer: FC<{
         {isDictating ? (
           // The recording UI replaces the input and send controls; only the
           // left plus stays visible alongside it.
-          <ChatDictationBar />
+          <ChatDictationBar
+            onSend={sendAfterDictation}
+            // Every state handleSubmit rejects, since it would reject after
+            // transcription with the send intent already spent. Text presence
+            // is left out: the transcript supplies it.
+            sendDisabled={dictationBlocked}
+          />
         ) : (
           <>
             <ComposerPrimitive.Input
@@ -1927,6 +3095,8 @@ const Composer: FC<{
               // no effect on Latin / CJK / Devanagari.
               dir="auto"
               {...inputProps}
+              addAttachmentOnPaste={false}
+              onPaste={handleFilePaste}
             />
             <ComposerRightControls
               disabled={
@@ -1944,12 +3114,25 @@ const Composer: FC<{
                 if (queuedPrompt.length === 0) {
                   return;
                 }
-                flushResourcesSync(() => {
-                  aui.composer().setText("");
-                });
-                startPromptQueue([queuedPrompt], createPromptQueueTarget(), true);
+                startHydratedPromptQueue(
+                  [queuedPrompt],
+                  true,
+                  () => {
+                    if (
+                      aui.composer().getState().text.trim() !== queuedPrompt
+                    ) {
+                      return;
+                    }
+                    flushResourcesSync(() => {
+                      aui.composer().setText("");
+                    });
+                    clearStoredDraft();
+                  },
+                );
               }}
-              onSendClick={interceptSend}
+              // ComposerPrimitive.Send handles clicks itself rather than
+              // submitting the form, so run the complete queue/capacity path.
+              onSendClick={handleSubmit}
               onStopClick={stopQueue}
               pendingSend={pendingSend}
               menuSide={effectiveMenuSide}
@@ -1958,12 +3141,17 @@ const Composer: FC<{
           </>
         )}
       </div>
+      <DeepResearchWebsiteAccessDialog
+        open={researchWebsiteAccessOpen && effectiveDeepResearchEnabled}
+        onOpenChange={setResearchWebsiteAccessOpen}
+      />
     </>
   );
 
   return (
     <PromptQueueContext.Provider value={queueContextValue}>
     <ComposerPrimitive.Root
+      ref={formRef}
       className="aui-composer-root relative flex w-full flex-col"
       aria-disabled={disabled}
       onSubmit={handleSubmit}
@@ -2665,9 +3853,28 @@ const ArtifactsToggle: FC = () => {
 };
 
 const ToolStatusDisplay: FC = () => {
-  const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
+  // This conversation's tool call only: a global status would put one chat's "Running
+  // Python..." above every composer. remoteId, not id: the adapter keys this map by
+  // unstable_threadId, so reading id lost the status of every restored chat.
+  const threadListItemId = useAuiState(
+    ({ threadListItem }) => threadListItem.remoteId,
+  );
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
-  const [elapsed, setElapsed] = useState(0);
+  const entry = useChatRuntimeStore((s) => {
+    // A first turn starts before its id is persisted, so the adapter files it under
+    // "__default"; only this thread's own run may claim it. Two first turns share that key
+    // with nothing to tell them apart, so claim it only when it holds one run.
+    const unresolved = s.toolStatusByThreadId.__default;
+    const own =
+      s.toolStatusByThreadId[threadListItemId ?? ""] ??
+      (isThreadRunning && unresolved?.length === 1 ? unresolved : undefined);
+    // Newest of the runs behind this key: separate entries, so one finishing cannot blank
+    // a sibling still running a tool.
+    return own?.[own.length - 1];
+  });
+  const toolStatus = entry?.status ?? null;
+  const startedAt = entry?.startedAt ?? null;
+  const [now, setNow] = useState(() => Date.now());
   const [visible, setVisible] = useState(false);
   const visibleRef = useRef(false);
 
@@ -2676,15 +3883,14 @@ const ToolStatusDisplay: FC = () => {
   }, [visible]);
 
   useEffect(() => {
-    if (!toolStatus) {
-      setElapsed(0);
+    if (!startedAt) {
       if (!isThreadRunning) {
         setVisible(false);
       }
       return;
     }
 
-    setElapsed(0);
+    setNow(Date.now());
 
     // Debounce visibility by 300ms when the badge isn't already on screen.
     // Once visible from a prior tool, later tools show immediately so it
@@ -2694,26 +3900,42 @@ const ToolStatusDisplay: FC = () => {
       showTimer = setTimeout(() => setVisible(true), 300);
     }
 
-    const interval = setInterval(() => {
-      setElapsed((prev) => prev + 1);
-    }, 1000);
+    const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => {
       clearInterval(interval);
       if (showTimer) {
         clearTimeout(showTimer);
       }
     };
-  }, [toolStatus, isThreadRunning]);
+  }, [startedAt, isThreadRunning]);
 
-  if (!(toolStatus && visible)) {
+  if (!(toolStatus && startedAt && visible)) {
     return null;
   }
-  const isRunning = toolStatus.startsWith("Running");
-  const StatusIcon = isRunning ? TerminalIcon : GlobeIcon;
+  // From the store's start time, so returning to the conversation resumes rather than restarting.
+  const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000));
+  const kind = toolStatusKind(toolStatus);
+  const isNudging = kind === "nudge";
+  const StatusIcon = kind === "terminal" ? TerminalIcon : GlobeIcon;
   return (
-    <div className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1">
-      <div className="flex animate-pulse items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 text-xs text-primary">
-        <StatusIcon className="size-3.5" />
+    <div
+      data-testid="composer-tool-status"
+      className="mb-2 flex w-full flex-row items-center gap-2 px-1.5 pt-0.5 pb-1"
+    >
+      <div
+        className={cn(
+          "flex items-center gap-2 rounded-full border border-primary/20 bg-primary/5 px-3 py-1.5 text-xs text-primary",
+          // The spinner is its own motion cue; pulsing too just fades it mid-spin.
+          !isNudging && "animate-pulse",
+        )}
+      >
+        {isNudging ? (
+          // label, not the default "Loading": the spinner is the badge's only
+          // role="status" region, so its name is what gets announced.
+          <Spinner className="size-3.5" label={toolStatus} />
+        ) : (
+          <StatusIcon className="size-3.5" />
+        )}
         <span>{toolStatus}</span>
         <span className="tabular-nums opacity-60">{elapsed}s</span>
       </div>
@@ -2737,9 +3959,10 @@ function attachmentAcceptForPicker(accept: string, audioEnabled: boolean): strin
   return filtered || accept;
 }
 
-const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
-  side = "bottom",
-}) => {
+const ComposerToolsMenu: FC<{
+  side?: "top" | "bottom";
+  researchAvailable: boolean;
+}> = ({ side = "bottom", researchAvailable }) => {
   const navigate = useNavigate();
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
@@ -2752,6 +3975,9 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
   );
+  const deepResearchEnabled = useChatRuntimeStore((s) => s.deepResearchEnabled);
+  const setDeepResearchEnabled = useChatRuntimeStore((s) => s.setDeepResearchEnabled);
+  const incognito = useChatRuntimeStore((s) => s.incognito);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
   // Shared gate so the menu row agrees with the RAG pill.
@@ -2805,6 +4031,9 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const imageDisabled = !modelLoaded;
   // Like Search/Code: disabled only when a loaded model lacks tool support.
   const mcpDisabled = modelLoaded && !supportsTools;
+  // Match Search and Code: allow pre-selection before a local model loads.
+  const researchDisabled =
+    !researchAvailable || Boolean(externalSelection) || incognito;
   // Three most recently updated projects for the quick-access submenu.
   const { projects } = useChatProjects();
   const recentProjects = [...projects]
@@ -2830,7 +4059,6 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  const incognito = useChatRuntimeStore((s) => s.incognito);
   const aui = useAui();
   const composerCanAddAttachments = useAuiState(
     ({ composer }) => composer.isEditing,
@@ -3055,8 +4283,15 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         aui.composer().setText(text);
       }}
       onRunList={(items) => {
-        setPromptStorageOpen(false);
-        startQueue(items);
+        const started = startQueue(items, undefined, () => {
+          setPromptStorageOpen(true);
+          toast.info("Saved list was not queued", {
+            description: "The chat changed before the queue was ready. Try again.",
+          });
+        });
+        if (started) {
+          setPromptStorageOpen(false);
+        }
       }}
     />
     <DropdownMenu
@@ -3141,6 +4376,27 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             />
           ) : null}
         </DropdownMenuItem>
+        {researchAvailable ? (
+          <DropdownMenuItem
+            disabled={researchDisabled && !deepResearchEnabled}
+            className={
+              deepResearchEnabled && !researchDisabled
+                ? "text-primary font-medium"
+                : undefined
+            }
+            onSelect={() => setDeepResearchEnabled(!deepResearchEnabled)}
+          >
+            <HugeiconsIcon icon={Telescope02Icon} strokeWidth={2} />
+            Deep research
+            {deepResearchEnabled && !researchDisabled ? (
+              <HugeiconsIcon
+                icon={Tick02Icon}
+                strokeWidth={2}
+                className="ml-auto"
+              />
+            ) : null}
+          </DropdownMenuItem>
+        ) : null}
         {supportsBuiltinImageGeneration && (
           <DropdownMenuItem
             disabled={imageDisabled}
@@ -3216,11 +4472,10 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [draftPrompt, setDraftPrompt] = useState("");
   const editInputRef = useRef<HTMLTextAreaElement>(null);
-  const visibleItems = items.filter((item) =>
-    promptQueueItemMatchesThreadIds(item, queueThreadIds),
-  );
+  const visibleItems = queueEntry
+    ? items.filter((item) => item.runId === queueEntry.runId)
+    : [];
   const editingItem = visibleItems.find((item) => item.id === editingItemId);
-  const editingItemCanEdit = editingItem?.canEdit ?? false;
   const activeEditingItemId = editingItem ? editingItemId : null;
 
   useEffect(() => {
@@ -3230,14 +4485,6 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
     editInputRef.current?.focus();
     editInputRef.current?.select();
   }, [activeEditingItemId]);
-
-  useEffect(() => {
-    if (!editingItemId || editingItemCanEdit) {
-      return;
-    }
-    setEditingItemId(null);
-    setDraftPrompt("");
-  }, [editingItemCanEdit, editingItemId]);
 
   if (!queueEntry || visibleItems.length === 0) {
     return null;
@@ -3268,7 +4515,7 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
 
   return (
     <div
-      className="relative z-0 mx-7 mb-[-8px] max-h-[28vh] overflow-y-auto rounded-t-[18px] rounded-b-none border border-border/45 bg-background/90 px-5 py-2 text-muted-foreground shadow-none backdrop-blur-md dark:bg-card/85"
+      className="relative z-0 mx-7 mb-[-8px] max-h-[28dvh] overflow-y-auto rounded-t-[18px] rounded-b-none border border-border/45 bg-background/90 px-5 py-2 text-muted-foreground shadow-none backdrop-blur-md dark:bg-card/85"
       aria-label={`Prompt queue, ${current} of ${total}`}
     >
       <div className="divide-y divide-border/25">
@@ -3390,6 +4637,60 @@ const ComposerRightControls: FC<{
     findPromptQueueEntry(s, queueThreadIds),
   );
   const isQueueRunning = Boolean(queueEntry);
+  const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const activeResearchRun = useResearchRunStore((state) => {
+    const runId = activeThreadId
+      ? state.latestRunByThreadId[activeThreadId]
+      : undefined;
+    return runId ? state.sessions[runId]?.run : undefined;
+  });
+  const isResearchActive = Boolean(
+    activeResearchRun &&
+      !["completed", "failed", "cancelled"].includes(activeResearchRun.status),
+  );
+  const [stoppingResearchRunId, setStoppingResearchRunId] = useState<
+    string | null
+  >(null);
+  const stoppingResearchRunIdRef = useRef<string | null>(null);
+  const researchStopping = Boolean(
+    activeResearchRun &&
+      (activeResearchRun.status === "cancelling" ||
+        stoppingResearchRunId === activeResearchRun.id),
+  );
+  useEffect(() => {
+    if (
+      !isResearchActive ||
+      (stoppingResearchRunIdRef.current &&
+        stoppingResearchRunIdRef.current !== activeResearchRun?.id)
+    ) {
+      stoppingResearchRunIdRef.current = null;
+      setStoppingResearchRunId(null);
+    }
+  }, [activeResearchRun?.id, isResearchActive]);
+  const stop = () => {
+    if (isResearchActive && activeResearchRun) {
+      if (
+        activeResearchRun.status === "cancelling" ||
+        stoppingResearchRunIdRef.current === activeResearchRun.id
+      ) {
+        return;
+      }
+      if (isQueueRunning) onStopClick?.();
+      stoppingResearchRunIdRef.current = activeResearchRun.id;
+      setStoppingResearchRunId(activeResearchRun.id);
+      void cancelResearchRun(activeResearchRun.id)
+        .then((run) => ingestResearchUpdate(run))
+        .catch((error) => {
+          stoppingResearchRunIdRef.current = null;
+          setStoppingResearchRunId(null);
+          toast.error("Could not stop research", {
+            description: error instanceof Error ? error.message : undefined,
+          });
+        });
+      return;
+    }
+    if (isQueueRunning) onStopClick?.();
+  };
   const aui = useAui();
   // Keep the mic clickable: if the engine can't run here, explain and point to
   // the local model instead of disabling the button.
@@ -3408,7 +4709,7 @@ const ComposerRightControls: FC<{
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
       {/* Starts dictation; the recording bar then covers the input row and owns
-          the stop and discard actions. */}
+          the stop and send actions. */}
       <ComposerPrimitive.If dictation={false}>
         <TooltipIconButton
           tooltip="Dictate"
@@ -3418,10 +4719,15 @@ const ComposerRightControls: FC<{
           className="size-8 rounded-full text-foreground"
           onClick={startDictation}
         >
-          <MicIcon className="size-5" />
+          {/* size-[22px] is the fallback; unsloth-dictate-icon sets the size. */}
+          <MicIcon className="unsloth-dictate-icon size-[22px]" />
         </TooltipIconButton>
       </ComposerPrimitive.If>
-      <AuiIf condition={({ thread }) => !thread.isRunning && !isQueueRunning}>
+      <AuiIf
+        condition={({ thread }) =>
+          !thread.isRunning && !isQueueRunning && !isResearchActive
+        }
+      >
         <ComposerPrimitive.Send asChild={true}>
           <TooltipIconButton
             tooltip={pendingSend ? "Waiting for documents…" : "Send message"}
@@ -3433,50 +4739,80 @@ const ComposerRightControls: FC<{
             // disabled only once a send is parked.
             disabled={disabled || pendingSend}
             onClick={(event) => onSendClick?.(event)}
-            className="aui-composer-send ml-1.5 size-8 rounded-full"
+            className="aui-composer-send ml-1.5 size-9 rounded-full"
             aria-label="Send message"
           >
             {pendingSend ? (
               <Spinner className="size-[18px]" />
             ) : (
-              <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
+              <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
             )}
           </TooltipIconButton>
         </ComposerPrimitive.Send>
       </AuiIf>
-      {isQueueRunning ? (
+      {isQueueRunning && !isResearchActive ? (
         <AuiIf condition={({ thread }) => !thread.isRunning}>
-          <TooltipIconButton
-            tooltip="Queue message"
-            side="bottom"
-            type="button"
-            variant="default"
-            size="icon"
-            disabled={disabled || queueDisabled}
-            onClick={onQueueClick}
-            className="aui-composer-send ml-1.5 size-8 rounded-full"
-            aria-label="Queue message"
-          >
-            <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
-          </TooltipIconButton>
+          {queueEntry?.dispatched ? (
+            <Button
+              type="button"
+              variant="default"
+              size="icon"
+              className="aui-composer-cancel ml-1.5 size-9 rounded-full"
+              aria-label="Stop queued message"
+              onClick={stop}
+            >
+              <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
+            </Button>
+          ) : (
+            <TooltipIconButton
+              tooltip="Queue message"
+              side="bottom"
+              type="button"
+              variant="default"
+              size="icon"
+              disabled={disabled || queueDisabled}
+              onClick={onQueueClick}
+              className="aui-composer-send ml-1.5 size-9 rounded-full"
+              aria-label="Queue message"
+            >
+              <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
+            </TooltipIconButton>
+          )}
         </AuiIf>
       ) : null}
-      <AuiIf condition={({ thread }) => thread.isRunning}>
-        <div className="ml-1.5 flex items-center">
-          {queueDisabled ? (
+      {isResearchActive ? (
+        <Button
+          type="button"
+          variant="default"
+          size="icon"
+          className="aui-composer-cancel ml-1.5 size-9 rounded-full"
+          aria-label={researchStopping ? "Stopping research" : "Stop research"}
+          disabled={researchStopping}
+          onClick={stop}
+        >
+          {researchStopping ? (
+            <Spinner className="size-3.5" />
+          ) : (
+            <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
+          )}
+        </Button>
+      ) : (
+        <AuiIf condition={({ thread }) => thread.isRunning}>
+          <div className="ml-1.5 flex items-center">
+            {queueDisabled ? (
             <ComposerPrimitive.Cancel asChild={true}>
               <Button
                 type="button"
                 variant="default"
                 size="icon"
-                className="aui-composer-cancel size-8 rounded-full"
+                className="aui-composer-cancel size-9 rounded-full"
                 aria-label="Stop generating"
-                onClick={isQueueRunning ? onStopClick : undefined}
+                onClick={stop}
               >
                 <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
               </Button>
             </ComposerPrimitive.Cancel>
-          ) : (
+            ) : (
             <TooltipIconButton
               tooltip="Queue message"
               side="bottom"
@@ -3485,33 +4821,38 @@ const ComposerRightControls: FC<{
               size="icon"
               disabled={queueDisabled}
               onClick={onQueueClick}
-              className="aui-composer-send size-8 rounded-full"
+              className="aui-composer-send size-9 rounded-full"
               aria-label="Queue message"
             >
-              <ArrowUpIcon className="aui-composer-send-icon size-[21px] stroke-2" />
+              <ArrowUpIcon className="unsloth-send-icon aui-composer-send-icon size-[21px] stroke-2" />
             </TooltipIconButton>
-          )}
-        </div>
-      </AuiIf>
+            )}
+          </div>
+        </AuiIf>
+      )}
     </div>
   );
 };
 
 const MessageError: FC = () => {
+  const researchRunId = useResearchMessageRunId();
+  const researchActive = useThreadResearchActive();
   return (
     <MessagePrimitive.Error>
       <ErrorPrimitive.Root className="aui-message-error-root mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md bg-destructive/10 p-3 text-destructive text-sm dark:bg-destructive/5 dark:text-red-200">
         <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2 min-w-0 flex-1" />
         {/* Recovery path for interrupted/failed turns: regenerate in place. */}
-        <ActionBarPrimitive.Reload asChild={true}>
-          <button
-            type="button"
-            className="aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-destructive/15"
-          >
-            <RefreshCwIcon strokeWidth={1.75} className="size-3.5" />
-            Retry
-          </button>
-        </ActionBarPrimitive.Reload>
+        {!researchRunId && !researchActive && (
+          <ActionBarPrimitive.Reload asChild={true}>
+            <button
+              type="button"
+              className="aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-destructive/15"
+            >
+              <RefreshCwIcon strokeWidth={1.75} className="size-3.5" />
+              Retry
+            </button>
+          </ActionBarPrimitive.Reload>
+        )}
       </ErrorPrimitive.Root>
     </MessagePrimitive.Error>
   );
@@ -3567,9 +4908,15 @@ const DiffusionCanvas: FC = () => {
   const isRunning = useAuiState(
     ({ message }) => message.status?.type === "running",
   );
-  // A non-null canvas is set only by diffusion_frame events (diffusion models only),
-  // so it is a sufficient gate; loadedIsDiffusion can lag the first frame on a fresh load.
-  const canvas = useChatRuntimeStore((s) => s.activeDiffusionCanvas);
+  // Only this conversation's own frames render here; a first turn has no id yet, so it reads
+  // "__default", which is where its run files them until the thread persists.
+  const threadKey =
+    useAuiState(({ threadListItem }) => threadListItem.remoteId) ?? "__default";
+  // A canvas is set only by diffusion_frame events, so its presence is a sufficient gate;
+  // loadedIsDiffusion can lag the first frame on a fresh load.
+  const canvas = useChatRuntimeStore(
+    (s) => s.activeDiffusionCanvasByThreadId[threadKey],
+  );
   if (!isRunning || !canvas) {
     return null;
   }
@@ -3584,7 +4931,7 @@ const DiffusionCanvas: FC = () => {
           block {canvas.block + 1} - {stepLabel}
         </span>
       </div>
-      <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-ui-12p5 leading-relaxed text-foreground/90">
+      <pre className="max-h-[60dvh] overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-ui-12p5 leading-relaxed text-foreground/90">
         {canvas.text}
       </pre>
     </div>
@@ -3602,6 +4949,16 @@ const AssistantMessage: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const messageContent = useAuiState(({ message }) => message.content);
+  const researchRunId = useAuiState(({ message }) => {
+    const custom = (
+      message.metadata as
+        | { custom?: { researchRunId?: unknown } }
+        | undefined
+    )?.custom;
+    return typeof custom?.researchRunId === "string"
+      ? custom.researchRunId
+      : null;
+  });
   const incognito = useChatRuntimeStore((s) => s.incognito);
 
   // Use global store for editing state to ensure a single source of truth
@@ -3667,7 +5024,7 @@ const AssistantMessage: FC = () => {
             <textarea
               ref={textareaRef}
               defaultValue={extractTaggedText(messageContent)}
-              className="w-full p-3 rounded-xl bg-muted border border-border text-foreground focus:ring-1 focus:ring-ring outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70vh]"
+              className="w-full p-3 rounded-xl bg-muted border border-border text-foreground focus:ring-1 focus:ring-ring outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70dvh]"
               autoFocus
               onInput={adjustHeight}
               onKeyDown={(e) => {
@@ -3690,16 +5047,20 @@ const AssistantMessage: FC = () => {
             <div className="pointer-events-none relative h-0 min-w-0">
               <MessageResponseModelBadge className="absolute -top-6 left-0 max-w-[min(22rem,100%)]" />
             </div>
-            <GeneratingIndicator />
-            <CancelledIndicator />
-            <DiffusionCanvas />
+            {researchRunId ? (
+              <ResearchMessage />
+            ) : (
+              <>
+                <GeneratingIndicator />
+                <CancelledIndicator />
+                <DiffusionCanvas />
 
             {/*
                 We use the standard MessagePrimitive.Parts. This ensures that
                 edited messages maintain the same professional styling,
                 Markdown rendering, and tool-call components as original responses.
             */}
-            <MessagePrimitive.Parts
+                <MessagePrimitive.Parts
               components={{
                 Text: MarkdownText,
                 Reasoning: Reasoning,
@@ -3719,10 +5080,12 @@ const AssistantMessage: FC = () => {
                   Fallback: ToolFallbackConfirmable,
                 },
               }}
-            />
-            <SourcesGroup />
-            <RagSourcesGroup />
-            <MessageHtmlArtifacts />
+                />
+                <SourcesGroup />
+                <RagSourcesGroup />
+                <MessageHtmlArtifacts />
+              </>
+            )}
             <MessageError />
           </>
         )}
@@ -3843,10 +5206,64 @@ const ForkMessageButton: FC = () => {
   );
 };
 
+const getResearchRunId = (metadata: unknown): string | null => {
+  const custom = (
+    metadata as
+      | {
+          custom?: {
+            researchRunId?: unknown;
+            researchRun?: { id?: unknown };
+          };
+        }
+      | undefined
+  )?.custom;
+  const runId = custom?.researchRunId ?? custom?.researchRun?.id;
+  return typeof runId === "string" ? runId : null;
+};
+
+const useResearchMessageRunId = () => {
+  return useAuiState(({ message }) => getResearchRunId(message.metadata));
+};
+
+const useOwnsResearchMessage = () => {
+  const aui = useAui();
+  const messageId = useAuiState(({ message }) => message.id);
+  const messages = useAuiState(({ thread }) => thread.messages);
+  if (messages.length === 0) {
+    return false;
+  }
+  return aui
+    .thread()
+    .export()
+    .messages.some(
+      ({ parentId, message }) =>
+        parentId === messageId && Boolean(getResearchRunId(message.metadata)),
+    );
+};
+
+// Whether the active thread has a non-terminal durable research run. After a reload the
+// research store follows the run instead of an assistant-ui run, so `thread.isRunning` is
+// false while research is active; edit/reload/branch must also gate on this to keep
+// one run per chat.
+const useThreadResearchActive = (): boolean => {
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  return useResearchRunStore((state) => {
+    const runId = activeThreadId
+      ? state.latestRunByThreadId[activeThreadId]
+      : undefined;
+    const run = runId ? state.sessions[runId]?.run : undefined;
+    return Boolean(
+      run && !["completed", "failed", "cancelled"].includes(run.status),
+    );
+  });
+};
+
 const DeleteMessageButton: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const researchRunId = useResearchMessageRunId();
+  const ownsResearchMessage = useOwnsResearchMessage();
 
   const handleDelete = async () => {
     const thread = aui.thread();
@@ -3890,6 +5307,10 @@ const DeleteMessageButton: FC = () => {
       toast.error("Failed to delete message");
     }
   };
+
+  if (researchRunId || ownsResearchMessage) {
+    return null;
+  }
 
   return (
     <TooltipIconButton
@@ -3939,13 +5360,17 @@ const CopyButton: FC = () => {
 
 const EditAssistantMessageButton: FC = () => {
   const messageId = useAuiState(({ message }) => message.id);
+  const researchRunId = useResearchMessageRunId();
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const researchActive = useThreadResearchActive();
   const setEditingId = useChatRuntimeStore((s) => s.setEditingMessageId);
+
+  if (researchRunId) return null;
 
   return (
     <TooltipIconButton
       tooltip="Edit response"
-      disabled={isRunning}
+      disabled={isRunning || researchActive}
       onClick={() => setEditingId(messageId)}
     >
       <HugeiconsIcon
@@ -3974,6 +5399,8 @@ async function exportMessageMarkdown(content: string): Promise<void> {
 }
 const AssistantActionBar: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
+  const researchRunId = useResearchMessageRunId();
+  const researchActive = useThreadResearchActive();
   const [detailsOpen, setDetailsOpen] = useState(false);
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
   // hideWhenRunning is thread-level, so a new run would hide this bar and its
@@ -3988,11 +5415,13 @@ const AssistantActionBar: FC = () => {
       >
         <CopyButton />
         <EditAssistantMessageButton />
-        <ActionBarPrimitive.Reload asChild={true}>
-          <TooltipIconButton tooltip="Refresh">
-            <RefreshCwIcon strokeWidth={1.75} className="size-icon" />
-          </TooltipIconButton>
-        </ActionBarPrimitive.Reload>
+        {!researchRunId && !researchActive && (
+          <ActionBarPrimitive.Reload asChild={true}>
+            <TooltipIconButton tooltip="Refresh">
+              <RefreshCwIcon strokeWidth={1.75} className="size-icon" />
+            </TooltipIconButton>
+          </ActionBarPrimitive.Reload>
+        )}
         <ForkCountBadge />
         <DeleteMessageButton />
         {ttsEnabled && (
@@ -4116,21 +5545,25 @@ const UserMessage: FC = () => {
 };
 
 const UserActionBar: FC = () => {
+  const ownsResearchMessage = useOwnsResearchMessage();
+  const researchActive = useThreadResearchActive();
   return (
     <ActionBarPrimitive.Root
       autohide="always"
       className="aui-user-action-bar-root flex gap-1 text-chat-icon-fg [&_button]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
     >
       <CopyButton />
-      <ActionBarPrimitive.Edit asChild={true}>
-        <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
-          <HugeiconsIcon
-            icon={Edit03Icon}
-            strokeWidth={1.75}
-            className="size-icon"
-          />
-        </TooltipIconButton>
-      </ActionBarPrimitive.Edit>
+      {!ownsResearchMessage && !researchActive && (
+        <ActionBarPrimitive.Edit asChild={true}>
+          <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
+            <HugeiconsIcon
+              icon={Edit03Icon}
+              strokeWidth={1.75}
+              className="size-icon"
+            />
+          </TooltipIconButton>
+        </ActionBarPrimitive.Edit>
+      )}
       <ForkCountBadge />
       <ForkMessageButton />
       <DeleteMessageButton />
@@ -4142,6 +5575,7 @@ const EditComposer: FC = () => {
   const aui = useAui();
   const { inputProps, isComposingRef } = useImeComposerInputHandlers();
   const resendAfterCancelRef = useRef(false);
+  const researchActive = useThreadResearchActive();
 
   useAuiEvent("thread.runEnd", () => {
     if (!resendAfterCancelRef.current) {
@@ -4170,6 +5604,7 @@ const EditComposer: FC = () => {
           <Button
             type="button"
             size="sm"
+            disabled={researchActive}
             onClick={(event) => {
               if (isComposingRef.current) {
                 event.preventDefault();
