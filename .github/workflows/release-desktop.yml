@@ -419,10 +419,10 @@ jobs:
     steps:
       # harden-runner in audit mode: surfaces every egress destination in
       # the runner log so the allowlist for a future `egress-policy: block`
-      # promotion can be derived from observed traffic. Audit mode is
-      # cross-platform (Linux / macOS / Windows runners); blocking mode is
-      # currently Linux-only, so we deliberately stay in audit until the
-      # macOS + Windows codesign paths have been observed.
+      # promotion can be derived from observed traffic. Blocking mode is
+      # supported on GitHub-hosted Linux / macOS / Windows runners as of
+      # harden-runner v2.20.0; stay in audit until the macOS + Windows
+      # codesign paths have been observed.
       - name: Harden runner (audit)
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
@@ -775,7 +775,7 @@ jobs:
       - name: Build Linux deb
         id: build_linux
         if: matrix.platform == 'ubuntu-22.04'
-        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f  # v1.0.0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
         with:
           projectPath: studio
           tauriScript: npx --prefix . tauri
@@ -844,7 +844,7 @@ jobs:
       - name: Build macOS app
         id: build_macos
         if: matrix.platform == 'macos-latest'
-        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f  # v1.0.0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           # The signing key is not password protected, and no secret of this name
@@ -1009,7 +1009,7 @@ jobs:
       - name: Build Windows app
         id: build_windows
         if: matrix.platform == 'windows-latest'
-        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f  # v1.0.0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           # The signing key is not password protected, and no secret of this name

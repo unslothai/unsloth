@@ -127,7 +127,7 @@ jobs:
       # anyone using @v0 / @v2 / @latest references. Pinning to a 40-
       # char SHA freezes this action at known-good code; Dependabot's
       # github-actions ecosystem will auto-bump the SHA.
-      # v2.19.1 commit:
+      # v2.20.0 commit:
       # Per-job allowlist: advisory-audit hits PyPI, npm registry,
       # crates.io advisories, GitHub release artefacts (osv-scanner
       # binary), Semgrep registry, and TruffleHog's own GitHub action.

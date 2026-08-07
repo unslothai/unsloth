@@ -111,11 +111,9 @@ jobs:
     # Silicon (~5-7 min), so we budget headroom.
     timeout-minutes: 25
     steps:
-      # harden-runner audit mode: macOS runners cannot use blocking mode
-      # today (eBPF egress enforcement is Linux-only), but audit mode is
-      # supported cross-platform and surfaces the egress destinations in
-      # the runner log. This produces the data needed to graduate this
-      # job to a block-mode allowlist once macOS support lands.
+      # harden-runner v2.20.0 supports blocking mode on GitHub-hosted macOS
+      # runners. Keep this job in audit while its egress destinations are
+      # observed, then graduate it to a reviewed block-mode allowlist.
       - name: Harden runner (audit)
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
