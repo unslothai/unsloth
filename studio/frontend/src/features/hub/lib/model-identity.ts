@@ -129,6 +129,18 @@ export function publicModelId(identifier: string): string {
 }
 
 /**
+* The short label to show for a model id, for ids with no catalog entry to take a name
+* from. Mirrors ``display_model_name`` in core/inference/model_ids.py: the public id's
+* trailing segment, so a repo id and the HF cache snapshot it loads from both read as
+* ``DeepSeek-V4-Flash-0731-GGUF``. Splitting the raw id leaks the host layout on Windows,
+* where ``C:\\Users\\...`` holds no ``/`` to split on.
+*/
+export function modelDisplayName(identifier: string): string {
+  const clean = publicModelId(identifier);
+  return clean.slice(clean.lastIndexOf("/") + 1) || clean;
+}
+
+/**
 * Whether the model the backend reports as loaded is one of *candidates*.
 *
 * A GGUF from an inactive HF cache loads by path, so a caller holding only the public id would

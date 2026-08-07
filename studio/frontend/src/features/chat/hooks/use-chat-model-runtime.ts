@@ -10,6 +10,8 @@ import {
   useTransformersUpgradeDialogStore,
 } from "@/features/transformers-upgrade";
 import { consumeNativePathToken } from "@/features/native-intents/api";
+// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
+import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   notifyNative,
@@ -234,7 +236,10 @@ export function syncModelCapabilities(
       ...models,
       {
         id: modelId,
-        name: resp.display_name || modelId,
+        // Labelled like the catalog entry that replaces this one on the next
+        // /api/models/list. /status has no display_name, and an older backend echoed
+        // the identifier it loaded from: for a cached GGUF, a host path in the bar.
+        name: modelDisplayName(resp.display_name || modelId),
         isLora: Boolean(resp.is_lora),
         ...synced,
       },

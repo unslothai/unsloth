@@ -12,6 +12,7 @@ import type {
 import {
   isOllamaLinkPath,
   isStandaloneGgufPath,
+  modelDisplayName,
   modelIdsMatch,
   normalizeModelIdentity,
   publicModelId,
@@ -419,4 +420,29 @@ test("preserves existing platform and Hub identity rules", () => {
     "//server/share/models/demo",
   );
   assert.equal(normalizeModelIdentity("Org/Model"), "org/model");
+});
+
+
+test("labels a model id with the repo leaf, never the raw path", () => {
+  // The reported case: a Windows HF cache path holds no "/", so splitting the raw id
+  // would put the whole home directory in the chat model bar.
+  assert.equal(
+    modelDisplayName(
+      String.raw`C:\Users\An\.cache\huggingface\hub\models--unsloth--DeepSeek-V4-Flash-0731-GGUF\snapshots\57326b941c4603e24d1a5e71c22520c66e086eb8`,
+    ),
+    "DeepSeek-V4-Flash-0731-GGUF",
+  );
+  assert.equal(
+    modelDisplayName(
+      "/home/u/.cache/huggingface/hub/models--unsloth--DeepSeek-V4-Flash-0731-GGUF/snapshots/57326b941c4603e24d1a5e71c22520c66e086eb8",
+    ),
+    "DeepSeek-V4-Flash-0731-GGUF",
+  );
+  assert.equal(
+    modelDisplayName("/srv/models/Qwen3-30B-A3B-Q4_K_M.gguf"),
+    "Qwen3-30B-A3B-Q4_K_M",
+  );
+  assert.equal(modelDisplayName("unsloth/Qwen3-30B-A3B-GGUF"), "Qwen3-30B-A3B-GGUF");
+  assert.equal(modelDisplayName("Qwen3-30B-A3B"), "Qwen3-30B-A3B");
+  assert.equal(modelDisplayName(""), "");
 });

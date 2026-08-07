@@ -20,6 +20,8 @@ from pydantic import BaseModel
 from typing import List, Optional
 import structlog
 from loggers import get_logger
+# Dependency-light leaf (PEP 562 package init): no llama.cpp / torch import chain.
+from core.inference.model_ids import display_model_name
 from utils.utils import canonical_model_repo_id, log_and_http_error
 
 import re as _re
@@ -1806,7 +1808,7 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
             _audio_type = model_data.get("audio_type")
             model_info = ModelDetails(
                 id = model_name,
-                name = model_name.split("/")[-1] if "/" in model_name else model_name,
+                name = display_model_name(model_name),
                 is_vision = _is_vision,
                 is_lora = model_data.get("is_lora", False),
                 is_mlx = model_data.get("is_mlx", False),
@@ -1817,21 +1819,27 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
             )
             loaded_models.append(model_info)
 
-        # Include active GGUF model (loaded via llama-server).
-        from routes.inference import get_llama_cpp_backend
+        # Include active GGUF model (loaded via llama-server). Both fields come from the
+        # pair /api/inference/status publishes, so the two endpoints cannot drift: the id
+        # is what a client holds as params.checkpoint (a native-lease load never exposes
+        # its leased path), and the name is the display id, never the raw identifier.
+        from routes.inference import _llama_status_model_ids, get_llama_cpp_backend
 
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_loaded and llama_backend.model_identifier:
-            loaded_models.append(
-                ModelDetails(
-                    id = llama_backend.model_identifier,
-                    name = llama_backend.model_identifier.split("/")[-1],
-                    is_gguf = True,
-                    is_vision = llama_backend.is_vision,
-                    is_audio = getattr(llama_backend, "_is_audio", False),
-                    audio_type = getattr(llama_backend, "_audio_type", None),
+            display_id, reported_identifier = _llama_status_model_ids(llama_backend)
+            checkpoint_id = reported_identifier or display_id
+            if checkpoint_id:
+                loaded_models.append(
+                    ModelDetails(
+                        id = checkpoint_id,
+                        name = display_model_name(display_id or checkpoint_id),
+                        is_gguf = True,
+                        is_vision = llama_backend.is_vision,
+                        is_audio = getattr(llama_backend, "_is_audio", False),
+                        audio_type = getattr(llama_backend, "_audio_type", None),
+                    )
                 )
-            )
 
         # Combine default and loaded; prefer loaded entries for duplicate ids so runtime flags survive.
         all_models = []
@@ -1842,7 +1850,7 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
             if model_id not in seen_ids:
                 model_info = loaded_by_id.get(model_id) or ModelDetails(
                     id = model_id,
-                    name = model_id.split("/")[-1] if "/" in model_id else model_id,
+                    name = display_model_name(model_id),
                     is_gguf = model_id.upper().endswith("-GGUF"),
                     is_mlx = _looks_like_mlx_repo(model_id),
                 )

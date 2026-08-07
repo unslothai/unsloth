@@ -79,6 +79,20 @@ def public_model_id(identifier: Optional[str]) -> Optional[str]:
     return name or identifier
 
 
+def display_model_name(identifier: Optional[str]) -> Optional[str]:
+    """The short label a UI should show for *identifier*.
+
+    ``public_model_id`` then its trailing segment, so a HF cache snapshot reads as
+    ``X-GGUF`` and not the commit sha its directory is named after. Splitting the raw
+    identifier instead leaks the host layout on Windows, where ``C:\\Users\\...`` has
+    no ``/`` to split on and the whole path becomes the label.
+    """
+    clean = public_model_id(identifier)
+    if not clean:
+        return clean
+    return clean.rsplit("/", 1)[-1] or clean
+
+
 def model_id_matches(requested: Optional[str], internal: Optional[str]) -> bool:
     """Whether a client-supplied *requested* id refers to *internal*.
 
