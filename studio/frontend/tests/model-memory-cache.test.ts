@@ -186,3 +186,29 @@ test("a read invalidated in flight returns the post-write value, not the stale o
   assert.equal(calls.length, 0);
   assert.equal(again.idleUnloadActive, false);
 });
+
+test("a caller arriving after the invalidation does not adopt the pre-write read", async () => {
+  // The retry above covers the caller that started before the write. One that
+  // arrives after it must not share that same GET either: the reply predates the
+  // write, and the hub poll puts it straight into idleUnloadArmed, where
+  // "disarmed" clears the user's selected checkpoint.
+  autoSwitch.invalidateOpenAIAutoSwitchSettings();
+  nextBody = { ...API, idle_unload_active: true };
+  release = () => {};
+  const before = autoSwitch.loadOpenAIAutoSwitchSettings();
+  const resume = release;
+  release = null;
+
+  autoSwitch.invalidateOpenAIAutoSwitchSettings();
+  nextBody = { ...API, idle_unload_active: false };
+  const after = autoSwitch.loadOpenAIAutoSwitchSettings();
+  resume?.();
+
+  assert.equal(
+    (await after).idleUnloadActive,
+    false,
+    "the post-write caller must read the post-write value",
+  );
+  assert.equal((await before).idleUnloadActive, false);
+  nextBody = { ...API };
+});

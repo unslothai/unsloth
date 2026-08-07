@@ -1129,6 +1129,33 @@ class TestHostMemoryGate:
             is True
         )
 
+    @pytest.mark.parametrize("flag", ["-ngl", "--gpu-layers", "--n-gpu-layers"])
+    @pytest.mark.parametrize("count", ["0", "8"])
+    def test_a_pass_through_ngl_beats_the_auto_full_offload_prediction(
+        self, monkeypatch, flag, count
+    ):
+        """Auto keeps the user's -ngl and appends it after ours, and llama.cpp is
+        last-wins, so the prediction is void and the weights are in RAM."""
+        assert (
+            self._gate(monkeypatch, fully_gpu_offloaded = True, extra_args = [flag, count])
+            is True
+        )
+
+    def test_a_pass_through_fit_beats_the_auto_full_offload_prediction(self, monkeypatch):
+        """--fit on re-enables the fitter, which may leave a prefix on the CPU."""
+        assert (
+            self._gate(monkeypatch, fully_gpu_offloaded = True, extra_args = ["--fit", "on"])
+            is True
+        )
+
+    def test_a_pass_through_full_offload_still_skips_the_lock(self, monkeypatch):
+        """The guard must not over-fire: -ngl above the block count is a real
+        full offload, so page-locking a redundant host copy stays skipped."""
+        assert (
+            self._gate(monkeypatch, fully_gpu_offloaded = True, extra_args = ["-ngl", "33"])
+            is False
+        )
+
     def test_apple_silicon_is_always_host_resident(self, monkeypatch):
         assert self._gate(monkeypatch, fully_gpu_offloaded = True, apple = True) is True
 

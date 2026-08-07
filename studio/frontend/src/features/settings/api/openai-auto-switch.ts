@@ -33,6 +33,10 @@ type ApiOpenAIAutoSwitchSettings = {
 
 let cachedSettings: OpenAIAutoSwitchSettings | null = null;
 let inFlightSettings: Promise<OpenAIAutoSwitchSettings> | null = null;
+// The generation inFlightSettings was issued at. A caller arriving after an
+// invalidation must not adopt a request issued before it: that reply describes
+// the pre-write world, and the hub poll puts it straight into idleUnloadArmed.
+let inFlightGeneration = -1;
 
 function fromApi(
   settings: ApiOpenAIAutoSwitchSettings,
@@ -83,6 +87,19 @@ export function invalidateOpenAIAutoSwitchSettings() {
 // converges. The bound only exists so a write storm cannot spin here.
 const MAX_REREADS = 3;
 
+function startRead(generation: number) {
+  // cacheGeneration only increases, so a later read always claims the slot under
+  // a different generation and this clear cannot drop its request.
+  const read = fetchOpenAIAutoSwitchSettings().finally(() => {
+    if (inFlightGeneration === generation) {
+      inFlightSettings = null;
+    }
+  });
+  inFlightSettings = read;
+  inFlightGeneration = generation;
+  return read;
+}
+
 export async function loadOpenAIAutoSwitchSettings() {
   let settings: OpenAIAutoSwitchSettings | null = null;
   for (let attempt = 0; attempt < MAX_REREADS; attempt += 1) {
@@ -90,10 +107,9 @@ export async function loadOpenAIAutoSwitchSettings() {
       return cachedSettings;
     }
     const generation = cacheGeneration;
-    inFlightSettings ??= fetchOpenAIAutoSwitchSettings().finally(() => {
-      inFlightSettings = null;
-    });
-    settings = await inFlightSettings;
+    settings = await (inFlightSettings && inFlightGeneration === generation
+      ? inFlightSettings
+      : startRead(generation));
     if (generation === cacheGeneration) {
       return cacheSettings(settings, generation);
     }

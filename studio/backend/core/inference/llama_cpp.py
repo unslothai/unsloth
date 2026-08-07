@@ -4559,6 +4559,13 @@ class LlamaCppBackend:
             return True
         if _env_places_tensors_on_cpu(env):
             return True
+        # fully_gpu_offloaded predicts OUR "-ngl -1 --fit off", but auto keeps the
+        # user's extras and appends them after, and llama.cpp is last-wins, so an
+        # -ngl 0 lands the model in RAM. Same guard the launch path already uses
+        # for full_offload_tuning_active; without it that load records itself as
+        # deliberately unpinnable.
+        if _extra_args_set_any_flag(extra_args, _GPU_OFFLOAD_OVERRIDE_FLAGS):
+            fully_gpu_offloaded = False
         all_on_gpu = fully_gpu_offloaded or self._offloads_every_layer(
             gpu_memory_mode = gpu_memory_mode,
             gpu_layers = gpu_layers,
