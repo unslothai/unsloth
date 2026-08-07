@@ -838,8 +838,15 @@ def test_local_inventory_scan_stops_retrying_under_constant_invalidation(monkeyp
 
 @pytest.mark.parametrize("change_kind", ["folders", "epoch"])
 def test_local_inventory_requests_share_scan(monkeypatch, change_kind):
-    assert local_inventory._inventory_path_identity("\0") == "\0"
-    assert local_inventory._inventory_path_identity("\ud800") == "\ud800"
+    # What the flight key needs from the helper is that it is total and stable on
+    # hostile input, not that it echoes it back. POSIX realpath() rejects an
+    # embedded NUL with ValueError so the raw string is normcased through; Windows
+    # non-strict realpath falls back to abspath and joins the cwd instead. Assert
+    # the property, not one platform's spelling of it.
+    for hostile in ("\0", "\ud800"):
+        identity = local_inventory._inventory_path_identity(hostile)
+        assert identity == local_inventory._inventory_path_identity(hostile)
+        assert identity.endswith(hostile)
     event = asyncio.Event
     calls, started, releases = 0, [event(), event()], [event(), event()]
     loaded, both_loaded, task_calls, epoch = 0, event(), [], [0]

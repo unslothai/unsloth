@@ -162,8 +162,14 @@ def test_collect_local_models_prefers_complete_previous_copy(monkeypatch, tmp_pa
 
 
 def test_compat_local_inventory_requests_share_scan(monkeypatch, tmp_path):
-    assert models_route._compat_inventory_path_identity("\0") == "\0"
-    assert models_route._compat_inventory_path_identity("\ud800") == "\ud800"
+    # Total and stable on hostile input is the whole contract here; the exact
+    # string is platform-dependent. POSIX realpath() rejects an embedded NUL with
+    # ValueError so the raw string is normcased through, while Windows non-strict
+    # realpath falls back to abspath and joins the cwd.
+    for hostile in ("\0", "\ud800"):
+        identity = models_route._compat_inventory_path_identity(hostile)
+        assert identity == models_route._compat_inventory_path_identity(hostile)
+        assert identity.endswith(hostile)
     sources = models_route._CompatLocalInventorySources(
         tmp_path / "active",
         tmp_path / "legacy",
