@@ -11,6 +11,10 @@
 # #6166; this matrix keeps that from silently regressing. Pure pytest, no GPU,
 # sub-second, so the matrix is cheap. Linux also runs the POSIX rollback test
 # under dash, matching the supported curl-to-sh installer path.
+#
+# The interactive-prompt guard rides along here for the same reason: it is a
+# text scan over the same installer and setup scripts, and it refuses a new
+# yes/no question in setup (see #7016, reverted in #8040).
 
 name: Cross-platform parity
 
@@ -22,6 +26,9 @@ on:
       - 'unsloth_cli/__init__.py'
       - 'tests/test_installer_skip_autostart.py'
       - 'tests/test_installer_system32_guard.py'
+      - 'tests/test_installer_interactive_prompts.py'
+      - 'scripts/uninstall.sh'
+      - 'scripts/uninstall.ps1'
       - 'tests/python/test_cross_platform_parity.py'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
@@ -43,6 +50,9 @@ on:
       - 'unsloth_cli/__init__.py'
       - 'tests/test_installer_skip_autostart.py'
       - 'tests/test_installer_system32_guard.py'
+      - 'tests/test_installer_interactive_prompts.py'
+      - 'scripts/uninstall.sh'
+      - 'scripts/uninstall.ps1'
       - 'tests/python/test_cross_platform_parity.py'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
@@ -114,6 +124,7 @@ jobs:
           tests/python/test_windows_python_venv_hardening.py
           tests/test_installer_skip_autostart.py
           tests/test_installer_system32_guard.py
+          tests/test_installer_interactive_prompts.py
           -q
       - name: PowerShell rollback lifecycle tests
         if: runner.os == 'Windows'
