@@ -1327,14 +1327,44 @@ def test_the_codegen_refuses_an_unknown_truncation_mode():
     assert "_unsloth_capped = _unsloth_known_mode" in block
 
 
-def test_evaluate_leaves_a_split_the_eval_packer_will_take():
-    """The late cap has to make the same call as the constructor.
+def test_eval_packing_does_not_excuse_a_late_split():
+    """No packer will ever see a split handed over after construction.
 
-    `evaluate()` re-prepares the split it is given, so under eval packing TRL
-    packs it, and every strategy owns the overflow: `wrapped` concatenates the
-    stream before chunking, `bfd_split` turns an overlength example into more
-    chunks. Cutting rows first evaluates on a truncated corpus.
+    The constructor spares a split TRL is about to pack, and that is right
+    there. Here it is wrong: `_prepare_dataset` is called from `__init__` and
+    nowhere else, and SFTTrainer overrides neither `evaluate` nor `predict` nor
+    `get_eval_dataloader`, so a late split is never tokenized, never packed and
+    never truncated. Skipping the cap under `eval_packing` handed the collator
+    the raw overlength rows with `max_length` already cleared.
     """
+    import ast
+
+    import trl.trainer.sft_trainer as sft_module
+
+    # The premise, asserted rather than assumed: prep is an __init__-only step.
+    # Read from the source file, because by now unsloth has patched the live
+    # class -- with this very wrapper, among others.
+    tree = ast.parse(Path(inspect.getsourcefile(sft_module)).read_text())
+    body = next(n.body for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "SFTTrainer")
+    methods = [m for m in body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    assert not {m.name for m in methods} & {
+        "evaluate",
+        "predict",
+        "get_eval_dataloader",
+        "get_test_dataloader",
+    }
+    prepares = [
+        m.name
+        for m in methods
+        if any(
+            isinstance(c, ast.Call)
+            and isinstance(c.func, ast.Attribute)
+            and c.func.attr == "_prepare_dataset"
+            for c in ast.walk(m)
+        )
+    ]
+    assert prepares == ["__init__"], prepares
+
     _, tok = _load_plain()
     late = _tokenized_dataset(tok)
     for strategy in ("wrapped", "bfd_split"):
@@ -1344,7 +1374,38 @@ def test_evaluate_leaves_a_split_the_eval_packer_will_take():
         stub.args.eval_packing = True
         stub.args.packing_strategy = strategy
         stub.evaluate(eval_dataset = late)
-        assert seen["ds"] is late, f"{strategy}: the packer's split was truncated first"
+        got = seen["ds"]
+        assert (
+            max(len(r) for r in got["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
+        ), f"{strategy}: an uncapped split reached the collator"
+
+
+def test_predict_caps_a_split_under_eval_packing():
+    """`predict()` is the base Trainer's, and never runs TRL's prep at all."""
+    from unsloth.models.rl import _wrap_sft_evaluate_cap
+
+    seen = {}
+
+    class Stub:
+        def evaluate(
+            self,
+            eval_dataset = None,
+            **kw,
+        ):
+            seen["eval"] = eval_dataset
+
+        def predict(self, test_dataset, **kw):
+            seen["test"] = test_dataset
+
+    _wrap_sft_evaluate_cap(Stub)
+
+    _, tok = _load_plain()
+    late = _tokenized_dataset(tok)
+    stub = Stub()
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
+    stub.args.eval_packing = True
+    stub.predict(late)
+    assert max(len(r) for r in seen["test"]["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
 
 
 def test_evaluate_intersects_labels_with_the_masks():
@@ -1526,12 +1587,108 @@ def test_evaluate_caps_a_with_transform_split():
     assert all(len(r["input_ids"]) <= cap for r in got)
 
 
-# --- round 6: the late cap's four gaps ---------------------------------------
+# ── round nine: what the wrapper hands back, and what it never sees ──────────
+def _torch_stream(rows):
+    """A `torch.utils.data.IterableDataset` with no `map` and no length."""
+    import torch.utils.data
+
+    class Stream(torch.utils.data.IterableDataset):
+        def __init__(self, rows):
+            self._rows = rows
+
+        def __iter__(self):
+            return iter(self._rows)
+
+    return Stream(rows)
 
 
-def _late_cap_helpers():
-    """`_cap`, `_CappedRows` and friends out of the closure `_wrap_sft_evaluate_cap`
-    builds them in, by wrapping a stub and reading what it captured."""
+def test_a_capped_stream_is_still_iterable_style():
+    """A DataLoader picks its kind with `isinstance`, not with `hasattr`.
+
+    Trainer skips building a sampler only for an `IterableDataset`, so wrapping
+    a stream in a plain object got it a `SequentialSampler`, which asks for the
+    `len()` the stream never had. The eval call then died on the wrapper instead
+    of yielding the capped rows it was built to yield.
+    """
+    import torch.utils.data
+
+    cap = _MODEL_MAX_SEQ_LENGTH
+    length = cap + 16
+    rows = [{"input_ids": list(range(length)), "attention_mask": [1] * length} for _ in range(3)]
+
+    Stub, seen = _stub_trainer_class()
+    stub = Stub()
+    stub.args = _Args(cap, None)
+    stub.evaluate(eval_dataset = _torch_stream(rows))
+
+    got = seen["ds"]
+    assert isinstance(got, torch.utils.data.IterableDataset), "the stream lost its kind"
+    # And the loader the trainer would build reads it without asking for a length.
+    loader = torch.utils.data.DataLoader(got, batch_size = None, collate_fn = lambda x: x)
+    read = list(loader)
+    assert len(read) == 3
+    assert all(len(r["input_ids"]) <= cap for r in read)
+    assert all(len(r["attention_mask"]) == len(r["input_ids"]) for r in read)
+
+
+def test_a_short_split_is_still_filtered_for_supervision():
+    """Being under the cap is not the same as being supervised.
+
+    A row whose labels are all -100 is a NaN loss whether or not anything had to
+    be cut off it, and the construction-time cap filters those unconditionally.
+    Returning early on the length alone was the one detail where the late cap
+    and the constructor disagreed.
+    """
+    from datasets import Dataset
+
+    cap = _MODEL_MAX_SEQ_LENGTH
+    short = cap // 2
+    empty = {
+        "input_ids": list(range(short)),
+        "attention_mask": [1] * short,
+        "labels": [-100] * short,
+    }
+    fine = {
+        "input_ids": list(range(short)),
+        "attention_mask": [1] * short,
+        "labels": list(range(short)),
+    }
+    late = Dataset.from_list([empty, fine])
+    assert max(len(r) for r in late["input_ids"]) <= cap, "nothing here needs cutting"
+
+    Stub, seen = _stub_trainer_class()
+    stub = Stub()
+    stub.args = _Args(cap, None)
+    stub.evaluate(eval_dataset = late)
+
+    got = seen["ds"]
+    assert len(got) == 1, "the row with no supervised token should be gone"
+    assert any(label != -100 for label in got[0]["labels"])
+
+
+def test_a_short_and_fully_supervised_split_comes_back_untouched():
+    """The filter that drops nothing must not hand back a copy either."""
+    from datasets import Dataset
+
+    cap = _MODEL_MAX_SEQ_LENGTH
+    short = cap // 2
+    # Two shapes: one the filter runs over and keeps every row of, and one with
+    # no supervision column at all, where there is nothing to run.
+    supervised = Dataset.from_list(
+        [{"input_ids": list(range(short)), "labels": list(range(short))}] * 2
+    )
+    bare = Dataset.from_list([{"input_ids": list(range(short)), "attention_mask": [1] * short}] * 2)
+
+    for late in (supervised, bare):
+        Stub, seen = _stub_trainer_class()
+        stub = Stub()
+        stub.args = _Args(cap, None)
+        stub.evaluate(eval_dataset = late)
+        assert seen["ds"] is late
+
+
+def _stub_with_stored_eval():
+    """A stub whose `evaluate()` falls back to `self.eval_dataset`, as HF does."""
     from unsloth.models.rl import _wrap_sft_evaluate_cap
 
     seen = {}
@@ -1542,126 +1699,113 @@ def _late_cap_helpers():
             eval_dataset = None,
             **kw,
         ):
-            seen["ds"] = eval_dataset
-
-        def predict(
-            self,
-            test_dataset = None,
-            **kw,
-        ):
-            seen["ds"] = test_dataset
+            seen["ds"] = self.eval_dataset if eval_dataset is None else eval_dataset
 
     _wrap_sft_evaluate_cap(Stub)
     return Stub, seen
 
 
-class _EvalArgs:
-    def __init__(
-        self,
-        cap,
-        max_length = None,
-        eval_packing = None,
-        packing = False,
-    ):
-        self.max_seq_length = cap
-        self.max_length = max_length
-        self.eval_packing = eval_packing
-        self.packing = packing
-        self.completion_only_loss = None
-        self.assistant_only_loss = False
-        self.truncation_mode = "keep_start"
+def test_evaluate_caps_the_split_stored_on_the_trainer():
+    """`evaluate()` with nothing passed reads `self.eval_dataset`.
 
-
-def test_a_streaming_late_split_stays_iterable_style():
-    """The read-side wrapper is map-style: it defines `__len__`/`__getitem__`,
-    and `isinstance(it, IterableDataset)` is False, so Trainer picks a map-style
-    sampler and asks a stream for a length it cannot give -- raising before one
-    capped row is yielded."""
-    import torch.utils.data as tud
-
-    long_row = list(range(_MODEL_MAX_SEQ_LENGTH * 2))
-
-    class _Stream(tud.IterableDataset):
-        column_names = ["input_ids", "attention_mask"]
-
-        def __iter__(self):
-            for _ in range(3):
-                yield {"input_ids": list(long_row), "attention_mask": [1] * len(long_row)}
-
-    Stub, seen = _late_cap_helpers()
-    stub = Stub()
-    stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH)
-    stub.evaluate(eval_dataset = _Stream())
-
-    got = seen["ds"]
-    assert isinstance(got, tud.IterableDataset), "the cap turned a stream into a map-style dataset"
-    rows = list(got)
-    assert rows and all(len(r["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH for r in rows)
-
-
-def test_predict_is_capped_even_when_eval_packing_is_on():
-    """`predict` comes from the base Trainer and never runs TRL's eval-packing
-    prep, so deferring to a packer that will not run leaves the split neither
-    packed nor capped."""
+    A caller can install or replace that split after construction, which is
+    exactly where the constructor's cap can no longer see it, and `max_length`
+    is already cleared by then.
+    """
     _, tok = _load_plain()
     late = _tokenized_dataset(tok)
-    Stub, seen = _late_cap_helpers()
+    cap = _MODEL_MAX_SEQ_LENGTH
+    assert max(len(r) for r in late["input_ids"]) > cap
+
+    Stub, seen = _stub_with_stored_eval()
     stub = Stub()
-    stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH, eval_packing = True)
-
-    stub.predict(test_dataset = late)
-    assert max(len(r) for r in seen["ds"]["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
-
-    # evaluate keeps deferring: TRL's packer really does own that split.
-    stub.evaluate(eval_dataset = late)
-    assert seen["ds"] is late
-
-
-def test_evaluate_caps_a_split_installed_on_the_trainer():
-    """`evaluate()` with no argument falls back to `self.eval_dataset`, which
-    the construction-time cap never saw either."""
-    _, tok = _load_plain()
-    Stub, seen = _late_cap_helpers()
-    stub = Stub()
-    stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH)
-    stub.eval_dataset = _tokenized_dataset(tok)
-
+    stub.args = _Args(cap, None)
+    stub.eval_dataset = late
     stub.evaluate()
-    assert seen["ds"] is not None, "evaluate() was handed nothing to cap"
-    assert max(len(r) for r in seen["ds"]["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
+
+    assert max(len(r) for r in seen["ds"]["input_ids"]) <= cap
+    # Swapped in for the call only: the trainer keeps the split it was given, so
+    # a caller reading it back does not find it silently rewritten.
+    assert stub.eval_dataset is late
 
 
-def test_an_already_short_late_split_still_drops_unsupervised_rows():
-    """Nothing to truncate, but `args.max_length` is None on this path so TRL's
-    own post-truncation filter does not run: a row that arrived already all
-    -100 reaches the collator and reports a NaN loss."""
-    from datasets import Dataset
+def test_the_stored_split_is_restored_even_when_evaluate_raises():
+    _, tok = _load_plain()
+    late = _tokenized_dataset(tok)
 
-    ids = list(range(8))
-    good = {"input_ids": ids, "attention_mask": [1] * 8, "labels": list(ids)}
-    dead = {"input_ids": ids, "attention_mask": [1] * 8, "labels": [-100] * 8}
-    short = Dataset.from_list([dict(good), dict(dead), dict(good)])
-    assert max(len(r) for r in short["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
+    from unsloth.models.rl import _wrap_sft_evaluate_cap
 
-    Stub, seen = _late_cap_helpers()
+    class Stub:
+        def evaluate(
+            self,
+            eval_dataset = None,
+            **kw,
+        ):
+            raise RuntimeError("boom")
+
+    _wrap_sft_evaluate_cap(Stub)
     stub = Stub()
-    stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH)
-    stub.evaluate(eval_dataset = short)
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
+    stub.eval_dataset = late
+    with pytest.raises(RuntimeError):
+        stub.evaluate()
+    assert stub.eval_dataset is late
+
+
+def test_a_stored_dict_of_splits_is_capped_by_name():
+    """HF recurses over a dict of stored splits by NAME, so the capped split has
+    to be reachable under the same key rather than passed down as an override."""
+    _, tok = _load_plain()
+    Stub, seen = _stub_with_stored_eval()
+    stub = Stub()
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
+    stored = {"a": _tokenized_dataset(tok), "b": _tokenized_dataset(tok)}
+    stub.eval_dataset = stored
+    stub.evaluate()
 
     got = seen["ds"]
-    assert len(got) == 2, "the all -100 row survived"
-    for row in got:
-        assert any(x != -100 for x in row["labels"])
+    assert sorted(got) == ["a", "b"]
+    for split in got.values():
+        assert max(len(r) for r in split["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
+    assert stub.eval_dataset is stored
 
 
-def test_an_already_short_split_with_nothing_to_drop_is_handed_back_as_is():
-    """The filter must not cost a rewrite when there is nothing to remove."""
-    from datasets import Dataset
+def test_a_split_is_only_scanned_once():
+    """`evaluate()` runs at every eval step of a training run.
 
-    ids = list(range(8))
-    short = Dataset.from_list([{"input_ids": ids, "attention_mask": [1] * 8}] * 3)
-    Stub, seen = _late_cap_helpers()
+    The scan that decides whether anything needs cutting materialises the whole
+    `input_ids` column, so doing it again for every eval turns the stored-split
+    fallback into a per-eval pass over the dataset.
+    """
+    _, tok = _load_plain()
+    backing = _tokenized_dataset(tok)
+    reads = []
+
+    class Counting:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __len__(self):
+            return len(self._inner)
+
+        def __getitem__(self, key):
+            reads.append(key)
+            return self._inner[key]
+
+        def __iter__(self):
+            return iter(self._inner)
+
+        def __getattr__(self, attribute):
+            return getattr(self._inner, attribute)
+
+    Stub, seen = _stub_with_stored_eval()
     stub = Stub()
-    stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH)
-    stub.evaluate(eval_dataset = short)
-    assert seen["ds"] is short
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
+    stub.eval_dataset = Counting(backing)
+    stub.evaluate()
+    first = seen["ds"]
+    after_one = len(reads)
+    stub.evaluate()
+
+    assert len(reads) == after_one, "the split was scanned again"
+    assert seen["ds"] is first, "the same split gave a different answer"
