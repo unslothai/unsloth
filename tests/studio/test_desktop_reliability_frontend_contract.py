@@ -567,8 +567,10 @@ def test_mac_chat_header_controls_share_the_titlebar_row():
     assert source.count("var(--studio-mac-traffic-light-inset") == 2
     # The chat header sits one row below the titlebar navigation, and the two
     # move together: this gap is what keeps them on the same visual line.
-    assert (_provider_css_px("--studio-chat-header-padding-top")
-            - _provider_css_px("--studio-titlebar-navigation-offset-y")) == 5
+    assert (
+        _provider_css_px("--studio-chat-header-padding-top")
+        - _provider_css_px("--studio-titlebar-navigation-offset-y")
+    ) == 5
     assert "pt-[var(--studio-content-top-inset,0px)] md:flex-row" in source
     assert "absolute top-[var(--studio-content-top-inset,0px)]" in source
 

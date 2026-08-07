@@ -71,7 +71,7 @@ def _slice_between(source, start, end):
     """
     for anchor in (start, end):
         assert anchor in source, f"anchor moved or was renamed: {anchor!r}"
-    return source[source.index(start):source.index(end)]
+    return source[source.index(start) : source.index(end)]
 
 
 def test_terminal_launch_boundaries_use_the_runtime_gate():
