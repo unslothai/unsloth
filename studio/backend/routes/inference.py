@@ -24,6 +24,7 @@ from loggers import get_logger
 import asyncio
 import threading
 import weakref
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 
@@ -146,6 +147,11 @@ def _install_httpcore_asyncgen_silencer() -> None:
 
 
 _install_httpcore_asyncgen_silencer()
+
+
+# Status polls can start a cold subprocess probe or wait on a release lookup.  Keep
+# that bounded work out of the default executor, which drives local token streaming.
+_STATUS_PROBE_EXECUTOR = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "inference-status")
 
 
 def _loaded_chat_template() -> Optional[str]:
@@ -8008,8 +8014,11 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
     try:
         llama_backend = get_llama_cpp_backend()
 
-        # The cold subprocess and GitHub probes must not block streaming.
-        _supports_mtp, _freshness = await asyncio.to_thread(_probe_llama_cpp_status, llama_backend)
+        # The cold subprocess and GitHub probes must not block the event loop or
+        # consume the default executor used by local token streaming.
+        _supports_mtp, _freshness = await asyncio.get_running_loop().run_in_executor(
+            _STATUS_PROBE_EXECUTOR, _probe_llama_cpp_status, llama_backend
+        )
         _stale = bool(_freshness.get("stale"))
         _installed_tag = _freshness.get("installed_tag")
         _latest_tag = _freshness.get("latest_tag")

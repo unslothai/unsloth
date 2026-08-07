@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 _BACKEND = Path(__file__).resolve().parents[1]
@@ -116,3 +117,40 @@ def test_status_probe_runs_off_the_event_loop(monkeypatch):
     assert response.llama_cpp_prebuilt_stale is True
     assert response.llama_cpp_installed_tag == "b1"
     assert response.llama_cpp_latest_tag == "b2"
+
+
+def test_overlapping_status_probes_leave_default_executor_for_streaming(monkeypatch):
+    """Slow polls cannot starve the workers that advance local token streams."""
+    _patch_status_dependencies(monkeypatch)
+    entered = threading.Event()
+    release = threading.Event()
+    _patch_slow_probes(monkeypatch, entered = entered, release = release)
+
+    async def _wait_for_probe():
+        deadline = asyncio.get_running_loop().time() + _GUARD_SECONDS
+        while not entered.is_set() and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.001)
+        return entered.is_set()
+
+    async def _run():
+        loop = asyncio.get_running_loop()
+        # One worker makes default-executor starvation deterministic.  The status
+        # executor remains separate, so two overlapping polls still leave it free.
+        loop.set_default_executor(ThreadPoolExecutor(max_workers = 1))
+        statuses = [
+            asyncio.create_task(inference_route.get_status(current_subject = "test"))
+            for _ in range(2)
+        ]
+        try:
+            started = await _wait_for_probe()
+            token = await asyncio.wait_for(asyncio.to_thread(lambda: "token"), timeout = _GUARD_SECONDS)
+        finally:
+            release.set()
+        responses = await asyncio.gather(*statuses)
+        return started, token, responses
+
+    started, token, responses = asyncio.run(_run())
+
+    assert started, "the status probe never ran"
+    assert token == "token"
+    assert len(responses) == 2
