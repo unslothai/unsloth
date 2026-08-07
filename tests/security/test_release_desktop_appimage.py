@@ -265,7 +265,13 @@ def _fake_library_host(tmp_path, ldconfig_lines = ()):
     return fake_bin
 
 
-def _run_apprun(app_dir, fake_bin, library_path, *, path = None):
+def _run_apprun(
+    app_dir,
+    fake_bin,
+    library_path,
+    *,
+    path = None,
+):
     return subprocess.run(
         [app_dir / "AppRun", "-c", "exit 0"],
         env = {
