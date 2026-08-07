@@ -42,7 +42,7 @@ peft>=0.18.0,!=0.11.0
 huggingface_hub>=1.23.0,<2.0; python_version >= "3.10"
 huggingface_hub==0.36.2; python_version < "3.10"
 hf_transfer
-diffusers @ git+https://github.com/huggingface/diffusers.git@f53d552036a0d1bd5570782a39cd40cfabf112bc; python_version >= "3.10"
+diffusers @ https://github.com/huggingface/diffusers/archive/f53d552036a0d1bd5570782a39cd40cfabf112bc.zip; python_version >= "3.10"
 diffusers; python_version < "3.10"
 
 # Transitive deps required because this file is installed with --no-deps.
