@@ -53,9 +53,12 @@ def test_the_backends_are_opted_out_of_before_transformers_loads():
     # The guard has to sit above every `transformers` import in this file, or a
     # module that already read the variables makes it a no-op.
     first_import = min(
-        (node.lineno for node in ast.walk(ast.parse(_SOURCE))
-         if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("transformers")),
-        default = 10 ** 9,
+        (
+            node.lineno
+            for node in ast.walk(ast.parse(_SOURCE))
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("transformers")
+        ),
+        default = 10**9,
     )
     assert block.lineno < first_import
 
@@ -74,9 +77,16 @@ def test_transformers_reads_the_variable_from_the_environment(value):
     and it is read once at import, which is why ours has to land first."""
     env = dict(os.environ, USE_TF = value)
     out = subprocess.run(
-        [sys.executable, "-c",
-         "from transformers.utils import import_utils; print(import_utils.USE_TF)"],
-        capture_output = True, text = True, env = env, timeout = 300)
+        [
+            sys.executable,
+            "-c",
+            "from transformers.utils import import_utils; print(import_utils.USE_TF)",
+        ],
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 300,
+    )
     if out.returncode != 0:
         pytest.skip(f"transformers not importable here: {out.stderr.strip()[:200]}")
     assert out.stdout.strip() == value
