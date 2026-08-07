@@ -1682,6 +1682,23 @@ class ExternalProviderClient:
         """
         import json as _json
 
+        def _native_thinking_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
+            """Return opaque Anthropic thinking blocks saved by the tool loop."""
+
+            extra = message.get("extra_content")
+            anthropic = extra.get("anthropic") if isinstance(extra, dict) else None
+            blocks = (
+                anthropic.get("thinking_blocks") if isinstance(anthropic, dict) else None
+            )
+            if not isinstance(blocks, list):
+                return []
+            return [
+                dict(block)
+                for block in blocks
+                if isinstance(block, dict)
+                and block.get("type") in ("thinking", "redacted_thinking")
+            ]
+
         # Extract system prompt; translate image_url parts to Anthropic format
         system: Optional[str] = None
         filtered: list[dict[str, Any]] = []
@@ -1739,7 +1756,7 @@ class ExternalProviderClient:
                 #   (Unsloth extension; mirrors Anthropic's document block,
                 #   which supports PDFs as base64 or URL per
                 #   https://platform.claude.com/docs/en/build-with-claude/vision)
-                anthropic_parts: list[dict[str, Any]] = []
+                anthropic_parts: list[dict[str, Any]] = _native_thinking_blocks(msg)
                 for part in content:
                     if part.get("type") == "text":
                         anthropic_parts.append({"type": "text", "text": part["text"]})
@@ -1894,7 +1911,7 @@ class ExternalProviderClient:
                     and msg["tool_calls"]
                 ):
                     _text_content = msg.get("content")
-                    _blocks: list[dict[str, Any]] = []
+                    _blocks: list[dict[str, Any]] = _native_thinking_blocks(msg)
                     if isinstance(_text_content, str) and _text_content:
                         _blocks.append({"type": "text", "text": _text_content})
                     for _tc in msg["tool_calls"]:
@@ -2289,6 +2306,7 @@ class ExternalProviderClient:
                 # Client calls may be parallel, so key state by Anthropic's
                 # content-block index rather than sharing hosted-tool state.
                 client_tool_uses: dict[int, dict[str, Any]] = {}
+                thinking_blocks: dict[int, dict[str, Any]] = {}
                 next_client_tool_index = 0
                 compaction_blocks_seen = 0
                 # Document citations from ``citations_delta`` events. Deduped by
@@ -2313,14 +2331,22 @@ class ExternalProviderClient:
                 # caching is verifiable per-request without the dashboard.
                 last_usage: dict[str, Any] = {}
 
-                def _content_chunk(text: str) -> str:
+                def _content_chunk(text: str, *, thinking_display: bool = False) -> str:
+                    delta: dict[str, Any] = {"content": text}
+                    if thinking_display:
+                        # This marker lets the managed tool loop keep the
+                        # display-only <think> wrapper out of provider history.
+                        # It contains no signature or other opaque metadata.
+                        delta["extra_content"] = {
+                            "anthropic": {"thinking_display": True}
+                        }
                     chunk = {
                         "id": completion_id,
                         "object": "chat.completion.chunk",
                         "choices": [
                             {
                                 "index": 0,
-                                "delta": {"content": text},
+                                "delta": delta,
                                 "finish_reason": None,
                             }
                         ],
@@ -2483,7 +2509,13 @@ class ExternalProviderClient:
                             block_type = content_block.get("type")
                             block_name = content_block.get("name")
                             block_index = event.get("index")
-                            if block_type == "tool_use" and isinstance(block_index, int):
+                            if block_type in ("thinking", "redacted_thinking") and isinstance(
+                                block_index, int
+                            ):
+                                thinking_blocks[block_index] = dict(content_block)
+                                if block_type == "thinking":
+                                    thinking_blocks[block_index].setdefault("thinking", "")
+                            elif block_type == "tool_use" and isinstance(block_index, int):
                                 seed_input = content_block.get("input")
                                 client_tool_uses[block_index] = {
                                     "index": next_client_tool_index,
@@ -2587,7 +2619,16 @@ class ExternalProviderClient:
                                     if not thinking_open:
                                         thinking_text = f"<think>{thinking_text}"
                                         thinking_open = True
-                                    yield _content_chunk(thinking_text)
+                                    block_index = event.get("index")
+                                    if isinstance(block_index, int) and block_index in thinking_blocks:
+                                        thinking_blocks[block_index]["thinking"] = (
+                                            str(thinking_blocks[block_index].get("thinking") or "")
+                                            + str(delta.get("thinking") or "")
+                                        )
+                                    yield _content_chunk(
+                                        thinking_text,
+                                        thinking_display = True,
+                                    )
                             elif delta_type == "text_delta":
                                 text = delta.get("text", "")
                                 # text_deltas inside a compaction block carry
@@ -2605,7 +2646,10 @@ class ExternalProviderClient:
                                     # closing on the text_delta transition is more
                                     # forgiving if events arrive out of order.
                                     if thinking_open:
-                                        yield _content_chunk("</think>")
+                                        yield _content_chunk(
+                                            "</think>",
+                                            thinking_display = True,
+                                        )
                                         thinking_open = False
                                     if text:
                                         yield _content_chunk(text)
@@ -2641,9 +2685,17 @@ class ExternalProviderClient:
                                     current_code_exec_use["buffer"] += partial
                                 elif current_web_fetch_use is not None:
                                     current_web_fetch_use["buffer"] += partial
-                            # signature_delta and other delta types are skipped
-                            # — they carry trust / verification metadata, not
-                            # user-visible content.
+                            elif delta_type == "signature_delta":
+                                block_index = event.get("index")
+                                signature = delta.get("signature")
+                                if (
+                                    isinstance(block_index, int)
+                                    and block_index in thinking_blocks
+                                    and isinstance(signature, str)
+                                    and signature
+                                ):
+                                    thinking_blocks[block_index]["signature"] = signature
+                            # Other delta types are not user-visible.
 
                         elif event_type == "content_block_stop":
                             block_index = event.get("index")
@@ -2654,6 +2706,27 @@ class ExternalProviderClient:
                                     arguments = _json.dumps(
                                         client_call["input"], separators = (",", ":")
                                     )
+                                tool_call: dict[str, Any] = {
+                                    "index": client_call["index"],
+                                    "id": client_call["id"],
+                                    "type": "function",
+                                    "function": {
+                                        "name": client_call["name"],
+                                        "arguments": arguments,
+                                    },
+                                }
+                                if thinking_blocks:
+                                    # Transport private native blocks on the
+                                    # normalized call. The managed loop consumes
+                                    # this field before forwarding the SSE.
+                                    tool_call["extra_content"] = {
+                                        "anthropic": {
+                                            "thinking_blocks": [
+                                                dict(thinking_blocks[index])
+                                                for index in sorted(thinking_blocks)
+                                            ]
+                                        }
+                                    }
                                 chunk = {
                                     "id": completion_id,
                                     "object": "chat.completion.chunk",
@@ -2661,17 +2734,7 @@ class ExternalProviderClient:
                                         {
                                             "index": 0,
                                             "delta": {
-                                                "tool_calls": [
-                                                    {
-                                                        "index": client_call["index"],
-                                                        "id": client_call["id"],
-                                                        "type": "function",
-                                                        "function": {
-                                                            "name": client_call["name"],
-                                                            "arguments": arguments,
-                                                        },
-                                                    }
-                                                ]
+                                                "tool_calls": [tool_call]
                                             },
                                             "finish_reason": None,
                                         }
@@ -2848,7 +2911,10 @@ class ExternalProviderClient:
                                 # ends, in case no text_delta follows (e.g.
                                 # display=omitted on Claude 4.7, or
                                 # thinking-only turns).
-                                yield _content_chunk("</think>")
+                                yield _content_chunk(
+                                    "</think>",
+                                    thinking_display = True,
+                                )
                                 thinking_open = False
 
                         elif event_type == "message_delta":
@@ -2894,7 +2960,10 @@ class ExternalProviderClient:
                             stop_reason = event.get("delta", {}).get("stop_reason")
                             if stop_reason:
                                 if thinking_open:
-                                    yield _content_chunk("</think>")
+                                    yield _content_chunk(
+                                        "</think>",
+                                        thinking_display = True,
+                                    )
                                     thinking_open = False
                                 # `pause_turn` is in-progress, not terminal: the
                                 # SSE stream still ends with [DONE] via
@@ -2938,7 +3007,10 @@ class ExternalProviderClient:
 
                         elif event_type == "message_stop":
                             if thinking_open:
-                                yield _content_chunk("</think>")
+                                yield _content_chunk(
+                                    "</think>",
+                                    thinking_display = True,
+                                )
                                 thinking_open = False
                             # Forward document_citations so the Sources panel
                             # can render the inline [N] footnotes. ``cited_text``

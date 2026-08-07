@@ -81,6 +81,12 @@ def _merge_tool_call_delta(
     call_type = raw_call.get("type")
     if isinstance(call_type, str) and call_type:
         entry["type"] = call_type
+    extra_content = raw_call.get("extra_content")
+    if isinstance(extra_content, Mapping):
+        # Provider-native continuation metadata (for example Gemini thought
+        # signatures or Anthropic thinking blocks) is emitted alongside the
+        # normalized tool call. Preserve it without interpreting opaque fields.
+        entry["extra_content"] = copy.deepcopy(dict(extra_content))
     raw_function = raw_call.get("function")
     if not isinstance(raw_function, Mapping):
         return
@@ -111,7 +117,14 @@ def _collect_round_delta(
         if not isinstance(delta, Mapping):
             continue
         content = delta.get("content")
-        if isinstance(content, str):
+        extra_content = delta.get("extra_content")
+        anthropic_extra = (
+            extra_content.get("anthropic") if isinstance(extra_content, Mapping) else None
+        )
+        is_anthropic_thinking = isinstance(anthropic_extra, Mapping) and bool(
+            anthropic_extra.get("thinking_display")
+        )
+        if isinstance(content, str) and not is_anthropic_thinking:
             assistant_text.append(content)
         raw_calls = delta.get("tool_calls")
         if isinstance(raw_calls, list):
@@ -202,6 +215,7 @@ async def stream_external_chat_with_tools(
     bypass_permissions: bool = False,
     permission_mode: str | None = None,
     auto_heal_tool_calls: bool = True,
+    parallel_tool_calls: bool | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream an external chat while executing Studio tools server-side."""
 
@@ -215,6 +229,7 @@ async def stream_external_chat_with_tools(
     timeout = None if tool_call_timeout >= 9999 else max(1, int(tool_call_timeout))
     cancel = cancel_event or threading.Event()
     rounds_with_calls = 0
+    observed_call_rounds = 0
     next_tool_choice = tool_choice
 
     while True:
@@ -278,13 +293,13 @@ async def stream_external_chat_with_tools(
         if final_pass:
             return
 
-        rounds_with_calls += 1
+        observed_call_rounds += 1
         normalized_calls: list[dict[str, Any]] = []
         seen_call_keys: set[tuple[str, str]] = set()
         for index in sorted(round_calls):
             call = round_calls[index]
             if not call.get("id"):
-                call["id"] = f"call_external_{rounds_with_calls}_{index}"
+                call["id"] = f"call_external_{observed_call_rounds}_{index}"
             key = (
                 (call.get("function") or {}).get("name", ""),
                 (call.get("function") or {}).get("arguments", ""),
@@ -296,16 +311,62 @@ async def stream_external_chat_with_tools(
             if len(normalized_calls) >= _MAX_TOOL_CALLS_PER_TURN:
                 break
 
-        decisions = [tool_controller.prepare_call(call) for call in normalized_calls]
-        executable = [decision for decision in decisions if decision.should_execute]
+        if parallel_tool_calls is False:
+            normalized_calls = normalized_calls[:1]
+
+        decision_pairs = [
+            (tool_controller.prepare_call(call), call) for call in normalized_calls
+        ]
+        decisions = [decision for decision, _call in decision_pairs]
+        executable_pairs = [
+            (decision, call)
+            for decision, call in decision_pairs
+            if decision.should_execute
+        ]
+        executable = [decision for decision, _call in executable_pairs]
+        turn_executed_real_tool = False
         assistant_message: dict[str, Any] = {
             "role": "assistant",
             "content": "".join(assistant_text),
         }
         if executable:
-            assistant_message["tool_calls"] = [
-                decision.as_assistant_tool_call() for decision in executable
-            ]
+            assistant_calls: list[dict[str, Any]] = []
+            for decision, raw_call in executable_pairs:
+                assistant_call = decision.as_assistant_tool_call()
+                extra_content = raw_call.get("extra_content")
+                if isinstance(extra_content, Mapping):
+                    assistant_call["extra_content"] = copy.deepcopy(dict(extra_content))
+                assistant_calls.append(assistant_call)
+            assistant_message["tool_calls"] = assistant_calls
+
+            # Anthropic's signed thinking blocks belong to the assistant
+            # message rather than an individual tool_use block. The normalized
+            # stream transports them on a tool call so they stay hidden from
+            # browser-visible content; lift them back to message scope here.
+            preserved_thinking_blocks: list[dict[str, Any]] = []
+            for _decision, raw_call in decision_pairs:
+                extra_content = raw_call.get("extra_content")
+                anthropic_extra = (
+                    extra_content.get("anthropic")
+                    if isinstance(extra_content, Mapping)
+                    else None
+                )
+                thinking_blocks = (
+                    anthropic_extra.get("thinking_blocks")
+                    if isinstance(anthropic_extra, Mapping)
+                    else None
+                )
+                if (
+                    isinstance(thinking_blocks, list)
+                    and len(thinking_blocks) > len(preserved_thinking_blocks)
+                ):
+                    preserved_thinking_blocks = copy.deepcopy(thinking_blocks)
+            if preserved_thinking_blocks:
+                assistant_message["extra_content"] = {
+                    "anthropic": {
+                        "thinking_blocks": preserved_thinking_blocks,
+                    }
+                }
         if executable or assistant_message["content"]:
             conversation.append(assistant_message)
 
@@ -416,11 +477,15 @@ async def stream_external_chat_with_tools(
             finally:
                 tool_stream.close()
             completion = tool_controller.record_result(decision, result)
+            turn_executed_real_tool = True
             yield _event_line(completion.tool_end_event())
             conversation.append(completion.tool_message())
 
         append_deferred_nudges(conversation, deferred_noops)
         yield _event_line({"type": "status", "text": ""})
+
+        if turn_executed_real_tool:
+            rounds_with_calls += 1
 
         if rounds_with_calls >= max_rounds or tool_controller.force_final_answer:
             conversation.append(

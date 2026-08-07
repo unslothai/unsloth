@@ -78,6 +78,25 @@ def _tool_round(arguments = '{"query":"Cairo weather"}'):
     ]
 
 
+def _named_tool_round(name: str, call_id: str, arguments: str) -> list[str]:
+    return [
+        _chunk(
+            delta = {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": name, "arguments": arguments},
+                    }
+                ]
+            }
+        ),
+        _chunk(delta = {}, finish_reason = "tool_calls"),
+        "data: [DONE]",
+    ]
+
+
 class _FakeClient:
     def __init__(self, rounds):
         self.rounds = list(rounds)
@@ -194,6 +213,202 @@ def test_provider_hosted_tools_survive_every_studio_round(monkeypatch):
         ["web_fetch", "image_generation"],
         ["web_fetch", "image_generation"],
     ]
+
+
+def test_gemini_thought_signature_survives_tool_continuation(monkeypatch):
+    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
+    first_round = _tool_round()
+    first_payload = json.loads(first_round[0][len("data:") :])
+    first_payload["choices"][0]["delta"]["tool_calls"][0]["extra_content"] = {
+        "google": {"thought_signature": "SIG-ABC"}
+    }
+    first_round[0] = "data: " + json.dumps(first_payload)
+    client = _FakeClient(
+        [
+            first_round,
+            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
+        ]
+    )
+
+    asyncio.run(_collect(client))
+
+    assistant = client.calls[1]["messages"][-2]
+    assert assistant["tool_calls"][0]["extra_content"] == {
+        "google": {"thought_signature": "SIG-ABC"}
+    }
+
+
+def test_anthropic_thinking_metadata_is_private_and_replayed(monkeypatch):
+    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
+    thinking_block = {
+        "type": "thinking",
+        "thinking": "I should search.",
+        "signature": "signed-thinking",
+    }
+    tool_round = [
+        _chunk(
+            delta = {
+                "content": "<think>I should search.",
+                "extra_content": {"anthropic": {"thinking_display": True}},
+            }
+        ),
+        _chunk(
+            delta = {
+                "content": "</think>",
+                "extra_content": {"anthropic": {"thinking_display": True}},
+            }
+        ),
+        _chunk(
+            delta = {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "toolu_search",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"query":"Cairo weather"}',
+                        },
+                        "extra_content": {
+                            "anthropic": {"thinking_blocks": [thinking_block]}
+                        },
+                    }
+                ]
+            }
+        ),
+        _chunk(delta = {}, finish_reason = "tool_calls"),
+        "data: [DONE]",
+    ]
+    client = _FakeClient(
+        [
+            tool_round,
+            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
+        ]
+    )
+
+    output = asyncio.run(_collect(client))
+
+    assistant = client.calls[1]["messages"][-2]
+    assert assistant["content"] == ""
+    assert assistant["extra_content"]["anthropic"]["thinking_blocks"] == [
+        thinking_block
+    ]
+    assert any("<think>I should search." in line for line in output)
+    assert not any("signed-thinking" in line for line in output)
+
+
+def test_parallel_tool_calls_false_executes_only_the_first_call(monkeypatch):
+    executed: list[str] = []
+
+    def fake_execute(name, _arguments, **_kwargs):
+        executed.append(name)
+        return "ok"
+
+    monkeypatch.setattr(loop_mod, "execute_tool", fake_execute)
+    parallel_round = [
+        _chunk(
+            delta = {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_first",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"query":"first"}',
+                        },
+                    },
+                    {
+                        "index": 1,
+                        "id": "call_second",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"query":"second"}',
+                        },
+                    },
+                ]
+            }
+        ),
+        _chunk(delta = {}, finish_reason = "tool_calls"),
+        "data: [DONE]",
+    ]
+    client = _FakeClient(
+        [parallel_round, [_chunk(delta = {"content": "done"}), "data: [DONE]"]]
+    )
+
+    asyncio.run(_collect(client, parallel_tool_calls = False))
+
+    assert executed == ["web_search"]
+    assistant = client.calls[1]["messages"][-2]
+    assert [call["id"] for call in assistant["tool_calls"]] == ["call_first"]
+
+
+def test_noop_round_does_not_consume_execution_budget(monkeypatch):
+    executed: list[str] = []
+
+    def fake_execute(name, _arguments, **_kwargs):
+        executed.append(name)
+        return "ok"
+
+    monkeypatch.setattr(loop_mod, "execute_tool", fake_execute)
+    client = _FakeClient(
+        [
+            _named_tool_round("web_search", "call_first", '{"query":"Cairo"}'),
+            _named_tool_round("web_search", "call_duplicate", '{"query":"Cairo"}'),
+            _named_tool_round(
+                "web_search",
+                "call_second",
+                '{"query":"Alexandria"}',
+            ),
+            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
+        ]
+    )
+
+    asyncio.run(_collect(client, max_tool_iterations = 2))
+
+    assert executed == ["web_search", "web_search"]
+    assert len(client.calls) == 4
+    assert client.calls[2]["tools"] == [TOOL_SCHEMA]
+    assert client.calls[3]["tools"] is None
+
+
+def test_denied_round_does_not_consume_execution_budget(monkeypatch):
+    executed: list[str] = []
+    approvals = iter(["deny", "allow"])
+
+    def fake_execute(name, _arguments, **_kwargs):
+        executed.append(name)
+        return "ok"
+
+    monkeypatch.setattr(loop_mod, "execute_tool", fake_execute)
+    monkeypatch.setattr(loop_mod, "new_approval_id", lambda: "approval")
+    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda *_args: object())
+    monkeypatch.setattr(loop_mod, "wait_tool_decision", lambda *_args: next(approvals))
+    client = _FakeClient(
+        [
+            _named_tool_round("web_search", "call_denied", '{"query":"Cairo"}'),
+            _named_tool_round(
+                "web_search",
+                "call_allowed",
+                '{"query":"Alexandria"}',
+            ),
+            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
+        ]
+    )
+
+    asyncio.run(
+        _collect(
+            client,
+            max_tool_iterations = 1,
+            confirm_tool_calls = True,
+        )
+    )
+
+    assert executed == ["web_search"]
+    assert len(client.calls) == 3
+    assert client.calls[1]["tools"] == [TOOL_SCHEMA]
+    assert client.calls[2]["tools"] is None
 
 
 def test_cancel_interrupts_a_silent_provider_stream():

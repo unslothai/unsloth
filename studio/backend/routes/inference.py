@@ -9119,6 +9119,7 @@ async def _proxy_to_external_provider(
                 auto_heal_tool_calls = payload.auto_heal_tool_calls
                 if payload.auto_heal_tool_calls is not None
                 else True,
+                parallel_tool_calls = payload.parallel_tool_calls,
             )
             _external_tracker = _TrackedCancel.for_payload(
                 cancel_event,

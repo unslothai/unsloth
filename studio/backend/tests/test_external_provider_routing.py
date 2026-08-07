@@ -92,6 +92,7 @@ def test_saved_provider_owns_routing_and_keeps_unrelated_hosted_tools(monkeypatc
         provider_base_url = "https://attacker.invalid/v1",
         enable_tools = True,
         enabled_tools = ["web_search", "web_fetch", "image_generation"],
+        parallel_tool_calls = False,
     )
 
     async def run():
@@ -110,6 +111,7 @@ def test_saved_provider_owns_routing_and_keeps_unrelated_hosted_tools(monkeypatc
     }
     assert captured["loop"]["tools"] == [TOOL_SCHEMA]
     assert captured["loop"]["provider_enabled_tools"] == ["web_fetch", "image_generation"]
+    assert captured["loop"]["parallel_tool_calls"] is False
     assert any(
         "[DONE]" in (chunk.decode() if isinstance(chunk, bytes) else chunk) for chunk in chunks
     )
