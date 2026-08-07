@@ -3791,6 +3791,14 @@ export function createOpenAIStreamAdapter(
               text.slice(continuationPartial.length),
             )
           : text;
+      // Provisional reason carried on every streamed yield: an abort stops the
+      // generator without reaching a terminal yield, and a reload rebuilds messages
+      // with status "complete", so a stopped turn would otherwise lose the reason it
+      // was short. The terminal yields overwrite this with the real value, or clear it.
+      const liveCustom = () => ({
+        ...reasoningDurationTracker.metadata(),
+        incomplete: { reason: "cancelled" as const },
+      });
       // Why this turn stopped early. Drives the Continue affordance.
       let incompleteReason: IncompleteReason | null = null;
       // Safetensors/MLX report finish_reason "stop" even at the cap, so an
@@ -3913,7 +3921,10 @@ export function createOpenAIStreamAdapter(
       // yield below, which would save an empty message and strand the resumed text on the
       // sibling branch with no way back to it.
       if (continuation) {
-        yield { content: buildAssistantContent(cumulativeText) };
+        yield {
+          content: buildAssistantContent(cumulativeText),
+          metadata: { custom: liveCustom() },
+        };
       }
 
       const parseToolProvenance = (
@@ -4653,7 +4664,7 @@ export function createOpenAIStreamAdapter(
                             totalChunks,
                             firstTokenTime,
                           ),
-                          custom: reasoningDurationTracker.metadata(),
+                          custom: liveCustom(),
                         },
                       };
                     }
@@ -4948,7 +4959,7 @@ export function createOpenAIStreamAdapter(
                       totalChunks,
                       firstTokenTime,
                     ),
-                    custom: reasoningDurationTracker.metadata(),
+                    custom: liveCustom(),
                   },
                 };
                 continue;
@@ -5151,7 +5162,7 @@ export function createOpenAIStreamAdapter(
                       totalChunks,
                       firstTokenTime,
                     ),
-                    custom: reasoningDurationTracker.metadata(),
+                    custom: liveCustom(),
                   },
                 };
                 continue;
@@ -5230,7 +5241,7 @@ export function createOpenAIStreamAdapter(
                       totalChunks,
                       firstTokenTime,
                     ),
-                    custom: reasoningDurationTracker.metadata(),
+                    custom: liveCustom(),
                   },
                 };
               }
