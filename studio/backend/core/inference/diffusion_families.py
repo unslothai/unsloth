@@ -480,11 +480,11 @@ def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:
 
 
 # Byte-identical unsloth mirrors of the vendor bases: a GGUF/FP8 pick ships only the denoiser, so
-# the companions come from the base. That is a 401 for the gated vendors and a third-party fetch
-# for the ungated ones. Swapped at the fetch sites only, never in ``resolve_base_repo``, whose
-# result keys the UPSTREAM-id tables below (see ``canonical_base``).
-# A mirror stands in for the WHOLE base, plain bf16 pipeline loads included, so it must be a
-# complete copy: a companions-only repo here breaks every pick that needs the transformer.
+# companions come from the base, which is a 401 for gated vendors and a third-party fetch for the
+# rest. Swapped at the fetch sites only, never in ``resolve_base_repo``, whose result keys the
+# UPSTREAM-id tables below (see ``canonical_base``).
+# A mirror stands in for the WHOLE base, bf16 pipeline loads included, so it must be a complete
+# copy: a companions-only repo breaks every pick that needs the transformer.
 _GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("black-forest-labs/FLUX.1-dev", "unsloth/FLUX.1-dev"),
     ("black-forest-labs/FLUX.1-schnell", "unsloth/FLUX.1-schnell"),
@@ -498,12 +498,10 @@ _GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("ideogram-ai/ideogram-4-fp8", "unsloth/ideogram-4-fp8"),
     ("ideogram-ai/ideogram-4-nf4", "unsloth/ideogram-4-nf4"),
     ("ideogram-ai/ideogram-4-nf4-diffusers", "unsloth/ideogram-4-nf4-diffusers"),
-    # Ungated from here down: mirrored not to drop a gate but to drop the third-party fetch, which
-    # is what a GGUF/FP8 pick's companions still cost. Every licence here permits redistribution,
-    # and each mirror carries the upstream licence text plus the notice its licence prescribes.
-    #
-    # Qwen-Image-2512 is the one no other redirect could reach: its companions are named by the
-    # artifact repo's base_model card tag rather than the family table.
+    # Ungated from here down: mirrored to drop the third-party fetch, not a gate. Every licence
+    # here permits redistribution, and each mirror carries the upstream licence text plus the
+    # notice that licence prescribes. Qwen-Image-2512 is the one no other redirect could reach:
+    # its companions are named by the artifact repo's base_model card tag, not the family table.
     ("Qwen/Qwen-Image-2512", "unsloth/Qwen-Image-2512"),
     ("Qwen/Qwen-Image", "unsloth/Qwen-Image"),
     ("Qwen/Qwen-Image-Edit-2511", "unsloth/Qwen-Image-Edit-2511"),
