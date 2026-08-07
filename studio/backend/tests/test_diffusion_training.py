@@ -125,6 +125,36 @@ def _crashing_target(*, event_queue, stop_queue, config):
     # Exits without a terminal event, so the pump must mark it as an error.
 
 
+def test_default_target_activates_native_tls_before_diffusion_trainer(monkeypatch):
+    """The diffusion service has its own spawn target, outside training/worker.py."""
+    import core.training.diffusion_training_service as service
+
+    calls = []
+    monkeypatch.setattr(
+        "utils.native_tls.activate_native_tls", lambda: calls.append("native_tls")
+    )
+
+    def _run_without_native_path_secret(target, **kwargs):
+        calls.append("native_path_secret")
+        assert target is service._run_diffusion_child
+        assert kwargs == {
+            "event_queue": "events",
+            "stop_queue": "stop",
+            "config": {"base_model": "example/model"},
+        }
+
+    monkeypatch.setattr(
+        "utils.native_path_leases.run_without_native_path_secret",
+        _run_without_native_path_secret,
+    )
+
+    service._default_target(
+        event_queue = "events", stop_queue = "stop", config = {"base_model": "example/model"}
+    )
+
+    assert calls == ["native_tls", "native_path_secret"]
+
+
 _CFG = {"base_model": "b", "data_dir": "d", "output_dir": "/tmp/out", "train_steps": 2}
 
 
