@@ -25,6 +25,27 @@ def bmp_metadata(path: Path) -> tuple[int, int, int]:
     return width, height, bits_per_pixel
 
 
+def tiff_first_image_size(path: Path) -> tuple[int, int]:
+    """Width and height of the first image in a TIFF, ignoring later hidpi pages."""
+    data = path.read_bytes()
+    assert data[:2] in (b"II", b"MM")
+    order = "<" if data[:2] == b"II" else ">"
+
+    ifd_offset = struct.unpack_from(order + "I", data, 4)[0]
+    entry_count = struct.unpack_from(order + "H", data, ifd_offset)[0]
+
+    sizes: dict[int, int] = {}
+    for index in range(entry_count):
+        entry = ifd_offset + 2 + index * 12
+        tag, field_type = struct.unpack_from(order + "HH", data, entry)
+        if tag in (256, 257):
+            # tag 256 is ImageWidth and 257 is ImageLength, either SHORT or LONG
+            sizes[tag] = struct.unpack_from(
+                order + ("H" if field_type == 3 else "I"), data, entry + 8
+            )[0]
+    return sizes[256], sizes[257]
+
+
 def test_desktop_display_name_and_compatibility_ids() -> None:
     config = json.loads(read(TAURI / "tauri.conf.json"))
     assert config["productName"] == "Unsloth"
@@ -71,14 +92,29 @@ def test_desktop_artwork_uses_plain_unsloth_lockups() -> None:
         assert "unsloth" in source
         assert "/studio.png" not in source
 
-    titlebar = read(FRONTEND / "src/components/tauri/window-titlebar.tsx")
-    assert "/rounded-512.png" in titlebar
-    assert "Unsloth" in titlebar
+    sidebar = read(FRONTEND / "src/components/app-sidebar.tsx")
+    assert "/circle-logo-small.png" in sidebar
+    assert "unsloth" in sidebar
     assert not (FRONTEND / "public/studio.png").exists()
 
     branding = TAURI / "windows/branding"
     assert bmp_metadata(branding / "nsis-header.bmp") == (300, 114, 24)
     assert bmp_metadata(branding / "nsis-sidebar.bmp") == (328, 628, 24)
+
+
+def test_dmg_install_window_matches_its_background_art() -> None:
+    dmg = json.loads(read(TAURI / "tauri.macos.conf.json"))["bundle"]["macOS"]["dmg"]
+    assert dmg["background"] == "./dmg/background.tiff"
+
+    # Finder lays the background out from the same origin it uses for icon
+    # coordinates, so the base page has to match the configured window size or
+    # the artwork drifts out from under the app and Applications icons.
+    window = (dmg["windowSize"]["width"], dmg["windowSize"]["height"])
+    assert window == (660, 400)
+    assert tiff_first_image_size(TAURI / "dmg/background.tiff") == window
+
+    assert dmg["appPosition"] == {"x": 180, "y": 170}
+    assert dmg["applicationFolderPosition"] == {"x": 480, "y": 170}
 
 
 def test_desktop_release_asset_names_are_human_readable() -> None:
@@ -90,9 +126,9 @@ def test_desktop_release_asset_names_are_human_readable() -> None:
         "MacOS.dmg",
         "ARM64.app.tar.gz",
         "ARM64.app.tar.gz.sig",
-        "Ubuntu.AppImage",
-        "Ubuntu.AppImage.sig",
-        "Linux.deb",
+        "Linux.AppImage",
+        "Linux.AppImage.sig",
+        "Ubuntu.deb",
         "Windows.exe",
         "Windows.exe.sig",
     }

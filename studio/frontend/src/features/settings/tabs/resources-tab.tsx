@@ -29,6 +29,7 @@ import {
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
+import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import { CopyIcon, FolderOpenIcon, LayersIcon } from "lucide-react";
 
 const POLL_MS = 3000;
@@ -183,10 +184,14 @@ function deviceOrdinal(device: GpuDevice): number | undefined {
 
 export function ResourcesTab() {
   const t = useT();
-  const [liveUpdates, setLiveUpdates] = useState(true);
+  const liveUpdates = useSettingsPanelPrefsStore((s) => s.resourcesLiveUpdates);
+  const setLiveUpdates = useSettingsPanelPrefsStore(
+    (s) => s.setResourcesLiveUpdates,
+  );
   const { isOpen, setIsOpen } = useMonitorOverlayStore();
+  // always fetch once: the switch is persisted now, so gating the hook on it
+  // would leave a session that opens with it off reading zeros forever.
   const systemInfo = useSystemInfo({
-    enabled: liveUpdates,
     pollMs: liveUpdates ? POLL_MS : undefined,
   });
   const [hfCache, setHfCache] = useState<HuggingFaceCacheSettings | null>(null);
@@ -448,14 +453,16 @@ export function ResourcesTab() {
       <SettingsSection title={t("settings.resources.gpu.title")}>
         {separateInferenceGpu && (
           <div className="flex items-center justify-between gap-4 border-b border-border/60 py-3 text-sm">
-            <span className="text-muted-foreground">GGUF inference</span>
+            <span className="text-muted-foreground">
+              {t("settings.resources.gpu.ggufInference")}
+            </span>
             <span className="text-right font-mono text-xs uppercase text-foreground">
               {separateInferenceGpu.backend ?? "GPU"}
               {separateInferenceGpu.available
                 ? inferenceVramTotal
                   ? ` · ${formatGiB(inferenceVramTotal)}`
                   : ""
-                : " · unavailable"}
+                : ` · ${t("settings.resources.gpu.unavailable")}`}
             </span>
           </div>
         )}

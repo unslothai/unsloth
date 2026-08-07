@@ -11,7 +11,7 @@ import sys
 import time
 import threading
 from pathlib import Path
-from typing import Callable, Mapping, Optional
+from typing import Callable, Mapping, Optional, Sequence
 
 from fastapi import HTTPException
 
@@ -82,12 +82,38 @@ def resolve_auto_use_xet() -> tuple[bool, str]:
     return (bool(health.use_xet), str(health.reason))
 
 
+def _allow_high_performance() -> bool:
+    """Legacy opt-in, still honoured for installs whose unsloth_zoo cannot size the worker itself."""
+    return os.environ.get("UNSLOTH_XET_ALLOW_HIGH_PERFORMANCE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 def resolve_transport(use_xet: bool) -> str:
     transport = download_registry.TRANSPORT_XET if use_xet else download_registry.TRANSPORT_HTTP
     unavailable_reason = download_registry.download_transport_unavailable_reason(transport)
     if unavailable_reason is not None:
         raise HTTPException(status_code = 400, detail = unavailable_reason)
     return transport
+
+
+def write_files_manifest(files: Sequence[str]) -> str:
+    """Stage a scoped job's file list in a temp JSON file and return its path.
+
+    The worker deletes it after reading. A pipeline repo lists hundreds of files, well past
+    what is comfortable on a command line."""
+    import json
+    import tempfile
+
+    handle = tempfile.NamedTemporaryFile(
+        mode = "w", suffix = ".json", prefix = "unsloth-dl-files-", delete = False, encoding = "utf-8"
+    )
+    with handle:
+        json.dump(list(files), handle)
+    return handle.name
 
 
 def spawn_worker(
@@ -122,33 +148,23 @@ def spawn_worker(
     env["HF_HUB_DISABLE_TELEMETRY"] = "1"
     env["HF_HUB_DISABLE_XET"] = "0" if use_xet else "1"
     if use_xet:
-        # hf_xet sizes its reconstruction buffers from constants (up to 8GB stock, 64GB under
-        # high-performance mode), not from the machine. Cap them from this host's RAM and cores
-        # BEFORE the worker starts: hf_xet reads its config natively at import, so setting them
-        # inside the worker is too late. Anything already in `env` was set by the caller, so leave.
-        from utils.hf_xet_fallback import xet_env_overrides
+        # hf_xet sizes its buffers from constants, not from the machine, and reads its config
+        # natively at import, so the worker's env has to be sized here. unsloth_zoo decides, so
+        # there is one rule and not two: it sizes from RAM/cores/disk and honours a user-set
+        # high-performance flag (standing its own sizing down, since xet-core voids it anyway).
+        # UNSLOTH_XET_FORCE_CAPS=1 bounds the machine regardless. Studio hand-rolled this, and the
+        # copies drifted: on a 2TB host the worker got a 24GB laptop's buffer and ran 3.4x slower.
+        from utils import hf_xet_fallback
 
-        allow_high_perf = os.environ.get(
-            "UNSLOTH_XET_ALLOW_HIGH_PERFORMANCE", ""
-        ).strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
-        if not allow_high_perf:
-            # Unconditional, and deliberately not routed through xet_env_overrides(): an older
-            # unsloth_zoo has no tuning module (overrides come back empty) and is also the one that
-            # sets HF_XET_HIGH_PERFORMANCE=1 at import. `env` is seeded from the parent environment,
-            # so that inherited "1" would raise the buffer ceiling to 64GB and void every cap below
-            # (xet-core applies the preset AFTER reading the environment). Overwrite, not setdefault.
+        # The worker's own cache, which the sizing measures: this backend's env may still name the
+        # one it started with, since moving the cache in Settings does not rewrite the live process.
+        sized = hf_xet_fallback.apply_xet_env(env, env.get("HF_HUB_CACHE"))
+        if sized is None and not _allow_high_performance():
+            # No tuning module: that unsloth_zoo is also the one setting HF_XET_HIGH_PERFORMANCE=1
+            # at import, and `env` is seeded from the parent, so that inherited "1" would hand the
+            # worker a 64GB ceiling (xet-core applies the preset AFTER reading the environment).
             for key in ("HF_XET_HIGH_PERFORMANCE", "HF_XET_HP"):
                 env[key] = "0"
-        for key, value in xet_env_overrides().items():
-            if key in ("HF_XET_HIGH_PERFORMANCE", "HF_XET_HP") and not allow_high_perf:
-                env[key] = value
-            else:
-                env.setdefault(key, value)
     # No token in Unsloth settings: fall back to the backend's own HF_TOKEN so
     # private repos stay downloadable (needed while inkling repos are private).
     # Not for a repo an API caller named: that would lend them the owner's identity.
@@ -501,6 +517,9 @@ def _try_http_retry(
             cancel_marker_transport = original_metadata.transport,
             hub_cache = original_metadata.hub_cache,
             xet_cache = original_metadata.xet_cache,
+            # Carry the scoped file list across the reclaim: the record it overwrites is what a later start for this scope slot is
+            # compared against, so dropping it makes an identical start read as a different file set and 409 instead of adopting.
+            scoped_files = original_metadata.scoped_files or None,
         )
         if claimed:
             break
@@ -534,6 +553,9 @@ def _try_http_retry(
         args.append("--dataset")
     elif variant:
         args.extend(["--variant", variant])
+    # A scoped job must retry as the SAME scoped download; without its file list the HTTP worker would fall through to a full snapshot.
+    if original_metadata.scoped_files:
+        args.extend(["--files-json", write_files_manifest(original_metadata.scoped_files)])
 
     # Re-query at spawn time: sibling state may have changed since XET failed.
     peer_hashes = registry.peer_blob_hashes(key) if variant else frozenset()
@@ -1075,13 +1097,20 @@ def active_download_refs(
         else:
             ref_repo_id = metadata.repo_id if metadata is not None else ref.key
             variant = None
+        # Scoped jobs share one slot per repo, so publish the file list an adopting client needs to recognise its own transfer.
+        # Absent metadata (a job hydrated before the registry knew it) reports null, which the client reads as unprovable.
+        scoped_files = list(metadata.scoped_files) if metadata is not None else []
         downloads.append(
             ActiveDownload(
                 repo_id = ref_repo_id,
                 variant = variant,
                 transport = metadata.transport if metadata is not None else None,
+                cancel_transport = (
+                    metadata.cancel_marker_transport if metadata is not None else None
+                ),
                 state = ref.state,
                 generation = ref.generation,
+                files = scoped_files or None,
             )
         )
     return downloads

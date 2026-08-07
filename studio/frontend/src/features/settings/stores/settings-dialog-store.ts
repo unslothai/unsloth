@@ -16,7 +16,7 @@ export type SettingsTab =
   | "agents"
   | "about";
 
-export type SettingsScrollTarget = "about-updates";
+export type SettingsScrollTarget = "about-updates" | "appearance-sidebar-nav";
 
 interface OpenDialogOptions {
   scrollTarget?: SettingsScrollTarget;

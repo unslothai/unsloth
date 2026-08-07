@@ -305,6 +305,20 @@
 	   18px), so icons read slightly smaller than enlarged text. */
 	--ui-icon-size: min(calc(1rem * var(--ui-font-scale, 1)), calc(0.5rem + 0.5rem * var(--ui-font-scale, 1)));
 	--icon-size: var(--ui-icon-size);
+	/* Mirrors the size-3.5 rule applied inside popovers (see the icon block
+	   below), so widths that reserve room for those icons track them. */
+	--ui-icon-size-sm: min(calc(0.875rem * var(--ui-font-scale, 1)), calc(0.4375rem + 0.4375rem * var(--ui-font-scale, 1)));
+	/* Model picker header controls. Padding and gaps come from the pinned
+	   --spacing, the icons and label both scale, so reserve each separately.
+	   The trigger is 2.25rem of padding and gaps, two icons, then the label.
+	   All match the h-9 / w-[110px] / 506px they replace at the 16px default. */
+	--picker-control-h: calc(1.125rem + 1.125rem * var(--ui-font-scale, 1));
+	--picker-control-w: calc(2.25rem + 2 * var(--ui-icon-size-sm) + 2.875rem * var(--ui-font-scale, 1));
+	/* Panel: pl-4, two gaps and pr-2, the pills' padding, their two icons and
+	   label, then the two dropdowns. */
+	--picker-panel-w: calc(6.25rem + 2 * var(--ui-icon-size-sm) + 9.875rem * var(--ui-font-scale, 1) + 2 * var(--picker-control-w));
+	/* Provider row adds one more control; split like the rest. */
+	--picker-panel-w-external: calc(var(--picker-panel-w) + 4rem + 2.75rem * var(--ui-font-scale, 1));
 	/* Inset of a centered .size-icon glyph within a 2rem (size-8) action
 	   button — i.e. (32px − icon-size) / 2. Use as a negative margin on a
 	   chat-message action bar so the leftmost icon's visual edge aligns
@@ -953,6 +967,16 @@ html[data-chat-font] .aui-root {
 		@apply h-full;
 	}
 
+	html.tauri {
+		overflow: hidden;
+		overscroll-behavior: none;
+	}
+
+	html.tauri body,
+	html.tauri #root {
+		overflow: hidden;
+	}
+
 	body[data-scroll-locked] {
 		margin-right: 0 !important;
 	}
@@ -1033,10 +1057,14 @@ html[data-chat-font] .aui-root {
 	.sidebar-nav-btn:hover,
 	.sidebar-nav-btn[data-active="true"],
 	.sidebar-nav-btn[data-state="open"],
+	.sidebar-nav-btn[data-menu-open="true"],
 	.group\/project-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.group\/project-chat-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.group\/projects-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.group\/recent-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	/* Images: the chevron discloses this row's own list, so the row stays lit while the
+	   pointer is on it. Scoped to the row's wrapper, clear of the list below it. */
+	.group\/images-item:hover > .relative > .sidebar-nav-btn,
 	.group\/run-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn {
 		background-color: var(--nav-surface-hover) !important;
 		color: #000 !important;
@@ -1044,10 +1072,12 @@ html[data-chat-font] .aui-root {
 	.dark .sidebar-nav-btn:hover,
 	.dark .sidebar-nav-btn[data-active="true"],
 	.dark .sidebar-nav-btn[data-state="open"],
+	.dark .sidebar-nav-btn[data-menu-open="true"],
 	.dark .group\/project-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.dark .group\/project-chat-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.dark .group\/projects-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
 	.dark .group\/recent-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn,
+	.dark .group\/images-item:hover > .relative > .sidebar-nav-btn,
 	.dark .group\/run-item:hover:not(:has(.sidebar-row-action:hover)) .sidebar-nav-btn {
 		color: #fff !important;
 	}
@@ -1066,6 +1096,10 @@ html[data-chat-font] .aui-root {
 	}
 	.sidebar-row-action-glyph {
 		@apply inline-flex size-6 items-center justify-center rounded-full text-sidebar-foreground/55;
+	}
+	/* A disclosure stays put while its list is open, unlike the hover-only row actions. */
+	.sidebar-row-action.is-disclosure-open {
+		@apply opacity-100 pointer-events-auto;
 	}
 	/* Secondary row action (the pinned-chat unpin button) sits just left of
 	   the primary "…" options button. */
@@ -1221,6 +1255,73 @@ html[data-chat-font] .aui-root {
 	.panel-slider:active [data-slot="slider-thumb"] {
 		box-shadow: 0 0 0 12px
 			color-mix(in srgb, var(--panel-slider-fg) 22%, transparent) !important;
+	}
+
+	/* Images (Create + Train) and Video: a lighter control border than the palette
+	   default. Light mode only, since dark mode draws these controls borderless.
+	   Overrides the token, so every derived shade stays in step. */
+	html:not(.dark) .diffusion-surface {
+		--border: #e9e9e9;
+		--input: #e9e9e9;
+	}
+
+	/* Settings columns on Images and Video: content dissolves at whichever edge it runs
+	   past, rather than being cut off. Same masks as the model picker list. */
+	.panel-scroll-fade.is-scrolled {
+		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+		mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+	}
+	.panel-scroll-fade.is-bottom-faded {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			#000 calc(100% - 20px),
+			transparent
+		);
+		mask-image: linear-gradient(to bottom, #000 calc(100% - 20px), transparent);
+	}
+	.panel-scroll-fade.is-scrolled.is-bottom-faded {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 16px,
+			#000 calc(100% - 20px),
+			transparent
+		);
+		mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 16px,
+			#000 calc(100% - 20px),
+			transparent
+		);
+	}
+
+	/* Images and Video: a field's "i" only appears with the row it belongs to. Matched on the
+	   InfoHint itself so every field style is covered, including the shared chat slider.
+	   Two levels up is the field container; higher ancestors deliberately do not match. */
+	.diffusion-surface [data-slot="info-hint"] {
+		opacity: 0;
+		pointer-events: none;
+		transition: opacity 150ms;
+	}
+	.diffusion-surface *:hover > [data-slot="info-hint"],
+	.diffusion-surface *:hover > * > [data-slot="info-hint"],
+	.diffusion-surface *:focus-within > [data-slot="info-hint"],
+	.diffusion-surface *:focus-within > * > [data-slot="info-hint"],
+	.diffusion-surface [data-slot="info-hint"]:focus-visible {
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	/* The Create / Train action floats over its settings, so hover must lighten the fill
+	   rather than thin it: a translucent green would show the controls behind it. Mixes to
+	   what bg-primary/80 looks like on the page, but stays opaque. */
+	.btn-float-action:hover:not(:disabled) {
+		background-color: color-mix(
+			in srgb,
+			var(--primary) 80%,
+			var(--background)
+		) !important;
 	}
 
 	/* Inline numeric input — used for slider values and Context Length.
@@ -2189,11 +2290,6 @@ html[data-chat-font] .aui-root {
 		}
 	}
 
-	/* Fine-tuning Studio: equal minimum card height, grows with content (md+) */
-	.min-h-studio-config-column {
-		@apply md:min-h-[520px];
-	}
-
 	[data-streamdown="unordered-list"] {
 		list-style-type: disc;
 		list-style-position: outside;
@@ -2388,10 +2484,14 @@ html[data-chat-font] .aui-root {
 
 [data-sonner-toast][data-styled='true']:has([data-button]) {
 	display: grid !important;
-	grid-template-columns: 16px minmax(0, 1fr);
+	grid-template-columns: minmax(0, 1fr);
 	align-items: start !important;
 	column-gap: 10px !important;
 	row-gap: 10px !important;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-button]):has([data-icon]) {
+	grid-template-columns: 16px minmax(0, 1fr);
 }
 
 [data-sonner-toast][data-styled='true']:has([data-button]) [data-icon] {
@@ -2400,23 +2500,49 @@ html[data-chat-font] .aui-root {
 }
 
 [data-sonner-toast][data-styled='true']:has([data-button]) [data-content] {
+	grid-column: 1;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-button]):has([data-icon]) [data-content] {
 	grid-column: 2;
 }
 
 [data-sonner-toast][data-styled='true']:has([data-button]) [data-button] {
-	grid-column: 2;
+	grid-column: 1;
 	justify-self: start;
 	margin: 0 !important;
+}
+
+[data-sonner-toast][data-styled='true']:has([data-button]):has([data-icon]) [data-button] {
+	grid-column: 2;
 }
 
 [data-sonner-toast][data-styled='true']:has([data-close-button]) {
 	padding-right: 48px !important;
 }
 
+/* Toast buttons are pills, matching the dialog actions they stand in for. */
+[data-sonner-toast] [data-button] {
+	border-radius: 9999px !important;
+}
+
 /* Loading toast keeps its own vertical padding from #7683. */
 [data-sonner-toast][data-styled='true'].chat-model-load-toast {
+	display: flex !important;
+	align-items: center !important;
+	gap: 12px !important;
 	padding-top: 14px !important;
 	padding-bottom: 14px !important;
+}
+
+[data-sonner-toast][data-styled='true'].chat-model-load-toast [data-content] {
+	flex: 1 1 auto;
+}
+
+[data-sonner-toast][data-styled='true'].chat-model-load-toast [data-button] {
+	align-self: center;
+	flex: none;
+	margin-left: auto !important;
 }
 
 /* Progress bar is the last row; give it room below. */
@@ -2947,4 +3073,58 @@ html[data-chat-font] .aui-root {
    passed) but keep its fixed --size on the scale in case that changes. */
 [data-sonner-toast] .sonner-loading-wrapper {
 	--size: var(--ui-icon-size) !important;
+}
+
+@layer components {
+	.elevated-card {
+		border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+		border-radius: 20px;
+		box-shadow: 0 0 60px 8px
+			color-mix(in srgb, var(--foreground) 5%, transparent);
+	}
+
+	@media (min-width: 640px) {
+		.elevated-card {
+			border-radius: 28px;
+		}
+	}
+
+	@media (min-width: 1024px) {
+		.elevated-card {
+			border-radius: 32px;
+		}
+	}
+
+	.dark .elevated-card {
+		border-color: transparent;
+		box-shadow: none;
+	}
+
+	.dark .elevated-card.elevated-card-dark-border {
+		border-color: color-mix(in srgb, var(--border) 70%, transparent);
+	}
+
+	.page-title-halo {
+		text-shadow:
+			0 0 24px color-mix(in srgb, var(--primary) 18%, transparent),
+			0 0 56px color-mix(in srgb, var(--primary) 12%, transparent),
+			0 0 96px color-mix(in srgb, var(--primary) 8%, transparent);
+	}
+
+	.dark .page-title-halo {
+		text-shadow: none;
+	}
+
+	.train-section-chip {
+		background-color: color-mix(
+			in srgb,
+			var(--chip-tint, transparent) 12%,
+			transparent
+		);
+		color: color-mix(
+			in srgb,
+			var(--control-accent) 60%,
+			var(--foreground)
+		);
+	}
 }

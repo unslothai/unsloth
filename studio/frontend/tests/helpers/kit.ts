@@ -39,7 +39,8 @@ export function installLocalStorageFake(): {
     },
   };
   Object.assign(globalThis, {
-    window: { localStorage: storage },
+    // A location too: lib/api-base reads its protocol, pulled in transitively.
+    window: { localStorage: storage, location: { protocol: "http:" } },
     localStorage: storage,
   });
   return { store, storage };

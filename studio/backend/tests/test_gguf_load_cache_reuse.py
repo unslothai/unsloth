@@ -692,6 +692,9 @@ class TestLoadHubDownloadExclusion:
             model_identifier = REPO,
             adopt_load_intent_if_matched = lambda _intent: True,
             _audio_probed = True,
+            # The reuse fast path consults this before asserting CHAT ownership; a real
+            # LlamaCppBackend exposes it as a property, so the double has to carry it too.
+            holds_no_vram = False,
         )
         request = LoadRequest(model_path = REPO, gguf_variant = VARIANT)
 
@@ -728,6 +731,9 @@ class TestLoadHubDownloadExclusion:
             matches_load_source = lambda _intent: True,
             adopt_load_intent_if_matched = lambda _intent: True,
             _audio_probed = True,
+            # The reuse fast path consults this before asserting CHAT ownership; a real
+            # LlamaCppBackend exposes it as a property, so the double has to carry it too.
+            holds_no_vram = False,
         )
         config = SimpleNamespace(
             identifier = REPO,
@@ -804,6 +810,42 @@ class TestLoadHubDownloadExclusion:
         with pytest.raises(AttributeError, match = "runtime response fields"):
             route._llama_runtime_fields(incomplete_backend)
 
+    def test_real_backend_resolves_every_runtime_response_field(self):
+        # The shipped class, not a fake: an unresolved field 500s every load and poll.
+        from core.inference.llama_cpp import LlamaCppBackend
+        from models.inference import _InferenceRuntimeFields
+
+        route = _load_route_module(
+            "inference_route_module_for_real_backend_projection_test",
+            "routes/inference.py",
+        )
+
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend.__init__()
+        supplied = {
+            "requires_trust_remote_code",
+            "speculative_type",
+            "requested_parallel_slots",
+            "parallel_slots",
+            "is_mlx",
+            "mlx_kv_bits",
+            "mlx_kv_bits_requested",
+            "mlx_kv_quant_eligibility",
+            "mlx_kv_quant_reason",
+            "mlx_kv_quant_note",
+            "chat_template_override_reason",
+        }
+        unresolved = sorted(
+            name
+            for name in _InferenceRuntimeFields.model_fields
+            if name not in supplied and not (hasattr(backend, name) or hasattr(backend, f"_{name}"))
+        )
+        assert unresolved == []
+
+        fields = route._llama_runtime_fields(backend)
+        assert fields["is_mlx"] is False
+        assert fields["mlx_kv_bits_requested"] is None
+
     def test_in_flight_marker_counts_and_normalizes_case(self):
         assert not hf_gguf_load_in_flight(REPO)
         with gguf_load_in_flight(REPO):
@@ -816,6 +858,23 @@ class TestLoadHubDownloadExclusion:
     def test_marker_noops_for_local_loads(self):
         with gguf_load_in_flight(None):
             assert not hf_gguf_load_in_flight("")
+
+    def test_chat_load_marker_is_repo_agnostic_and_nests(self):
+        # The GPU arbiter needs to know a chat load exists before llama-server is spawned, for local paths and safetensors too, so this marker carries no repo key.
+        from core.inference.llama_cpp import chat_load_active, chat_load_in_flight
+
+        assert not chat_load_active()
+        with chat_load_in_flight():
+            assert chat_load_active()
+            with chat_load_in_flight():
+                assert chat_load_active()
+            assert chat_load_active()
+        assert not chat_load_active()
+
+        with pytest.raises(RuntimeError):
+            with chat_load_in_flight():
+                raise RuntimeError("boom")
+        assert not chat_load_active()
 
     def test_marker_cleared_on_exception(self):
         with pytest.raises(RuntimeError):
@@ -1000,28 +1059,26 @@ class TestLoadHubDownloadExclusion:
 
         asyncio.run(scenario())
 
-    def test_load_marker_precedes_hub_guard_and_unload(self):
+    def test_load_marker_precedes_hub_guard_which_precedes_the_gpu_handoff(self):
         source = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
             encoding = "utf-8"
         )
-        # _load_model_impl has more than one `if config.is_gguf:`, so anchor on
-        # the branch that actually owns the load marker rather than the first
-        # one in the file, which belongs to an earlier check.
+        # Anchor on the enclosing function, not a nearby `if config.is_gguf:`: the old anchor took the last such line before the load marker, which held
+        # only while _resolve_inherited_extra_args sat above every one of them. The ordering is a property of _load_model_impl.
         marker = source.index("enter_context(gguf_load_in_flight")
-        gguf_branch_start = source.rindex("if config.is_gguf:", 0, marker)
+        gguf_branch_start = source.rindex("async def _load_model_impl", 0, marker)
         gguf_branch = source[gguf_branch_start:]
 
-        # The gguf_load_in_flight marker must be entered before the hub-download
-        # guard and the unload so a concurrent load can't race the download
-        # manager. The llama_extra_args inheritance moved out of the branch into
-        # _resolve_inherited_extra_args, which must still run BEFORE it: the
-        # inherited value (e.g. a carried --no-mmproj) shapes the guard's
-        # require_mmproj. Anchor on the call form so the assertion pins the
-        # endpoint's call site, not the function definition.
-        assert source.index("= _resolve_inherited_extra_args(") < gguf_branch_start
+        # One chain, in this order:
+        # - _resolve_inherited_extra_args first: the inherited value (e.g. a carried --no-mmproj) shapes the guard's require_mmproj.
+        # - the gguf_load_in_flight marker before the hub-download guard: that handshake keeps a load and the download manager off the same files.
+        # - both before the CHAT handoff: the guard's 409 loads nothing, so checking it later destroyed a resident pipeline for a load that could never start.
+        # - the resident unload last. Anchored on call forms so each assertion pins a call site, not a definition.
         assert (
-            gguf_branch.index("enter_context(gguf_load_in_flight")
+            gguf_branch.index("= _resolve_inherited_extra_args(")
+            < gguf_branch.index("enter_context(gguf_load_in_flight")
             < gguf_branch.index("_hub_download_blocks_gguf_load")
+            < gguf_branch.index("enter_context(chat_load_in_flight")
             < gguf_branch.index("unsloth_backend.unload_model")
         )
         llama_source = (

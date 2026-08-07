@@ -504,6 +504,87 @@ def test_desktop_session_uses_real_admin_identity_for_api_keys():
     assert [row["name"] for row in rows] == ["desktop"]
 
 
+def web_bearer(client) -> str:
+    payload = {"username": storage.DEFAULT_ADMIN_USERNAME, "password": "human-password-123"}
+    return client.post("/api/auth/login", json = payload).json()["access_token"]
+
+
+def is_desktop_token(token: str) -> bool:
+    payload = jwt.decode(
+        token, storage.get_jwt_secret(storage.DEFAULT_ADMIN_USERNAME), algorithms = ["HS256"]
+    )
+    return payload.get("desktop") is True
+
+
+def test_desktop_sets_the_remote_password_without_the_seeded_one():
+    seed_user(must_change_password = True)
+    raw = storage.create_desktop_secret()
+    client = auth_client()
+    token = client.post("/api/auth/desktop-login", json = {"secret": raw}).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    body = {"new_password": "remote-password-123"}
+
+    response = client.post("/api/auth/desktop-initial-password", headers = headers, json = body)
+
+    assert response.status_code == 200
+    assert response.json()["must_change_password"] is False
+    assert is_desktop_token(response.json()["access_token"])
+    assert storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME) is False
+    # Desktop auto-auth survives the change the desktop itself made.
+    assert storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME
+    remote_login = client.post(
+        "/api/auth/login",
+        json = {"username": storage.DEFAULT_ADMIN_USERNAME, "password": "remote-password-123"},
+    )
+    assert remote_login.status_code == 200
+    # The seeded credential is gone, so change-password owns every later change.
+    repeat = client.post(
+        "/api/auth/desktop-initial-password",
+        headers = {"Authorization": f"Bearer {response.json()['access_token']}"},
+        json = body,
+    )
+    assert repeat.status_code == 409
+
+
+def test_remote_password_refuses_credentials_that_are_not_the_desktop_app():
+    seed_user(must_change_password = True)
+    client = auth_client()
+    api_key, _row = storage.create_api_key(storage.DEFAULT_ADMIN_USERNAME, "cli")
+
+    for bearer in (web_bearer(client), api_key):
+        response = client.post(
+            "/api/auth/desktop-initial-password",
+            headers = {"Authorization": f"Bearer {bearer}"},
+            json = {"new_password": "remote-password-123"},
+        )
+        # Distinguishable from the pre-existing "Password change required" refusal.
+        assert response.status_code == 403
+        assert response.json()["detail"] == "This action requires the Unsloth desktop app."
+    assert storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME) is True
+
+
+@pytest.mark.parametrize("desktop", [True, False])
+def test_change_password_revokes_the_desktop_secret_only_for_browsers(desktop):
+    seed_user(must_change_password = False)
+    raw = storage.create_desktop_secret()
+    client = auth_client()
+    bearer = (
+        client.post("/api/auth/desktop-login", json = {"secret": raw}).json()["access_token"]
+        if desktop
+        else web_bearer(client)
+    )
+
+    response = client.post(
+        "/api/auth/change-password",
+        headers = {"Authorization": f"Bearer {bearer}"},
+        json = {"current_password": "human-password-123", "new_password": "remote-password-123"},
+    )
+
+    assert response.status_code == 200
+    assert is_desktop_token(response.json()["access_token"]) is desktop
+    assert (storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME) is desktop
+
+
 def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local_model):
     # _inject_local_providers mints an internal sk-unsloth-* API key (not a
     # forwarded JWT) that validates as admin whether the session was desktop or web.
@@ -670,6 +751,8 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     llama_module.router = APIRouter()
     prompts_module = ModuleType("routes.prompts")
     prompts_module.router = APIRouter()
+    preview_module = ModuleType("routes.preview")
+    preview_module.router = APIRouter()
 
     for name, router in {
         "auth_router": APIRouter(),
@@ -687,6 +770,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
         "settings_router": settings_module.router,
         "training_history_router": APIRouter(),
         "training_router": APIRouter(),
+        "video_router": APIRouter(),
     }.items():
         setattr(routes_module, name, router)
     routes_module.settings = settings_module
@@ -696,6 +780,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setitem(sys.modules, "routes.settings", settings_module)
     monkeypatch.setitem(sys.modules, "routes.llama", llama_module)
     monkeypatch.setitem(sys.modules, "routes.prompts", prompts_module)
+    monkeypatch.setitem(sys.modules, "routes.preview", preview_module)
 
     import studio.backend.main as backend_main
 
