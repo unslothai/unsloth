@@ -145,6 +145,7 @@ import {
   shouldSubmitDictation,
 } from "@/features/chat/utils/dictation-send";
 import { listThreadDocuments } from "@/features/rag/api/rag-api";
+import { useRagAvailabilityStore } from "@/features/rag/api/rag-availability";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { DocumentPreviewMount } from "@/features/rag/components/document-preview-mount";
@@ -447,7 +448,12 @@ async function targetHasIndexingDocuments(item: PromptQueueItem) {
     // A failed status probe cannot prove that this thread's documents are
     // ready. Keep the queued send pending and retry instead of dispatching
     // without the RAG documents it was explicitly waiting for.
-    return true;
+    //
+    // Unless RAG cannot run on this host at all: the probe can never succeed
+    // there, and dispatchQueuedPrompt reschedules on every "still indexing",
+    // so waiting it out means the queued prompt is never sent. There are no
+    // documents to wait for, so send it.
+    return !useRagAvailabilityStore.getState().isUnavailable();
   }
 }
 

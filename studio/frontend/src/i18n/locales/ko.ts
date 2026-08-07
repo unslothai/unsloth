@@ -399,6 +399,14 @@ export const ko = {
         showLlamaUpdatesDescription:
           "새 모델을 실행할 수 있는 최신 llama.cpp 빌드가 있으면 알립니다. 학습만 사용한다면 끄세요.",
       },
+      startup: {
+        sectionTitle: "시작",
+        launchAtLogin: "로그인 시 Unsloth 실행",
+        launchAtLoginDescription:
+          "로그인하면 Unsloth를 백그라운드에서 시작합니다. 열기 전까지 메뉴 막대 또는 시스템 트레이에 남아 있습니다.",
+        loadError: "로그인 시 실행 설정을 불러오지 못했습니다.",
+        saveError: "로그인 시 실행 설정을 업데이트하지 못했습니다.",
+      },
       gettingStarted: "시작하기",
       startOnboarding: "온보딩 시작",
       startOnboardingDescription:

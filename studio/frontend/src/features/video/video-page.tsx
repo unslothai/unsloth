@@ -14,6 +14,8 @@ import { HugeiconsIcon } from "@hugeicons/react";
 
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import { MediaPageLink } from "@/components/media-page-link";
+import { usePlatformStore } from "@/config/env";
+import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { Button } from "@/components/ui/button";
 import {
@@ -491,7 +493,61 @@ function RecipeRow({
 
 type Busy = "loading" | "unloading" | "generating" | null;
 
+// Centered panel used for both halves of the capability gate below: the wait, and the answer.
+function VideoGate({ children }: { children: ReactNode }) {
+  return (
+    <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-3 pt-[var(--studio-content-top-inset,0px)] text-center text-sm text-muted-foreground">
+      {children}
+    </div>
+  );
+}
+
+/**
+ * Capability gate in front of the generator.
+ *
+ * The root guard never bounces /video: not on the browser-platform guess, and not on a measured
+ * chat-only verdict either, because a CPU-only host or a Mac without MLX is precisely where the
+ * explanation below has something to say. Video also has no Apple path in the backend, so the
+ * page answers for itself: spin while the answer is out, explain when it is no.
+ *
+ * The spin is bounded: AppSidebar is mounted on this route and re-reads /api/health while the
+ * verdict is unknown, writing it to the same store this reads, so a host slower than
+ * fetchDeviceType's bounded wait still lands here rather than spinning for the session.
+ */
 export function VideoPage({ active = true }: { active?: boolean }) {
+  const hardware = useHardwareInfo();
+  const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
+
+  if (capabilitiesUnknown || !hardware.loaded) {
+    return (
+      <VideoGate>
+        <Spinner className="size-5" />
+        <span>Checking this machine for video support...</span>
+      </VideoGate>
+    );
+  }
+
+  // Only an authoritative "no" hides the generator; an older backend omits the field, which
+  // arrives as null, and must keep the page it has always served.
+  if (hardware.videoSupported === false) {
+    return (
+      <VideoGate>
+        <HugeiconsIcon
+          icon={FlimSlateIcon}
+          className="size-7 shrink-0 text-muted-foreground/70"
+        />
+        <p className="max-w-sm text-balance">
+          {hardware.videoUnsupportedMessage ??
+            "Video generation is not supported on this machine."}
+        </p>
+      </VideoGate>
+    );
+  }
+
+  return <VideoGenerator active={active} />;
+}
+
+function VideoGenerator({ active = true }: { active?: boolean }) {
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
     "a tiny ginger sloth surfing a wave at sunset, cinematic, smooth motion",
@@ -1508,8 +1564,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
     <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
       {/* Top: the model selector, sitting clear of the sidebar and level with the controls column below. Load progress shows in a toast. */}
-      <div className="flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
-        <div className="flex items-center gap-3">
+      <div className="pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+        <div className="pointer-events-auto flex items-center gap-3">
           <ModelSelector
             models={VIDEO_MODELS}
             value={status?.loaded ? status.repo_id ?? undefined : undefined}
@@ -1536,7 +1592,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
             </div>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="pointer-events-auto flex items-center gap-2">
           {/* Images is a separate page, so it sits out here, not in this page's controls. */}
           <MediaPageLink to="/images" label="Images" icon={Image03Icon} />
         </div>
