@@ -144,7 +144,7 @@ jobs:
   # Three limits on that floor. All are real, none is fixable here, and they
   # are the reason `pause` is not the default.
   #
-  # It needs a runner. This job asks for an ubuntu-22.04 hosted runner out of
+  # It needs a runner. This job asks for an ubuntu-24.04 hosted runner out of
   # the same account-wide pool the sweeper exists to relieve, so under the
   # saturation this file is written for, the guard queues with everything else.
   # The true bound is MAX_DISABLED_MINUTES plus that wait, and on the numbers in
@@ -178,13 +178,13 @@ jobs:
     name: Re-enable anything left disabled
     # The complement of the condition on `sweep` below, so each trigger starts
     # only the job it asked for. Without it every ci-pause dispatch also took a
-    # second ubuntu-22.04 runner out of the pool the sweep in the same run is
+    # second ubuntu-24.04 runner out of the pool the sweep in the same run is
     # trying to free, and ran an enable loop on the one event that is asking for
     # the opposite. The floor under a pause is the cron, not this job appearing
     # on unrelated triggers; a manual restore is `mode=resume`, which enables the
     # whole allowlist rather than only what is past the cutoff.
     if: ${{ github.event_name == 'schedule' }}
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
@@ -290,7 +290,7 @@ jobs:
   sweep:
     name: Free capacity
     if: ${{ github.event_name != 'schedule' }}
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
