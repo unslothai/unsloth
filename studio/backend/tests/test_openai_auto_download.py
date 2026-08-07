@@ -1589,6 +1589,12 @@ def test_a_quant_request_is_not_satisfied_by_transformers_weights(monkeypatch):
         "get_inference_backend",
         lambda: type("B", (), {"active_model_name": "/srv/models/tuned"})(),
     )
+    # Pin it: unpatched this reads the machine's SAVED setting, so the 404 below turns into the
+    # 503 switch-failed branch for anyone who has ever enabled auto-switch in Studio. The default
+    # is False, which is why CI never saw it.
+    monkeypatch.setattr(
+        "utils.openai_auto_switch_settings.get_openai_auto_switch_enabled", lambda: False
+    )
     monkeypatch.setattr(inference_route, "_unavailable_model_message", _fake_unavailable_message)
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(inference_route._reject_unservable_model("alias:Q4_K_M", _Req()))
