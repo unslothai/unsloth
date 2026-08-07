@@ -144,7 +144,6 @@ test("only records that actually carry a batch value are stamped v2", () => {
 test("a v2 record survives byte-for-byte when an old client refuses it", () => {
   store.clear();
   assert.ok(savePerModelConfig(MODEL, VARIANT, config({ nBatch: 4096, nUbatch: 1024 })));
-  const before = store.get(KEY);
 
   // Simulate the old client: stamp the record beyond what this build understands, which
   // is exactly what a v1 build sees when it reads a v2 record.
@@ -176,7 +175,6 @@ test("a v2 record survives byte-for-byte when an old client refuses it", () => {
   assert.ok(loaded, "downgrade then upgrade must round-trip");
   assert.equal(loaded.nBatch, 4096);
   assert.equal(loaded.nUbatch, 1024);
-  assert.ok(before.length > 0);
 });
 
 test("a future record shows defaults rather than another model's settings", () => {

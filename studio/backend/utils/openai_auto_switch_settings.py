@@ -265,18 +265,22 @@ VALID_SPECULATIVE_TYPES = frozenset(
     {
         "auto",
         "mtp",
+        "dspark",
         "ngram",
         "mtp+ngram",
         "off",
         "default",
         "draft-mtp",
+        "draft-dspark",
         "ngram-mod",
         "ngram-simple",
     }
 )
-# Only these consume spec_draft_n_max (mirrors MTP_SPECULATIVE_TYPES in the UI).
-MTP_SPECULATIVE_TYPES = frozenset({"mtp", "mtp+ngram", "draft-mtp"})
+# Only these consume spec_draft_n_max (mirrors DRAFT_N_MAX_SPEC_TYPES in the UI).
+DRAFT_N_MAX_SPEC_TYPES = frozenset({"mtp", "mtp+ngram", "draft-mtp", "dspark", "draft-dspark"})
 VALID_GPU_MEMORY_MODES = frozenset({"auto", "manual"})
+# Mirrors MLX_KV_BITS_CHOICES in core/inference/mlx_inference.py; a set, not a range.
+VALID_MLX_KV_BITS = frozenset({8, 6, 5, 4, 3, 2})
 
 # Mirrors PARALLEL_MIN/MAX in llama_server_args.py. Mirrored not imported: that module owns
 # the extra-args allow-list this one must stay out of.
@@ -342,11 +346,17 @@ def normalize_model_override(payload: dict[str, Any]) -> dict[str, Any]:
     if kv_cache_dtype:
         entry["kv_cache_dtype"] = kv_cache_dtype
 
+    # MLX quantizes by bit width, not by a llama.cpp dtype name, so it is its own field.
+    mlx_kv_bits = payload.get("mlx_kv_bits")
+    if not isinstance(mlx_kv_bits, bool) and mlx_kv_bits in VALID_MLX_KV_BITS:
+        entry["mlx_kv_bits"] = int(mlx_kv_bits)
+
     speculative_type = _clean_str(payload.get("speculative_type"), VALID_SPECULATIVE_TYPES)
     if speculative_type:
         entry["speculative_type"] = speculative_type
-        # MTP-only; storing it otherwise shows an edit the loader ignores.
-        if speculative_type in MTP_SPECULATIVE_TYPES:
+        # Only the modes that launch a drafter with a configurable depth (MTP
+        # and DSpark); storing it otherwise shows an edit the loader ignores.
+        if speculative_type in DRAFT_N_MAX_SPEC_TYPES:
             spec_draft_n_max = _bounded_int(payload.get("spec_draft_n_max"), minimum = 1, maximum = 16)
             if spec_draft_n_max:
                 entry["spec_draft_n_max"] = spec_draft_n_max
@@ -446,6 +456,8 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
     for source, target in (
         ("llama_extra_args", "llama_extra_args"),
         ("kv_cache_dtype", "cache_type_kv"),
+        # Ungated like the UI's own load payload: non-MLX backends ignore it.
+        ("mlx_kv_bits", "mlx_kv_bits"),
         ("speculative_type", "speculative_type"),
         ("spec_draft_n_max", "spec_draft_n_max"),
         ("tensor_parallel", "tensor_parallel"),

@@ -81,6 +81,22 @@ def _is_mlx_available():
 _IS_MLX = _is_mlx_available()
 
 if _IS_MLX:
+    # _gpu_init does this on the GPU path; the MLX path never reaches it, so
+    # torchao 0.18 + torch < 2.10 dies on `ScalingType`. No-op otherwise.
+    try:
+        from .import_fixes import fix_torchao_torch_symbol_skew as _fix_torchao
+        _fix_torchao()
+        del _fix_torchao
+    except Exception:
+        pass
+    try:
+        # Same reason: MLX audio reaches xcodec2 -> torchtune -> the old
+        # torchao.dtypes.nf4tensor path.
+        from .import_fixes import fix_torchao_nf4tensor_move as _fix_nf4
+        _fix_nf4()
+        del _fix_nf4
+    except Exception:
+        pass
     try:
         import unsloth_zoo
     except ImportError as _e:
@@ -592,9 +608,7 @@ if _IS_MLX:
 
     def _assign_mlx_positional_kwarg(kwargs, name, value):
         if name in kwargs:
-            raise TypeError(
-                f"UnslothTrainer.__init__() got multiple values for argument " f"{name!r}"
-            )
+            raise TypeError(f"UnslothTrainer.__init__() got multiple values for argument {name!r}")
         kwargs[name] = value
 
     def _normalize_mlx_trainer_init_args(args, kwargs):

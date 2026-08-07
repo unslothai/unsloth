@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { usePlatformStore } from "@/config/env";
 import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
@@ -52,11 +53,12 @@ import {
   CONTEXT_LENGTH_MIN,
   DEFAULT_MAX_SEQ_LENGTH,
   DEFAULT_PER_MODEL_CONFIG,
+  DRAFT_N_MAX_SPEC_TYPES,
   KV_CACHE_DTYPES,
   MAX_SEQ_LENGTH_MAX,
   MAX_SEQ_LENGTH_MIN,
   MAX_SEQ_LENGTH_STEP,
-  MTP_SPECULATIVE_TYPES,
+  MLX_KV_BITS,
   N_BATCH_MAX,
   N_BATCH_MIN,
   N_PARALLEL_MAX,
@@ -66,6 +68,7 @@ import {
   deletePerModelConfig,
   floorMaxSeqLength,
   isDefaultConfig,
+  isServedByMlx,
   normalizeMaxSeqLength,
   normalizePerModelConfig,
   readAdvancedSettingsOpen,
@@ -98,6 +101,7 @@ const SPECULATIVE_TYPE_LABELS: Record<
 > = {
   auto: "Auto",
   mtp: "MTP",
+  dspark: "DSpark",
   ngram: "Ngram",
   "mtp+ngram": "MTP+Ngram",
   off: "Off",
@@ -199,7 +203,7 @@ function ChatTemplateSetting({
         <span className={LABEL_CLASS}>Chat Template</span>
         <InfoHint>
           {readOnly
-            ? "Preview the model's chat template. Custom overrides apply to GGUF models for now."
+            ? "Preview the model's chat template. This model's backend cannot take a custom one."
             : "Override the model's chat template with custom Jinja. Applies when the model loads."}
         </InfoHint>
       </div>
@@ -327,9 +331,8 @@ function AdvancedGpuSlider({
   );
 }
 
-// GPU Memory placement controls (mode / GPU Layers / MoE offload / GPU picker),
-// GGUF only. Slider ceilings come from the GGUF header dims, the picker from the
-// live device list. --tensor-split is not persisted per model, so not exposed here.
+// GPU Memory placement controls (mode / GPU Layers / MoE offload / GPU picker), GGUF only.
+// Slider ceilings come from the GGUF header dims; --tensor-split is not persisted per model.
 function GpuMemorySettings({
   config,
   update,
@@ -354,8 +357,7 @@ function GpuMemorySettings({
   const gpuLayers = config.gpuLayers ?? GPU_LAYERS_AUTO;
   // Slider at Auto: llama.cpp --fit owns the layout, so MoE-offload doesn't apply.
   const autoLayers = isManual && gpuLayers < 0;
-  // Ceiling = layer count + 1 (llama.cpp counts the output layer as offloadable),
-  // else a safe fallback.
+  // Ceiling = layer count + 1 (llama.cpp counts the output layer as offloadable), else a fallback.
   const gpuLayersMax = layerCount != null ? layerCount + 1 : 256;
   const nCpuMoe = config.nCpuMoe ?? 0;
   const moeLayersMax = moeLayerCount ?? 0;
@@ -505,10 +507,115 @@ function GpuMemorySettings({
   );
 }
 
+const MLX_KV_BITS_AUTO = "auto";
+
+function AdvancedSettingsToggle({
+  checked,
+  onCheckedChange,
+}: {
+  checked: boolean;
+  onCheckedChange: (next: boolean) => void;
+}) {
+  return (
+    <div className={ROW_CLASS}>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
+          Advanced settings
+        </span>
+        <InfoHint>
+          Extra options for how the model loads. Most setups don't need these.
+        </InfoHint>
+      </div>
+      <Switch
+        className="panel-switch shrink-0"
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+        aria-label="Show advanced settings"
+      />
+    </div>
+  );
+}
+
+function MlxAdvancedSettings({
+  config,
+  update,
+  outcome,
+  servedByMlx,
+  onEditTemplate,
+  templateOutcome,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  /** What the backend reported for this exact setting on the loaded model. */
+  outcome: string | null;
+  /** KV quantization is MLX-only; a CUDA safetensors model has no such control. */
+  servedByMlx: boolean;
+  onEditTemplate: () => void;
+  /** Why the loaded model could not take the override it was given. */
+  templateOutcome: string | null;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      {servedByMlx && (
+        <>
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>KV Cache Dtype</span>
+          <InfoHint>
+            Lower KV cache precision to save memory at the cost of some
+            quality. Auto keeps full precision; 8-bit is the safest reduction,
+            and lower widths save more memory.
+          </InfoHint>
+        </div>
+        <Select
+          value={config.mlxKvBits ? String(config.mlxKvBits) : MLX_KV_BITS_AUTO}
+          onValueChange={(v) =>
+            update({ mlxKvBits: v === MLX_KV_BITS_AUTO ? null : Number(v) })
+          }
+        >
+          <SelectTrigger
+            animateRadius={false}
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            className={`w-[92px] ${SELECT_TRIGGER_CLASS}`}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            <SelectItem value={MLX_KV_BITS_AUTO}>Auto</SelectItem>
+            {MLX_KV_BITS.map((bits) => (
+              <SelectItem key={bits} value={String(bits)}>
+                {bits}-bit
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      {outcome ? (
+        <p className="text-ui-11 leading-snug text-muted-foreground">
+          {outcome}
+        </p>
+      ) : null}
+        </>
+      )}
+      <ChatTemplateSetting
+        config={config}
+        onEditTemplate={onEditTemplate}
+        readOnly={!servedByMlx}
+      />
+      {templateOutcome ? (
+        <p className="text-ui-11 leading-snug text-muted-foreground">
+          {templateOutcome}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function GgufAdvancedSettings({
   config,
   update,
-  isMtp,
+  showDraftTokens,
   speculativeFallback,
   onEditTemplate,
   layerCount,
@@ -520,7 +627,7 @@ function GgufAdvancedSettings({
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
-  isMtp: boolean;
+  showDraftTokens: boolean;
   speculativeFallback: string;
   onEditTemplate: () => void;
   layerCount: number | null;
@@ -588,8 +695,12 @@ function GgufAdvancedSettings({
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS_WRAP}>Speculative Decoding</span>
           <InfoHint>
-            Faster generation with no accuracy hit. Auto picks MTP / ngram based
-            on the model and platform. Pick a strategy to force it.
+            Faster generation. Auto picks the best strategy for the model and
+            platform: DSpark when the model ships a drafter sidecar, otherwise
+            MTP / ngram. Pick a strategy to force it, or Off to disable.
+            DSpark downloads a sidecar of about 11 GB and trades VRAM for speed;
+            on quantized targets its greedy output can differ from a non
+            speculative run. MTP and ngram do not change output.
           </InfoHint>
         </div>
         <Select
@@ -597,8 +708,9 @@ function GgufAdvancedSettings({
           onValueChange={(v) =>
             update({
               speculativeType: v,
-              specDraftNMax:
-                v === "mtp" || v === "mtp+ngram" ? config.specDraftNMax : null,
+              specDraftNMax: DRAFT_N_MAX_SPEC_TYPES.has(v)
+                ? config.specDraftNMax
+                : null,
             })
           }
         >
@@ -620,13 +732,13 @@ function GgufAdvancedSettings({
         </Select>
       </div>
 
-      {isMtp && (
+      {showDraftTokens && (
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Draft Tokens</span>
             <InfoHint>
-              Max MTP draft tokens per step. Leave blank for the platform
-              default (2 on GPU, 3 on CPU/Mac).
+              Max draft tokens per step. Leave blank for the default (MTP: 2 on
+              GPU, 3 on CPU/Mac; DSpark: 3).
             </InfoHint>
           </div>
           <input
@@ -823,9 +935,8 @@ interface ModelConfigPageProps {
   isDiffusion?: boolean;
   variant?: "page" | "sidebar";
   /**
-   * Page variant only: render the built-in "Run settings" title block. A host that
-   * already shows the model name as its page heading turns this off.
-   */
+  * Page variant only: render the built-in "Run settings" title block. A host that already
+  * shows the model name as its page heading turns this off. */
   showHeader?: boolean;
 }
 
@@ -841,6 +952,19 @@ export function ModelConfigPage({
   showHeader = true,
 }: ModelConfigPageProps) {
   const rememberId = useId();
+  const platformDeviceType = usePlatformStore((s) => s.deviceType);
+  const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const mlxKvQuantReason = useChatRuntimeStore((s) => s.mlxKvQuantReason);
+  const chatTemplateOverrideReason = useChatRuntimeStore(
+    (s) => s.chatTemplateOverrideReason,
+  );
+  const loadedChatTemplateOverride = useChatRuntimeStore(
+    (s) => s.loadedChatTemplateOverride,
+  );
+  const mlxKvQuantNote = useChatRuntimeStore((s) => s.mlxKvQuantNote);
+  const loadedMlxKvBitsRequested = useChatRuntimeStore(
+    (s) => s.loadedMlxKvBitsRequested,
+  );
   const isActiveModel = loadedConfig != null;
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const activeNativePathToken = useChatRuntimeStore(
@@ -852,8 +976,7 @@ export function ModelConfigPage({
   const loadedMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
   );
-  // What settings are stored under, which is not always what loads. Every read, write
-  // and mirror uses it; the probes keep target.id, since they have to open the model.
+  // What settings are stored under, which is not always what loads; the probes keep target.id.
   const configId = target.configId ?? target.id;
   const gpuDevices = useGpuDevices();
   const resolveInitial = () => {
@@ -872,25 +995,50 @@ export function ModelConfigPage({
     return resolved;
   };
   const [initial] = useState(resolveInitial);
-  const [config, setConfig] = useState<PerModelConfig>(() =>
+  const [configState, setConfig] = useState<PerModelConfig>(() =>
     reconcileConfigGpuSelection(initial.config, isDiffusion, gpuDevices),
   );
   const [remember, setRemember] = useState(() => initial.remembered);
   const [savedRemember, setSavedRemember] = useState(() => initial.remembered);
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
   const [templateOpen, setTemplateOpen] = useState(false);
-  // Read live, not snapshotted at mount: the sidebar copy of Run Settings stays
-  // mounted while collapsed, so it has to follow a toggle made in the picker.
+  // Compare against what the backend was asked for, not what it applied: staging a
+  // new value must retire a verdict that answered a different request.
+  const chatTemplateOutcome =
+    isActiveModel &&
+    (configState.chatTemplateOverride ?? null) ===
+      (loadedChatTemplateOverride ?? null)
+      ? chatTemplateOverrideReason
+      : null;
+  const mlxKvQuantOutcome =
+    isActiveModel &&
+    (configState.mlxKvBits ?? null) === (loadedMlxKvBitsRequested ?? null)
+      ? // Both, not either: dropping the note promises savings before the offset
+        // where quantization actually starts.
+        [mlxKvQuantReason, mlxKvQuantNote].filter(Boolean).join(". ") || null
+      : null;
+  const servedByMlx = isServedByMlx(
+    target.isGguf,
+    platformDeviceType,
+    platformChatOnlyReason,
+  );
+  // Read live, not snapshotted at mount: the sidebar copy stays mounted while collapsed.
   const advancedPreference = useSyncExternalStore(
     subscribeAdvancedSettingsOpen,
     readAdvancedSettingsOpen,
     () => null,
   );
-  // Until the switch is used anywhere, a model carrying non-default advanced
-  // values opens the section on its own so those stay visible. Frozen at mount
-  // so editing a field back to its default cannot close the section underfoot.
-  const [autoOpenAdvanced] = useState(() => hasNonDefaultAdvanced(config));
-  const showAdvanced = advancedPreference ?? autoOpenAdvanced;
+  // Until the switch is used anywhere, a model carrying non-default advanced values opens the
+  // section itself. Frozen at mount so editing a field back to its default cannot close it.
+  const [autoOpenAdvanced] = useState(() => hasNonDefaultAdvanced(configState));
+  // Frozen like the rest of the auto-open decision, so editing the width does not
+  // reopen the section the user just closed.
+  const [initialMlxKvBits] = useState(() => configState.mlxKvBits ?? null);
+  // Applicability stays live, unlike the snapshot above: MLX can become available
+  // after mount, and a width that starts applying then has to surface.
+  const autoOpenForMlxKvBits = servedByMlx && initialMlxKvBits != null;
+  const showAdvanced =
+    advancedPreference ?? (autoOpenAdvanced || autoOpenForMlxKvBits);
   const toggleAdvanced = saveAdvancedSettingsOpen;
   const contextInputRef = useRef<NumericValueInputHandle>(null);
   const maxSeqLengthInputRef = useRef<NumericValueInputHandle>(null);
@@ -918,11 +1066,7 @@ export function ModelConfigPage({
     ? false
     : templateDefaults.loading;
 
-  const update = (patch: Partial<PerModelConfig>) =>
-    setConfig((current) => ({ ...current, ...patch }));
-
-  // Fetch GGUF header dims (context + layer/MoE counts) to size the GPU Memory
-  // sliders; the context also fills in below when target.meta lacks it.
+  // Fetch GGUF header dims to size the GPU Memory sliders; the context also fills in below.
   const contextFetchKey = target.isGguf
     ? `${target.id}\n${target.ggufVariant ?? ""}\n${hfToken || ""}\n${nativePathToken ?? ""}`
     : null;
@@ -983,6 +1127,18 @@ export function ModelConfigPage({
   ]);
   const stagedDims =
     fetchedStagedDims?.key === contextFetchKey ? fetchedStagedDims : null;
+  // Tri-state on purpose: an inconclusive probe stays undefined so onRun hands "unknown" on.
+  // Collapsing it to false would let a compare pane inherit another model's split (#7574).
+  const classifiedIsDiffusion = resolveStagedDiffusionClassification(
+    isDiffusion,
+    stagedDims,
+  );
+  const resolvedIsDiffusion = classifiedIsDiffusion === true;
+  const config = reconcileConfigGpuSelection(
+    configState,
+    resolvedIsDiffusion,
+    gpuDevices,
+  );
   const stagedMetadataPending =
     contextFetchKey != null &&
     stagedDims == null &&
@@ -990,25 +1146,19 @@ export function ModelConfigPage({
       config.selectedGpuIds != null ||
       config.nBatch != null ||
       config.nUbatch != null);
-  // Tri-state on purpose: an inconclusive probe stays undefined so onRun hands
-  // "unknown" to the selection. Collapsing it to false would tell a compare pane
-  // this is an ordinary GGUF, letting it inherit another model's split (#7574).
-  const classifiedIsDiffusion = resolveStagedDiffusionClassification(
-    isDiffusion,
-    stagedDims,
-  );
-  const resolvedIsDiffusion = classifiedIsDiffusion === true;
   const gpuIndexKind =
     pinnableGpuContext(gpuDevices, resolvedIsDiffusion).indexKind ?? null;
-  useEffect(() => {
-    setConfig((current) =>
-      reconcileConfigGpuSelection(current, resolvedIsDiffusion, gpuDevices),
-    );
-  }, [gpuDevices, resolvedIsDiffusion]);
+  const update = (patch: Partial<PerModelConfig>) =>
+    setConfig((current) => ({
+      ...reconcileConfigGpuSelection(current, resolvedIsDiffusion, gpuDevices),
+      ...patch,
+    }));
 
-  const isMtp =
+  // True for every mode that takes a draft depth, DSpark included, so this
+  // gates the Draft Tokens row rather than naming a drafter.
+  const showDraftTokens =
     config.speculativeType != null &&
-    MTP_SPECULATIVE_TYPES.has(config.speculativeType);
+    DRAFT_N_MAX_SPEC_TYPES.has(config.speculativeType);
   const nativeContextLength =
     target.meta.contextLength ?? stagedDims?.contextLength ?? null;
   const activeLoadedContext =
@@ -1038,9 +1188,8 @@ export function ModelConfigPage({
     ? withoutUnsupportedDiffusionSettings(rawBaseline, gpuIndexKind)
     : rawBaseline;
   const atBaseline = perModelConfigsEqual(config, baseline);
-  // An explicit customContextLength equal to the native ceiling is still an
-  // override (Reset stays enabled). "At default" means no override at all AND the
-  // shown context matches native (or no native context length is exposed).
+  // An explicit customContextLength equal to the native ceiling is still an override (Reset stays
+  // enabled). "At default" means no override at all AND the shown context matches native.
   const contextAtDefault =
     !target.isGguf ||
     (config.customContextLength == null &&
@@ -1054,17 +1203,15 @@ export function ModelConfigPage({
   const nativeMaxSeqLength =
     floorMaxSeqLength(modelMaxPosition.maxPositionEmbeddings) ??
     MAX_SEQ_LENGTH_MAX;
-  // A non-GGUF active model seeds maxSeqLength from its loaded value. Once cleared
-  // (Reset sets null), fall back to the app default, not the loaded runtime value,
-  // else a remembered/active override can never be cleared.
+  // A non-GGUF active model seeds maxSeqLength from its loaded value. Once cleared, fall back to
+  // the app default, not the loaded runtime value, else the override can never be cleared.
   const maxSeqLengthValue =
     normalizeMaxSeqLength(config.maxSeqLength) ??
     clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength);
   const maxSeqLengthMax = Math.max(nativeMaxSeqLength, maxSeqLengthValue);
-  // An auto-fit-below-native GGUF shows activeLoadedContext while
-  // customContextLength stays null. If the user fixes GPU Layers (Manual) and
-  // remembers, pin that shown context so a later fresh load keeps the fitted
-  // placement instead of sending native/0 for fixed layers and recreating the OOM.
+  // An auto-fit-below-native GGUF shows activeLoadedContext while customContextLength stays null.
+  // If the user fixes GPU Layers (Manual) and remembers, pin that shown context so a later fresh
+  // load keeps the fitted placement instead of sending native/0 and recreating the OOM.
   const loadableConfig = resolvedIsDiffusion
     ? withoutUnsupportedDiffusionSettings(config, gpuIndexKind)
     : config;
@@ -1075,9 +1222,8 @@ export function ModelConfigPage({
     loadableConfig.gpuLayers >= 0 &&
     loadableConfig.customContextLength == null &&
     activeLoadedContext != null;
-  // Persisted record: keep config as-is (non-GGUF keeps maxSeqLength null) so
-  // isDefaultConfig recognises it and clears a remembered override instead of
-  // pinning the app default.
+  // Persisted record: keep config as-is (non-GGUF keeps maxSeqLength null) so isDefaultConfig
+  // recognises it and clears a remembered override instead of pinning the app default.
   const runtimeConfig = target.isGguf
     ? pinFixedLayerContext
       ? { ...loadableConfig, customContextLength: activeLoadedContext }
@@ -1094,11 +1240,9 @@ export function ModelConfigPage({
       : "Load model";
 
   const handleRun = () => {
-    // Same-click Load/Reload: a numeric draft the user just typed is flushed only
-    // by that input's blur handler, which updates the parent config after this
-    // click closure already captured the stale value. Commit every numeric input
-    // imperatively so the staged load honors what the user just typed, not just
-    // the Context field.
+    // Same-click Load/Reload: a numeric draft the user just typed is flushed only by that input's
+    // blur handler, which runs after this click closure captured the stale value. Commit every
+    // numeric input imperatively so the staged load honors what was typed, not just Context.
     const committedContext = target.isGguf
       ? contextInputRef.current?.commit()
       : undefined;
@@ -1140,12 +1284,9 @@ export function ModelConfigPage({
     const effectiveConfig = resolvedIsDiffusion
       ? withoutUnsupportedDiffusionSettings(committedConfig, gpuIndexKind)
       : committedConfig;
-    // pinFixedLayerContext above was computed from the render-time config, before
-    // the same-click GPU Layers draft was committed. Recompute it from
-    // effectiveConfig so committing a positive fixed-layer value still pins the
-    // fitted context; otherwise the saved config carries customContextLength: null
-    // and a later fresh load sends the native context with fixed layers (the OOM
-    // the pin exists to avoid).
+    // pinFixedLayerContext above was computed from the render-time config, before the same-click
+    // GPU Layers draft was committed. Recompute from effectiveConfig so a positive fixed-layer
+    // value still pins the fitted context, else a later fresh load recreates the OOM.
     const effectivePinFixedLayerContext =
       target.isGguf &&
       effectiveConfig.gpuMemoryMode === "manual" &&
@@ -1158,8 +1299,7 @@ export function ModelConfigPage({
         ? { ...effectiveConfig, customContextLength: activeLoadedContext }
         : effectiveConfig
       : runtimeConfig;
-    // Non-GGUF load substitutes the resolved max sequence length; recompute it
-    // from the committed draft so a same-click Max Seq Length edit is not lost.
+    // Non-GGUF load substitutes the resolved max sequence length; recompute from the committed draft.
     const effectiveMaxSeqLengthValue =
       committedMaxSeqLength == null
         ? maxSeqLengthValue
@@ -1169,8 +1309,7 @@ export function ModelConfigPage({
     const effectiveAtBaseline = perModelConfigsEqual(effectiveConfig, baseline);
     const effectivePersistenceOnly =
       isActiveModel && effectiveAtBaseline && rememberChanged;
-    // Judge what storage keeps: savePerModelConfig normalizes first, so judging the raw
-    // object reported saved while the write dropped it.
+    // Judge what storage keeps: savePerModelConfig normalizes first, so the raw object over-reports.
     const normalizedRuntimeConfig = normalizePerModelConfig(
       effectiveRuntimeConfig,
     );
@@ -1187,11 +1326,9 @@ export function ModelConfigPage({
     } else {
       saveFailed = !deletePerModelConfig(configId, target.ggufVariant);
     }
-    // Mirror to the server so an API load gets these settings, not app defaults. Best-effort:
-    // the localStorage write above already governs this browser, and it is skipped when that
-    // write failed, or the two would permanently disagree. Gated on auto-switch reach, not just
-    // GGUF-ness, since the resolver skips Ollama, and a native-path lease is the same case: the
-    // id is only the file's display name, which the resolver never keys.
+    // Mirror to the server so an API load gets these settings, not app defaults. Best-effort, and
+    // skipped when the localStorage write failed or the two would permanently disagree. Gated on
+    // auto-switch reach, not GGUF-ness: the resolver skips Ollama, and a native-path lease is the same.
     if (
       !saveFailed &&
       (target.apiLoadable ?? target.isGguf) &&
@@ -1203,9 +1340,8 @@ export function ModelConfigPage({
         remember ? normalizedRuntimeConfig : null,
       );
     }
-    // Saving can push the local map over budget and drop other models, whose server
-    // entries would keep applying with nothing able to forget them. Not a Forget: only
-    // the mirrored fields go, and launch flags set through the API stay.
+    // Saving can push the local map over budget and drop other models, whose server entries would
+    // keep applying with nothing able to forget them. Not a Forget: only the mirrored fields go.
     for (const dropped of evicted) {
       syncModelOverride(dropped.modelId, dropped.ggufVariant, null, {
         keepLaunchFlags: true,
@@ -1311,8 +1447,8 @@ export function ModelConfigPage({
                 />
               ) : null}
               <p className="text-ui-11 leading-relaxed text-muted-foreground">
-                By default, Unsloth uses the model's full context, lowering it
-                only if it will not fit your device's memory.
+                Unsloth automatically fits the context to your device, using the
+                full context when memory allows.
               </p>
               {isActiveModel &&
                 loadedMaxContextLength != null &&
@@ -1329,7 +1465,7 @@ export function ModelConfigPage({
               <GgufAdvancedSettings
                 config={config}
                 update={update}
-                isMtp={isMtp}
+                showDraftTokens={showDraftTokens}
                 speculativeFallback={speculativeFallback}
                 onEditTemplate={() => setTemplateOpen(true)}
                 layerCount={stagedDims?.layerCount ?? null}
@@ -1341,23 +1477,10 @@ export function ModelConfigPage({
               />
             )}
 
-            <div className={ROW_CLASS}>
-              <div className="flex min-w-0 items-center gap-1.5">
-                <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
-                  Advanced settings
-                </span>
-                <InfoHint>
-                  Extra options for how the model loads. Most setups don't need
-                  these.
-                </InfoHint>
-              </div>
-              <Switch
-                className="panel-switch shrink-0"
-                checked={showAdvanced}
-                onCheckedChange={toggleAdvanced}
-                aria-label="Show advanced settings"
-              />
-            </div>
+            <AdvancedSettingsToggle
+              checked={showAdvanced}
+              onCheckedChange={toggleAdvanced}
+            />
           </>
         )}
         {!target.isGguf && (
@@ -1373,10 +1496,19 @@ export function ModelConfigPage({
                 })
               }
             />
-            <ChatTemplateSetting
-              config={config}
-              onEditTemplate={() => setTemplateOpen(true)}
-              readOnly={true}
+            {showAdvanced && (
+              <MlxAdvancedSettings
+                config={config}
+                update={update}
+                outcome={mlxKvQuantOutcome}
+                servedByMlx={servedByMlx}
+                onEditTemplate={() => setTemplateOpen(true)}
+                templateOutcome={chatTemplateOutcome}
+              />
+            )}
+            <AdvancedSettingsToggle
+              checked={showAdvanced}
+              onCheckedChange={toggleAdvanced}
             />
           </>
         )}
@@ -1440,7 +1572,7 @@ export function ModelConfigPage({
         value={config.chatTemplateOverride}
         defaultTemplate={resolvedDefaultTemplate}
         defaultLoading={resolvedDefaultLoading}
-        readOnly={!target.isGguf}
+        readOnly={!target.isGguf && !servedByMlx}
         onSave={(override) => update({ chatTemplateOverride: override })}
       />
     </div>

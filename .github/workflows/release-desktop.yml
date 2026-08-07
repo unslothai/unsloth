@@ -55,6 +55,8 @@ jobs:
   prepare-version:
     name: Prepare release versions
     runs-on: ubuntu-latest
+    # Version resolution only; observed 8-16s.
+    timeout-minutes: 15
     outputs:
       studio_version: ${{ steps.prepare.outputs.studio_version }}
       app_version: ${{ steps.prepare.outputs.app_version }}
@@ -64,7 +66,7 @@ jobs:
       pypi_version: ${{ steps.prepare.outputs.pypi_version }}
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
 
@@ -363,6 +365,8 @@ jobs:
     name: Build ${{ matrix.label }}
     needs: prepare-version
     runs-on: ${{ matrix.platform }}
+    # 6.9-20.9 min observed across platforms and cache states.
+    timeout-minutes: 60
 
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -387,7 +391,7 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
 
@@ -400,7 +404,7 @@ jobs:
 
       # ── Node.js ──
       - name: Setup Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
           node-version: 24
 
@@ -446,11 +450,14 @@ jobs:
           if (Array.isArray(targets) && targets.some((target) => String(target).toLowerCase() === 'rpm')) {
             throw new Error('Desktop release must not target RPM packages');
           }
+          if (Array.isArray(targets) && targets.some((target) => String(target).toLowerCase() === 'appimage')) {
+            throw new Error('Tauri AppImage bundling must stay disabled; the release uses the thin AppImage packager');
+          }
           if (config.bundle?.linux?.rpm) {
             throw new Error('bundle.linux.rpm must not be configured');
           }
-          if (config.bundle?.linux?.appimage?.bundleMediaFramework !== false) {
-            throw new Error('Linux AppImage bundleMediaFramework must stay false');
+          if (config.bundle?.linux?.appimage) {
+            throw new Error('bundle.linux.appimage must not be configured for the thin AppImage release path');
           }
 
           const workflow = readFileSync('.github/workflows/release-desktop.yml', 'utf8');
@@ -463,23 +470,24 @@ jobs:
           if (!linuxInstallLines.some((line) => line.includes('libappindicator3-dev'))) {
             throw new Error('Desktop Linux release must install libappindicator3-dev');
           }
-          const linuxdeployLines = lines.filter((line) => line.includes('github.com/linuxdeploy/linuxdeploy/releases/download'));
-          if (!linuxdeployLines.some((line) => line.includes('1-alpha-20250213-2/linuxdeploy-x86_64.AppImage'))) {
-            throw new Error('Desktop Linux release must pin linuxdeploy 1-alpha-20250213-2');
+          const appimagetoolLines = lines.filter((line) => line.includes('github.com/AppImage/appimagetool/releases/download'));
+          if (!appimagetoolLines.some((line) => line.includes('1.9.1/appimagetool-x86_64.AppImage'))) {
+            throw new Error('Desktop Linux release must pin appimagetool 1.9.1');
           }
           // A pinned version/path is reproducibility, not integrity: the asset
           // can be replaced after upload. Require the immutable SHA-256 digest
           // to be pinned AND verified before chmod +x. Scope every check to the
-          // real "Pin linuxdeploy for AppImage" step so this guard cannot
+          // real "Pin thin AppImage toolchain" step so this guard cannot
           // satisfy itself; a file-wide scan would match the guard's own code.
-          const expectedLinuxdeployDigest = '4648f278ab3ef31f819e67c30d50f462640e5365a77637d7e6f2ad9fd0b4522a';
+          const expectedAppimagetoolDigest = 'ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0';
+          const expectedRuntimeDigest = '2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d';
           const isComment = (line) => {
             const trimmed = line.trim();
             return trimmed.startsWith('#') || trimmed.startsWith('//');
           };
-          const stepStart = lines.findIndex((line) => /^\s*- name: Pin linuxdeploy for AppImage\s*$/.test(line));
+          const stepStart = lines.findIndex((line) => /^\s*- name: Pin thin AppImage toolchain\s*$/.test(line));
           if (stepStart === -1) {
-            throw new Error('Desktop Linux release must keep the "Pin linuxdeploy for AppImage" step');
+            throw new Error('Desktop Linux release must keep the "Pin thin AppImage toolchain" step');
           }
           const stepIndent = lines[stepStart].search(/\S/);
           let stepEnd = lines.length;
@@ -495,18 +503,26 @@ jobs:
             }
           }
           const stepLines = lines.slice(stepStart, stepEnd);
-          const digestEnvRe = /^\s*LINUXDEPLOY_SHA256:\s*["']([0-9a-f]{64})["']\s*$/;
-          const digestEnvLine = stepLines.find((line) => digestEnvRe.test(line));
-          if (!digestEnvLine || digestEnvLine.match(digestEnvRe)[1] !== expectedLinuxdeployDigest) {
-            throw new Error('Desktop Linux release must pin the linuxdeploy SHA-256 digest in the LINUXDEPLOY_SHA256 env');
+          const digest = (name) => {
+            const pattern = new RegExp(`^\\s*${name}:\\s*["']([0-9a-f]{64})["']\\s*$`);
+            const line = stepLines.find((candidate) => pattern.test(candidate));
+            return line?.match(pattern)?.[1];
+          };
+          if (digest('APPIMAGETOOL_SHA256') !== expectedAppimagetoolDigest) {
+            throw new Error('Desktop Linux release must pin the appimagetool SHA-256 digest');
           }
-          const sha256Idx = stepLines.findIndex((line) => !isComment(line) && line.includes('sha256sum -c'));
-          if (sha256Idx === -1) {
-            throw new Error('Desktop Linux release must verify the linuxdeploy digest with sha256sum -c before use');
+          if (digest('APPIMAGE_RUNTIME_SHA256') !== expectedRuntimeDigest) {
+            throw new Error('Desktop Linux release must pin the AppImage runtime SHA-256 digest');
+          }
+          const sha256Indexes = stepLines
+            .map((line, index) => !isComment(line) && line.includes('sha256sum -c') ? index : -1)
+            .filter((index) => index !== -1);
+          if (sha256Indexes.length !== 2) {
+            throw new Error('Desktop Linux release must verify both AppImage toolchain digests');
           }
           const chmodIdx = stepLines.findIndex((line) => !isComment(line) && /chmod\s+\+x/.test(line));
-          if (chmodIdx !== -1 && sha256Idx > chmodIdx) {
-            throw new Error('Desktop Linux release must verify the linuxdeploy digest before chmod +x');
+          if (chmodIdx !== -1 && Math.max(...sha256Indexes) > chmodIdx) {
+            throw new Error('Desktop Linux release must verify the AppImage toolchain before chmod +x');
           }
           const releaseBody = process.env.DESKTOP_RELEASE_NOTES;
           if (!releaseBody) {
@@ -607,7 +623,7 @@ jobs:
           git diff -- Cargo.toml Cargo.lock
 
       - name: Rust cache
-        uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
           workspaces: 'studio/src-tauri -> target'
 
@@ -651,10 +667,32 @@ jobs:
           rm -f certificate.p12
 
       # ── Windows: install Azure Trusted Signing CLI ──
-      - name: Install trusted-signing-cli
+      # `cargo install` builds this from source: 241s and 248s on the last two
+      # cache-miss runs. It was only ever fast when the ~550 MB rust-cache
+      # happened to restore `~/.cargo/bin` too, and that entry is the first
+      # thing evicted under repo cache pressure, which is why Windows swung
+      # between 8.8 min and 20.9 min. A dedicated single-binary cache keeps the
+      # compile off the critical path independently of the big Rust cache.
+      - name: Restore trusted-signing-cli
+        id: cache_trusted_signing_cli
         if: matrix.platform == 'windows-latest'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: ~/.cargo/bin/trusted-signing-cli.exe
+          # The version is in the key, so a bump invalidates the cache instead
+          # of silently reusing the old binary.
+          key: trusted-signing-cli-0.10.0-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install trusted-signing-cli
+        if: matrix.platform == 'windows-latest' && steps.cache_trusted_signing_cli.outputs.cache-hit != 'true'
         run: |
           cargo install trusted-signing-cli --version 0.10.0 --locked
+
+      # Unconditional: on a cache hit the install step above is skipped, and the
+      # cargo bin dir still has to reach PATH or signing fails.
+      - name: Add cargo bin to PATH
+        if: matrix.platform == 'windows-latest'
+        run: |
           echo "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # ── Windows: verify signing CLI is accessible ──
@@ -666,51 +704,103 @@ jobs:
           trusted-signing-cli --version || Write-Output "trusted-signing-cli failed to run"
 
       # ── Linux: pin AppImage packaging toolchain ──
-      - name: Pin linuxdeploy for AppImage
+      - name: Pin thin AppImage toolchain
         if: matrix.platform == 'ubuntu-22.04'
         shell: bash
         env:
           # Pinning the versioned release path is reproducibility, not
           # integrity: a GitHub release asset can be replaced (or its delivery
-          # path compromised) after upload. The SHA-256 below is the immutable
-          # digest of this exact asset and is the integrity gate. If linuxdeploy
-          # publishes a new build under this tag, this run fails closed and the
-          # digest must be re-pinned deliberately.
-          LINUXDEPLOY_URL: "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20250213-2/linuxdeploy-x86_64.AppImage"
-          LINUXDEPLOY_SHA256: "4648f278ab3ef31f819e67c30d50f462640e5365a77637d7e6f2ad9fd0b4522a"
+          # path compromised) after upload. The SHA-256 digests of these exact
+          # assets are the integrity gate. A replaced
+          # release asset fails closed and must be re-pinned deliberately.
+          APPIMAGETOOL_URL: "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage"
+          APPIMAGETOOL_SHA256: "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
+          APPIMAGE_RUNTIME_URL: "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64"
+          APPIMAGE_RUNTIME_SHA256: "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d"
         run: |
           set -euo pipefail
-          tools_dir="$RUNNER_TEMP/tauri-tools-cache/tauri"
+          tools_dir="$RUNNER_TEMP/appimage-tools"
           mkdir -p "$tools_dir"
-          dest="$tools_dir/linuxdeploy-x86_64.AppImage"
-          curl -fsSL "$LINUXDEPLOY_URL" -o "$dest"
+          appimagetool="$tools_dir/appimagetool-x86_64.AppImage"
+          runtime="$tools_dir/runtime-x86_64"
+          curl -fsSL "$APPIMAGETOOL_URL" -o "$appimagetool"
+          curl -fsSL "$APPIMAGE_RUNTIME_URL" -o "$runtime"
           # Verify the digest BEFORE the binary is ever marked executable. The
-          # next step builds the AppImage with the Tauri signing key, so a
-          # substituted linuxdeploy that ran here could exfiltrate signing
+          # later step builds the AppImage with the Tauri signing key, so a
+          # substituted packager that ran there could exfiltrate signing
           # material or tamper with release artifacts. Fail closed on any
           # mismatch.
-          echo "${LINUXDEPLOY_SHA256}  ${dest}" | sha256sum -c -
-          chmod +x "$dest"
+          echo "${APPIMAGETOOL_SHA256}  ${appimagetool}" | sha256sum -c -
+          echo "${APPIMAGE_RUNTIME_SHA256}  ${runtime}" | sha256sum -c -
+          chmod +x "$appimagetool"
 
-      # ── Linux: build + sign ──
-      - name: Build Linux app
+      # ── Linux: build the native package once ──
+      - name: Build Linux deb
         id: build_linux
         if: matrix.platform == 'ubuntu-22.04'
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          XDG_CACHE_HOME: ${{ runner.temp }}/tauri-tools-cache
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
         with:
           projectPath: studio
           tauriScript: npx --prefix . tauri
-          args: -v ${{ matrix.args }}
+          args: >-
+            -v --bundles deb
+            --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      # ── Linux: wrap the deb payload without bundling the GTK/WebKit stack ──
+      - name: Build and sign thin Linux AppImage
+        id: package_linux
+        if: matrix.platform == 'ubuntu-22.04'
+        shell: bash
+        env:
+          ARTIFACT_PATHS: ${{ steps.build_linux.outputs.artifactPaths }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          deb_path="$(
+            python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          paths = json.loads(os.environ.get('ARTIFACT_PATHS', ''))
+          matches = [pathlib.Path(path) for path in paths if str(path).endswith('.deb')]
+          if len(matches) != 1 or not matches[0].is_file():
+              sys.exit(f'Expected exactly one Linux deb artifact, got {matches}')
+          print(matches[0])
+          PY
+          )"
+          output_dir="studio/src-tauri/target/release/bundle/appimage"
+          appimage="$output_dir/unsloth-studio_${APP_VERSION}_amd64.AppImage"
+          export APPIMAGE_PATH="$appimage"
+          studio/src-tauri/linux/build-thin-appimage.sh \
+            "$deb_path" \
+            "$RUNNER_TEMP/appimage-tools/appimagetool-x86_64.AppImage" \
+            "$RUNNER_TEMP/appimage-tools/runtime-x86_64" \
+            "$appimage"
+          signature="${appimage}.sig"
+          npx --prefix studio tauri signer sign "$appimage" > "$signature"
+          if [[ ! -s "$signature" ]]; then
+            echo "Tauri signer did not create a nonempty signature: $signature" >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          import os
+
+          deb_paths = json.loads(os.environ['ARTIFACT_PATHS'])
+          appimage = os.environ['APPIMAGE_PATH']
+          paths = [*deb_paths, appimage, f'{appimage}.sig']
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'artifactPaths={json.dumps(paths)}\n')
+          PY
 
       # ── macOS: build + sign + notarize ──
       - name: Build macOS app
         id: build_macos
         if: matrix.platform == 'macos-latest'
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -734,9 +824,9 @@ jobs:
         if: matrix.platform == 'macos-latest'
         shell: bash
         # `--timeout` below caps the polling, but not the upload that precedes
-        # it. This job sets no timeout of its own, so without a backstop a stuck
-        # Notary service would hold `max-parallel: 1` for GitHub's 6h default
-        # and discard the Linux and Windows builds with it.
+        # it. Without a step-level backstop a stuck Notary service would hold
+        # `max-parallel: 1` for the whole job budget and discard the Linux and
+        # Windows builds with it, so cap it tighter than the job here.
         timeout-minutes: 45
         env:
           ARTIFACT_PATHS: ${{ steps.build_macos.outputs.artifactPaths }}
@@ -868,7 +958,7 @@ jobs:
       - name: Build Windows app
         id: build_windows
         if: matrix.platform == 'windows-latest'
-        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -918,8 +1008,32 @@ jobs:
           Update-MpSignature -UpdateSource MicrosoftUpdateServer -ErrorAction Continue
           & $mp -SignatureUpdate 2>&1 | Write-Host
 
-          $status = Get-MpComputerStatus
-          $pref = Get-MpPreference
+          # Read these defensively. A runner can come up with the Defender WMI
+          # provider dead ("Provider load failure") and the service RPC endpoint
+          # down (0x800106ba), which is how the platform incident on 2026-08-06
+          # presented: the cmdlets throw, $status/$pref land null, and every check
+          # below then reads as a misconfiguration it is not.
+          $status = $null
+          $pref = $null
+          $unavailable = @()
+          try { $status = Get-MpComputerStatus -ErrorAction Stop }
+          catch { $unavailable += "Get-MpComputerStatus: $($_.Exception.Message)" }
+          try { $pref = Get-MpPreference -ErrorAction Stop }
+          catch { $unavailable += "Get-MpPreference: $($_.Exception.Message)" }
+          if (-not $unavailable -and -not $status) { $unavailable += 'Get-MpComputerStatus returned nothing' }
+          if (-not $unavailable -and -not $pref)   { $unavailable += 'Get-MpPreference returned nothing' }
+
+          # Absent scanner vs. bad verdict. Everything below this point assumes a
+          # Defender that answers; when it does not answer at all there is no scan
+          # to interpret, so skip instead of failing closed. This is deliberately
+          # narrow: it triggers only when the cmdlets themselves fail, which is an
+          # unavailable engine. A Defender that IS present but misconfigured still
+          # fails below, and an actual detection still fails the job.
+          if ($unavailable) {
+            Write-Host "::warning::Defender is unavailable on this runner ($($unavailable -join '; ')); skipping the bundle scan. This is a missing scanner, not a clean verdict - these bundles were not scanned."
+            exit 0
+          }
+
           Write-Host "engine $($status.AMEngineVersion), signatures $($status.AntivirusSignatureVersion) ($($status.AntivirusSignatureLastUpdated))"
 
           # Set-MpPreference can return cleanly and still be ignored, so verify.
@@ -1139,7 +1253,7 @@ jobs:
       - name: Stage release assets
         shell: bash
         env:
-          ARTIFACT_PATHS: ${{ steps.build_linux.outputs.artifactPaths || steps.build_macos.outputs.artifactPaths || steps.build_windows.outputs.artifactPaths }}
+          ARTIFACT_PATHS: ${{ steps.package_linux.outputs.artifactPaths || steps.build_macos.outputs.artifactPaths || steps.build_windows.outputs.artifactPaths }}
         run: |
           set -euo pipefail
           if command -v python3 >/dev/null 2>&1; then
@@ -1214,6 +1328,8 @@ jobs:
     name: Publish desktop release
     needs: [prepare-version, build]
     runs-on: ubuntu-latest
+    # Artifact download plus release upload; observed 17-40s.
+    timeout-minutes: 20
     permissions:
       contents: write  # create the versioned Release and replace updater-channel metadata
     env:

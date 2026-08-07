@@ -139,6 +139,8 @@ def test_chat_settings_payload_accepts_preset_load_config():
 
 
 def test_chat_settings_payload_accepts_preset_batch_sizes():
+    from pydantic import ValidationError
+
     # extra="forbid" 400s the whole settings write, and the normalizer emits both keys on
     # every preset (null included), so a preset that only pinned nParallel would stop saving.
     payload = chat_history.ChatSettingsPayload.model_validate(
@@ -160,9 +162,34 @@ def test_chat_settings_payload_accepts_preset_batch_sizes():
     chat_history.ChatPresetLoadConfig.model_validate(
         {"nParallel": 4, "nBatch": None, "nUbatch": None}
     )
-    for bad in ({"nBatch": 0}, {"nUbatch": BATCH_MAX + 1}):
+    for bad in ({"nBatch": 0}, {"nUbatch": BATCH_MAX + 1}, {"nBatch": True}):
         with pytest.raises(ValidationError):
             chat_history.ChatPresetLoadConfig.model_validate(bad)
+
+
+def test_chat_settings_payload_accepts_mlx_kv_bits():
+    from pydantic import ValidationError
+
+    # extra="forbid" rejects the whole settings write on an undeclared key.
+    payload = chat_history.ChatSettingsPayload.model_validate(
+        {
+            "customPresets": [
+                {
+                    "name": "MLX preset",
+                    "params": {"temperature": 0.7},
+                    "loadConfig": {"mlxKvBits": 8},
+                },
+            ],
+        }
+    )
+    dumped = payload.model_dump(exclude_unset = True)
+    assert dumped["customPresets"][0]["loadConfig"]["mlxKvBits"] == 8
+
+    for width in (4, None):
+        chat_history.ChatPresetLoadConfig.model_validate({"mlxKvBits": width})
+    # Only the widths MLX supports.
+    with pytest.raises(ValidationError):
+        chat_history.ChatPresetLoadConfig.model_validate({"mlxKvBits": 7})
 
 
 def test_chat_settings_payload_accepts_nudge_tool_calls():

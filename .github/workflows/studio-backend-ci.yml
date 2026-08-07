@@ -40,7 +40,7 @@ on:
       - 'pyproject.toml'
       - '.github/workflows/studio-backend-ci.yml'
   push:
-    branches: [main, pip]
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

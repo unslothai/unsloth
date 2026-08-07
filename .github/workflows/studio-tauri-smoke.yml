@@ -24,7 +24,7 @@ on:
       - 'unsloth_cli/**'
       - '.github/workflows/studio-tauri-smoke.yml'
   push:
-    branches: [main, pip]
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -48,7 +48,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev libappindicator3-dev \
-            librsvg2-dev libxdo-dev libssl-dev patchelf
+            librsvg2-dev libxdo-dev libssl-dev patchelf xvfb
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
@@ -56,8 +56,13 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
 
-      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
+          # Save only on main. This action defaults to saving on every ref, and
+          # a PR-scoped rust cache (550-840MB here) can only be restored by
+          # re-runs of that same PR while still counting against the 10GB
+          # per-repo budget, evicting main's copy that every PR can restore.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: studio/src-tauri -> target
 
       - name: Install pinned Tauri CLI (matches release-desktop.yml)
@@ -126,6 +131,116 @@ jobs:
           file "$BIN"
           du -h "$BIN"
 
+      # desktop-app-clean-machine-ci.yml launches a SHIPPED release, so this is
+      # the only job that catches a Linux startup regression from a source change
+      # before a release is cut.
+      #
+      # Ten launches, not one: the #8062 X11 race killed roughly one launch in
+      # three, so a single launch passes two times in three with the bug present.
+      #
+      # The backend is a stub -- preflight only needs `-h` to exit 0 and
+      # `studio desktop-capabilities --json` to answer, and the crash lands
+      # milliseconds after the spawn -- which covers the whole startup-to-app-shell
+      # transition without a Python install, in ~4 minutes.
+      - name: Launch repeatedly under Xvfb
+        run: |
+          set -u
+          BIN="$PWD/studio/src-tauri/target/debug/unsloth-studio"
+          [ -x "$BIN" ] || { echo "::error::no debug binary at $BIN"; exit 1; }
+
+          # From libX11 1.8 the library calls XInitThreads() from its own
+          # constructor, so the #8062 race cannot happen and these launches would
+          # pass even with the fix reverted. ubuntu-22.04 ships 1.7.5, which does not.
+          x11ver="$(dpkg-query -W -f='${Version}' libx11-6 2>/dev/null || true)"
+          echo "libx11-6: ${x11ver:-not installed}"
+          if [ -z "$x11ver" ] || dpkg --compare-versions "$x11ver" ge 2:1.8; then
+            echo "::warning::libX11 ${x11ver:-unknown} initialises threading itself, so these launches no longer cover the #8062 race, only that the app starts. Keep this job on a runner with libX11 < 1.8 to keep that coverage."
+          fi
+
+          # Derived, not hardcoded: a bump to MIN_DESKTOP_BACKEND_VERSION would
+          # leave the stub Stale, park the app on the repair screen and quietly
+          # stop testing the startup transition this job exists to test.
+          STUB_VERSION="$(sed -n 's/.*MIN_DESKTOP_BACKEND_VERSION: &str = "\([^"]*\)".*/\1/p' \
+            studio/src-tauri/src/preflight/version.rs)"
+          [ -n "$STUB_VERSION" ] || {
+            echo "::error::could not read MIN_DESKTOP_BACKEND_VERSION from preflight/version.rs"
+            exit 1
+          }
+          echo "stub backend version: $STUB_VERSION"
+
+          mkdir -p "$RUNNER_TEMP/stub" launch-logs
+          cat > "$RUNNER_TEMP/stub/unsloth" <<'STUB'
+          #!/bin/sh
+          case "$*" in
+            "-h") exit 0 ;;
+            *desktop-capabilities*)
+              printf '%s\n' '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":true,"version":"__STUB_VERSION__"}'
+              exit 0 ;;
+            *studio*--api-only*) exec sleep 60 ;;
+          esac
+          exit 1
+          STUB
+          sed -i "s/__STUB_VERSION__/$STUB_VERSION/" "$RUNNER_TEMP/stub/unsloth"
+          chmod +x "$RUNNER_TEMP/stub/unsloth"
+
+          fails=0
+          for i in $(seq 1 10); do
+            H="$RUNNER_TEMP/launch-$i"
+            rm -rf "$H"
+            mkdir -p "$H/.unsloth/studio/unsloth_studio/bin" "$H/.config" "$H/xdg"
+            cp "$RUNNER_TEMP/stub/unsloth" "$H/.unsloth/studio/unsloth_studio/bin/unsloth"
+            D=$((70 + i))
+            Xvfb ":$D" -screen 0 1440x900x24 -nolisten tcp > "launch-logs/xvfb-$i.log" 2>&1 &
+            XV=$!
+            for _ in $(seq 1 40); do [ -e "/tmp/.X11-unix/X$D" ] && break; sleep 0.25; done
+            (
+              export DISPLAY=":$D" HOME="$H" XDG_RUNTIME_DIR="$H/xdg" XDG_CONFIG_HOME="$H/.config"
+              # Without this GTK drops its fatal-X-error report and the app exits
+              # 1 with no output at all, which is what made #8062 so opaque.
+              export G_MESSAGES_DEBUG=all RUST_BACKTRACE=full
+              unset UNSLOTH_STUDIO_HOME STUDIO_HOME
+              exec "$BIN"
+            ) > "launch-logs/app-$i.log" 2>&1 &
+            APP=$!
+            for _ in $(seq 1 20); do kill -0 "$APP" 2>/dev/null || break; sleep 1; done
+            if kill -0 "$APP" 2>/dev/null; then
+              kill -TERM "$APP" 2>/dev/null || true
+              # Surviving only counts if the launch reached the transition that
+              # used to kill it: an app parked on the install or repair screen
+              # also survives 20s while testing none of this.
+              if grep -q "start_managed_server spawned" "launch-logs/app-$i.log"; then
+                echo "launch $i: reached the backend spawn and stayed up"
+              else
+                fails=$((fails + 1))
+                echo "::error::launch $i never reached the backend spawn, so it never exercised the startup transition"
+                tail -25 "launch-logs/app-$i.log" || true
+              fi
+            else
+              rc=0; wait "$APP" 2>/dev/null || rc=$?
+              fails=$((fails + 1))
+              echo "::error::launch $i exited early with rc=$rc"
+              tail -25 "launch-logs/app-$i.log" || true
+            fi
+            kill "$XV" 2>/dev/null || true
+            wait "$XV" 2>/dev/null || true
+          done
+
+          # Anything less is a user watching the window vanish on startup.
+          if [ "$fails" -ne 0 ]; then
+            echo "::error::$fails of 10 launches did not reach the app shell and stay there"
+            exit 1
+          fi
+          echo "10 of 10 launches reached the backend spawn and stayed up"
+
+      - name: Upload launch logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: tauri-launch-logs
+          path: launch-logs
+          if-no-files-found: warn
+          retention-days: 1
+
       - name: Upload Tauri debug build
         # Failures only, and only the binary -- never the whole target/debug
         # tree. That directory is ~1.3GB per run: the 405MB unstripped binary
@@ -167,8 +282,13 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
 
-      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
+          # Save only on main. This action defaults to saving on every ref, and
+          # a PR-scoped rust cache (550-840MB here) can only be restored by
+          # re-runs of that same PR while still counting against the 10GB
+          # per-repo budget, evicting main's copy that every PR can restore.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: studio/src-tauri -> target
 
       # Windows runners expose `python`, not `python3`, so pin an interpreter

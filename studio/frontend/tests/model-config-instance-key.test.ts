@@ -101,6 +101,7 @@ test("every mirrored setting moves the instance key", () => {
     { ...LIVE, customContextLength: 8192 },
     { ...LIVE, maxSeqLength: 4096 },
     { ...LIVE, kvCacheDtype: "f16" },
+    { ...LIVE, mlxKvBits: 4 },
     { ...LIVE, speculativeType: "off" },
     { ...LIVE, specDraftNMax: 4 },
     { ...LIVE, nParallel: 1 },

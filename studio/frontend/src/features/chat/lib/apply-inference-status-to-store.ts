@@ -16,6 +16,7 @@ import {
   type ReasoningStyle,
   loadOptionalBool,
   loadedGpuMemoryFields,
+  normalizeSpeculativeType,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -34,33 +35,10 @@ function sameArray<T>(a: T[] | null, b: T[] | null): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-// Canonicalises backend / persisted speculative mode values onto the UI modes.
-export function normalizeSpeculativeType(
-  v: string | null | undefined,
-): string | null {
-  if (v == null) return null;
-  const s = String(v).trim().toLowerCase();
-  if (!s) return null;
-  if (s === "auto" || s === "default") return "auto";
-  if (s === "off") return "off";
-  if (s === "mtp" || s === "draft-mtp") return "mtp";
-  if (s === "ngram" || s === "ngram-mod" || s === "ngram-simple") {
-    return "ngram";
-  }
-  if (s === "mtp+ngram") return "mtp+ngram";
-  const parts = s
-    .split(",")
-    .map((p) => p.trim())
-    .filter(Boolean);
-  const hasMtp = parts.some((p) => p === "mtp" || p === "draft-mtp");
-  const hasNgram = parts.some(
-    (p) => p === "ngram" || p === "ngram-mod" || p === "ngram-simple",
-  );
-  if (hasMtp && hasNgram) return "mtp+ngram";
-  if (hasMtp) return "mtp";
-  if (hasNgram) return "ngram";
-  return "auto";
-}
+// Canonicalises backend / persisted speculative mode values onto the UI
+// modes. Re-exported from the store, which owns the vocabulary: a second
+// copy meant every new mode had to be added twice or the two would disagree.
+export { normalizeSpeculativeType } from "../stores/chat-runtime-store";
 
 export function clampLocalReasoningEffort(
   value: ReasoningEffort,
@@ -368,6 +346,7 @@ export function applyActiveModelStatusToStore(
     loadedIsDiffusion: status.is_diffusion ?? false,
     activeModelIsLocal: status.is_local_model ?? false,
     specFallbackReason: status.spec_fallback_reason ?? null,
+    specDrafterKind: status.spec_drafter_kind ?? null,
     // The spec / KV seeds share the GPU-fields reseed mechanism below: a
     // non-GGUF status leaves their loaded baselines null, so the "unseeded"
     // guard re-fires every refresh -- hold them too while a staged pick's
@@ -399,6 +378,43 @@ export function applyActiveModelStatusToStore(
       (prevState.loadedTensorParallel === null || hydratingExistingModel) && {
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
+      }),
+    // Hydration only, so a steady poll never rewrites settings the store owns.
+    // Width, verdict and request move together; a late reply can overwrite a newer one.
+    ...(seedLoadParams &&
+      hydratingExistingModel &&
+      status.mlx_kv_bits !== undefined &&
+      (status.is_mlx === true
+        ? {
+            mlxKvBits: status.mlx_kv_bits_requested ?? null,
+            loadedMlxKvBitsRequested: status.mlx_kv_bits_requested ?? null,
+            mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
+            chatTemplateOverrideReason:
+              status.chat_template_override_reason ?? null,
+            mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
+          }
+        : {
+            // The verdict retires; the editable width is dormant, not wrong.
+            loadedMlxKvBitsRequested: null,
+            mlxKvQuantReason: null,
+            chatTemplateOverrideReason: null,
+            mlxKvQuantNote: null,
+          })),
+    // Recovery for a hydration this tab never saw, and only when nothing is
+    // staged: re-seeding over an earlier edit would discard it.
+    ...(seedLoadParams &&
+      !hydratingExistingModel &&
+      status.is_mlx === true &&
+      status.mlx_kv_bits !== undefined &&
+      prevState.mlxKvBits === null &&
+      prevState.loadedMlxKvBitsRequested === null &&
+      prevState.mlxKvQuantReason === null &&
+      prevState.chatTemplateOverrideReason === null && {
+        mlxKvBits: status.mlx_kv_bits_requested ?? null,
+        loadedMlxKvBitsRequested: status.mlx_kv_bits_requested ?? null,
+        mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
+        chatTemplateOverrideReason: status.chat_template_override_reason ?? null,
+        mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
       }),
     // Baseline only, never the control: the echo is the RESOLVED count and would
     // pin a blank "server default" control. The rollback re-sends the baseline,
