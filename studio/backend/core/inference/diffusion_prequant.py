@@ -144,6 +144,48 @@ def resolve_prequant_source(
     return None
 
 
+_LOCAL_PREQUANT_SCHEME: dict[tuple[str, int, int], Optional[str]] = {}
+
+
+def local_prequant_scheme(path: str) -> Optional[str]:
+    """The scheme a local pre-quant checkpoint records, or None when it cannot be read.
+
+    ``resolve_prequant_source`` hands back a ``path`` source for ANY override, whatever scheme was
+    asked for: the file is never inspected. That is fine when the caller named the scheme, but
+    under ``auto`` the ladder picks one and an override baked for a different scheme then reads as
+    an available pre-quant. Planning skips staging the dense transformer, the loader reaches the
+    same ``metadata.scheme`` check that runs at load time, refuses the file, and with no dense
+    fallback the pick silently drops to GGUF.
+
+    Cheap despite the file size: ``mmap`` plus ``map_location = "meta"`` maps the storages instead
+    of reading them, so only the pickle structure is parsed (~1s on a 34 GB checkpoint). Cached on
+    (path, mtime, size) because the auto ladder asks once per candidate scheme. ``weights_only``
+    has to be False for the torchao subclasses, which is what the loader already does, and the
+    path is allowlisted before we get here, so this opens nothing new."""
+    import os
+
+    try:
+        real = os.path.expanduser(path)
+        st = os.stat(real)
+        key = (real, int(st.st_mtime), int(st.st_size))
+    except Exception:  # noqa: BLE001 -- unreadable is "unknown", handled by the caller
+        return None
+    if key in _LOCAL_PREQUANT_SCHEME:
+        return _LOCAL_PREQUANT_SCHEME[key]
+    scheme: Optional[str] = None
+    try:
+        import torch
+
+        obj = torch.load(real, map_location = "meta", weights_only = False, mmap = True)
+        if isinstance(obj, dict) and obj.get("format") == PREQUANT_FORMAT:
+            recorded = (obj.get("metadata") or {}).get("scheme")
+            scheme = str(recorded) if recorded else None
+    except Exception:  # noqa: BLE001 -- a checkpoint we cannot parse is "unknown", never a match
+        scheme = None
+    _LOCAL_PREQUANT_SCHEME[key] = scheme
+    return scheme
+
+
 def usable_prequant_source(
     fam: Any,
     scheme: str,
@@ -152,13 +194,22 @@ def usable_prequant_source(
     base_repo: Optional[str] = None,
 ) -> Optional[PrequantSource]:
     """``resolve_prequant_source``, but a local path counts only when the loader would
-    accept it: inside the allowlist AND present on disk. Otherwise resolves to None so
-    memory planning falls back to dense-fit checks up front, instead of the loader refusing
-    the path only after the resident pipeline was evicted and dense bf16 materialises under
-    a plan that never budgeted for it (evict-then-OOM). Hosted-repo sources are unaffected."""
+    accept it: inside the allowlist AND present on disk AND baked for THIS scheme. Otherwise
+    resolves to None so memory planning falls back to dense-fit checks up front, instead of the
+    loader refusing the path only after the resident pipeline was evicted and dense bf16
+    materialises under a plan that never budgeted for it (evict-then-OOM). Hosted-repo sources are
+    unaffected.
+
+    The scheme check matters most under ``auto``, which picks a scheme the user never named: an
+    int8 override must not read as an available fp8 pre-quant just because the file exists. A
+    checkpoint whose scheme cannot be read is treated as not usable, matching every other unknown
+    here, since the loader would reject it too."""
     src = resolve_prequant_source(fam, scheme, path_override = path_override, base_repo = base_repo)
-    if src is not None and src.kind == "path" and not local_prequant_path_ready(src.location):
-        return None
+    if src is not None and src.kind == "path":
+        if not local_prequant_path_ready(src.location):
+            return None
+        if local_prequant_scheme(src.location) != scheme:
+            return None
     return src
 
 

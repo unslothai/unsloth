@@ -148,6 +148,35 @@ def test_candidate_disk_gate_skips_when_cache_disk_low(monkeypatch):
     )
 
 
+def test_candidate_disk_gate_spares_an_already_cached_prequant(monkeypatch):
+    """A cached checkpoint downloads nothing, so the space gate has no claim on it.
+
+    The gate's own comment said a cached re-download is a no-op, but it ran regardless. That
+    discarded exactly the candidate the auto retry exists to find: the retry only ever proposes a
+    rung whose checkpoint is already cached, so on a low-disk or moved-cache install every retry
+    fell back to the GGUF despite a resident-fit local artifact.
+    """
+    import core.inference.diffusion_auto_policy as ap
+    import core.inference.diffusion_prequant as pq
+
+    _patch_selector(monkeypatch, scheme = "int8")
+    monkeypatch.setattr(pq, "usable_prequant_source", lambda *a, **k: object())
+    monkeypatch.setattr(pq, "prequant_checkpoint_cached", lambda *a, **k: True)
+    # Far too little space for the checkpoint, which is precisely the case being excused.
+    monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: 1024)
+    est = resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "auto")
+    assert isinstance(est, DenseQuantEstimate)
+    assert est.prequant is True
+
+    # Uncached on the same low disk still trips the gate: this excuses a cached artifact, not
+    # every prequant.
+    monkeypatch.setattr(pq, "prequant_checkpoint_cached", lambda *a, **k: False)
+    assert (
+        resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "auto")
+        is None
+    )
+
+
 def test_candidate_disk_gate_unprobeable_disk_passes(monkeypatch):
     # Disk probing must never sink the candidate: unprobeable (None) passes through.
     import core.inference.diffusion_auto_policy as ap

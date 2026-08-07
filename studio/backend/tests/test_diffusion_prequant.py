@@ -155,15 +155,50 @@ def test_usable_source_disallowed_path_is_none(tmp_path, monkeypatch):
 
 
 def test_usable_source_allowed_present_path_wins(tmp_path, monkeypatch):
-    # Allowlisted AND present: the override is usable and beats the hosted repo, exactly like resolve_prequant_source.
+    # Allowlisted, present AND baked for this scheme: the override is usable and beats the hosted repo, exactly like resolve_prequant_source.
     import os
 
     ckpt = tmp_path / "model.pt"
     ckpt.write_bytes(b"x")
     monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [os.path.realpath(str(tmp_path))])
+    monkeypatch.setattr(pq, "local_prequant_scheme", lambda _p: "fp8")
     fam = _fam(prequant_repos = (("fp8", "org/hosted-fp8"),))
     src = pq.usable_prequant_source(fam, "fp8", path_override = str(ckpt))
     assert src == PrequantSource(kind = "path", location = str(ckpt), filename = None)
+
+
+def test_usable_source_rejects_an_override_baked_for_another_scheme(tmp_path, monkeypatch):
+    """An int8 checkpoint must not read as an available fp8 pre-quant.
+
+    resolve_prequant_source hands back a path source for ANY override without inspecting the file,
+    so under `auto` (which picks a scheme the user never named) planning would skip staging the
+    dense transformer, the loader would hit the same metadata.scheme check it runs at load time,
+    refuse the file, and with no dense fallback the pick silently drops to GGUF.
+    """
+    import os
+
+    ckpt = tmp_path / "model.pt"
+    ckpt.write_bytes(b"x")
+    monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [os.path.realpath(str(tmp_path))])
+    monkeypatch.setattr(pq, "local_prequant_scheme", lambda _p: "int8")
+    fam = _fam(prequant_repos = (("fp8", "org/hosted-fp8"),))
+    assert pq.usable_prequant_source(fam, "fp8", path_override = str(ckpt)) is None
+    # The same file IS usable for the scheme it was actually baked for.
+    src = pq.usable_prequant_source(fam, "int8", path_override = str(ckpt))
+    assert src == PrequantSource(kind = "path", location = str(ckpt), filename = None)
+
+
+def test_an_unreadable_override_is_not_usable(tmp_path, monkeypatch):
+    # A file we cannot parse as a pre-quant checkpoint is "unknown", and the loader would reject it
+    # too, so planning must budget dense rather than assume a shortcut it will not get.
+    import os
+
+    ckpt = tmp_path / "model.pt"
+    ckpt.write_bytes(b"not a checkpoint")
+    monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [os.path.realpath(str(tmp_path))])
+    fam = _fam(prequant_repos = (("fp8", "org/hosted-fp8"),))
+    assert pq.local_prequant_scheme(str(ckpt)) is None
+    assert pq.usable_prequant_source(fam, "fp8", path_override = str(ckpt)) is None
 
 
 def test_usable_source_repo_unaffected_by_allowlist(monkeypatch):
