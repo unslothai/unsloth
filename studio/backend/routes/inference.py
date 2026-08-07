@@ -10643,9 +10643,7 @@ async def openai_chat_completions(
                                 )
 
                         _audio_stats = _audio_stats_holder.get("stats")
-                        _audio_finish = (
-                            "stop" if cancelled else _stats_finish_reason(_audio_stats)
-                        )
+                        _audio_finish = "stop" if cancelled else _stats_finish_reason(_audio_stats)
                         # The worker fills this in for both backends (MLX adds timings),
                         # so the row has counts and a speed like every other request.
                         if isinstance(_audio_stats, dict):
