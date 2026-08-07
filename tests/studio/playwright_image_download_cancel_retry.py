@@ -35,7 +35,7 @@ from playwright_image_model_footprint import (
 
 
 ART_DIR = Path(os.environ.get("PW_ART_DIR", "logs/playwright_image_cancel_retry"))
-ART_DIR.mkdir(parents=True, exist_ok=True)
+ART_DIR.mkdir(parents = True, exist_ok = True)
 EXPECT = os.environ.get("PW_EXPECT", "after").strip().lower()
 if EXPECT not in {"before", "after"}:
     raise ValueError("PW_EXPECT must be 'before' or 'after'")
@@ -85,16 +85,16 @@ def _entry(repo_id: str) -> dict[str, object]:
 
 def _open_quant(page, *, navigate: bool) -> None:
     if navigate:
-        page.goto(f"{BASE_URL}/images", wait_until="domcontentloaded")
-    trigger = page.get_by_role("button", name="Select image model")
-    trigger.wait_for(state="visible", timeout=30_000)
+        page.goto(f"{BASE_URL}/images", wait_until = "domcontentloaded")
+    trigger = page.get_by_role("button", name = "Select image model")
+    trigger.wait_for(state = "visible", timeout = 30_000)
     trigger.click()
-    page.get_by_text("FLUX.2-klein-4B-GGUF", exact=True).click()
-    gguf = page.get_by_text("GGUF", exact=True)
+    page.get_by_text("FLUX.2-klein-4B-GGUF", exact = True).click()
+    gguf = page.get_by_text("GGUF", exact = True)
     if gguf.count() == 1:
         gguf.click()
-    quant = page.locator("button").filter(has_text="Q4_K_M")
-    quant.wait_for(state="visible")
+    quant = page.locator("button").filter(has_text = "Q4_K_M")
+    quant.wait_for(state = "visible")
     assert quant.count() == 1
     quant.click()
 
@@ -187,11 +187,11 @@ def main() -> None:
         }
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
+        browser = playwright.chromium.launch(headless = True)
         context = browser.new_context(
-            viewport={"width": 1440, "height": 900},
-            reduced_motion="reduce",
-            color_scheme="dark",
+            viewport = {"width": 1440, "height": 900},
+            reduced_motion = "reduce",
+            color_scheme = "dark",
         )
         context.add_init_script(
             "localStorage.setItem('unsloth_auth_token', 'rendered-ui-test');"
@@ -213,7 +213,7 @@ def main() -> None:
 
             payload = json.loads(request.post_data or "{}")
             if path in {"/api/hub/gguf-variants", "/api/models/gguf-variants"}:
-                variants = _api_payload(path, query, full_footprint=True)
+                variants = _api_payload(path, query, full_footprint = True)
                 # This is the critical reported precondition: the picker knows the 2.6 GB
                 # checkpoint is cached, but its separate 8.2 GB requirements are absent.
                 variants["variants"][0]["downloaded"] = CHECKPOINT_CACHED
@@ -265,7 +265,7 @@ def main() -> None:
                 state["load_calls"] = int(state["load_calls"]) + 1
                 state["load_payloads"].append(payload)
                 state["load_progress_polls"] = 0
-                _json(route, _status(loaded=False))
+                _json(route, _status(loaded = False))
                 return
             if path == "/api/inference/images/load-progress":
                 if int(state["load_calls"]) == 0:
@@ -282,14 +282,16 @@ def main() -> None:
                     downloading_inline = (
                         direct_legacy_load and int(state["load_progress_polls"]) < 5
                     )
-                    ready = (
-                        not downloading_inline and int(state["load_progress_polls"]) >= 5
-                    )
+                    ready = not downloading_inline and int(state["load_progress_polls"]) >= 5
                     if ready:
                         state["loaded"] = True
                     progress = {
                         "phase": (
-                            "ready" if ready else "downloading" if downloading_inline else "finalizing"
+                            "ready"
+                            if ready
+                            else "downloading"
+                            if downloading_inline
+                            else "finalizing"
                         ),
                         "bytes_downloaded": (
                             CHECKPOINT_BYTES if downloading_inline else REQUIRED_BYTES
@@ -303,32 +305,30 @@ def main() -> None:
                 _json(route, progress)
                 return
             if path == "/api/inference/images/status":
-                _json(route, _status(loaded=bool(state["loaded"])))
+                _json(route, _status(loaded = bool(state["loaded"])))
                 return
-            _json(route, _api_payload(path, query, full_footprint=True))
+            _json(route, _api_payload(path, query, full_footprint = True))
 
         context.route("**/*", route_request)
         page = context.new_page()
         page.on("pageerror", lambda exc: page_errors.append(str(exc)))
 
-        _open_quant(page, navigate=True)
+        _open_quant(page, navigate = True)
         if EXPECT == "before":
             deadline = time.monotonic() + 20
             while int(state["load_calls"]) < 1 and time.monotonic() < deadline:
                 page.wait_for_timeout(250)
-            legacy_toast = page.locator("[data-sonner-toast]").filter(
-                has_text="Downloading model"
-            )
-            legacy_toast.wait_for(state="visible", timeout=10_000)
+            legacy_toast = page.locator("[data-sonner-toast]").filter(has_text = "Downloading model")
+            legacy_toast.wait_for(state = "visible", timeout = 10_000)
             assert "2.6 GB of 11 GB" in legacy_toast.inner_text()
             assert state["starts"] == [], state["starts"]
             assert state["plan_snapshots"] == [], state["plan_snapshots"]
             assert state["load_calls"] == 1
-            assert page.get_by_role("button", name="Cancel download").count() == 0
+            assert page.get_by_role("button", name = "Cancel download").count() == 0
             assert not page_errors, page_errors
             page.screenshot(
-                path=str(ART_DIR / "before-legacy-model-download-toast.png"),
-                full_page=True,
+                path = str(ART_DIR / "before-legacy-model-download-toast.png"),
+                full_page = True,
             )
             result = {
                 "expectation": EXPECT,
@@ -337,69 +337,57 @@ def main() -> None:
                 "load_calls_while_companion_missing": state["load_calls"],
                 "real_cancel_available": False,
             }
-            (ART_DIR / "result.json").write_text(
-                json.dumps(result, indent=2), encoding="utf-8"
-            )
+            (ART_DIR / "result.json").write_text(json.dumps(result, indent = 2), encoding = "utf-8")
             browser.close()
             print(f"PASS expected before-state; evidence: {ART_DIR.resolve()}")
             return
 
         expected_initial_starts = (
-            [COMPANION_REPO]
-            if CHECKPOINT_CACHED
-            else [REPO_ID, COMPANION_REPO]
+            [COMPANION_REPO] if CHECKPOINT_CACHED else [REPO_ID, COMPANION_REPO]
         )
         deadline = time.monotonic() + 20
         while len(state["starts"]) < len(expected_initial_starts) and time.monotonic() < deadline:
             page.wait_for_timeout(250)
         if len(state["starts"]) < len(expected_initial_starts):
             page.screenshot(
-                path=str(ART_DIR / "image-download-companion-timeout.png"), full_page=True
+                path = str(ART_DIR / "image-download-companion-timeout.png"), full_page = True
             )
-            print("companion timeout state:", json.dumps(state, default=str, indent=2))
+            print("companion timeout state:", json.dumps(state, default = str, indent = 2))
             print(page.locator("body").inner_text()[:8_000])
         assert state["starts"] == expected_initial_starts, state["starts"]
-        companion_row = page.locator(".hub-download-panel").filter(
-            has_text=COMPANION_REPO
-        )
-        companion_row.wait_for(state="visible", timeout=10_000)
+        companion_row = page.locator(".hub-download-panel").filter(has_text = COMPANION_REPO)
+        companion_row.wait_for(state = "visible", timeout = 10_000)
         panel_text = companion_row.inner_text()
         assert "Required assets" in panel_text
         assert "@diffusion" not in panel_text
         if not CHECKPOINT_CACHED:
             assert "Model file" in panel_text
-        assert page.get_by_text("Downloading model requirements", exact=False).count() == 0
-        assert page.get_by_text("Downloading model…", exact=True).count() == 0
-        assert page.get_by_text("Loading to GPU…", exact=True).count() == 0
+        assert page.get_by_text("Downloading model requirements", exact = False).count() == 0
+        assert page.get_by_text("Downloading model…", exact = True).count() == 0
+        assert page.get_by_text("Loading to GPU…", exact = True).count() == 0
         assert state["load_calls"] == 0, "missing companion bypassed staging"
-        page.screenshot(
-            path=str(ART_DIR / "image-companion-download.png"), full_page=True
-        )
+        page.screenshot(path = str(ART_DIR / "image-companion-download.png"), full_page = True)
 
-        cancel = page.get_by_role("button", name="Cancel download")
+        cancel = page.get_by_role("button", name = "Cancel download")
         assert cancel.count() == 1
         cancel.click()
-        page.get_by_text("Cancelled. Partial files kept.", exact=True).wait_for(
-            state="visible", timeout=10_000
+        page.get_by_text("Cancelled. Partial files kept.", exact = True).wait_for(
+            state = "visible", timeout = 10_000
         )
-        page.screenshot(path=str(ART_DIR / "image-download-cancelled.png"), full_page=True)
+        page.screenshot(path = str(ART_DIR / "image-download-cancelled.png"), full_page = True)
         assert state["cancelled"] is True
         assert state["load_calls"] == 0, "cancelled staging unexpectedly loaded the model"
 
-        _open_quant(page, navigate=False)
-        page.locator("[data-sonner-toast]").filter(has_text="Loading to GPU").wait_for(
-            state="visible", timeout=20_000
+        _open_quant(page, navigate = False)
+        page.locator("[data-sonner-toast]").filter(has_text = "Loading to GPU").wait_for(
+            state = "visible", timeout = 20_000
         )
-        finalizing_toast = page.locator("[data-sonner-toast]").filter(
-            has_text="Loading to GPU"
-        )
+        finalizing_toast = page.locator("[data-sonner-toast]").filter(has_text = "Loading to GPU")
         assert "100%" in finalizing_toast.inner_text()
-        page.screenshot(
-            path=str(ART_DIR / "image-download-retry-finalizing.png"), full_page=True
-        )
+        page.screenshot(path = str(ART_DIR / "image-download-retry-finalizing.png"), full_page = True)
 
-        page.get_by_text("Model loaded", exact=True).wait_for(state="visible", timeout=15_000)
-        page.screenshot(path=str(ART_DIR / "image-download-retry-loaded.png"), full_page=True)
+        page.get_by_text("Model loaded", exact = True).wait_for(state = "visible", timeout = 15_000)
+        page.screenshot(path = str(ART_DIR / "image-download-retry-loaded.png"), full_page = True)
 
         assert state["starts"] == [*expected_initial_starts, COMPANION_REPO], state["starts"]
         assert state["load_calls"] == 1
@@ -422,7 +410,7 @@ def main() -> None:
             "finalization_progress_polls": state["load_progress_polls"],
             "loaded": state["loaded"],
         }
-        (ART_DIR / "result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+        (ART_DIR / "result.json").write_text(json.dumps(result, indent = 2), encoding = "utf-8")
         browser.close()
 
     print(f"PASS rendered image cancel/retry; evidence: {ART_DIR.resolve()}")
