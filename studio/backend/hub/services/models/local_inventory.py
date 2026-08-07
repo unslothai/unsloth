@@ -626,6 +626,10 @@ def _promote_to_custom_source(model: LocalModelInfo) -> LocalModelInfo:
                 "custom",
                 partial = model.partial,
                 requires_variant = model.capabilities.requires_variant,
+                # Rebuilding from the format alone restored can_chat on rows the
+                # classifier had ruled out. The format is unchanged here, so
+                # carrying the old verdict through is idempotent.
+                can_chat_override = model.capabilities.can_chat,
             ),
         }
     )
