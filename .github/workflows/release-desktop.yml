@@ -50,6 +50,12 @@ env:
 concurrency:
   group: release-desktop-${{ github.repository }}
   cancel-in-progress: false
+  # publish-desktop-updater.yml shares this group and already sets queue: max.
+  # Without it here, the default queue: single silently cancels a *pending*
+  # release the moment a second one is dispatched or a publish lands, which
+  # looks identical to a release that was never dispatched. A queued release
+  # holds no runner, so waiting is free.
+  queue: max
 
 jobs:
   # Ask the sweeper to stand scheduled CI down while this release builds. Same
