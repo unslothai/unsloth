@@ -37,8 +37,7 @@ use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 /// Exactly one runs cleanup; the others block, so the process never exits mid-reap.
 static TERMINATION_CLEANUP: Once = Once::new();
 
-/// True when launched by the OS login autostart entry, so the frontend keeps
-/// the window hidden and the app sits in the tray until opened.
+/// Started by the OS login autostart entry, so the frontend keeps the window hidden in the tray.
 #[tauri::command]
 fn was_launched_hidden() -> bool {
     std::env::args().any(|arg| arg == "--hidden")
@@ -52,8 +51,7 @@ fn reveal_main_window(app: tauri::AppHandle) {
 #[tauri::command]
 fn get_launch_at_login(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
-    // The plugin's is_enabled only checks that the entry file exists, so an
-    // entry the user disabled from a DE startup-apps UI would read as on.
+    // is_enabled only checks the entry file exists, so a DE-disabled entry would read as on.
     if cfg!(target_os = "linux") && linux_autostart_disabled(&app) {
         return Ok(false);
     }
@@ -90,10 +88,8 @@ fn harden_autostart_entry(app: &tauri::AppHandle) {
     rewrite_macos_launch_agent(app);
 }
 
-/// auto-launch writes the Run value as `{path} {args}` unquoted; Windows
-/// parses it as a command line, so a profile path with a space ("C:\Users\
-/// Jane Doe\...") can resolve to the wrong executable. None when already
-/// quoted.
+/// auto-launch writes the Run value unquoted, so Windows parses a path with a space
+/// ("C:\Users\Jane Doe\...") into the wrong executable. None when already quoted.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn quoted_windows_run_command(value: &str) -> Option<String> {
     if value.starts_with('"') {
@@ -127,11 +123,9 @@ fn quote_windows_run_value(app: &tauri::AppHandle) {
     }
 }
 
-/// Exec is parsed as whitespace-delimited words, so a binary path is quoted
-/// when it contains reserved characters (AppImage under "~/My Apps/" breaks
-/// otherwise). `"`, `` ` ``, `$` and `\` are the characters the spec requires
-/// escaping inside quotes. A literal `%` introduces a field code, so it is
-/// escaped as `%%` independent of the quoting decision.
+/// Exec is whitespace-delimited, so a binary path holding reserved characters is quoted, with
+/// `"`, `` ` ``, `$` and `\` escaped inside the quotes. A literal `%` starts a field code, so it
+/// becomes `%%` regardless of quoting.
 fn exec_quoted(binary: &str) -> String {
     let binary = binary.replace('%', "%%");
     const RESERVED: &str = " \t\n\"'\\><~|&;$*?#()`";
@@ -141,9 +135,8 @@ fn exec_quoted(binary: &str) -> String {
     let mut quoted = String::with_capacity(binary.len() + 2);
     quoted.push('"');
     for c in binary.chars() {
-        // The string escape rule runs before the quoting rule, so the escaping
-        // backslash must itself be escaped: a value written with a single one
-        // is an invalid escape sequence and launchers drop the whole Exec.
+        // The string escape rule runs before the quoting rule, so the escaping backslash must
+        // itself be escaped; a single one is invalid and launchers drop the whole Exec.
         match c {
             '"' | '`' | '$' => {
                 quoted.push_str("\\\\");
@@ -157,11 +150,9 @@ fn exec_quoted(binary: &str) -> String {
     quoted
 }
 
-/// auto-launch writes the Exec binary unquoted and no TryExec, so quote the
-/// binary (paths with spaces would word-split) and add TryExec: XDG launchers
-/// skip an entry whose TryExec binary is missing, which leaves a removed
-/// install inert without postrm touching user homes. TryExec is a plain
-/// string field and stays unquoted.
+/// auto-launch writes the Exec binary unquoted with no TryExec. Quote it (spaces word-split) and
+/// add TryExec: launchers skip an entry whose TryExec binary is missing, so a removed install goes
+/// inert without postrm touching user homes. TryExec is a plain string field and stays unquoted.
 fn hardened_autostart_entry(entry: &str) -> Option<String> {
     if entry.lines().any(|line| line.starts_with("TryExec=")) {
         return None;
@@ -182,8 +173,7 @@ fn hardened_autostart_entry(entry: &str) -> Option<String> {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    // TryExec skips the Exec quoting rule but is still a string value, so a
-    // literal backslash has to go through the string escape rule.
+    // TryExec skips the quoting rule but is still a string, so backslashes still escape.
     Some(format!(
         "{hardened}\nTryExec={}",
         binary.replace('\\', "\\\\")
@@ -191,8 +181,7 @@ fn hardened_autostart_entry(entry: &str) -> Option<String> {
 }
 
 fn linux_autostart_entry_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
-    // auto-launch hardcodes ~/.config regardless of XDG_CONFIG_HOME; mirror it
-    // or this points at a file the plugin never writes.
+    // auto-launch hardcodes ~/.config regardless of XDG_CONFIG_HOME; mirror it or we miss the file.
     Some(
         dirs::home_dir()?
             .join(".config")
@@ -201,8 +190,7 @@ fn linux_autostart_entry_path(app: &tauri::AppHandle) -> Option<std::path::PathB
     )
 }
 
-/// Startup-application UIs disable an entry by adding Hidden=true or
-/// X-GNOME-Autostart-enabled=false instead of deleting the file.
+/// DE startup UIs disable an entry via Hidden=true or X-GNOME-Autostart-enabled=false, not deletion.
 fn autostart_entry_disabled(entry: &str) -> bool {
     entry.lines().any(|line| {
         matches!(
@@ -238,9 +226,8 @@ fn xml_escaped(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// auto-launch interpolates the executable path into plist XML unescaped, so
-/// a path containing & or < writes a malformed LaunchAgent. Same structure as
-/// the plugin's template, with the strings escaped.
+/// auto-launch interpolates the executable path into plist XML unescaped, so a path with & or <
+/// writes a malformed LaunchAgent. Same structure as the plugin's template, with strings escaped.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn macos_launch_agent_plist(label: &str, binary: &str) -> String {
     format!(
@@ -284,18 +271,15 @@ fn rewrite_macos_launch_agent(app: &tauri::AppHandle) {
     let _ = fs::write(&path, plist);
 }
 
-/// A moved or re-downloaded AppImage leaves the autostart entry pointing at
-/// the old path while `is_enabled` still reports true (it only checks that
-/// the entry file exists), so rewrite the entry to the current executable on
-/// every startup.
+/// A moved or re-downloaded AppImage leaves the entry pointing at the old path while `is_enabled`
+/// only checks the file exists, so rewrite the entry to the current executable on every startup.
 fn reconcile_autostart_entry(app: &tauri::AppHandle) {
     use tauri_plugin_autostart::ManagerExt;
     // A dev run would repoint the entry at target/debug.
     if cfg!(debug_assertions) {
         return;
     }
-    // Respect an entry the user disabled from a DE startup-apps UI; enable()
-    // would rewrite the file without the disabled marker.
+    // enable() would rewrite the file without the user's DE-set disabled marker.
     if cfg!(target_os = "linux") && linux_autostart_disabled(app) {
         return;
     }
@@ -638,8 +622,7 @@ fn setup_unix_termination_signals(app: &tauri::App) -> Result<(), Box<dyn std::e
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
-    // Hidden login starts run as an accessory app (no Dock icon); restore the
-    // regular policy whenever the window is surfaced.
+    // Hidden login starts run as an accessory app (no Dock icon); restore the regular policy.
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     if let Some(window) = app.get_webview_window("main") {
@@ -928,7 +911,7 @@ mod tests {
         let entry = "[Desktop Entry]\nExec=/home/n/My Apps/Unsloth.AppImage --hidden\nTerminal=false";
         let hardened = hardened_autostart_entry(entry).expect("guard must be added");
         assert!(hardened.contains("Exec=\"/home/n/My Apps/Unsloth.AppImage\" --hidden\n"));
-        // TryExec is a plain string field, so the path stays unquoted there.
+        // TryExec is a plain string field, so the path stays unquoted.
         assert!(hardened.ends_with("\nTryExec=/home/n/My Apps/Unsloth.AppImage"));
     }
 
@@ -940,8 +923,7 @@ mod tests {
         assert!(hardened.contains(r#"Exec="/opt/a\\"b\\$c/app" --hidden"#));
     }
 
-    /// A single escaping backslash is an invalid string escape, so launchers
-    /// discard the Exec value and the entry silently never starts.
+    /// A single escaping backslash is an invalid escape, so launchers discard the whole Exec.
     #[test]
     fn autostart_hardening_doubles_the_escaping_backslash() {
         let entry = "[Desktop Entry]\nExec=/opt/a b`c$d/app --hidden";
@@ -974,7 +956,7 @@ mod tests {
         let entry = "[Desktop Entry]\nExec=/home/n/Unsloth%20Studio.AppImage --hidden";
         let hardened = hardened_autostart_entry(entry).expect("guard must be added");
         assert!(hardened.contains("Exec=/home/n/Unsloth%%20Studio.AppImage --hidden\n"));
-        // TryExec is a plain string field, so the raw path stays there.
+        // TryExec is a plain string field, so the raw path stays.
         assert!(hardened.ends_with("\nTryExec=/home/n/Unsloth%20Studio.AppImage"));
     }
 

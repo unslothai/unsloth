@@ -68,8 +68,7 @@ function logicalPerCssPx(monitorScale: number): number {
   return Number.isFinite(ratio) && ratio > 1 ? ratio : 1;
 }
 
-// Autostart launches pass --hidden: layout still applies, but the window stays
-// hidden in the tray until the user opens it.
+// Autostart passes --hidden: layout still applies, but the window stays in the tray.
 let launchedHidden: Promise<boolean> | null = null;
 function wasLaunchedHidden(): Promise<boolean> {
   launchedHidden ??= import("@tauri-apps/api/core")
