@@ -2594,8 +2594,7 @@ class _UnavailableConversionPatternMap(dict):
         name = str(key).lower()
         if name in _PEFT_MOE_CONVERSION_PATTERNS:
             return True
-        if name in _PEFT_MOE_NAMED_NOT_FUSED or \
-            name in _PEFT_MOE_NAMED_NOT_CONVERTED:
+        if name in _PEFT_MOE_NAMED_NOT_FUSED or name in _PEFT_MOE_NAMED_NOT_CONVERTED:
             return False
         return any(hint in name for hint in self._MOE_HINTS)
 
