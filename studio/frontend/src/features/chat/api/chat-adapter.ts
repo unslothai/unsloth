@@ -1902,7 +1902,10 @@ const AUTO_LOAD_LOCAL_SOURCES: ReadonlySet<string> = new Set([
 function isAutoLoadableLocalRow(row: LocalModelInfo): boolean {
   return (
     AUTO_LOAD_LOCAL_SOURCES.has(row.source) &&
-    row.capabilities?.can_chat === true &&
+    // Absent capabilities means the backend did not classify, not "not chat":
+    // requiring true skipped the row and fell through to downloading the
+    // default. Same rule the cached rows use; an explicit false still excludes.
+    row.capabilities?.can_chat !== false &&
     row.partial !== true &&
     row.model_format !== "adapter" &&
     row.model_format !== "checkpoint" &&

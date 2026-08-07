@@ -232,11 +232,23 @@ _ENCODER_ONLY_MODEL_TYPES = frozenset(
 )
 
 
+# Real configs are a few KB. The cap keeps a huge or hostile file from being
+# read into memory during a scan.
+_MAX_LOCAL_JSON_BYTES = 1 << 20
+
+
 def _read_local_json_object(path: Path) -> dict:
+    """Config metadata, or ``{}``. Never raises: this runs per row in a scan, so
+    one unreadable file must not fail the whole inventory."""
     try:
+        # is_file() also skips a FIFO, whose read would block the scan forever.
+        if not path.is_file() or path.stat().st_size > _MAX_LOCAL_JSON_BYTES:
+            return {}
         data = json.loads(path.read_text(encoding = "utf-8"))
         return data if isinstance(data, dict) else {}
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+    # ValueError covers JSONDecodeError and UnicodeDecodeError; deeply nested
+    # JSON raises RecursionError, which is neither.
+    except (ValueError, OSError, RecursionError):
         return {}
 
 

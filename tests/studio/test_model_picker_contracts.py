@@ -2430,7 +2430,10 @@ def test_autoload_local_rows_follow_the_picker_policy():
     policy = src.split("function isAutoLoadableLocalRow", 1)[1]
     policy = policy.split("\n}", 1)[0]
     assert "AUTO_LOAD_LOCAL_SOURCES.has(row.source)" in policy
-    assert "row.capabilities?.can_chat === true" in policy
+    # Not `=== true`: normalizeCapabilities falls back to the format capability
+    # when the backend sends no can_chat, so the picker shows such a row. `===
+    # true` skipped it and fell through to downloading the default instead.
+    assert "row.capabilities?.can_chat !== false" in policy
     assert "row.partial !== true" in policy
     # An adapter resolves its base model, which for an uncached base is a Hub
     # fetch; a scan-folder checkpoint is a pickle with no Hub security scan.

@@ -4622,3 +4622,43 @@ def test_bare_vision_and_audio_backbones_are_not_chat_capable(tmp_path, config):
     them away, and they are small enough to be tried before a chat model."""
     path = _write_local_model(tmp_path, "row", config)
     assert model_common._local_transformers_can_chat(path) is False
+
+
+def test_unreadable_config_never_fails_the_scan(tmp_path):
+    """The classifier runs per row, so one bad config.json must classify as
+    unknown, not take the inventory request down with it. Deep nesting raises
+    RecursionError, which is neither JSONDecodeError nor OSError."""
+    cases = {
+        "deep": "[" * 60000 + "]" * 60000,
+        "truncated": '{"architectures": ["Llam',
+        "not_an_object": '["a", "b"]',
+        "empty": "",
+    }
+    for name, body in cases.items():
+        path = tmp_path / name
+        path.mkdir()
+        (path / "config.json").write_text(body, encoding = "utf-8")
+        assert model_common._local_transformers_can_chat(path) is None, name
+
+
+def test_oversized_config_is_skipped_rather_than_read(tmp_path):
+    path = tmp_path / "huge"
+    path.mkdir()
+    (path / "config.json").write_text(
+        '{"architectures": ["LlamaForCausalLM"], "pad": "'
+        + "a" * (model_common._MAX_LOCAL_JSON_BYTES + 1)
+        + '"}',
+        encoding = "utf-8",
+    )
+    assert model_common._local_transformers_can_chat(path) is None
+
+
+def test_a_fifo_named_config_json_does_not_block_the_scan(tmp_path):
+    """read_text() on a FIFO with no writer blocks forever, hanging the scan."""
+    os = pytest.importorskip("os")
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("no mkfifo on this platform")
+    path = tmp_path / "fifo"
+    path.mkdir()
+    os.mkfifo(path / "config.json")
+    assert model_common._local_transformers_can_chat(path) is None
