@@ -187,7 +187,13 @@ def test_dropped_parallel_call_unlinks_openai_response_and_keeps_gemini_parts(mo
         [
             [
                 "data: " + json.dumps(event),
-                _chunk(delta = {"tool_calls": calls, "reasoning_details": reasoning, "reasoning_content": "think"}),
+                _chunk(
+                    delta = {
+                        "tool_calls": calls,
+                        "reasoning_details": reasoning,
+                        "reasoning_content": "think",
+                    }
+                ),
                 _chunk(delta = {}, finish = "tool_calls"),
                 "data: [DONE]",
             ],
