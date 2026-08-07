@@ -444,7 +444,11 @@ class TestRouteCompleteness:
                     if isinstance(target, ast.Name) and target.id == name:
                         # AnnAssign may be a bare declaration with no value; AugAssign rebinds to
                         # something derived, never the helper call itself.
-                        value = child.value if isinstance(child, (ast.AnnAssign, ast.NamedExpr)) else None
+                        value = (
+                            child.value
+                            if isinstance(child, (ast.AnnAssign, ast.NamedExpr))
+                            else None
+                        )
                         found.append((child, value))
                         handled.add(id(target))
                 elif (
