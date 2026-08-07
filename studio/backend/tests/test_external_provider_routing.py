@@ -15,8 +15,8 @@ from routes import inference as inference_mod
 TOOL = {
     "type": "function",
     "function": {
-        "name": "web_search",
-        "description": "Search locally.",
+        "name": "search_knowledge_base",
+        "description": "Search attached documents.",
         "parameters": {"type": "object", "properties": {}},
     },
 }
@@ -113,7 +113,7 @@ def _run(payload):
 def test_saved_opt_in_owns_routing_and_empty_selection_falls_through(monkeypatch, selected, path):
     captured = _configure(monkeypatch, selected)
 
-    _run(_payload())
+    _run(_payload(rag_scope = {"collection_id": "scope"}))
 
     assert captured["client"] == {
         "provider_type": "custom",
@@ -123,6 +123,7 @@ def test_saved_opt_in_owns_routing_and_empty_selection_falls_through(monkeypatch
     assert path in captured
     if path == "managed":
         assert captured["managed"]["tools"] == [TOOL]
+        assert "Do not answer from memory" in captured["managed"]["messages"][0]["content"]
         assert captured["tracker"]["track_active_generation"] is False
         with pytest.raises(inference_mod.HTTPException):
             _run(_payload(stream = False))

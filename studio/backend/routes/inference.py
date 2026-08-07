@@ -9062,6 +9062,11 @@ async def _proxy_to_external_provider(
             tools = _external_studio_tools,
             model_name = model,
         )
+        _external_nudge = _apply_rag_nudge(
+            _external_nudge,
+            _external_studio_tools,
+            rag_scope = payload.rag_scope,
+        )
         if _external_nudge:
             chat_messages = _set_or_prepend_system_message(chat_messages, _external_nudge)
 
