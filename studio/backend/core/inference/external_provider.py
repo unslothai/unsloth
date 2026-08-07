@@ -5957,9 +5957,7 @@ class ExternalProviderClient:
                                             current_openai_response_id
                                         )
                                     if openai_continuation:
-                                        tool_call["extra_content"] = {
-                                            "openai": openai_continuation
-                                        }
+                                        tool_call["extra_content"] = {"openai": openai_continuation}
                                     yield (
                                         "data: "
                                         + _json.dumps(

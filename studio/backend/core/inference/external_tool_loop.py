@@ -134,9 +134,7 @@ def _collect_round_delta(
                 extra_content.get("google") if isinstance(extra_content, Mapping) else None
             )
             thought_signature = (
-                google_extra.get("thought_signature")
-                if isinstance(google_extra, Mapping)
-                else None
+                google_extra.get("thought_signature") if isinstance(google_extra, Mapping) else None
             )
             if (
                 isinstance(thought_signature, str)

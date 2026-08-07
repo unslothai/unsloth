@@ -4479,9 +4479,7 @@ def test_anthropic_replays_hosted_blocks_before_managed_tool_call(monkeypatch):
                             "id": "call_local",
                             "type": "function",
                             "function": {"name": "inspect_local", "arguments": "{}"},
-                            "extra_content": {
-                                "anthropic": {"hosted_blocks": [hosted_block]}
-                            },
+                            "extra_content": {"anthropic": {"hosted_blocks": [hosted_block]}},
                         }
                     ],
                 },
@@ -4665,9 +4663,7 @@ def test_openai_responses_uses_previous_response_for_managed_tool_continuation(m
                             "id": "call_local",
                             "type": "function",
                             "function": {"name": "inspect_local", "arguments": "{}"},
-                            "extra_content": {
-                                "openai": {"previous_response_id": "resp_hosted"}
-                            },
+                            "extra_content": {"openai": {"previous_response_id": "resp_hosted"}},
                         }
                     ],
                 },

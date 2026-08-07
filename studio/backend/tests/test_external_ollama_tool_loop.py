@@ -390,9 +390,7 @@ def test_gemini_signed_text_survives_tool_continuation(monkeypatch):
 
     assistant = client.calls[1]["messages"][-2]
     assert assistant["content"] == "I will search."
-    assert assistant["extra_content"] == {
-        "google": {"thought_signature": "SIG-TEXT"}
-    }
+    assert assistant["extra_content"] == {"google": {"thought_signature": "SIG-TEXT"}}
 
 
 def test_anthropic_thinking_metadata_is_private_and_replayed(monkeypatch):
