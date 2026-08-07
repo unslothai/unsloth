@@ -45,39 +45,28 @@ function copyWithExecCommand(text: string): boolean {
   }
 }
 
-/**
- * Start the async Clipboard API write without awaiting it. The spec reads transient
- * activation when writeText is *called*, so arming it here keeps the result usable
- * after a later await. Null when the API is missing (insecure context).
- */
-function startWebClipboardWrite(text: string): Promise<boolean> | null {
-  if (typeof navigator?.clipboard?.writeText !== "function") return null;
-  return navigator.clipboard.writeText(text).then(
-    () => true,
-    (error) => {
-      console.warn("Async clipboard API failed, falling back to execCommand", error);
-      return false;
-    },
-  );
-}
-
 export async function copyToClipboard(text: string): Promise<boolean> {
   if (typeof text !== "string" || text.length === 0) {
     return false;
   }
 
-  // Armed before any await, so it still carries the click's activation even when the
-  // Tauri attempt below yields first and then fails.
-  const webWrite = startWebClipboardWrite(text);
-
-  // Native IPC has no activation requirement, which is the whole point: callers that
-  // await something before copying have already lost the gesture.
-  const nativeOk = isTauri ? await copyWithTauriClipboard(text) : false;
-  // Always settle the armed write, even once native has succeeded: returning with it
-  // still in flight would let it land after the user's next copy and clobber it.
-  const webOk = webWrite ? await webWrite : false;
-  if (nativeOk || webOk) {
+  // Exactly one writer runs per call. Pre-arming the web write would keep the click's
+  // activation for a native failure, but it also leaves a second write in flight that a
+  // rapid second copy can lose a race to, and a silently stale clipboard is worse than a
+  // visible failure. Gated synchronously, so a browser still writes inside the gesture.
+  if (isTauri && (await copyWithTauriClipboard(text))) {
     return true;
+  }
+
+  // Primary: async Clipboard API
+  if (typeof navigator?.clipboard?.writeText === "function") {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (error) {
+      console.warn("Async clipboard API failed, falling back to execCommand", error);
+      // Rejected (NotAllowedError, insecure context, etc.); fall through.
+    }
   }
 
   // Fallback: execCommand (works in Safari when called during user gesture)
