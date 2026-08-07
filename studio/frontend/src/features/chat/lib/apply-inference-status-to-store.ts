@@ -112,7 +112,7 @@ function ensureActiveModelInStoreList(
   }
   const summary: ChatModelSummary = {
     id: checkpointId,
-    // active_model is already the clean public id; the leaf matches the catalog rows,
+    // active_model is already the clean public id; its leaf matches the catalog rows,
     // and the fallback keeps a snapshot path out of the trigger.
     name: modelDisplayName(status.active_model ?? checkpointId),
     isVision: status.is_vision ?? false,

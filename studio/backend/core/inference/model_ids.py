@@ -80,9 +80,8 @@ def public_model_id(identifier: Optional[str]) -> Optional[str]:
 
 
 def _is_hub_repo_id(identifier: str) -> bool:
-    """``org/name``, including the ``org/name.gguf`` repos that exist on the Hub (e.g.
-    lex-au/Orpheus-3b-FT-Q8_0.gguf). Same rule as ``_is_direct_gguf_file_ref``: a file
-    reference carries a repo id plus a filename, so two or more slashes."""
+    """``org/name``, including Hub repos named ``org/name.gguf``. A file reference
+    carries a repo id plus a filename, so two or more slashes."""
     if identifier.count("/") != 1:
         return False
     stem = identifier[: -len(_GGUF_SUFFIX)] if identifier.lower().endswith(_GGUF_SUFFIX) else identifier
@@ -92,10 +91,9 @@ def _is_hub_repo_id(identifier: str) -> bool:
 def display_model_name(identifier: Optional[str]) -> Optional[str]:
     """The short label a UI should show for *identifier*.
 
-    ``public_model_id`` then its trailing segment, so a HF cache snapshot reads as
-    ``X-GGUF`` and not the commit sha its directory is named after. Splitting the raw
-    identifier instead leaks the host layout on Windows, where ``C:\\Users\\...`` has
-    no ``/`` to split on and the whole path becomes the label.
+    Trailing segment of the public id, so a HF cache snapshot reads as ``X-GGUF`` and
+    not its commit sha. Splitting the raw identifier instead leaks the host layout on
+    Windows, where ``C:\\Users\\...`` has no ``/`` to split on.
     """
     if not identifier:
         return identifier

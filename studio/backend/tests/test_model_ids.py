@@ -87,8 +87,8 @@ def test_display_model_name_uses_the_repo_leaf_not_the_snapshot_sha():
         "/snapshots/57326b941c4603e24d1a5e71c22520c66e086eb8"
     )
     assert display_model_name(posix) == "DeepSeek-V4-Flash-0731-GGUF"
-    # The reported case: a Windows cache path has no "/" to split on, so a raw
-    # rsplit would label the model with the whole home directory.
+    # Reported case: a Windows cache path has no "/", so a raw rsplit labels the
+    # model with the whole home directory.
     windows = (
         "C:\\Users\\An\\.cache\\huggingface\\hub"
         "\\models--unsloth--DeepSeek-V4-Flash-0731-GGUF"
@@ -112,11 +112,10 @@ def test_display_model_name_leaves_ordinary_ids_alone():
 def test_display_model_name_keeps_gguf_on_hub_repo_ids():
     from core.inference.model_ids import display_model_name
 
-    # Real Hub repos are named this way (lex-au/Orpheus-3b-FT-Q8_0.gguf); the suffix is
-    # part of the repo leaf, not a file extension to strip.
+    # A real Hub repo: the suffix is part of the leaf, not an extension to strip.
     assert display_model_name("lex-au/Orpheus-3b-FT-Q8_0.gguf") == "Orpheus-3b-FT-Q8_0.gguf"
     # A file inside a repo (>= 2 slashes) is still a file reference.
     assert display_model_name("lex-au/Orpheus-3b-FT/Q8_0.gguf") == "Q8_0"
-    # And an anchored one-slash path is a path, not a repo id.
+    # An anchored one-slash id is a path, not a repo id.
     assert display_model_name("/srv/Qwen3-Q4.gguf") == "Qwen3-Q4"
     assert display_model_name("C:\\models\\Qwen3-Q4.gguf") == "Qwen3-Q4"

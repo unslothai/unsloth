@@ -238,7 +238,7 @@ export function syncModelCapabilities(
         id: modelId,
         // Labelled like the catalog entry that replaces this one on the next
         // /api/models/list. /status has no display_name, and an older backend echoed
-        // the identifier it loaded from: for a cached GGUF, a host path in the bar.
+        // the load identifier: for a cached GGUF, a host path in the bar.
         name: modelDisplayName(resp.display_name || modelId),
         isLora: Boolean(resp.is_lora),
         ...synced,

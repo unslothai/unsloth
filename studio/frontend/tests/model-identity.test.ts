@@ -424,8 +424,8 @@ test("preserves existing platform and Hub identity rules", () => {
 
 
 test("labels a model id with the repo leaf, never the raw path", () => {
-  // The reported case: a Windows HF cache path holds no "/", so splitting the raw id
-  // would put the whole home directory in the chat model bar.
+  // Reported case: a Windows HF cache path holds no "/", so splitting the raw id
+  // puts the whole home directory in the chat model bar.
   assert.equal(
     modelDisplayName(
       String.raw`C:\Users\An\.cache\huggingface\hub\models--unsloth--DeepSeek-V4-Flash-0731-GGUF\snapshots\57326b941c4603e24d1a5e71c22520c66e086eb8`,
@@ -448,8 +448,8 @@ test("labels a model id with the repo leaf, never the raw path", () => {
 });
 
 test("keeps .gguf on Hub repo ids, which are not file paths", () => {
-  // lex-au/Orpheus-3b-FT-Q8_0.gguf and friends are real repos; the suffix is part of
-  // the leaf. Only a >= 2-slash id names a file inside a repo.
+  // These are real repos; the suffix is part of the leaf. Only a >= 2-slash id
+  // names a file inside a repo.
   assert.equal(
     modelDisplayName("lex-au/Orpheus-3b-FT-Q8_0.gguf"),
     "Orpheus-3b-FT-Q8_0.gguf",

@@ -3,10 +3,9 @@
 
 """GET /api/models/list must label the resident GGUF the way the chat model bar reads it.
 
-The bar renders the ``name`` of the models[] entry whose ``id`` equals the client's
-``params.checkpoint``, which for a GGUF out of the HF cache is the snapshot directory.
-Naming that entry by splitting the raw identifier on "/" showed the commit sha on POSIX
-and, on Windows (backslashes, nothing to split on), the entire home directory.
+The bar renders the ``name`` of the models[] entry whose ``id`` is the client's
+``params.checkpoint``, which for a cached GGUF is the snapshot directory. Splitting that
+raw identifier on "/" showed the commit sha on POSIX and the whole home dir on Windows.
 """
 
 import asyncio
@@ -58,8 +57,8 @@ def test_hf_cache_snapshot_is_labelled_by_its_repo_leaf(monkeypatch):
 
         assert len(entries) == 1
         entry = entries[0]
-        # The id stays the loadable identifier the client holds as its checkpoint, so the
-        # picker still finds this entry; only the label is cleaned up.
+        # The id stays the checkpoint the client holds, so the picker still finds
+        # this entry; only the label is cleaned up.
         assert entry.id == snapshot
         assert entry.name == "DeepSeek-V4-Flash-0731-GGUF"
         assert entry.is_gguf is True
@@ -75,8 +74,8 @@ def test_standalone_gguf_is_labelled_by_its_file_stem(monkeypatch):
 
 def test_native_lease_keeps_the_path_shaped_id_agents_tab_filters_on(monkeypatch):
     # agents-tab's discoverGgufModels drops path-shaped ids so a native lease's label,
-    # which cannot reload the file, never becomes a named model in a --model command.
-    # Only the label is cleaned here.
+    # which cannot reload the file, never lands in a --model command. Only the label
+    # is cleaned here.
     entries = _list_models(
         monkeypatch,
         _FakeLlama(
@@ -107,7 +106,7 @@ def test_plain_repo_ids_are_unchanged(monkeypatch):
 
 def test_already_resident_load_response_never_echoes_the_snapshot_path(monkeypatch):
     # The already-loaded fast path leaves display_name unset, so the response fell back
-    # to the identifier the GGUF loaded from -- the client then labels the model with it.
+    # to the identifier the GGUF loaded from, and the client labelled the model with it.
     import routes.inference as inf_route
 
     monkeypatch.setattr(
@@ -123,7 +122,7 @@ def test_already_resident_load_response_never_echoes_the_snapshot_path(monkeypat
     )
 
     assert resp.display_name == "DeepSeek-V4-Flash-0731-GGUF"
-    # The loadable identifier itself is unchanged; only the label is cleaned up.
+    # The loadable identifier itself is unchanged.
     assert resp.model == _POSIX_SNAPSHOT
 
 
@@ -145,8 +144,8 @@ def test_an_explicit_display_name_still_wins(monkeypatch):
 
 
 def test_a_hub_repo_id_ending_in_gguf_keeps_its_suffix(monkeypatch):
-    # lex-au/Orpheus-3b-FT-Q8_0.gguf and friends are real repo ids, not file paths, so
-    # the label is the repo leaf whole; only a >= 2-slash id names a file inside a repo.
+    # These are real repo ids, not file paths, so the label is the whole repo leaf;
+    # only a >= 2-slash id names a file inside a repo.
     class _Backend(_FakeUnsloth):
         default_models = ["lex-au/Orpheus-3b-FT-Q8_0.gguf"]
 

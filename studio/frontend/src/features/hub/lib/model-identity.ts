@@ -128,8 +128,8 @@ export function publicModelId(identifier: string): string {
   return name.replace(GGUF_SUFFIX_RE, "") || trimmed;
 }
 
-/** `org/name`, including the `org/name.gguf` repos that exist on the Hub. A file
-* reference carries a repo id plus a filename, so two or more slashes. */
+/** `org/name`, including Hub repos named `org/name.gguf`. A file reference carries a
+* repo id plus a filename, so two or more slashes. */
 function isHubRepoId(identifier: string): boolean {
   if (identifier.split("/").length - 1 !== 1) {
     return false;
@@ -138,11 +138,10 @@ function isHubRepoId(identifier: string): boolean {
 }
 
 /**
-* The short label to show for a model id, for ids with no catalog entry to take a name
-* from. Mirrors ``display_model_name`` in core/inference/model_ids.py: the public id's
-* trailing segment, so a repo id and the HF cache snapshot it loads from both read as
-* ``DeepSeek-V4-Flash-0731-GGUF``. Splitting the raw id leaks the host layout on Windows,
-* where ``C:\\Users\\...`` holds no ``/`` to split on.
+* The short label for a model id with no catalog entry to take a name from. Mirrors
+* ``display_model_name`` in core/inference/model_ids.py: the public id's trailing
+* segment, so a repo id and the HF cache snapshot it loads from read alike. Splitting
+* the raw id leaks the host layout on Windows, where ``C:\\Users\\...`` holds no ``/``.
 */
 export function modelDisplayName(identifier: string): string {
   const trimmed = identifier.trim();

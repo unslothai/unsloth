@@ -757,8 +757,8 @@ export function ModelSelector({
   const currentModel = useMemo(() => {
     if (!selected) return undefined;
     const found = optionById.get(selected);
-    // No catalog entry yet (the window right after a refresh), or never listed. The
-    // checkpoint for a cached GGUF is its snapshot path, so raw it shows a home dir.
+    // No catalog entry yet (just after a refresh) or never listed. A cached GGUF's
+    // checkpoint is its snapshot path, so shown raw it reads as a home dir.
     const fallbackName = modelDisplayName(selected);
     if (activeGgufVariant) {
       const desc = `GGUF · ${activeGgufVariant}`;
