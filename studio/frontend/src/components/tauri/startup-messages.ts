@@ -10,20 +10,20 @@ export interface InstallProgressMessage {
 
 const INSTALL_PHASE_MESSAGES: readonly InstallProgressMessage[] = [
   {
-    title: "Installing Unsloth...",
-    subtitle: "Preparing your workspace...",
+    title: "Preparing your workspace...",
+    subtitle: "Checking what this computer needs.",
   },
   {
-    title: "Installing Unsloth...",
-    subtitle: "Downloading required components...",
+    title: "Downloading required components...",
+    subtitle: "Creating your local environment.",
   },
   {
     title: "Installing Unsloth...",
     subtitle: "Setting up local AI tools...",
   },
   {
-    title: "Installing Unsloth...",
-    subtitle: "Finishing setup...",
+    title: "Finishing setup...",
+    subtitle: "Getting everything ready.",
   },
 ];
 
@@ -41,13 +41,10 @@ function normalizedRotationIndex(index: number, length: number): number {
 export function installProgressMessage(
   currentStepIndex: number,
   rotationIndex = 0,
-  progressDetail?: string | null,
 ): InstallProgressMessage {
   const phaseIndex =
     currentStepIndex < 2 ? 0 : currentStepIndex < 4 ? 1 : currentStepIndex < 6 ? 2 : 3;
   const phaseMessage = INSTALL_PHASE_MESSAGES[phaseIndex];
-  const liveSubtitle = progressDetail?.trim();
-  if (liveSubtitle) return { title: phaseMessage.title, subtitle: liveSubtitle };
   if (rotationIndex === 0) return phaseMessage;
 
   return {

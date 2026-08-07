@@ -199,7 +199,7 @@ function InstallingContent({
   progressDetail: string | null;
 }) {
   const messageIndex = useRotatingMessageIndex();
-  const message = installProgressMessage(currentStepIndex, messageIndex, progressDetail);
+  const message = installProgressMessage(currentStepIndex, messageIndex);
   const detailLines = progressDetail
     ? [...logs, progressDetail]
     : logs;

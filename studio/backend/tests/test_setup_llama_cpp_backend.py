@@ -126,14 +126,6 @@ def test_arm64_recovery_uses_transient_cpu_fallback():
     assert "--force-cpu" not in block
 
 
-def test_tauri_reports_llama_source_build_progress():
-    text = _SETUP_SH.read_text(encoding = "utf-8")
-    build = text.index('substep "$_BUILD_DESC..."')
-    nearby = text[build - 300 : build + 300]
-    assert 'tauri_progress "Building llama.cpp locally' in nearby
-    assert "this can take a few minutes" in nearby
-
-
 def test_explicit_vulkan_prebuilt_failure_does_not_change_backend():
     sh = _SETUP_SH.read_text(encoding = "utf-8")
     failure = sh.index('step "llama.cpp" "prebuilt install failed"')

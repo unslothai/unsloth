@@ -68,11 +68,6 @@ fi
 # Usage: substep <message> [color]         (color defaults to C_DIM)
 step()    { printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
 substep() { printf "  %-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
-tauri_progress() {
-    case "${UNSLOTH_TAURI_MODE:-0}" in
-        1|true) printf '[TAURI:PROGRESS] %s\n' "$1" ;;
-    esac
-}
 
 setup_fail() {
     local exit_code=$1
@@ -2519,7 +2514,6 @@ else
             fi
 
             substep "$_BUILD_DESC..."
-            tauri_progress "Building llama.cpp locally; this can take a few minutes..."
 
             NCPU=$(_llama_build_jobs)
             verbose_substep "parallel jobs: $NCPU (RAM-capped; UNSLOTH_LLAMA_BUILD_JOBS overrides)"

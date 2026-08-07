@@ -29,30 +29,22 @@ test("startup messages follow backend phases without regressing", () => {
 });
 
 test("installer progress rotates reassurance without changing actual phases", () => {
-  const expectedSubtitles = new Map([
+  const expectedTitles = new Map([
     [-1, "Preparing your workspace..."],
     [2, "Downloading required components..."],
-    [4, "Setting up local AI tools..."],
+    [4, "Installing Unsloth..."],
     [6, "Finishing setup..."],
   ]);
 
-  for (const [step, expectedSubtitle] of expectedSubtitles) {
+  for (const [step, expectedTitle] of expectedTitles) {
     const subtitles = new Set<string>();
     for (let rotation = 0; rotation < 20; rotation += 1) {
       const message = installProgressMessage(step, rotation);
-      assert.equal(message.title, "Installing Unsloth...");
+      assert.equal(message.title, expectedTitle);
       subtitles.add(message.subtitle);
     }
-    assert.ok(subtitles.has(expectedSubtitle));
     assert.ok(subtitles.size > 1, `step ${step} should rotate reassurance copy`);
   }
-});
-
-test("installer progress shows live detail over generic phase copy", () => {
-  assert.equal(
-    installProgressMessage(6, 3, "Building llama.cpp for Apple Silicon... ").subtitle,
-    "Building llama.cpp for Apple Silicon...",
-  );
 });
 
 test("startup copy rotates while preserving backend phase transitions", () => {
