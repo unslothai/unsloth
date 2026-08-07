@@ -250,6 +250,7 @@ def _fake_library_host(tmp_path, ldconfig_lines = ()):
         "#!/bin/sh\n"
         'case "$1" in\n'
         "  */usr/bin/unsloth-studio) exit 0 ;;\n"
+        '  ./*) [ -e "$1" ] && exit 0 || exit 1 ;;\n'
         "  " + str(tmp_path) + '/*) [ -e "$1" ] && exit 0 || exit 1 ;;\n'
         "  *) exit 1 ;;\n"
         "esac\n",
@@ -264,13 +265,14 @@ def _fake_library_host(tmp_path, ldconfig_lines = ()):
     return fake_bin
 
 
-def _run_apprun(app_dir, fake_bin, library_dir):
+def _run_apprun(app_dir, fake_bin, library_path, *, path = None):
     return subprocess.run(
         [app_dir / "AppRun", "-c", "exit 0"],
         env = {
             **os.environ,
-            "LD_LIBRARY_PATH": str(library_dir),
-            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "APPDIR": str(app_dir),
+            "LD_LIBRARY_PATH": str(library_path),
+            "PATH": path or f"{fake_bin}:{os.environ['PATH']}",
         },
         check = False,
         capture_output = True,
@@ -307,6 +309,58 @@ def test_thin_appimage_accepts_every_tray_library_name_the_loader_tries(tmp_path
         result = _run_apprun(app_dir, fake_bin, library_dir)
 
         assert result.returncode == 0, f"{library_name}: {result.stderr}"
+
+
+def test_thin_appimage_matches_loader_library_path_separators_and_empty_components(tmp_path):
+    _, app_dir, _ = _build_fake_appimage(tmp_path)
+    fake_bin = _fake_library_host(tmp_path)
+    library_dir = tmp_path / "host-libraries"
+    library_dir.mkdir()
+    (library_dir / "libayatana-appindicator3.so.1").symlink_to("/bin/sh")
+
+    for library_path in (
+        f"{tmp_path / 'missing'};{library_dir}",
+        f"{tmp_path / 'missing'}::{library_dir}",
+        f"{tmp_path / 'missing'}:",
+    ):
+        if library_path.endswith(":"):
+            working_dir = tmp_path / "working-directory"
+            working_dir.mkdir()
+            (working_dir / "libayatana-appindicator3.so.1").symlink_to("/bin/sh")
+        else:
+            working_dir = tmp_path
+
+        result = subprocess.run(
+            [app_dir / "AppRun", "-c", "exit 0"],
+            cwd = working_dir,
+            env = {
+                **os.environ,
+                "APPDIR": str(app_dir),
+                "LD_LIBRARY_PATH": str(library_path),
+                "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            },
+            check = False,
+            capture_output = True,
+            text = True,
+        )
+
+        assert result.returncode == 0, f"{library_path}: {result.stderr}"
+
+
+def test_thin_appimage_accepts_a_readable_tray_library_when_ldd_is_unavailable(tmp_path):
+    _, app_dir, _ = _build_fake_appimage(tmp_path)
+    fake_bin = _fake_library_host(tmp_path)
+    (fake_bin / "ldd").unlink()
+    sed = fake_bin / "sed"
+    sed.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
+    sed.chmod(0o755)
+    library_dir = tmp_path / "host-libraries"
+    library_dir.mkdir()
+    (library_dir / "libayatana-appindicator3.so.1").symlink_to("/bin/sh")
+
+    result = _run_apprun(app_dir, fake_bin, library_dir, path = str(fake_bin))
+
+    assert result.returncode == 0, result.stderr
 
 
 # The cache is how a library outside LD_LIBRARY_PATH and the standard

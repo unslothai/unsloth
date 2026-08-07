@@ -143,19 +143,24 @@ appindicator_names="$appindicator_names libayatana-appindicator3.so libappindica
 
 appindicator_is_usable() {
   [ -r "$1" ] || return 1
+  # The regular dependency guard above already treats an unavailable ldd as an
+  # inconclusive check. Do the same for this dynamically loaded dependency:
+  # the loader, not ldd, determines whether a readable candidate can load.
+  command -v ldd >/dev/null 2>&1 || return 0
   appindicator_ldd=$(ldd "$1" 2>&1) || return 1
   ! printf '%s\n' "$appindicator_ldd" | grep -q 'not found'
 }
 
 find_appindicator() {
-  if [ -n "${LD_LIBRARY_PATH:-}" ]; then
-    # Split on ':' up front so the name loop below still splits on spaces.
-    # These are the function's own positional parameters, not the script's.
-    saved_ifs=$IFS
-    IFS=:
-    set -- $LD_LIBRARY_PATH
-    IFS=$saved_ifs
-    for library_dir in "$@"; do
+  if [ "${LD_LIBRARY_PATH+x}" = x ]; then
+    # The loader accepts ':' and ';' separators. An empty component is the
+    # current directory. Appending a separator keeps a trailing empty
+    # component visible while extracting each directory.
+    library_path="${LD_LIBRARY_PATH}:"
+    while [ -n "$library_path" ]; do
+      library_dir=${library_path%%[:;]*}
+      library_path=${library_path#*[:;]}
+      [ -n "$library_dir" ] || library_dir=.
       for library_name in $appindicator_names; do
         candidate="$library_dir/$library_name"
         if appindicator_is_usable "$candidate"; then
