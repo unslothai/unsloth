@@ -298,7 +298,7 @@ def _resolved_relative_targets(package, src):
     parts = package.split(".") if package else []
     resolved = []
     for level, name in _relative_import_targets(src):
-        if level == 0:      # absolute, already rooted at the converter package
+        if level == 0:  # absolute, already rooted at the converter package
             resolved.append(name)
             continue
         drop = level - 1
@@ -329,17 +329,24 @@ def _relative_import_targets(src):
             # .core import build`, which loads the same file a relative import
             # would and was queued by neither branch. Level 0 marks a name that
             # is already rooted at the converter package.
-            if isinstance(node, ast.ImportFrom) and not node.level and \
-                (node.module or "").startswith(_CONVERTER_MODULE):
-                inner = (node.module or "")[len(_CONVERTER_MODULE):].lstrip(".")
-                if inner: targets.append((0, inner))
-                targets.extend((0, f"{inner}.{a.name}" if inner else a.name)
-                               for a in node.names if a.name != "*")
+            if (
+                isinstance(node, ast.ImportFrom)
+                and not node.level
+                and (node.module or "").startswith(_CONVERTER_MODULE)
+            ):
+                inner = (node.module or "")[len(_CONVERTER_MODULE) :].lstrip(".")
+                if inner:
+                    targets.append((0, inner))
+                targets.extend(
+                    (0, f"{inner}.{a.name}" if inner else a.name)
+                    for a in node.names
+                    if a.name != "*"
+                )
                 continue
             if isinstance(node, ast.Import):
                 for a in node.names:
                     if a.name.startswith(_CONVERTER_MODULE + "."):
-                        targets.append((0, a.name[len(_CONVERTER_MODULE) + 1:]))
+                        targets.append((0, a.name[len(_CONVERTER_MODULE) + 1 :]))
                 continue
             if isinstance(node, ast.ImportFrom) and node.level:
                 if node.module:
@@ -1249,12 +1256,15 @@ def test_an_import_in_a_module_level_match_case_is_collected():
 
 def test_an_import_in_a_match_case_inside_a_function_is_still_ignored():
     """The control: a function body never runs at import time."""
-    assert _transformers_imports(
-        "def f(x):\n"
-        "    match x:\n"
-        "        case 1:\n"
-        "            from transformers.utils import logging\n"
-    ) == {}
+    assert (
+        _transformers_imports(
+            "def f(x):\n"
+            "    match x:\n"
+            "        case 1:\n"
+            "            from transformers.utils import logging\n"
+        )
+        == {}
+    )
 
 
 def test_the_two_base_patterns_are_in_the_snapshot():
