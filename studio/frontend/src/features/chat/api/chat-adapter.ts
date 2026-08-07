@@ -1945,8 +1945,12 @@ function normalizeTarget(value: string): string {
   return posixPath ? target : target.toLowerCase();
 }
 
+// Keyed on the load target alone, not the kind. A repo holding both GGUF and
+// safetensors yields a row in each list, but the backend resolves one target
+// to one model and probes GGUF first, so keeping both would spend a second
+// attempt on the same files and record the wrong kind.
 function autoLoadSourceKey(source: AutoLoadSource): string {
-  return `${source.kind}:${normalizeTarget(source.loadId)}`;
+  return normalizeTarget(source.loadId);
 }
 
 function buildAutoLoadSources(
@@ -1954,6 +1958,8 @@ function buildAutoLoadSources(
   modelRepos: CachedModelRepo[],
   localRows: LocalModelInfo[],
   safetensorsMaxSeqLength: number,
+  // Already timeout-bounded, but a stopped send should not wait one out.
+  signal?: AbortSignal,
 ): AutoLoadSource[] {
   const sources: AutoLoadSource[] = [];
   for (const repo of ggufRepos) {
@@ -1967,6 +1973,7 @@ function buildAutoLoadSources(
         listGgufVariants(repo.repo_id, undefined, {
           preferLocalCache: true,
           localPath: repo.cache_path,
+          signal,
         }).then((response) => response.variants),
     });
   }
@@ -1995,6 +2002,7 @@ function buildAutoLoadSources(
             listGgufVariants(row.path, undefined, {
               preferLocalCache: true,
               localPath: row.path,
+              signal,
             }).then((response) => response.variants)
         : null,
     });
@@ -2021,13 +2029,6 @@ function orderAutoLoadSources(
   sources: AutoLoadSource[],
   remembered: { id: string; kind: LastLocalModelKind } | null,
 ): AutoLoadSource[] {
-  const seen = new Set<string>();
-  const deduped = sources.filter((source) => {
-    const key = autoLoadSourceKey(source);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
   const rank = (source: AutoLoadSource): number => {
     if (remembered && isRememberedSource(source, remembered)) return 0;
     return source.kind === "gguf" ? 1 : 2;
@@ -2035,7 +2036,18 @@ function orderAutoLoadSources(
   // Unknown sizes sort last so a sizeless row cannot shadow a real one.
   const size = (source: AutoLoadSource): number =>
     source.sizeBytes > 0 ? source.sizeBytes : Number.MAX_SAFE_INTEGER;
-  return deduped.sort((a, b) => rank(a) - rank(b) || size(a) - size(b));
+  const ordered = [...sources].sort(
+    (a, b) => rank(a) - rank(b) || size(a) - size(b),
+  );
+  // Deduped after ordering, so the row kept is the one the cascade would have
+  // reached first rather than whichever inventory happened to be listed first.
+  const seen = new Set<string>();
+  return ordered.filter((source) => {
+    const key = autoLoadSourceKey(source);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /**
@@ -2718,6 +2730,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         allModelRepos.filter(isChattableCachedRepo),
         localList.models.filter(isAutoLoadableLocalRow),
         store.params.maxSeqLength,
+        options?.abortSignal,
       ),
       lastLoaded,
     );

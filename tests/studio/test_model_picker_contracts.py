@@ -2590,3 +2590,34 @@ def test_local_safetensors_chat_capability_is_classified_not_assumed():
     classifier = src.split("def _local_transformers_can_chat(", 1)[1]
     classifier = classifier.split("\ndef ", 1)[0]
     assert classifier.rstrip().endswith("return None")
+
+
+def test_sources_dedupe_on_the_load_target_alone():
+    """A repo holding both GGUF and safetensors yields a row in each cached
+    list, but the backend resolves one target to one model and probes GGUF
+    first, so keeping both spends a second attempt on the same files."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    key = src.split("function autoLoadSourceKey", 1)[1].split("\n}", 1)[0]
+    assert "return normalizeTarget(source.loadId);" in key
+    assert "source.kind" not in key
+    order = src.split("function orderAutoLoadSources", 1)[1].split("\n}\n", 1)[0]
+    # Ordered first, so the survivor is the row the cascade would have reached.
+    assert order.index("const ordered = [...sources].sort(") < order.index("const seen = new Set<string>()")
+
+
+def test_variant_scans_take_the_run_signal():
+    src = _read("features/chat/api/chat-adapter.ts")
+    build = src.split("function buildAutoLoadSources", 1)[1]
+    build = build.split("function isRememberedSource", 1)[0]
+    assert build.count("signal,") == 2
+    assert "options?.abortSignal,\n      )," in src
+
+
+def test_cached_rows_classify_chat_capability_too():
+    """The same encoder gate the scan-folder rows get; cached rows built their
+    capabilities from file format alone."""
+    src = _read_backend("hub/services/models/cache_inventory.py")
+    assert "_local_transformers_can_chat" in src
+    fields = src.split("def _cache_inventory_fields", 1)[1].split("\ndef ", 1)[0]
+    assert "can_chat_override" in fields
+    assert 'model_format in {"safetensors", "checkpoint"} and snapshot_path is not None' in fields

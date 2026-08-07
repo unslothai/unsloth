@@ -30,6 +30,7 @@ from hub.services.models.common import (
     _gguf_variant_state_summary,
     _is_adapter_weight_name,
     _is_checkpoint_weight_name,
+    _local_transformers_can_chat,
     _is_training_artefact_name,
     _is_gguf_filename,
     _is_main_gguf_filename,
@@ -369,6 +370,14 @@ def _cache_inventory_fields(
         "hf_cache",
         partial = partial,
         requires_variant = requires_variant,
+        # Same classification the scan-folder rows get: a cached BERT / CLIP /
+        # SentenceTransformers repo is chat-capable on file format alone, and
+        # those are small, so chat auto-load would try them first.
+        can_chat_override = (
+            _local_transformers_can_chat(snapshot_path)
+            if model_format in {"safetensors", "checkpoint"} and snapshot_path is not None
+            else None
+        ),
     ).model_dump()
     # The loader's companion search never leaves the quants' snapshot.
     if model_format == "gguf" and (

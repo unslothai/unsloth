@@ -338,7 +338,12 @@ const downloadManager = {
     }
   },
 };
-async function listGgufVariants(repoId: string, _b?: any, _c?: any) {
+async function listGgufVariants(repoId: string, _b?: any, options?: any) {
+  EVENTS.push({
+    kind: "listGgufVariants",
+    repoId,
+    hasSignal: Boolean(options?.signal),
+  });
   const entry = SCENARIO.variants[repoId];
   if (entry === "throw") throw new Error("variant listing failed");
   return entry ?? { variants: [] };
@@ -1026,3 +1031,54 @@ def test_remembered_posix_paths_match_case_sensitively():
 
     # Lowercasing would rank both as remembered and let the smaller one win.
     assert _loaded_paths(out) == ["/models/Foo.gguf"]
+
+
+def test_a_mixed_cached_repo_is_attempted_once_not_twice():
+    """A repo holding both GGUF and safetensors appears in both cached lists.
+    The backend resolves one load target to one model and probes GGUF first,
+    so keeping both rows spends a second attempt on the same files and records
+    the wrong kind."""
+    out = _run(
+        "scenario({ ggufRepos: [GEMMA],"
+        " modelRepos: [{ repo_id: GEMMA.repo_id, load_id: GEMMA.load_id, size_bytes: 15800000000 }],"
+        " variants: { [GEMMA.repo_id]: GEMMA_VARIANTS },"
+        " load: () => new Error(OOM) })"
+    )
+
+    assert _loaded_paths(out) == [GEMMA_REPO]
+    # The GGUF row is the one the backend will actually resolve, so it survives.
+    assert [
+        event["gguf_variant"] for event in out["events"] if event["kind"] == "loadModel"
+    ] == ["UD-Q4_K_XL"]
+
+
+def test_a_mixed_cached_repo_still_loads_through_its_gguf_row():
+    """Control: deduping must not drop the repo altogether."""
+    out = _run(
+        "scenario({ ggufRepos: [GEMMA],"
+        " modelRepos: [{ repo_id: GEMMA.repo_id, load_id: GEMMA.load_id, size_bytes: 1 }],"
+        " variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })"
+    )
+    assert _loaded_paths(out) == [GEMMA_REPO]
+    assert out["result"]["loaded"] is True
+
+
+def test_distinct_repos_are_not_collapsed_by_the_dedupe():
+    """Guard on the key: only a shared load target may collapse."""
+    out = _run(
+        "scenario({ ggufRepos: [1, 2].map((i) => ({ ...GEMMA, repo_id: `r${i}`,"
+        " load_id: `r${i}`, size_bytes: i })),"
+        " variants: { r1: GEMMA_VARIANTS, r2: GEMMA_VARIANTS },"
+        " load: () => new Error(OOM) })"
+    )
+    assert _loaded_paths(out) == ["r1", "r2"]
+
+
+def test_variant_scans_carry_the_run_abort_signal():
+    """Bounded by their own timeout, but a stopped send should not wait it out."""
+    out = _run(
+        "scenario({ ggufRepos: [GEMMA], variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })"
+    )
+    scans = [event for event in out["events"] if event["kind"] == "listGgufVariants"]
+    assert scans, "no variant scan ran"
+    assert all(scan["hasSignal"] for scan in scans)

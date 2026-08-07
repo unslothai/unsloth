@@ -4530,3 +4530,42 @@ def test_local_embedding_model_is_not_chat_capable(tmp_path):
     assert rows["tiny-llama"].capabilities.can_chat is True
     # Training and LoRA support are unchanged: this only gates chat.
     assert rows["all-MiniLM-L6-v2"].capabilities.can_train is True
+
+
+def test_cached_encoder_repo_is_not_chat_capable(tmp_path):
+    """Cached rows build capabilities from file format too, so a cached BERT or
+    CLIP repo looked like a chat model to background auto-load."""
+    snapshot = _write_local_model(
+        tmp_path, "snap", {"architectures": ["BertModel"], "model_type": "bert"}
+    )
+    fields = cache_inventory._cache_inventory_fields(
+        "sentence-transformers/all-MiniLM-L6-v2",
+        "safetensors",
+        active_hub_cache = tmp_path,
+        snapshot_path = snapshot,
+    )
+    assert fields["capabilities"]["can_chat"] is False
+
+
+def test_cached_generative_repo_stays_chat_capable(tmp_path):
+    """Control for the gate above."""
+    snapshot = _write_local_model(
+        tmp_path, "snap", {"architectures": ["LlamaForCausalLM"], "model_type": "llama"}
+    )
+    fields = cache_inventory._cache_inventory_fields(
+        "unsloth/Llama-3.2-1B-Instruct",
+        "safetensors",
+        active_hub_cache = tmp_path,
+        snapshot_path = snapshot,
+    )
+    assert fields["capabilities"]["can_chat"] is True
+
+
+def test_cached_row_without_a_snapshot_keeps_its_format_capability(tmp_path):
+    """Fails open: no snapshot to inspect must not hide the row."""
+    fields = cache_inventory._cache_inventory_fields(
+        "unsloth/Llama-3.2-1B-Instruct",
+        "safetensors",
+        active_hub_cache = tmp_path,
+    )
+    assert fields["capabilities"]["can_chat"] is True
