@@ -1900,9 +1900,7 @@ class TestThePolicyReadsOneSnapshot:
                 fired.append(True)
                 store[mm.KEEP_RESIDENT_SETTING_KEY] = False
                 store[mm.NO_RAM_RESERVE_SETTING_KEY] = True
-                mm._invalidate(
-                    mm.KEEP_RESIDENT_SETTING_KEY, mm.NO_RAM_RESERVE_SETTING_KEY
-                )
+                mm._invalidate(mm.KEEP_RESIDENT_SETTING_KEY, mm.NO_RAM_RESERVE_SETTING_KEY)
             return value
 
         monkeypatch.setattr(mm, "get_keep_resident", flip_after_first_read)
@@ -1929,6 +1927,6 @@ class TestThePolicyReadsOneSnapshot:
         ]
         assert named.count("get_model_memory_settings") == 1
         for separate in ("should_mlock", "get_no_ram_reserve", "get_keep_resident"):
-            assert separate not in named, (
-                f"{separate} is read separately again, so the pair can tear"
-            )
+            assert (
+                separate not in named
+            ), f"{separate} is read separately again, so the pair can tear"
