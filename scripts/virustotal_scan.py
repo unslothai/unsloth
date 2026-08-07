@@ -287,7 +287,9 @@ class VirusTotalClient:
             # without this a request could start after the deadline and then block
             # for the full socket timeout, overrunning the step's own budget.
             if deadline is not None and self._clock() >= deadline:
-                raise TimeoutError(f"deadline reached while pacing before {method} {_redact_url(url)}")
+                raise TimeoutError(
+                    f"deadline reached while pacing before {method} {_redact_url(url)}"
+                )
             try:
                 status, payload = self._transport(method, url, headers, body)
             except Exception as error:  # network layer, DNS, TLS, truncated read
