@@ -479,6 +479,10 @@ Environment:
     foreach ($r in $customRoots) {
         if (_IsUnsafeRoot $r) {
             _Substep "refusing to remove unsafe path: $r" "Yellow"
+            # install.ps1 accepts any writable root, so this can be a real install under a
+            # path the deny list covers. Nothing is deleted and it holds studio.db and the
+            # auth data, so the summary must say so. Mirrors uninstall.sh.
+            if (Test-Path -LiteralPath $r) { $script:RemoveFailed = $true }
             continue
         }
         if (-not (_IsStudioRoot $r)) {
