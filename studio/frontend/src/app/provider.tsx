@@ -50,6 +50,7 @@ import {
   type MeasuredWindowLayout,
   type WindowLayoutGuard,
   finalizeAppWindowLayout,
+  shouldFinishWindowLayoutWait,
   measureWindowLayout,
 } from "./window-layout-lifecycle";
 
@@ -90,7 +91,6 @@ type WindowLayoutObserver = {
 };
 
 const WINDOW_LAYOUT_POLL_MS = 50;
-const WINDOW_LAYOUT_FALLBACK_MS = 300;
 const WINDOW_LAYOUT_TIMEOUT_MS = 1000;
 
 function delay(milliseconds: number): Promise<void> {
@@ -135,10 +135,7 @@ async function observeWindowLayout(
           sawPostShowChange = true;
           continue;
         }
-        if (
-          sawPostShowChange ||
-          elapsed + WINDOW_LAYOUT_POLL_MS >= WINDOW_LAYOUT_FALLBACK_MS
-        ) {
+        if (shouldFinishWindowLayoutWait(sawPostShowChange)) {
           return;
         }
       }

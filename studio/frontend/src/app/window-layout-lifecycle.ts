@@ -80,6 +80,11 @@ export async function measureWindowLayout<Monitor extends WorkAreaMonitor>(
   return { bounds, monitor, frameSize };
 }
 
+export function shouldFinishWindowLayoutWait(
+  sawPostShowChange: boolean,
+): boolean {
+  return sawPostShowChange;
+}
 type FinalizeAppWindowLayoutOptions<Monitor extends WorkAreaMonitor> = {
   restored: boolean;
   measured: MeasuredWindowLayout<Monitor>;

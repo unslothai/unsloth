@@ -15,6 +15,7 @@ import {
 } from "../src/app/window-layout.ts";
 import {
   finalizeAppWindowLayout,
+  shouldFinishWindowLayoutWait,
   measureWindowLayout,
 } from "../src/app/window-layout-lifecycle.ts";
 
@@ -31,6 +32,10 @@ function workArea(
   };
 }
 
+test("waits for the first native restore event before settling", () => {
+  assert.equal(shouldFinishWindowLayoutWait(false), false);
+  assert.equal(shouldFinishWindowLayoutWait(true), true);
+});
 test("keeps the nominal minimum and preferred size on a roomy work area", () => {
   const bounds = calculateWindowSizeBounds({ width: 1920, height: 1040 });
 
