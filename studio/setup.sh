@@ -329,25 +329,25 @@ _cg_dirs() {
     printf '%s\n' "$_root"
 }
 
-# Echo a cgroup hierarchy's "<mount root><tab><mount point>", or nothing.
+# Echo every matching cgroup hierarchy as "<mount root><tab><mount point>".
 # $1 = a mountinfo file, $2 = "cgroup2" for the unified mount or a v1 controller
 # name. mountinfo is "... <root> <mountpoint> <opts> [tags] - <fstype> <source>
 # <superopts>", and a v1 hierarchy lists its controllers in the super options,
 # so a co-mounted or relocated one is found by name instead of assumed to sit
 # at <root>/<name>.
-_cg_mount() {
+_cg_mounts() {
     [ -r "$1" ] || return 0
     awk -v want="$2" '
         {
             for (i = 1; i <= NF; i++) if ($i == "-") break
             if (i + 3 > NF) next
             if (want == "cgroup2") {
-                if ($(i + 1) == "cgroup2") { print $4 "\t" $5; exit }
+                if ($(i + 1) == "cgroup2") print $4 "\t" $5
                 next
             }
             if ($(i + 1) != "cgroup") next
             n = split($(i + 3), opts, ",")
-            for (j = 1; j <= n; j++) if (opts[j] == want) { print $4 "\t" $5; exit }
+            for (j = 1; j <= n; j++) if (opts[j] == want) { print $4 "\t" $5; next }
         }' "$1" 2>/dev/null
     return 0
 }
@@ -371,6 +371,29 @@ _cg_rel() {
     return 0
 }
 
+# Pick one "<root><tab><point>" from the candidates on stdin. A hierarchy can be
+# mounted more than once, and taking the first would step past the binding mount
+# whenever an unrelated subtree is listed ahead of it. Prefer a mount whose root
+# contains the process path, most specific first; else keep the first seen.
+# Args: process cgroup path.
+_cg_pick_mount() {
+    local _rel=$1 _root _point _bestroot="" _bestpoint="" _firstroot="" _firstpoint=""
+    while IFS=$'\t' read -r _root _point; do
+        [ -n "$_point" ] || continue
+        if [ -z "$_firstpoint" ]; then _firstroot=$_root; _firstpoint=$_point; fi
+        [ -n "$(_cg_rel "$_root" "$_rel")" ] || continue
+        if [ -z "$_bestpoint" ] || [ "${#_root}" -gt "${#_bestroot}" ]; then
+            _bestroot=$_root; _bestpoint=$_point
+        fi
+    done
+    if [ -n "$_bestpoint" ]; then
+        printf '%s\t%s' "$_bestroot" "$_bestpoint"
+    elif [ -n "$_firstpoint" ]; then
+        printf '%s\t%s' "$_firstroot" "$_firstpoint"
+    fi
+    return 0
+}
+
 # Echo the memory free under the binding cgroup limit in MiB, or nothing.
 # Args: fallback cgroup root, /proc/self/cgroup path, /proc/self/mountinfo
 # path; all taken as arguments so the tests can drive a real tree. Mirrors unsloth/dataset_num_proc.py: reading the
@@ -381,7 +404,7 @@ _cg_rel() {
 # process cannot see. The smallest remaining allowance wins.
 _cgroup_free_mb() {
     local _root=$1 _proc=$2 _mnt=${3:-} _rel _dir _used _limit _free _name _min=""
-    local _v2 _v1 _v2root _v1root
+    local _v2 _v1 _v2root _v1root _v2rel _v1rel
     _consider() {
         [ -n "$1" ] || return 0
         if [[ "$2" =~ ^[0-9]+$ ]]; then _free=$(( $1 - $2 )); else _free=$1; fi
@@ -389,15 +412,17 @@ _cgroup_free_mb() {
         if [ -z "$_min" ] || [ "$_free" -lt "$_min" ]; then _min=$_free; fi
         return 0
     }
-    # Prefer the real mounts; fall back to the conventional layout.
-    IFS=$'\t' read -r _v2root _v2 <<< "$(_cg_mount "$_mnt" cgroup2)"
-    IFS=$'\t' read -r _v1root _v1 <<< "$(_cg_mount "$_mnt" memory)"
+    # Prefer the real mounts; fall back to the conventional layout. The process
+    # path is read first so the right mount can be chosen among several.
+    _v2rel=$(awk -F: '/^0::/ { print $3; exit }' "$_proc" 2>/dev/null || true)
+    _v1rel=$(awk -F: '$2 ~ /(^|,)memory(,|$)/ { print $3; exit }' "$_proc" 2>/dev/null || true)
+    IFS=$'\t' read -r _v2root _v2 <<< "$(_cg_mounts "$_mnt" cgroup2 | _cg_pick_mount "$_v2rel")"
+    IFS=$'\t' read -r _v1root _v1 <<< "$(_cg_mounts "$_mnt" memory | _cg_pick_mount "$_v1rel")"
     [ -n "$_v2" ] || { _v2=$_root; _v2root="/"; }
     [ -n "$_v1" ] || { _v1="$_root/memory"; _v1root="/"; }
     if [ -d "$_v2" ]; then
         # The v2 line is "0::<path>"; systemd hybrid mode adds v1 lines alongside.
-        _rel=$(awk -F: '/^0::/ { print $3; exit }' "$_proc" 2>/dev/null || true)
-        _rel=$(_cg_rel "$_v2root" "$_rel")
+        _rel=$(_cg_rel "$_v2root" "$_v2rel")
         while IFS= read -r _dir; do
             _used=$(_cg_read "$_dir/memory.current")
             for _name in memory.max memory.high; do
@@ -408,8 +433,7 @@ _cgroup_free_mb() {
     fi
     if [ -d "$_v1" ]; then
         # v1 is "<id>:<controllers>:<path>", and mounts are often combined.
-        _rel=$(awk -F: '$2 ~ /(^|,)memory(,|$)/ { print $3; exit }' "$_proc" 2>/dev/null || true)
-        _rel=$(_cg_rel "$_v1root" "$_rel")
+        _rel=$(_cg_rel "$_v1root" "$_v1rel")
         while IFS= read -r _dir; do
             _used=$(_cg_read "$_dir/memory.usage_in_bytes")
             _limit=$(_cg_limit "$(_cg_read "$_dir/memory.limit_in_bytes")")

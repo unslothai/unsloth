@@ -73,7 +73,7 @@ assert_eq "junk override ignored" "7" "$(run_jobs 20 16384 "lots")"
 # namespace, but under Slurm, systemd or --cgroupns=host the binding limit is
 # the process's own path or an ancestor's, and a root-only read sees "max".
 _CG_FILE=$(mktemp)
-for _fn in _cg_read _cg_limit _cg_dirs _cg_mount _cg_rel _cgroup_free_mb; do
+for _fn in _cg_read _cg_limit _cg_dirs _cg_mounts _cg_rel _cg_pick_mount _cgroup_free_mb; do
     sed -n "/^${_fn}()/,/^}/p" "$SETUP_SH" >> "$_CG_FILE"
 done
 if [ ! -s "$_CG_FILE" ]; then
@@ -205,6 +205,47 @@ printf '%s\n' "51 30 0:41 /docker/abc $_TMPD/bind/v1 rw - cgroup cgroup rw,memor
     > "$_TMPD/bindv1.mnt"
 assert_eq "v1 bind mount finds the innermost limit" "2048" \
     "$(run_cgroup "$_TMPD/bind" "$_TMPD/bindv1.proc" "$_TMPD/bindv1.mnt")"
+
+# 18) A hierarchy mounted more than once: an unrelated subtree listed first
+#     must not shadow the mount that actually contains the process.
+mkdir -p "$_TMPD/multi/unrelated" "$_TMPD/multi/real/job"
+printf '8589934592\n' > "$_TMPD/multi/unrelated/memory.max"
+printf '8589934592\n' > "$_TMPD/multi/real/memory.max"
+printf '1073741824\n' > "$_TMPD/multi/real/job/memory.max"
+printf '0::/slice/job\n' > "$_TMPD/multi.proc"
+{
+    printf '%s\n' "60 30 0:50 /unrelated $_TMPD/multi/unrelated rw - cgroup2 cgroup2 rw"
+    printf '%s\n' "61 30 0:51 /slice $_TMPD/multi/real rw - cgroup2 cgroup2 rw"
+} > "$_TMPD/multi.mnt"
+assert_eq "the containing mount wins over an earlier one" "1024" \
+    "$(run_cgroup "$_TMPD/multi" "$_TMPD/multi.proc" "$_TMPD/multi.mnt")"
+
+# 19) Most specific wins when several roots contain the path.
+{
+    printf '%s\n' "62 30 0:52 / $_TMPD/multi/unrelated rw - cgroup2 cgroup2 rw"
+    printf '%s\n' "63 30 0:53 /slice $_TMPD/multi/real rw - cgroup2 cgroup2 rw"
+} > "$_TMPD/multi.spec"
+assert_eq "the most specific containing root wins" "1024" \
+    "$(run_cgroup "$_TMPD/multi" "$_TMPD/multi.proc" "$_TMPD/multi.spec")"
+
+# 20) When no mount contains the path, the first is still used rather than
+#     dropping the hierarchy entirely.
+printf '0::/nowhere\n' > "$_TMPD/multi.none"
+assert_eq "no containing mount falls back to the first" "8192" \
+    "$(run_cgroup "$_TMPD/multi" "$_TMPD/multi.none" "$_TMPD/multi.mnt")"
+
+# 21) The same, for a v1 controller listed twice.
+mkdir -p "$_TMPD/multi/v1a" "$_TMPD/multi/v1b/task"
+printf '8589934592\n' > "$_TMPD/multi/v1a/memory.limit_in_bytes"
+printf '4294967296\n' > "$_TMPD/multi/v1b/memory.limit_in_bytes"
+printf '2147483648\n' > "$_TMPD/multi/v1b/task/memory.limit_in_bytes"
+printf '3:memory:/docker/abc/task\n' > "$_TMPD/multiv1.proc"
+{
+    printf '%s\n' "64 30 0:54 /other $_TMPD/multi/v1a rw - cgroup cgroup rw,memory"
+    printf '%s\n' "65 30 0:55 /docker/abc $_TMPD/multi/v1b rw - cgroup cgroup rw,memory"
+} > "$_TMPD/multiv1.mnt"
+assert_eq "v1 picks the containing mount too" "2048" \
+    "$(run_cgroup "$_TMPD/multi" "$_TMPD/multiv1.proc" "$_TMPD/multiv1.mnt")"
 
 # The min() that ties it together. _usable_ram_mb hardcodes the real paths, so
 # stub the reader to prove the wiring rather than just the parts.
