@@ -187,10 +187,9 @@ def _peft_converter_source():
         import pkgutil
         for info in pkgutil.iter_modules([path]):
             try:
-                sources.append(inspect.getsource(
-                    importlib.import_module(f"{module}.{info.name}")))
+                sources.append(inspect.getsource(importlib.import_module(f"{module}.{info.name}")))
             except Exception:
-                continue        # a child that will not import cannot be read
+                continue  # a child that will not import cannot be read
     return "\n".join(sources)
 
 
@@ -528,13 +527,8 @@ def test_every_runtime_symbol_is_one_we_backfill():
 def test_a_class_body_import_is_seen():
     """`ast.walk` descends into everything, so an import inside a module-level
     class body -- which executes at import time -- is covered."""
-    src = (
-        "class Converter:\n"
-        "    from transformers.core_model_loading import Concatenate\n"
-    )
-    assert _transformers_imports(src) == {
-        "transformers.core_model_loading": {"Concatenate"},
-    }
+    src = "class Converter:\n    from transformers.core_model_loading import Concatenate\n"
+    assert _transformers_imports(src) == {"transformers.core_model_loading": {"Concatenate"}}
 
 
 def test_a_package_split_still_reads_the_implementation(tmp_path, monkeypatch):
@@ -548,8 +542,7 @@ def test_a_package_split_still_reads_the_implementation(tmp_path, monkeypatch):
     pkg.__path__ = [str(tmp_path)]
     (tmp_path / "__init__.py").write_text("from .impl import Converter\n")
     (tmp_path / "impl.py").write_text(
-        "from transformers.core_model_loading import Concatenate\n"
-        "class Converter: pass\n"
+        "from transformers.core_model_loading import Concatenate\nclass Converter: pass\n"
     )
     child = types.ModuleType("zz_conv_pkg.impl")
     monkeypatch.setitem(sys.modules, "zz_conv_pkg", pkg)
@@ -571,5 +564,6 @@ def test_a_package_split_still_reads_the_implementation(tmp_path, monkeypatch):
 def test_the_fetcher_walks_a_package():
     """Wiring: the fallback must iterate `__path__`, not stop at `__init__`."""
     import inspect
+
     src = inspect.getsource(_peft_converter_source)
     assert "__path__" in src and "iter_modules" in src
