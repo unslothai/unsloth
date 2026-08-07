@@ -46,9 +46,7 @@ def _patch(
     # is covered, which means the non-Mac cases below would flip to macos_unsupported
     # when this suite runs on a macOS runner. Default follows `apple` so existing callers
     # keep the host they were written for.
-    monkeypatch.setattr(
-        hw.platform, "system", lambda: system or ("Darwin" if apple else "Linux")
-    )
+    monkeypatch.setattr(hw.platform, "system", lambda: system or ("Darwin" if apple else "Linux"))
 
 
 # -- capability matrix --------------------------------------------------------------------------
@@ -178,8 +176,7 @@ def test_intel_mac_is_macos_unsupported_not_a_missing_gpu(monkeypatch):
         cap = hw.video_capability()
         assert cap["video_supported"] is False
         assert cap["video_unsupported_reason"] == "macos_unsupported", (
-            f"Intel Mac with torch={torch_present} reported "
-            f"{cap['video_unsupported_reason']!r}"
+            f"Intel Mac with torch={torch_present} reported " f"{cap['video_unsupported_reason']!r}"
         )
         assert "coming soon" in cap["video_unsupported_message"].lower()
         assert "GPU" not in cap["video_unsupported_message"]
