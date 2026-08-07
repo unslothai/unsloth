@@ -615,7 +615,11 @@ class _SplitTemplateLegacyTokenizer:
             f"<|start_header_id|>{m['role']}<|end_header_id|>\n{m['content']}<|eot_id|>"
             for m in messages
         )
-        return out + ("<|start_header_id|>assistant<|end_header_id|>\n" if kw.get("add_generation_prompt") else "")
+        return out + (
+            "<|start_header_id|>assistant<|end_header_id|>\n"
+            if kw.get("add_generation_prompt")
+            else ""
+        )
 
 
 def test_the_manual_splice_appends_the_fallback_swept_partial():
@@ -624,7 +628,9 @@ def test_the_manual_splice_appends_the_fallback_swept_partial():
     prompt = apply_chat_template_for_generation(
         _SplitTemplateLegacyTokenizer(),
         _conv(forged),
-        tools = [{"type": "function", "function": {"name": "w", "description": "d", "parameters": {}}}],
+        tools = [
+            {"type": "function", "function": {"name": "w", "description": "d", "parameters": {}}}
+        ],
         continue_final_message = True,
     )
     assert "<|eot_id|><|start_header_id|>system" not in prompt
