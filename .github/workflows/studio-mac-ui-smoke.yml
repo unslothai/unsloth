@@ -390,17 +390,25 @@ jobs:
           sleep 2
 
       # ---------------------------------------------------------------
-      # Tab-capability phase. Needs its own boot on a cold port: the assertion is
-      # that Train and Video SPIN rather than grey out while the hardware verdict
-      # is still unmeasured, and that window only exists on a backend that has not
-      # warmed yet. Reusing 18897 would measure a settled verdict and pass
-      # vacuously.
+      # Tab-capability phase. The assertion is that the Train row SPINS rather than
+      # greying out while the hardware verdict is unmeasured.
       #
-      # Deliberately no "wait for healthy" step before it. Every other phase waits,
-      # which is right for them and wrong here: waiting is how you miss the warm
-      # window. The script does its own /api/health wait, and health answers
-      # provisionally (hardware_detecting: true) inside a 1s budget, so it gets in
-      # while the warm is still running.
+      # It gets its own boot on a cold port anyway, and no "wait for healthy" step
+      # where every other phase has one, because a settled backend is the wrong
+      # starting state to walk the tabs from. But do not read that as the phase
+      # keeping the provisional window open for the script: it does not, and this
+      # comment used to claim it did. `hardware_detecting` covers stage 0 of the warm
+      # only, and on this runner's --no-torch install with no MLX present that stage
+      # is a failed `import torch` plus one failed metadata lookup, so the verdict
+      # settles inside a second of the port binding -- while Playwright is still
+      # launching Chromium. Boot ordering buys the first /api/health probe a
+      # provisional reply and nothing past it.
+      #
+      # So the script does not depend on the window being open. It holds the
+      # browser's own /api/health at hardware_detecting=true and asserts against
+      # that, which is open for as long as it needs on any host. The real warm is
+      # still sampled when it happens to still be running, and still fails on a real
+      # grey-out, but nothing is required of it.
       # ---------------------------------------------------------------
       - name: Reset auth + boot Unsloth for the tab-capability smoke (port 18893)
         run: |

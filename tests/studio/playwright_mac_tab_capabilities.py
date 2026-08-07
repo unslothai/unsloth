@@ -12,6 +12,10 @@ Covers the two field failures from Unsloth Desktop 0.1.524-beta on Apple Silicon
    background warm thread, can take a long time. A row whose capability is still
    unmeasured must spin, not grey out.
 
+   That state is asserted on a window this script opens itself, by holding the
+   browser's /api/health at hardware_detecting=true, rather than on the real warm.
+   The real one is a race nobody wins: see sample_natural_warm_window.
+
 2. The desktop launcher's health watchdog killed the backend about a minute in
    ("Server stopped unexpectedly"). The warm thread holds the GIL through its
    C-extension imports, so probes time out while the process is perfectly alive.
@@ -56,6 +60,8 @@ ART.mkdir(parents = True, exist_ok = True)
 SURVIVAL_S = float(os.environ.get("STUDIO_MAC_SURVIVAL_S", "330"))
 POLL_INTERVAL_S = float(os.environ.get("STUDIO_MAC_POLL_INTERVAL_S", "5"))
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "900"))
+# How long the forced-verdict check gives the row to settle into its pending state.
+FORCED_PENDING_S = float(os.environ.get("STUDIO_MAC_FORCED_PENDING_S", "15"))
 # Every tab the user reported interacting with, plus the ones that share the
 # chat-only gate. (route, nav row id, human name).
 TABS = [
@@ -71,10 +77,31 @@ TABS = [
 # so they are matched explicitly rather than folded into the generic redirect check.
 _SIGNED_OUT_PATHS = ("/login", "/onboarding", "/change-password")
 
+# Rows the sidebar pins inline by default, per SIDEBAR_NAV_DEFAULT_PINNED in
+# studio/frontend/src/features/settings/stores/appearance-custom-store.ts. Only these
+# carry a data-testid: the overflow rows render as MoreMenuItem inside a dropdown that
+# mounts nothing until it is opened and passes no test id even when it is, so
+# `[data-testid="nav-row-video"]` returns null on every host, every time.
+#
+# That matters for what this file can claim. The field report named Train AND Video, and
+# the first version of this script sampled both -- but the Video half could never observe
+# anything, so half of its evidence was structurally empty. Video is not lost coverage:
+# both rows carry the one `pending: capabilitiesUnknown` flag and both resolve it through
+# resolveNavRowState (studio/frontend/src/components/nav-row-state.ts), so Train is the
+# observable end of the same wire and the More flyout is covered by the frontend unit
+# tests instead.
+INLINE_ROW_IDS = ("hub", "projects", "images", "train")
+# The row every pending-state assertion below is pinned to.
+GATED_ROW_ID = "train"
+# Intercept pattern for the browser's health reads. Matches whether api-base.ts builds a
+# relative path or an absolute one.
+_HEALTH_ROUTE = "**/api/health"
+
 _failed: list[str] = []
-# Set once any nav row is located. A walk that never finds one proves nothing about
-# the gating, so an all-miss run is a failure rather than a stream of info lines.
-_saw_any_row = False
+# Every nav row located anywhere in the tab walk. A walk that never finds the rows the
+# sidebar pins by default proves nothing about the gating, so it is a failure rather
+# than a stream of info lines.
+_rows_seen: set[str] = set()
 
 
 def signed_out(url: str) -> bool:
@@ -136,6 +163,11 @@ class BackendSurvivalPoller:
                         "status": status,
                         "ms": round((time.monotonic() - began) * 1000, 1),
                         "hardware_detecting": (body or {}).get("hardware_detecting"),
+                        # Stage 0 of the warm only sets hardware_detecting; this one stays
+                        # lit through the transformers and datasets imports after it, so the
+                        # pair is what tells a reader of the artifacts how wide the real
+                        # provisional window on this host was.
+                        "torch_warm_in_progress": (body or {}).get("torch_warm_in_progress"),
                     }
                 )
             self.stop.wait(POLL_INTERVAL_S)
@@ -156,7 +188,12 @@ class BackendSurvivalPoller:
                 continue
             bad = [s for s in got if s["status"] != 200]
             worst = max(s["ms"] for s in got)
-            info(f"{path}: {len(got)} samples, {len(bad)} non-200, worst {worst}ms")
+            unmeasured = sum(1 for s in got if s["hardware_detecting"] is True)
+            warming = sum(1 for s in got if s["torch_warm_in_progress"] is True)
+            info(
+                f"{path}: {len(got)} samples, {len(bad)} non-200, worst {worst}ms, "
+                f"{unmeasured} with an unmeasured verdict, {warming} with the warm still running"
+            )
             if bad:
                 fail(
                     f"{path} returned non-200 {len(bad)} time(s) "
@@ -221,45 +258,71 @@ def log_in(page) -> bool:
     return True
 
 
-def assert_row_never_greyed_while_unmeasured(page) -> None:
-    """A row whose verdict is unmeasured must spin, never grey out.
+_ROW_STATE_JS = """(ids) => {
+    const out = {};
+    for (const id of ids) {
+        const el = document.querySelector(`[data-testid="nav-row-${id}"]`);
+        if (!el) { out[id] = null; continue; }
+        out[id] = {
+            disabled: el.hasAttribute("disabled")
+                || el.getAttribute("aria-disabled") === "true",
+            spinner: el.getAttribute("data-spinner") === "true",
+        };
+    }
+    return out;
+}"""
 
-    Sampled from first paint, because the regression was visible on the very first
-    frame: the UA seed greyed Train and Video out before any measurement existed.
+
+def row_states(page, ids = INLINE_ROW_IDS) -> dict:
+    """DOM state of each nav row by test id; None for a row that is not rendered."""
+    return page.evaluate(_ROW_STATE_JS, list(ids)) or {}
+
+
+def sample_natural_warm_window(page) -> None:
+    """Watch the real warm close, and fail on a real grey-out. Observes nothing on most runs.
+
+    Deliberately asserts nothing about having reached the window, because reaching it is
+    not something this script can arrange. `hardware_detecting` is stage 0 of the warm --
+    on the macOS runner's `--no-torch` install that is a failed `import torch` plus one
+    failed importlib.metadata lookup, so the verdict settles inside a second of the port
+    binding. Getting an authenticated sidebar in front of that costs a Chromium launch,
+    a login and two navigations, one of which spends the frontend's own 5s bounded wait
+    on the verdict (HARDWARE_DETECT_WAIT_MS in studio/frontend/src/config/env.ts). The
+    window is normally shut before the first sample, on a slow host as much as a fast
+    one, so requiring it -- under an env flag or otherwise -- would buy a permanently red
+    job rather than a test. The guarantee lives in assert_pending_state_on_forced_verdict
+    below; this stays for the case the window IS open, where it is the only check that
+    sees the real backend and the real UI disagree.
     """
     step("sampling nav rows during the unmeasured window")
     deadline = time.monotonic() + 45
-    seen_spinner = {"train": False, "video": False}
+    samples = 0
+    unmeasured_samples = 0
+    row_samples = 0
+    spinner_samples = 0
     violations: list[str] = []
     while time.monotonic() < deadline:
         try:
-            state = page.evaluate(
-                """() => {
-                    const out = {};
-                    for (const id of ["train", "video"]) {
-                        const el = document.querySelector(`[data-testid="nav-row-${id}"]`);
-                        if (!el) { out[id] = null; continue; }
-                        out[id] = {
-                            disabled: el.hasAttribute("disabled")
-                                || el.getAttribute("aria-disabled") === "true",
-                            spinner: el.getAttribute("data-spinner") === "true",
-                        };
-                    }
-                    return out;
-                }"""
-            )
-        except Exception:
+            state = row_states(page, (GATED_ROW_ID,))
+        except Exception as exc:
+            # Only fatal before anything was read: a page that cannot be evaluated at all
+            # is the signed-out/unrendered shape, and breaking out of it quietly is how
+            # this function used to report success on zero observations.
+            if samples == 0:
+                fail(f"could not read the sidebar during the unmeasured window ({exc!r})")
+            else:
+                info(f"row sampling stopped early ({exc!r})")
             break
-        measured = _get_json("/api/health")[1] or {}
-        unmeasured = measured.get("hardware_detecting") is True
-        for row_id, got in (state or {}).items():
-            if not got:
-                continue
-            if got["spinner"]:
-                seen_spinner[row_id] = True
-            if unmeasured and got["disabled"]:
+        samples += 1
+        unmeasured = (_get_json("/api/health")[1] or {}).get("hardware_detecting") is True
+        unmeasured_samples += int(unmeasured)
+        got = state.get(GATED_ROW_ID)
+        if got and unmeasured:
+            row_samples += 1
+            spinner_samples += int(bool(got["spinner"]))
+            if got["disabled"]:
                 violations.append(
-                    f"{row_id} rendered disabled while /api/health still reported "
+                    f"{GATED_ROW_ID} rendered disabled while /api/health still reported "
                     "hardware_detecting=true"
                 )
         if not unmeasured:
@@ -269,7 +332,114 @@ def assert_row_never_greyed_while_unmeasured(page) -> None:
 
     for v in sorted(set(violations)):
         fail(v)
-    info(f"spinner observed during warm: {seen_spinner}")
+    info(
+        f"real warm window: {samples} sample(s), {unmeasured_samples} with an unmeasured "
+        f"verdict, {row_samples} of those with the {GATED_ROW_ID} row rendered, "
+        f"{spinner_samples} of those spinning"
+    )
+
+
+def assert_pending_state_on_forced_verdict(page) -> None:
+    """Hold the verdict unmeasured for the browser and require the Train row to spin.
+
+    This is the check that cannot pass having observed nothing, and it is the reason the
+    one above does not have to. Instead of racing a sub-second warm, it answers the
+    browser's /api/health with a real reply that has the measurement taken back out, so
+    the provisional window stays open for as long as the check needs, on every host.
+
+    What the field report described is then exactly what this reads: with the verdict
+    unmeasured, `pending` beats `disabled` in resolveNavRowState
+    (studio/frontend/src/components/nav-row-state.ts), so nav-row-train must render
+    enabled with data-spinner="true". The regression rendered it disabled with no
+    spinner, which fails here on any host, fast or slow, warm window or none.
+
+    A missing row is a failure, not a skip: nav-row-train is pinned inline by default, so
+    if it is not in the DOM the sidebar did not render and there is nothing to assert on.
+    A stub body that drifted out of shape also fails loudly for the same reason, rather
+    than quietly passing -- there is no path through here that reports success without
+    having read the row.
+    """
+    step("forcing an unmeasured verdict and re-checking the pinned Train row")
+    status, live = _get_json("/api/health")
+    if status != 200 or not isinstance(live, dict):
+        fail(
+            "/api/health gave no body to base the provisional reply on "
+            f"(status {status}); the forced pending-state check could not run"
+        )
+        return
+    # A real reply with the measurement removed, so the only thing the browser sees
+    # differently is the field under test. device_type is what env.ts reads as "measured",
+    # and chat_only stays the conservative pre-detection default -- the exact pair a Mac
+    # got on first paint in the field report, where the row blacked out.
+    provisional = {
+        k: v for k, v in live.items() if k not in ("device_type", "hardware_detection_deferred")
+    }
+    provisional["hardware_detecting"] = True
+    provisional["chat_only"] = True
+    body = json.dumps(provisional)
+
+    def serve_provisional(route) -> None:
+        route.fulfill(status = 200, content_type = "application/json", body = body)
+
+    page.route(_HEALTH_ROUTE, serve_provisional)
+    try:
+        try:
+            page.goto(f"{BASE}/chat", wait_until = "domcontentloaded", timeout = 60000)
+            page.wait_for_selector(f'[data-testid="nav-row-{GATED_ROW_ID}"]', timeout = 30000)
+        except Exception as exc:
+            page.screenshot(path = str(ART / "forced_pending_missing_row.png"))
+            fail(
+                f"the {GATED_ROW_ID} nav row never rendered under an unmeasured verdict "
+                f"({exc!r}); it is pinned inline by default, so either the sidebar did not "
+                "come up or the row is gated on the verdict it is supposed to spin on"
+            )
+            return
+        # The row derives its state synchronously from the store, but the store is filled
+        # by the root route's beforeLoad, so give it frames rather than one read.
+        deadline = time.monotonic() + FORCED_PENDING_S
+        got = None
+        while True:
+            try:
+                got = row_states(page, (GATED_ROW_ID,)).get(GATED_ROW_ID)
+            except Exception as exc:
+                # Raising out of here would skip the survival report and the exit code
+                # main() is built around, so it lands as a failure like any other.
+                fail(f"could not read the {GATED_ROW_ID} row under a forced verdict ({exc!r})")
+                return
+            if got and got["spinner"] and not got["disabled"]:
+                break
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.25)
+        page.screenshot(path = str(ART / "forced_pending.png"))
+        if not got:
+            fail(f"the {GATED_ROW_ID} nav row vanished between the wait and the read")
+        elif got["disabled"]:
+            fail(
+                f"{GATED_ROW_ID} rendered disabled while /api/health reported "
+                "hardware_detecting=true; this is the blacked-out row from the field report"
+            )
+        elif not got["spinner"]:
+            fail(
+                f"{GATED_ROW_ID} rendered with no pending spinner while /api/health "
+                "reported hardware_detecting=true; an unmeasured capability has to read "
+                "as 'still checking', not as a settled verdict"
+            )
+        else:
+            info(f"{GATED_ROW_ID} spun on a forced unmeasured verdict, as it must")
+    finally:
+        page.unroute(_HEALTH_ROUTE, serve_provisional)
+
+
+def assert_row_never_greyed_while_unmeasured(page) -> None:
+    """A row whose verdict is unmeasured must spin, never grey out.
+
+    Two passes over the same contract. The first rides the real warm and is silent when
+    it misses it; the second creates the window it needs. Only the second can hold this
+    file to its promise, so it runs unconditionally and on every host.
+    """
+    sample_natural_warm_window(page)
+    assert_pending_state_on_forced_verdict(page)
 
 
 def drive_tabs(page) -> None:
@@ -301,19 +471,29 @@ def drive_tabs(page) -> None:
             else:
                 info(f"{name}: redirected to {landed} after a measured verdict (allowed)")
 
+        # Read every inline row, not just this tab's: they render together, so one read
+        # records that the sidebar came up at all and keeps the per-route detail in the log.
+        try:
+            _rows_seen.update(rid for rid, got in row_states(page).items() if got)
+        except Exception as exc:
+            info(f"{name}: could not read the sidebar rows ({exc!r})")
+
         # Clicking the row is the interaction the user reported; a greyed-out row
         # swallows the click, so this doubles as a check that it is reachable.
-        global _saw_any_row
         try:
             row = page.locator(f'[data-testid="nav-row-{row_id}"]')
-            if row.count() > 0:
-                _saw_any_row = True
             if row.count() > 0 and row.first.is_enabled():
                 row.first.click(timeout = 10000)
                 page.wait_for_timeout(1000)
             elif row.count() > 0:
                 info(f"{name}: nav row present but disabled (measured verdict)")
+            elif row_id in INLINE_ROW_IDS:
+                # Not an info line: this row is pinned inline by default, so its absence
+                # means the sidebar did not render and this tab checked nothing.
+                fail(f"{name}: nav row {row_id} is pinned inline by default but did not render")
             else:
+                # Expected and permanent for Video and Export: they live under "More",
+                # which renders no test id. Reached by route instead.
                 info(f"{name}: nav row not pinned inline; reached by route instead")
         except Exception as exc:
             info(f"{name}: row click did not land ({exc!r})")
@@ -354,10 +534,11 @@ def main() -> int:
 
         assert_row_never_greyed_while_unmeasured(page)
         drive_tabs(page)
-        if not _saw_any_row:
+        missing = [rid for rid in INLINE_ROW_IDS if rid not in _rows_seen]
+        if missing:
             fail(
-                "no sidebar nav row was found on any route; the tab gating was never "
-                "actually exercised, so a green run here would mean nothing"
+                f"the sidebar rows pinned by default never rendered on any route ({', '.join(missing)}); "
+                "the tab gating was never actually exercised, so a green run here would mean nothing"
             )
 
         # Hold the session open until the survival window is covered. The reported
