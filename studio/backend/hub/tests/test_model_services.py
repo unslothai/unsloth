@@ -1257,9 +1257,9 @@ def test_cached_gguf_scan_degrades_when_the_shared_index_cannot_be_built(monkeyp
         )
 
     rows = cache_inventory._scan_cached_gguf()
-    assert "Org/Good" in {row["repo_id"] for row in rows}, (
-        "one unhashable repo identity emptied the whole GGUF inventory"
-    )
+    assert "Org/Good" in {
+        row["repo_id"] for row in rows
+    }, "one unhashable repo identity emptied the whole GGUF inventory"
 
 
 def test_state_scan_survives_a_state_filename_with_an_undecodable_byte(monkeypatch, tmp_path):
