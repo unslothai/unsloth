@@ -26,7 +26,13 @@ on:
       - 'unsloth_cli/**'
       - '.github/workflows/wheel-smoke.yml'
   push:
-    branches: [main, pip]
+    branches: [main]
+    paths:
+      - 'pyproject.toml'
+      - 'studio/**'
+      - 'unsloth/**'
+      - 'unsloth_cli/**'
+      - '.github/workflows/wheel-smoke.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

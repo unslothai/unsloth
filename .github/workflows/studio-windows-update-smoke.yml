@@ -35,7 +35,7 @@ on:
       - 'pyproject.toml'
       - '.github/workflows/studio-windows-update-smoke.yml'
   push:
-    branches: [main, pip]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
