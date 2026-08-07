@@ -325,8 +325,11 @@ def _relative_import_targets(src):
                     # transformers imports in the file that actually has them.
                     # A name that turns out to be a symbol is simply a fetch
                     # that finds nothing, which the caller already skips.
-                    targets.extend((node.level, f"{node.module}.{alias.name}")
-                                   for alias in node.names if alias.name != "*")
+                    targets.extend(
+                        (node.level, f"{node.module}.{alias.name}")
+                        for alias in node.names
+                        if alias.name != "*"
+                    )
                 else:  # `from . import a, b`
                     targets.extend((node.level, alias.name) for alias in node.names)
                 continue
@@ -1160,18 +1163,11 @@ def test_a_module_form_transformers_import_is_a_dependency():
     `from` form, so skipping every `ast.Import` let a newly required submodule
     break the converter with this check still green. It binds no symbols."""
     imports = _transformers_imports(
-        "import transformers.core_model_loading\n"
-        "import os\n"
-        "import transformers.utils as tu\n"
+        "import transformers.core_model_loading\nimport os\nimport transformers.utils as tu\n"
     )
-    assert imports == {
-        "transformers.core_model_loading": set(),
-        "transformers.utils": set(),
-    }
+    assert imports == {"transformers.core_model_loading": set(), "transformers.utils": set()}
 
 
 def test_a_module_form_import_inside_a_function_is_still_ignored():
     """The control: it never runs at import time, so it cannot break startup."""
-    assert _transformers_imports(
-        "def f():\n    import transformers.core_model_loading\n"
-    ) == {}
+    assert _transformers_imports("def f():\n    import transformers.core_model_loading\n") == {}
