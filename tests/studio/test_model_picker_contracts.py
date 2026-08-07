@@ -595,11 +595,14 @@ def test_local_mtp_warning_covers_path_and_native_gguf_sources():
     # Switching models must drop both together: a kept flag would classify the
     # newly selected model by the old one's provenance.
     store = _read("features/chat/stores/chat-runtime-store.ts")
-    reset = re.search(r"setCheckpoint: \(modelId, ggufVariant\) =>.*?\}\),", store, re.S)
-    assert reset
-    assert "activeModelIsLocal: false" in reset.group(0)
-    assert "specFallbackReason: null" in reset.group(0)
-    assert "isLocalGguf" in src.split('specFallbackReason === "drafter_not_found"', 1)[1]
+    reset = store.split("setCheckpoint: (modelId, ggufVariant, options) =>", 1)[1].split(
+        "setActiveThreadId:", 1
+    )[0]
+    assert "activeModelIsLocal: false" in reset
+    assert "specFallbackReason: null" in reset
+    # The reason chain is a switch, so slice on the case label rather than the
+    # ternary comparison it replaced.
+    assert "isLocalGguf" in src.split('case "drafter_not_found":', 1)[1]
 
 
 def test_local_mtp_warning_uses_backend_source_metadata():
@@ -1355,7 +1358,7 @@ def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
     # so it cannot swallow the fresh-default path below and stay green.
     candidate = adapter.split("async function loadAutoLoadCandidate", 1)[1]
     gguf_branch, non_gguf_rest = candidate.split('if (candidate.kind === "gguf") {', 1)[1].split(
-        "\n    } else {\n", 1
+        "} else {", 1
     )
     non_gguf_branch = non_gguf_rest.split("if (!(loadResp.is_lora ?? false)) {", 1)[0]
     # The cached-GGUF branch keeps the remembered override via the gated local...

@@ -19,7 +19,7 @@ from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.gguf import (
     extract_quant_label,
     extract_quant_token,
-    is_mtp_only_drafter_path as _is_mtp_only_drafter_path,
+    is_reclaimable_drafter_path as _is_reclaimable_drafter_path,
 )
 from hub.utils.hf_cache_state import (
     INCOMPLETE_SUFFIX,
@@ -82,13 +82,28 @@ def _path_exists_or_symlink(path: Path) -> bool:
 
 
 def _repo_file_matches(target_repo, predicate) -> list[tuple[Path, Optional[Path], str]]:
+    """Files whose snapshot-relative path satisfies *predicate*.
+
+    Relative, not the bare ``file_name``: huggingface_hub sets that to
+    ``file_path.name`` (and our own recovery scan to ``entry.name``), so a
+    companion in ``dspark/`` or ``MTP/`` arrived here indistinguishable from a
+    root file. Every predicate below keys on the directory for at least one
+    supported layout, and the quant labels they extract are unchanged by the
+    prefix.
+    """
     matches: list[tuple[Path, Optional[Path], str]] = []
     for rev in getattr(target_repo, "revisions", ()):
+        snapshot = getattr(rev, "snapshot_path", None)
         for f in getattr(rev, "files", ()):
             name = str(getattr(f, "file_name", ""))
+            file_path = getattr(f, "file_path", None)
+            if snapshot and file_path:
+                try:
+                    name = Path(file_path).relative_to(Path(snapshot)).as_posix()
+                except ValueError:
+                    pass
             if not predicate(name):
                 continue
-            file_path = getattr(f, "file_path", None)
             if not file_path:
                 continue
             blob_path = getattr(f, "blob_path", None)
@@ -217,12 +232,11 @@ def _delete_gguf_variant_from_repos(
         if matched and not sibling_active and not _has_remaining_main_gguf(target_repo):
             companion_matches = _repo_file_matches(
                 target_repo,
-                # Companions: mmproj and the MTP drafter -- downloaded with
-                # every variant, so the last variant's delete reclaims them.
-                # MTP only: DSpark is opt-in and in no variant plan, so Studio
-                # never fetched it and must not reclaim it.
+                # Companions: mmproj and the drafters Studio downloads (MTP with
+                # every variant, DSpark on opt-in). No main GGUF is left, so they
+                # cannot be launched; reclaim them with the last variant.
                 lambda name: _is_gguf_filename(name)
-                and (_is_mmproj_filename(name) or _is_mtp_only_drafter_path(name)),
+                and (_is_mmproj_filename(name) or _is_reclaimable_drafter_path(name)),
             )
             for snap, _blob, name in companion_matches:
                 try:

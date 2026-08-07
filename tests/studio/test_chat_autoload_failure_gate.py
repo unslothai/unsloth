@@ -65,6 +65,24 @@ export function setScenario(scenario: Scenario) {
 
 const GPU_LAYERS_AUTO = -1;
 
+// The sliced region now includes the queue-specific empty-model resolver and
+// visible-state snapshot helpers, so their imported contracts must exist even
+// though these scenarios call autoLoadSmallestModel directly.
+async function getInferenceStatus() {
+  return { active_model: null };
+}
+function isExternalModelId(value: unknown) {
+  return typeof value === "string" && value.startsWith("external::");
+}
+function resolveInferenceCheckpointId(status: any) {
+  return status.active_model
+    ? (status.model_identifier ?? status.active_model)
+    : null;
+}
+function snapshotQueuedChatRunSettings(state: any) {
+  return { ...state, params: { ...state.params } };
+}
+
 function makeStore(): any {
   const state: any = {
     hfToken: null,
@@ -93,6 +111,27 @@ let STORE: any = makeStore();
 // but they are the same landmine as syncModelCapabilities was, waiting for the
 // first scenario that turns a GPU option on. Stubbed so the harness is complete
 // rather than complete-by-luck.
+// Imported by chat-adapter.ts from ../lib/mlx-runtime-state. Mirrors the real
+// one rather than returning {}: a non-MLX response retires the verdict but
+// leaves mlxKvBits absent, and a scenario that saw an empty object would keep
+// a stale width alive and pass for the wrong reason.
+function mlxRuntimeStateFrom(resp: any) {
+  if (resp?.is_mlx !== true) {
+    return {
+      loadedMlxKvBitsRequested: null,
+      mlxKvQuantReason: null,
+      chatTemplateOverrideReason: null,
+      mlxKvQuantNote: null,
+    };
+  }
+  return {
+    mlxKvBits: resp.mlx_kv_bits_requested ?? null,
+    loadedMlxKvBitsRequested: resp.mlx_kv_bits_requested ?? null,
+    mlxKvQuantReason: resp.mlx_kv_quant_reason ?? null,
+    chatTemplateOverrideReason: resp.chat_template_override_reason ?? null,
+    mlxKvQuantNote: resp.mlx_kv_quant_note ?? null,
+  };
+}
 async function prepareHfTokenForUse(token: any) {
   return { proceed: true, token };
 }
