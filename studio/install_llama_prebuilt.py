@@ -382,6 +382,10 @@ class AssetChoice:
     max_sm: int | None = None
     selection_log: list[str] | None = None
     expected_sha256: str | None = None
+    # ROCm bundles only (mirrors PublishedLlamaArtifact): umbrella gfx family
+    # and the concrete archs the binaries were built for.
+    gfx_target: str | None = None
+    mapped_targets: list[str] | None = None
 
 
 @dataclass(frozen = True)
@@ -3353,6 +3357,8 @@ def published_rocm_choice_for_host(
             url = asset_url,
             source_label = "published",
             install_kind = install_kind,
+            gfx_target = artifact.gfx_target,
+            mapped_targets = list(artifact.mapped_targets),
             selection_log = list(release.selection_log)
             + [
                 f"rocm_selection: gpu={host.rocm_gfx_target} "
@@ -5789,6 +5795,12 @@ def write_prebuilt_metadata(
         "bundle_profile": choice.bundle_profile,
         "runtime_line": choice.runtime_line,
         "coverage_class": choice.coverage_class,
+        # ROCm bundles: concrete built archs, so runtime GPU selection can
+        # gate devices the binary has no kernels for (#7624). Deliberately
+        # NOT in the install fingerprint: existing installs stay valid and
+        # simply fail open until their next refresh.
+        "gfx_target": choice.gfx_target,
+        "mapped_targets": list(choice.mapped_targets or []),
         "install_fingerprint": fingerprint,
         "prebuilt_fallback_used": prebuilt_fallback_used,
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
