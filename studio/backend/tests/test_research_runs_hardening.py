@@ -1731,25 +1731,21 @@ def test_stream_completion_rechecks_the_lease_between_transport_retries(monkeypa
 
 
 def test_every_stream_assertion_matches_the_return_arity():
-    """`_stream_completion`'s tuple width, read from its annotation, must match
-    every comparison and unpack in this file.
+    """Every `_run_stream` comparison and unpack must match the tuple width
+    `_stream_completion` declares.
 
-    #7985 widened the return to carry `usage` and updated most call sites but
-    not four of them, which reddened the whole repo on every open PR: two
-    compared against a 3-tuple and two unpacked into three names. Nothing here
-    tied the two together, so the drift was invisible until CI ran.
+    #7985 widened the return to carry `usage` and missed four call sites here,
+    reddening every open PR. Nothing tied the two together, so it took CI.
     """
     import ast
     import inspect as _inspect
-    import re
 
     from core import research_runs as _rr
 
     annotation = str(
         _inspect.signature(_rr.ResearchSupervisor._stream_completion).return_annotation
     )
-    # `tuple[a, b, c, d]` -> 4, counting only top-level commas so that a nested
-    # `dict[str, int]` does not read as two extra members.
+    # Top-level commas only, so a nested `dict[str, int]` is one member.
     inner = annotation[annotation.index("[") + 1 : annotation.rindex("]")]
     depth, width = 0, 1
     for ch in inner:
