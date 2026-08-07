@@ -1048,8 +1048,17 @@ _compat_local_inventory_flights: dict[
 ] = {}
 
 
+# Retrying a superseded scan is only worth it while invalidations are occasional;
+# past this the endpoint must answer instead of restarting the walk forever.
+_COMPAT_LOCAL_INVENTORY_MAX_ATTEMPTS = 8
+
+
 class _CompatLocalCacheChanged(RuntimeError):
-    pass
+    def __init__(self, models: List[LocalModelInfo]) -> None:
+        super().__init__("local inventory sources changed during the scan")
+        # Carried so the attempt cap can serve the freshest scan it has instead
+        # of looping forever or answering with nothing.
+        self.models = models
 
 
 def _compat_inventory_path_identity(path: object) -> str:
@@ -1067,30 +1076,40 @@ async def _shared_compat_local_inventory_scan(
     from storage.studio_db import list_scan_folders
     from hub.utils import inventory_scan as hf_cache_scan
 
-    sources = sources or _compat_local_inventory_sources()
-    try:
-        custom_folders = await asyncio.to_thread(list_scan_folders)
-    except Exception as e:
-        logger.warning("Could not load custom scan folders: %s", e)
-        custom_folders = []
+    requested_sources = sources
 
-    async def collect(expected_epoch: int) -> List[LocalModelInfo]:
+    async def collect(
+        expected_epoch: int,
+        custom_folders: List[dict],
+        scan_sources: _CompatLocalInventorySources,
+    ) -> List[LocalModelInfo]:
         models = await asyncio.to_thread(
             collect_local_models,
             models_root,
             custom_folders = custom_folders,
-            sources = sources,
+            sources = scan_sources,
         )
         if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
-            raise _CompatLocalCacheChanged
+            raise _CompatLocalCacheChanged(models)
         return models
 
     # Discard obsolete results and retry their waiters against the current cache epoch.
-    while True:
+    superseded: Optional[List[LocalModelInfo]] = None
+    for _attempt in range(_COMPAT_LOCAL_INVENTORY_MAX_ATTEMPTS):
+        # Epoch first: the sources and folders below are read after it, so any
+        # change to them lands in a later epoch and the post-scan check sees it.
+        # A caller-supplied ``sources`` stays pinned - the /local route validated
+        # its models_dir against exactly those roots.
         epoch = hf_cache_scan.hf_cache_scans_epoch()
+        scan_sources = requested_sources or _compat_local_inventory_sources()
+        try:
+            custom_folders = await asyncio.to_thread(list_scan_folders)
+        except Exception as e:
+            logger.warning("Could not load custom scan folders: %s", e)
+            custom_folders = []
         key: _CompatLocalInventoryKey = (
             Path(_compat_inventory_path_identity(models_root)),
-            sources,
+            scan_sources,
             tuple(
                 _compat_inventory_path_identity(folder.get("path", "")) for folder in custom_folders
             ),
@@ -1100,10 +1119,18 @@ async def _shared_compat_local_inventory_scan(
             return await hf_cache_scan.shared_scan(
                 _compat_local_inventory_flights,
                 key,
-                lambda expected_epoch = epoch: collect(expected_epoch),
+                lambda expected_epoch = epoch, folders = custom_folders, roots = scan_sources: (
+                    collect(expected_epoch, folders, roots)
+                ),
             )
-        except _CompatLocalCacheChanged:
+        except _CompatLocalCacheChanged as changed:
+            superseded = changed.models
             continue
+    # Invalidations are outpacing the walk, so no scan will ever confirm as
+    # current. Answer with the freshest one (the loop only reaches here through
+    # the retry path, so there is always one) instead of rescanning forever.
+    logger.warning("Compat local inventory kept racing cache invalidations; serving the last scan")
+    return superseded
 
 
 @router.get("/local", response_model = LocalModelListResponse)

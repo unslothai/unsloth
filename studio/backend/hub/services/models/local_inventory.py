@@ -59,8 +59,17 @@ _local_inventory_flights: dict[
 ] = {}
 
 
+# Retrying a superseded scan is only worth it while invalidations are occasional;
+# past this the endpoint must answer instead of restarting the walk forever.
+_LOCAL_INVENTORY_MAX_ATTEMPTS = 8
+
+
 class _LocalCacheChanged(RuntimeError):
-    pass
+    def __init__(self, response: LocalModelListResponse) -> None:
+        super().__init__("local inventory sources changed during the scan")
+        # Carried so the attempt cap can serve the freshest scan it has instead
+        # of looping forever or answering with nothing.
+        self.response = response
 
 
 # Local aliases keep the extracted code close to the original implementation.
@@ -861,15 +870,11 @@ async def _scan_local_models_response(
 
 async def list_local_models_response(models_dir: str = "./models") -> LocalModelListResponse:
     """Coalesce overlapping local inventory requests for the same models root."""
-    custom_folders = await _load_custom_folders()
-    sources = _local_inventory_sources()
 
-    async def scan_and_classify(expected_epoch: int) -> LocalModelListResponse:
-        response = await _scan_local_models_response(models_dir, custom_folders, sources)
-        if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
-            raise _LocalCacheChanged
-        # These rows feed the same pickers as /api/models/local. Classify inside the shared
-        # worker so retrying waiters do not repeat GGUF metadata reads.
+    def classify(response: LocalModelListResponse) -> LocalModelListResponse:
+        # These rows feed the same pickers as /api/models/local. Classified inside the
+        # shared worker so retrying waiters do not repeat GGUF metadata reads, and only
+        # for a response that is actually about to be served.
         try:
             from routes.models import _local_model_task
             models = [
@@ -881,9 +886,22 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
             logger.warning("Could not classify local model tasks: %s", e)
             return response
 
+    async def scan_and_classify(
+        expected_epoch: int, custom_folders: list[dict], sources: _LocalInventorySources
+    ) -> LocalModelListResponse:
+        response = await _scan_local_models_response(models_dir, custom_folders, sources)
+        if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
+            raise _LocalCacheChanged(response)
+        return classify(response)
+
     # Discard obsolete results and retry their waiters against the current cache epoch.
-    while True:
+    superseded: Optional[LocalModelListResponse] = None
+    for _attempt in range(_LOCAL_INVENTORY_MAX_ATTEMPTS):
+        # Epoch first: the sources and folders below are read after it, so any
+        # change to them lands in a later epoch and the post-scan check sees it.
         epoch = hf_cache_scan.hf_cache_scans_epoch()
+        custom_folders = await _load_custom_folders()
+        sources = _local_inventory_sources()
         key: _LocalInventoryKey = (
             _inventory_path_identity(models_dir),
             sources,
@@ -896,10 +914,18 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
             return await hf_cache_scan.shared_scan(
                 _local_inventory_flights,
                 key,
-                lambda expected_epoch = epoch: scan_and_classify(expected_epoch),
+                lambda expected_epoch = epoch, folders = custom_folders, roots = sources: (
+                    scan_and_classify(expected_epoch, folders, roots)
+                ),
             )
-        except _LocalCacheChanged:
+        except _LocalCacheChanged as changed:
+            superseded = changed.response
             continue
+    # Invalidations are outpacing the walk, so no scan will ever confirm as
+    # current. Answer with the freshest one (the loop only reaches here through
+    # the retry path, so there is always one) instead of rescanning forever.
+    logger.warning("Local inventory kept racing cache invalidations; serving the last scan")
+    return classify(superseded)
 
 
 def get_models_folder_response() -> dict:

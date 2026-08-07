@@ -806,6 +806,38 @@ def test_shared_scan_scopes_tasks_to_event_loop():
     assert results == ["ok", "ok"] and flights == {}
 
 
+def test_local_inventory_scan_stops_retrying_under_constant_invalidation(monkeypatch):
+    """A churn rate above the scan rate must still answer, not walk the disk forever."""
+    from hub.services.models import local_inventory
+
+    epoch, scans = [0], []
+
+    async def fake_scan(models_dir, custom_folders, sources):
+        scans.append(1)
+        epoch[0] += 1              # every walk is superseded before it returns
+        return SimpleNamespace(models = [], model_copy = lambda update = None: SimpleNamespace(models = []))
+
+    async def no_folders():
+        return []
+
+    monkeypatch.setattr(local_inventory, "_scan_local_models_response", fake_scan)
+    monkeypatch.setattr(local_inventory, "_load_custom_folders", no_folders)
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: ("roots",))
+    monkeypatch.setattr(
+        local_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0]
+    )
+
+    async def run():
+        return await asyncio.wait_for(
+            local_inventory.list_local_models_response("./models"), timeout = 5
+        )
+
+    response = asyncio.run(run())
+    assert response is not None, "the capped loop must still answer"
+    assert len(scans) == local_inventory._LOCAL_INVENTORY_MAX_ATTEMPTS
+    assert local_inventory._local_inventory_flights == {}
+
+
 @pytest.mark.parametrize("change_kind", ["folders", "epoch"])
 def test_local_inventory_requests_share_scan(monkeypatch, change_kind):
     assert local_inventory._inventory_path_identity("\0") == "\0"
