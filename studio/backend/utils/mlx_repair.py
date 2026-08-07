@@ -42,6 +42,10 @@ from utils.uv_path_safety import uv_safe_path
 logger = structlog.get_logger(__name__)
 
 DISABLE_ENV_VAR = "UNSLOTH_DISABLE_MLX_AUTOREPAIR"
+# uv's wording when --python names a path it will not install into. Matched on the
+# stable leading clause only: uv appends the offending path and a "run `uv venv`"
+# hint, and has reworded the tail across releases.
+_UNRESOLVED_PYTHON_MARKER = "No virtual environment or system Python installation found"
 # Minimum versions unsloth-zoo requires on Apple Silicon (its pyproject darwin
 # deps). mlx-vlm especially must be >=0.4.4: an older one still imports but
 # breaks VLM Train/Export, so installing it would wrongly clear chat-only.
@@ -196,11 +200,53 @@ def _uv_executable() -> str | None:
     return None
 
 
-def _uv_install_cmd(*args: str) -> list[str] | None:
+def _venv_root() -> str | None:
+    """The venv directory this interpreter runs from, or None outside a venv.
+
+    `sys.prefix` differs from `sys.base_prefix` exactly when a venv is active, and
+    uv accepts a venv directory wherever it accepts an interpreter. Confirm the
+    marker file so a half-deleted tree is not offered to uv as a target."""
+    if sys.prefix == sys.base_prefix:
+        return None
+    try:
+        if (Path(sys.prefix) / "pyvenv.cfg").is_file():
+            return sys.prefix
+    except OSError:
+        pass
+    return None
+
+
+def _interpreter_resolves() -> bool:
+    """True when sys.executable is a path uv can still resolve.
+
+    A venv's bin/python is a symlink into the base interpreter. macOS breaks that
+    link routinely -- a Homebrew or python.org point upgrade moves the target and
+    the venv keeps a dangling symlink, at which point uv reports "No virtual
+    environment or system Python installation found for path ...". The running
+    process survives because it already mapped the binary, so this is only
+    detectable by re-resolving the path."""
+    try:
+        return bool(sys.executable) and Path(sys.executable).resolve(strict = True).exists()
+    except (OSError, RuntimeError):
+        return False
+
+
+def _uv_python_target() -> str:
+    """What to hand uv's --python. Prefer the interpreter, fall back to the venv.
+
+    Passing the venv root lets the self-heal still work when bin/python dangles,
+    which is the common macOS failure above; uv reads pyvenv.cfg and installs into
+    that environment's site-packages either way."""
+    if _interpreter_resolves():
+        return sys.executable
+    return _venv_root() or sys.executable
+
+
+def _uv_install_cmd(*args: str, python: str | None = None) -> list[str] | None:
     uv = _uv_executable()
     if not uv:
         return None
-    return [uv, "pip", "install", "--python", sys.executable, *args]
+    return [uv, "pip", "install", "--python", python or _uv_python_target(), *args]
 
 
 def _mlx_install_env() -> dict[str, str]:
@@ -218,8 +264,17 @@ def _mlx_install_env() -> dict[str, str]:
     by silently backtracking mlx-vlm to an old, unsupported version (uv honours
     UV_OVERRIDE; plain pip ignores it, so the transformers constraint below is the
     pip-path safety net). We set UV_OVERRIDE ourselves, so a poisoned one in the
-    process env is ignored."""
+    process env is ignored.
+
+    VIRTUAL_ENV is set from sys.prefix rather than forwarded from os.environ, for
+    the same reason: it names the environment uv must install into, and taking it
+    from the process env would let a caller redirect the install elsewhere. It is
+    the second half of the dangling-symlink recovery in _uv_python_target -- with
+    it uv can identify the target environment even when bin/python no longer
+    resolves."""
     env = {key: os.environ[key] for key in _MLX_ENV_ALLOWLIST if key in os.environ}
+    if (venv_root := _venv_root()) is not None:
+        env["VIRTUAL_ENV"] = venv_root
     override = (
         Path(__file__).resolve().parents[1]
         / "requirements"
@@ -271,13 +326,14 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
     constraint_path = None
     try:
         constraint_args, constraint_path = _transformers_constraint_args()
-        cmd = _uv_install_cmd(
+        install_args = (
             "--upgrade",
             _ONLY_BINARY_ARG,
             *_MLX_REINSTALL_ARGS,
             *constraint_args,
             *MLX_PACKAGES,
         )
+        cmd = _uv_install_cmd(*install_args)
         if cmd is None:
             logger.warning(
                 "MLX self-heal requires uv so Unsloth can apply dependency overrides; "
@@ -285,9 +341,9 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
             )
             return False
         logger.info("MLX self-heal: installing %s", ", ".join(MLX_PACKAGES))
-        result = subprocess.run(
-            cmd,
-            env = _mlx_install_env(),
+        env = _mlx_install_env()
+        run_kwargs = dict(
+            env = env,
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
@@ -295,6 +351,27 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
             errors = "replace",
             timeout = timeout,
         )
+        result = subprocess.run(cmd, **run_kwargs)
+        # uv could not resolve the interpreter we named. _uv_python_target only
+        # falls back when sys.executable fails to re-resolve, and uv rejects paths
+        # for its own reasons too (an unreadable pyvenv.cfg, a venv built by a
+        # since-removed interpreter). Retry once against the venv directory before
+        # giving up, so a broken bin/python does not leave Train disabled forever.
+        if (
+            result.returncode != 0
+            and _UNRESOLVED_PYTHON_MARKER in (result.stdout or "")
+            and (venv_root := _venv_root()) is not None
+            and venv_root != _uv_python_target()
+        ):
+            retry_cmd = _uv_install_cmd(*install_args, python = venv_root)
+            if retry_cmd is not None:
+                logger.info(
+                    "MLX self-heal: uv could not resolve %s; retrying against the "
+                    "environment at %s",
+                    _uv_python_target(),
+                    venv_root,
+                )
+                result = subprocess.run(retry_cmd, **run_kwargs)
     except subprocess.TimeoutExpired:
         logger.warning("MLX self-heal timed out after %ss; staying chat-only", timeout)
         return False
@@ -309,6 +386,21 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
                 pass
     if result.returncode != 0:
         tail = (result.stdout or "")[-2000:]
+        if _UNRESOLVED_PYTHON_MARKER in (result.stdout or ""):
+            # Both attempts failed to name an environment uv accepts, so the venv
+            # itself is broken rather than merely missing MLX. Say which command
+            # repairs it; the raw uv text tells the user to run `uv venv`, which
+            # would build an environment Unsloth does not manage.
+            logger.warning(
+                "MLX self-heal could not use the Unsloth environment at %s: uv did not "
+                "recognise it as a virtual environment. This usually means the venv's "
+                "bin/python points at an interpreter that has since been upgraded or "
+                "removed. Train/Export stay disabled until the environment is rebuilt: "
+                "run `unsloth studio update`. uv said:\n%s",
+                _venv_root() or sys.prefix,
+                tail,
+            )
+            return False
         logger.warning("MLX self-heal failed (staying chat-only):\n%s", tail)
         return False
     importlib.invalidate_caches()
