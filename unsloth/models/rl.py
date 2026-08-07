@@ -588,6 +588,7 @@ def _wrap_sft_evaluate_cap(trainer_cls):
     Both entry points, not just `evaluate`: `predict(test_dataset = ...)` comes
     from the base Trainer and reaches the same collator by the same route.
     """
+
     def _cap(dataset, cap):
         names = getattr(dataset, "column_names", None) or ()
         if "input_ids" not in names:
@@ -632,11 +633,9 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         wrapped._unsloth_eval_cap_wrapped = True
         return wrapped
 
-    for name, keyword in (("evaluate", "eval_dataset"),
-                          ("predict", "test_dataset")):
+    for name, keyword in (("evaluate", "eval_dataset"), ("predict", "test_dataset")):
         original = getattr(trainer_cls, name, None)
-        if original is None or getattr(
-                original, "_unsloth_eval_cap_wrapped", False):
+        if original is None or getattr(original, "_unsloth_eval_cap_wrapped", False):
             continue
         setattr(trainer_cls, name, _make(original, keyword))
 

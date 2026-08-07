@@ -1078,7 +1078,6 @@ def test_wrapping_evaluate_twice_is_a_no_op():
     assert Stub.evaluate is first
 
 
-
 def test_a_none_completion_only_loss_does_not_filter_a_pretokenized_split():
     """TRL resolves `None` from the dataset shape:
 
@@ -1091,7 +1090,7 @@ def test_a_none_completion_only_loss_does_not_filter_a_pretokenized_split():
     full-sequence supervision, and could empty the split outright."""
     block = _padding_free_codegen_block()
     i = block.index("_unsloth_col_loss")
-    window = block[i:i + 400]
+    window = block[i : i + 400]
     assert "is None" in window and "'prompt' in _unsloth_cols" in window
 
 
@@ -1103,10 +1102,18 @@ def test_the_predict_entry_point_is_capped_too():
     seen = {}
 
     class Stub:
-        def evaluate(self, eval_dataset = None, **kw):
+        def evaluate(
+            self,
+            eval_dataset = None,
+            **kw,
+        ):
             seen["eval"] = eval_dataset
 
-        def predict(self, test_dataset = None, **kw):
+        def predict(
+            self,
+            test_dataset = None,
+            **kw,
+        ):
             seen["predict"] = test_dataset
 
     _wrap_sft_evaluate_cap(Stub)
@@ -1125,7 +1132,11 @@ def test_a_trainer_without_predict_is_not_broken():
     from unsloth.models.rl import _wrap_sft_evaluate_cap
 
     class OnlyEvaluate:
-        def evaluate(self, eval_dataset = None, **kw):
+        def evaluate(
+            self,
+            eval_dataset = None,
+            **kw,
+        ):
             return eval_dataset
 
     _wrap_sft_evaluate_cap(OnlyEvaluate)
