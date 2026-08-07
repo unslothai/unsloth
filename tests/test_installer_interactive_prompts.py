@@ -95,7 +95,7 @@ _BARE_READ = re.compile(
     r"(?:^|[;&(]|\b(?:if|elif|then|else)\b)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
     # No variable name at all is valid: the answer lands in $REPLY.
     r"read(?:\s+(?:-[a-zA-Z0-9]+|[\d.]+|\"\"|''))*(?:\s+[A-Za-z_][A-Za-z0-9_]*)*"
-    r"(?:\s*(?:;|\|\||&&).*)?\s*$"
+    r"(?:\s*(?:;|\|\||&&).*)?\s*(?:#.*)?$"
 )
 _LOOP = re.compile(r"\b(?:while|until|for)\b")
 
@@ -270,24 +270,35 @@ def blank_comments(source: str, script: str) -> str:
     powershell = script.endswith(".ps1")
     batch = script.endswith(".bat")
     python = script.endswith(".py")
-    for line in source.splitlines():
+    opened = -1
+    for index, line in enumerate(source.splitlines()):
         if powershell and in_block:
             # Code can follow the terminator on the same line.
             lines.append(line.split("#>", 1)[1] if "#>" in line else "")
             in_block = "#>" not in line
             continue
-        if python:
-            line, in_docstring = _outside_docstring(line, in_docstring)
-        if batch and re.match(r"\s*(?:REM\b|::)", line, re.IGNORECASE):
+        # A comment naming a delimiter is not one: reading it as an opener would
+        # blank the rest of the file and take every prompt in it out of the scan.
+        if _is_comment(line) or (batch and re.match(r"\s*(?:REM\b|::)", line, re.IGNORECASE)):
             lines.append("")
             continue
+        if python:
+            line, in_docstring = _outside_docstring(line, in_docstring)
+            if in_docstring and opened < 0:
+                opened = index
+            elif not in_docstring:
+                opened = -1
         if powershell:
             line = _INLINE_BLOCK.sub("", line)
             if "<#" in line:
                 lines.append(line.split("<#", 1)[0])
-                in_block = True
+                in_block, opened = True, index
                 continue
-        lines.append("" if _is_comment(line) else line)
+        lines.append(line)
+    if in_block or in_docstring:
+        # Unterminated, so it was never a comment or a docstring. Put the lines back.
+        original = source.splitlines()
+        lines[opened + 1 :] = original[opened + 1 :]
     return "\n".join(lines)
 
 
@@ -454,6 +465,8 @@ def test_every_installer_script_is_scanned():
         "studio/install_*.py",
         "scripts/install*.sh",
         "scripts/install*.ps1",
+        "uninstall*.sh",
+        "uninstall*.ps1",
         "scripts/uninstall*.sh",
         "scripts/uninstall*.ps1",
     )
@@ -499,6 +512,34 @@ def test_helpers_the_installers_invoke_are_scanned():
         f"helpers invoked by the installers but not scanned: {unscanned}. "
         f"Add them to SCANNED_SCRIPTS in tests/test_installer_interactive_prompts.py "
         f"and to the paths filter in .github/workflows/cross-platform-parity-ci.yml."
+    )
+
+
+def test_the_workflow_runs_for_every_scanned_script():
+    """A scanned script whose path filter is missing is only checked on the PR that
+    registers it. Read the filters back rather than keeping two lists in step by
+    hand. Parsed with a regex, not yaml: the parity runner installs pytest only."""
+    workflow = (REPO_ROOT / ".github/workflows/cross-platform-parity-ci.yml").read_text(
+        encoding = "utf-8"
+    )
+    patterns = re.findall(r"^\s*-\s*'([^']+)'\s*$", workflow, flags = re.MULTILINE)
+    # GitHub's `*` stops at a path separator; `**` does not.
+    matchers = [
+        re.compile(
+            re.escape(pattern)
+            .replace(r"\*\*", "\x00")
+            .replace(r"\*", "[^/]*")
+            .replace("\x00", ".*")
+            + "$"
+        )
+        for pattern in patterns
+    ]
+    uncovered = sorted(
+        script for script in SCANNED_SCRIPTS if not any(m.match(script) for m in matchers)
+    )
+    assert not uncovered, (
+        f"scanned scripts with no path filter in cross-platform-parity-ci.yml: {uncovered}. "
+        f"A later PR touching only one of these would not run this guard."
     )
 
 
@@ -627,6 +668,34 @@ def test_detects_an_assignment_prefixed_read():
     source = 'printf "  Continue with installation? "\nIFS= read -r _reply\n'
     assert [question for _, _, question in find_prompts("install.sh", source)] == [
         "continue with installation?",
+    ]
+
+
+def test_a_comment_naming_a_delimiter_opens_nothing():
+    """The heredoc lesson applied to the other two languages: reading a delimiter out
+    of a comment blanks the rest of the file and takes every prompt in it with it."""
+    python_source = '# opening delimiter is """\nprint("  Enable telemetry? ")\n_reply = input()\n'
+    assert [
+        question for _, _, question in find_prompts("studio/install_python_stack.py", python_source)
+    ] == ["enable telemetry?"]
+    pwsh_source = '# block comments begin with <#\n$reply = Read-Host "  Enable telemetry? "\n'
+    assert [question for _, _, question in find_prompts("install.ps1", pwsh_source)] == [
+        "enable telemetry?",
+    ]
+
+
+def test_an_unterminated_docstring_blanks_nothing():
+    source = '_text = """open\nprint("  Enable telemetry? ")\n_reply = input()\n'
+    questions = [
+        question for _, _, question in find_prompts("studio/install_python_stack.py", source)
+    ]
+    assert "enable telemetry?" in questions
+
+
+def test_detects_a_read_with_a_trailing_comment():
+    source = 'printf "  Enable telemetry? "\nread -r _reply # use the inherited terminal\n'
+    assert [question for _, _, question in find_prompts("install.sh", source)] == [
+        "enable telemetry?",
     ]
 
 
