@@ -3,8 +3,8 @@
 
 """Fourth review pass: status reads that must never block, and the PID registry.
 
-The STT status route reads these sidecars on the event loop, so anything it
-touches has to answer while a lifecycle operation holds the sidecar's lock.
+The status route reads these sidecars on the event loop, so everything it touches
+has to answer while a lifecycle operation holds the sidecar's lock.
 """
 
 import subprocess
@@ -33,8 +33,7 @@ class _SlowlyDyingProcess:
         pass
 
     def wait(self, timeout = None):
-        # Blocks until the test lets go, standing in for a server that takes
-        # seconds to release its port and VRAM.
+        # Blocks until the test lets go, like a server slow to release its port and VRAM.
         if not self._release.wait(timeout = timeout):
             raise subprocess.TimeoutExpired("llama-server", timeout)
         self._returncode = -15
@@ -54,8 +53,8 @@ def _resident(sidecar: MtmdSttSidecar, process) -> None:
 def test_status_reads_do_not_block_behind_a_reap(monkeypatch):
     """loaded_model/device/is_loading answer while unload() reaps under _lock.
 
-    The status route reads these on the event loop, and training admission
-    reads them too, so neither can wait on a dying server.
+    The event loop and training admission both read these, so neither can wait
+    on a dying server.
     """
     monkeypatch.setattr(mtmd_mod, "forget_pid", lambda pid: None)
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
@@ -87,9 +86,8 @@ def test_status_reads_do_not_block_behind_a_reap(monkeypatch):
 def test_a_reaping_server_stays_visible_to_training_admission(monkeypatch):
     """A dying llama-server still holds VRAM, so it must still read as resident.
 
-    _release_locked() clears the fields, so clearing them before the reap would
-    let summarize_resident_stt() report nothing while the process is alive, and
-    training would start into memory it does not have.
+    Clearing the fields before the reap would let summarize_resident_stt() report
+    nothing while the process is alive, and training would start into its memory.
     """
     monkeypatch.setattr(mtmd_mod, "forget_pid", lambda pid: None)
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
@@ -185,10 +183,8 @@ def test_status_reads_do_not_block_during_a_llama_cpp_update():
 
 
 def test_ggml_download_drops_its_adopted_pid(monkeypatch):
-    """spawn_download() adopts a PID, so the ggml path must reap it properly.
-
-    A PID left adopted can be reused, and terminate_all would then signal
-    whatever inherited it.
+    """spawn_download() adopts a PID; left adopted it can be reused, and
+    terminate_all would then signal whatever inherited it.
     """
     forgotten = []
 
@@ -251,8 +247,7 @@ def test_download_probe_is_memoised_then_dropped_when_a_download_ends(monkeypatc
     assert mtmd_mod.is_model_downloaded("qwen3-asr-0.6b") is True
     assert len(calls) == 1, "the memo did not spare the second probe"
 
-    # A finished download changes what is on disk, so the answer is dropped
-    # rather than left to expire: the panel settles on its next poll.
+    # A finished download changes the disk, so the answer is dropped, not left to expire.
     mtmd_mod._forget_downloaded_probe("qwen3-asr-0.6b")
     assert mtmd_mod.is_model_downloaded("qwen3-asr-0.6b") is True
     assert len(calls) == 2
@@ -281,14 +276,13 @@ def test_download_probe_expires(monkeypatch):
 def test_an_invalidation_mid_probe_discards_the_stale_answer(monkeypatch):
     """A download finishing under a probe must not be undone by that probe.
 
-    The probe runs outside the lock, so it can read an incomplete snapshot,
-    then write False back after the download's invalidation already cleared the
-    entry. The model would then read as missing for a whole TTL.
+    The probe runs outside the lock, so it can write a stale False back over the
+    download's invalidation, and the model then reads as missing for a whole TTL.
     """
     mtmd_mod._forget_downloaded_probe()
 
     def probe_then_invalidate(model_id):
-        # Stands in for the download completing while this probe is in flight.
+        # The download completing while this probe is in flight.
         mtmd_mod._forget_downloaded_probe(model_id)
         return None
 
@@ -344,7 +338,7 @@ def test_download_status_reports_progress_without_holding_the_lock():
     observed = []
 
     def slow_cache_bytes(model_id = None):
-        # The lock is free while this runs, or the assert below deadlocks.
+        # The lock must be free while this runs.
         observed.append(state._lock.acquire(blocking = False))
         if observed[-1]:
             state._lock.release()

@@ -212,15 +212,12 @@ def _cached_model_paths(model_id: str) -> Optional[tuple[str, str]]:
     return model, mmproj
 
 
-# The status endpoint asks for every model and the panel polls it every 750ms.
-# Each answer is two hf_hub_download() calls, which resolve refs and stat the
-# snapshot even local-only, so memoise it briefly. Only the boolean: a load
-# resolves the real paths every time.
+# The panel polls every model every 750ms, and each answer is two hf_hub_download()
+# calls that stat the snapshot even local-only, so memoise the boolean briefly.
 _DOWNLOADED_PROBE_TTL_SECONDS = 2.0
 _downloaded_probe_lock = threading.Lock()
 _downloaded_probe: dict[str, tuple[float, bool]] = {}
-# Bumped by every invalidation, so a probe that started earlier cannot write its
-# now-stale answer back over a cleared entry.
+# Bumped on every invalidation so an in-flight probe cannot overwrite a cleared entry.
 _downloaded_probe_generation = 0
 
 
@@ -245,8 +242,7 @@ def is_model_downloaded(model_id: str) -> bool:
         generation = _downloaded_probe_generation
     downloaded = _cached_model_paths(model_id) is not None
     with _downloaded_probe_lock:
-        # Timestamp now, not before the probe: a slow cache would otherwise
-        # store an entry that is already most of the way to expiry.
+        # Timestamp now, not before the probe: a slow cache would store a near-expired entry.
         if generation == _downloaded_probe_generation:
             _downloaded_probe[model_id] = (time.monotonic(), downloaded)
     return downloaded
@@ -275,8 +271,7 @@ class _MtmdDownloadState:
                 "cancelled": self._cancelled,
                 "bytes_total": self._total_bytes if downloading else None,
             }
-        # Outside the lock: _cache_bytes() walks the cache blobs, and a cancel
-        # should not queue behind that.
+        # Outside the lock: _cache_bytes() walks the cache blobs, and a cancel must not queue.
         snapshot["bytes_done"] = self._cache_bytes(model_id) if downloading else None
         return snapshot
 
@@ -292,10 +287,7 @@ class _MtmdDownloadState:
         return True
 
     def _cache_bytes(self, model_id: Optional[str] = None) -> Optional[int]:
-        """Best-effort progress: bytes in this repo's cache blobs.
-
-        Takes the model id so status() can call it after dropping the lock.
-        """
+        """Best-effort progress: cache blob bytes. model_id lets status() call it unlocked."""
         try:
             from core.inference.stt_sidecar import _repo_cache_dir
 
@@ -386,8 +378,7 @@ class _MtmdDownloadState:
             with self._lock:
                 self._error = f"Download failed for '{model_id}'."
         finally:
-            # The memo is stale however this ended. Dropping it here is what
-            # lets the panel settle on its next poll, not a TTL later.
+            # The memo is stale however this ended; dropping it now lets the next poll settle.
             _forget_downloaded_probe(model_id)
 
 
@@ -434,16 +425,15 @@ class MtmdSttSidecar:
 
     @property
     def loaded_model(self) -> Optional[str]:
-        # Lock-free, like stt_ggml_sidecar.py: _lock is held across a reap and
-        # across a whole llama.cpp install, and the status route reads this on
-        # the event loop. _process_alive() snapshots _process before poll(), so
-        # a concurrent unload is safe.
+        # Lock-free: _lock is held across reaps and llama.cpp installs, but the status
+        # route reads this on the event loop. _process_alive() snapshots _process before
+        # poll(), so a concurrent unload is safe.
         return self._model_id if self._process_alive() else None
 
     @property
     def device(self) -> Optional[str]:
-        # Derived, not a second probe: two _process_alive() calls can straddle
-        # the publish and report a device with a null model.
+        # Derived, not a second probe: two probes can straddle the publish and
+        # report a device with no model.
         return "llama.cpp" if self.loaded_model else None
 
     def is_loading(self) -> bool:
@@ -484,9 +474,8 @@ class MtmdSttSidecar:
         self._generation += 1
         process = self._process
         try:
-            # Reap before clearing, not after: a lock-free reader during the
-            # reap has to still see the model, or training admission starts
-            # while the dying llama-server holds its VRAM.
+            # Reap before clearing: a lock-free reader mid-reap must still see the
+            # model, or training starts while the dying server still holds its VRAM.
             _reap(process)
         finally:
             self._process = None
@@ -597,10 +586,9 @@ class MtmdSttSidecar:
                 if self._gpu_disabled == training or self._active_requests:
                     self._schedule_idle_unload_locked()
                     return
-            # Announced before the slow part: the probe and the reap below take
-            # seconds, and is_loading() is read lock-free, so a training start
-            # landing there would see False and wait out the startup in unload()
-            # rather than cancel this load.
+            # Announced before the slow probe and reap: is_loading() is read lock-free,
+            # so a training start would otherwise see False and wait out the startup in
+            # unload() instead of cancelling this load.
             cancel_event = threading.Event()
             self._load_cancel_event = cancel_event
             self._loading = True
@@ -619,8 +607,7 @@ class MtmdSttSidecar:
                 self._release_locked()
                 released = True
             finally:
-                # Nothing started, so take the announcement back. Past here the
-                # startup owns it and clears it in its own finally.
+                # Nothing started, so take the announcement back; past here the startup owns it.
                 if not released:
                     self._loading = False
                     self._load_cancel_event = None
@@ -719,8 +706,7 @@ class MtmdSttSidecar:
                         return True
             except Exception:
                 pass
-            # Outside the except: a 2xx that is not 200 would spin this loop
-            # with no delay for the whole startup timeout.
+            # Outside the except: a non-200 2xx would otherwise spin this loop with no delay.
             time.sleep(0.25)
         return False
 
