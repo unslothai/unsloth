@@ -39,6 +39,18 @@ on:
       - '.github/actions/install-unsloth-local/action.yml'
   push:
     branches: [main, pip]
+    paths:
+      - 'studio/**'
+      - 'unsloth/**'
+      - 'unsloth_cli/**'
+      - 'install.sh'
+      - 'pyproject.toml'
+      - 'tests/studio/**'
+      - '.github/scripts/run-studio-permission-browser.sh'
+      - '.github/workflows/studio-ui-smoke.yml'
+      - '.github/scripts/boot-studio-api-only.sh'
+      - '.github/scripts/wait-for-health.sh'
+      - '.github/actions/install-unsloth-local/action.yml'
   workflow_dispatch:
 
 concurrency:

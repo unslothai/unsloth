@@ -43,6 +43,17 @@ on:
       - '.github/scripts/wait-for-health.sh'
   push:
     branches: [main, pip]
+    paths:
+      - 'studio/**'
+      - 'unsloth/**'
+      - 'unsloth_cli/**'
+      - 'install.ps1'
+      - 'pyproject.toml'
+      - 'tests/studio_setup_ps1/**'
+      - 'tests/studio/*.ps1'
+      - '.github/workflows/studio-windows-inference-smoke.yml'
+      - '.github/scripts/boot-studio-api-only.sh'
+      - '.github/scripts/wait-for-health.sh'
   workflow_dispatch:
 
 concurrency:

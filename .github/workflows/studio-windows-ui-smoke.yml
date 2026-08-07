@@ -28,6 +28,17 @@ on:
       - '.github/scripts/wait-for-health.sh'
   push:
     branches: [main, pip]
+    paths:
+      - 'studio/**'
+      - 'unsloth/**'
+      - 'unsloth_cli/**'
+      - 'install.ps1'
+      - 'pyproject.toml'
+      - 'tests/studio/**'
+      - '.github/scripts/run-studio-permission-browser.sh'
+      - '.github/workflows/studio-windows-ui-smoke.yml'
+      - '.github/scripts/boot-studio-api-only.sh'
+      - '.github/scripts/wait-for-health.sh'
   workflow_dispatch:
 
 concurrency:

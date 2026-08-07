@@ -21,6 +21,13 @@ on:
       - '.github/actions/install-unsloth-local/action.yml'
   push:
     branches: [main, pip]
+    paths:
+      - 'studio/install_llama_prebuilt.py'
+      - 'studio/setup.sh'
+      - 'install.sh'
+      - '.github/scripts/assert-llama-loads.sh'
+      - '.github/workflows/studio-mac-install-matrix.yml'
+      - '.github/actions/install-unsloth-local/action.yml'
   workflow_dispatch:
 
 concurrency:

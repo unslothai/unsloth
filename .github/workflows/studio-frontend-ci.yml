@@ -22,6 +22,13 @@ on:
       - '.github/workflows/studio-frontend-ci.yml'
   push:
     branches: [main, pip]
+    paths:
+      - 'studio/frontend/**'
+      - 'scripts/check_frontend_dep_removal.py'
+      - 'tests/studio/test_frontend_dep_removal.py'
+      - 'scripts/sync_allow_scripts_pins.py'
+      - 'tests/studio/test_sync_allow_scripts_pins.py'
+      - '.github/workflows/studio-frontend-ci.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

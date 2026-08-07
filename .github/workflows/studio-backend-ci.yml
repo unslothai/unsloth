@@ -41,6 +41,16 @@ on:
       - '.github/workflows/studio-backend-ci.yml'
   push:
     branches: [main, pip]
+    paths:
+      - 'studio/**'
+      - 'unsloth/**'
+      - 'unsloth_cli/**'
+      - 'tests/**'
+      - 'install.sh'
+      - 'install.ps1'
+      - 'scripts/**'
+      - 'pyproject.toml'
+      - '.github/workflows/studio-backend-ci.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
