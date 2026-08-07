@@ -17,6 +17,7 @@ from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
     ChatMessageConflictError,
     ChatMessageProtectedError,
+    ChatThreadPreconditionFailed,
     CorruptSettingsError,
     clear_chat_history,
     count_chat_threads,
@@ -70,6 +71,10 @@ class ChatThread(BaseModel):
 
 class ChatThreadPatch(BaseModel):
     title: Optional[str] = None
+    # Apply only while the row still holds this title, so a rename beats a background rewrite.
+    expectedTitle: Optional[str] = None
+    # Apply only while this is still the opening user message, so a title from a deleted one is rejected.
+    expectedOpeningMessageId: Optional[str] = None
     modelType: Optional[Literal["base", "lora", "model1", "model2"]] = None
     modelId: Optional[str] = None
     pairId: Optional[str] = None
@@ -290,6 +295,8 @@ async def patch_thread(
     current_subject: str = Depends(get_current_subject),
 ):
     patch = payload.model_dump(exclude_unset = True)
+    expected_title = patch.pop("expectedTitle", None)
+    expected_opening_message_id = patch.pop("expectedOpeningMessageId", None)
     for field in ("title", "modelType", "modelId", "archived", "createdAt", "updatedAt"):
         if field in patch and patch[field] is None:
             raise HTTPException(status_code = 400, detail = f"{field} cannot be null")
@@ -298,10 +305,18 @@ async def patch_thread(
             status_code = 404,
             detail = f"Project {patch['projectId']} not found",
         )
-    thread = update_chat_thread(
-        thread_id,
-        patch,
-    )
+    try:
+        thread = update_chat_thread(
+            thread_id,
+            patch,
+            expected_title = expected_title,
+            expected_opening_message_id = expected_opening_message_id,
+        )
+    except ChatThreadPreconditionFailed:
+        raise HTTPException(
+            status_code = 409,
+            detail = f"Thread {thread_id} changed since it was read",
+        )
     if thread is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     return ChatThread(**thread)

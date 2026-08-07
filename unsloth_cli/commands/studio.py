@@ -3376,7 +3376,16 @@ class _WindowsLauncherUpdateTransaction:
         try:
             os.replace(self.launcher, self.stale)
         except OSError as exc:
+            # Not fatal: an antivirus hold must not make the environment
+            # unupdatable. But say what it costs, because uv cannot then replace
+            # the launcher and the pip fallback drops --upgrade-package, so
+            # unsloth is left at its old version while everything else updates.
             typer.echo(f"Warning: could not move the Unsloth launcher aside: {exc}", err = True)
+            typer.echo(
+                "  unsloth itself may not be upgraded. Close anything holding "
+                f"{self.launcher} and re-run the update.",
+                err = True,
+            )
 
     def _retained_backup(self) -> Optional[Path]:
         """The backup, when it exists and is usable. Nothing to point users at otherwise."""

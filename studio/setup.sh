@@ -831,6 +831,65 @@ rm -rf "$REPO_ROOT/unsloth_compiled_cache"
 rm -rf "$SCRIPT_DIR/backend/unsloth_compiled_cache"
 rm -rf "$SCRIPT_DIR/tmp/unsloth_compiled_cache"
 
+# WebView caches keyed by the bundle id can keep serving the previous frontend
+# after an update. Cache-only: storage, cookies, settings, models and the studio
+# database are untouched.
+_clear_webview_caches() {
+    # No HOME: bail rather than let `set -u` abort or "" expand to /Library and /.cache.
+    [ -n "${HOME:-}" ] || return 0
+    _wvc_bid="ai.unsloth.studio"
+    _wvc_paths=()
+    # The app's version stamp dir (main.rs webview_profile_root), which on macOS
+    # is not the cache dir, so it is tracked separately.
+    _wvc_root=""
+    case "$(uname -s 2>/dev/null)" in
+        Darwin)
+            # WKWebView keeps every cache-typed store under Library/Caches/<bid>;
+            # Library/WebKit/<bid> is user storage and is left alone.
+            _wvc_paths=("$HOME/Library/Caches/$_wvc_bid")
+            _wvc_root="$HOME/Library/Application Support/$_wvc_bid"
+            ;;
+        Linux)
+            # wry points WebKitGTK's base-cache dir at the app data dir, so the
+            # caches sit beside localstorage/, databases/ and cookies, which stay.
+            # A relative XDG_DATA_HOME is invalid per the XDG spec and dropped by
+            # dirs, so match Tauri and use the default rather than rm -rf under
+            # whatever directory the installer runs from.
+            _wvc_data="${XDG_DATA_HOME:-$HOME/.local/share}"
+            case "$_wvc_data" in /*) ;; *) _wvc_data="$HOME/.local/share" ;; esac
+            _wvc_data="$_wvc_data/$_wvc_bid"
+            _wvc_paths=(
+                "$_wvc_data/WebKitCache"
+                "$_wvc_data/CacheStorage"
+                "$_wvc_data/serviceworkers"
+            )
+            _wvc_root="$_wvc_data"
+            ;;
+        *) return 0 ;;
+    esac
+    # Drop the version stamp first. An update runs while the old WebView still holds
+    # these files, so the rm below can fail; the app's own clear is the retry, and it
+    # is skipped while the stamp matches the running version. Unconditional, since a
+    # repair or a local rebuild leaves the version unchanged and a redundant clear on
+    # the next launch is the cheap side. An `if`, not `[ ... ] && rm`: under `set -e`
+    # that compound returns 1 when the guard is false and would abort the install.
+    if [ -n "$_wvc_root" ]; then
+        rm -f "$_wvc_root/.webview-cache-cleared" 2>/dev/null || true
+    fi
+    _wvc_cleared=false
+    for _wvc_p in "${_wvc_paths[@]}"; do
+        # -L too: a dangling symlink still occupies the path.
+        [ -e "$_wvc_p" ] || [ -L "$_wvc_p" ] || continue
+        rm -rf "$_wvc_p" 2>/dev/null && _wvc_cleared=true || true
+    done
+    if [ "$_wvc_cleared" = true ]; then
+        substep "cleared stale WebView caches ($_wvc_bid); settings and data kept"
+    fi
+    return 0
+}
+# Not called here: under `set -e` with no trap, clearing before the UNSLOTH_STUDIO_HOME
+# / STUDIO_HOME override is validated lets a typo'd override delete the cache, then abort.
+
 # ── Detect Colab ──
 IS_COLAB=false
 keynames=$'\n'$(printenv | cut -d= -f1)
@@ -875,10 +934,19 @@ if [ -n "$_studio_override" ]; then
 else
     STUDIO_HOME="$HOME/.unsloth/studio"
 fi
+
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
 VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
 VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"
 VENV_T5_510_DIR="$STUDIO_HOME/.venv_t5_510"
+
+# The override is validated, so a typo can no longer cost the cache. Venv-gated because
+# a writable-but-empty override still aborts at the venv check below, and clearing first
+# would cost the cache for a run that then does nothing; a fresh install has neither venv
+# nor cache. Still before any install work, while the old frontend is the one on disk.
+if [ -x "$VENV_DIR/bin/python" ]; then
+    _clear_webview_caches
+fi
 
 _STUDIO_OWNED_MARKER=".unsloth-studio-owned"
 _LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"

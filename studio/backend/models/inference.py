@@ -1179,6 +1179,14 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Enable/disable thinking/reasoning mode for supported models",
     )
+    continue_final_message: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Continue the trailing assistant message instead of starting a new "
+            "turn: the prompt ends mid-response so the model resumes token-exactly from "
+            "where it stopped. Requires the last message to have role 'assistant'."
+        ),
+    )
     reasoning_effort: Optional[
         Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
     ] = Field(

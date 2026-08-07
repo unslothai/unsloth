@@ -534,3 +534,45 @@ def test_the_update_lock_lives_outside_the_replaceable_venv(monkeypatch, studio,
 
     assert seen["venv_locks"] == []
     assert len(seen["home_locks"]) == 1
+
+
+def test_a_failed_move_aside_warns_that_unsloth_may_not_upgrade(
+    monkeypatch, studio, tmp_path, capsys
+):
+    # Aborting here would make an antivirus hold enough to render the
+    # environment unupdatable, which main did not do either. But the cost has to
+    # be visible: uv cannot replace a launcher it could not move, and the pip
+    # fallback drops --upgrade-package, so unsloth stays at its old version.
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
+    ran = []
+    seen = {}
+
+    real_replace = studio.os.replace
+
+    def refuse_move(source, destination):
+        # Only the move aside: patching os.replace wholesale would also break
+        # _atomic_copy's backup, and the test would then be passing on a
+        # compound failure rather than the one it names.
+        if str(destination).endswith(".update-stale"):
+            raise OSError("access is denied")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(studio.os, "replace", refuse_move)
+
+    def setup(**_kwargs):
+        ran.append(True)
+        # Sampled here: a successful update unlinks the backup on the way out.
+        seen["backup"] = (scripts / "unsloth.exe.update-backup").read_bytes()
+
+    monkeypatch.setattr(studio, "_run_setup_script", setup)
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
+
+    _update(studio)
+
+    assert ran == [True]
+    err = capsys.readouterr().err
+    assert "could not move the Unsloth launcher aside" in err
+    assert "may not be upgraded" in err
+    # The backup still succeeded, so this is the move-aside failure alone.
+    assert "could not back up" not in err
+    assert seen["backup"] == ORIGINAL_LAUNCHER

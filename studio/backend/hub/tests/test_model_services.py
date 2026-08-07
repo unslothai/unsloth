@@ -4467,6 +4467,311 @@ def test_dataset_status_includes_generation(monkeypatch):
     assert result.generation == 4
 
 
+def _write_local_model(
+    root: Path,
+    name: str,
+    config: dict,
+    *,
+    modules: bool = False,
+) -> Path:
+    path = root / name
+    path.mkdir(parents = True)
+    (path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    (path / "model.safetensors").write_bytes(b"\0" * 16)
+    if modules:
+        (path / "modules.json").write_text("[]", encoding = "utf-8")
+    return path
+
+
+@pytest.mark.parametrize(
+    "config, modules, expected",
+    [
+        ({"architectures": ["LlamaForCausalLM"], "model_type": "llama"}, False, True),
+        ({"architectures": ["T5ForConditionalGeneration"], "model_type": "t5"}, False, True),
+        ({"auto_map": {"AutoModelForCausalLM": "m.C"}, "model_type": "bert"}, False, True),
+        ({"architectures": ["BertModel"], "model_type": "bert"}, False, False),
+        ({"architectures": ["BertModel"], "model_type": "bert"}, True, False),
+        ({"architectures": ["RobertaForMaskedLM"], "model_type": "roberta"}, False, False),
+        ({"architectures": ["CLIPModel"], "model_type": "clip"}, False, False),
+        # Unknown architectures must fail OPEN: never hide a real chat model.
+        ({"architectures": ["SomeCustomNet"], "model_type": "custom"}, False, None),
+        ({}, False, None),
+    ],
+)
+def test_local_transformers_chat_classification(tmp_path, config, modules, expected):
+    """A safetensors dir is chat-capable on file format alone, so an embedding
+    export looked like a chat model, and auto-load tries the smallest first."""
+    path = _write_local_model(tmp_path, "row", config, modules = modules)
+    assert model_common._local_transformers_can_chat(path) is expected
+
+
+def test_local_embedding_model_is_not_chat_capable(tmp_path):
+    """End to end through the scanner: the row is still listed, since that is
+    how the user deletes it, but can_chat is false so auto-load skips it."""
+    _write_local_model(
+        tmp_path,
+        "all-MiniLM-L6-v2",
+        {"architectures": ["BertModel"], "model_type": "bert"},
+        modules = True,
+    )
+    _write_local_model(
+        tmp_path,
+        "tiny-llama",
+        {"architectures": ["LlamaForCausalLM"], "model_type": "llama"},
+    )
+    rows = {
+        row.display_name: row
+        for path in sorted(tmp_path.iterdir())
+        for row in model_common._classify_local_path(path, "models_dir")
+    }
+    assert rows["all-MiniLM-L6-v2"].capabilities.can_chat is False
+    assert rows["tiny-llama"].capabilities.can_chat is True
+    # Training and LoRA support are unchanged: this only gates chat.
+    assert rows["all-MiniLM-L6-v2"].capabilities.can_train is True
+
+
+def test_cached_encoder_repo_is_not_chat_capable(tmp_path):
+    """Cached rows build capabilities from file format too, so a cached BERT
+    looked like a chat model to auto-load."""
+    snapshot = _write_local_model(
+        tmp_path, "snap", {"architectures": ["BertModel"], "model_type": "bert"}
+    )
+    fields = cache_inventory._cache_inventory_fields(
+        "sentence-transformers/all-MiniLM-L6-v2",
+        "safetensors",
+        identity = cache_inventory._LoadIdentity(
+            load_id = str(snapshot), active_cache = False, load_snapshot = snapshot
+        ),
+    )
+    assert fields["capabilities"]["can_chat"] is False
+
+
+def test_cached_generative_repo_stays_chat_capable(tmp_path):
+    """Control for the gate above."""
+    snapshot = _write_local_model(
+        tmp_path, "snap", {"architectures": ["LlamaForCausalLM"], "model_type": "llama"}
+    )
+    fields = cache_inventory._cache_inventory_fields(
+        "unsloth/Llama-3.2-1B-Instruct",
+        "safetensors",
+        identity = cache_inventory._LoadIdentity(
+            load_id = str(snapshot), active_cache = False, load_snapshot = snapshot
+        ),
+    )
+    assert fields["capabilities"]["can_chat"] is True
+
+
+def test_cached_row_without_a_snapshot_keeps_its_format_capability(tmp_path):
+    """Fails open: no snapshot to inspect must not hide the row."""
+    fields = cache_inventory._cache_inventory_fields(
+        "unsloth/Llama-3.2-1B-Instruct",
+        "safetensors",
+        identity = cache_inventory._LoadIdentity(
+            load_id = "unsloth/Llama-3.2-1B-Instruct",
+            active_cache = True,
+            load_snapshot = None,
+        ),
+    )
+    assert fields["capabilities"]["can_chat"] is True
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"architectures": ["WhisperForConditionalGeneration"], "model_type": "whisper"},
+        {"architectures": ["SomeCustomHead"], "model_type": "whisper"},
+        {"architectures": ["VisionEncoderDecoderModel"], "model_type": "vision-encoder-decoder"},
+        {"architectures": ["MusicgenForConditionalGeneration"], "model_type": "musicgen"},
+    ],
+)
+def test_non_chat_conditional_generation_is_not_chat_capable(tmp_path, config):
+    """These end in ForConditionalGeneration but cannot answer a text turn, and
+    are small enough that the cascade would stop there. The managed cache
+    already hides Whisper; scan folders did not."""
+    path = _write_local_model(tmp_path, "row", config)
+    assert model_common._local_transformers_can_chat(path) is False
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"architectures": ["T5ForConditionalGeneration"], "model_type": "t5"},
+        {"architectures": ["Gemma3ForConditionalGeneration"], "model_type": "gemma3"},
+        {"architectures": ["BartForConditionalGeneration"], "model_type": "bart"},
+    ],
+)
+def test_real_conditional_generation_chat_models_are_unaffected(tmp_path, config):
+    """Guard on the list above: multimodal and seq2seq chat models must stay."""
+    path = _write_local_model(tmp_path, "row", config)
+    assert model_common._local_transformers_can_chat(path) is True
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"architectures": ["ViTModel"], "model_type": "vit"},
+        {"architectures": ["Dinov2Model"], "model_type": "dinov2"},
+        {"architectures": ["SwinModel"], "model_type": "swin"},
+        {"architectures": ["Wav2Vec2Model"], "model_type": "wav2vec2"},
+    ],
+)
+def test_bare_vision_and_audio_backbones_are_not_chat_capable(tmp_path, config):
+    """Their class names carry no task suffix, so only the model type gives them
+    away."""
+    path = _write_local_model(tmp_path, "row", config)
+    assert model_common._local_transformers_can_chat(path) is False
+
+
+def test_unreadable_config_never_fails_the_scan(tmp_path):
+    """One bad config.json must classify as unknown, not take the inventory
+    request down. Deep nesting raises RecursionError, which is neither
+    JSONDecodeError nor OSError."""
+    cases = {
+        "deep": "[" * 60000 + "]" * 60000,
+        "truncated": '{"architectures": ["Llam',
+        "not_an_object": '["a", "b"]',
+        "empty": "",
+    }
+    for name, body in cases.items():
+        path = tmp_path / name
+        path.mkdir()
+        (path / "config.json").write_text(body, encoding = "utf-8")
+        assert model_common._local_transformers_can_chat(path) is None, name
+
+
+def test_oversized_config_is_skipped_rather_than_read(tmp_path):
+    path = tmp_path / "huge"
+    path.mkdir()
+    (path / "config.json").write_text(
+        '{"architectures": ["LlamaForCausalLM"], "pad": "'
+        + "a" * (model_common._MAX_LOCAL_JSON_BYTES + 1)
+        + '"}',
+        encoding = "utf-8",
+    )
+    assert model_common._local_transformers_can_chat(path) is None
+
+
+def test_a_fifo_named_config_json_does_not_block_the_scan(tmp_path):
+    """read_text() on a FIFO with no writer blocks forever, hanging the scan."""
+    os = pytest.importorskip("os")
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("no mkfifo on this platform")
+    path = tmp_path / "fifo"
+    path.mkdir()
+    os.mkfifo(path / "config.json")
+    assert model_common._local_transformers_can_chat(path) is None
+
+
+@pytest.mark.parametrize(
+    "model_type",
+    ["siglip", "clip", "bert", "vit", "wav2vec2"],
+)
+def test_an_encoder_without_architectures_is_still_not_chat_capable(tmp_path, model_type):
+    """google/siglip2-* ships config.json with no architectures key, and the
+    encoder-only branch used to require one, so those rows stayed chat-capable
+    and sorted ahead of a real chat model."""
+    path = tmp_path / model_type
+    path.mkdir()
+    (path / "config.json").write_text(json.dumps({"model_type": model_type}), encoding = "utf-8")
+
+    assert model_common._local_transformers_can_chat(path) is False
+
+
+def test_a_causal_lm_without_architectures_still_fails_open(tmp_path):
+    """Control: keyed on the encoder-only type list, so an unknown type with no
+    architectures stays inconclusive."""
+    path = tmp_path / "custom"
+    path.mkdir()
+    (path / "config.json").write_text(json.dumps({"model_type": "some_new_llm"}), encoding = "utf-8")
+
+    assert model_common._local_transformers_can_chat(path) is None
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"model_type": "blip", "architectures": ["BlipForConditionalGeneration"]},
+        {"model_type": "blip-2", "architectures": ["Blip2ForConditionalGeneration"]},
+        {"model_type": "instructblip", "architectures": ["InstructBlipForConditionalGeneration"]},
+        {"model_type": "git", "architectures": ["GitForCausalLM"]},
+    ],
+)
+def test_an_image_captioner_is_not_chat_capable(tmp_path, config):
+    """These generate text, but only about an image, so a plain text turn fails,
+    and the smallest-first cascade would load one and stop looking."""
+    path = tmp_path / "captioner"
+    path.mkdir()
+    (path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+
+    assert model_common._local_transformers_can_chat(path) is False
+
+
+@pytest.mark.parametrize(
+    "architecture",
+    ["CLIPTextModelWithProjection", "CLIPVisionModelWithProjection", "CLIPTextModel"],
+)
+def test_a_projection_head_encoder_is_not_chat_capable(tmp_path, architecture):
+    """The encoder-only branch also required the name to end in Model, so a
+    projection variant fell through and kept its format capability."""
+    path = tmp_path / "proj"
+    path.mkdir()
+    (path / "config.json").write_text(
+        json.dumps({"model_type": "clip", "architectures": [architecture]}), encoding = "utf-8"
+    )
+
+    assert model_common._local_transformers_can_chat(path) is False
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"model_type": "bert", "architectures": ["BertLMHeadModel"]},
+        {"model_type": "t5", "architectures": ["T5ForConditionalGeneration"]},
+        {"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]},
+    ],
+)
+def test_a_generative_head_still_wins_over_the_encoder_type(tmp_path, config):
+    """Control for both gates above: a generative architecture is accepted
+    before the type list is consulted."""
+    path = tmp_path / "gen"
+    path.mkdir()
+    (path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+
+    assert model_common._local_transformers_can_chat(path) is True
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"model_type": "llama", "architectures": ["LlamaModel"]},
+        {"model_type": "gpt2", "architectures": ["GPT2Model"]},
+        {"model_type": "t5", "architectures": ["T5Model"]},
+        {"model_type": "mistral", "architectures": ["MistralModel"]},
+    ],
+)
+def test_a_bare_text_backbone_is_not_chat_capable(tmp_path, config):
+    """AutoModel.save_pretrained writes the backbone name, and a backbone has no
+    LM head, so the cascade would stop on one before a usable chat model."""
+    path = tmp_path / "backbone"
+    path.mkdir()
+    (path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+
+    assert model_common._local_transformers_can_chat(path) is False
+
+
+def test_an_unfamiliar_backbone_still_fails_open(tmp_path):
+    """The list is explicit, not shape-matched, so a custom FooModel keeps its
+    format capability."""
+    path = tmp_path / "custom"
+    path.mkdir()
+    (path / "config.json").write_text(
+        json.dumps({"model_type": "brand_new_arch", "architectures": ["FooModel"]}),
+        encoding = "utf-8",
+    )
+
+    assert model_common._local_transformers_can_chat(path) is None
+
+
 @pytest.mark.parametrize("layout", ["flat", "publisher_child"])
 def test_lmstudio_scan_matches_gguf_suffix_case_insensitively(tmp_path, layout):
     """The custom and models-dir scans lower() the suffix; these two did not, so a
@@ -4481,3 +4786,27 @@ def test_lmstudio_scan_matches_gguf_suffix_case_insensitively(tmp_path, layout):
     found = {Path(row.path).name for row in local_inventory._scan_lmstudio_dir(lm_dir)}
 
     assert found == {"lower.gguf", "UPPER.GGUF", "Mixed.GguF"}
+
+
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        ({"model_type": "bert", "architectures": ["BertModel"]}, False),
+        ({"model_type": "clip", "architectures": ["CLIPModel"]}, False),
+        ({"model_type": "llama", "architectures": ["LlamaForCausalLM"]}, True),
+    ],
+)
+def test_custom_promotion_keeps_the_classifier_verdict(tmp_path, config, expected):
+    """Promotion rebuilt capabilities from the format alone, which restored
+    can_chat on rows the classifier had ruled out."""
+    model_dir = tmp_path / "scan" / "model"
+    model_dir.mkdir(parents = True)
+    (model_dir / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    (model_dir / "model.safetensors").write_bytes(b"x" * 1024)
+
+    rows = local_inventory._scan_custom_folder(tmp_path / "scan")
+    assert rows, "the scan produced no row"
+    for row in rows:
+        promoted = local_inventory._promote_to_custom_source(row)
+        assert promoted.source == "custom"
+        assert promoted.capabilities.can_chat is expected
