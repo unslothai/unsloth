@@ -11906,9 +11906,7 @@ async def openai_chat_completions(
                     {
                         **_msg,
                         "content": (
-                            _sf_stripped
-                            if _msg is _sf_continue_target
-                            else _sf_stripped.strip()
+                            _sf_stripped if _msg is _sf_continue_target else _sf_stripped.strip()
                         ),
                     }
                 )
