@@ -129,7 +129,7 @@ def test_arm64_recovery_uses_transient_cpu_fallback():
 def test_tauri_reports_llama_source_build_progress():
     text = _SETUP_SH.read_text(encoding = "utf-8")
     build = text.index('substep "$_BUILD_DESC..."')
-    nearby = text[build - 300:build + 300]
+    nearby = text[build - 300 : build + 300]
     assert 'tauri_progress "Building llama.cpp locally' in nearby
     assert "this can take a few minutes" in nearby
 
