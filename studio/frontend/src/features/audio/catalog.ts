@@ -10,11 +10,26 @@ import {
   groupForRepoId,
 } from "@/features/model-picker/components/model-selector/model-catalog";
 import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
+import {
+  type AudioSttEngine,
+  isKnownSttArtifactRepoId,
+  sttEngineForRepoId,
+  sttRepoIdForSidecarKey,
+  sttSidecarKeyFor,
+} from "./stt-artifacts";
+
+export {
+  sttEngineForRepoId,
+  sttRepoIdForSidecarKey,
+  sttSidecarKeyFor,
+  type AudioSttEngine,
+};
 
 export type AudioTask = "tts" | "stt";
 
 /** The catalog task for a repo id; null for repos outside AUDIO_CATALOG. */
 export function audioTaskFor(repoId: string): AudioTask | null {
+  if (isKnownSttArtifactRepoId(repoId)) return "stt";
   return groupForRepoId(repoId, AUDIO_CATALOG)?.task ?? null;
 }
 
@@ -28,39 +43,24 @@ export function ggufSiblingFor(repoId: string): string | null {
   return gguf && gguf.repoId !== repoId ? gguf.repoId : null;
 }
 
+/** Curated TTS rows that can actually generate on Apple Silicon. A safetensors
+ * row is still useful when its group publishes a GGUF sibling, because the
+ * Audio page resolves and stages that exact sibling before loading. */
+export function macTtsCatalogChoiceIsRunnable(repoId: string): boolean {
+  const group = groupForRepoId(repoId, AUDIO_CATALOG);
+  if (!group || group.task !== "tts") return false;
+  return group.artifacts.some((artifact) => artifact.format === "gguf");
+}
+
 /** Every curated audio artifact, in catalog order (TTS groups, then STT). */
 export const AUDIO_MODEL_OPTIONS: ModelOption[] =
   catalogToModelOptions(AUDIO_CATALOG);
 
-/** Picker rows for a mode, that mode's own task first.
- *
- *  Recommended seeds curated rows in the order given, and the list scrolls, so a
- *  fixed order left every STT row (both Qwen3-ASR included) below the fold on
- *  Transcribe. The other task still follows, so switching stays one click away. */
+/** Curated picker rows for the active mode only. Advertising the other task in
+ *  Recommended lets Transcribe load a TTS checkpoint (and vice versa). */
 export function audioModelsForTask(task: AudioTask): ModelOption[] {
   const matches = (option: ModelOption) => audioTaskFor(option.id) === task;
-  return [
-    ...AUDIO_MODEL_OPTIONS.filter(matches),
-    ...AUDIO_MODEL_OPTIONS.filter((option) => !matches(option)),
-  ];
-}
-
-/** Curated STT repo id -> the sidecar model key /audio/stt/* and /audio/transcribe
- *  expect. Mirrors STT_MODEL_REPOS in stt-model-catalog.ts, inverted. */
-const STT_SIDECAR_KEY_BY_REPO: Record<string, string> = {
-  "unsloth/whisper-tiny": "tiny",
-  "unsloth/whisper-base": "base",
-  "unsloth/whisper-small": "small",
-  "unsloth/whisper-large-v3-turbo": "large-v3-turbo",
-  "unsloth/whisper-large-v3": "large-v3",
-  "unslothai/qwen3-asr-0.6b-gguf": "qwen3-asr-0.6b",
-  "unslothai/qwen3-asr-1.7b-gguf": "qwen3-asr-1.7b",
-};
-
-/** The sidecar key for a curated STT repo, falling back to the id itself so a
- *  custom Whisper repo still reaches the transformers sidecar unchanged. */
-export function sttSidecarKeyFor(repoId: string): string {
-  return STT_SIDECAR_KEY_BY_REPO[repoId.trim().toLowerCase()] ?? repoId;
+  return AUDIO_MODEL_OPTIONS.filter(matches);
 }
 
 /** Short capability line for the rail header ("Text-to-speech · snac codec"). */

@@ -24,6 +24,8 @@ export interface ModelArtifact {
   keywords?: readonly string[];
   /** Gated on the Hub (license + token). A bare group click skips it when not downloaded and falls through to an open artifact (e.g. the GGUF); an already-downloaded gated artifact is still returned. */
   gated?: boolean;
+  /** Fixed quant when a specialized runtime pins one exact GGUF file. */
+  deviceQuant?: string;
 }
 
 export interface CatalogGroup {
@@ -446,7 +448,9 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
     description: "Speech-to-text",
     scope: "audio",
     task: "stt",
-    artifacts: [gguf("unslothai/Qwen3-ASR-0.6B-GGUF")],
+    artifacts: [
+      gguf("unslothai/Qwen3-ASR-0.6B-GGUF", { deviceQuant: "Q8_0" }),
+    ],
   },
   {
     canonicalId: "unslothai/Qwen3-ASR-1.7B-GGUF",
@@ -454,7 +458,9 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
     description: "Speech-to-text",
     scope: "audio",
     task: "stt",
-    artifacts: [gguf("unslothai/Qwen3-ASR-1.7B-GGUF")],
+    artifacts: [
+      gguf("unslothai/Qwen3-ASR-1.7B-GGUF", { deviceQuant: "Q8_0" }),
+    ],
   },
   {
     canonicalId: "unsloth/whisper-large-v3-turbo",
@@ -647,6 +653,7 @@ export function catalogToModelOptions(catalog: CatalogGroup[]): ModelOption[] {
             : group.displayName,
         description: `${group.description} - ${artifact.label}`,
         isGguf: artifact.format === "gguf",
+        deviceQuant: artifact.deviceQuant,
       });
     }
   }

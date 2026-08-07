@@ -882,6 +882,34 @@ def test_cached_gguf_scan_hides_infra_repos_without_user_downloads(monkeypatch, 
     assert [row["repo_id"] for row in result["cached"]] == ["Org/Chat-GGUF"]
 
 
+def test_cached_gguf_scan_emits_curated_asr_as_non_chat_audio_inventory(monkeypatch, tmp_path):
+    asr = _repo(
+        "unslothai/Qwen3-ASR-0.6B-GGUF",
+        [
+            _file("Qwen3-ASR-0.6B-Q8_0.gguf", 800_000_000),
+            _file("mmproj-Qwen3-ASR-0.6B-Q8_0.gguf", 200_000_000),
+        ],
+        tmp_path / "asr",
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [asr])],
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_gguf_repo_partial",
+        lambda _repo_id, _path, **_kw: False,
+    )
+
+    [row] = cache_inventory._scan_cached_gguf()
+
+    assert row["repo_id"] == "unslothai/Qwen3-ASR-0.6B-GGUF"
+    assert row["size_bytes"] == 800_000_000
+    assert row["capabilities"]["can_chat"] is False
+    assert row["capabilities"]["supports_vision"] is False
+
+
 def test_cached_gguf_scan_keeps_infra_repo_with_user_downloaded_variant(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     embedder = _repo(
@@ -947,6 +975,45 @@ def test_cached_models_scan_hides_non_gguf_embedder(monkeypatch, tmp_path):
     result = {"cached": cache_inventory._scan_cached_models()}
 
     assert [row["repo_id"] for row in result["cached"]] == ["Org/Chat"]
+
+
+def test_cached_models_scan_emits_curated_whisper_but_not_custom_whisper(monkeypatch, tmp_path):
+    curated_path = tmp_path / "hub" / "models--unsloth--whisper-tiny"
+    curated_path.mkdir(parents = True)
+    curated = _repo(
+        "unsloth/whisper-tiny",
+        [_file("config.json", 12), _file("model.safetensors", 80_000_000)],
+        curated_path,
+    )
+    custom_path = tmp_path / "hub" / "models--Org--custom-whisper"
+    custom_path.mkdir(parents = True)
+    custom = _repo(
+        "Org/custom-whisper",
+        [_file("config.json", 12), _file("model.safetensors", 90_000_000)],
+        custom_path,
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = [curated, custom])],
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda _kind, _repo_id, _path, **_kw: False,
+    )
+    monkeypatch.setattr(
+        cache_inventory,
+        "_cached_model_local_metadata",
+        lambda repo_path, _snapshot=None: {
+            "_hidden_stt": "custom-whisper" in str(repo_path)
+        },
+    )
+
+    [row] = cache_inventory._scan_cached_models()
+
+    assert row["repo_id"] == "unsloth/whisper-tiny"
+    assert row["capabilities"]["can_chat"] is False
 
 
 _SNAPSHOT_SHA = "a" * 40

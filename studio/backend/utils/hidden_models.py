@@ -55,6 +55,17 @@ _HIDDEN_STT_REPO_IDS = frozenset(
         "unslothai/Qwen3-ASR-1.7B-GGUF",
     }
 )
+_HIDDEN_STT_REPO_IDS_LOWER = frozenset(repo_id.lower() for repo_id in _HIDDEN_STT_REPO_IDS)
+
+
+def is_curated_stt_repo_id(value: str | None) -> bool:
+    """True only for Studio's exact curated STT Hub repositories.
+
+    They remain hidden from chat, but task-scoped inventory consumers need the
+    real cache rows so size, format, variants and lifecycle actions do not have
+    to be reimplemented by the Audio page.
+    """
+    return bool(value and value.strip().lower() in _HIDDEN_STT_REPO_IDS_LOWER)
 
 
 def _config_is_whisper(path: Path) -> bool:
@@ -157,7 +168,7 @@ def is_hidden_model(*values: str | None) -> bool:
     hidden_repo_ids = {
         _PROBE_REPO_ID.lower(),
         *(repo_id.lower() for repo_id in _DEFAULT_EMBEDDING_REPO_IDS),
-        *(repo_id.lower() for repo_id in _HIDDEN_STT_REPO_IDS),
+        *_HIDDEN_STT_REPO_IDS_LOWER,
     }
     exact_paths: list[str] = []
     for model in {

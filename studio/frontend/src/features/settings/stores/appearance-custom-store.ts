@@ -125,7 +125,7 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
 
 /** Every previously shipped layout, so a migration can tell an untouched install from one the
  *  user arranged themselves. v3 pinned Video under Images; v4 moved Model hub above Projects;
- *  v5 put Video back under "More"; v6 is the pre-Audio layout. */
+ *  v5 put Video back under "More" and later added API before Audio shipped. */
 const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
   [
     { id: "projects", pinned: true },
@@ -487,14 +487,14 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
     }),
     {
       name: "unsloth_appearance_customization",
-      version: 5,
+      version: 6,
       storage: createJSONStorage(() => guardedLocalStorage),
       migrate: (persisted, version) => {
         const state = (persisted ?? {}) as Partial<AppearanceCustomState>;
         const customization = migrateShippedSidebarNavDefault(
           sanitizeCustomization(state.customization),
           version,
-          5,
+          6,
         );
         return { customization } as AppearanceCustomState;
       },

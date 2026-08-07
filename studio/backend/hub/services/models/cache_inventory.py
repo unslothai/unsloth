@@ -44,7 +44,7 @@ from hub.services.models.common import (
 # scan loop swallows per-repo exceptions and would drop every repo. Lives under
 # ``utils`` (not ``utils.models``) to avoid the eager model-config/checkpoint
 # imports in ``utils/models/__init__.py``.
-from utils.hidden_models import is_hidden_model
+from utils.hidden_models import is_curated_stt_repo_id, is_hidden_model
 
 logger = get_logger(__name__)
 
@@ -377,6 +377,12 @@ def _cache_inventory_fields(
         else repo_info is not None and _repo_has_mmproj(repo_info)
     ):
         capabilities["supports_vision"] = True
+    # Qwen3-ASR's required mmproj is an audio projector, not a vision
+    # projector. Curated STT rows are visible only to task-scoped consumers and
+    # must never become eligible for chat auto-load.
+    if is_curated_stt_repo_id(repo_id):
+        capabilities["supports_vision"] = False
+        capabilities["can_chat"] = False
     if hidden_infra:
         capabilities["can_chat"] = False
     # A VAE / text-encoder mirror holds no language model, so it cannot chat whatever its weight
@@ -462,9 +468,12 @@ def _scan_cached_gguf() -> list[dict]:
                     str(repo_path),
                     str(snapshot_path) if snapshot_path is not None else None,
                 )
+                is_curated_stt = is_curated_stt_repo_id(repo_id)
                 # Hide infra repos unless the user downloaded a variant via
-                # the Hub; variant state only exists for user downloads.
-                if is_hidden_infra and not has_variant_state:
+                # the Hub; variant state only exists for user downloads. Exact
+                # curated STT repos are still emitted as management rows and
+                # the frontend's task allowlist keeps them out of Chat.
+                if is_hidden_infra and not is_curated_stt and not has_variant_state:
                     continue
                 if total_size == 0 and not has_variant_state:
                     continue
@@ -843,11 +852,13 @@ def _scan_cached_models() -> list[dict]:
                 repo_path = Path(repo_info.repo_path)
                 snapshot_path = _cached_model_snapshot_path(repo_path)
                 # The non-GGUF embedder has no variant downloads; always hide.
-                if _is_hidden_infra_repo(
+                is_hidden_infra = _is_hidden_infra_repo(
                     repo_id,
                     str(repo_path),
                     str(snapshot_path) if snapshot_path is not None else None,
-                ):
+                )
+                is_curated_stt = is_curated_stt_repo_id(repo_id)
+                if is_hidden_infra and not is_curated_stt:
                     continue
                 has_main_gguf = _repo_has_gguf_files(repo_info)
                 payload = _repo_non_gguf_model_payload(repo_info)
@@ -870,7 +881,7 @@ def _scan_cached_models() -> list[dict]:
                 )
                 load_snapshot = identity.load_snapshot
                 local_metadata = _cached_model_local_metadata(repo_path, load_snapshot)
-                if local_metadata.pop("_hidden_stt", False):
+                if local_metadata.pop("_hidden_stt", False) and not is_curated_stt:
                     skipped_stt += 1
                     continue
                 # Scoped to the row's snapshot, so an incomplete newer revision cannot flip can_chat.
@@ -931,6 +942,7 @@ def _scan_cached_models() -> list[dict]:
                         payload.model_format,
                         identity = identity,
                         partial = bool(row["partial"]),
+                        hidden_infra = is_hidden_infra,
                         companion = bool(row["companion"]),
                     )
                 )

@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Recommended seeds curated rows in the order the picker is handed them, and the
-// list scrolls: whichever task trails is the one nobody sees. These pin that the
-// active mode's task leads, and that the curated STT set still covers every
-// dictation sidecar id.
+// Each mode advertises only checkpoints it can execute, while the curated STT
+// set still covers every dictation sidecar id.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -18,39 +16,49 @@ import {
 type AudioTask = "tts" | "stt";
 
 const taskFor = (repoId: string): AudioTask | null =>
-  (groupForRepoId(repoId, AUDIO_CATALOG)?.task as AudioTask | undefined) ?? null;
+  (groupForRepoId(repoId, AUDIO_CATALOG)?.task as AudioTask | undefined) ??
+  null;
 
 // Mirrors audioModelsForTask in src/features/audio/catalog.ts, which cannot be
 // imported here: it resolves through the "@/" alias.
 const modelsForTask = (task: AudioTask) => {
   const all = catalogToModelOptions(AUDIO_CATALOG);
   const matches = (id: string) => taskFor(id) === task;
-  return [
-    ...all.filter((o) => matches(o.id)),
-    ...all.filter((o) => !matches(o.id)),
-  ].map((o) => o.id);
+  return all.filter((o) => matches(o.id)).map((o) => o.id);
 };
 
-test("Transcribe leads with STT, so Qwen3-ASR is not below the fold", () => {
+test("Transcribe offers only STT, with Qwen3-ASR above the fold", () => {
   const rows = modelsForTask("stt");
-  assert.equal(taskFor(rows[0]), "stt");
+  assert.ok(rows.every((id) => taskFor(id) === "stt"));
   // The regression: both unslothai models sat at 8 and 9 behind every TTS row.
   const qwen = rows.filter((id) => id.startsWith("unslothai/Qwen3-ASR"));
   assert.equal(qwen.length, 2);
   for (const id of qwen) assert.ok(rows.indexOf(id) < 3, `${id} buried`);
 });
 
-test("Generate leads with TTS", () => {
+test("Qwen3-ASR rows retain the fixed sidecar quant", () => {
+  const qwen = catalogToModelOptions(AUDIO_CATALOG).filter((option) =>
+    option.id.startsWith("unslothai/Qwen3-ASR"),
+  );
+  assert.equal(qwen.length, 2);
+  assert.ok(qwen.every((option) => option.deviceQuant === "Q8_0"));
+});
+
+test("Generate offers only TTS", () => {
   const rows = modelsForTask("tts");
-  assert.equal(taskFor(rows[0]), "tts");
+  assert.ok(rows.every((id) => taskFor(id) === "tts"));
   assert.ok(rows.indexOf("unsloth/orpheus-3b-0.1-ft") < 2);
 });
 
-test("both modes offer every curated model, only reordered", () => {
+test("the two modes partition every curated model", () => {
   const all = catalogToModelOptions(AUDIO_CATALOG).map((o) => o.id);
-  for (const task of ["tts", "stt"] as const) {
-    assert.deepEqual([...modelsForTask(task)].sort(), [...all].sort());
-  }
+  const tts = modelsForTask("tts");
+  const stt = modelsForTask("stt");
+  assert.equal(
+    tts.some((id) => stt.includes(id)),
+    false,
+  );
+  assert.deepEqual([...tts, ...stt].sort(), [...all].sort());
 });
 
 test("the curated STT rows cover every dictation sidecar model", () => {

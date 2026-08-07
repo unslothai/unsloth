@@ -1,0 +1,255 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+
+import {
+  curatedAudioInventoryTask,
+  curatedAudioInventoryMatches,
+  macTtsHubRowIsRunnable,
+  shouldDiscoverCommunityModels,
+  shouldRecommendCommunityModels,
+  taskCatalogFormatMatches,
+  taskForMediaPick,
+  withPipelineTag,
+} from "../src/features/model-picker/components/model-selector/audio-picker-policy.ts";
+
+test("curated downloaded TTS artifacts override generic GGUF task metadata only in Speak", () => {
+  assert.equal(
+    curatedAudioInventoryMatches({
+      isActiveCatalogArtifact: true,
+      catalogScope: "audio",
+      catalogTask: "tts",
+      pickerTask: ["text-to-speech"],
+    }),
+    true,
+  );
+  assert.equal(
+    curatedAudioInventoryMatches({
+      isActiveCatalogArtifact: true,
+      catalogScope: "audio",
+      catalogTask: "tts",
+      pickerTask: ["automatic-speech-recognition"],
+    }),
+    false,
+  );
+});
+
+test("curated downloaded STT artifacts override generic metadata only in Transcribe", () => {
+  assert.equal(
+    curatedAudioInventoryMatches({
+      isActiveCatalogArtifact: true,
+      catalogScope: "audio",
+      catalogTask: "stt",
+      pickerTask: ["automatic-speech-recognition"],
+    }),
+    true,
+  );
+  assert.equal(
+    curatedAudioInventoryMatches({
+      isActiveCatalogArtifact: true,
+      catalogScope: "audio",
+      catalogTask: "stt",
+      pickerTask: ["text-to-speech"],
+    }),
+    false,
+  );
+});
+
+test("non-audio catalogs and unfiltered Chat get no downloaded-task exception", () => {
+  assert.equal(
+    curatedAudioInventoryMatches({
+      isActiveCatalogArtifact: true,
+      catalogScope: "image",
+      catalogTask: "tts",
+      pickerTask: ["text-to-speech"],
+    }),
+    false,
+  );
+  assert.equal(
+    curatedAudioInventoryMatches({
+      isActiveCatalogArtifact: true,
+      catalogScope: "audio",
+      catalogTask: "tts",
+      pickerTask: undefined,
+    }),
+    false,
+  );
+  assert.equal(
+    curatedAudioInventoryMatches({
+      isActiveCatalogArtifact: false,
+      catalogScope: "audio",
+      catalogTask: "tts",
+      pickerTask: ["text-to-speech"],
+    }),
+    false,
+  );
+});
+import {
+  AUDIO_CATALOG,
+  artifactForRepoId,
+  groupForRepoId,
+} from "../src/features/model-picker/components/model-selector/model-catalog.ts";
+
+const pickerSource = readFileSync(
+  new URL(
+    "../src/features/model-picker/components/model-selector/pickers.tsx",
+    import.meta.url,
+  ),
+  "utf8",
+);
+
+test("fresh Hub pipeline metadata routes media picks before stale inventory", () => {
+  assert.equal(
+    taskForMediaPick("automatic-speech-recognition", "text-to-speech"),
+    "automatic-speech-recognition",
+  );
+  assert.equal(taskForMediaPick(null, "text-to-speech"), "text-to-speech");
+});
+
+test("exact cached Audio artifacts route from generic inventory to their Audio task", () => {
+  const orpheus = artifactForRepoId(
+    "unsloth/orpheus-3b-0.1-ft-GGUF",
+    AUDIO_CATALOG,
+  );
+  assert.ok(orpheus);
+  assert.equal(
+    taskForMediaPick(
+      null,
+      curatedAudioInventoryTask({
+        inventoryTask: "text-generation",
+        isExactCatalogArtifact: true,
+        catalogScope: orpheus.group.scope,
+        catalogTask: orpheus.group.task,
+      }),
+    ),
+    "text-to-speech",
+  );
+
+  const asr = artifactForRepoId("unslothai/Qwen3-ASR-0.6B-GGUF", AUDIO_CATALOG);
+  assert.ok(asr);
+  assert.equal(
+    taskForMediaPick(
+      null,
+      curatedAudioInventoryTask({
+        inventoryTask: "text-generation",
+        isExactCatalogArtifact: true,
+        catalogScope: asr.group.scope,
+        catalogTask: asr.group.task,
+      }),
+    ),
+    "automatic-speech-recognition",
+  );
+});
+
+test("generic LLM and non-Audio artifacts keep their inventory task", () => {
+  assert.equal(
+    curatedAudioInventoryTask({
+      inventoryTask: "text-generation",
+      isExactCatalogArtifact: false,
+      catalogScope: "audio",
+      catalogTask: "tts",
+    }),
+    "text-generation",
+  );
+  assert.equal(
+    curatedAudioInventoryTask({
+      inventoryTask: "text-generation",
+      isExactCatalogArtifact: true,
+      catalogScope: "image",
+      catalogTask: "tts",
+    }),
+    "text-generation",
+  );
+});
+
+test("local Audio rows copy the curated task onto their clickable path alias", () => {
+  assert.match(
+    pickerSource,
+    /const exactAudioArtifact = m\.model_id[\s\S]*artifactForRepoId\(m\.model_id, AUDIO_CATALOG\)[\s\S]*put\(m\.id, m\.task, exactAudioArtifact\)/,
+  );
+});
+
+test("curated task artifacts remain in All while explicit formats still filter", () => {
+  assert.equal(taskCatalogFormatMatches("all", false), true);
+  assert.equal(taskCatalogFormatMatches("safetensors", true), true);
+  assert.equal(taskCatalogFormatMatches("gguf", false), false);
+});
+
+test("search-only Audio policy discovers community rows without recommending them", () => {
+  assert.equal(shouldDiscoverCommunityModels("search-only"), true);
+  assert.equal(shouldRecommendCommunityModels("search-only"), false);
+  assert.equal(shouldRecommendCommunityModels("recommended"), true);
+});
+
+test("macOS TTS search only offers directly runnable or curated GGUF-backed rows", () => {
+  assert.equal(
+    macTtsHubRowIsRunnable({
+      isMac: true,
+      isTts: true,
+      isGguf: false,
+      hasRunnableGgufSibling: false,
+    }),
+    false,
+  );
+  assert.equal(
+    macTtsHubRowIsRunnable({
+      isMac: true,
+      isTts: true,
+      isGguf: true,
+      hasRunnableGgufSibling: false,
+    }),
+    true,
+  );
+  assert.equal(
+    macTtsHubRowIsRunnable({
+      isMac: true,
+      isTts: true,
+      isGguf: false,
+      hasRunnableGgufSibling: true,
+    }),
+    true,
+  );
+  assert.equal(
+    macTtsHubRowIsRunnable({
+      isMac: false,
+      isTts: true,
+      isGguf: false,
+      hasRunnableGgufSibling: false,
+    }),
+    true,
+  );
+  const csmHasGguf = Boolean(
+    groupForRepoId("unsloth/csm-1b", AUDIO_CATALOG)?.artifacts.some(
+      (artifact) => artifact.format === "gguf",
+    ),
+  );
+  assert.equal(csmHasGguf, false);
+  assert.equal(
+    macTtsHubRowIsRunnable({
+      isMac: true,
+      isTts: true,
+      isGguf: false,
+      hasRunnableGgufSibling: csmHasGguf,
+    }),
+    false,
+  );
+});
+
+test("GGUF variant picks retain their Hub pipeline tag", () => {
+  assert.deepEqual(
+    withPipelineTag(
+      { source: "hub", isLora: false, isGguf: true, ggufVariant: "Q4_K_M" },
+      "automatic-speech-recognition",
+    ),
+    {
+      source: "hub",
+      isLora: false,
+      isGguf: true,
+      ggufVariant: "Q4_K_M",
+      pipelineTag: "automatic-speech-recognition",
+    },
+  );
+});

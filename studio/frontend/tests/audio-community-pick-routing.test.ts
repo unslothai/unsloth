@@ -11,13 +11,15 @@ import {
   AUDIO_CATALOG,
   groupForRepoId,
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
+import { resolveAudioPickTask } from "../src/features/audio/audio-page-policy.ts";
 
 type Task = "tts" | "stt" | null;
 
-// Mirrors handleModelSelect: catalog first, then the pick's Hub pipeline tag.
 const routeFor = (repoId: string, pipelineTag?: string | null): Task =>
-  (groupForRepoId(repoId, AUDIO_CATALOG)?.task as Task) ??
-  (pipelineTag === "automatic-speech-recognition" ? "stt" : null);
+  resolveAudioPickTask(
+    (groupForRepoId(repoId, AUDIO_CATALOG)?.task as Task) ?? null,
+    pipelineTag,
+  );
 
 test("an uncurated ASR repo routes to the STT sidecar, not the TTS slot", () => {
   // The regression: audioTaskFor returns null off-catalog, so this fell through
@@ -26,7 +28,10 @@ test("an uncurated ASR repo routes to the STT sidecar, not the TTS slot", () => 
     routeFor("openai/whisper-large-v3", "automatic-speech-recognition"),
     "stt",
   );
-  assert.equal(routeFor("nvidia/parakeet-tdt", "automatic-speech-recognition"), "stt");
+  assert.equal(
+    routeFor("nvidia/parakeet-tdt", "automatic-speech-recognition"),
+    "stt",
+  );
 });
 
 test("an uncurated TTS repo still takes the main slot", () => {

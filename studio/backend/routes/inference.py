@@ -8068,6 +8068,7 @@ async def _generate_tts_wav(
             max_new_tokens = _effective_max_tokens(payload) or 2048,
             repetition_penalty = payload.repetition_penalty,
             use_adapter = payload.use_adapter,
+            cancel_event = _audio_cancel,
         )
 
     # Apply per-model recommended sampling + any operator UNSLOTH_SAMPLING_* pin before
@@ -8078,10 +8079,9 @@ async def _generate_tts_wav(
     _fill_recommended_sampling_openai(payload, _audio_model_id)
 
     # TTS holds the model for the whole request, so unregistered a non-forced swap counted zero
-    # generations and tore the model down mid-generation. The GGUF path observes the event; the
-    # subprocess backend blocks on its response queue with no cancel plumbing, so there it is
-    # only advisory -- which is why the swap drains are bounded. No cancel keys: /cancel
-    # addresses streams, and this route has none.
+    # generations and tore the model down mid-generation. Both GGUF and subprocess paths observe
+    # the request event. No cancel keys: /cancel addresses streams, and this route has none; the
+    # disconnect watcher below is the cancellation source.
     with _TrackedCancel(
         _audio_cancel,
         thread_id = getattr(payload, "thread_id", None),
@@ -8245,7 +8245,9 @@ async def openai_audio_transcriptions(
             status_code = 400,
             detail = f"Unsupported response_format '{response_format}'. Use 'json' or 'text'.",
         )
-    raw = await file.read()
+    # UploadFile spools to disk, but an unbounded read materializes the whole upload in
+    # memory before the shared size check. One byte past the limit is enough to reject it.
+    raw = await file.read(_MAX_AUDIO_RAW_BYTES + 1)
     # openai's whisper-1 placeholder means the default transcription model, not a sidecar id
     sidecar_model = None if model in (None, "", "whisper-1") else model
     result = await _transcribe_audio_result(

@@ -19,6 +19,7 @@ export {
   listRecommendedFolders,
   listScanFolders,
   loadModel,
+  unloadModel,
   notifyChatHistoryUpdated,
   removeScanFolder,
   revealCachedModel,
@@ -207,10 +208,12 @@ export {
   fetchSttStatus,
   loadSttModel,
   startSttDownload,
+  sttEngineFor,
   sttEngineStatusFor,
   unloadSttModel,
   validateSttModel,
   type SttDownloadStatus,
+  type SttEngine,
 } from "./adapters/studio-model-dictation-adapter";
 export {
   StudioSpeechSynthesisAdapter,
