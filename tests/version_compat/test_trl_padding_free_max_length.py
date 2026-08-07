@@ -860,10 +860,12 @@ def _scalar_torch_formatted_dataset(tok):
 
     ids = tok("The quick brown fox. " * 200)["input_ids"]
     assert len(ids) > _MODEL_MAX_SEQ_LENGTH
-    ds = Dataset.from_list([
-        {"input_ids": list(ids), "attention_mask": [1] * len(ids), "sample_id": i}
-        for i in range(4)
-    ])
+    ds = Dataset.from_list(
+        [
+            {"input_ids": list(ids), "attention_mask": [1] * len(ids), "sample_id": i}
+            for i in range(4)
+        ]
+    )
     return ds.with_format("torch")
 
 
@@ -888,10 +890,12 @@ def _mask_supervised_dataset(tok):
     completion = tok(" answer")["input_ids"]
     ids = list(prompt) + list(completion)
     mask = [0] * len(prompt) + [1] * len(completion)
-    return Dataset.from_list([
-        {"input_ids": ids, "attention_mask": [1] * len(ids), "completion_mask": mask}
-        for _ in range(4)
-    ])
+    return Dataset.from_list(
+        [
+            {"input_ids": ids, "attention_mask": [1] * len(ids), "completion_mask": mask}
+            for _ in range(4)
+        ]
+    )
 
 
 def test_rows_whose_mask_is_truncated_away_are_dropped(tmp_path, trl_has_guard):
@@ -900,9 +904,9 @@ def test_rows_whose_mask_is_truncated_away_are_dropped(tmp_path, trl_has_guard):
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
     trainer = _build(tmp_path, dataset = _mask_supervised_dataset)
     for row in trainer.train_dataset:
-        assert any(m != 0 for m in row["completion_mask"]), (
-            "a row with no supervised token survived truncation"
-        )
+        assert any(
+            m != 0 for m in row["completion_mask"]
+        ), "a row with no supervised token survived truncation"
 
 
 def test_skip_prepare_dataset_does_not_excuse_an_overlength_row(tmp_path, trl_has_guard):
