@@ -518,6 +518,252 @@ class TestChatCompletionRequestToolFields:
         assert body["error"]["param"] == "confirm_tool_calls"
         assert "only supported for local streaming tools" in body["error"]["message"]
 
+    def test_permission_mode_ask_rejected_for_non_streaming_oai_compat(self, monkeypatch):
+        """A non-streaming ask/auto request needs approval but cannot prompt: the
+        validator does not fold ask/auto into confirm_tool_calls for external
+        providers, so it must still 400 instead of passing through unprompted."""
+        import routes.inference as inference_route
+
+        class _UnusedBackend:
+            is_loaded = False
+
+        called = {"proxy": False}
+
+        async def _fake_proxy(
+            payload,
+            request,
+            current_subject = None,
+        ):
+            called["proxy"] = True
+            from fastapi.responses import StreamingResponse
+
+            async def _gen():
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(_gen(), media_type = "text/event-stream")
+
+        monkeypatch.setattr(inference_route, "_proxy_to_external_provider", _fake_proxy)
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "ollama",
+                "provider_base_url": "http://127.0.0.1:11434/v1",
+                "external_model": "qwen3:8b",
+                "enable_tools": True,
+                "enabled_tools": ["web_search"],
+                "permission_mode": "ask",
+                "stream": False,
+            },
+        )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        assert body["error"]["param"] == "confirm_tool_calls"
+        assert called["proxy"] is False
+
+    def test_default_mode_hosted_tools_pass_through(self, monkeypatch):
+        """A hosted-provider passthrough with tools and the default permission_mode
+        must still route verbatim (no confirm intent), not 400 on the confirm gate."""
+        import routes.inference as inference_route
+
+        class _UnusedBackend:
+            is_loaded = False
+
+        called = {"proxy": False}
+
+        async def _fake_proxy(
+            payload,
+            request,
+            current_subject = None,
+        ):
+            called["proxy"] = True
+            from fastapi.responses import StreamingResponse
+
+            async def _gen():
+                yield 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(_gen(), media_type = "text/event-stream")
+
+        monkeypatch.setattr(inference_route, "_proxy_to_external_provider", _fake_proxy)
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "openai",
+                "external_model": "gpt-4.1",
+                "enable_tools": True,
+                "stream": True,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        assert called["proxy"] is True
+
+    def test_confirm_tool_calls_allowed_for_oai_compat_local_tool_runtime(self, monkeypatch):
+        """Ollama/llama.cpp/vLLM/custom may confirm local tools on stream=true (#7282)."""
+        import routes.inference as inference_route
+
+        class _UnusedBackend:
+            is_loaded = False
+
+        seen = {"called": False}
+
+        async def _fake_proxy(
+            payload,
+            request,
+            current_subject = None,
+        ):
+            seen["called"] = True
+            assert payload.provider_type == "ollama"
+            assert payload.confirm_tool_calls is True
+            assert payload.stream is True
+            from fastapi.responses import StreamingResponse
+
+            async def _gen():
+                yield 'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(_gen(), media_type = "text/event-stream")
+
+        monkeypatch.setattr(inference_route, "_proxy_to_external_provider", _fake_proxy)
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "ollama",
+                "provider_base_url": "http://127.0.0.1:11434/v1",
+                "external_model": "qwen3:8b",
+                "enable_tools": True,
+                "enabled_tools": ["web_search"],
+                "confirm_tool_calls": True,
+                "stream": True,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        assert seen["called"] is True
+
+    def test_confirm_tool_calls_rejected_for_oai_compat_with_client_tools(self, monkeypatch):
+        """Client-supplied tools stay on passthrough; confirm is not supported there."""
+
+        class _UnusedBackend:
+            is_loaded = False
+
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "ollama",
+                "provider_base_url": "http://127.0.0.1:11434/v1",
+                "external_model": "qwen3:8b",
+                "enable_tools": True,
+                "enabled_tools": ["web_search"],
+                "confirm_tool_calls": True,
+                "stream": True,
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "custom_fn",
+                            "description": "x",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            },
+        )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["param"] == "confirm_tool_calls"
+
+    def test_confirm_tool_calls_rejected_for_oai_compat_zero_tool_budget(self, monkeypatch):
+        """max_tool_calls_per_message=0 disables the local runtime, so the request
+        falls back to passthrough where confirm cannot be honored; keep the 400."""
+        import routes.inference as inference_route
+
+        class _UnusedBackend:
+            is_loaded = False
+
+        called = {"proxy": False}
+
+        async def _fake_proxy(
+            payload,
+            request,
+            current_subject = None,
+        ):
+            called["proxy"] = True
+            from fastapi.responses import StreamingResponse
+
+            async def _gen():
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(_gen(), media_type = "text/event-stream")
+
+        monkeypatch.setattr(inference_route, "_proxy_to_external_provider", _fake_proxy)
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "ollama",
+                "provider_base_url": "http://127.0.0.1:11434/v1",
+                "external_model": "qwen3:8b",
+                "enable_tools": True,
+                "enabled_tools": ["web_search"],
+                "confirm_tool_calls": True,
+                "stream": True,
+                "max_tool_calls_per_message": 0,
+            },
+        )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        assert body["error"]["param"] == "confirm_tool_calls"
+        assert called["proxy"] is False
+
+    def test_confirm_tool_calls_allowed_for_oai_compat_positive_tool_budget(self, monkeypatch):
+        """A positive tool budget keeps the local runtime, so confirm is still allowed."""
+        import routes.inference as inference_route
+
+        class _UnusedBackend:
+            is_loaded = False
+
+        seen = {"called": False}
+
+        async def _fake_proxy(
+            payload,
+            request,
+            current_subject = None,
+        ):
+            seen["called"] = True
+            from fastapi.responses import StreamingResponse
+
+            async def _gen():
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(_gen(), media_type = "text/event-stream")
+
+        monkeypatch.setattr(inference_route, "_proxy_to_external_provider", _fake_proxy)
+        client = self._v1_client(monkeypatch, _UnusedBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "hi"}],
+                "provider_type": "ollama",
+                "provider_base_url": "http://127.0.0.1:11434/v1",
+                "external_model": "qwen3:8b",
+                "enable_tools": True,
+                "enabled_tools": ["web_search"],
+                "confirm_tool_calls": True,
+                "stream": True,
+                "max_tool_calls_per_message": 3,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        assert seen["called"] is True
+
     def test_logprobs_rejected_until_supported(self, monkeypatch):
         class _UnusedBackend:
             is_loaded = False

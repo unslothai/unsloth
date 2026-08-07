@@ -157,6 +157,7 @@ import {
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
+  providerSupportsLocalToolRuntime,
 } from "./provider-capabilities";
 import {
   ChatActiveContext,
@@ -2153,6 +2154,9 @@ export function ChatPage({
       selection.modelId,
       provider?.baseUrl,
     );
+    const supportsLocalToolRuntime = providerSupportsLocalToolRuntime(
+      provider?.providerType,
+    );
     const supportsBuiltinImageGeneration =
       providerSupportsBuiltinImageGeneration(
         provider?.providerType,
@@ -2185,6 +2189,12 @@ export function ChatPage({
     const storedWebFetchToolsEnabled = loadOptionalBool(
       CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
     );
+    // A Connection points at someone else's endpoint, and the local tool runtime runs
+    // Search / Code / MCP on this machine and feeds the output back to that endpoint. So
+    // the pills start off for it and are never seeded from the shared
+    // CHAT_TOOLS_ENABLED_KEY / CHAT_CODE_TOOLS_ENABLED_KEY, which a local GGUF chat may
+    // have set: selecting a remote model must not silently start shipping local tool
+    // output off-box. The user turns the pill on per model.
     const nextToolsEnabled = supportsBuiltinWebSearch
       ? isKimi
         ? false
@@ -2205,12 +2215,9 @@ export function ChatPage({
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
-      // External models have no local tool runtime, so `supportsTools` is
-      // false. The `supportsBuiltin*` flags cover providers that run tools
-      // server-side: WebSearch lights the Search pill (OpenAI/Anthropic/
-      // OpenRouter/Kimi), CodeExecution the Code pill (Claude 4.x, gpt-5.5),
-      // ImageGeneration the Images pill (OpenAI cloud Responses-API only).
-      supportsTools: false,
+      // Hosted providers have no local tool runtime (supportsTools false; supportsBuiltin*
+      // carries server-side capability). OAI-compat Connections drive local Search/Code/MCP (#7282).
+      supportsTools: supportsLocalToolRuntime,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
       supportsBuiltinImageGeneration,
@@ -2226,6 +2233,10 @@ export function ChatPage({
       webFetchToolsEnabled: supportsBuiltinWebFetch
         ? (storedWebFetchToolsEnabled ?? false)
         : false,
+      // MCP persists in localStorage, so without this a Connection inherits a
+      // local model's opt-in and can invoke local MCP tools on its first turn.
+      // In-memory only: a reload restores the user's local-model preference.
+      ...(supportsLocalToolRuntime ? { mcpEnabledForChat: false } : {}),
     });
   }, [externalProvidersForChat, inferenceParams.checkpoint]);
   const canCompare = useMemo(() => {
@@ -2685,6 +2696,9 @@ export function ChatPage({
             selectedExternal?.modelId,
             selectedProvider?.baseUrl,
           );
+        const supportsLocalToolRuntime = providerSupportsLocalToolRuntime(
+          selectedProvider?.providerType,
+        );
         const supportsBuiltinImageGeneration =
           providerSupportsBuiltinImageGeneration(
             selectedProvider?.providerType,
@@ -2714,6 +2728,9 @@ export function ChatPage({
         const storedWebFetchToolsEnabled = loadOptionalBool(
           CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
         );
+        // Same opt-in rule as the initial-selection block above: a Connection never
+        // inherits the shared tool toggles, because its local tool output leaves the
+        // machine. See the comment there.
         const nextToolsEnabled = supportsBuiltinWebSearch
           ? isKimi
             ? false
@@ -2744,11 +2761,8 @@ export function ChatPage({
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
-          // External models have no local tool runtime → supportsTools false.
-          // The supportsBuiltin* flags carry server-side capability per pill:
-          // Search, Code (Claude 4.x + gpt-5.5), Images (OpenAI cloud
-          // Responses-API).
-          supportsTools: false,
+          // Hosted providers: supportsTools false + supportsBuiltin*. OAI-compat Connections drive local Search/Code/MCP (#7282).
+          supportsTools: supportsLocalToolRuntime,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
           supportsBuiltinImageGeneration,
@@ -2763,6 +2777,9 @@ export function ChatPage({
           webFetchToolsEnabled: supportsBuiltinWebFetch
             ? (storedWebFetchToolsEnabled ?? false)
             : false,
+          // See the mount-time block: MCP is persisted, so it must not carry a
+          // local model's opt-in into an OAI-compat Connection.
+          ...(supportsLocalToolRuntime ? { mcpEnabledForChat: false } : {}),
           ...(stillOnOpenRouterFree ? {} : { lastOpenRouterChosenModel: null }),
         });
         return;
