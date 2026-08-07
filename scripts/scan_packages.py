@@ -3036,7 +3036,11 @@ def _load_baseline(path: str) -> "dict[tuple[str, str, str, str], set[str] | Non
     return keys
 
 
-def _write_baseline(path: str, findings: list[Finding], source: "str | None" = None) -> None:
+def _write_baseline(
+    path: str,
+    findings: list[Finding],
+    source: "str | None" = None,
+) -> None:
     """Persist CRITICAL/HIGH findings as an allowlist for human triage.
 
     Pins are carried over from `source`, the baseline in effect for this run, so
@@ -3086,8 +3090,7 @@ def _write_baseline(path: str, findings: list[Finding], source: "str | None" = N
 
 
 def _partition_baseline(
-    findings: list[Finding],
-    baseline: "dict[tuple[str, str, str, str], set[str] | None]",
+    findings: list[Finding], baseline: "dict[tuple[str, str, str, str], set[str] | None]"
 ) -> tuple[list[Finding], list[Finding]]:
     """Split findings into (active, suppressed) by allowlist membership."""
     if not baseline:
