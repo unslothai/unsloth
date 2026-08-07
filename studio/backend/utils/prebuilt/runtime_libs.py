@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Where the CUDA runtime lives on this host, for the managed servers' child envs.
-
-Two sources the dynamic linker does not find on its own: Python wheels
-(``python_runtime_dirs``) and directories another application ships privately
-(``vendored_cuda_runtime_dirs``).
+"""CUDA runtime dirs the dynamic linker does not find on its own, for the managed
+servers' child envs: Python wheels, and dirs another application ships privately.
 
 Kept in sync with install_llama_prebuilt.py's python_runtime_dirs and
 prebuilt_core.py's linux_runtime_dirs_for_required_libraries; the backend cannot
@@ -42,12 +39,10 @@ def dedupe_existing_dirs(paths: Iterable[str | Path]) -> list[str]:
     return unique
 
 
-# Directories where another application ships a private copy of the CUDA runtime.
-# They are not on the dynamic linker's search path, but the prebuilt installer
-# counts them when it decides which CUDA runtime line this host can run
-# (prebuilt_core.py: linux_runtime_dirs_for_required_libraries), so a launcher
-# has to put the matching one back or the CUDA backend fails to dlopen and ggml
-# drops to CPU. Entries are (root, per-CUDA-major subdirectory prefix).
+# (root, per-CUDA-major subdir prefix) for apps shipping a private CUDA runtime.
+# Off the linker's search path, but the installer counts them when it picks a
+# runtime line (prebuilt_core.py: linux_runtime_dirs_for_required_libraries), so
+# a launcher must restore the matching one or ggml silently drops to CPU.
 _VENDORED_CUDA_ROOTS: tuple[tuple[Path, str], ...] = (
     (Path("/usr/local/lib/ollama"), "cuda_v{major}"),
 )
@@ -60,19 +55,14 @@ def vendored_cuda_runtime_dirs(
 ) -> list[str]:
     """CUDA runtime dirs private to another application, for an installed build.
 
-    ``marker`` is the parsed install marker of the build being launched; its
-    ``runtime_line`` ("cuda13") says which CUDA major that build needs. Anything
-    else (a CPU or Vulkan build, a source build with no marker, a corrupt one)
-    yields nothing. Only a directory holding both libcudart and libcublas for
-    that exact major qualifies, so an unrelated CUDA major never reaches the
-    loader path.
+    ``marker`` is the build's parsed install marker; its ``runtime_line``
+    ("cuda13") picks the CUDA major. Anything else yields nothing. A dir
+    qualifies only with both libcudart and libcublas for that exact major.
 
-    Callers must place these *last*: they are a rescue for hosts where no other
-    copy of the runtime exists, never a replacement for the wheel or system one
-    that qualified the build.
+    Callers must place the result last: it rescues hosts with no other copy of
+    the runtime, and must never displace the one that qualified the build.
     """
-    # Every root below is a Linux path, and only Linux uses LD_LIBRARY_PATH to
-    # find them. Revisit if a Windows or macOS entry is ever added.
+    # Every root below is a Linux path. Revisit if a Windows/macOS entry is added.
     if not sys.platform.startswith("linux"):
         return []
 
@@ -85,8 +75,7 @@ def vendored_cuda_runtime_dirs(
     found: list[Path] = []
     for root, prefix_template in _VENDORED_CUDA_ROOTS if roots is None else roots:
         prefix = prefix_template.format(major = major)
-        # Guard against cuda_v130 answering a cuda_v13 glob; a trailing minor
-        # (cuda_v13.0) is still the right major.
+        # cuda_v130 must not answer a cuda_v13 glob; cuda_v13.0 still should.
         exact = re.compile(rf"{re.escape(prefix)}(?:[._-].*)?")
         try:
             found.extend(

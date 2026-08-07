@@ -400,8 +400,7 @@ def _make_cuda_bundle(tmp_path, *, runtime_line = "cuda13"):
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "Linux loader path only")
 def test_child_env_appends_vendored_cuda_runtime(monkeypatch, tmp_path):
-    # Same gap as the llama-server launcher: a CUDA bundle whose libcudart only
-    # exists in another application's private directory has to reach the loader.
+    # Same gap as llama-server: a bundle whose only libcudart is in a private dir.
     import utils.prebuilt.runtime_libs as rl
     from utils.whisper_cpp_freshness import reset_caches
 

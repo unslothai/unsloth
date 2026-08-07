@@ -162,9 +162,8 @@ def test_read_install_marker_handles_invalid_json(tmp_path):
 
 
 def test_read_install_marker_handles_non_utf8(tmp_path):
-    # A truncated or corrupt marker decodes as invalid UTF-8. That raised out of
-    # read_install_marker into every unguarded caller (the update paths, and the
-    # launchers' CUDA runtime lookup), taking down a model launch over metadata.
+    # A corrupt marker decodes as invalid UTF-8, which used to raise out of here
+    # into every unguarded caller (the update paths, the launchers' CUDA lookup).
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir(parents = True)
     (install_dir / "UNSLOTH_PREBUILT_INFO.json").write_bytes(b'{"runtime_line": "\xff\xfecuda13"}')

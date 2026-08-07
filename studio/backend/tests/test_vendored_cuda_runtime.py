@@ -3,10 +3,9 @@
 
 """Tests for locating a CUDA runtime another application ships privately.
 
-The prebuilt installer counts those directories when it picks a CUDA runtime
-line (prebuilt_core.py: linux_runtime_dirs_for_required_libraries), so the
-launchers have to put the matching one back on LD_LIBRARY_PATH. Pins the
-match rule (exact CUDA major, complete runtime) and the refusals.
+The installer counts those dirs when it picks a runtime line, so the launchers
+must put the matching one back on LD_LIBRARY_PATH. Pins the match rule (exact
+CUDA major, complete runtime) and the refusals.
 """
 
 from __future__ import annotations

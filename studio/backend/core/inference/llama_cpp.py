@@ -4242,10 +4242,8 @@ class LlamaCppBackend:
                 if os.path.isdir(cuda_lib):
                     lib_dirs.append(cuda_lib)
 
-            # Last resort: a CUDA runtime another application ships privately.
-            # Behind the wheel/toolkit dirs and the inherited path on purpose --
-            # the installed build's CUDA major may have been qualified by Torch,
-            # and this only has to rescue hosts where nothing else provides it.
+            # Last, deliberately: the build's CUDA major may have been qualified
+            # by Torch, so this only rescues hosts with no other copy.
             from utils.llama_cpp_freshness import read_install_marker
             from utils.prebuilt.runtime_libs import vendored_cuda_runtime_dirs
 

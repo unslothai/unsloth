@@ -308,8 +308,7 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
         for pattern in ("libggml-cuda.so*", "ggml-cuda*.dll")
         for path in bundle_dir.glob(pattern)
     )
-    # Same rescue as the llama-server launcher: a CUDA runtime another app ships
-    # privately, appended after everything else so it only fills a real gap.
+    # Same rescue as the llama-server launcher; appended last (see the helper).
     vendored_cuda_dirs: list[str] = []
     if has_cuda_module:
         try:
