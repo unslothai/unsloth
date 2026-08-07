@@ -646,16 +646,12 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             except Exception:
                 length = None
             if length is not None:
-                self._index = [
-                    i for i in range(length) if self._keep(self._slice(inner[i]))
-                ]
+                self._index = [i for i in range(length) if self._keep(self._slice(inner[i]))]
 
         def _slice(self, row):
             if not isinstance(row, dict):
                 return row
-            return {
-                k: (v[self._cut] if k in self._per_token else v) for k, v in row.items()
-            }
+            return {k: (v[self._cut] if k in self._per_token else v) for k, v in row.items()}
 
         def _keep(self, row):
             if not self._supervision or not isinstance(row, dict):
@@ -763,7 +759,11 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             # `datasets`, and a `with_transform` split has it but recreates its rows
             # on every read, so mapping writes a table nobody reads.
             transform = str((getattr(dataset, "format", None) or {}).get("type", "")).lower()
-            if not hasattr(dataset, "map") or not hasattr(dataset, "filter") or transform == "custom":
+            if (
+                not hasattr(dataset, "map")
+                or not hasattr(dataset, "filter")
+                or transform == "custom"
+            ):
                 return _CappedRows(dataset, cut, supervision, per_token)
             new = dataset.map(lambda e: {c: e[c][cut] for c in per_token})
             # Truncating can leave a row with every label at -100, or a mask that is
