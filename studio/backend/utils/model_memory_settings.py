@@ -76,10 +76,15 @@ def _cached_setting(key: str) -> Any:
     return stored
 
 
-def _invalidate(key: str) -> None:
+def _invalidate(*keys: str) -> None:
+    """Drop these keys in ONE acquisition. The write commits the pair in one
+    transaction, so invalidating them separately would let a load in between read
+    a new keep_resident against a cached old no_ram_reserve and emit --mlock for
+    a combination that was never stored."""
     with _cache_lock:
-        _cache.pop(key, None)
-        _generation[key] = _generation.get(key, 0) + 1
+        for key in keys:
+            _cache.pop(key, None)
+            _generation[key] = _generation.get(key, 0) + 1
 
 
 def get_keep_resident() -> bool:
@@ -129,8 +134,7 @@ def set_model_memory_settings(
     if updates:
         from storage.studio_db import upsert_app_settings
         upsert_app_settings(updates)
-        for key in updates:
-            _invalidate(key)
+        _invalidate(*updates)
 
     return get_keep_resident(), get_no_ram_reserve()
 

@@ -1807,3 +1807,66 @@ class TestADefaultLaunchRecordsItsApplicability:
             )
             is False
         )
+
+
+class TestPairedWritesAreInvalidatedTogether:
+    """The write commits both keys in one transaction, so a reader must never
+    observe a combination that was never stored. Invalidating key by key let a
+    load read the new keep_resident against a cached old no_ram_reserve and emit
+    --mlock for a launch the user had just told not to reserve RAM."""
+
+    def test_a_paired_write_invalidates_once_for_both_keys(self, monkeypatch):
+        """Deterministic: the timing window itself is only a few instructions, so
+        pin the contract instead of racing for it."""
+        import utils.model_memory_settings as mm
+
+        store: dict = {}
+        monkeypatch.setattr(
+            "storage.studio_db.get_app_setting", lambda key, default = None: store.get(key, default)
+        )
+        monkeypatch.setattr(
+            "storage.studio_db.upsert_app_settings", lambda updates: store.update(updates)
+        )
+        calls: list[tuple] = []
+        real = mm._invalidate
+        monkeypatch.setattr(
+            mm, "_invalidate", lambda *keys: (calls.append(keys), real(*keys))[1]
+        )
+
+        mm.set_model_memory_settings(keep_resident = True, no_ram_reserve = True)
+
+        assert len(calls) == 1, f"the pair must be dropped in one call, got {calls}"
+        assert set(calls[0]) == {
+            mm.KEEP_RESIDENT_SETTING_KEY,
+            mm.NO_RAM_RESERVE_SETTING_KEY,
+        }
+
+    def test_invalidating_a_pair_bumps_both_generations(self):
+        import utils.model_memory_settings as mm
+
+        mm._generation.clear()
+        mm._invalidate(mm.KEEP_RESIDENT_SETTING_KEY, mm.NO_RAM_RESERVE_SETTING_KEY)
+        assert mm._generation[mm.KEEP_RESIDENT_SETTING_KEY] == 1
+        assert mm._generation[mm.NO_RAM_RESERVE_SETTING_KEY] == 1
+
+    def test_one_acquisition_covers_every_key(self):
+        import ast
+        from pathlib import Path
+
+        src = Path(__file__).resolve().parent.parent / "utils" / "model_memory_settings.py"
+        tree = ast.parse(src.read_text(encoding = "utf-8"))
+        setter = next(
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "set_model_memory_settings"
+        )
+        for node in ast.walk(setter):
+            if isinstance(node, ast.For):
+                called = {
+                    c.func.id
+                    for c in ast.walk(node)
+                    if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+                }
+                assert "_invalidate" not in called, (
+                    "_invalidate is back in a loop, so the pair is not atomic"
+                )
