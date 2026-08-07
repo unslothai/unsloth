@@ -534,3 +534,26 @@ def test_the_update_lock_lives_outside_the_replaceable_venv(monkeypatch, studio,
 
     assert seen["venv_locks"] == []
     assert len(seen["home_locks"]) == 1
+
+
+def test_a_failed_move_aside_warns_that_unsloth_may_not_upgrade(monkeypatch, studio, tmp_path, capsys):
+    # Aborting here would make an antivirus hold enough to render the
+    # environment unupdatable, which main did not do either. But the cost has to
+    # be visible: uv cannot replace a launcher it could not move, and the pip
+    # fallback drops --upgrade-package, so unsloth stays at its old version.
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
+    ran = []
+
+    def refuse_move(source, destination):
+        raise OSError("access is denied")
+
+    monkeypatch.setattr(studio.os, "replace", refuse_move)
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: ran.append(True))
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
+
+    _update(studio)
+
+    assert ran == [True]
+    err = capsys.readouterr().err
+    assert "could not move the Unsloth launcher aside" in err
+    assert "may not be upgraded" in err
