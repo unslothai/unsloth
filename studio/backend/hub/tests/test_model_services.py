@@ -1250,8 +1250,12 @@ def test_state_scan_survives_a_state_filename_with_an_undecodable_byte(monkeypat
     assert state.summary()[0] is True
 
     # The per-repo iterators keep enumerating past it too, surrogate name and all.
-    variants = [variant for variant, _path in
-                download_manifest.iter_variant_markers("model", "Owner/Repo", hub_cache = cache)]
+    variants = [
+        variant
+        for variant, _path in download_manifest.iter_variant_markers(
+            "model", "Owner/Repo", hub_cache = cache
+        )
+    ]
     assert "Q4_K_M" in variants and any("\udcff" in v for v in variants), variants
 
 
