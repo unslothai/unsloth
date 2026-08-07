@@ -10005,6 +10005,14 @@ async def openai_chat_completions(
 
         # ── Audio INPUT path: decode WAV and route to audio input generation ──
         if payload.audio_base64 and model_info.get("has_audio_input"):
+            # This route re-listens to the recording and answers afresh, so there is no
+            # boundary to resume from. Refuse rather than return a restart labelled as
+            # a continuation; the Studio UI already hides Continue here.
+            if _continue_final_message(payload):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "continue_final_message is not supported with audio input.",
+                )
             try:
                 audio_array = _decode_audio_base64(payload.audio_base64)
                 system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)

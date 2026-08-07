@@ -2366,6 +2366,19 @@ def append_assistant_turn(
     conversation.append(assistant_msg)
 
 
+def strip_open_reasoning_prefill(prefix: str) -> str:
+    """Drop a generation prompt's unclosed ``<think>`` opener.
+
+    A splice appends the already-visible partial to this prefix, so on a template that
+    prefills an open block (DeepSeek-R1, QwQ, Qwen3-Thinking) the answer would resume
+    as reasoning and the model would close the block instead of continuing it.
+    """
+    open_at = prefix.rfind(_THINK_OPEN)
+    if open_at == -1 or open_at < prefix.rfind(_THINK_CLOSE):
+        return prefix
+    return prefix[:open_at]
+
+
 def render_prompt_with_boundary(
     processor,
     messages: list,
@@ -2393,7 +2406,7 @@ def render_prompt_with_boundary(
         prefix = processor.apply_chat_template(
             messages[:-1], add_generation_prompt = True, tokenize = False
         )
-        return f"{prefix}{partial}"
+        return f"{strip_open_reasoning_prefill(prefix)}{partial}"
 
 
 def apply_chat_template_for_generation(
@@ -2493,10 +2506,21 @@ def apply_chat_template_for_generation(
     def _render_continuation_manually(msgs: list) -> str:
         """For tokenizers predating ``continue_final_message`` (TypeError above).
 
-        Renders the history before the partial turn, then appends the partial raw.
+        Prefix and partial come from the SAME swept copy: an attempt that drops the
+        tools kwarg re-sweeps for the default template, and a boundary unique to that
+        profile would otherwise survive raw in the appended text.
         """
-        prefix = _render(list(msgs[:-1]), {"add_generation_prompt": True})
-        return f"{prefix}{_continue_text}"
+        for kwargs in attempts:
+            swept = _swept_for(kwargs, msgs)
+            try:
+                prefix = tokenizer.apply_chat_template(
+                    swept[:-1], tokenize = False, add_generation_prompt = True, **kwargs
+                )
+            except TypeError:
+                continue
+            partial = trailing_assistant_text(swept) or _continue_text
+            return f"{strip_open_reasoning_prefill(prefix)}{partial}"
+        raise TypeError("no attempt rendered the continuation prefix")
 
     def _render_with_fallback(msgs: list) -> str:
         try:
