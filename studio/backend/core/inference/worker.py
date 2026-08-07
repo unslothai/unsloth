@@ -557,6 +557,7 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
             "enable_thinking",
             "reasoning_effort",
             "preserve_thinking",
+            "continue_final_message",
         ):
             if opt_key in cmd:
                 gen_kwargs[opt_key] = cmd[opt_key]
@@ -597,7 +598,8 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
             {
                 "type": "gen_done",
                 "request_id": request_id,
-                # usage/timings from the MLX backend (None elsewhere).
+                # usage/timings from MLX, usage + "truncated" from safetensors
+                # (None for a backend that reports neither).
                 "stats": getattr(backend, "last_generation_stats", None),
             },
         )
@@ -778,6 +780,8 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
             {
                 "type": "gen_done",
                 "request_id": request_id,
+                # Same channel as the text path; the ASR backends reset it per run.
+                "stats": getattr(backend, "last_generation_stats", None),
             },
         )
         logger.info("Finished audio input generation for request_id=%s", request_id)
