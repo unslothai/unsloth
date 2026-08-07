@@ -4,6 +4,8 @@
 // Barrel import (lint rule); the model-picker cycle is fine because the call
 // happens at runtime, not module eval.
 import { resolveResidentInitialConfig } from "@/features/model-picker";
+// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
+import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { getInferenceStatus } from "../api/chat-api";
 import {
   mergeBackendRecommendedInference,
@@ -110,7 +112,9 @@ function ensureActiveModelInStoreList(
   }
   const summary: ChatModelSummary = {
     id: checkpointId,
-    name: status.active_model ?? checkpointId,
+    // active_model is already the clean public id; its leaf matches the catalog rows,
+    // and the fallback keeps a snapshot path out of the trigger.
+    name: modelDisplayName(status.active_model ?? checkpointId),
     isVision: status.is_vision ?? false,
     isLora: false,
     isGguf: status.is_gguf ?? false,

@@ -88,8 +88,19 @@ def test_chat_autoload_toast_is_persistent_and_dismissible():
     assert "toast.loading(" not in auto_load
     assert "const updateAutoLoadToast =" in auto_load
     assert "if (autoLoadToastDismissed) return;" in auto_load
-    assert auto_load.count("toast.message(") == 2
-    assert auto_load.count("updateAutoLoadToast(") >= 4
+    # Progress + the terminal "download stopped" notice; success/error use their
+    # own toast.success / toast.error helpers.
+    assert auto_load.count("toast.message(") == 3
+    # One progress toast re-titled through every phase: the cascade updates it
+    # directly, and the download keeps it live via the same updater.
+    assert auto_load.count("updateAutoLoadToast(") >= 2
+    assert (
+        "ensureDefaultModelDownloaded(\n        hfToken,\n        options?.abortSignal,\n        updateAutoLoadToast,\n      )"
+        in auto_load
+    )
+    download_helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
+    download_helper = download_helper.split("async function autoLoadSmallestModel", 1)[0]
+    assert download_helper.count("setToast(") >= 2
     assert "duration: Number.POSITIVE_INFINITY" in auto_load
     assert "closeButton: true" in auto_load
     assert "icon: createLoadingToastIcon()" in auto_load
@@ -528,9 +539,13 @@ def test_chat_autoload_scopes_variant_lookup_to_cached_repo_path():
     """Autoload must probe the exact cache row it will load, including rows
     retained from a previously selected Hugging Face cache."""
     src = _read("features/chat/api/chat-adapter.ts")
-    auto_load = src.split("async function autoLoadSmallestModel", 1)[1]
-    assert auto_load.count("preferLocalCache: true") >= 2
-    assert auto_load.count("localPath: repo.cache_path") >= 2
+    # Both cache-backed sources scan the exact path they will load from, not the
+    # bare repo id.
+    sources = src.split("function buildAutoLoadSources", 1)[1]
+    sources = sources.split("function isRememberedSource", 1)[0]
+    assert sources.count("preferLocalCache: true") == 2
+    assert "localPath: repo.cache_path" in sources
+    assert "localPath: row.path" in sources
 
     # #7767 moved the query building out of chat-api into its own module, so the listing
     # imports without the auth barrel. Both halves are pinned: the caller must still hand
@@ -1405,8 +1420,8 @@ def test_parallel_slots_control_cleared_when_the_load_never_sent_them():
     assert "nParallel: null," in non_gguf_branch
     assert "loadedNParallel: null," in non_gguf_branch
 
-    fresh_default = adapter.split("No downloaded models found. Fetching", 1)[1].split(
-        'showAutoLoadSuccess("Loaded Qwen', 1
+    fresh_default = adapter.split("// Nothing on the device:", 1)[1].split(
+        "showAutoLoadSuccess(\n          `Loaded ${DEFAULT_CHAT_MODEL_LABEL}", 1
     )[0]
     # The fresh-default download omits the slots, so its success state clears both,
     # or the control reads as an unapplied edit against the seeded baseline.
@@ -2425,3 +2440,363 @@ def test_the_primary_action_keeps_its_four_labels():
         for el in re.finditer(r"<Button\b.*?</Button>", page, re.S)
     )
     assert primary, "primaryActionLabel is no longer rendered inside the handleRun Button"
+
+
+def test_autoload_sees_every_on_device_inventory_and_fails_closed():
+    """#7374: Send downloaded a model over a loadable local one. The cascade read
+    only the two managed-cache lists, both wrapped in `.catch(() => [])`, so a
+    flaky request also read as "device is empty"."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    auto_load = src.split("async function autoLoadSmallestModel", 1)[1]
+    discovery = auto_load.split("for (const source of sources)", 1)[0]
+    # The backend-indexed on-device inventory is consulted, not just the cache.
+    assert "listLocalModels()" in discovery
+    assert "listCachedGguf(options?.abortSignal)" in discovery
+    assert "listCachedModels(hfToken, options?.abortSignal)" in discovery
+    # Fail closed: an inventory error must not read as an empty device.
+    assert "listCachedGguf().catch(" not in src
+    assert "listCachedModels().catch(" not in src
+    assert "listLocalModels().catch(" not in src
+
+
+def test_autoload_local_rows_follow_the_picker_policy():
+    """A background pick must be something the user could have picked, minus the
+    formats that must stay an explicit action."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    policy = src.split("function isAutoLoadableLocalRow", 1)[1]
+    policy = policy.split("\n}", 1)[0]
+    assert "AUTO_LOAD_LOCAL_SOURCES.has(row.source)" in policy
+    # Not `=== true`: normalizeCapabilities falls back to the format capability
+    # when the backend sends no can_chat, so the picker shows such a row while
+    # `=== true` skipped it and fell through to downloading the default.
+    assert "row.capabilities?.can_chat !== false" in policy
+    assert "row.partial !== true" in policy
+    # An adapter resolves its base model, a Hub fetch when that base is uncached;
+    # a scan-folder checkpoint is a pickle with no Hub security scan. Stated as
+    # an allowlist, which subsumes both: excluding them by name was only as good
+    # as the classification, and the backend sends "unknown" when it cannot tell.
+    # test_a_local_row_the_picker_would_hide_is_never_auto_loaded covers the
+    # behaviour.
+    assert '(isGgufLocalRow(row) || row.model_format === "safetensors")' in policy
+    assert "isHiddenModelId(row.model_id, row.id, row.path)" in policy
+
+    sources = src.split("const AUTO_LOAD_LOCAL_SOURCES", 1)[1].split("]", 1)[0]
+    assert '"models_dir"' in sources
+    assert '"lmstudio"' in sources
+    assert '"custom"' in sources
+    # hf_cache rows are the cached lists' job; ollama links are not loadable.
+    assert '"hf_cache"' not in sources
+    assert '"ollama"' not in sources
+
+
+def test_default_model_download_is_visible_and_cancellable():
+    """On a genuinely empty device Studio still fetches a model, but as a managed
+    download with progress and a Cancel, never an inline pull inside /load."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
+    helper = helper.split("async function autoLoadSmallestModel", 1)[0]
+    assert "downloadManager.requestStart(request)" in helper
+    assert "downloadManager.cancel(" in helper
+    assert "subscribeJobListeners(" in helper
+    # The toast carries its own Cancel wired to the same job.
+    assert "cancelDownload," in helper
+    # Live byte progress, so the user is not staring at a static message.
+    assert "useDownloadManagerStore.subscribe(" in helper
+    # Already on disk from an earlier run: no download at all.
+    assert 'if (variant?.downloaded && variant.partial !== true) return "ready";' in helper
+    # The load only happens once the bytes are actually here.
+    assert "loadModel(" not in helper
+
+    auto_load = src.split("async function autoLoadSmallestModel", 1)[1]
+    fallback = auto_load.split("// Nothing on the device:", 1)[1]
+    assert 'if (download !== "ready") {' in fallback
+    # Cancelling leaves the user with actionable next steps, not a dead end.
+    assert "Pick one from the top bar" in fallback
+
+    updater = src.split("const updateAutoLoadToast =", 1)[1].split("\n  };", 1)[0]
+    assert 'label: "Cancel"' in updater
+
+
+def test_default_chat_model_is_gemma_4_e2b():
+    """The empty-device default, in one place so it cannot drift."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    assert 'const DEFAULT_CHAT_MODEL_REPO = "unsloth/gemma-4-E2B-it-GGUF";' in src
+    assert 'const DEFAULT_CHAT_MODEL_VARIANT = "UD-Q4_K_XL";' in src
+    assert 'const DEFAULT_CHAT_MODEL_LABEL = "Gemma 4 E2B";' in src
+    # No hard-coded repo id or quant left anywhere on the send path.
+    assert "Qwen3.5-4B-MTP-GGUF" not in src
+    assert src.count('"UD-Q4_K_XL"') == 1
+
+
+def test_first_download_toast_is_informative_not_alarming():
+    """The old copy read as a warning about the user's machine ("No downloaded
+    models found") and named a raw repo/quant."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    assert "No downloaded models found" not in src
+    assert "Downloading a small model" not in src
+    helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
+    helper = helper.split("async function autoLoadSmallestModel", 1)[0]
+    assert "Getting ${DEFAULT_CHAT_MODEL_LABEL} ready" in helper
+    assert "Unsloth couldn\u2019t find an existing model." in helper
+    assert "You can stop the download or " in helper
+    assert "manage models later in the 'Model hub'" in helper
+
+
+def test_indexed_local_loads_are_remembered_without_bypassing_leases():
+    """A local model the user actually ran should be re-picked first, but a
+    native file-picker path must not be: reaching it needs a signed lease."""
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    block = runtime.split("const indexedLocalPick =", 1)[1]
+    block = block.split("} catch (error) {", 1)[0]
+    assert 'selection.source === "local"' in block
+    assert "!nativePathToken &&" in block
+    assert "(indexedLocalPick || !isLocalModelPath(modelId))" in block
+
+    store = _read("features/chat/utils/last-local-model-load.ts")
+    # A cached Hub GGUF repo without a quant names no file; a local .gguf does.
+    assert 'input.kind === "gguf" && !ggufVariant && !isPathLikeId(id)' in store
+    # Identity only: no tokens, leases, or approvals are persisted.
+    assert "token" not in store.lower().replace("isPathLikeId", "")
+
+
+def test_autoload_skips_image_and_video_rows():
+    """The backend tags a row with a task only for image/video models, and the
+    picker routes those away on click. A background load has no routing step."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    tasks = src.split("const IMAGE_OR_VIDEO_TASKS", 1)[1].split("]", 1)[0]
+    assert '"text-to-image"' in tasks
+    assert '"text-to-video"' in tasks
+    assert '"image-diffusion-unsupported"' in tasks
+    policy = src.split("function isAutoLoadableLocalRow", 1)[1].split("\n}", 1)[0]
+    assert 'IMAGE_OR_VIDEO_TASKS.has(row.task ?? "")' in policy
+
+
+def test_remembered_matching_uses_the_same_case_rules_as_the_dedupe_key():
+    """Folding a POSIX path would mark two models differing only by case as
+    both being the remembered one."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    remembered = src.split("function isRememberedSource", 1)[1].split("\n}", 1)[0]
+    assert "normalizeTarget(remembered.id)" in remembered
+    assert "normalizeTarget(source.id)" in remembered
+    assert "normalizeTarget(source.loadId)" in remembered
+    assert ".toLowerCase()" not in remembered
+    key = src.split("function autoLoadSourceKey", 1)[1].split("\n}", 1)[0]
+    assert "normalizeTarget(source.loadId)" in key
+
+
+def test_cached_inventory_lookups_take_the_run_signal():
+    """Neither has a timeout of its own, unlike listLocalModels."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    assert "listCachedGguf(options?.abortSignal)" in src
+    assert "listCachedModels(hfToken, options?.abortSignal)" in src
+
+
+def test_download_cancel_survives_the_pending_start_window():
+    """cancel() no-ops on a key with no job, so a click during requestStart's
+    preflights is replayed once the job exists, and exactly once: cancelling
+    patches the job and wakes the subscription."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
+    helper = helper.split("async function autoLoadSmallestModel", 1)[0]
+    assert "let cancelRequested = false;" in helper
+    assert "let cancelInFlight = false;" in helper
+    # In flight only: a failed cancel restores the job, so a later click retries.
+    assert 'if (cancelInFlight || active.state === "cancelling") return true;' in helper
+    assert "if (cancelRequested) {\n          if (!cancelEverIssued) issueCancel();" in helper
+    assert 'if (cancelRequested && !issueCancel()) finish("cancelled");' in helper
+
+
+def test_a_failed_quant_is_marked_tried_so_the_repo_continues():
+    """One corrupt quant must not cost a repo that holds a valid one."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    cascade = src.split("for (const source of sources)", 1)[1]
+    cascade = cascade.split("// Nothing on the device:", 1)[0]
+    assert "while (!autoLoadCancelled && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS)" in cascade
+    assert "skippedAutoLoadCandidates.add(" in cascade
+
+
+def test_local_safetensors_chat_capability_is_classified_not_assumed():
+    """An embedding export is config.json plus model.safetensors, which the
+    format-only rule marked chat-capable, and it is small enough to be tried
+    first."""
+    src = _read_backend("hub/services/models/common.py")
+    assert "def _local_transformers_can_chat(" in src
+    assert "can_chat_override" in src
+    call = src.split("adapter_type = adapter_type if model_format", 1)[1]
+    call = call.split("elif not rows:", 1)[0]
+    assert "_local_transformers_can_chat(scan_path)" in call
+    assert 'model_format in {"safetensors", "checkpoint"}' in call
+    # Fails open: an unfamiliar architecture must not be hidden.
+    classifier = src.split("def _local_transformers_can_chat(", 1)[1]
+    classifier = classifier.split("\ndef ", 1)[0]
+    assert classifier.rstrip().endswith("return None")
+
+
+def test_sources_dedupe_on_the_load_target_alone():
+    """A repo holding both GGUF and safetensors yields a row in each cached list,
+    but the backend resolves one target to one model, so keeping both spends a
+    second attempt on the same files. Skipped in the cascade rather than dropped
+    while ordering, because dropping the twin lost a loadable safetensors row
+    whenever its GGUF twin resolved no quant."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    key = src.split("function autoLoadSourceKey", 1)[1].split("\n}", 1)[0]
+    assert "return normalizeTarget(source.loadId);" in key
+    assert "source.kind" not in key
+    # Ordering keeps every row; the sort alone decides which twin is reached first.
+    order = src.split("function orderAutoLoadSources", 1)[1].split("\n}\n", 1)[0]
+    assert "[...sources].sort(" in order
+    assert "filter(" not in order
+    # The skip is keyed on a candidate having been resolved, not on merely visiting.
+    body = src.split("const candidateResolvedFor = new Set<string>();", 1)[1]
+    body = body.split("\n    // Cap also gates", 1)[0]
+    assert body.index("if (candidateResolvedFor.has(sourceKey)) continue;") < body.index(
+        "candidateResolvedFor.add(sourceKey);"
+    )
+    assert "if (!candidate) break;\n          candidateResolvedFor.add(sourceKey);" in body
+
+
+def test_variant_scans_take_the_run_signal():
+    src = _read("features/chat/api/chat-adapter.ts")
+    build = src.split("function buildAutoLoadSources", 1)[1]
+    build = build.split("function isRememberedSource", 1)[0]
+    assert build.count("signal,") == 2
+    assert "options?.abortSignal,\n      )," in src
+
+
+def test_cached_rows_classify_chat_capability_too():
+    """The same encoder gate the scan-folder rows get; cached rows built their
+    capabilities from file format alone."""
+    src = _read_backend("hub/services/models/cache_inventory.py")
+    assert "_local_transformers_can_chat" in src
+    fields = src.split("def _cache_inventory_fields", 1)[1].split("\ndef ", 1)[0]
+    assert "can_chat_override" in fields
+    assert (
+        'model_format in {"safetensors", "checkpoint"} and classify_snapshot is not None' in fields
+    )
+
+
+def test_every_load_target_comparison_uses_the_same_case_rules():
+    """Source dedupe, remembered matching, and tried-candidate keys all compare
+    load targets, so they must agree on POSIX case."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    for fn in ("autoLoadSourceKey", "isRememberedSource", "autoLoadCandidateKey"):
+        body = src.split(f"function {fn}(", 1)[1].split("\n}", 1)[0]
+        assert "normalizeTarget(" in body, fn
+        assert "id.toLowerCase()" not in body, fn
+
+
+def test_the_default_variant_lookup_takes_the_run_signal():
+    src = _read("features/chat/api/chat-adapter.ts")
+    helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
+    helper = helper.split("async function autoLoadSmallestModel", 1)[0]
+    assert (
+        "listGgufVariants(DEFAULT_CHAT_MODEL_REPO, undefined, {\n      signal: abortSignal,\n    })"
+        in helper
+    )
+    # The catch below swallows the abort rejection, so the guard after it is
+    # what actually stops the download from starting.
+    assert helper.index("} catch {") < helper.index("abortSignal?.throwIfAborted();")
+
+
+def test_cached_rows_get_the_same_image_and_video_gate_as_local_rows():
+    """Cached diffusion repos carry their task on the row and report can_chat
+    true on file format alone."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    cached = src.split("function isChattableCachedRepo", 1)[1].split("\n}\n", 1)[0]
+    assert 'IMAGE_OR_VIDEO_TASKS.has(repo.task ?? "")' in cached
+    local = src.split("function isAutoLoadableLocalRow", 1)[1].split("\n}", 1)[0]
+    assert 'IMAGE_OR_VIDEO_TASKS.has(row.task ?? "")' in local
+    # A chat GGUF is tagged text-generation, so the gate is a list, not "has a task".
+    tasks = src.split("const IMAGE_OR_VIDEO_TASKS", 1)[1].split("]", 1)[0]
+    assert '"text-generation"' not in tasks
+
+
+def test_the_default_download_prepares_the_token_first():
+    """startJob sends the stored token raw, with none of the recovery
+    validateModel and loadModel get."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
+    helper = helper.split("async function autoLoadSmallestModel", 1)[0]
+    assert "prepareHfTokenForUse(hfToken)" in helper
+    assert 'if (!prepared.proceed) return "cancelled";' in helper
+    # After the on-disk check, so nothing prompts when there is no download,
+    # and before the managed start.
+    assert helper.index('return "ready"') < helper.index("prepareHfTokenForUse(hfToken)")
+    assert helper.index("prepareHfTokenForUse(hfToken)") < helper.index(
+        "downloadManager.requestStart(request)"
+    )
+
+
+def test_a_cancelled_download_is_never_handed_to_a_load():
+    """A cancel can fail and the transfer finish anyway."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
+    helper = helper.split("async function autoLoadSmallestModel", 1)[0]
+    assert 'finish(cancelRequested ? "cancelled" : "ready")' in helper
+
+
+def test_cached_classification_reads_the_snapshot_the_row_loads():
+    """_scan_cached_models passes only `identity`, so snapshot_path alone
+    classified nothing and the gate was a no-op in production."""
+    src = _read_backend("hub/services/models/cache_inventory.py")
+    fields = src.split("def _cache_inventory_fields", 1)[1].split("\ndef ", 1)[0]
+    assert "classify_snapshot = identity.load_snapshot or snapshot_path" in fields
+    assert "_local_transformers_can_chat(classify_snapshot)" in fields
+    # The resolve must run before the classification reads it.
+    assert fields.index("identity = _resolve_load_identity(") < fields.index("classify_snapshot =")
+
+
+def test_non_chat_conditional_generation_is_excluded_before_the_suffix_check():
+    """Whisper ends in ForConditionalGeneration; the order decides the answer."""
+    src = _read_backend("hub/services/models/common.py")
+    classifier = src.split("def _local_transformers_can_chat(", 1)[1]
+    classifier = classifier.split("\ndef ", 1)[0]
+    assert classifier.index("_NON_CHAT_GENERATIVE_MODEL_TYPES") < classifier.index(
+        "_GENERATIVE_ARCHITECTURE_SUFFIXES"
+    )
+    assert '"whisper"' in src
+    # Real seq2seq and multimodal chat models must not be listed.
+    excluded = src.split("_NON_CHAT_GENERATIVE_ARCHITECTURES = frozenset(", 1)[1]
+    excluded = excluded.split(")", 1)[0]
+    assert "T5ForConditionalGeneration" not in excluded
+    assert "Gemma" not in excluded
+
+
+def test_format_gates_wait_for_the_server_reported_platform():
+    """The store's initial chatOnly is a browser guess: a Mac browser on a remote
+    Linux Studio would hide every local safetensors model."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    gate = src.split("function runsOnThisPlatform", 1)[1].split("\n}", 1)[0]
+    assert "if (!platform.fetched || !platform.isChatOnly()) return true;" in gate
+
+
+def test_the_default_is_preflighted_before_the_managed_download():
+    """A refusal from the training or placement guard must not cost gigabytes
+    first."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    fallback = src.split("// Nothing on the device:", 1)[1]
+    fallback = fallback.split("export function createOpenAIStreamAdapter", 1)[0]
+    assert fallback.index("canAutoLoad({") < fallback.index("ensureDefaultModelDownloaded(")
+    # One GPU snapshot feeds both, so the load sends what was cleared.
+    assert fallback.index("const rt = useChatRuntimeStore.getState();") < fallback.index(
+        "canAutoLoad({"
+    )
+
+
+def test_cached_non_gguf_rows_get_the_chat_only_platform_gate():
+    """The picker hides them outright there (visibleCachedModelRows)."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    gate = src.split("function cachedModelsRunOnThisPlatform", 1)[1].split("\n}", 1)[0]
+    assert "return !platform.fetched || !platform.isChatOnly();" in gate
+    assert "cachedModelsRunOnThisPlatform()\n          ? allModelRepos.filter(" in src
+    # GGUF runs everywhere, so those rows stay ungated.
+    assert "allGgufRepos.filter(isChattableCachedRepo)," in src
+
+
+def test_bare_vision_and_audio_backbones_are_classified_non_chat():
+    """A ViTModel name has no task suffix, so only the model type identifies it."""
+    src = _read_backend("hub/services/models/common.py")
+    encoders = src.split("_ENCODER_ONLY_MODEL_TYPES = frozenset(", 1)[1]
+    encoders = encoders.split(")", 1)[0]
+    for model_type in ('"vit"', '"dinov2"', '"swin"', '"wav2vec2"', '"resnet"'):
+        assert model_type in encoders, model_type
