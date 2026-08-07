@@ -259,6 +259,7 @@ test("remeasures a restored window after show on its compact secondary", async (
     show: async () => {
       events.push("show");
       visible = true;
+      return true;
     },
     measure,
     setMinimumConstraints: async (minimum) => {
@@ -308,6 +309,7 @@ test("waits for restored geometry before enforcing its minimum", async () => {
     measured,
     show: async () => {
       events.push("show");
+      return true;
     },
     waitForSettled: async () => {
       events.push("settled");
@@ -337,6 +339,42 @@ test("waits for restored geometry before enforcing its minimum", async () => {
   assert.deepEqual(currentSize, { width: 1200, height: 800 });
 });
 
+test("preserves restored geometry while an autostart window stays hidden", async () => {
+  const events: string[] = [];
+  const measured = {
+    bounds: {
+      minimum: { width: 900, height: 600 },
+      maximum: { width: 1920, height: 1040 },
+    },
+    monitor: null,
+    frameSize: { width: 0, height: 0 },
+  };
+
+  await finalizeAppWindowLayout({
+    restored: true,
+    measured,
+    show: async () => {
+      events.push("show");
+      return false;
+    },
+    waitForSettled: async () => {
+      events.push("settled");
+    },
+    measure: async () => {
+      events.push("measure");
+      return measured;
+    },
+    setMinimumConstraints: async () => {
+      events.push("constraints");
+    },
+    enforceBounds: async () => {
+      events.push("enforce");
+    },
+    isCurrent: () => true,
+  });
+
+  assert.deepEqual(events, ["show"]);
+});
 test("stale layouts do not show the window", async () => {
   let shown = false;
 
@@ -351,6 +389,7 @@ test("stale layouts do not show the window", async () => {
     },
     show: async () => {
       shown = true;
+      return true;
     },
     measure: async () => {
       throw new Error("stale layouts must not remeasure");

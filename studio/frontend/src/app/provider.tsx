@@ -304,9 +304,10 @@ async function applyAppWindowLayout(
       restored,
       measured,
       show: async () => {
-        if (await wasLaunchedHidden()) return;
-        if (!isCurrent()) return;
+        if (await wasLaunchedHidden()) return false;
+        if (!isCurrent()) return false;
         await win.show();
+        return true;
       },
       waitForSettled: layoutObserver?.waitForSettled,
       measure: () => measureTauriWindowLayout(windowModule, win, isCurrent),

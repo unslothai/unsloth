@@ -83,7 +83,7 @@ export async function measureWindowLayout<Monitor extends WorkAreaMonitor>(
 type FinalizeAppWindowLayoutOptions<Monitor extends WorkAreaMonitor> = {
   restored: boolean;
   measured: MeasuredWindowLayout<Monitor>;
-  show: () => Promise<void>;
+  show: () => Promise<boolean>;
   waitForSettled?: () => Promise<void>;
   measure: () => Promise<MeasuredWindowLayout<Monitor> | null>;
   setMinimumConstraints: (minimum: LogicalWindowSize) => Promise<void>;
@@ -103,8 +103,11 @@ export async function finalizeAppWindowLayout<Monitor extends WorkAreaMonitor>({
   isCurrent,
 }: FinalizeAppWindowLayoutOptions<Monitor>): Promise<void> {
   if (!isCurrent()) return;
-  await show();
+  const shown = await show();
   if (!isCurrent()) return;
+  // A restored hidden autostart cannot reliably resolve its saved monitor yet.
+  // Keep the plugin-restored geometry untouched until native tray reveal.
+  if (restored && !shown) return;
 
   // Native restore calls complete before GTK/Cocoa move and resize events have
   // necessarily updated Tauri's cached geometry.
