@@ -10,9 +10,9 @@ overwritten by VRAM-capping logic.
 Needs no GPU, network, or libraries beyond pytest and pydantic.
 """
 
+import ast
 import io
 import json
-import re
 import struct
 import sys
 import types as _types
@@ -400,23 +400,63 @@ class TestRouteCompleteness:
             idx = end
         return blocks
 
-    def _gets_llama_runtime_fields(self, block: str) -> bool:
-        """True if ``block`` receives the llama runtime fields, inline or via a hoisted dict.
+    @staticmethod
+    def _is_runtime_fields_call(node) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_llama_runtime_fields"
+        )
 
-        A call site may have to hoist the call to overwrite one entry before splatting, since
+    def _status_calls_getting_runtime_fields(self) -> list:
+        """``InferenceStatusResponse(...)`` calls that actually receive the llama runtime fields.
+
+        A call site may hoist the helper call to overwrite one entry before splatting, since
         passing an overriding keyword alongside ``**fields`` is a TypeError. That is a valid way
-        to receive the fields, so accept it rather than demanding the call be inline.
+        to receive the fields, so accept it, but only when the assignment that REACHES the call
+        supplies them: a later ``name = {}`` in the same function rebinds the name and the
+        response gets nothing, and a same-named assignment in some other function is irrelevant.
+        Subscript writes such as ``fields["x"] = y`` mutate rather than rebind, so they do not
+        count as a reassignment.
         """
-        if "_llama_runtime_fields(llama_backend)" in block:
-            return True
-        for name in re.findall(r"\*\*(\w+)", block):
-            if re.search(
-                rf"^\s*{re.escape(name)}\s*=\s*_llama_runtime_fields\(llama_backend\)",
-                self._source,
-                re.M,
+        tree = ast.parse(self._source)
+        funcs = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        found = []
+        for call in ast.walk(tree):
+            if not (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id == "InferenceStatusResponse"
             ):
-                return True
-        return False
+                continue
+            for kw in call.keywords:
+                if kw.arg is not None:
+                    continue
+                if self._is_runtime_fields_call(kw.value):
+                    found.append(call)
+                    break
+                if not isinstance(kw.value, ast.Name):
+                    continue
+                # Innermost function containing this call.
+                enclosing = [
+                    f for f in funcs if f.lineno <= call.lineno <= (f.end_lineno or call.lineno)
+                ]
+                if not enclosing:
+                    continue
+                scope = max(enclosing, key = lambda f: f.lineno)
+                reaching = None
+                for node in ast.walk(scope):
+                    if not isinstance(node, ast.Assign) or node.lineno >= call.lineno:
+                        continue
+                    if any(
+                        isinstance(t, ast.Name) and t.id == kw.value.id for t in node.targets
+                    ):
+                        if reaching is None or node.lineno > reaching.lineno:
+                            reaching = node
+                if reaching is not None and self._is_runtime_fields_call(reaching.value):
+                    found.append(call)
+                    break
+        return found
 
     def test_gguf_load_responses_have_field(self):
         """Every GGUF LoadResponse (is_gguf = True) includes native_context_length."""
@@ -454,13 +494,8 @@ class TestRouteCompleteness:
 
     def test_status_path(self):
         """InferenceStatusResponse construction with llama_backend has the field."""
-        blocks = self._find_construction_blocks("InferenceStatusResponse")
-        found = False
-        for block in blocks:
-            if "llama_backend" in block and self._gets_llama_runtime_fields(block):
-                found = True
-                break
-        assert found, "No InferenceStatusResponse block with llama_backend has runtime fields"
+        calls = self._status_calls_getting_runtime_fields()
+        assert calls, "No InferenceStatusResponse block with llama_backend has runtime fields"
         assert "for name in _InferenceRuntimeFields.model_fields" in self._source
 
     def test_non_gguf_status_path_reports_runtime_context_length(self):
