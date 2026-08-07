@@ -92,7 +92,7 @@ _POSIX_READ = re.compile(
 # Options then variable names to end of line, in command position, so the word
 # `read` in a heredoc of prose is not a prompt.
 _BARE_READ = re.compile(
-    r"(?:^|[;&(]|\b(?:if|elif|then|else)\b)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
+    r"(?:^|[;&(]|\b(?:if|elif|then|else)\b)\s*!?\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
     # No variable name at all is valid: the answer lands in $REPLY.
     r"read(?:\s+(?:-[a-zA-Z0-9]+|[\d.]+|\"\"|''))*(?:\s+[A-Za-z_][A-Za-z0-9_]*)*"
     r"(?:\s*(?:;|\|\||&&).*)?\s*(?:#.*)?$"
@@ -197,6 +197,7 @@ def _is_interactive_read(line: str, script: str) -> bool:
 # `<<EOF`, not the `<<<` here-string, and not inside a quoted string: install.sh
 # prints a shell-profile marker containing `# <<< Unsloth ... <<<`.
 _HEREDOC = re.compile(r"<<(?!<)-?\s*[\"']?([A-Za-z_][A-Za-z0-9_]*)[\"']?")
+_INTERPRETER = re.compile(r"\b(?:python[0-9.]*|node|perl|ruby|osascript)\b[^<]*<<")
 
 
 def _blank_heredocs(lines: list[str]) -> list[str]:
@@ -212,8 +213,11 @@ def _blank_heredocs(lines: list[str]) -> list[str]:
                 terminator = ""
             continue
         # Openers come from code: not from a string, not from an inline comment.
-        match = _HEREDOC.search(_blank_strings(line).split("#")[0])
-        if match:
+        code = _blank_strings(line).split("#")[0]
+        match = _HEREDOC.search(code)
+        # `python - <<PY` runs its body. Blanking that would hide real code, which
+        # is the one thing worse than scanning it as shell.
+        if match and not _INTERPRETER.search(code):
             terminator, start = match.group(1), index + 1
     # An unterminated opener was not one. Blanking to EOF would silently blind the
     # scan for the rest of the file, prompts included.
@@ -468,6 +472,8 @@ def test_every_installer_script_is_scanned():
         "scripts/install*.ps1",
         "uninstall*.sh",
         "uninstall*.ps1",
+        "uninstall*.bat",
+        "uninstall*.py",
         "scripts/uninstall*.sh",
         "scripts/uninstall*.ps1",
     )
@@ -523,25 +529,39 @@ def test_the_workflow_runs_for_every_scanned_script():
     workflow = (REPO_ROOT / ".github/workflows/cross-platform-parity-ci.yml").read_text(
         encoding = "utf-8"
     )
-    patterns = re.findall(r"^\s*-\s*'([^']+)'\s*$", workflow, flags = re.MULTILINE)
-    # GitHub's `*` stops at a path separator; `**` does not.
-    matchers = [
-        re.compile(
+    blocks, collecting = [], None
+    for line in workflow.splitlines():
+        entry = re.match(r"^\s*-\s*'([^']+)'\s*$", line)
+        if collecting is not None and entry:
+            collecting.append(entry.group(1))
+            continue
+        if collecting:
+            blocks.append(collecting)
+        collecting = [] if line.strip() == "paths:" else None
+    if collecting:
+        blocks.append(collecting)
+    assert blocks, "no paths: filters found in cross-platform-parity-ci.yml"
+
+    def matcher(pattern: str) -> re.Pattern:
+        # GitHub's `*` stops at a path separator; `**` does not.
+        body = (
             re.escape(pattern)
             .replace(r"\*\*", "\x00")
             .replace(r"\*", "[^/]*")
             .replace("\x00", ".*")
-            + "$"
         )
-        for pattern in patterns
-    ]
-    uncovered = sorted(
-        script for script in SCANNED_SCRIPTS if not any(m.match(script) for m in matchers)
-    )
-    assert not uncovered, (
-        f"scanned scripts with no path filter in cross-platform-parity-ci.yml: {uncovered}. "
-        f"A later PR touching only one of these would not run this guard."
-    )
+        return re.compile(body + "$")
+
+    # Each event on its own: a filter present only on push leaves pull requests bare.
+    for patterns in blocks:
+        matchers = [matcher(pattern) for pattern in patterns]
+        uncovered = sorted(
+            script for script in SCANNED_SCRIPTS if not any(m.match(script) for m in matchers)
+        )
+        assert not uncovered, (
+            f"scanned scripts with no path filter in cross-platform-parity-ci.yml: {uncovered}. "
+            f"A later PR touching only one of these would not run this guard."
+        )
 
 
 def test_approved_prompts_are_documented():
@@ -795,6 +815,22 @@ def test_detects_a_batch_prompt_in_a_conditional():
     assert [question for _, _, question in find_prompts("studio/setup.bat", source)] == [
         "enable telemetry?",
     ]
+
+
+def test_detects_a_negated_read():
+    """`if ! cmd` is house style in these scripts; a read is no different."""
+    source = 'printf "  Enable telemetry? "\nif ! read -r _reply; then _reply=n; fi\n'
+    assert [question for _, _, question in find_prompts("install.sh", source)] == [
+        "enable telemetry?",
+    ]
+
+
+def test_an_interpreter_heredoc_is_not_blanked():
+    """`python - <<PY` runs its body. Hiding real code is worse than reading it as
+    shell, which still leaves the marker pass looking at it."""
+    source = 'python - <<PY\nprint("Enable telemetry? [Y/n]")\nPY\n'
+    questions = [question for _, _, question in find_prompts("install.sh", source)]
+    assert "enable telemetry?" in questions
 
 
 def test_detects_a_read_used_as_a_condition():
