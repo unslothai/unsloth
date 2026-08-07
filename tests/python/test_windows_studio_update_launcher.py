@@ -126,12 +126,15 @@ def test_setup_noop_preserves_launcher_and_removes_backup(monkeypatch, studio, t
     assert calls[0][1]["timeout"] == 10
 
 
-def test_canonical_launcher_exists_while_setup_runs(monkeypatch, studio, tmp_path):
+def test_a_recoverable_copy_exists_while_setup_runs(monkeypatch, studio, tmp_path):
+    # The canonical path is freed so the installer can publish a replacement,
+    # but never without a copy to put back if it publishes nothing.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
 
     def setup(**_kwargs):
-        assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+        assert not launcher.exists()
         assert (scripts / "unsloth.exe.update-backup").read_bytes() == ORIGINAL_LAUNCHER
+        assert (scripts / "unsloth.exe.update-stale").read_bytes() == ORIGINAL_LAUNCHER
 
     monkeypatch.setattr(studio, "_run_setup_script", setup)
     monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
@@ -155,16 +158,18 @@ def test_setup_failure_restores_original_and_propagates(monkeypatch, studio, tmp
     assert (scripts / "unsloth.exe.update-backup").read_bytes() == ORIGINAL_LAUNCHER
 
 
-def test_launcher_deleted_during_setup_is_restored_and_update_fails(monkeypatch, studio, tmp_path):
+def test_setup_publishing_no_launcher_restores_it_and_succeeds(monkeypatch, studio, tmp_path):
+    # The bug this transaction exists for: pip finds unsloth already current,
+    # writes no launcher, and the old updater then deleted its own .deleteme and
+    # left the venv with none at all. Restoring is the right answer, not failing.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
-    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: launcher.unlink())
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
 
-    with pytest.raises(studio.typer.Exit) as exc:
-        _update(studio)
+    _update(studio)
 
-    assert exc.value.exit_code == 1
     assert launcher.read_bytes() == ORIGINAL_LAUNCHER
-    assert (scripts / "unsloth.exe.update-backup").exists()
+    assert not (scripts / "unsloth.exe.update-stale").exists()
 
 
 @pytest.mark.parametrize("invalid", [b"", b"not-a-pe"])
@@ -220,7 +225,8 @@ def test_legacy_backup_recovers_only_when_launcher_is_missing(monkeypatch, studi
     legacy.write_bytes(ORIGINAL_LAUNCHER)
 
     def setup(**_kwargs):
-        assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+        # Recovered from the legacy file, then moved aside for the installer.
+        assert (scripts / "unsloth.exe.update-stale").read_bytes() == ORIGINAL_LAUNCHER
 
     monkeypatch.setattr(studio, "_run_setup_script", setup)
     monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
@@ -237,9 +243,10 @@ def test_lock_contention_exits_before_setup_or_launcher_mutation(monkeypatch, st
     if REAL_MSVCRT is not None:
         # Exercise the real byte-range lock on Windows and the fake elsewhere.
         monkeypatch.setitem(sys.modules, "msvcrt", REAL_MSVCRT)
+    before = launcher.read_bytes()
     first = studio._WindowsLauncherUpdateTransaction()
     first.__enter__()
-    before = launcher.read_bytes()
+    stale_before = (scripts / "unsloth.exe.update-stale").read_bytes()
     backup_before = (scripts / "unsloth.exe.update-backup").read_bytes()
     setup_calls = []
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: setup_calls.append(True))
@@ -248,7 +255,8 @@ def test_lock_contention_exits_before_setup_or_launcher_mutation(monkeypatch, st
             _update(studio)
         assert exc.value.exit_code == 1
         assert setup_calls == []
-        assert launcher.read_bytes() == before
+        assert stale_before == before
+        assert (scripts / "unsloth.exe.update-stale").read_bytes() == stale_before
         assert (scripts / "unsloth.exe.update-backup").read_bytes() == backup_before
     finally:
         first.__exit__(None, None, None)
@@ -344,12 +352,15 @@ def test_a_backup_failure_does_not_abort_the_update(monkeypatch, studio, tmp_pat
     ran = []
     original = studio._WindowsLauncherUpdateTransaction._atomic_copy
 
-    def refuse_backup(self, source, destination):
+    def refuse_backup(source, destination):
         if destination.name.endswith(".update-backup"):
             raise OSError("access is denied")
-        return original(self, source, destination)
+        return original(source, destination)
 
-    monkeypatch.setattr(studio._WindowsLauncherUpdateTransaction, "_atomic_copy", refuse_backup)
+    # _atomic_copy is a staticmethod, so the stand-in must not bind self either.
+    monkeypatch.setattr(
+        studio._WindowsLauncherUpdateTransaction, "_atomic_copy", staticmethod(refuse_backup)
+    )
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: ran.append(True))
     monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
 
@@ -400,3 +411,23 @@ def test_the_launcher_is_resolved_from_the_managed_studio_venv(monkeypatch, stud
 
     assert calls[0][0] == [str(managed_launcher), "--version"]
     assert managed_launcher.read_bytes() == b"MZ-managed-launcher"
+
+
+def test_a_replacement_published_by_setup_is_kept(monkeypatch, studio, tmp_path):
+    # The point of freeing the canonical path. uv only self-replaces its own
+    # executable, so it deletes a third-party console script outright and
+    # hard-errors when the file is in use; the pip fallback then no-ops on the
+    # already-satisfied bare unsloth and the upgrade is silently skipped.
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
+    new_launcher = b"MZ-upgraded-launcher"
+
+    monkeypatch.setattr(
+        studio, "_run_setup_script", lambda **_kwargs: launcher.write_bytes(new_launcher)
+    )
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
+
+    _update(studio)
+
+    assert launcher.read_bytes() == new_launcher
+    assert not (scripts / "unsloth.exe.update-stale").exists()
+    assert not (scripts / "unsloth.exe.update-backup").exists()
