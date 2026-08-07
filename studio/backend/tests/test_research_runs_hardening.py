@@ -1731,8 +1731,7 @@ def test_stream_completion_rechecks_the_lease_between_transport_retries(monkeypa
 
 
 def test_every_stream_assertion_matches_the_return_arity():
-    """Every `_run_stream` comparison and unpack must match the tuple width
-    `_stream_completion` declares.
+    """Every `_run_stream` compare and unpack must match `_stream_completion`'s arity.
 
     #7985 widened the return to carry `usage` and missed four call sites here,
     reddening every open PR. Nothing tied the two together, so it took CI.
