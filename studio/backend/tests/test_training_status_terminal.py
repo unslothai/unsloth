@@ -15,6 +15,8 @@ import asyncio
 import sys
 from pathlib import Path
 
+import pytest
+
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -22,6 +24,15 @@ if _BACKEND_DIR not in sys.path:
 
 import routes.training as rt
 from core.training.training import TrainingBackend, TrainingProgress
+
+
+async def _inline_to_thread(function, /, *args, **kwargs):
+    return function(*args, **kwargs)
+
+
+@pytest.fixture(autouse = True)
+def _run_route_helpers_inline(monkeypatch):
+    monkeypatch.setattr(rt.asyncio, "to_thread", _inline_to_thread)
 
 
 class _WedgedProc:

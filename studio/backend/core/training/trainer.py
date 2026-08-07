@@ -63,6 +63,7 @@ from datasets import Dataset
 from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 from utils.hf_dataset_options import hf_dataset_split_instruction_names
 from utils.third_party_source import (
+    ensure_dac_speech_weights,
     ensure_outetts_source,
     ensure_spark_tts_source,
     import_outetts_module,
@@ -1741,7 +1742,7 @@ class UnslothTrainer:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
         self._update_progress(status_message = "Preparing Spark-TTS codec source...")
-        spark_code_dir = ensure_spark_tts_source()
+        spark_code_dir = ensure_spark_tts_source(self._spark_tts_repo_dir)
         self._spark_tts_code_dir = spark_code_dir
         BiCodecTokenizer = import_sparktts_module(
             "sparktts.models.audio_tokenizer",
@@ -1982,14 +1983,18 @@ class UnslothTrainer:
 
         self._update_progress(status_message = "Loading OuteTTS AudioProcessor...")
         logger.info("Loading OuteTTS AudioProcessor...\n")
-        model_tokenizer_path = "OuteAI/Llama-OuteTTS-1.0-1B"
+        audio_codec_path = ensure_dac_speech_weights()
         dummy_config = OuteTTSModelConfig(
-            tokenizer_path = model_tokenizer_path,
+            tokenizer_path = None,
             device = device,
-            audio_codec_path = None,
+            audio_codec_path = str(audio_codec_path),
         )
         audio_processor = AudioProcessor(config = dummy_config)
-        prompt_processor = PromptProcessor(model_tokenizer_path)
+        if self.tokenizer is None:
+            raise RuntimeError("OuteTTS tokenizer is not loaded")
+        prompt_processor = PromptProcessor(None)
+        prompt_processor.tokenizer = self.tokenizer
+        prompt_processor.get_audio_token_map()
 
         self._update_progress(status_message = "Preprocessing audio with OuteTTS...")
         logger.info(f"DAC preprocessing: audio_col='{audio_col}', text_col='{text_col}'\n")

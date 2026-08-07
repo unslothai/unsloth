@@ -18,6 +18,7 @@ import torch
 
 from utils.third_party_source import (
     deactivate_pinned_package,
+    ensure_dac_speech_weights,
     ensure_outetts_source,
     ensure_spark_tts_source,
     import_outetts_module,
@@ -97,7 +98,7 @@ class AudioCodecManager:
     ) -> None:
         if self._bicodec_tokenizer is not None:
             return
-        spark_code_dir = ensure_spark_tts_source()
+        spark_code_dir = ensure_spark_tts_source(model_repo_path)
         self._bicodec_code_dir = spark_code_dir
         BiCodecTokenizer = import_sparktts_module(
             "sparktts.models.audio_tokenizer",
@@ -123,11 +124,12 @@ class AudioCodecManager:
             "outetts.models.config",
             outetts_code_dir,
         ).ModelConfig
+        audio_codec_path = ensure_dac_speech_weights()
 
         dummy_config = OuteTTSModelConfig(
-            tokenizer_path = "OuteAI/Llama-OuteTTS-1.0-1B",
+            tokenizer_path = None,
             device = device,
-            audio_codec_path = None,
+            audio_codec_path = str(audio_codec_path),
         )
         processor = AudioProcessor(config = dummy_config)
         self._dac_audio_codec = processor.audio_codec

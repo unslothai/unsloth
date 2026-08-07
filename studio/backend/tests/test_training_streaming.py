@@ -31,6 +31,8 @@ def _load_route_module(name: str, relative_path: str):
     spec = importlib.util.spec_from_file_location(name, _BACKEND_ROOT / relative_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    if hasattr(module, "_hub_unreachable"):
+        module._hub_unreachable = lambda: False
     return module
 
 
@@ -265,7 +267,10 @@ def test_streaming_start_rejects_train_on_completions_before_backend_start():
         start_training = lambda **kwargs: pytest.fail("backend should not start"),
     )
 
-    with patch.object(training_route, "get_training_backend", return_value = backend):
+    with (
+        patch.object(training_route, "get_training_backend", return_value = backend),
+        patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
+    ):
         with pytest.raises(HTTPException) as exc_info:
             asyncio.run(training_route.start_training(request, current_subject = "test-user"))
 
@@ -297,7 +302,10 @@ def test_streaming_start_requires_separate_eval_split(eval_split):
         start_training = lambda **kwargs: pytest.fail("backend should not start"),
     )
 
-    with patch.object(training_route, "get_training_backend", return_value = backend):
+    with (
+        patch.object(training_route, "get_training_backend", return_value = backend),
+        patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
+    ):
         with pytest.raises(HTTPException) as exc_info:
             asyncio.run(training_route.start_training(request, current_subject = "test-user"))
 
@@ -325,7 +333,10 @@ def test_streaming_start_rejects_missing_max_steps():
         start_training = lambda **kwargs: pytest.fail("backend should not start"),
     )
 
-    with patch.object(training_route, "get_training_backend", return_value = backend):
+    with (
+        patch.object(training_route, "get_training_backend", return_value = backend),
+        patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
+    ):
         with pytest.raises(HTTPException) as exc_info:
             asyncio.run(training_route.start_training(request, current_subject = "test-user"))
 
@@ -356,7 +367,10 @@ def test_streaming_start_rejects_embedding_models():
         start_training = lambda **kwargs: pytest.fail("backend should not start"),
     )
 
-    with patch.object(training_route, "get_training_backend", return_value = backend):
+    with (
+        patch.object(training_route, "get_training_backend", return_value = backend),
+        patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
+    ):
         with pytest.raises(HTTPException) as exc_info:
             asyncio.run(training_route.start_training(request, current_subject = "test-user"))
 
@@ -513,7 +527,10 @@ def test_training_status_exposes_the_current_start_request_id():
         step_history = [],
     )
 
-    with patch.object(training_route, "get_training_backend", return_value = backend):
+    with (
+        patch.object(training_route, "get_training_backend", return_value = backend),
+        patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
+    ):
         status = asyncio.run(training_route.get_training_status(current_subject = "test-user"))
 
     assert status.job_id == "job_test"
@@ -576,7 +593,10 @@ def test_streaming_start_rejects_local_datasets():
         start_training = lambda **kwargs: pytest.fail("backend should not start"),
     )
 
-    with patch.object(training_route, "get_training_backend", return_value = backend):
+    with (
+        patch.object(training_route, "get_training_backend", return_value = backend),
+        patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
+    ):
         with pytest.raises(HTTPException) as exc_info:
             asyncio.run(training_route.start_training(request, current_subject = "test-user"))
 

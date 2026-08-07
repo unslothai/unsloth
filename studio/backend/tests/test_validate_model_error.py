@@ -27,6 +27,15 @@ import routes.inference as inf  # noqa: E402
 from models.inference import ValidateModelRequest  # noqa: E402
 
 
+async def _inline_to_thread(function, /, *args, **kwargs):
+    return function(*args, **kwargs)
+
+
+@pytest.fixture(autouse = True)
+def _run_route_helpers_inline(monkeypatch):
+    monkeypatch.setattr(inf.asyncio, "to_thread", _inline_to_thread)
+
+
 def _provoke(
     monkeypatch,
     exc: BaseException,

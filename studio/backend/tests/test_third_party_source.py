@@ -3,11 +3,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
 import importlib
 import py_compile
 import shutil
 import subprocess
 import sys
+import tarfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -16,10 +20,9 @@ import utils.third_party_source as source
 import utils.utils as utils
 
 
-pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason = "git is required")
-
-
 def _run_git(repository: Path, *arguments: str) -> str:
+    if shutil.which("git") is None:
+        pytest.skip("git is required for this test")
     result = subprocess.run(
         ["git", "-C", str(repository), *arguments],
         check = True,
@@ -86,6 +89,180 @@ def _configure(monkeypatch, tmp_path: Path, repository: Path, revision: str) -> 
     return cache
 
 
+def _sealed_spec(spec, checkout: Path, runtime: Path):
+    return replace(
+        spec,
+        source_tree_digest = source._manifest_digest(
+            source._filesystem_source_manifest(checkout, spec)
+        ),
+        runtime_tree_digest = source._manifest_digest(source._runtime_manifest(runtime, spec)),
+    )
+
+
+def test_manifest_digest_protocol_is_canonical():
+    manifest = {
+        "sparktts/z.py": "0" * 64,
+        "sparktts/a.py": "f" * 64,
+    }
+
+    assert source._manifest_digest(manifest) == (
+        "96ce9c498a9112e52fa1ef4f93e33003c2fdb26e0f1dfdc9408e701ecd66c173"
+    )
+
+
+def _write_source_archive(path: Path, root: str, files: dict[str, bytes]) -> None:
+    with tarfile.open(path, mode = "w:gz") as bundle:
+        for relative, content in files.items():
+            member = tarfile.TarInfo(f"{root}/{relative}")
+            member.size = len(content)
+            bundle.addfile(member, io.BytesIO(content))
+
+
+def test_fresh_sealed_source_installs_from_archive_without_git(monkeypatch, tmp_path):
+    revision = "1" * 40
+    repository = "https://github.com/example/Fixture"
+    root = f"Fixture-{revision}"
+    files = {
+        "README.md": b"not installed\n",
+        "sparktts/models/audio_tokenizer.py": b"VALUE = 'archive'\n",
+        "sparktts/utils/audio.py": b"VALUE = 'audio'\n",
+    }
+    archive = tmp_path / "source.tar.gz"
+    _write_source_archive(archive, root, files)
+    source_manifest = {
+        relative: hashlib.sha256(content).hexdigest()
+        for relative, content in files.items()
+        if relative.startswith("sparktts/")
+    }
+    runtime_manifest = {
+        **source_manifest,
+        "sparktts/__init__.py": hashlib.sha256(b"").hexdigest(),
+    }
+    spec = source.PinnedSource(
+        name = "Fixture",
+        package = "sparktts",
+        repository = repository,
+        revision = revision,
+        required_files = (
+            "sparktts/models/audio_tokenizer.py",
+            "sparktts/utils/audio.py",
+        ),
+        generated_files = (("sparktts/__init__.py", ""),),
+        source_tree_digest = source._manifest_digest(source_manifest),
+        runtime_tree_digest = source._manifest_digest(runtime_manifest),
+        archive_url = archive.as_uri(),
+    )
+    cache = tmp_path / "cache"
+    monkeypatch.setattr(source, "cache_root", lambda: cache)
+    monkeypatch.setattr(utils, "hf_env_offline", lambda: False)
+    monkeypatch.setattr(
+        source,
+        "_git",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("fresh archive provisioning must not invoke Git")
+        ),
+    )
+
+    runtime = source.ensure_pinned_source(spec)
+
+    assert source._valid_runtime(runtime, spec)
+    assert (runtime / "sparktts" / "models" / "audio_tokenizer.py").read_bytes() == (
+        files["sparktts/models/audio_tokenizer.py"]
+    )
+    assert not (runtime / "README.md").exists()
+
+
+def test_archive_download_enforces_deadline_with_read1(monkeypatch, tmp_path):
+    now = [0.0]
+    calls = {"read": 0, "read1": 0, "timeout": None}
+
+    class SlowResponse:
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, size):
+            calls["read"] += 1
+            raise AssertionError("read1 must be used when available")
+
+        def read1(self, size):
+            calls["read1"] += 1
+            now[0] += 0.6
+            return b"x"
+
+    def urlopen(request, *, timeout):
+        calls["timeout"] = timeout
+        return SlowResponse()
+
+    spec = source.PinnedSource(
+        name = "Fixture",
+        package = "sparktts",
+        repository = "https://github.com/example/Fixture",
+        revision = "3" * 40,
+        required_files = (),
+    )
+    monkeypatch.setattr(source.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(source, "_ARCHIVE_DOWNLOAD_DEADLINE_SECONDS", 1)
+    monkeypatch.setattr(source.urllib.request, "urlopen", urlopen)
+
+    with pytest.raises(RuntimeError, match = "Timed out downloading"):
+        source._download_archive("https://example.invalid/archive.tar.gz", tmp_path / "out", spec)
+
+    assert calls == {
+        "read": 0,
+        "read1": 2,
+        "timeout": source._ARCHIVE_SOCKET_TIMEOUT_SECONDS,
+    }
+
+
+@pytest.mark.parametrize(
+    ("member_name", "member_type"),
+    (
+        ("Fixture-" + "2" * 40 + "/sparktts/../escape.py", tarfile.REGTYPE),
+        ("Fixture-" + "2" * 40 + "\\sparktts\\escape.py", tarfile.REGTYPE),
+        ("/Fixture-" + "2" * 40 + "/sparktts/escape.py", tarfile.REGTYPE),
+        ("Fixture-" + "2" * 40 + "/sparktts/C:escape.py", tarfile.REGTYPE),
+        ("Fixture-" + "2" * 40 + "/sparktts/link.py", tarfile.SYMTYPE),
+    ),
+)
+def test_source_archive_rejects_unsafe_members(
+    monkeypatch,
+    tmp_path,
+    member_name,
+    member_type,
+):
+    revision = "2" * 40
+    archive = tmp_path / "unsafe.tar.gz"
+    with tarfile.open(archive, mode = "w:gz") as bundle:
+        member = tarfile.TarInfo(member_name)
+        member.type = member_type
+        if member_type == tarfile.REGTYPE:
+            member.size = 1
+            bundle.addfile(member, io.BytesIO(b"x"))
+        else:
+            member.linkname = "target"
+            bundle.addfile(member)
+    spec = source.PinnedSource(
+        name = "Fixture",
+        package = "sparktts",
+        repository = "https://github.com/example/Fixture",
+        revision = revision,
+        required_files = (),
+        source_tree_digest = "0" * 64,
+        runtime_tree_digest = "0" * 64,
+        archive_url = archive.as_uri(),
+    )
+    monkeypatch.setattr(source, "cache_root", lambda: tmp_path / "cache")
+    monkeypatch.setattr(utils, "hf_env_offline", lambda: False)
+
+    with pytest.raises(RuntimeError, match = "archive"):
+        source.ensure_pinned_source(spec)
+
+
 def test_installs_the_exact_revision_instead_of_repository_head(monkeypatch, tmp_path):
     repository, pinned = _repository(tmp_path)
     cache = _configure(monkeypatch, tmp_path, repository, pinned)
@@ -109,18 +286,70 @@ def test_valid_cached_revision_stays_offline(monkeypatch, tmp_path):
     repository, pinned = _repository(tmp_path)
     _configure(monkeypatch, tmp_path, repository, pinned)
     expected = source.ensure_spark_tts_source()
-    calls = []
-    real_git = source._git
+    checkout = expected.parent / "source"
+    monkeypatch.setattr(
+        source,
+        "SPARK_TTS_SOURCE",
+        _sealed_spec(source.SPARK_TTS_SOURCE, checkout, expected),
+    )
 
-    def record_git(arguments, **kwargs):
-        calls.append(arguments)
-        return real_git(arguments, **kwargs)
+    def reject_git(*args, **kwargs):
+        raise AssertionError("valid sealed runtime must not invoke Git")
 
-    monkeypatch.setattr(source, "_git", record_git)
+    monkeypatch.setattr(source, "_git", reject_git)
     monkeypatch.setattr(utils, "hf_env_offline", lambda: True)
 
     assert source.ensure_spark_tts_source() == expected
-    assert not any("fetch" in arguments for arguments in calls)
+
+
+def test_sealed_checkout_reconstructs_runtime_offline_without_git(monkeypatch, tmp_path):
+    repository, pinned = _repository(tmp_path)
+    _configure(monkeypatch, tmp_path, repository, pinned)
+    installed = source.ensure_spark_tts_source()
+    checkout = installed.parent / "source"
+    monkeypatch.setattr(
+        source,
+        "SPARK_TTS_SOURCE",
+        _sealed_spec(source.SPARK_TTS_SOURCE, checkout, installed),
+    )
+    shutil.rmtree(installed)
+    monkeypatch.setattr(utils, "hf_env_offline", lambda: True)
+    monkeypatch.setattr(
+        source,
+        "_git",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("sealed checkout reconstruction must not invoke Git")
+        ),
+    )
+
+    rebuilt = source.ensure_spark_tts_source()
+
+    assert source._valid_runtime(rebuilt, source.SPARK_TTS_SOURCE)
+
+
+def test_exact_legacy_source_migrates_offline_without_git(monkeypatch, tmp_path):
+    repository, pinned = _repository(tmp_path)
+    cache = _configure(monkeypatch, tmp_path, repository, pinned)
+    installed = source.ensure_spark_tts_source()
+    checkout = installed.parent / "source"
+    spec = _sealed_spec(source.SPARK_TTS_SOURCE, checkout, installed)
+    legacy = tmp_path / "Spark-TTS"
+    shutil.copytree(checkout, legacy, ignore = shutil.ignore_patterns(".git"))
+    shutil.rmtree(cache)
+    monkeypatch.setattr(source, "SPARK_TTS_SOURCE", spec)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(utils, "hf_env_offline", lambda: True)
+    monkeypatch.setattr(
+        source,
+        "_git",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("legacy migration must not invoke Git")
+        ),
+    )
+
+    rebuilt = source.ensure_spark_tts_source()
+
+    assert source._valid_runtime(rebuilt, spec)
 
 
 def test_dirty_cached_revision_fails_closed_offline(monkeypatch, tmp_path):
@@ -416,3 +645,92 @@ def test_runtime_overlay_omits_incompatible_outetts_modules(monkeypatch, tmp_pat
     assert all((checkout / relative).is_file() for relative in upstream_only)
     assert (checkout / "outetts" / "__init__.py").read_text(encoding = "utf-8") != ""
     assert _run_git(checkout, "status", "--porcelain") == ""
+
+
+def _configure_dac_artifact(monkeypatch, tmp_path: Path, payload: bytes) -> Path:
+    hub_cache = tmp_path / "hub"
+    monkeypatch.setattr(source, "_DAC_SIZE", len(payload))
+    monkeypatch.setattr(source, "_DAC_SHA256", hashlib.sha256(payload).hexdigest())
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.active_hf_hub_cache",
+        lambda: str(hub_cache),
+    )
+    return hub_cache
+
+
+def test_dac_weights_use_immutable_revision_and_active_cache(monkeypatch, tmp_path):
+    payload = b"pinned DAC weights"
+    hub_cache = _configure_dac_artifact(monkeypatch, tmp_path, payload)
+    downloaded = tmp_path / "downloaded.pth"
+    downloaded.write_bytes(payload)
+    calls = []
+
+    def download(**kwargs):
+        calls.append(kwargs)
+        return str(downloaded)
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", download)
+    monkeypatch.setattr(utils, "hf_env_offline", lambda: False)
+
+    result = source.ensure_dac_speech_weights()
+
+    assert result == downloaded.resolve()
+    assert calls == [
+        {
+            "repo_id": source._DAC_REPOSITORY,
+            "filename": source._DAC_FILENAME,
+            "revision": source._DAC_REVISION,
+            "cache_dir": str(hub_cache),
+            "local_files_only": False,
+        }
+    ]
+
+
+def test_exact_legacy_dac_weights_migrate_to_active_cache_offline(monkeypatch, tmp_path):
+    payload = b"legacy pinned DAC weights"
+    hub_cache = _configure_dac_artifact(monkeypatch, tmp_path, payload)
+    legacy = tmp_path / "legacy" / source._DAC_FILENAME
+    legacy.parent.mkdir()
+    legacy.write_bytes(payload)
+    monkeypatch.setattr(utils, "hf_env_offline", lambda: True)
+    calls = []
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", lambda **kwargs: calls.append(kwargs))
+
+    result = source.ensure_dac_speech_weights(legacy)
+
+    assert result.is_relative_to(hub_cache)
+    assert result.read_bytes() == payload
+    assert calls == []
+    legacy.write_bytes(b"tampered")
+    assert source.ensure_dac_speech_weights(legacy) == result
+
+
+def test_default_legacy_dac_path_matches_windows_appdata(monkeypatch, tmp_path):
+    payload = b"Windows legacy DAC weights"
+    hub_cache = _configure_dac_artifact(monkeypatch, tmp_path, payload)
+    appdata = tmp_path / "AppData" / "Roaming"
+    legacy = appdata / "outeai" / "dac" / source._DAC_FILENAME
+    legacy.parent.mkdir(parents = True)
+    legacy.write_bytes(payload)
+    monkeypatch.setattr(source.sys, "platform", "win32")
+    monkeypatch.setenv("APPDATA", str(appdata))
+    calls = []
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", lambda **kwargs: calls.append(kwargs))
+
+    result = source.ensure_dac_speech_weights()
+
+    assert result.is_relative_to(hub_cache)
+    assert result.read_bytes() == payload
+    assert calls == []
+
+
+def test_dac_weight_hash_mismatch_fails_closed(monkeypatch, tmp_path):
+    payload = b"expected"
+    _configure_dac_artifact(monkeypatch, tmp_path, payload)
+    downloaded = tmp_path / "downloaded.pth"
+    downloaded.write_bytes(b"tampered")
+    monkeypatch.setattr(utils, "hf_env_offline", lambda: False)
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", lambda **kwargs: str(downloaded))
+
+    with pytest.raises(RuntimeError, match = "failed integrity validation"):
+        source.ensure_dac_speech_weights(tmp_path / "missing.pth")

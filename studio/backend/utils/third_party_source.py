@@ -3,15 +3,21 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import importlib
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
+import time
+import urllib.error
+import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
@@ -35,6 +41,9 @@ class PinnedSource:
     required_files: tuple[str, ...]
     omitted_files: tuple[str, ...] = ()
     generated_files: tuple[tuple[str, str], ...] = ()
+    source_tree_digest: str | None = None
+    runtime_tree_digest: str | None = None
+    archive_url: str | None = None
 
 
 SPARK_TTS_SOURCE = PinnedSource(
@@ -47,6 +56,12 @@ SPARK_TTS_SOURCE = PinnedSource(
         "sparktts/utils/audio.py",
     ),
     generated_files = (("sparktts/__init__.py", ""),),
+    source_tree_digest = "20ff9f4c9e380b89248b828e9f39ec14572c43ff4a8d87b76190dbb3214b1b27",
+    runtime_tree_digest = "f14510e491a87ab287910e1d3f80e6b3d1bcea91b7f91f3baa45a3181a6993ba",
+    archive_url = (
+        "https://github.com/SparkAudio/Spark-TTS/archive/"
+        "2f1ea9082400547242641f5271b6f941c9f439d1.tar.gz"
+    ),
 )
 
 OUTETTS_SOURCE = PinnedSource(
@@ -65,10 +80,30 @@ OUTETTS_SOURCE = PinnedSource(
         "outetts/models/gguf_model.py",
     ),
     generated_files = (("outetts/__init__.py", ""),),
+    source_tree_digest = "817299085cb018839d37bf43505c9a742188bdb0f6ead8e1ea19a8643f0bb49f",
+    runtime_tree_digest = "b9f878aeb2de4d3ab0a5b1f75a5d04f2a137e4369143099bb24f6d6a41301fab",
+    archive_url = (
+        "https://github.com/edwko/OuteTTS/archive/"
+        "f5eac6e70d792844c6a6959d900a47af2c061a5b.tar.gz"
+    ),
 )
 
 _REVISION_PATTERN = re.compile(r"[0-9a-f]{40}")
+_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 _IMPORT_LOCK = threading.RLock()
+
+_DAC_REPOSITORY = "ibm-research/DAC.speech.v1.0"
+_DAC_REVISION = "1ea7f64cd0678415e2d8c32d67b190722cb9b149"
+_DAC_FILENAME = "weights_24khz_1.5kbps_v1.0.pth"
+_DAC_SIZE = 295731578
+_DAC_SHA256 = "d77ca0b04df942ec64e6a7a162bcac093b1127700acdaec0079f40d32c4405fb"
+
+_ARCHIVE_MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024
+_ARCHIVE_MAX_MEMBERS = 10_000
+_ARCHIVE_MAX_UNCOMPRESSED_BYTES = 128 * 1024 * 1024
+_ARCHIVE_MAX_TAR_BYTES = 160 * 1024 * 1024
+_ARCHIVE_SOCKET_TIMEOUT_SECONDS = 15
+_ARCHIVE_DOWNLOAD_DEADLINE_SECONDS = 300
 
 
 def _git(arguments: list[str], *, source_name: str) -> subprocess.CompletedProcess:
@@ -292,6 +327,50 @@ def _checkout_manifest(checkout: Path, spec: PinnedSource) -> dict[str, str]:
     return manifest
 
 
+def _manifest_digest(manifest: dict[str, str]) -> str:
+    payload = json.dumps(
+        manifest,
+        sort_keys = True,
+        separators = (",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _filesystem_source_manifest(source: Path, spec: PinnedSource) -> dict[str, str]:
+    if source.is_symlink() or not source.is_dir():
+        raise ValueError(f"Missing {spec.name} source")
+    package_root = source / spec.package
+    if package_root.is_symlink() or not package_root.is_dir():
+        raise ValueError(f"Missing {spec.package} package")
+    excluded = set(
+        _configured_package_paths(spec.omitted_files, spec, kind = "omitted")
+    ) | set(_generated_file_contents(spec))
+    manifest = {}
+    for path in sorted(package_root.rglob("*")):
+        relative = path.relative_to(source).as_posix()
+        if path.is_symlink():
+            raise ValueError(f"Symlinks are not allowed in {spec.name} source")
+        if path.is_dir() or _generated_cache_path(relative):
+            continue
+        if not path.is_file():
+            raise ValueError(f"Special files are not allowed in {spec.name} source")
+        if relative not in excluded:
+            manifest[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return manifest
+
+
+def _sealed_source_manifest(source: Path, spec: PinnedSource) -> dict[str, str] | None:
+    if spec.source_tree_digest is None:
+        return None
+    try:
+        manifest = _filesystem_source_manifest(source, spec)
+    except (OSError, ValueError):
+        return None
+    if _manifest_digest(manifest) != spec.source_tree_digest:
+        return None
+    return manifest
+
+
 def _runtime_manifest(runtime: Path, spec: PinnedSource) -> dict[str, str]:
     package_root = runtime / spec.package
     if package_root.is_symlink() or not package_root.is_dir():
@@ -443,7 +522,166 @@ def _install_checkout(destination: Path, spec: PinnedSource) -> None:
         _remove_owned_path(workspace)
 
 
-def _valid_runtime(runtime: Path, checkout: Path, spec: PinnedSource) -> bool:
+def _archive_root_name(spec: PinnedSource) -> str:
+    repository_name = spec.repository.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
+    if not repository_name:
+        raise RuntimeError(f"Invalid pinned {spec.name} repository")
+    return f"{repository_name}-{spec.revision}"
+
+
+def _download_archive(url: str, destination: Path, spec: PinnedSource) -> None:
+    request = urllib.request.Request(url, headers = {"User-Agent": "Unsloth-Studio"})
+    deadline = time.monotonic() + _ARCHIVE_DOWNLOAD_DEADLINE_SECONDS
+    try:
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"Timed out downloading the pinned {spec.name} source archive")
+        with urllib.request.urlopen(
+            request,
+            timeout = _ARCHIVE_SOCKET_TIMEOUT_SECONDS,
+        ) as response:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"Timed out downloading the pinned {spec.name} source archive")
+            content_length = response.headers.get("Content-Length")
+            if content_length is not None:
+                try:
+                    advertised_size = int(content_length)
+                except ValueError as error:
+                    raise RuntimeError(f"Invalid {spec.name} archive response size") from error
+                if advertised_size < 0 or advertised_size > _ARCHIVE_MAX_DOWNLOAD_BYTES:
+                    raise RuntimeError(f"The pinned {spec.name} archive is too large")
+            total = 0
+            read_chunk = getattr(response, "read1", None)
+            if not callable(read_chunk):
+                read_chunk = response.read
+            with destination.open("wb") as handle:
+                while True:
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError(
+                            f"Timed out downloading the pinned {spec.name} source archive"
+                        )
+                    chunk = read_chunk(1024 * 1024)
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError(
+                            f"Timed out downloading the pinned {spec.name} source archive"
+                        )
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > _ARCHIVE_MAX_DOWNLOAD_BYTES:
+                        raise RuntimeError(f"The pinned {spec.name} archive is too large")
+                    handle.write(chunk)
+    except RuntimeError:
+        raise
+    except (OSError, urllib.error.URLError) as error:
+        raise RuntimeError(f"Could not download the pinned {spec.name} source archive") from error
+
+
+def _archive_member_parts(member: tarfile.TarInfo, spec: PinnedSource) -> tuple[str, ...]:
+    name = member.name[:-1] if member.isdir() and member.name.endswith("/") else member.name
+    parts = tuple(name.split("/"))
+    if (
+        not name
+        or name.startswith("/")
+        or "\\" in name
+        or any(part in ("", ".", "..") for part in parts)
+        or any(PureWindowsPath(part).drive for part in parts)
+        or parts[0] != _archive_root_name(spec)
+    ):
+        raise RuntimeError(f"Invalid path in the pinned {spec.name} source archive")
+    return parts
+
+
+class _BoundedArchiveReader:
+    def __init__(self, handle, limit: int):
+        self._handle = handle
+        self._limit = limit
+        self._read = 0
+
+    def read(self, size: int = -1) -> bytes:
+        remaining = self._limit - self._read
+        requested = remaining + 1 if size < 0 else min(size, remaining + 1)
+        data = self._handle.read(requested)
+        self._read += len(data)
+        if self._read > self._limit:
+            raise RuntimeError("The pinned source archive expands too large")
+        return data
+
+
+def _install_archive_source(destination: Path, spec: PinnedSource) -> None:
+    if spec.archive_url is None or spec.source_tree_digest is None:
+        raise RuntimeError(f"The pinned {spec.name} source archive is not configured")
+    workspace = Path(tempfile.mkdtemp(prefix = ".archive-", dir = destination.parent))
+    archive = workspace / "source.tar.gz"
+    staging = workspace / "source"
+    staging.mkdir()
+    try:
+        _download_archive(spec.archive_url, archive, spec)
+        member_count = 0
+        uncompressed_bytes = 0
+        extracted = set()
+        try:
+            with archive.open("rb") as compressed:
+                with gzip.GzipFile(fileobj = compressed, mode = "rb") as decompressed:
+                    reader = _BoundedArchiveReader(decompressed, _ARCHIVE_MAX_TAR_BYTES)
+                    with tarfile.open(fileobj = reader, mode = "r|") as bundle:
+                        for member in bundle:
+                            member_count += 1
+                            if member_count > _ARCHIVE_MAX_MEMBERS:
+                                raise RuntimeError(
+                                    f"The pinned {spec.name} archive has too many entries"
+                                )
+                            parts = _archive_member_parts(member, spec)
+                            if member.isdir():
+                                continue
+                            if not member.isfile() or member.size < 0:
+                                raise RuntimeError(
+                                    f"The pinned {spec.name} archive contains a non-regular file"
+                                )
+                            uncompressed_bytes += member.size
+                            if uncompressed_bytes > _ARCHIVE_MAX_UNCOMPRESSED_BYTES:
+                                raise RuntimeError(
+                                    f"The pinned {spec.name} archive expands too large"
+                                )
+                            if len(parts) < 3 or parts[1] != spec.package:
+                                continue
+                            relative = "/".join(parts[1:])
+                            _package_path_parts(relative, spec, kind = "archive")
+                            if relative in extracted:
+                                raise RuntimeError(
+                                    f"The pinned {spec.name} archive contains duplicate files"
+                                )
+                            extracted.add(relative)
+                            source_file = bundle.extractfile(member)
+                            if source_file is None:
+                                raise RuntimeError(
+                                    f"The pinned {spec.name} archive contains an unreadable file"
+                                )
+                            destination_file = staging.joinpath(*parts[1:])
+                            destination_file.parent.mkdir(parents = True, exist_ok = True)
+                            remaining = member.size
+                            with source_file, destination_file.open("wb") as handle:
+                                while remaining:
+                                    chunk = source_file.read(min(1024 * 1024, remaining))
+                                    if not chunk:
+                                        raise RuntimeError(
+                                            f"The pinned {spec.name} archive ended unexpectedly"
+                                        )
+                                    handle.write(chunk)
+                                    remaining -= len(chunk)
+        except (tarfile.TarError, EOFError, OSError) as error:
+            raise RuntimeError(f"The pinned {spec.name} source archive is invalid") from error
+        if _sealed_source_manifest(staging, spec) is None:
+            raise RuntimeError(f"The pinned {spec.name} source archive failed integrity validation")
+        _replace_owned_directory(staging, destination)
+    finally:
+        _remove_owned_path(workspace)
+
+
+def _valid_runtime(
+    runtime: Path,
+    spec: PinnedSource,
+    checkout: Path | None = None,
+) -> bool:
     if runtime.is_symlink() or not runtime.is_dir():
         return False
     try:
@@ -478,7 +716,10 @@ def _valid_runtime(runtime: Path, checkout: Path, spec: PinnedSource) -> bool:
                 return False
             if generated.read_bytes() != content:
                 return False
-        return _runtime_manifest(runtime, spec) == _expected_runtime_manifest(checkout, spec)
+        manifest = _runtime_manifest(runtime, spec)
+        if spec.runtime_tree_digest is not None:
+            return _manifest_digest(manifest) == spec.runtime_tree_digest
+        return checkout is not None and manifest == _expected_runtime_manifest(checkout, spec)
     except (OSError, RuntimeError, ValueError):
         return False
 
@@ -488,7 +729,13 @@ def _install_runtime(runtime: Path, checkout: Path, spec: PinnedSource) -> None:
     staging = workspace / "runtime"
     staging.mkdir()
     try:
-        for relative, expected_digest in _checkout_manifest(checkout, spec).items():
+        if spec.source_tree_digest is not None:
+            source_manifest = _sealed_source_manifest(checkout, spec)
+            if source_manifest is None:
+                raise RuntimeError(f"The cached {spec.name} source failed integrity validation")
+        else:
+            source_manifest = _checkout_manifest(checkout, spec)
+        for relative, expected_digest in source_manifest.items():
             source_file = checkout / relative
             destination_file = staging / relative
             destination_file.parent.mkdir(parents = True, exist_ok = True)
@@ -499,53 +746,203 @@ def _install_runtime(runtime: Path, checkout: Path, spec: PinnedSource) -> None:
             destination_file = staging / relative
             destination_file.parent.mkdir(parents = True, exist_ok = True)
             destination_file.write_bytes(content)
-        if not _valid_runtime(staging, checkout, spec):
+        if not _valid_runtime(staging, spec, checkout):
             raise RuntimeError(f"The prepared {spec.name} runtime failed integrity validation")
         _replace_owned_directory(staging, runtime)
     finally:
         _remove_owned_path(workspace)
 
 
-def ensure_pinned_source(spec: PinnedSource) -> Path:
+def ensure_pinned_source(
+    spec: PinnedSource,
+    *,
+    legacy_sources: tuple[Path | str, ...] = (),
+) -> Path:
     revision = spec.revision.lower()
     if _REVISION_PATTERN.fullmatch(revision) is None or revision != spec.revision:
         raise RuntimeError(f"{spec.name} source revision must be a lowercase full Git commit")
+    for digest in (spec.source_tree_digest, spec.runtime_tree_digest):
+        if digest is not None and _SHA256_PATTERN.fullmatch(digest) is None:
+            raise RuntimeError(f"{spec.name} source digest must be a lowercase SHA-256")
+    if (spec.source_tree_digest is None) != (spec.runtime_tree_digest is None):
+        raise RuntimeError(f"{spec.name} source and runtime digests must be configured together")
 
     parent = cache_root() / "third-party-sources" / spec.name
     version_root = parent / revision
     checkout = version_root / "source"
     runtime = version_root / "runtime-v1"
-    if _valid_checkout(checkout, spec) and _valid_runtime(runtime, checkout, spec):
+    if _valid_runtime(runtime, spec):
         return runtime.resolve()
 
     version_root.mkdir(parents = True, exist_ok = True)
     try:
         with FileLock(str(parent / ".install.lock"), timeout = 300):
-            checkout_valid = _valid_checkout(checkout, spec)
-            if not checkout_valid:
+            if _valid_runtime(runtime, spec):
+                return runtime.resolve()
+
+            source = None
+            if spec.source_tree_digest is not None:
+                for candidate in (checkout, *(Path(value) for value in legacy_sources)):
+                    if _sealed_source_manifest(candidate, spec) is not None:
+                        source = candidate
+                        break
+            elif _valid_checkout(checkout, spec):
+                source = checkout
+
+            if source is not None and _valid_runtime(runtime, spec, source):
+                return runtime.resolve()
+
+            if source is None:
                 from utils.utils import hf_env_offline
 
                 if hf_env_offline():
                     raise RuntimeError(
                         f"The pinned {spec.name} source is not cached and Studio is offline"
                     )
-                _install_checkout(checkout, spec)
-            if not _valid_runtime(runtime, checkout, spec):
-                _install_runtime(runtime, checkout, spec)
+                if spec.archive_url is not None:
+                    _install_archive_source(checkout, spec)
+                else:
+                    _install_checkout(checkout, spec)
+                source = checkout
+            _install_runtime(runtime, source, spec)
     except Timeout as error:
         raise RuntimeError(f"Timed out waiting for another {spec.name} installation") from error
 
-    if not _valid_checkout(checkout, spec) or not _valid_runtime(runtime, checkout, spec):
+    if not _valid_runtime(runtime, spec, checkout):
         raise RuntimeError(f"The installed {spec.name} source failed integrity validation")
     return runtime.resolve()
 
 
-def ensure_spark_tts_source() -> Path:
-    return ensure_pinned_source(SPARK_TTS_SOURCE)
+def ensure_spark_tts_source(model_repo_path: Path | str | None = None) -> Path:
+    legacy_parent = Path(model_repo_path).parent if model_repo_path is not None else Path.cwd()
+    legacy_sources = (legacy_parent / "Spark-TTS",)
+    return ensure_pinned_source(SPARK_TTS_SOURCE, legacy_sources = legacy_sources)
 
 
 def ensure_outetts_source() -> Path:
-    return ensure_pinned_source(OUTETTS_SOURCE)
+    backend_root = Path(__file__).resolve().parents[1]
+    return ensure_pinned_source(
+        OUTETTS_SOURCE,
+        legacy_sources = (
+            backend_root / "core" / "inference" / "OuteTTS",
+            backend_root / "core" / "training" / "inference" / "OuteTTS",
+        ),
+    )
+
+
+def _artifact_matches(path: Path, *, expected_size: int, expected_sha256: str) -> bool:
+    try:
+        if not path.is_file() or path.stat().st_size != expected_size:
+            return False
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest() == expected_sha256
+    except OSError:
+        return False
+
+
+def _install_verified_artifact(source: Path, destination: Path) -> None:
+    workspace = Path(tempfile.mkdtemp(prefix = ".artifact-", dir = destination.parent))
+    staging = workspace / destination.name
+    try:
+        shutil.copyfile(source, staging)
+        if not _artifact_matches(
+            staging,
+            expected_size = _DAC_SIZE,
+            expected_sha256 = _DAC_SHA256,
+        ):
+            raise RuntimeError("The cached DAC speech weights changed during migration")
+        os.replace(staging, destination)
+    finally:
+        _remove_owned_path(workspace)
+
+
+def _default_legacy_dac_weights_path() -> Path | None:
+    if sys.platform == "win32":
+        appdata = (os.environ.get("APPDATA") or "").strip()
+        if not appdata:
+            return None
+        return Path(appdata) / "outeai" / "dac" / _DAC_FILENAME
+    return Path.home() / ".cache" / "outeai" / "dac" / _DAC_FILENAME
+
+
+def ensure_dac_speech_weights(
+    legacy_path: Path | str | None = None,
+) -> Path:
+    from huggingface_hub import hf_hub_download
+    from utils.hf_cache_settings import active_hf_hub_cache
+    from utils.utils import hf_env_offline
+
+    hub_cache = Path(active_hf_hub_cache())
+    destination = (
+        hub_cache
+        / "studio-pinned-artifacts"
+        / _DAC_REPOSITORY.replace("/", "--")
+        / _DAC_REVISION
+        / _DAC_FILENAME
+    )
+    if _artifact_matches(
+        destination,
+        expected_size = _DAC_SIZE,
+        expected_sha256 = _DAC_SHA256,
+    ):
+        return destination.resolve()
+
+    destination.parent.mkdir(parents = True, exist_ok = True)
+    try:
+        with FileLock(str(destination.parent / ".install.lock"), timeout = 300):
+            if _artifact_matches(
+                destination,
+                expected_size = _DAC_SIZE,
+                expected_sha256 = _DAC_SHA256,
+            ):
+                return destination.resolve()
+
+            legacy = (
+                Path(legacy_path)
+                if legacy_path is not None
+                else _default_legacy_dac_weights_path()
+            )
+            if legacy is not None and _artifact_matches(
+                legacy,
+                expected_size = _DAC_SIZE,
+                expected_sha256 = _DAC_SHA256,
+            ):
+                _install_verified_artifact(legacy, destination)
+                return destination.resolve()
+
+            offline = hf_env_offline()
+            download_error = None
+            downloaded = None
+            try:
+                downloaded = Path(
+                    hf_hub_download(
+                        repo_id = _DAC_REPOSITORY,
+                        filename = _DAC_FILENAME,
+                        revision = _DAC_REVISION,
+                        cache_dir = str(hub_cache),
+                        local_files_only = offline,
+                    )
+                )
+            except Exception as error:
+                download_error = error
+
+            if downloaded is not None and _artifact_matches(
+                downloaded,
+                expected_size = _DAC_SIZE,
+                expected_sha256 = _DAC_SHA256,
+            ):
+                return downloaded.resolve()
+
+            if download_error is not None:
+                raise RuntimeError(
+                    "The pinned DAC speech weights are unavailable in the active Hugging Face cache"
+                ) from download_error
+            raise RuntimeError("The downloaded DAC speech weights failed integrity validation")
+    except Timeout as error:
+        raise RuntimeError("Timed out waiting for the DAC speech weights installation") from error
 
 
 def _module_is_inside(module: ModuleType, package_root: Path) -> bool:

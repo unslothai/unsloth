@@ -30,6 +30,7 @@ def _load_route_module(name: str):
     spec = importlib.util.spec_from_file_location(name, _BACKEND_ROOT / "routes" / "training.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module._hub_unreachable = lambda: False
     return module
 
 
@@ -1348,7 +1349,10 @@ def test_stop_route_passes_expected_job_id_to_backend():
         stop_training = lambda **kwargs: calls.append(kwargs) or True,
     )
 
-    with patch.object(route, "get_training_backend", return_value = backend):
+    with (
+        patch.object(route, "get_training_backend", return_value = backend),
+        patch.object(route.asyncio, "to_thread", _inline_to_thread),
+    ):
         response = asyncio.run(
             route.stop_training(
                 route.TrainingStopRequest(
@@ -1374,6 +1378,7 @@ def test_stop_route_reports_superseded_job_without_mutation():
 
     with (
         patch.object(route, "get_training_backend", return_value = backend),
+        patch.object(route.asyncio, "to_thread", _inline_to_thread),
         pytest.raises(route.HTTPException) as exc_info,
     ):
         asyncio.run(
@@ -1403,7 +1408,10 @@ def test_reset_route_reports_superseded_job_without_mutation():
         )
     )
 
-    with patch.object(route, "get_training_backend", return_value = backend):
+    with (
+        patch.object(route, "get_training_backend", return_value = backend),
+        patch.object(route.asyncio, "to_thread", _inline_to_thread),
+    ):
         response = asyncio.run(
             route.reset_training(
                 route.TrainingResetRequest(expected_job_id = "job_old"),

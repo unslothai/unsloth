@@ -63,8 +63,8 @@ _COMPLETE_EXIT_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_COMPLETE_EXIT_GRACE_S
 _DB_FINALIZE_RETRIES = 3
 _DB_FINALIZE_RETRY_S = 0.5
 _MAX_TRACKED_START_REQUESTS = 64
-_MAX_EARLY_CANCEL_TOMBSTONES = 1024
-_EARLY_CANCEL_TOMBSTONE_TTL_S = 300.0
+_MAX_START_CANCEL_TOMBSTONES = 1024
+_START_CANCEL_TOMBSTONE_TTL_S = 300.0
 _START_CANCELLED_ERROR_CODE = "training_start_cancelled"
 
 _pyplot = None
@@ -1118,9 +1118,10 @@ class TrainingBackend:
         self.current_job_id: Optional[str] = None
         self.current_start_request_id: Optional[str] = None
         self._start_requests: dict[str, TrainingStartRequestRecord] = {}
-        self._early_cancel_tombstones: dict[
+        self._start_cancel_tombstones: dict[
             str, tuple[float, TrainingStartRequestRecord]
         ] = {}
+        self._start_cancel_tombstone_reservations: dict[str, int] = {}
         self._pending_start_request_id: Optional[str] = None
         self._status_start_request_id: Optional[str] = None
         self._output_dir: Optional[str] = None
@@ -1149,15 +1150,15 @@ class TrainingBackend:
         self, start_request_id: str, job_id: str
     ) -> tuple[str, TrainingStartRequestRecord]:
         with self._lock:
-            self._prune_early_cancel_tombstones_locked()
+            self._prune_start_cancel_tombstones_locked()
             existing = self._start_requests.get(start_request_id)
             if existing is not None:
                 return "existing", existing
-            early_cancel = self._early_cancel_tombstones.get(start_request_id)
-            if early_cancel is not None:
-                record = early_cancel[1]
-                self._early_cancel_tombstones[start_request_id] = (
-                    time.monotonic() + _EARLY_CANCEL_TOMBSTONE_TTL_S,
+            cancelled = self._start_cancel_tombstones.get(start_request_id)
+            if cancelled is not None:
+                record = cancelled[1]
+                self._start_cancel_tombstones[start_request_id] = (
+                    time.monotonic() + _START_CANCEL_TOMBSTONE_TTL_S,
                     record,
                 )
                 return "existing", record
@@ -1222,22 +1223,20 @@ class TrainingBackend:
     ) -> tuple[Literal["cancelled", "superseded"], TrainingStartRequestRecord]:
         from .lifecycle import training_lifecycle_guard
 
+        reserved_cancel_tombstone = False
         with self._lock:
-            self._prune_early_cancel_tombstones_locked()
+            self._prune_start_cancel_tombstones_locked()
             existing = self._start_requests.get(start_request_id)
             if existing is None:
-                early_cancel = self._early_cancel_tombstones.get(start_request_id)
-                if early_cancel is not None:
-                    record = early_cancel[1]
-                    self._early_cancel_tombstones[start_request_id] = (
-                        time.monotonic() + _EARLY_CANCEL_TOMBSTONE_TTL_S,
+                cancelled_tombstone = self._start_cancel_tombstones.get(start_request_id)
+                if cancelled_tombstone is not None:
+                    record = cancelled_tombstone[1]
+                    self._start_cancel_tombstones[start_request_id] = (
+                        time.monotonic() + _START_CANCEL_TOMBSTONE_TTL_S,
                         record,
                     )
                     return "cancelled", record
-                if len(self._early_cancel_tombstones) >= _MAX_EARLY_CANCEL_TOMBSTONES:
-                    raise TrainingStartCancellationCapacityError(
-                        "Too many training start cancellations are pending"
-                    )
+                self._reserve_start_cancel_tombstone_locked(start_request_id)
                 cancelled = TrainingStartRequestRecord(
                     start_request_id = start_request_id,
                     job_id = "",
@@ -1246,10 +1245,7 @@ class TrainingBackend:
                     error = "Training start was cancelled",
                     error_code = _START_CANCELLED_ERROR_CODE,
                 )
-                self._early_cancel_tombstones[start_request_id] = (
-                    time.monotonic() + _EARLY_CANCEL_TOMBSTONE_TTL_S,
-                    cancelled,
-                )
+                self._commit_start_cancel_tombstone_locked(start_request_id, cancelled)
                 return "cancelled", cancelled
 
             owns_current = (
@@ -1259,11 +1255,16 @@ class TrainingBackend:
             if existing.state == "rejected" and (
                 not owns_current or existing.error_code == _START_CANCELLED_ERROR_CODE
             ):
+                if existing.error_code == _START_CANCELLED_ERROR_CODE:
+                    self._reserve_start_cancel_tombstone_locked(start_request_id)
+                    self._start_requests.pop(start_request_id, None)
+                    self._commit_start_cancel_tombstone_locked(start_request_id, existing)
                 if self._status_start_request_id == start_request_id:
                     self._status_start_request_id = None
                 return "cancelled", existing
 
             if existing.state == "pending" and not owns_current:
+                self._reserve_start_cancel_tombstone_locked(start_request_id)
                 cancelled = replace(
                     existing,
                     state = "rejected",
@@ -1271,57 +1272,94 @@ class TrainingBackend:
                     error = "Training start was cancelled",
                     error_code = _START_CANCELLED_ERROR_CODE,
                 )
-                self._start_requests[start_request_id] = cancelled
+                self._start_requests.pop(start_request_id, None)
+                self._commit_start_cancel_tombstone_locked(start_request_id, cancelled)
                 if self._pending_start_request_id == start_request_id:
                     self._pending_start_request_id = None
                 if self._status_start_request_id == start_request_id:
                     self._status_start_request_id = None
                 return "cancelled", cancelled
 
-        with training_lifecycle_guard():
-            with self._lock:
-                existing = self._start_requests.get(start_request_id) or existing
-                owns_current = (
-                    self.current_start_request_id == start_request_id
-                    and self.current_job_id == existing.job_id
-                )
-                if existing.error_code == _START_CANCELLED_ERROR_CODE:
-                    if self._status_start_request_id == start_request_id:
-                        self._status_start_request_id = None
-                    return "cancelled", existing
-                if not owns_current or self._run_finished_locked():
+            reserved_cancel_tombstone = self._reserve_start_cancel_tombstone_locked(
+                start_request_id
+            )
+
+        try:
+            with training_lifecycle_guard():
+                with self._lock:
+                    cancelled_tombstone = self._start_cancel_tombstones.get(start_request_id)
+                    if cancelled_tombstone is not None:
+                        record = cancelled_tombstone[1]
+                        self._start_cancel_tombstones[start_request_id] = (
+                            time.monotonic() + _START_CANCEL_TOMBSTONE_TTL_S,
+                            record,
+                        )
+                        return "cancelled", record
+                    latest = self._start_requests.get(start_request_id)
+                    if latest is None:
+                        return "superseded", existing
+                    existing = latest
+                    if not reserved_cancel_tombstone:
+                        reserved_cancel_tombstone = (
+                            self._reserve_start_cancel_tombstone_locked(start_request_id)
+                        )
+                    owns_current = (
+                        self.current_start_request_id == start_request_id
+                        and self.current_job_id == existing.job_id
+                    )
+                    if existing.error_code == _START_CANCELLED_ERROR_CODE:
+                        if self._status_start_request_id == start_request_id:
+                            self._status_start_request_id = None
+                        return "cancelled", existing
+                    if not owns_current or self._run_finished_locked():
+                        return "superseded", existing
+                    expected_job_id = existing.job_id
+                if not self._stop_training_with_lifecycle_reserved(
+                    save = False,
+                    expected_job_id = expected_job_id,
+                ):
                     return "superseded", existing
-                expected_job_id = existing.job_id
-            if not self._stop_training_with_lifecycle_reserved(
-                save = False,
-                expected_job_id = expected_job_id,
-            ):
+
+            if self.reset_training_state(expected_job_id = expected_job_id) != "reset":
                 return "superseded", existing
 
-        if self.reset_training_state(expected_job_id = expected_job_id) != "reset":
-            return "superseded", existing
-
-        with self._lock:
-            latest = self._start_requests.get(start_request_id) or existing
-            if (
-                self.current_start_request_id != start_request_id
-                or self.current_job_id != expected_job_id
-            ):
-                return "superseded", latest
-            cancelled = replace(
-                latest,
-                state = "rejected",
-                message = "Training start was cancelled",
-                error = "Training start was cancelled",
-                error_code = _START_CANCELLED_ERROR_CODE,
-            )
-            self._start_requests[start_request_id] = cancelled
-            self.current_start_request_id = None
-            if self._pending_start_request_id == start_request_id:
-                self._pending_start_request_id = None
-            if self._status_start_request_id == start_request_id:
-                self._status_start_request_id = None
-            return "cancelled", cancelled
+            with self._lock:
+                cancelled_tombstone = self._start_cancel_tombstones.get(start_request_id)
+                if cancelled_tombstone is not None:
+                    record = cancelled_tombstone[1]
+                    self._start_cancel_tombstones[start_request_id] = (
+                        time.monotonic() + _START_CANCEL_TOMBSTONE_TTL_S,
+                        record,
+                    )
+                    return "cancelled", record
+                latest = self._start_requests.get(start_request_id)
+                if latest is None:
+                    return "superseded", existing
+                if (
+                    self.current_start_request_id != start_request_id
+                    or self.current_job_id != expected_job_id
+                ):
+                    return "superseded", latest
+                cancelled = replace(
+                    latest,
+                    state = "rejected",
+                    message = "Training start was cancelled",
+                    error = "Training start was cancelled",
+                    error_code = _START_CANCELLED_ERROR_CODE,
+                )
+                self._start_requests.pop(start_request_id, None)
+                self._commit_start_cancel_tombstone_locked(start_request_id, cancelled)
+                reserved_cancel_tombstone = False
+                self.current_start_request_id = None
+                if self._pending_start_request_id == start_request_id:
+                    self._pending_start_request_id = None
+                if self._status_start_request_id == start_request_id:
+                    self._status_start_request_id = None
+                return "cancelled", cancelled
+        finally:
+            if reserved_cancel_tombstone:
+                with self._lock:
+                    self._release_start_cancel_tombstone_locked(start_request_id)
 
     def _start_request_allows_spawn_locked(
         self, start_request_id: Optional[str], job_id: str
@@ -1333,12 +1371,12 @@ class TrainingBackend:
 
     def get_start_request(self, start_request_id: str) -> Optional[TrainingStartRequestRecord]:
         with self._lock:
-            self._prune_early_cancel_tombstones_locked()
+            self._prune_start_cancel_tombstones_locked()
             record = self._start_requests.get(start_request_id)
             if record is not None:
                 return record
-            early_cancel = self._early_cancel_tombstones.get(start_request_id)
-            return early_cancel[1] if early_cancel is not None else None
+            cancelled = self._start_cancel_tombstones.get(start_request_id)
+            return cancelled[1] if cancelled is not None else None
 
     def status_start_request(self) -> Optional[TrainingStartRequestRecord]:
         with self._lock:
@@ -1385,9 +1423,9 @@ class TrainingBackend:
 
     def acknowledge_start_request(self, start_request_id: str) -> bool:
         with self._lock:
-            self._prune_early_cancel_tombstones_locked()
+            self._prune_start_cancel_tombstones_locked()
             record = self._start_requests.get(start_request_id)
-            if record is None and start_request_id in self._early_cancel_tombstones:
+            if record is None and start_request_id in self._start_cancel_tombstones:
                 return True
             if record is None or record.state == "pending":
                 return False
@@ -1395,11 +1433,48 @@ class TrainingBackend:
                 self._status_start_request_id = None
             return True
 
-    def _prune_early_cancel_tombstones_locked(self) -> None:
+    def _prune_start_cancel_tombstones_locked(self) -> None:
         now = time.monotonic()
-        for request_id, (expires_at, _) in tuple(self._early_cancel_tombstones.items()):
+        for request_id, (expires_at, _) in tuple(self._start_cancel_tombstones.items()):
             if expires_at <= now:
-                del self._early_cancel_tombstones[request_id]
+                del self._start_cancel_tombstones[request_id]
+
+    def _reserve_start_cancel_tombstone_locked(self, start_request_id: str) -> bool:
+        self._prune_start_cancel_tombstones_locked()
+        if start_request_id in self._start_cancel_tombstones:
+            return False
+        reservation_count = self._start_cancel_tombstone_reservations.get(start_request_id, 0)
+        if reservation_count:
+            self._start_cancel_tombstone_reservations[start_request_id] = reservation_count + 1
+            return True
+        if (
+            len(self._start_cancel_tombstones)
+            + len(self._start_cancel_tombstone_reservations)
+            >= _MAX_START_CANCEL_TOMBSTONES
+        ):
+            raise TrainingStartCancellationCapacityError(
+                "Too many training start cancellations are pending"
+            )
+        self._start_cancel_tombstone_reservations[start_request_id] = 1
+        return True
+
+    def _commit_start_cancel_tombstone_locked(
+        self,
+        start_request_id: str,
+        record: TrainingStartRequestRecord,
+    ) -> None:
+        self._start_cancel_tombstone_reservations.pop(start_request_id, None)
+        self._start_cancel_tombstones[start_request_id] = (
+            time.monotonic() + _START_CANCEL_TOMBSTONE_TTL_S,
+            record,
+        )
+
+    def _release_start_cancel_tombstone_locked(self, start_request_id: str) -> None:
+        reservation_count = self._start_cancel_tombstone_reservations.get(start_request_id, 0)
+        if reservation_count <= 1:
+            self._start_cancel_tombstone_reservations.pop(start_request_id, None)
+        else:
+            self._start_cancel_tombstone_reservations[start_request_id] = reservation_count - 1
 
     def _prune_start_requests_locked(self) -> None:
         overflow = len(self._start_requests) - _MAX_TRACKED_START_REQUESTS
