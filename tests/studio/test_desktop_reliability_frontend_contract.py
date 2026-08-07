@@ -412,9 +412,7 @@ def test_desktop_update_screen_clips_the_underlying_route_content():
     update_layer = source.split("function TauriUpdateLayer", 1)[1].split(
         "const HIDDEN_TITLEBAR_SIDEBAR_ROUTES", 1
     )[0]
-    updating_branch = update_layer.split("{isUpdating ? (", 1)[1].split(
-        ") : (", 1
-    )[0]
+    updating_branch = update_layer.split("{isUpdating ? (", 1)[1].split(") : (", 1)[0]
 
     # The hidden-route wrapper may scroll, but the full-height update state must
     # keep the still-mounted route below the update screen clipped.
