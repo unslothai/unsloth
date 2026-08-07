@@ -542,9 +542,7 @@ class UnslothTrainer:
         self.trust_remote_code = trust_remote_code  # For AutoProcessor etc. used during training
         lookup_name = model_load_name or model_name
         exact_model_name = (
-            use_exact_model_name
-            if use_exact_model_name is not None
-            else model_revision is not None
+            use_exact_model_name if use_exact_model_name is not None else model_revision is not None
         )
         self.model_load_error = None
         try:
