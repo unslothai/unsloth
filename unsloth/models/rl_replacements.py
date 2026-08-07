@@ -619,7 +619,7 @@ def sft_trainer_prepare_dataset(function_name, function):
                 # too, so this raises where they do rather than one call later.
                 required = True,
                 consequence = ", so `max_length` would not be enforced for raw "
-                              "datasets under padding-free batching",
+                "datasets under padding-free batching",
             )
             # why: route each edit through _require_replace so a drifted anchor fails
             # loudly instead of leaving a dangling reference to the setup variables.

@@ -2032,8 +2032,8 @@ def test_the_max_length_seed_rewrite_is_required():
     with _pytest.raises(RuntimeError, match = "required source edit"):
         rl_replacements._replace_or_fallback(
             "def f():\n    pass\n",
-            "    max_seq_length = getattr(args, \"max_length\", 0)",
-            "    max_seq_length = getattr(args, \"max_length\", 0) or 0",
+            '    max_seq_length = getattr(args, "max_length", 0)',
+            '    max_seq_length = getattr(args, "max_length", 0) or 0',
             fallback_pattern = _re.compile(r"^nothing matches this$", _re.MULTILINE),
             fallback_new = r"x",
             where = "sft_prepare_dataset max_length seed",
@@ -2048,11 +2048,14 @@ def test_an_optional_rewrite_still_only_warns():
     from unsloth.models import rl_replacements
 
     source = "def f():\n    pass\n"
-    assert rl_replacements._replace_or_fallback(
-        source,
-        "not present either",
-        "x",
-        fallback_pattern = _re.compile(r"^nothing matches this$", _re.MULTILINE),
-        fallback_new = r"x",
-        where = "dataset_num_proc",
-    ) == source
+    assert (
+        rl_replacements._replace_or_fallback(
+            source,
+            "not present either",
+            "x",
+            fallback_pattern = _re.compile(r"^nothing matches this$", _re.MULTILINE),
+            fallback_new = r"x",
+            where = "dataset_num_proc",
+        )
+        == source
+    )
