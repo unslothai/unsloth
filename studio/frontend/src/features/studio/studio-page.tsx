@@ -152,7 +152,9 @@ export function StudioPage(): ReactElement {
 
   // The root guard now lets /studio through while the hardware verdict is out (redirecting on
   // the browser-platform guess strands a healthy host on /chat), so the page owns the wait:
-  // show the same loading panel as a hydrating runtime rather than a half-built wizard.
+  // show the same loading panel as a hydrating runtime rather than a half-built wizard. The
+  // wait ends by itself: AppSidebar (mounted on this route) re-reads /api/health while the
+  // verdict is unknown and writes it to this same store, so no second poll is needed here.
   const showTrainingHydrating =
     capabilitiesUnknown || (!hasHydratedRuntime && isHydratingRuntime);
   const showHistoryBack = activeTab === "history" && !!selectedHistoryRunId;

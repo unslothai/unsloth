@@ -508,6 +508,10 @@ function VideoGate({ children }: { children: ReactNode }) {
  * The row is reachable before the hardware verdict lands (the root guard no longer bounces
  * /video on the browser-platform guess), and video has no Apple path in the backend, so the
  * page answers for itself: spin while the answer is out, explain when it is no.
+ *
+ * The spin is bounded: AppSidebar is mounted on this route and re-reads /api/health while the
+ * verdict is unknown, writing it to the same store this reads, so a host slower than
+ * fetchDeviceType's bounded wait still lands here rather than spinning for the session.
  */
 export function VideoPage({ active = true }: { active?: boolean }) {
   const hardware = useHardwareInfo();

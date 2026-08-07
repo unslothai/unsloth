@@ -401,6 +401,15 @@ function getSidebarItemThreadIds(item: SidebarItem) {
 
 const WORKFLOW_UNAVAILABLE = "The loaded model cannot do this";
 
+// Re-read cadences for the hardware verdict below. An unmeasured verdict holds Train and Video
+// on a spinner, so it is re-read sooner than the background MLX self-heal check, which only
+// pays off after the user has repaired an install. A re-read outstanding longer than the stall
+// window is given up on rather than latching the poll off: the backend it is waiting on is the
+// one case this has to recover from.
+const VERDICT_UNKNOWN_POLL_MS = 3000;
+const SELF_HEAL_POLL_MS = 15000;
+const VERDICT_POLL_STALL_MS = 30000;
+
 /** One workflow in the list under the Images row. */
 function WorkflowChoice({
   tab,
@@ -614,17 +623,36 @@ export function AppSidebar() {
         ? "Video generation needs an NVIDIA or AMD GPU."
         : undefined;
 
-  // The backend MLX self-heal (utils/mlx_repair) can reinstall MLX and flip chat_only false
-  // without a restart. The platform store cached the initial /api/health, so re-poll while
-  // chat-only for the recoverable mlx_unavailable case; the guard below stops it after.
+  // Two things can change the verdict after the first /api/health. The backend MLX self-heal
+  // (utils/mlx_repair) can reinstall MLX and flip chat_only false without a restart, and
+  // detection can land after fetchDeviceType gave up waiting for it. The platform store cached
+  // that first reply, so re-poll for both; the guard below stops it once neither applies.
   useEffect(() => {
     // Also while deferred: under the kill switch health settles nothing, so a GPU host would stay chat-only.
-    if (!chatOnly || (chatOnlyReason !== "mlx_unavailable" && !detectionDeferred)) return;
+    const selfHealSettled =
+      !chatOnly || (chatOnlyReason !== "mlx_unavailable" && !detectionDeferred);
+    // And on any platform while the verdict itself is out. fetchDeviceType spends its bounded
+    // wait at most once per page load, so a host that detects slower than that keeps the
+    // provisional reply, and nothing else is scheduled to re-read it: the rows above would spin
+    // and /studio would hold its loading panel for the rest of the session. This is the only
+    // recovery poll in the app, and the sidebar is mounted on every route that gates on the
+    // verdict (studio-page and video-page read the same store, so they recover with it).
+    if (selfHealSettled && !capabilitiesUnknown) return;
+    let pollingSince = 0;
     const id = window.setInterval(() => {
-      void fetchDeviceType({ force: true }).catch(() => undefined);
-    }, 15000);
+      // A backend still importing torch answers slowly, so skip while a re-read is outstanding
+      // rather than stacking them against it. Bounded, or a request that never settles would
+      // hold the poll off for good.
+      if (pollingSince && Date.now() - pollingSince < VERDICT_POLL_STALL_MS) return;
+      pollingSince = Date.now();
+      void fetchDeviceType({ force: true })
+        .catch(() => undefined)
+        .finally(() => {
+          pollingSince = 0;
+        });
+    }, capabilitiesUnknown ? VERDICT_UNKNOWN_POLL_MS : SELF_HEAL_POLL_MS);
     return () => window.clearInterval(id);
-  }, [chatOnly, chatOnlyReason, detectionDeferred]);
+  }, [capabilitiesUnknown, chatOnly, chatOnlyReason, detectionDeferred]);
 
   const [shutdownOpen, setShutdownOpen] = useState(false);
 
