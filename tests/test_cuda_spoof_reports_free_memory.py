@@ -16,9 +16,8 @@
 
 `torch.cuda.mem_get_info` returns `(free, total)` and delegates to
 `cudart().cudaMemGetInfo`, so a spoof answering zero free describes an exhausted
-card. unsloth_zoo's fused cross entropy takes half of it as its chunk target and
-raises rather than chunking, which failed `test_sft_trains_on_cpu` on a host with
-four idle GPUs and read as a product bug until someone read the fixture.
+card. The fused cross entropy then raises rather than chunking, which failed
+`test_sft_trains_on_cpu` on a host with four idle GPUs and read as a product bug.
 
 Source-level, because importing either spoof mutates the interpreter's torch.
 """
@@ -53,8 +52,8 @@ def _memory_tuples(path):
             if not (isinstance(value, ast.Tuple) and len(value.elts) == 2):
                 continue
             try:
-                # `literal_eval` cannot fold `60 * 1024**3`, which is how these
-                # are written. Evaluate with nothing in scope instead.
+                # `literal_eval` cannot fold `60 * 1024**3`, so evaluate with
+                # nothing in scope instead.
                 found.append(
                     tuple(eval(ast.unparse(e), {"__builtins__": {}}, {}) for e in value.elts)
                 )

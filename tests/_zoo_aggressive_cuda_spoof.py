@@ -64,9 +64,8 @@ def apply() -> None:
     class _CudaRt:
         @staticmethod
         def cudaMemGetInfo(device: int = 0):
-            # (free, total), and `torch.cuda.mem_get_info` delegates here. Zero
-            # free is an exhausted card: the fused loss takes half of it as its
-            # chunk target and raises instead of chunking.
+            # (free, total), where `torch.cuda.mem_get_info` delegates. Zero free
+            # is an exhausted card, and the fused loss raises instead of chunking.
             return (60 * 1024**3, 80 * 1024**3)
 
         @staticmethod
