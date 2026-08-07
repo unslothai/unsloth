@@ -4541,8 +4541,9 @@ def test_cached_encoder_repo_is_not_chat_capable(tmp_path):
     fields = cache_inventory._cache_inventory_fields(
         "sentence-transformers/all-MiniLM-L6-v2",
         "safetensors",
-        active_hub_cache = tmp_path,
-        snapshot_path = snapshot,
+        identity = cache_inventory._LoadIdentity(
+            load_id = str(snapshot), active_cache = False, load_snapshot = snapshot
+        ),
     )
     assert fields["capabilities"]["can_chat"] is False
 
@@ -4555,8 +4556,9 @@ def test_cached_generative_repo_stays_chat_capable(tmp_path):
     fields = cache_inventory._cache_inventory_fields(
         "unsloth/Llama-3.2-1B-Instruct",
         "safetensors",
-        active_hub_cache = tmp_path,
-        snapshot_path = snapshot,
+        identity = cache_inventory._LoadIdentity(
+            load_id = str(snapshot), active_cache = False, load_snapshot = snapshot
+        ),
     )
     assert fields["capabilities"]["can_chat"] is True
 
@@ -4566,6 +4568,41 @@ def test_cached_row_without_a_snapshot_keeps_its_format_capability(tmp_path):
     fields = cache_inventory._cache_inventory_fields(
         "unsloth/Llama-3.2-1B-Instruct",
         "safetensors",
-        active_hub_cache = tmp_path,
+        identity = cache_inventory._LoadIdentity(
+            load_id = "unsloth/Llama-3.2-1B-Instruct",
+            active_cache = True,
+            load_snapshot = None,
+        ),
     )
     assert fields["capabilities"]["can_chat"] is True
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"architectures": ["WhisperForConditionalGeneration"], "model_type": "whisper"},
+        {"architectures": ["SomeCustomHead"], "model_type": "whisper"},
+        {"architectures": ["VisionEncoderDecoderModel"], "model_type": "vision-encoder-decoder"},
+        {"architectures": ["MusicgenForConditionalGeneration"], "model_type": "musicgen"},
+    ],
+)
+def test_non_chat_conditional_generation_is_not_chat_capable(tmp_path, config):
+    """These end in ForConditionalGeneration but cannot answer a text turn, and
+    are often smaller than a real chat model, so the cascade would stop there.
+    The managed cache already hides Whisper; scan folders did not."""
+    path = _write_local_model(tmp_path, "row", config)
+    assert model_common._local_transformers_can_chat(path) is False
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"architectures": ["T5ForConditionalGeneration"], "model_type": "t5"},
+        {"architectures": ["Gemma3ForConditionalGeneration"], "model_type": "gemma3"},
+        {"architectures": ["BartForConditionalGeneration"], "model_type": "bart"},
+    ],
+)
+def test_real_conditional_generation_chat_models_are_unaffected(tmp_path, config):
+    """Guard on the list above: multimodal and seq2seq chat models must stay."""
+    path = _write_local_model(tmp_path, "row", config)
+    assert model_common._local_transformers_can_chat(path) is True

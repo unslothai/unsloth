@@ -365,6 +365,9 @@ def _cache_inventory_fields(
             active_hub_cache = active_hub_cache,
             payload_snapshots = payload_snapshots,
         )
+    # The directory this row actually loads from. The non-GGUF scan passes only
+    # *identity*, so reading snapshot_path alone classified nothing.
+    classify_snapshot = identity.load_snapshot or snapshot_path
     capabilities = _capabilities_for_format(
         model_format,
         "hf_cache",
@@ -374,8 +377,8 @@ def _cache_inventory_fields(
         # SentenceTransformers repo is chat-capable on file format alone, and
         # those are small, so chat auto-load would try them first.
         can_chat_override = (
-            _local_transformers_can_chat(snapshot_path)
-            if model_format in {"safetensors", "checkpoint"} and snapshot_path is not None
+            _local_transformers_can_chat(classify_snapshot)
+            if model_format in {"safetensors", "checkpoint"} and classify_snapshot is not None
             else None
         ),
     ).model_dump()

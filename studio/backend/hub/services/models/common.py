@@ -148,6 +148,30 @@ _NON_GENERATIVE_ARCHITECTURE_SUFFIXES = (
     "ForVideoClassification",
     "ForZeroShotImageClassification",
 )
+# Conditional-generation architectures that generate something other than a
+# chat reply. They match the generative suffix below, and the managed cache
+# already hides Whisper snapshots, so only the scan-folder rows need this.
+_NON_CHAT_GENERATIVE_MODEL_TYPES = frozenset(
+    {
+        "musicgen",
+        "musicgen_melody",
+        "speech-encoder-decoder",
+        "speech_to_text",
+        "speech_to_text_2",
+        "trocr",
+        "vision-encoder-decoder",
+        "whisper",
+    }
+)
+_NON_CHAT_GENERATIVE_ARCHITECTURES = frozenset(
+    {
+        "MusicgenForConditionalGeneration",
+        "SpeechEncoderDecoderModel",
+        "Speech2TextForConditionalGeneration",
+        "VisionEncoderDecoderModel",
+        "WhisperForConditionalGeneration",
+    }
+)
 _ENCODER_ONLY_MODEL_TYPES = frozenset(
     {
         "albert",
@@ -228,13 +252,22 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
         if isinstance(architectures, list)
         else []
     )
+    model_type_raw = config.get("model_type")
+    normalized_type = (
+        model_type_raw.strip().lower() if isinstance(model_type_raw, str) else ""
+    )
+    # Checked before the generative suffix: Whisper and friends end in
+    # ForConditionalGeneration but cannot answer a text turn, and they are
+    # often smaller than a real chat model so the cascade would stop there.
+    if normalized_type in _NON_CHAT_GENERATIVE_MODEL_TYPES or any(
+        name in _NON_CHAT_GENERATIVE_ARCHITECTURES for name in names
+    ):
+        return False
     if any(name.endswith(_GENERATIVE_ARCHITECTURE_SUFFIXES) for name in names):
         return True
     if names and all(name.endswith(_NON_GENERATIVE_ARCHITECTURE_SUFFIXES) for name in names):
         return False
 
-    model_type = config.get("model_type")
-    normalized_type = model_type.strip().lower() if isinstance(model_type, str) else ""
     if (
         normalized_type in _ENCODER_ONLY_MODEL_TYPES
         and names

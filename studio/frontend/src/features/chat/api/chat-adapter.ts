@@ -1914,11 +1914,15 @@ function isAutoLoadableLocalRow(row: LocalModelInfo): boolean {
 
 /**
  * Chat-only installs run GGUF anywhere and MLX on a Mac; the picker hides every
- * other local format there. Reads the boot-detected snapshot, so no fetch.
+ * other local format there. Reads the store, so no fetch.
  */
 function runsOnThisPlatform(row: LocalModelInfo): boolean {
   const platform = usePlatformStore.getState();
-  if (!platform.isChatOnly()) return true;
+  // Until the backend reports it, the store holds a BROWSER guess: a Mac
+  // browser on a remote Linux Studio reads chatOnly, and gating on that would
+  // hide every local safetensors model and fetch the default instead. An
+  // ineligible candidate is rejected at validation without a load attempt.
+  if (!platform.fetched || !platform.isChatOnly()) return true;
   if (row.model_format === "gguf" || row.path.toLowerCase().endsWith(".gguf")) {
     return true;
   }

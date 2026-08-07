@@ -2623,7 +2623,10 @@ def test_cached_rows_classify_chat_capability_too():
     assert "_local_transformers_can_chat" in src
     fields = src.split("def _cache_inventory_fields", 1)[1].split("\ndef ", 1)[0]
     assert "can_chat_override" in fields
-    assert 'model_format in {"safetensors", "checkpoint"} and snapshot_path is not None' in fields
+    assert (
+        'model_format in {"safetensors", "checkpoint"} and classify_snapshot is not None'
+        in fields
+    )
 
 
 def test_every_load_target_comparison_uses_the_same_case_rules():
@@ -2685,3 +2688,40 @@ def test_a_cancelled_download_is_never_handed_to_a_load():
     helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
     helper = helper.split("async function autoLoadSmallestModel", 1)[0]
     assert 'finish(cancelRequested ? "cancelled" : "ready")' in helper
+
+
+def test_cached_classification_reads_the_snapshot_the_row_loads():
+    """_scan_cached_models passes only `identity`, so reading snapshot_path
+    alone classified nothing and the gate was a no-op in production."""
+    src = _read_backend("hub/services/models/cache_inventory.py")
+    fields = src.split("def _cache_inventory_fields", 1)[1].split("\ndef ", 1)[0]
+    assert "classify_snapshot = identity.load_snapshot or snapshot_path" in fields
+    assert "_local_transformers_can_chat(classify_snapshot)" in fields
+    # The resolve must run before the classification reads it.
+    assert fields.index("identity = _resolve_load_identity(") < fields.index(
+        "classify_snapshot ="
+    )
+
+
+def test_non_chat_conditional_generation_is_excluded_before_the_suffix_check():
+    """Whisper ends in ForConditionalGeneration; the order decides the answer."""
+    src = _read_backend("hub/services/models/common.py")
+    classifier = src.split("def _local_transformers_can_chat(", 1)[1]
+    classifier = classifier.split("\ndef ", 1)[0]
+    assert classifier.index("_NON_CHAT_GENERATIVE_MODEL_TYPES") < classifier.index(
+        "_GENERATIVE_ARCHITECTURE_SUFFIXES"
+    )
+    assert '"whisper"' in src
+    # Real seq2seq and multimodal chat models must not be listed.
+    excluded = src.split("_NON_CHAT_GENERATIVE_ARCHITECTURES = frozenset(", 1)[1]
+    excluded = excluded.split(")", 1)[0]
+    assert "T5ForConditionalGeneration" not in excluded
+    assert "Gemma" not in excluded
+
+
+def test_format_gates_wait_for_the_server_reported_platform():
+    """The store's initial chatOnly is a browser guess: a Mac browser on a
+    remote Linux Studio would otherwise hide every local safetensors model."""
+    src = _read("features/chat/api/chat-adapter.ts")
+    gate = src.split("function runsOnThisPlatform", 1)[1].split("\n}", 1)[0]
+    assert "if (!platform.fetched || !platform.isChatOnly()) return true;" in gate

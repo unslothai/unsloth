@@ -59,6 +59,8 @@ export type Scenario = {
   cancelFails: boolean;
   /** "decline" or "anonymous" from the expired-token dialog. */
   tokenDecision: string | null;
+  /** false = the backend platform probe has not landed yet. */
+  platformFetched: boolean;
   variants: Record<string, any>;
   lastLoaded: any;
   validate: (payload: any) => any;
@@ -246,6 +248,8 @@ function isHiddenModelId(..._a: any[]) { return false; }
 const usePlatformStore = {
   getState: () => ({
     deviceType: SCENARIO.deviceType ?? "linux",
+    // Server-reported unless a scenario says the probe has not landed.
+    fetched: SCENARIO.platformFetched !== false,
     isChatOnly: () => SCENARIO.chatOnly === true,
   }),
 };
@@ -434,6 +438,7 @@ SCENARIO_HELPERS = """
       cancelDuringStart: false,
       cancelFails: false,
       tokenDecision: null,
+      platformFetched: true,
       variants: {},
       lastLoaded: null,
       validate: VALIDATE_OK,
@@ -1209,3 +1214,32 @@ def test_a_cached_text_generation_repo_still_auto_loads():
         " variants: { [GEMMA.repo_id]: GEMMA_VARIANTS } })"
     )
     assert _loaded_paths(out) == [GEMMA_REPO]
+
+
+def test_a_provisional_mac_platform_does_not_hide_a_remote_backends_models():
+    """Before the health probe lands the store holds a browser guess. A Mac
+    browser on a remote Linux Studio reads chatOnly, and gating on that would
+    hide every local safetensors model and fetch the default instead."""
+    safetensors = (
+        "{ ...LOCAL_GGUF, id: 'st', load_id: 'st', path: '/models/st',"
+        " model_format: 'safetensors' }"
+    )
+    out = _run(
+        f"scenario({{ chatOnly: true, deviceType: 'mac', platformFetched: false,"
+        f" localModels: [{safetensors}] }})"
+    )
+
+    assert _loaded_paths(out) == ["st"]
+    assert _downloads_started(out) == []
+
+
+def test_a_server_reported_chat_only_platform_still_gates():
+    """Control: once the backend has answered, the gate applies."""
+    safetensors = (
+        "{ ...LOCAL_GGUF, id: 'st', load_id: 'st', path: '/models/st',"
+        " model_format: 'safetensors' }"
+    )
+    out = _run(
+        f"scenario({{ chatOnly: true, platformFetched: true, localModels: [{safetensors}] }})"
+    )
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
