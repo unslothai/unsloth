@@ -3363,6 +3363,33 @@ class ModelConfig:
                 # list_gguf_variants() detects vision & resolves the variant
                 variants, has_vision = list_gguf_variants(identifier, hf_token = hf_token)
                 variant = gguf_variant
+                if variant:
+                    from core.inference.llama_cpp import (
+                        _gguf_files_for_variant,
+                        cached_gguf_for_load,
+                    )
+
+                    # Reject before the load path unloads the resident model.
+                    # Only a live, complete repo listing can prove the variant
+                    # absent; without one, let the load path resolve it. The
+                    # cache escape mirrors the load path's own reuse predicate.
+                    try:
+                        from huggingface_hub import list_repo_files
+                        repo_files = list_repo_files(identifier, token = hf_token)
+                    except Exception:
+                        repo_files = None
+                    if (
+                        repo_files
+                        and not _gguf_files_for_variant(repo_files, variant)
+                        and not cached_gguf_for_load(
+                            identifier, variant, verify_sizes = True, hf_token = hf_token
+                        )
+                    ):
+                        available = ", ".join(v.quant for v in variants)
+                        raise ValueError(
+                            f"GGUF variant '{variant}' not found in {identifier}. "
+                            f"Available variants: {available}"
+                        )
                 if not variant:  # auto-select best quant
                     variant_filenames = [v.filename for v in variants]
                     best = _pick_best_gguf(variant_filenames)
