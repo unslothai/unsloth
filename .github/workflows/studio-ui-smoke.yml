@@ -276,13 +276,17 @@ jobs:
 
       - name: Pass bootstrap pw for model-config test
         run: |
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
           NEW="CIModelCfg-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+          echo "::add-mask::$OLD"
           echo "::add-mask::$NEW"
+          echo "STUDIO_MODELCFG_OLD_PW=$OLD" >> "$GITHUB_ENV"
           echo "STUDIO_MODELCFG_NEW_PW=$NEW" >> "$GITHUB_ENV"
 
       - name: Drive model-picker per-model-config with Playwright
         env:
           BASE_URL: http://127.0.0.1:18898
+          STUDIO_OLD_PW: ${{ env.STUDIO_MODELCFG_OLD_PW }}
           STUDIO_NEW_PW: ${{ env.STUDIO_MODELCFG_NEW_PW }}
           PW_ART_DIR: logs/playwright_modelcfg
           STUDIO_UI_STRICT: '1'
