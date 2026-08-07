@@ -1443,20 +1443,25 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # long prompt can leave that mask all zeros; TRL's collator turns
                     # those into all -100 and a batch made of them has no supervised
                     # token at all, which is a NaN loss rather than a small one.
-                    # A mask is only supervision when its loss mode is on. With
-                    # `completion_only_loss = False` TRL ignores `completion_mask`
-                    # and trains from the normal labels, so a row whose retained
-                    # mask is all zero is still a perfectly good row and dropping
-                    # it biases the split or empties it. `completion_only_loss`
-                    # defaults to None, which TRL reads as "on for a
-                    # prompt-completion dataset", so only an explicit False opts
-                    # out; `assistant_only_loss` defaults to False and has to be
-                    # asked for. `labels` is unconditional: it IS the supervision.
-                    "            _unsloth_supervision = [('labels', -100)]\n"
+                    # A mask is supervision when TRL will actually apply it, and the
+                    # two masks are not symmetric there. DataCollatorForLanguageModeling
+                    # guards `completion_mask` behind `self.completion_only_loss` but
+                    # applies `assistant_masks` on presence alone:
+                    #     if self.completion_only_loss and "completion_mask" in examples[0]:
+                    #     if "assistant_masks" in examples[0]:
+                    # (trl/trainer/sft_trainer.py, checked on 0.25.1 and v1.9.2). TRL only
+                    # ever BUILDS that column under `assistant_only_loss`, which is why the
+                    # flag looks like the gate, but a pre-tokenized split -- the only kind
+                    # this branch handles -- carries whichever columns the caller put there.
+                    # So gating on the flag left an all-zero assistant mask in place, and
+                    # the collator turned the row into all -100: no supervised token, and a
+                    # batch of them is a NaN loss.
+                    # `completion_only_loss` defaults to None, which TRL reads as "on for a
+                    # prompt-completion dataset", so only an explicit False opts out.
+                    # `labels` is unconditional: it IS the supervision.
+                    "            _unsloth_supervision = [('labels', -100), ('assistant_masks', 0)]\n"
                     "            if getattr(args, 'completion_only_loss', None) is not False:\n"
                     "                _unsloth_supervision.append(('completion_mask', 0))\n"
-                    "            if getattr(args, 'assistant_only_loss', False):\n"
-                    "                _unsloth_supervision.append(('assistant_masks', 0))\n"
                     "            try:\n"
                     "                _unsloth_cols = getattr(_new, 'column_names', None) or ()\n"
                     "                for _unsloth_sup, _unsloth_empty in _unsloth_supervision:\n"

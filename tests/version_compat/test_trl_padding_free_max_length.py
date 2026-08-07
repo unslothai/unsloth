@@ -912,6 +912,41 @@ def test_rows_whose_mask_is_truncated_away_are_dropped(tmp_path, trl_has_guard):
         ), "a row with no supervised token survived truncation"
 
 
+def _assistant_mask_dataset(tok):
+    """The same shape, supervised by `assistant_masks` instead."""
+    from datasets import Dataset
+
+    prompt = tok("The quick brown fox. " * 200)["input_ids"]
+    assert len(prompt) > _MODEL_MAX_SEQ_LENGTH
+    completion = tok(" answer")["input_ids"]
+    ids = list(prompt) + list(completion)
+    mask = [0] * len(prompt) + [1] * len(completion)
+    return Dataset.from_list(
+        [
+            {"input_ids": ids, "attention_mask": [1] * len(ids),
+             "assistant_masks": mask}
+            for _ in range(4)
+        ]
+    )
+
+
+def test_assistant_masks_are_filtered_even_with_the_loss_mode_off(
+        tmp_path, trl_has_guard):
+    """The two masks are not gated alike, and gating both on their flag was
+    wrong. DataCollatorForLanguageModeling applies `assistant_masks` on presence
+    alone -- only `completion_mask` is behind `completion_only_loss` -- so with
+    `assistant_only_loss` at its default False an all-zero mask still becomes
+    all -100 and the row carries no supervised token."""
+    if not trl_has_guard:
+        pytest.skip("no guard in this TRL: the block under test is not generated at all")
+    trainer = _build(tmp_path, dataset = _assistant_mask_dataset,
+                     assistant_only_loss = False)
+    for row in trainer.train_dataset:
+        assert any(
+            m != 0 for m in row["assistant_masks"]
+        ), "a row TRL will label all -100 survived truncation"
+
+
 def test_skip_prepare_dataset_does_not_excuse_an_overlength_row(tmp_path, trl_has_guard):
     """It was the one way to a silently uncapped run: TRL then neither truncates
     nor builds its collator with a truncation length, so the oversized rows
@@ -935,11 +970,13 @@ def test_the_codegen_carries_the_third_round_fixes():
     assert "hasattr(_first, '__len__')" not in block
     assert "try:    len(_first)" in block
 
-    # Supervision is carried three ways and only `labels` was filtered, but a
-    # mask only supervises when its loss mode is on, so each is gated.
-    assert "_unsloth_supervision = [('labels', -100)]" in block
+    # Supervision is carried three ways and only `labels` was filtered. The two
+    # masks are gated the way TRL's collator gates them, which is not the same
+    # for both: `completion_mask` behind `completion_only_loss`, `assistant_masks`
+    # on presence alone.
+    assert "_unsloth_supervision = [('labels', -100), ('assistant_masks', 0)]" in block
     assert "getattr(args, 'completion_only_loss', None) is not False" in block
-    assert "getattr(args, 'assistant_only_loss', False)" in block
+    assert "getattr(args, 'assistant_only_loss'" not in block
 
     # skip_prepare_dataset must not exempt the overlength check.
     assert "if not _unsloth_skip_prepare and not (_unsloth_within_cap" not in block
