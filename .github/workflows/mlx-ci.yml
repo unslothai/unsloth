@@ -79,11 +79,25 @@ on:
       - 'tests/conftest.py'
       - '.github/workflows/mlx-ci.yml'
   push:
-    branches: [main, pip]
+    branches: [main]
+    paths:
+      - 'unsloth/__init__.py'
+      - 'unsloth/_gpu_init.py'
+      - 'studio/backend/utils/hardware/**'
+      - 'studio/backend/core/training/worker.py'
+      - 'studio/backend/core/inference/mlx_inference.py'
+      - 'tests/studio/test_mlx_training_worker_behaviors.py'
+      - 'tests/studio/run_real_mlx_smoke.py'
+      - 'tests/conftest.py'
+      - '.github/workflows/mlx-ci.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read

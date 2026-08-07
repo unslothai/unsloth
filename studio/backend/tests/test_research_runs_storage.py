@@ -1313,6 +1313,7 @@ def test_research_budget_defaults_support_long_runs():
         "maxSources": 40,
         "modelTimeoutSeconds": 900,
         "toolTimeoutSeconds": 120,
+        "firstOutputTimeoutSeconds": 120,
     }
     assert config["instructions"] == "Answer in Spanish."
     ResearchPlan(
@@ -1334,6 +1335,7 @@ def test_research_budget_ceilings_allow_depth_but_remain_bounded():
             "maxSources": 100,
             "modelTimeoutSeconds": 3600,
             "toolTimeoutSeconds": 600,
+            "firstOutputTimeoutSeconds": 3600,
         },
     )
     assert _sanitize_config(payload, {"modelId": "local-model"})["budgets"] == payload.budgets

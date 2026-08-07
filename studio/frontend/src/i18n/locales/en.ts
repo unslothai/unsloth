@@ -401,6 +401,14 @@ export const en = {
         showLlamaUpdatesDescription:
           "Notify when a newer llama.cpp build is available to run new models. Turn off if you only train.",
       },
+      startup: {
+        sectionTitle: "Startup",
+        launchAtLogin: "Run Unsloth at login",
+        launchAtLoginDescription:
+          "Start Unsloth in the background when you log in. It stays in the menu bar or system tray until you open it.",
+        loadError: "Failed to load the launch at login setting.",
+        saveError: "Failed to update the launch at login setting.",
+      },
       gettingStarted: "Getting started",
       startOnboarding: "Start onboarding",
       startOnboardingDescription:

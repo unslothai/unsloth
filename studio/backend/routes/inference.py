@@ -1129,6 +1129,10 @@ _STREAM_DISCONNECT_POLL_TIMEOUT_S = 0.25
 _OPENAI_PASSTHROUGH_PREHEADER_STATUS_WINDOW_S = 0.1
 _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S = 5.0
 _OPENAI_PASSTHROUGH_SSE_KEEPALIVE = ": keep-alive\n\n"
+# Lets a client tell "queued" from "backend silent"; SSE comments, so readers ignore both.
+_OPENAI_ADMISSION_SSE_WAIT = ": admission-wait\n\n"
+# Paired with the above: the slot is ours, so a suspended client clock starts now.
+_OPENAI_ADMISSION_SSE_DONE = ": admission-done\n\n"
 _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
 # Cap on waiting for a cancelled teardown task. Request.is_disconnected() can swallow
 # cancel() (#7617), so teardown abandons the task rather than hold the response, and
@@ -1365,6 +1369,8 @@ async def _openai_admission_wait_stream_chunks(
     )
     deadline = None if config.queue_timeout_s is None else time.monotonic() + config.queue_timeout_s
     keepalive_interval_s = max(0.001, config.keepalive_interval_s)
+    # At once, not after a full interval: a caller must not wait one out to learn it queued.
+    yield _OPENAI_ADMISSION_SSE_WAIT
     next_keepalive_at = time.monotonic() + keepalive_interval_s
     try:
         while True:
@@ -1375,6 +1381,7 @@ async def _openai_admission_wait_stream_chunks(
             )
             lease = reservation.lease_nowait()
             if lease is not None:
+                yield _OPENAI_ADMISSION_SSE_DONE
                 yield lease
                 return
 
@@ -1391,6 +1398,7 @@ async def _openai_admission_wait_stream_chunks(
             except asyncio.TimeoutError:
                 lease = None
             if lease is not None:
+                yield _OPENAI_ADMISSION_SSE_DONE
                 yield lease
                 return
             await _raise_if_openai_admission_cancelled(
@@ -1401,7 +1409,7 @@ async def _openai_admission_wait_stream_chunks(
             now = time.monotonic()
             if now >= next_keepalive_at:
                 next_keepalive_at = now + keepalive_interval_s
-                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                yield _OPENAI_ADMISSION_SSE_WAIT
     except asyncio.CancelledError:
         reservation.cancel()
         raise

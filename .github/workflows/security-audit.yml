@@ -2,14 +2,15 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 # Multi-language supply-chain audit. Triggers:
-#   - PRs touching any dependency manifest (Python / npm / Cargo), a
-#     scanner or its allowlist baseline, or this workflow file,
-#   - push to main / pip,
+#   - every pull request, deliberately not path-filtered, so nothing
+#     slips past the audit by touching only files outside the
+#     dependency manifests,
+#   - push to main,
 #   - nightly @ 04:13 UTC so newly-published advisories surface even
 #     when no PR opens,
 #   - workflow_dispatch for ad-hoc invocations.
 #
-# Two jobs:
+# Six jobs:
 #   - advisory-audit:    one runner that runs pip-audit + npm audit +
 #                        cargo audit back-to-back. All three are
 #                        advisory-DB lookups -- fast, lockfile-driven,
@@ -24,6 +25,12 @@
 #                        independent so a CVE-DB hit in advisory-audit
 #                        does not block the supply-chain pattern scan
 #                        (or vice versa).
+#   - npm-scan-packages: npm tarball content scan, no npm install.
+#   - workflow-trigger-lint:
+#                        bans pull_request_target + shared cache keys.
+#   - tests-security:    pytest tests/security regression suite.
+#   - npm-provenance-and-install-scripts:
+#                        npm audit signatures + new-postinstall gate.
 #
 # All steps are non-blocking initially. The default branch already
 # carries a known-vuln backlog (the dependabot banner shows 17 today,
@@ -49,27 +56,23 @@ name: Security audit
 
 on:
   pull_request:
-    paths:
-      - 'studio/backend/requirements/**'
-      - 'studio/frontend/package.json'
-      - 'studio/frontend/package-lock.json'
-      - 'studio/src-tauri/Cargo.toml'
-      - 'studio/src-tauri/Cargo.lock'
-      - 'pyproject.toml'
-      - 'scripts/scan_packages.py'
-      - 'scripts/scan_packages_baseline.json'
-      - 'scripts/scan_npm_packages.py'
-      - 'scripts/scan_npm_packages_baseline.json'
-      - '.github/workflows/security-audit.yml'
   push:
-    branches: [main, pip]
+    branches: [main]
   schedule:
     - cron: '13 4 * * *'   # 04:13 UTC daily, off the cron rush
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # The event is part of the group so a scheduled run and a push to main cannot
+  # coalesce. Both resolve to refs/heads/main, and the default queue: single keeps
+  # only one pending run, so without this a merge burst silently drops the nightly:
+  # cancel-in-progress protects the running run, never the pending one.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -545,7 +548,7 @@ jobs:
       # / tokens / cred files committed accidentally. --only-verified
       # filters out probabilistic findings, so we only flag tokens
       # that the source provider confirmed are live. On push to main
-      # / pip we scan the full repo; on PR we scan base..head.
+      # we scan the full repo; on PR we scan base..head.
       # SHA-pinned for the same reason as harden-runner above.
       # v3.95.2 commit:
       # ─────────────────────────────────────────────────────────────
