@@ -773,8 +773,12 @@ class LlamaAdmissionQueue:
             queued = len(self._waiters) + len(self._unpark_tickets),
             # What another caller could actually take, so the admission log never
             # shows free slots next to queued requests: after a shrink, ids below
-            # the new capacity can be free while holdovers still fill the ceiling.
-            free = min(len(self._free), max(0, self._capacity - self._held)),
+            # the new capacity can be free while holdovers still fill the ceiling,
+            # and resume tickets hold slots back exactly as _can_admit_locked does.
+            free = min(
+                len(self._free),
+                max(0, self._capacity - self._held - len(self._unpark_tickets)),
+            ),
         )
 
 

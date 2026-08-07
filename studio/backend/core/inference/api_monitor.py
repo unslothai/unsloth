@@ -19,6 +19,8 @@ _MAX_ENTRIES = 50
 _MAX_PROMPT_CHARS = 12000
 _MAX_REPLY_CHARS = 12000
 _PREVIEW_CHARS = 360
+# Far above any real context window; anything larger is a broken upstream payload.
+_MAX_TOKEN_COUNT = 1 << 40
 
 # Opt-in startup kill switch for Studio's in-memory API monitor.
 _DISABLE_ENV = "UNSLOTH_STUDIO_DISABLE_API_MONITOR"
@@ -34,7 +36,20 @@ def _token_count_or_none(value: Any) -> Optional[int]:
         count = int(value)
     except (TypeError, ValueError, OverflowError):
         return None
-    return count if count >= 0 else None
+    # snapshot() divides by these; an unbounded int makes that division raise too.
+    if count < 0 or count > _MAX_TOKEN_COUNT:
+        return None
+    return count
+
+
+def _finite_float_or_none(value: Any) -> Optional[float]:
+    # float() on a huge int raises OverflowError, which is neither ValueError nor
+    # TypeError; these values come off arbitrary upstream payloads.
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _trim(text: Optional[str], limit: int) -> str:
@@ -350,17 +365,18 @@ class ApiMonitor:
     ) -> None:
         if not entry_id:
             return
+        # Coerce outside the lock: these come off arbitrary payloads, and this runs
+        # inside streaming generators where a raise truncates the user's response.
+        tok_per_sec = _finite_float_or_none(tok_per_sec)
+        prompt_ms = _finite_float_or_none(prompt_ms)
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None:
                 return
-            try:
-                if tok_per_sec is not None and math.isfinite(float(tok_per_sec)):
-                    entry.tok_per_sec = float(tok_per_sec)
-                if prompt_ms is not None and math.isfinite(float(prompt_ms)):
-                    entry.prompt_ms = float(prompt_ms)
-            except (TypeError, ValueError):
-                pass
+            if tok_per_sec is not None:
+                entry.tok_per_sec = tok_per_sec
+            if prompt_ms is not None:
+                entry.prompt_ms = prompt_ms
             if stop_reason is not None:
                 entry.stop_reason = str(stop_reason)
             entry.updated_at = time.time()

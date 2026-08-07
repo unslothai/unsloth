@@ -3037,7 +3037,9 @@ def _monitor_usage(
     timings: Optional[dict] = None,
     stop_reason: Optional[str] = None,
 ):
-    if usage:
+    # isinstance, not truthiness: a malformed non-dict usage would raise on .get()
+    # into the streaming generator and abort the user's response.
+    if isinstance(usage, dict) and usage:
         api_monitor.set_usage(
             monitor_id,
             prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens"),
@@ -3514,7 +3516,9 @@ def _monitor_queue_state() -> Optional[dict]:
             # Direct calls hold no lease, so anything past capacity is waiting inside
             # llama-server and counts as queued, not clamped away into a readout that looks idle.
             "queued": snapshot.queued + max(0, busy - snapshot.capacity),
-            "free": max(0, snapshot.capacity - active),
+            # From the snapshot, not capacity - active: the queue already holds slots
+            # back for approved resumes, so recomputing would show free next to queued.
+            "free": max(0, snapshot.free - direct),
         }
     capacity = _positive_int_or_none(getattr(llama_backend, "effective_parallel_slots", None)) or 1
     active = min(capacity, direct)
@@ -13173,7 +13177,6 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             # honor stream_options.include_usage per event, while keeping SSE
             # framing and token bytes intact.
             _include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
-            _direct_llama_request_started()
             client = httpx.AsyncClient(
                 timeout = _llama_streaming_generation_timeout(),
                 trust_env = False,
@@ -13189,6 +13192,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             # nothing behind (see _responses_stream). No thread_id: public API surface, not a chat.
             _tracker = _TrackedCancel(disconnect_event, model = monitor_model, kind = "completions")
             _tracker.__enter__()
+            # Last statement before the try whose finally decrements it: anything that
+            # raised in between would leak a permanent +1, and there is no reset hook.
+            _direct_llama_request_started()
             try:
                 req = client.build_request(
                     "POST", target_url, json = body, headers = {"Connection": "close"}
@@ -13291,7 +13297,6 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         _client = _cancelable_nonstreaming_client()
         _tracker = _TrackedCancel(_cancel_event, model = monitor_model, kind = "completions")
         _tracker.__enter__()
-        _direct_llama_request_started()
         _cancel_watcher = asyncio.create_task(
             _await_cancel_or_disconnect_then_close_client(
                 cancel_event = _cancel_event,
@@ -13299,6 +13304,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 client = _client,
             )
         )
+        _direct_llama_request_started()
         try:
             try:
                 resp = await _client.post(
@@ -13437,7 +13443,6 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         kind = "embeddings",
     )
     _tracker.__enter__()
-    _direct_llama_request_started()
     _cancel_watcher = asyncio.create_task(
         _await_cancel_or_disconnect_then_close_client(
             cancel_event = _cancel_event,
@@ -13445,6 +13450,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             client = _client,
         )
     )
+    _direct_llama_request_started()
     try:
         try:
             resp = await _client.post(

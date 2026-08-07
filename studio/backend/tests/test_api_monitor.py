@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import itertools
+
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -857,23 +860,33 @@ def test_non_streaming_responses_reports_its_finish_reason(monkeypatch):
     # Stop reason must be read off the choice, or the row shows a blank.
     import routes.inference as inf
 
-    seen = {}
-    monkeypatch.setattr(
-        inf,
-        "_monitor_usage",
-        lambda mid, usage, ctx = None, **kw: seen.update(kw),
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inf, "api_monitor", monitor)
+    entry_id = monitor.start(
+        endpoint = "/v1/responses",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
     )
-    body = {"choices": [{"message": {"content": "hi"}, "finish_reason": "length"}]}
+    body = {
+        "choices": [{"message": {"content": "hi"}, "finish_reason": "length"}],
+        "timings": {"predicted_per_second": 12.5, "prompt_ms": 80.0},
+    }
     choices = body.get("choices", [])
-    usage_data = {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
     # Mirrors the call the route makes at the end of _responses_non_streaming.
     inf._monitor_usage(
-        "row",
-        usage_data,
+        entry_id,
+        {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
         None,
+        timings = body.get("timings"),
         stop_reason = (choices[0].get("finish_reason") if choices else None),
     )
-    assert seen.get("stop_reason") == "length"
+    monitor.finish(entry_id)
+
+    [entry] = monitor.snapshot()
+    assert entry["stop_reason"] == "length"
+    assert entry["tok_per_sec"] == 12.5
+    assert entry["ttft_ms"] == 80
 
 
 def test_parked_tool_resume_counts_as_queued():
@@ -883,6 +896,154 @@ def test_parked_tool_resume_counts_as_queued():
     queue = LlamaAdmissionQueue("http://llama.test")
     queue._unpark_tickets.append(1)
     assert queue.snapshot().queued == 1
+
+
+def test_free_never_reports_a_slot_admission_would_refuse():
+    """`free` is what a new arrival could take, so it must track _can_admit_locked.
+
+    A resume ticket holds a slot back from new arrivals, so counting it in `queued`
+    without subtracting it from `free` prints free slots next to a queued request.
+    """
+    from core.inference.llama_admission import LlamaAdmissionQueue
+
+    for capacity, held, tickets in itertools.product(range(1, 5), range(0, 5), range(0, 3)):
+        if held > capacity:
+            continue
+        queue = LlamaAdmissionQueue("http://llama.test")
+        queue._resize_pool_locked(capacity)
+        if any(queue._take_slot_locked(0) is None for _ in range(held)):
+            continue
+        for _ in range(tickets):
+            queue._unpark_seq += 1
+            queue._unpark_tickets.append(queue._unpark_seq)
+
+        snapshot = queue.snapshot()
+        admittable = queue._can_admit_locked(len(queue._unpark_tickets))
+        assert (snapshot.free > 0) == admittable, (
+            f"capacity={capacity} held={held} tickets={tickets}: "
+            f"free={snapshot.free} but _can_admit_locked={admittable}"
+        )
+
+
+def test_queue_panel_never_shows_a_free_slot_next_to_a_resume(monkeypatch):
+    """The panel derives free from the snapshot, so it inherits that invariant."""
+    from types import SimpleNamespace
+
+    import routes.inference as inf
+    from core.inference.llama_admission import LlamaAdmissionQueue
+
+    queue = LlamaAdmissionQueue("http://llama.test")
+    queue._unpark_tickets.append(1)
+    monkeypatch.setattr(
+        inf,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,
+            is_diffusion = False,
+            base_url = "http://llama.test",
+            effective_parallel_slots = 1,
+        ),
+    )
+    monkeypatch.setattr(inf, "peek_llama_admission_snapshot", lambda _base: queue.snapshot())
+    monkeypatch.setattr(inf, "_direct_llama_inflight", 0)
+
+    assert inf._monitor_queue_state() == {
+        "capacity": 1,
+        "active": 0,
+        "queued": 1,
+        "free": 0,
+    }
+
+
+def test_set_perf_survives_an_out_of_range_engine_number():
+    """float() on a huge int raises OverflowError, which is not ValueError.
+
+    These helpers run inside streaming generators, where a raise truncates the
+    user's response, and the values come off an arbitrary upstream payload.
+    """
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    huge = int("9" * 400)
+    monitor.set_perf(entry_id, tok_per_sec = huge, prompt_ms = huge, stop_reason = "stop")
+    monitor.finish(entry_id)
+
+    [entry] = monitor.snapshot()
+    assert entry["tok_per_sec"] is None
+    assert entry["ttft_ms"] is None
+    assert entry["stop_reason"] == "stop"
+
+
+@pytest.mark.parametrize(
+    "chunk",
+    [
+        {"choices": [{"delta": {"content": "x"}}], "timings": {"predicted_per_second": 10**400}},
+        {"choices": [{"delta": {"content": "x"}}], "timings": {"prompt_ms": 10**400}},
+        {"choices": [{"delta": {"content": "x"}}], "usage": {"total_tokens": 10**400}},
+        {"choices": [{"delta": {"content": "x"}}], "usage": "not-a-dict"},
+        {"choices": [{"delta": {"content": "x"}}], "timings": "not-a-dict"},
+        {"choices": "not-a-list"},
+        {"choices": [{"delta": "not-a-dict"}]},
+        {},
+    ],
+)
+def test_monitor_chunk_never_raises_on_a_malformed_upstream_chunk(monkeypatch, chunk):
+    """A raise here escapes into the SSE generator and truncates the response."""
+    import routes.inference as inf
+
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inf, "api_monitor", monitor)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    inf._monitor_openai_chunk(entry_id, chunk, 4096, streaming = True)
+    # snapshot() divides by the recorded counts, so it has to survive them too.
+    assert monitor.snapshot()
+
+
+def test_direct_llama_counter_is_started_last_before_its_guarding_try():
+    """Anything between started() and the try leaks a permanent +1 if it raises.
+
+    There is no reset hook for this counter (unlike reset_llama_admission_queues),
+    so one leak pins the monitor's slot panel at busy until the process restarts.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    for func_name in ("openai_completions", "openai_embeddings"):
+        tree = ast.parse(
+            textwrap.dedent(inspect.getsource(getattr(inference_route, func_name)))
+        )
+        started = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "_direct_llama_request_started"
+        ]
+        assert started, f"{func_name}: no _direct_llama_request_started() call found"
+
+        for node in ast.walk(tree):
+            block = getattr(node, "body", None)
+            if not isinstance(block, list):
+                continue
+            for index, stmt in enumerate(block):
+                if not any(stmt is call for call in started):
+                    continue
+                assert index + 1 < len(block) and isinstance(block[index + 1], ast.Try), (
+                    f"{func_name}: _direct_llama_request_started() is not immediately "
+                    f"followed by the try whose finally decrements it:\n"
+                    + "\n".join(ast.unparse(s) for s in block[index : index + 3])
+                )
 
 
 def test_top_level_provider_tool_event_stamps_first_token(monkeypatch):
