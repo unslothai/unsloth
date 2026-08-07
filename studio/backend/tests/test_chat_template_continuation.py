@@ -709,7 +709,12 @@ _RESUMED_PLAIN_EVENTS = [
 ]
 
 
-def _sf_completion(monkeypatch, events, stats = None, **body):
+def _sf_completion(
+    monkeypatch,
+    events,
+    stats = None,
+    **body,
+):
     """POST a non-streaming safetensors tool-loop chat and return the assistant message."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

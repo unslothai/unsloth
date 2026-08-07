@@ -2379,7 +2379,7 @@ def strip_open_reasoning_prefill(prefix: str) -> str:
     open_at = prefix.rfind(_THINK_OPEN)
     if open_at == -1 or open_at < prefix.rfind(_THINK_CLOSE):
         return prefix
-    if prefix[open_at + len(_THINK_OPEN):].strip():
+    if prefix[open_at + len(_THINK_OPEN) :].strip():
         return prefix
     return prefix[:open_at]
 

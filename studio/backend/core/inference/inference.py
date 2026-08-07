@@ -1363,9 +1363,7 @@ class InferenceBackend:
             )
             # Presence penalty (GGUF parity) for VLM chat.
             _vision_input_ids = inputs.get("input_ids") if hasattr(inputs, "get") else None
-            prompt_len = (
-                int(_vision_input_ids.shape[1]) if _vision_input_ids is not None else None
-            )
+            prompt_len = int(_vision_input_ids.shape[1]) if _vision_input_ids is not None else None
             if _vision_input_ids is not None:
                 _pp = _make_presence_penalty_processor(presence_penalty, prompt_len)
                 if _pp is not None:

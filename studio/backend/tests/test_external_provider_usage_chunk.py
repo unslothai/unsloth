@@ -535,9 +535,7 @@ def test_self_hosted_providers_get_the_continuation_flags(monkeypatch):
         ("ollama", "http://localhost:11434/v1"),
     ],
 )
-def test_other_providers_do_not_get_the_continuation_flags(
-    monkeypatch, provider_type, base_url
-):
+def test_other_providers_do_not_get_the_continuation_flags(monkeypatch, provider_type, base_url):
     body = _continuation_body(monkeypatch, provider_type, base_url)
     assert "continue_final_message" not in body
     assert "add_generation_prompt" not in body

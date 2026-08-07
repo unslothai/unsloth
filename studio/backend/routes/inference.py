@@ -12703,9 +12703,7 @@ async def openai_chat_completions(
             # Budget exhaustion unless a heal below promotes a tool call; a cancelled
             # turn stopped on request, not at the cap, so it stays "stop".
             _finish = (
-                "stop"
-                if cancel_event.is_set()
-                else _stats_finish_reason(stats_holder.get("stats"))
+                "stop" if cancel_event.is_set() else _stats_finish_reason(stats_holder.get("stats"))
             )
             if _sf_heal:
                 if heal_openai_message(_msg, _sf_heal, _sf_healing_tools):
