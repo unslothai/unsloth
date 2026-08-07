@@ -118,6 +118,15 @@ import {
 } from "../utils/reasoning-duration";
 import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import {
+  budgetImpliesTruncation,
+  CONTINUE_INSTRUCTION,
+  type IncompleteReason,
+  joinContinuation,
+  readContinuationRequest,
+  rejectsAssistantPrefill,
+  resumesExactly,
+} from "../utils/continuation";
+import {
   generateAudio,
   GenerationLengthError,
   fetchGgufStagedMetadata,
@@ -2784,6 +2793,7 @@ export function createOpenAIStreamAdapter(
   const adapter = {
     async *run({
       messages,
+      runConfig,
       abortSignal,
       unstable_threadId,
       unstable_assistantMessageId,
@@ -3466,6 +3476,30 @@ export function createOpenAIStreamAdapter(
         );
       }
 
+      // The run's messages stop at the user turn (this is a sibling branch), so the
+      // partial is appended here for the backend to resume.
+      const continuation = readContinuationRequest(runConfig);
+      if (continuation) {
+        outboundMessages.push({
+          role: "assistant",
+          content: continuation.partial,
+        });
+        // The original assistant message is not in this branch, so without its
+        // signature the model history goes back unsigned.
+        attachAssistantThoughtSignature(
+          outboundMessages,
+          continuation.thoughtSignature,
+        );
+        // Anthropic 400s when the last message is an assistant turn, so it gets an
+        // instruction turn after the partial instead of a prefill.
+        if (rejectsAssistantPrefill(externalProvider?.providerType)) {
+          outboundMessages.push({
+            role: "user",
+            content: CONTINUE_INSTRUCTION,
+          });
+        }
+      }
+
       const combinedSystemPrompt = await resolveChatInstructions(
         resolvedThreadId,
         params.systemPrompt,
@@ -3567,9 +3601,11 @@ export function createOpenAIStreamAdapter(
       // Scan post-prune history so a refused user turn's image/audio
       // doesn't gate or mis-attribute the next turn.
       const imageBase64 = findLatestUserImageBase64(survivingMessages);
+      // A continuation resumes the turn as it was sent: picking up a clip staged in the
+      // composer since would switch it onto the audio path, which cannot be continued.
       const audioBase64 = findLatestUserAudioBase64(
         survivingMessages,
-        !queuedRunSettings,
+        !queuedRunSettings && !continuation,
       );
       const hasOutboundImage = Boolean(imageBase64);
 
@@ -3771,7 +3807,41 @@ export function createOpenAIStreamAdapter(
         local: !isExternalRequest,
         owner: serverCancel,
       });
-      let cumulativeText = "";
+      // Seeded with the partial so the bubble reads as one response; the boundary lets
+      // the finalizers re-derive the new output and repair a repeat/restart.
+      let cumulativeText = continuation ? continuation.partial : "";
+      const continuationPartial = continuation?.partial ?? "";
+      // Local backends (and a self-hosted vLLM / llama-server, which get the flags)
+      // resume at the exact token boundary, so their output is already the rest of the
+      // answer and trimming could only delete words the model meant to write. The repair
+      // is for providers that may ignore the prefill and repeat or restart.
+      const repairContinuation =
+        isExternalRequest && !resumesExactly(externalProvider?.providerType);
+      const mergeContinuation = (text: string): string =>
+        continuationPartial && repairContinuation
+          ? joinContinuation(
+              continuationPartial,
+              text.slice(continuationPartial.length),
+            )
+          : text;
+      // Every streamed yield carries the repaired text, not just the terminal ones:
+      // assistant-ui drops whatever is yielded after an abort, so on Stop the last
+      // STREAMED yield is what gets saved.
+      const liveAssistantContent = () =>
+        buildAssistantContent(mergeContinuation(cumulativeText));
+      // Provisional reason on every streamed yield: an abort skips the terminal yields
+      // and a reload rebuilds messages as "complete", so a stopped turn would otherwise
+      // lose why it was short. The terminal yields overwrite or clear it.
+      const liveCustom = () => ({
+        ...reasoningDurationTracker.metadata(),
+        incomplete: { reason: "cancelled" as const },
+      });
+      // Why this turn stopped early. Drives the Continue affordance.
+      let incompleteReason: IncompleteReason | null = null;
+      // MLX reports finish_reason "stop" even at the cap, so an exhausted budget is its
+      // only truncation signal. Everyone else reports "length" honestly.
+      let requestedMaxTokens: number | undefined;
+      const isMlxRequest = !isExternalRequest && activeModel?.isMlx === true;
       const reasoningDurationTracker = createReasoningDurationTracker();
       // True while wrapping a `delta.reasoning_content` stream in
       // <think>...</think> for parseAssistantContent. Lives outside the
@@ -3884,6 +3954,16 @@ export function createOpenAIStreamAdapter(
 
         return pinTextThoughtSignature(assembled);
       };
+
+      // Yielded before the request starts: an abort during load skips the partial-content
+      // yield below, saving an empty message and stranding the resumed text.
+      if (continuation) {
+        yield {
+          content: buildAssistantContent(cumulativeText),
+          metadata: { custom: liveCustom() },
+        };
+      }
+
       const parseToolProvenance = (
         value: unknown,
       ): ToolCallProvenance | undefined => {
@@ -4204,6 +4284,9 @@ export function createOpenAIStreamAdapter(
               model: externalSelection.modelId,
               messages: outboundMessages,
               stream: true,
+              // Never forwarded upstream (the proxy sends an explicit field list);
+              // the trailing assistant turn is what asks a provider to continue.
+              ...(continuation ? { continue_final_message: true } : {}),
               // Reasoning-class models (OpenAI gpt-5.x / o3) reject
               // temperature and top_p; forward only when supported.
               ...(externalCapabilities?.temperature !== false
@@ -4311,6 +4394,7 @@ export function createOpenAIStreamAdapter(
             model: params.checkpoint,
             messages: outboundMessages,
             stream: true,
+            ...(continuation ? { continue_final_message: true } : {}),
             // Opt into the trailing usage chunk so the context-usage bar
             // and tok/s readout populate (backend gates it on include_usage).
             stream_options: { include_usage: true },
@@ -4442,6 +4526,7 @@ export function createOpenAIStreamAdapter(
               throw error;
             }
             clearSelectedImageEditReference();
+            requestedMaxTokens = requestPayload.max_tokens;
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
             const stream = streamChatCompletions(requestPayload, runSignal);
 
@@ -4609,14 +4694,14 @@ export function createOpenAIStreamAdapter(
                         argsText: partial.argsText,
                       };
                       yield {
-                        content: buildAssistantContent(cumulativeText),
+                        content: liveAssistantContent(),
                         metadata: {
                           timing: buildTiming(
                             streamStartTime,
                             totalChunks,
                             firstTokenTime,
                           ),
-                          custom: reasoningDurationTracker.metadata(),
+                          custom: liveCustom(),
                         },
                       };
                     }
@@ -4904,14 +4989,14 @@ export function createOpenAIStreamAdapter(
                   }
                 }
                 yield {
-                  content: buildAssistantContent(cumulativeText),
+                  content: liveAssistantContent(),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
                       totalChunks,
                       firstTokenTime,
                     ),
-                    custom: reasoningDurationTracker.metadata(),
+                    custom: liveCustom(),
                   },
                 };
                 continue;
@@ -4929,6 +5014,13 @@ export function createOpenAIStreamAdapter(
               }
 
               totalChunks += 1;
+              // Latched, not read off the last chunk: a provider can send the
+              // terminal reason ahead of its usage chunk.
+              if (chunk.choices?.[0]?.finish_reason === "length") {
+                incompleteReason = "length";
+              } else if (chunk.choices?.[0]?.finish_reason) {
+                incompleteReason = null;
+              }
               // Latch the chunk's `model` field so the openrouter/free chip
               // shows the chosen underlying model.
               if (
@@ -5100,14 +5192,14 @@ export function createOpenAIStreamAdapter(
                   }
                 }
                 yield {
-                  content: buildAssistantContent(cumulativeText),
+                  content: liveAssistantContent(),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
                       totalChunks,
                       firstTokenTime,
                     ),
-                    custom: reasoningDurationTracker.metadata(),
+                    custom: liveCustom(),
                   },
                 };
                 continue;
@@ -5145,7 +5237,7 @@ export function createOpenAIStreamAdapter(
                   "",
                 );
               }
-              const assistantContent = buildAssistantContent(cumulativeText);
+              const assistantContent = liveAssistantContent();
 
               // Fallback when no server-side reasoning_summary arrives.
               const parsedReasoningGroupCount =
@@ -5186,7 +5278,7 @@ export function createOpenAIStreamAdapter(
                       totalChunks,
                       firstTokenTime,
                     ),
-                    custom: reasoningDurationTracker.metadata(),
+                    custom: liveCustom(),
                   },
                 };
               }
@@ -5279,6 +5371,17 @@ export function createOpenAIStreamAdapter(
           }
         }
 
+        if (
+          incompleteReason === null &&
+          budgetImpliesTruncation({
+            isMlx: isMlxRequest,
+            maxTokens: requestedMaxTokens,
+            completionTokens: meta?.usage?.completion_tokens,
+          })
+        ) {
+          incompleteReason = "length";
+        }
+
         const finishedAt = Date.now();
         const finalTiming = buildTiming(
           streamStartTime,
@@ -5294,7 +5397,7 @@ export function createOpenAIStreamAdapter(
         reasoningDurationTracker.finishGroup();
         yield {
           content: [
-            ...buildAssistantContent(cumulativeText),
+            ...buildAssistantContent(mergeContinuation(cumulativeText)),
             ...sourceParts,
             ...documentCitationParts,
           ],
@@ -5302,6 +5405,8 @@ export function createOpenAIStreamAdapter(
             timing: finalTiming,
             custom: {
               ...reasoningDurationTracker.metadata(),
+              // Persisted so Continue survives a reload; cleared on a normal end.
+              incomplete: incompleteReason ? { reason: incompleteReason } : undefined,
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
               serverTimings: meta?.timings ?? undefined,
@@ -5362,14 +5467,15 @@ export function createOpenAIStreamAdapter(
         }
         if (!abortSignal.aborted) {
           closeReasoningContent();
-          const partialContent = buildAssistantContent(cumulativeText);
+          const partialText = mergeContinuation(cumulativeText);
+          const partialContent = buildAssistantContent(partialText);
           if (partialContent.length > 0) {
             const partialTiming = buildTiming(
               streamStartTime,
               totalChunks,
               firstTokenTime,
               Date.now() - streamStartTime,
-              estimateTokenCount(cumulativeText),
+              estimateTokenCount(partialText),
               toolCallParts.length,
             );
             yield {
@@ -5378,6 +5484,13 @@ export function createOpenAIStreamAdapter(
                 timing: partialTiming,
                 custom: {
                   ...reasoningDurationTracker.metadata(),
+                  // This partial is unfinished too, so it also offers Continue.
+                  incomplete: {
+                    reason:
+                      err instanceof GenerationLengthError
+                        ? "length"
+                        : "interrupted",
+                  },
                   timing: partialTiming,
                 },
               },
