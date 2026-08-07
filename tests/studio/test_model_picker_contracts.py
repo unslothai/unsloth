@@ -2624,8 +2624,7 @@ def test_cached_rows_classify_chat_capability_too():
     fields = src.split("def _cache_inventory_fields", 1)[1].split("\ndef ", 1)[0]
     assert "can_chat_override" in fields
     assert (
-        'model_format in {"safetensors", "checkpoint"} and classify_snapshot is not None'
-        in fields
+        'model_format in {"safetensors", "checkpoint"} and classify_snapshot is not None' in fields
     )
 
 
@@ -2698,9 +2697,7 @@ def test_cached_classification_reads_the_snapshot_the_row_loads():
     assert "classify_snapshot = identity.load_snapshot or snapshot_path" in fields
     assert "_local_transformers_can_chat(classify_snapshot)" in fields
     # The resolve must run before the classification reads it.
-    assert fields.index("identity = _resolve_load_identity(") < fields.index(
-        "classify_snapshot ="
-    )
+    assert fields.index("identity = _resolve_load_identity(") < fields.index("classify_snapshot =")
 
 
 def test_non_chat_conditional_generation_is_excluded_before_the_suffix_check():

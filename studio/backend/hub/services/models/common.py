@@ -253,9 +253,7 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
         else []
     )
     model_type_raw = config.get("model_type")
-    normalized_type = (
-        model_type_raw.strip().lower() if isinstance(model_type_raw, str) else ""
-    )
+    normalized_type = model_type_raw.strip().lower() if isinstance(model_type_raw, str) else ""
     # Checked before the generative suffix: Whisper and friends end in
     # ForConditionalGeneration but cannot answer a text turn, and they are
     # often smaller than a real chat model so the cascade would stop there.
