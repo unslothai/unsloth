@@ -55,6 +55,7 @@ from core.inference.llama_server_args import (
     extra_args_disable_mmproj,
     fit_is_enabled_in,
     memory_state_satisfies_settings,
+    fit_is_effectively_on,
     resolve_effective_memory_state,
     scrub_memory_env,
     parse_cache_override,
@@ -2114,7 +2115,8 @@ def _pipeline_parallel_disabled_by_args(
     # Pipelining needs n_gpu_layers > n_layer_all, so a user -ngl (appended after
     # Studio's -ngl -1, last-wins) that cannot exceed the count loads a prefix and
     # turns it off. Negative (all layers) or above the count keeps the step, even
-    # in between: n_layers is block_count and can undercount n_layer_all (MTP layers).
+    # in between: n_layers is block_count, which IS n_layer_all (llama-model.cpp
+    # reads the key straight into it); hparams.n_layer() is the smaller MTP-less one.
     if n_layers:
         try:
             gpu_layers = parse_gpu_layers_override(extra_args)
@@ -4654,6 +4656,7 @@ class LlamaCppBackend:
         binary: Optional[str] = None,
         env: Optional[Mapping[str, str]] = None,
         probe_vulkan: bool = True,
+        fit_active: bool = False,
     ) -> bool:
         """True when the weights will sit in pageable host RAM, so mlock helps.
 
@@ -4687,6 +4690,7 @@ class LlamaCppBackend:
             gpu_memory_mode = gpu_memory_mode,
             gpu_layers = gpu_layers,
             extra_args = extra_args,
+            fit_active = fit_active,
         )
         if not all_on_gpu:
             return True
@@ -4707,6 +4711,7 @@ class LlamaCppBackend:
         gpu_memory_mode: Optional[str],
         gpu_layers: Optional[int],
         extra_args: Optional[Iterable[str]],
+        fit_active: bool = False,
     ) -> bool:
         """True when every layer lands on the GPU by a route ``fully_gpu_offloaded``
         does not cover: manual mode at its full-offload maximum, or a user -ngl.
@@ -4739,7 +4744,12 @@ class LlamaCppBackend:
             return False
         # -1 is "all layers"; llama.cpp needs a count ABOVE the block count to
         # cover the output layer too, which is what the picker's maximum sends.
-        return requested == -1 or requested > n_layers
+        # -1 is also llama.cpp's DEFAULT, so an active fitter is free to lower it
+        # (common/fit.cpp aborts only on a count the user really set); a concrete
+        # count stands, which is why only this arm is gated.
+        if requested == -1:
+            return not fit_active
+        return requested > n_layers
 
     @staticmethod
     def _amd_apu_wants_unified_memory(gpu_indices = None) -> bool:
@@ -11053,6 +11063,11 @@ class LlamaCppBackend:
                     binary = binary,
                     env = _mem_env,
                     probe_vulkan = should_mlock(),
+                    # Over the built cmd AND the extras, so Studio's own --fit
+                    # counts and a later user --fit still wins by last-arg.
+                    fit_active = fit_is_effectively_on(
+                        [*cmd, *(_mem_extra_args or [])], _mem_env
+                    ),
                 )
                 _mem_managed, _mem_extras = apply_model_memory_policy(
                     extra_args,

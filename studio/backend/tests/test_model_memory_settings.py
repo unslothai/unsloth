@@ -2382,3 +2382,75 @@ class TestNoDeadMemoryBookkeeping:
             }
         unread = sorted(written - read)
         assert not unread, f"written but never read, so they go stale on retries: {unread}"
+
+
+class TestAnActiveFitterVoidsTheAllLayersVerdict:
+    """-ngl -1 IS llama.cpp's default, so common/fit.cpp does not abort on it
+    (it aborts only on a count the user really set) and the fitter is free to
+    move layers back to the CPU. A concrete count stands, so only -1 is gated."""
+
+    @staticmethod
+    def _all_on_gpu(monkeypatch, extras, *, fit_active):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        monkeypatch.setattr(
+            type(backend), "n_layers", property(lambda self: 32), raising = False
+        )
+        backend._n_cpu_moe = 0
+        return backend._offloads_every_layer(
+            gpu_memory_mode = "auto",
+            gpu_layers = None,
+            extra_args = extras,
+            fit_active = fit_active,
+        )
+
+    def test_minus_one_under_an_active_fitter_is_not_full_offload(self, monkeypatch):
+        assert self._all_on_gpu(monkeypatch, ["-ngl", "-1"], fit_active = True) is False
+
+    def test_minus_one_with_the_fitter_off_still_is(self, monkeypatch):
+        assert self._all_on_gpu(monkeypatch, ["-ngl", "-1"], fit_active = False) is True
+
+    @pytest.mark.parametrize("count", ["33", "99"])
+    def test_a_concrete_count_stands_under_the_fitter(self, monkeypatch, count):
+        """fit.cpp aborts on a user-set n_gpu_layers, so it cannot be lowered."""
+        assert self._all_on_gpu(monkeypatch, ["-ngl", count], fit_active = True) is True
+
+    def test_a_count_at_or_below_the_blocks_is_never_full(self, monkeypatch):
+        assert self._all_on_gpu(monkeypatch, ["-ngl", "32"], fit_active = True) is False
+
+
+class TestTheEffectiveFitterState:
+    """fit_is_enabled_in answers for the extras; this answers for the child, so
+    Studio's own --fit counts and llama.cpp's ON default is respected."""
+
+    @pytest.mark.parametrize(
+        ("args", "env", "expected"),
+        [
+            ([], None, True),
+            (["--fit", "on"], None, True),
+            (["--fit", "off"], None, False),
+            (["--fit", "on", "--fit", "off"], None, False),
+            (["--fit", "off", "--fit", "on"], None, True),
+            (["--fit=off"], None, False),
+            (["-fit", "off"], None, False),
+            ([], {"LLAMA_ARG_FIT": "off"}, False),
+            ([], {"LLAMA_ARG_FIT": "on"}, True),
+            (["--fit", "off"], {"LLAMA_ARG_FIT": "on"}, False),
+            (["--fit", "on"], {"LLAMA_ARG_FIT": "off"}, True),
+            (["--fit", "banana"], None, True),
+        ],
+    )
+    def test_only_an_explicit_off_disables_it(self, args, env, expected):
+        assert _lsa.fit_is_effectively_on(args, env) is expected
+
+    def test_the_launch_asks_over_the_whole_command(self):
+        """Source check: Studio emits its own --fit into cmd, so reading the
+        extras alone would miss it."""
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        assert "fit_active = fit_is_effectively_on(" in src
+        assert "[*cmd, *(_mem_extra_args or [])], _mem_env" in src

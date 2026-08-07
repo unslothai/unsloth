@@ -406,6 +406,23 @@ def fit_is_enabled_in(args: Optional[Iterable[str]]) -> bool:
     return raw_value is not None and raw_value.strip().lower() in _ENV_TRUE_VALUES
 
 
+def fit_is_effectively_on(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """Whether the fitter actually runs, over the WHOLE argv and the env twin.
+
+    ``fit_is_enabled_in`` answers for the extras alone; this answers for the
+    child. llama.cpp defaults the fitter ON and applies the env before argv, so
+    only an explicit "off" turns it off, and an unreadable value keeps it on.
+    """
+    raw_value = _last_flag_value(args, _FIT_FLAGS)
+    if raw_value is None and env:
+        raw_value = env.get("LLAMA_ARG_FIT")
+    if raw_value is None:
+        return True
+    return str(raw_value).strip().lower() not in _ENV_FALSE_VALUES
+
+
 def parse_cache_override_per_axis(
     args: Optional[Iterable[str]],
 ) -> tuple[Optional[str], Optional[str]]:
