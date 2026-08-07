@@ -558,8 +558,8 @@ class TestRouteCompleteness:
         descend(scope.body)
         return chain
 
-    def _binding_dominates(self, scope, name: str, call) -> bool:
-        """True when a helper binding of ``name`` provably runs before ``call``.
+    def _binding_dominates(self, scope, name: str, call, predicate = None) -> bool:
+        """True when a binding of ``name`` matching ``predicate`` provably runs before ``call``.
 
         Sibling order in one statement list is the only ordering Python guarantees without
         modelling control flow, so that is all this claims: the binding has to be an earlier
@@ -577,7 +577,7 @@ class TestRouteCompleteness:
                     continue
                 if not any(isinstance(t, ast.Name) and t.id == name for t in targets):
                     continue
-                if self._is_runtime_fields_call(stmt.value):
+                if (predicate or self._is_runtime_fields_call)(stmt.value):
                     return True
         return False
 
@@ -586,7 +586,7 @@ class TestRouteCompleteness:
     # never produced.
     _PROTECTED_RUNTIME_KEYS = frozenset({"native_context_length"})
 
-    def _mutations_are_safe(self, scope, name: str, call) -> bool:
+    def _mutations_are_safe(self, scope, name: str, calls) -> bool:
         """True when nothing in ``scope`` can remove a protected key from ``name``.
 
         The real call site edits one entry of the hoisted dict before splatting it, so mutation has
@@ -602,7 +602,11 @@ class TestRouteCompleteness:
         mutation offsite. A legitimate new pattern will trip this and get a human to re-read the
         contract, which is the cheaper mistake.
         """
-        allowed_reads: set = {id(call_kw.value) for call_kw in call.keywords if call_kw.arg is None}
+        # Every response branch that splats the dict, not just the one being checked: with
+        # two GGUF returns each would otherwise read the other's splat as an illegal use.
+        allowed_reads: set = {
+            id(kw.value) for one in calls for kw in one.keywords if kw.arg is None
+        }
         ok = True
 
         def walk(node) -> None:
@@ -666,7 +670,9 @@ class TestRouteCompleteness:
         The decorator is the definition of the endpoint, so matching on it rather than on the
         function's name keeps this pointed at whatever serves ``/status`` after a rename.
         """
-        for node in ast.walk(tree):
+        # Module level only. A nested `@router.get("/status")` inside a factory is not the
+        # endpoint this module registers, and may never be registered at all.
+        for node in tree.body:
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             for decorator in node.decorator_list:
@@ -716,23 +722,57 @@ class TestRouteCompleteness:
     # helper itself is module level, so any local binding of it is a substitution.
     _DEPENDENCY_SOURCES = {"_llama_runtime_fields": (), "llama_backend": ("get_llama_cpp_backend",)}
 
-    def _dependencies_are_intact(self, scope) -> bool:
+    @staticmethod
+    def _rebound_in_a_nested_scope(scope, names) -> bool:
+        """A closure declaring one of ``names`` ``global`` or ``nonlocal`` can replace it.
+
+        ``_bindings_in_own_scope`` stops at the scope boundary by design, so a nested
+        ``global _llama_runtime_fields`` followed by an assignment is invisible to it.
+        """
+        for node in ast.walk(scope):
+            if node is scope or not isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+            ):
+                continue
+            for inner in ast.walk(node):
+                if isinstance(inner, (ast.Global, ast.Nonlocal)) and any(
+                    n in names for n in inner.names
+                ):
+                    return True
+        return False
+
+    def _dependencies_are_intact(self, scope, helper_call) -> bool:
         """True when nothing in ``scope`` replaces the helper or the backend it is called on.
 
         ``_is_runtime_fields_call`` only checks spelling, so without this
         ``_llama_runtime_fields = lambda _: {}`` above the hoist passes while the real helper
         is never called, and the response defaults every runtime field to None.
+
+        A binding of the right SHAPE is not enough for the backend either. Placing
+        ``llama_backend = get_llama_cpp_backend()`` after the helper call leaves it an
+        uninitialised local at the call, which is an UnboundLocalError, so the accepted
+        binding also has to dominate.
         """
+        if self._rebound_in_a_nested_scope(scope, set(self._DEPENDENCY_SOURCES)):
+            return False
         for dependency, allowed in self._DEPENDENCY_SOURCES.items():
-            for _node, value in self._bindings_in_own_scope(scope, dependency):
-                if not (
+
+            def _from_allowed(value, allowed = allowed) -> bool:
+                return (
                     isinstance(value, ast.Call)
                     and isinstance(value.func, ast.Name)
                     and value.func.id in allowed
                     and not value.args
                     and not value.keywords
-                ):
-                    return False
+                )
+
+            bindings = self._bindings_in_own_scope(scope, dependency)
+            if not bindings:
+                continue  # never rebound here: it is the module-level name
+            if not all(_from_allowed(value) for _node, value in bindings):
+                return False
+            if not self._binding_dominates(scope, dependency, helper_call, _from_allowed):
+                return False
         return True
 
     def _status_calls_getting_runtime_fields(self) -> list:
@@ -768,8 +808,30 @@ class TestRouteCompleteness:
         handler = self._route_handler(tree, "/status")
         if handler is None:
             return []  # no handler to check is not a passing contract
+        # EVERY GGUF branch, not any one of them. The caller asserts only that the list is
+        # non-empty, so with two GGUF returns a special-cased branch carrying the hoist
+        # certified the ordinary branch that returns without the fields.
+        gguf_calls = [
+            call
+            for call in self._returned_calls(handler, "InferenceStatusResponse")
+            if any(
+                kw.arg == "is_gguf"
+                and isinstance(kw.value, ast.Constant)
+                and kw.value.value is True
+                for kw in call.keywords
+            )
+        ]
+        if not gguf_calls:
+            return []  # no GGUF response to certify
+        def scope_of(node):
+            """Innermost function containing ``node``."""
+            enclosing = [
+                f for f in funcs if f.lineno <= node.lineno <= (f.end_lineno or node.lineno)
+            ]
+            return max(enclosing, key = lambda f: f.lineno) if enclosing else handler
+
         found = []
-        for call in self._returned_calls(handler, "InferenceStatusResponse"):
+        for call in gguf_calls:
             for kw in call.keywords:
                 if kw.arg is not None:
                     continue
@@ -779,6 +841,8 @@ class TestRouteCompleteness:
                         and (other.arg in self._PROTECTED_RUNTIME_KEYS or other.arg is None)
                         for other in call.keywords
                     ):
+                        continue
+                    if not self._dependencies_are_intact(scope_of(call), kw.value):
                         continue
                     found.append(call)
                     break
@@ -802,12 +866,6 @@ class TestRouteCompleteness:
                     for other in call.keywords
                 ):
                     continue
-                # The helper and the backend are read by NAME, so a local rebinding of
-                # either -- `_llama_runtime_fields = lambda _: {}` -- satisfies the spelling
-                # check while calling something else entirely. The helper is module level and
-                # must not be bound here at all; the backend is obtained exactly one way.
-                if not self._dependencies_are_intact(scope):
-                    continue
                 if name in self._parameter_names(scope):
                     continue
                 bindings = self._bindings_in_own_scope(scope, name)
@@ -815,13 +873,24 @@ class TestRouteCompleteness:
                     self._is_runtime_fields_call(value) for _node, value in bindings
                 ):
                     continue
+                # The helper and the backend are read by NAME, so a local rebinding of
+                # either -- `_llama_runtime_fields = lambda _: {}` -- satisfies the spelling
+                # check while calling something else entirely. The helper is module level and
+                # must not be bound here at all; the backend is obtained exactly one way, and
+                # that binding has to run BEFORE the helper call, not merely before the
+                # response, or the name is an uninitialised local at the call.
+                if not all(
+                    self._dependencies_are_intact(scope, value) for _node, value in bindings
+                ):
+                    continue
                 if not self._binding_dominates(scope, name, call):
                     continue
-                if not self._mutations_are_safe(scope, name, call):
+                if not self._mutations_are_safe(scope, name, gguf_calls):
                     continue
                 found.append(call)
                 break
-        return found
+        # One unqualified GGUF branch invalidates the lot: users on it get None.
+        return found if len(found) == len(gguf_calls) else []
 
     def test_gguf_load_responses_have_field(self):
         """Every GGUF LoadResponse (is_gguf = True) includes native_context_length."""
@@ -887,7 +956,8 @@ class TestRouteCompleteness:
         )
         # The unhoisted form needs no analysis at all.
         assert self._accepts(
-            "return InferenceStatusResponse(**_llama_runtime_fields(llama_backend))"
+            "return InferenceStatusResponse(is_gguf = True, "
+            "**_llama_runtime_fields(llama_backend))"
         )
 
     def test_the_hoist_analysis_rejects_a_binding_that_can_be_skipped(self):
@@ -1134,7 +1204,7 @@ class TestRouteCompleteness:
         )
         # The unhoisted form is held to the same rule.
         assert not self._accepts(
-            "return InferenceStatusResponse("
+            "return InferenceStatusResponse(is_gguf = True, "
             "**_llama_runtime_fields(llama_backend), native_context_length = None)"
         )
 
@@ -1180,6 +1250,88 @@ class TestRouteCompleteness:
                 """
             )
             assert not self._status_calls_getting_runtime_fields(), decorator
+
+    def test_every_gguf_return_branch_has_to_qualify(self):
+        """`test_status_path` only asks that the list be non-empty.
+
+        With two GGUF returns, a special-cased branch carrying the hoist certified the
+        ordinary branch that answers without the fields, and users on that branch get
+        native_context_length = None.
+        """
+        assert not self._accepts(
+            """
+            fields = _llama_runtime_fields(llama_backend)
+            if _special:
+                return InferenceStatusResponse(is_gguf = True, **fields)
+            return InferenceStatusResponse(is_gguf = True)
+            """
+        )
+        # Both branches carrying it is the shape that should pass.
+        assert self._accepts(
+            """
+            fields = _llama_runtime_fields(llama_backend)
+            if _special:
+                return InferenceStatusResponse(is_gguf = True, **fields)
+            return InferenceStatusResponse(is_gguf = True, **fields)
+            """
+        )
+        # A non-GGUF return alongside is not this contract's business.
+        assert self._accepts(
+            """
+            fields = _llama_runtime_fields(llama_backend)
+            if not _is_gguf:
+                return InferenceStatusResponse(is_gguf = False)
+            return InferenceStatusResponse(is_gguf = True, **fields)
+            """
+        )
+
+    def test_the_hoist_analysis_rejects_a_dependency_replaced_from_a_closure(self):
+        """`global _llama_runtime_fields` inside a nested function replaces the module name.
+
+        The bindings walk stops at the scope boundary, so the substitution was invisible
+        while the response came from the replacement.
+        """
+        assert not self._accepts(
+            """
+            def _swap():
+                global _llama_runtime_fields
+                _llama_runtime_fields = lambda _: {}
+            _swap()
+            fields = _llama_runtime_fields(llama_backend)
+            return InferenceStatusResponse(is_gguf = True, **fields)
+            """
+        )
+
+    def test_the_hoist_analysis_rejects_a_backend_bound_after_it_is_used(self):
+        """Binding shape is not enough: it has to run first.
+
+        `fields = _llama_runtime_fields(llama_backend)` above
+        `llama_backend = get_llama_cpp_backend()` makes the name an uninitialised local at
+        the call, which is an UnboundLocalError, not a response.
+        """
+        assert not self._accepts(
+            """
+            fields = _llama_runtime_fields(llama_backend)
+            llama_backend = get_llama_cpp_backend()
+            return InferenceStatusResponse(is_gguf = True, **fields)
+            """
+        )
+
+    def test_the_status_handler_has_to_be_module_level(self):
+        """A nested `@router.get("/status")` inside a factory is not this module's endpoint."""
+        import textwrap
+
+        self._source = textwrap.dedent(
+            """
+            def make_routes():
+                @router.get("/status")
+                async def get_status(llama_backend):
+                    fields = _llama_runtime_fields(llama_backend)
+                    return InferenceStatusResponse(is_gguf = True, **fields)
+                return get_status
+            """
+        )
+        assert not self._status_calls_getting_runtime_fields()
 
     def test_non_gguf_status_path_reports_runtime_context_length(self):
         """Non-GGUF InferenceStatusResponse reports context_length from model_info."""
