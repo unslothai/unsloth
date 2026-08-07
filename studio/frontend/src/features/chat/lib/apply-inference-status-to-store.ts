@@ -34,6 +34,8 @@ import { resolveMlxKvBitsSeed } from "./resolve-mlx-kv-bits-seed";
 import { resolvePairedLoadParamSeed } from "./resolve-paired-load-param-seed";
 import type { PairedLoadParamSeed } from "./resolve-paired-load-param-seed";
 
+type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
+
 function pairedSeedPatch<T>(
   seed: PairedLoadParamSeed<T>,
   controlKey: string,
