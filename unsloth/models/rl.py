@@ -584,6 +584,7 @@ _PER_TOKEN = (
     "position_ids",
 )
 
+
 def _column_names(dataset):
     """The split's columns, from metadata AND from a row.
 
@@ -613,6 +614,7 @@ def _column_names(dataset):
     if isinstance(row, dict):
         names.update(row.keys())
     return tuple(names), source
+
 
 class _CappedBase:
     """A read-side cap for a split that cannot be rewritten in place.
@@ -663,6 +665,7 @@ class _CappedBase:
             raise AttributeError(attribute)
         return getattr(inner, attribute)
 
+
 class _CappedRows(_CappedBase):
     """The map-style flavour: a split with a length and an index.
 
@@ -684,9 +687,10 @@ class _CappedRows(_CappedBase):
         for i in range(len(self._index)):
             yield self[i]
 
+
 try:
     from torch.utils.data import IterableDataset as _IterableDatasetBase
-except Exception:      # torch's data stack is optional at import time
+except Exception:  # torch's data stack is optional at import time
     _IterableDatasetBase = object
 
 
@@ -763,7 +767,12 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             columns.append("assistant_masks")
         return columns
 
-    def _cap(dataset, cap, args, drop_unsupervised = True):
+    def _cap(
+        dataset,
+        cap,
+        args,
+        drop_unsupervised = True,
+    ):
         names, dataset = _column_names(dataset)
         if "input_ids" not in names:
             # No tokens here yet, so there is nothing to cut. TRL does not
@@ -885,7 +894,12 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         fingerprint = getattr(dataset, "_fingerprint", None)
         return None if fingerprint is None else fingerprint
 
-    def _cap_cached(trainer, dataset, cap, drop_unsupervised = True):
+    def _cap_cached(
+        trainer,
+        dataset,
+        cap,
+        drop_unsupervised = True,
+    ):
         """Cap a split once per object.
 
         `evaluate()` runs at every eval step of a training run, and the scan that
@@ -911,10 +925,14 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         memo[key] = (dataset, cap, capped, token)
         return capped
 
-    def _cap_splits(trainer, given, cap, drop_unsupervised = True):
+    def _cap_splits(
+        trainer,
+        given,
+        cap,
+        drop_unsupervised = True,
+    ):
         if isinstance(given, dict):
-            capped = {k: _cap_cached(trainer, v, cap, drop_unsupervised)
-                      for k, v in given.items()}
+            capped = {k: _cap_cached(trainer, v, cap, drop_unsupervised) for k, v in given.items()}
             if all(capped[k] is v for k, v in given.items()):
                 return given
             return capped

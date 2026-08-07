@@ -1822,10 +1822,18 @@ def _late_cap_helpers():
     seen = {}
 
     class Stub:
-        def evaluate(self, eval_dataset = None, **kw):
+        def evaluate(
+            self,
+            eval_dataset = None,
+            **kw,
+        ):
             seen["ds"] = eval_dataset
 
-        def predict(self, test_dataset = None, **kw):
+        def predict(
+            self,
+            test_dataset = None,
+            **kw,
+        ):
             seen["ds"] = test_dataset
 
     _wrap_sft_evaluate_cap(Stub)
@@ -1833,7 +1841,11 @@ def _late_cap_helpers():
 
 
 class _EvalArgs:
-    def __init__(self, cap, max_length = None):
+    def __init__(
+        self,
+        cap,
+        max_length = None,
+    ):
         self.max_seq_length = cap
         self.max_length = max_length
         self.eval_packing = None
@@ -1841,7 +1853,6 @@ class _EvalArgs:
         self.completion_only_loss = None
         self.assistant_only_loss = False
         self.truncation_mode = "keep_start"
-
 
 
 def test_the_capped_wrappers_are_picklable():
@@ -1905,10 +1916,12 @@ def test_predict_keeps_every_row_it_was_given():
     from datasets import Dataset
 
     ids = list(range(8))
-    rows = Dataset.from_list([
-        {"input_ids": ids, "attention_mask": [1] * 8, "labels": list(ids)},
-        {"input_ids": ids, "attention_mask": [1] * 8, "labels": [-100] * 8},
-    ])
+    rows = Dataset.from_list(
+        [
+            {"input_ids": ids, "attention_mask": [1] * 8, "labels": list(ids)},
+            {"input_ids": ids, "attention_mask": [1] * 8, "labels": [-100] * 8},
+        ]
+    )
     Stub, seen = _late_cap_helpers()
     stub = Stub()
     stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH)
