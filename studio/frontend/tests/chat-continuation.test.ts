@@ -106,31 +106,23 @@ test("an empty partial yields the continuation alone", () => {
 
 test("an exhausted budget only implies truncation on the MLX route", () => {
   const capped = { maxTokens: 256, completionTokens: 256 };
-  assert.equal(
-    budgetImpliesTruncation({ isExternal: false, isGguf: false, ...capped }),
-    true,
-  );
-  // llama-server's tool loop reports completion_tokens summed over every pass while
-  // max_tokens caps each pass, so a 30-token nudge plus a 230-token answer that ended
-  // on its own reads as 260 of 256. It reports "length" itself, so nothing is lost.
+  assert.equal(budgetImpliesTruncation({ isMlx: true, ...capped }), true);
+  // Everyone else reports "length" itself. llama-server's tool loop in particular sums
+  // completion_tokens over every pass while max_tokens caps each pass, and transformers
+  // knows an answer that ended on its stop token at the cap from one that ran out.
   assert.equal(
     budgetImpliesTruncation({
-      isExternal: false,
-      isGguf: true,
+      isMlx: false,
       maxTokens: 256,
       completionTokens: 260,
     }),
     false,
   );
-  assert.equal(
-    budgetImpliesTruncation({ isExternal: true, isGguf: false, ...capped }),
-    false,
-  );
+  assert.equal(budgetImpliesTruncation({ isMlx: false, ...capped }), false);
   // A route that sends no usage, and an answer inside the budget, stay complete.
   assert.equal(
     budgetImpliesTruncation({
-      isExternal: false,
-      isGguf: false,
+      isMlx: true,
       maxTokens: 256,
       completionTokens: undefined,
     }),
@@ -138,8 +130,7 @@ test("an exhausted budget only implies truncation on the MLX route", () => {
   );
   assert.equal(
     budgetImpliesTruncation({
-      isExternal: false,
-      isGguf: false,
+      isMlx: true,
       maxTokens: 256,
       completionTokens: 255,
     }),
@@ -315,4 +306,15 @@ test("only the servers sent the flags resume exactly", () => {
   ]) {
     assert.equal(resumesExactly(providerType), false, String(providerType));
   }
+});
+
+test("citations appended for display do not block Continue", () => {
+  // Sources are attached at finalization and never replayed, exactly like reasoning.
+  assert.equal(
+    isContinuableContent([
+      { type: "text", text: "The answer begins" },
+      { type: "source", sourceType: "url", id: "s1", url: "https://x" },
+    ]),
+    true,
+  );
 });

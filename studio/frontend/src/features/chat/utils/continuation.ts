@@ -118,25 +118,24 @@ export function joinContinuation(
 }
 
 /**
- * Whether a finished local turn used its whole budget, i.e. stopped for length.
+ * Whether a finished MLX turn used its whole budget, i.e. stopped for length.
  *
  * MLX alone needs the inference: it reports finish_reason "stop" at the cap, so an
- * exhausted budget is the only signal there. External providers and llama-server report
- * "length" themselves, and llama-server's tool loop sums completion_tokens over every
- * pass against a per-pass cap, so the sum marks a finished multi-pass answer truncated.
+ * exhausted budget is the only signal there. Everyone else reports "length" themselves,
+ * including transformers, which sets it from the token count `generate` returned and
+ * knows the difference between a turn that ran out of budget and one that happened to
+ * end on its stop token at the cap. Inferring for them would relabel a finished answer.
  */
 export function budgetImpliesTruncation({
-  isExternal,
-  isGguf,
+  isMlx,
   maxTokens,
   completionTokens,
 }: {
-  isExternal: boolean;
-  isGguf: boolean;
+  isMlx: boolean;
   maxTokens: number | undefined;
   completionTokens: number | undefined;
 }): boolean {
-  if (isExternal || isGguf) {
+  if (!isMlx) {
     return false;
   }
   return (
@@ -168,7 +167,8 @@ export function isContinuableContent(
       continue;
     }
     // Reasoning is not replayed either way, so it neither blocks nor enables.
-    if (type === "reasoning") {
+    // Citations are the same: appended for display at finalization, never sent back.
+    if (type === "reasoning" || type === "source") {
       continue;
     }
     return false;

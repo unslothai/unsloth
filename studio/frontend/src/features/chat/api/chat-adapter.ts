@@ -3820,9 +3820,9 @@ export function createOpenAIStreamAdapter(
       // Why this turn stopped early. Drives the Continue affordance.
       let incompleteReason: IncompleteReason | null = null;
       // MLX reports finish_reason "stop" even at the cap, so an exhausted budget is the
-      // only truncation signal on that route. llama-server reports "length" honestly.
+      // only truncation signal on that route. Everyone else reports "length" honestly.
       let requestedMaxTokens: number | undefined;
-      const isGgufRequest = activeModel?.isGguf === true;
+      const isMlxRequest = !isExternalRequest && activeModel?.isMlx === true;
       const reasoningDurationTracker = createReasoningDurationTracker();
       // True while wrapping a `delta.reasoning_content` stream in
       // <think>...</think> for parseAssistantContent. Lives outside the
@@ -5356,8 +5356,7 @@ export function createOpenAIStreamAdapter(
         if (
           incompleteReason === null &&
           budgetImpliesTruncation({
-            isExternal: isExternalRequest,
-            isGguf: isGgufRequest,
+            isMlx: isMlxRequest,
             maxTokens: requestedMaxTokens,
             completionTokens: meta?.usage?.completion_tokens,
           })
