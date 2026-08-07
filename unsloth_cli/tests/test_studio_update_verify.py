@@ -617,8 +617,12 @@ def test_an_installer_rewritten_lockfile_is_not_damage(site):
     # setup.ps1/setup.sh run `npm install` inside the installed tree, and npm
     # dedupes hoisted entries under legacy-peer-deps, shrinking the file.
     lock = "studio/backend/core/data_recipe/oxc-validator/package-lock.json"
-    _make_dist(site, "unsloth", {"unsloth/__init__.py": b"u\n", lock: b"L" * 27225},
-               record_sizes = {lock: 28473})
+    _make_dist(
+        site,
+        "unsloth",
+        {"unsloth/__init__.py": b"u\n", lock: b"L" * 27225},
+        record_sizes = {lock: 28473},
+    )
     assert _deps().damaged_installed_files() == []
 
 
@@ -642,8 +646,12 @@ def test_a_top_level_module_named_like_a_test_root_is_still_checked(site):
 def test_runtime_damage_still_fails_when_ignored_rows_are_present(site):
     # The exemption must not blind the scan to a torn runtime module.
     lock = "studio/backend/core/data_recipe/oxc-validator/package-lock.json"
-    _make_dist(site, "unsloth", {"unsloth/__init__.py": b"u\n", lock: b"L" * 10},
-               record_sizes = {lock: 28473})
+    _make_dist(
+        site,
+        "unsloth",
+        {"unsloth/__init__.py": b"u\n", lock: b"L" * 10},
+        record_sizes = {lock: 28473},
+    )
     (site / "unsloth" / "__init__.py").unlink()
     found = _deps().damaged_installed_files()
     assert len(found) == 1 and "unsloth/__init__.py is missing" in found[0]

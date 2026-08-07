@@ -222,7 +222,18 @@ def _scan_paths() -> Dict[str, list]:
 # torchao both ship test/conftest.py, and install_python_stack.py
 # force-reinstalls torchao every update.
 _SHARED_NON_RUNTIME_ROOTS = frozenset(
-    ("test", "tests", "doc", "docs", "example", "examples", "benchmark", "benchmarks", "sample", "samples")
+    (
+        "test",
+        "tests",
+        "doc",
+        "docs",
+        "example",
+        "examples",
+        "benchmark",
+        "benchmarks",
+        "sample",
+        "samples",
+    )
 )
 
 # Rewritten in place by our own setup: setup.ps1/setup.sh run `npm install`

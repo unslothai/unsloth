@@ -349,9 +349,7 @@ def test_a_backup_failure_does_not_abort_the_update(monkeypatch, studio, tmp_pat
             raise OSError("access is denied")
         return original(self, source, destination)
 
-    monkeypatch.setattr(
-        studio._WindowsLauncherUpdateTransaction, "_atomic_copy", refuse_backup
-    )
+    monkeypatch.setattr(studio._WindowsLauncherUpdateTransaction, "_atomic_copy", refuse_backup)
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: ran.append(True))
     monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
 

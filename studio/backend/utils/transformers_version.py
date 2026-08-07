@@ -1985,7 +1985,18 @@ def _sidecar_scan(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
 # Mirrored from unsloth_cli/_studio_deps.py, not imported, for the reason given in
 # _sidecar_scan_impl below: the backend never imports the CLI package. Keep in sync.
 _SHARED_NON_RUNTIME_ROOTS = frozenset(
-    ("test", "tests", "doc", "docs", "example", "examples", "benchmark", "benchmarks", "sample", "samples")
+    (
+        "test",
+        "tests",
+        "doc",
+        "docs",
+        "example",
+        "examples",
+        "benchmark",
+        "benchmarks",
+        "sample",
+        "samples",
+    )
 )
 _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
 
