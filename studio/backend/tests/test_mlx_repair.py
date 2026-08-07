@@ -490,6 +490,6 @@ def test_an_unresolvable_interpreter_is_diagnosed_not_retried(monkeypatch, tmp_p
     assert mr.attempt_mlx_repair() is False
     assert len(calls) == 1, f"uv was invoked {len(calls)} times; the retry is back: {calls}"
     flat = " ".join(str(part) for part in calls[0])
-    assert "--target" not in flat and "--prefix" not in flat, (
-        f"a corrupting install target reached the uv command line: {flat}"
-    )
+    assert (
+        "--target" not in flat and "--prefix" not in flat
+    ), f"a corrupting install target reached the uv command line: {flat}"
