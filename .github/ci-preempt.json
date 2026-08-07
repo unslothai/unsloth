@@ -9,6 +9,22 @@
     "the shared pool, not by how important they are: preempting a one-job lint",
     "run frees nothing while still showing up as a cancelled check.",
     "",
+    "A workflow is listed under EVERY class it consumes, not just its headline",
+    "one. Both actions the sweeper takes are whole-workflow: disable stops the",
+    "workflow, and a cancelled run takes all of its jobs with it. There is no",
+    "way to reach one leg of a matrix. So a mixed-platform workflow filed under",
+    "one class only is invisible to a pause naming the others, and its jobs on",
+    "the class being held keep refilling the pool the pause is paying for.",
+    "clean-machine-install-ci.yml alone is 6 linux and 7 windows legs.",
+    "",
+    "The cost of the rule is the converse: a linux pause now also takes that",
+    "workflow's 7 macOS legs down. That is the right way round. Losing coverage",
+    "is bounded by the guard at MAX_DISABLED_MINUTES and a cancelled run keeps",
+    "its re-run button, whereas a pause that silently does not hold fails at the",
+    "only thing it was for. The file already made this trade in the worse",
+    "direction: a macos pause disables 9 linux and 10 windows legs today. The",
+    "sweeper de-duplicates, so a file under two classes is still disabled once.",
+    "",
     "Read the macos list before you use it. Measured across every clean",
     "attempt-1 release run in the org, macOS is the FASTEST class to get a",
     "runner, not the slowest: llama.cpp's two macOS jobs on 08-03 waited 6",
@@ -37,11 +53,18 @@
       "version-compat-ci.yml",
       "local-agent-guides-ci.yml",
       "notebooks-ci.yml",
-      "security-audit.yml"
+      "security-audit.yml",
+      "cross-platform-parity-ci.yml",
+      "clean-machine-install-ci.yml",
+      "interrupted-install-ci.yml",
+      "startup-profile-ci.yml"
     ],
     "windows": [
       "studio-windows-inference-smoke.yml",
-      "cross-platform-parity-ci.yml"
+      "cross-platform-parity-ci.yml",
+      "clean-machine-install-ci.yml",
+      "interrupted-install-ci.yml",
+      "startup-profile-ci.yml"
     ]
   },
   "never": [
