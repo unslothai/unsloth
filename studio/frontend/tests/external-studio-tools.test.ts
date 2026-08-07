@@ -43,16 +43,11 @@ test("Studio tool execution opt-in is independent of provider type", () => {
     configured.providerType = providerType;
     assert.equal(normalizeProvider(configured).studioToolExecution, true);
   }
-});
-
-test("Gemini image-tier models exclude Studio-managed tools", () => {
-  for (const [model, baseUrl, expected] of [
-    ["gemini-3-pro-image", undefined, false],
-    ["gemini-3-pro", undefined, true],
-    ["gemini-3-pro-image", "https://proxy.example/v1", true],
-  ] as const) {
-    assert.equal(providerSupportsStudioTools("gemini", model, baseUrl, true), expected);
-  }
+  const supports = (model: string, baseUrl?: string) =>
+    providerSupportsStudioTools("gemini", model, baseUrl, true);
+  assert.equal(supports("gemini-3-pro-image"), false);
+  assert.equal(supports("gemini-3-pro"), true);
+  assert.equal(supports("gemini-3-pro-image", "https://proxy.example/v1"), true);
 });
 
 test("Studio execution preserves unrelated provider-hosted tools", () => {
