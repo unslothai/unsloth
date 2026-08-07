@@ -136,7 +136,7 @@ export function resolveHeadMessageId(
 ): string | null {
   if (messages.length === 0) return null;
   const sorted = sortChatMessages(messages);
-  const childrenOf = new Map<string, ParentChainMessage[]>();
+  const childrenOf = new Map<string | null, ParentChainMessage[]>();
   for (const message of messages) {
     const parentId = message.parentId ?? null;
     if (!childrenOf.has(parentId)) childrenOf.set(parentId, []);

@@ -1332,9 +1332,10 @@ function useStudioRuntimeAdapters(
           void refreshContextUsage({ threadId: remoteId });
         }
 
-        // Reconstruct the branch tree for retries/regenerations. Repair assistant
-        // rows that lost parentId (they were chained under the prior assistant
-        // and resetHead dropped middle branches — #7732), order siblings for
+        // If any message has a stored parentId, reconstruct the tree so
+        // retries/regenerations keep their branches. Repair assistant rows that
+        // lost parentId (they were chained under the prior assistant and
+        // resetHead dropped middle branches — #7732), order siblings for
         // import, and pass headId so MessageRepository picks the active leaf.
         const hasParentIds = msgs.some((m) => m.parentId != null);
         if (hasParentIds) {
