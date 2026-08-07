@@ -20,6 +20,16 @@ _CACHE_DIRNAME = "snapshot-loads"
 _METADATA_FILENAME = "metadata.json"
 
 
+class UnsafeDatasetCachePathError(OSError):
+    """A processed cache entry is not provably inside the trusted cache root.
+
+    Kept distinct from a plain ``OSError`` so a caller doing best-effort bookkeeping can
+    swallow "the write did not land" (purged entry, read-only home, full disk) without
+    also swallowing "this path is no longer trusted". Subclasses ``OSError`` so existing
+    ``except OSError`` callers keep catching it.
+    """
+
+
 @dataclass(frozen = True)
 class AppProcessedDatasetCache:
     repo_id: str
@@ -106,6 +116,14 @@ def _resolved_app_processed_dataset_cache_root(*, create: bool) -> Optional[Path
         return None
 
 
+def _cache_root_is_present() -> bool:
+    try:
+        root_path = app_processed_dataset_cache_root().expanduser()
+        return root_path.is_symlink() or root_path.exists()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+
+
 def _atomic_write_metadata(path: Path, payload: dict[str, Any]) -> None:
     temporary = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex[:8]}")
     try:
@@ -182,11 +200,21 @@ def prepare_app_processed_dataset_cache(repo_id: str, snapshot: Path) -> AppProc
 def mark_app_processed_dataset_cache_complete(entry: AppProcessedDatasetCache) -> None:
     root = _resolved_app_processed_dataset_cache_root(create = False)
     if root is None:
-        raise OSError("Dataset cache root is unavailable")
+        # A root that is simply gone was purged out from under us -- benign. A root that
+        # is still there but would not resolve inside the trusted root is a symlink or an
+        # escape, so it must not be reported as a mere missing directory.
+        if _cache_root_is_present():
+            raise UnsafeDatasetCachePathError("Dataset cache root is not inside the trusted root")
+        raise FileNotFoundError("Dataset cache root is unavailable")
     entry_path = entry.path.resolve(strict = True)
-    entry_path.relative_to(root)
+    try:
+        entry_path.relative_to(root)
+    except ValueError as error:
+        raise UnsafeDatasetCachePathError(
+            f"Dataset cache entry escapes the cache root: {entry.path}"
+        ) from error
     if entry.path.is_symlink() or entry.cache_dir.is_symlink():
-        raise OSError(f"Dataset cache path is a symlink: {entry.path}")
+        raise UnsafeDatasetCachePathError(f"Dataset cache path is a symlink: {entry.path}")
     _atomic_write_metadata(
         entry_path / _METADATA_FILENAME,
         _metadata_payload(

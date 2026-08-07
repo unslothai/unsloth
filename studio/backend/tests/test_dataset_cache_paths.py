@@ -900,6 +900,46 @@ def test_cached_load_survives_a_failed_completion_write(monkeypatch, tmp_path):
     assert len(calls) == 1
 
 
+def test_completion_marking_reports_a_swapped_in_symlink_as_unsafe(tmp_path):
+    """Marking is the only check that runs after the load, so it must still fail loudly.
+
+    ``prepare`` validates the entry, then the load runs; an entry swapped for a symlink in
+    that window is caught here or nowhere.
+    """
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    entry = dataset_processed_cache.prepare_app_processed_dataset_cache(repo_id, snapshot)
+    external = tmp_path / "external"
+    external.mkdir()
+    entry.cache_dir.rmdir()
+    entry.cache_dir.symlink_to(external, target_is_directory = True)
+
+    with pytest.raises(dataset_processed_cache.UnsafeDatasetCachePathError):
+        dataset_processed_cache.mark_app_processed_dataset_cache_complete(entry)
+
+
+def test_cached_load_still_fails_on_an_unsafe_cache_path(monkeypatch, tmp_path):
+    """Best effort covers a failed write, never a path that left the trusted cache root."""
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    _fake_datasets(monkeypatch)
+
+    def _unsafe(entry):
+        raise dataset_processed_cache.UnsafeDatasetCachePathError("cache path is a symlink")
+
+    monkeypatch.setattr(dataset_cache, "mark_app_processed_dataset_cache_complete", _unsafe)
+
+    with pytest.raises(dataset_processed_cache.UnsafeDatasetCachePathError):
+        dataset_cache.load_cached_hf_dataset(
+            repo_id,
+            str(snapshot),
+            subset = None,
+            split = "train",
+        )
+
+
 def test_app_processed_cache_rejects_symlinked_parent(monkeypatch, tmp_path):
     repo_id = "Org/Data"
     _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
