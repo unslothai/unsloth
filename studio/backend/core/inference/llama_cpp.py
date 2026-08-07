@@ -11436,9 +11436,16 @@ class LlamaCppBackend:
                 self._commit_effective_parallel_slots(n_parallel)
                 self._swa_full = swa_full
                 self._kv_cache_unified = kv_cache_unified
+                # Re-derived from the slot count that LAUNCHED, not the one the sizing
+                # pass saw. The drafter drop and the non-MTP retry both hand slots back
+                # after the batch flag is emitted, and this is recorded next to
+                # _commit_effective_parallel_slots: pairing those slots with a micro-batch
+                # derived at the clamped count under-states the cache the slot save
+                # re-estimates from it.
+                _launched_ubatch = _ubatch_for_slots(n_parallel)
                 self._n_ubatch = max(
                     0,
-                    int(self._DEFAULT_N_UBATCH if _effective_ubatch is None else _effective_ubatch),
+                    int(self._DEFAULT_N_UBATCH if _launched_ubatch is None else _launched_ubatch),
                 )
                 self._flash_attn_enabled = (
                     _flash_attn_enabled_from_args(_last_spawn_cmd, env = env)

@@ -612,3 +612,35 @@ def test_the_local_guard_charges_diffusion_nothing_for_the_batch_flags():
     assert loud == pytest.approx(quiet, abs = 0.001)
     # and the gate is not vacuous: on the identical header a chat load pays for them
     assert chat_loud > chat_quiet + 0.7
+
+
+def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
+    """self._n_ubatch is recorded next to _commit_effective_parallel_slots and the two are
+    read together later (the slot save re-estimates the KV from both). Both slot RESTORES
+    (the paravirtual drafter drop and the non-MTP retry) raise the count after the sizing
+    pass ran, so recording the sizing pass's value would pair the launched slots with a
+    micro-batch derived at the clamped count and under-state that cache. Pinned on the
+    source, since reaching the record needs a real spawn."""
+    import ast
+    import inspect
+    import textwrap
+
+    src = textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model))
+    tree = ast.parse(src)
+    calls = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_ubatch_for_slots"
+    ]
+    # the sizing pass, the fit-time reduction, and the post-launch record
+    assert len(calls) == 3, f"expected three re-derivations, found {len(calls)}"
+    # the record must not reuse the sizing pass's value
+    compact = "".join(src.split())
+    assert "self._n_ubatch=max(0,int(self._DEFAULT_N_UBATCHif_launched_ubatchisNone" in compact
+    assert "_launched_ubatch=_ubatch_for_slots(n_parallel)" in compact
+    # and it is derived after the last thing that can move the slot count
+    assert compact.index("_launched_ubatch=_ubatch_for_slots") > compact.index(
+        "n_parallel=_mtp_clamped_slots"
+    )
