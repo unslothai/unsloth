@@ -45,23 +45,13 @@ def _chunk(
 
 def _tool_round(
     name = "web_search",
-    call_id = "call_1",
     arguments = '{"query":"Cairo"}',
     *,
-    extra = None,
     usage = None,
 ):
-    call = {
-        "index": 0,
-        "id": call_id,
-        "type": "function",
-        "function": {"name": name, "arguments": arguments},
-    }
-    if extra:
-        call["extra_content"] = extra
     lines = [
-        _chunk(delta = {"tool_calls": [call]}),
-        _chunk(delta = {}, finish = "tool_calls"),
+        _chunk(delta = {"function_call": {"name": name, "arguments": arguments}}),
+        _chunk(delta = {}, finish = "function_call"),
     ]
     if usage:
         lines.append(_chunk(usage = usage))
@@ -194,7 +184,7 @@ def test_dropped_parallel_call_unlinks_openai_response_and_keeps_gemini_parts(mo
                         "reasoning_content": "think",
                     }
                 ),
-                _chunk(delta = {}, finish = "tool_calls"),
+                _chunk(delta = {}, finish = "stop"),
                 "data: [DONE]",
             ],
             [_chunk(delta = {"content": "done"}), "data: [DONE]"],
@@ -242,7 +232,6 @@ def test_knowledge_base_searches_are_capped(monkeypatch):
         [
             _tool_round(
                 "search_knowledge_base",
-                f"call_{index}",
                 json.dumps({"query": f"paraphrase {index}"}),
             )
             for index in range(loop_mod.RAG_MAX_SEARCHES_PER_TURN + 1)

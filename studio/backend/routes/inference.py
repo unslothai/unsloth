@@ -8585,6 +8585,7 @@ def _build_external_messages(
     document_provider = provider_type in _INPUT_DOCUMENT_PROVIDERS
     anthropic = provider_type == "anthropic"
     openai = provider_type == "openai"
+    provider_extra_namespace = "openai" if openai else "anthropic" if anthropic else None
     # `extra_content` carries the assistant's text-part `thoughtSignature`
     # round-trip on Gemini's native streamGenerateContent endpoint. Custom
     # Gemini OpenAI-compat gateways (LiteLLM etc.) route through
@@ -8599,6 +8600,24 @@ def _build_external_messages(
         except Exception:
             _native_gemini = False
     emit_extra_content = _native_gemini
+
+    def _provider_extra_content(extra_content: Any) -> Optional[dict]:
+        if not isinstance(extra_content, dict):
+            return None
+        if emit_extra_content:
+            return extra_content
+        if provider_extra_namespace:
+            provider_extra = extra_content.get(provider_extra_namespace)
+            if isinstance(provider_extra, dict):
+                return {provider_extra_namespace: provider_extra}
+        return None
+
+    def _attach_provider_extra_content(entry: dict, message: Any) -> None:
+        if message.role != "assistant":
+            return
+        extra_content = _provider_extra_content(message.extra_content)
+        if extra_content:
+            entry["extra_content"] = extra_content
 
     _SERVER_BUILTIN_TOOL_NAMES = frozenset(
         {"web_search", "web_fetch", "code_execution", "image_generation"}
@@ -8645,8 +8664,9 @@ def _build_external_messages(
         """Sanitize assistant `tool_calls` for non-native-Gemini providers.
 
         Two concerns:
-          1. `tool_calls[i].extra_content` carries Gemini-only thoughtSignature
-             metadata; strip it for providers that can't parse the unknown key.
+          1. `tool_calls[i].extra_content` carries opaque provider continuation
+             metadata. Keep only the active provider's namespace for translators
+             that consume it; strip it before generic compatibility endpoints.
           2. Marked server-side builtin cards (`_server_tool: true` on a
              canonical builtin name, or a Gemini `native_part` payload) are
              Unsloth-internal tool cards from a prior native Gemini turn;
@@ -8674,10 +8694,13 @@ def _build_external_messages(
             if not isinstance(_tc, dict):
                 cleaned.append(_tc)
                 continue
+            provider_extra = _provider_extra_content(_tc.get("extra_content"))
             if "extra_content" not in _tc:
                 cleaned.append(_tc)
                 continue
             _stripped = {k: v for k, v in _tc.items() if k != "extra_content"}
+            if provider_extra:
+                _stripped["extra_content"] = provider_extra
             cleaned.append(_stripped)
         return cleaned
 
@@ -8734,8 +8757,7 @@ def _build_external_messages(
                     out["tool_call_id"] = msg.tool_call_id
                 if msg.name:
                     out["name"] = msg.name
-            if emit_extra_content and msg.role == "assistant" and msg.extra_content:
-                out["extra_content"] = msg.extra_content
+            _attach_provider_extra_content(out, msg)
             result.append(out)
             continue
         # Assistant messages with content=None but populated tool_calls are
@@ -8752,8 +8774,7 @@ def _build_external_messages(
                 "content": "",
                 "tool_calls": _filtered_tcs,
             }
-            if emit_extra_content and msg.extra_content:
-                _assistant_only["extra_content"] = msg.extra_content
+            _attach_provider_extra_content(_assistant_only, msg)
             result.append(_assistant_only)
             continue
         if isinstance(msg.content, list):
@@ -8815,8 +8836,7 @@ def _build_external_messages(
                         entry["tool_call_id"] = msg.tool_call_id
                     if msg.name:
                         entry["name"] = msg.name
-                if emit_extra_content and msg.role == "assistant" and msg.extra_content:
-                    entry["extra_content"] = msg.extra_content
+                _attach_provider_extra_content(entry, msg)
                 result.append(entry)
             else:
                 # Non-vision provider: strip images / documents, keep text,
@@ -8861,8 +8881,7 @@ def _build_external_messages(
                         entry["tool_call_id"] = msg.tool_call_id
                     if msg.name:
                         entry["name"] = msg.name
-                if emit_extra_content and msg.role == "assistant" and msg.extra_content:
-                    entry["extra_content"] = msg.extra_content
+                _attach_provider_extra_content(entry, msg)
                 result.append(entry)
     return result
 

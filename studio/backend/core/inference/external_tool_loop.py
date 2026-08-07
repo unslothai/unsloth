@@ -168,6 +168,12 @@ def _collect_round_delta(
             for raw_call in raw_calls:
                 if isinstance(raw_call, Mapping):
                     _merge_tool_call_delta(tool_calls, raw_call)
+        legacy_call = delta.get("function_call")
+        if isinstance(legacy_call, Mapping):
+            _merge_tool_call_delta(
+                tool_calls,
+                {"index": 0, "type": "function", "function": legacy_call},
+            )
 
 
 def _without_tool_transport(
@@ -194,6 +200,7 @@ def _without_tool_transport(
         delta = choice.get("delta")
         if isinstance(delta, dict):
             delta.pop("tool_calls", None)
+            delta.pop("function_call", None)
         if has_tool_calls and choice.get("finish_reason") is not None:
             choice["finish_reason"] = None
         meaningful_delta = isinstance(delta, dict) and bool(delta)
@@ -395,7 +402,9 @@ async def stream_external_chat_with_tools(
                             finish_reason = choice.get("finish_reason")
                             if finish_reason is None:
                                 continue
-                            if finish_reason in ("tool_calls", "function_call"):
+                            if finish_reason in ("tool_calls", "function_call") or (
+                                finish_reason == "stop" and round_calls
+                            ):
                                 round_finished = True
                             elif round_calls:
                                 round_terminal_error = (
