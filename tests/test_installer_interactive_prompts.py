@@ -89,7 +89,8 @@ _POSIX_READ = re.compile(
 # `read` in a heredoc of prose is not a prompt.
 _BARE_READ = re.compile(
     r"(?:^|[;&(])\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
-    r"read(?:\s+(?:-[a-zA-Z0-9]+|\d+))*(?:\s+[A-Za-z_][A-Za-z0-9_]*)+"
+    # No variable name at all is valid: the answer lands in $REPLY.
+    r"read(?:\s+(?:-[a-zA-Z0-9]+|\d+))*(?:\s+[A-Za-z_][A-Za-z0-9_]*)*"
     r"(?:\s*(?:\|\||&&).*)?\s*$"
 )
 _LOOP = re.compile(r"\b(?:while|until|for)\b")
@@ -105,12 +106,12 @@ _PWSH_READ = re.compile(
 
 # The Python helpers setup runs, and the batch launcher.
 _PY_READ = re.compile(r"(?<![.\w])input\s*\(|getpass\.getpass\s*\(|confirm\s*\(")
-_BAT_READ = re.compile(r"\bset\s+/p\b|\bchoice\b", re.IGNORECASE)
+_BAT_READ = re.compile(r"(?:^|[&(]|\bdo\b)\s*(?:set\s+/p\b|choice\b)", re.IGNORECASE)
 
 # A helper filename, with or without its `scripts/` prefix: sibling invocations
 # such as "$SCRIPT_DIR/build_deps.sh" carry no prefix. Resolved against the repo
 # before it counts, so a name that is not a real script is ignored.
-_HELPER_REF = re.compile(r"(?<![$\w])((?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:sh|ps1|py|bat))")
+_HELPER_REF = re.compile(r"(?<![$\w])((?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.(?:sh|ps1|py|bat))")
 
 _QUOTED = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"' r"|'([^']*)'")
 
@@ -134,12 +135,19 @@ def _is_comment(line: str) -> bool:
     return line.lstrip().startswith("#")
 
 
+def _blank_strings(line: str) -> str:
+    """Blank quoted text so a message naming an input API is not one. A `$(...)`
+    subexpression is kept: it executes, and PowerShell really does prompt from
+    inside an expandable string."""
+    return _QUOTED.sub(lambda m: m.group(0) if "$(" in m.group(0) else '""', line)
+
+
 def _is_interactive_read(line: str, script: str) -> bool:
     """A read that waits on a person: a prompt option, /dev/tty, `select`, `input()`,
     `set /p`, or plain inherited stdin. Redirected and loop reads consume a file, not
     a person. Quoted text is blanked first, so a message naming `Read-Host` is not
     one."""
-    code = _QUOTED.sub('""', line)
+    code = _blank_strings(line)
     if script.endswith(".ps1"):
         return bool(_PWSH_READ.search(code))
     if script.endswith(".py"):
@@ -153,20 +161,43 @@ def _is_interactive_read(line: str, script: str) -> bool:
     return "<" not in code and not piped and bool(_BARE_READ.search(code))
 
 
+def _outside_docstring(line: str, delimiter: str) -> tuple[str, str]:
+    """Strip triple-quoted regions from a Python line, returning what is left and the
+    delimiter still open. A docstring showing an `input()` example documents the
+    script, it does not prompt."""
+    while True:
+        if delimiter:
+            end = line.find(delimiter)
+            if end == -1:
+                return "", delimiter
+            line, delimiter = line[end + 3 :], ""
+            continue
+        opener = min((i for i in (line.find('"""'), line.find("'''")) if i != -1), default = -1)
+        if opener == -1:
+            return line, ""
+        head, delimiter = line[:opener], line[opener : opener + 3]
+        rest, delimiter = _outside_docstring(line[opener + 3 :], delimiter)
+        return head + rest, delimiter
+
+
 def blank_comments(source: str, script: str) -> str:
     """Blank comments, keeping the line count so numbers still line up. `.ps1` files
     carry `<# ... #>` blocks, where a documented Read-Host example would otherwise
     fail CI over a prompt that cannot run. `.bat` comments are REM or `::`."""
     lines = []
     in_block = False
+    in_docstring = ""
     powershell = script.endswith(".ps1")
     batch = script.endswith(".bat")
+    python = script.endswith(".py")
     for line in source.splitlines():
         if powershell and in_block:
             # Code can follow the terminator on the same line.
             lines.append(line.split("#>", 1)[1] if "#>" in line else "")
             in_block = "#>" not in line
             continue
+        if python:
+            line, in_docstring = _outside_docstring(line, in_docstring)
         if batch and re.match(r"\s*(?:REM\b|::)", line, re.IGNORECASE):
             lines.append("")
             continue
@@ -181,7 +212,16 @@ def blank_comments(source: str, script: str) -> str:
 
 
 def _quoted_strings(line: str) -> list[str]:
-    return [group for match in _QUOTED.finditer(line) for group in match.groups() if group]
+    """Outer strings first, then anything quoted inside a `$(...)`, which is code."""
+    found = []
+    for match in _QUOTED.finditer(line):
+        for group in match.groups():
+            if not group:
+                continue
+            found.append(group)
+            if "$(" in group:
+                found.extend(_quoted_strings(group))
+    return found
 
 
 def normalise_question(text: str) -> str:
@@ -326,6 +366,7 @@ def test_every_installer_script_is_scanned():
         "studio/setup*.sh",
         "studio/setup*.ps1",
         "studio/setup*.bat",
+        "install*.bat",
         "scripts/install*.sh",
         "scripts/install*.ps1",
         "scripts/uninstall*.sh",
@@ -361,7 +402,8 @@ def test_helpers_the_installers_invoke_are_scanned():
             # Below the script that names it, below the repo, or in scripts/, by
             # full path and by name so a URL still resolves to the local copy.
             # What resolves nowhere is a filename in a message, not an invocation.
-            reference, name = match.group(1), match.group(1).rsplit("/", 1)[-1]
+            reference = match.group(1).replace("\\", "/")
+            name = reference.rsplit("/", 1)[-1]
             for candidate in (
                 path.parent / reference,
                 REPO_ROOT / reference,
@@ -504,6 +546,38 @@ def test_detects_an_assignment_prefixed_read():
     source = 'printf "  Continue with installation? "\nIFS= read -r _reply\n'
     assert [question for _, _, question in find_prompts("install.sh", source)] == [
         "continue with installation?",
+    ]
+
+
+def test_detects_a_read_with_no_variable():
+    """`read -r` on its own is valid: the answer lands in $REPLY."""
+    source = 'printf "  Continue with installation? "\nread -r\n'
+    assert [question for _, _, question in find_prompts("install.sh", source)] == [
+        "continue with installation?",
+    ]
+
+
+def test_detects_a_prompt_inside_an_expandable_string():
+    """A `$(...)` subexpression executes, so blanking quoted text cannot blank it."""
+    source = "Write-Host \"Response: $(Read-Host 'Enable telemetry?')\"\n"
+    assert [question for _, _, question in find_prompts("install.ps1", source)] == [
+        "enable telemetry?",
+    ]
+
+
+def test_ignores_a_batch_input_command_named_in_a_message():
+    source = 'echo choice /M "Enable telemetry?" is not supported here\n'
+    assert find_prompts("studio/setup.bat", source) == []
+
+
+def test_ignores_a_python_docstring_example():
+    source = '"""Doc.\n\nreply = input("Enable telemetry? [Y/n]")\n"""\nvalue = 1\n'
+    assert find_prompts("studio/install_python_stack.py", source) == []
+
+
+def test_helper_reference_keeps_a_windows_subdirectory():
+    assert _HELPER_REF.findall(r'& "$PSScriptRoot\helpers\setup_extra.ps1"') == [
+        r"helpers\setup_extra.ps1",
     ]
 
 
