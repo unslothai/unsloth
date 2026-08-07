@@ -301,15 +301,15 @@ async def stream_external_chat_with_tools(
         permission_mode = "ask"
 
     conversation = [copy.deepcopy(dict(message)) for message in messages]
-    max_rounds = max(0, int(max_tool_iterations))
-    final_pass = max_rounds == 0
+    max_calls = max(0, int(max_tool_iterations))
+    final_pass = max_calls == 0
     tool_controller = ToolLoopController(
         tools = [] if final_pass else tools,
         auto_heal_tool_calls = auto_heal_tool_calls,
     )
     timeout = None if tool_call_timeout >= 9999 else max(1, int(tool_call_timeout))
     cancel = cancel_event or threading.Event()
-    rounds_with_calls = 0
+    executed_calls = 0
     denied_rounds = 0
     kb_search_count = 0
     observed_call_rounds = 0
@@ -490,9 +490,18 @@ async def stream_external_chat_with_tools(
         if parallel_tool_calls is False:
             normalized_calls = normalized_calls[:1]
 
-        decision_pairs = list(
+        prepared_pairs = list(
             zip(tool_controller.prepare_batch(normalized_calls), normalized_calls)
         )
+        remaining_calls = max(0, max_calls - executed_calls)
+        decision_pairs: list[tuple[Any, dict[str, Any]]] = []
+        retained_executable = 0
+        for decision, call in prepared_pairs:
+            if decision.should_execute:
+                if retained_executable >= remaining_calls:
+                    continue
+                retained_executable += 1
+            decision_pairs.append((decision, call))
         decisions = [decision for decision, _call in decision_pairs]
         executable_pairs = [
             (decision, call) for decision, call in decision_pairs if decision.should_execute
@@ -514,7 +523,6 @@ async def stream_external_chat_with_tools(
                     extra_content.pop("openai", None)
                 if not extra_content:
                     raw_call.pop("extra_content", None)
-        turn_executed_real_tool = False
         turn_had_denial = False
         assistant_message: dict[str, Any] = {
             "role": "assistant",
@@ -674,22 +682,20 @@ async def stream_external_chat_with_tools(
                 if decision.tool_name == "search_knowledge_base":
                     kb_search_count += 1
             completion = tool_controller.record_result(decision, result)
-            turn_executed_real_tool = True
+            executed_calls += 1
             yield _event_line(completion.tool_end_event())
             conversation.append(completion.tool_message())
 
         append_deferred_nudges(conversation, deferred_noops)
         yield _event_line({"type": "status", "text": ""})
 
-        if turn_executed_real_tool:
-            rounds_with_calls += 1
         if turn_had_denial:
             denied_rounds += 1
 
         if (
-            rounds_with_calls >= max_rounds
+            executed_calls >= max_calls
             # Denials do not consume the execution budget, but remain bounded.
-            or denied_rounds >= max(2, max_rounds)
+            or denied_rounds >= max(2, max_calls)
             or tool_controller.force_final_answer
         ):
             conversation.append(

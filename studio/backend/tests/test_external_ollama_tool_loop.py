@@ -151,8 +151,13 @@ def test_tool_round_requires_an_explicit_tool_finish(monkeypatch, terminal):
     assert executed == []
 
 
-def test_dropped_parallel_call_unlinks_openai_response_and_keeps_gemini_parts(monkeypatch):
-    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
+def test_dropped_over_budget_call_unlinks_openai_response_and_keeps_gemini_parts(monkeypatch):
+    executed = []
+    monkeypatch.setattr(
+        loop_mod,
+        "execute_tool",
+        lambda _name, arguments, **_kwargs: executed.append(arguments) or "ok",
+    )
     native = {"executableCode": {"language": "PYTHON", "code": "print(2)"}}
     reasoning = [{"type": "reasoning.encrypted", "data": "opaque"}]
     event = {
@@ -191,10 +196,12 @@ def test_dropped_parallel_call_unlinks_openai_response_and_keeps_gemini_parts(mo
         ]
     )
 
-    asyncio.run(_collect(client, parallel_tool_calls = False))
+    asyncio.run(_collect(client, max_tool_iterations = 1))
 
-    assert client.calls[0]["parallel_tool_calls"] is False
-    assistant = client.calls[1]["messages"][-2]
+    assert executed == [{"query": 0}]
+    assistant = [
+        message for message in client.calls[1]["messages"] if message["role"] == "assistant"
+    ][-1]
     assert [call["id"] for call in assistant["tool_calls"]] == ["call_0"]
     assert "extra_content" not in assistant["tool_calls"][0]
     assert assistant["extra_content"]["google"]["hosted_parts"] == [native]
