@@ -1687,9 +1687,7 @@ class ExternalProviderClient:
 
             extra = message.get("extra_content")
             anthropic = extra.get("anthropic") if isinstance(extra, dict) else None
-            blocks = (
-                anthropic.get("thinking_blocks") if isinstance(anthropic, dict) else None
-            )
+            blocks = anthropic.get("thinking_blocks") if isinstance(anthropic, dict) else None
             if not isinstance(blocks, list):
                 return []
             return [
@@ -2337,9 +2335,7 @@ class ExternalProviderClient:
                         # This marker lets the managed tool loop keep the
                         # display-only <think> wrapper out of provider history.
                         # It contains no signature or other opaque metadata.
-                        delta["extra_content"] = {
-                            "anthropic": {"thinking_display": True}
-                        }
+                        delta["extra_content"] = {"anthropic": {"thinking_display": True}}
                     chunk = {
                         "id": completion_id,
                         "object": "chat.completion.chunk",
@@ -2620,11 +2616,13 @@ class ExternalProviderClient:
                                         thinking_text = f"<think>{thinking_text}"
                                         thinking_open = True
                                     block_index = event.get("index")
-                                    if isinstance(block_index, int) and block_index in thinking_blocks:
-                                        thinking_blocks[block_index]["thinking"] = (
-                                            str(thinking_blocks[block_index].get("thinking") or "")
-                                            + str(delta.get("thinking") or "")
-                                        )
+                                    if (
+                                        isinstance(block_index, int)
+                                        and block_index in thinking_blocks
+                                    ):
+                                        thinking_blocks[block_index]["thinking"] = str(
+                                            thinking_blocks[block_index].get("thinking") or ""
+                                        ) + str(delta.get("thinking") or "")
                                     yield _content_chunk(
                                         thinking_text,
                                         thinking_display = True,
@@ -2733,9 +2731,7 @@ class ExternalProviderClient:
                                     "choices": [
                                         {
                                             "index": 0,
-                                            "delta": {
-                                                "tool_calls": [tool_call]
-                                            },
+                                            "delta": {"tool_calls": [tool_call]},
                                             "finish_reason": None,
                                         }
                                     ],

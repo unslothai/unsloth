@@ -314,14 +314,10 @@ async def stream_external_chat_with_tools(
         if parallel_tool_calls is False:
             normalized_calls = normalized_calls[:1]
 
-        decision_pairs = [
-            (tool_controller.prepare_call(call), call) for call in normalized_calls
-        ]
+        decision_pairs = [(tool_controller.prepare_call(call), call) for call in normalized_calls]
         decisions = [decision for decision, _call in decision_pairs]
         executable_pairs = [
-            (decision, call)
-            for decision, call in decision_pairs
-            if decision.should_execute
+            (decision, call) for decision, call in decision_pairs if decision.should_execute
         ]
         executable = [decision for decision, _call in executable_pairs]
         turn_executed_real_tool = False
@@ -347,18 +343,15 @@ async def stream_external_chat_with_tools(
             for _decision, raw_call in decision_pairs:
                 extra_content = raw_call.get("extra_content")
                 anthropic_extra = (
-                    extra_content.get("anthropic")
-                    if isinstance(extra_content, Mapping)
-                    else None
+                    extra_content.get("anthropic") if isinstance(extra_content, Mapping) else None
                 )
                 thinking_blocks = (
                     anthropic_extra.get("thinking_blocks")
                     if isinstance(anthropic_extra, Mapping)
                     else None
                 )
-                if (
-                    isinstance(thinking_blocks, list)
-                    and len(thinking_blocks) > len(preserved_thinking_blocks)
+                if isinstance(thinking_blocks, list) and len(thinking_blocks) > len(
+                    preserved_thinking_blocks
                 ):
                     preserved_thinking_blocks = copy.deepcopy(thinking_blocks)
             if preserved_thinking_blocks:

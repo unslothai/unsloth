@@ -269,9 +269,7 @@ def test_anthropic_thinking_metadata_is_private_and_replayed(monkeypatch):
                             "name": "web_search",
                             "arguments": '{"query":"Cairo weather"}',
                         },
-                        "extra_content": {
-                            "anthropic": {"thinking_blocks": [thinking_block]}
-                        },
+                        "extra_content": {"anthropic": {"thinking_blocks": [thinking_block]}},
                     }
                 ]
             }
@@ -290,9 +288,7 @@ def test_anthropic_thinking_metadata_is_private_and_replayed(monkeypatch):
 
     assistant = client.calls[1]["messages"][-2]
     assert assistant["content"] == ""
-    assert assistant["extra_content"]["anthropic"]["thinking_blocks"] == [
-        thinking_block
-    ]
+    assert assistant["extra_content"]["anthropic"]["thinking_blocks"] == [thinking_block]
     assert any("<think>I should search." in line for line in output)
     assert not any("signed-thinking" in line for line in output)
 
@@ -333,9 +329,7 @@ def test_parallel_tool_calls_false_executes_only_the_first_call(monkeypatch):
         _chunk(delta = {}, finish_reason = "tool_calls"),
         "data: [DONE]",
     ]
-    client = _FakeClient(
-        [parallel_round, [_chunk(delta = {"content": "done"}), "data: [DONE]"]]
-    )
+    client = _FakeClient([parallel_round, [_chunk(delta = {"content": "done"}), "data: [DONE]"]])
 
     asyncio.run(_collect(client, parallel_tool_calls = False))
 

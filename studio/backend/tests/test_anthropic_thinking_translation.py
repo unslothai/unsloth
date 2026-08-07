@@ -471,9 +471,7 @@ def test_signed_thinking_blocks_precede_anthropic_tool_use(monkeypatch):
                                 },
                             }
                         ],
-                        "extra_content": {
-                            "anthropic": {"thinking_blocks": [thinking_block]}
-                        },
+                        "extra_content": {"anthropic": {"thinking_blocks": [thinking_block]}},
                     },
                     {
                         "role": "tool",
