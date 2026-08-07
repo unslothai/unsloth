@@ -417,6 +417,16 @@ export const fr = {
         showLlamaUpdatesDescription:
           "Notifier lorsqu'une nouvelle version de llama.cpp est disponible pour exécuter de nouveaux modèles. Désactivez si vous ne faites que de l'entraînement.",
       },
+      startup: {
+        sectionTitle: "Démarrage",
+        launchAtLogin: "Lancer Unsloth à la connexion",
+        launchAtLoginDescription:
+          "Démarre Unsloth en arrière-plan lorsque vous vous connectez. Il reste dans la barre de menus ou la zone de notification jusqu'à ce que vous l'ouvriez.",
+        loadError:
+          "Impossible de charger le réglage de lancement à la connexion.",
+        saveError:
+          "Impossible de mettre à jour le réglage de lancement à la connexion.",
+      },
       gettingStarted: "Prise en main",
       startOnboarding: "Démarrer la prise en main",
       startOnboardingDescription:

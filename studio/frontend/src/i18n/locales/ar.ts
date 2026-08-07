@@ -402,6 +402,14 @@ export const ar = {
         showLlamaUpdatesDescription:
           "التنبيه عند توفر إصدار أحدث من llama.cpp لتشغيل نماذج جديدة. أوقف التشغيل إذا كنت تُدرّب فقط.",
       },
+      startup: {
+        sectionTitle: "بدء التشغيل",
+        launchAtLogin: "تشغيل Unsloth عند تسجيل الدخول",
+        launchAtLoginDescription:
+          "يبدأ Unsloth في الخلفية عند تسجيل الدخول، ويبقى في شريط القوائم أو علبة النظام حتى تفتحه.",
+        loadError: "تعذر تحميل إعداد التشغيل عند تسجيل الدخول.",
+        saveError: "تعذر تحديث إعداد التشغيل عند تسجيل الدخول.",
+      },
       gettingStarted: "البدء",
       startOnboarding: "بدء الإعداد التمهيدي",
       startOnboardingDescription:

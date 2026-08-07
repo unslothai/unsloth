@@ -52,3 +52,18 @@ test("model memory rows are reachable by the terms the feature is about", () => 
     );
   }
 });
+
+const STARTUP_ENTRIES = [
+  "settings.general.startup.sectionTitle",
+  "settings.general.startup.launchAtLogin",
+] as const;
+
+test("startup entries are searchable on desktop only", () => {
+  const desktop = createSettingsSearchIndex(true);
+  const browser = createSettingsSearchIndex(false);
+
+  for (const entry of STARTUP_ENTRIES) {
+    assert.ok(desktop.general.includes(entry));
+    assert.ok(!browser.general.includes(entry));
+  }
+});

@@ -7405,6 +7405,10 @@ class LlamaCppBackend:
             return None
 
         target: Optional[str] = None
+        # Whether the question was actually answered. A listing that never
+        # completed (offline, transient Hub failure) leaves target None for a
+        # reason that says nothing about the repo's contents.
+        listing_answered = False
         from huggingface_hub import list_repo_files
 
         # Retry a transient listing blip; permanent repo/auth errors and offline
@@ -7414,6 +7418,7 @@ class LlamaCppBackend:
                 return None
             try:
                 target = pick(list_repo_files(hf_repo, token = hf_token))
+                listing_answered = True
                 break
             except Exception as e:
                 if type(e).__name__ in (
@@ -7444,9 +7449,15 @@ class LlamaCppBackend:
                 logger.debug(f"Offline cache lookup for {label} failed: {e}")
 
         # "The repo publishes none" and "the fetch failed" both return None, but
-        # only the second is worth retrying on the next Apply. Left unset on the
-        # early returns above, where the answer is genuinely unknown.
-        if outcome is not None and not cancel_event.is_set():
+        # only the second is worth retrying on the next Apply. Left unset unless
+        # the question was really answered -- by a listing that completed, or by
+        # a cache hit that produced a target regardless -- so an unreachable Hub
+        # is not recorded as a permanent absence.
+        if (
+            outcome is not None
+            and not cancel_event.is_set()
+            and (listing_answered or target is not None)
+        ):
             outcome["listed"] = target is not None
         if target is None or cancel_event.is_set():
             return None

@@ -51,7 +51,11 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   # Drafts are listed only to a token with push access, and every desktop-v* release here
@@ -424,6 +428,16 @@ jobs:
           "$PY" -c "import torch; print('torch', torch.__version__)"
 
       - name: Launch under Xvfb and prove it stays up
+        env:
+          # Without this a fatal X11 error is completely invisible. GTK3 registers
+          # gdk_x_io_error() as its XSetIOErrorHandler, and that handler reports with
+          # g_debug() and then calls _exit(1) (gtk-3-24 gdk/x11/gdkmain-x11.c; the comment
+          # there says g_warning() was avoided because it could be redirected). g_debug()
+          # output is dropped unless G_MESSAGES_DEBUG names the domain, so the app exits 1
+          # having printed nothing at all and the step reports a bare rc=1 with no cause.
+          # That is exactly what #8062 looked like until this variable was set, at which
+          # point the next line read "Fatal IO error 11 ... on X server".
+          G_MESSAGES_DEBUG: all
         run: |
           set -a; [ -f ./clean-machine.env ] && . ./clean-machine.env; set +a
           # The one platform where a hosted runner can give the app a real display, so this

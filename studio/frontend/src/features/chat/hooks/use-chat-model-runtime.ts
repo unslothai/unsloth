@@ -10,6 +10,8 @@ import {
   useTransformersUpgradeDialogStore,
 } from "@/features/transformers-upgrade";
 import { consumeNativePathToken } from "@/features/native-intents/api";
+// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
+import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   notifyNative,
@@ -234,7 +236,9 @@ export function syncModelCapabilities(
       ...models,
       {
         id: modelId,
-        name: resp.display_name || modelId,
+        // Label like the catalog entry that replaces this on the next /api/models/list;
+        // the fallback keeps a cached GGUF's snapshot path out of the bar.
+        name: modelDisplayName(resp.display_name || modelId),
         isLora: Boolean(resp.is_lora),
         ...synced,
       },

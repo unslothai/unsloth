@@ -404,6 +404,14 @@ export const ru = {
         showLlamaUpdatesDescription:
           "Уведомлять о доступности новой сборки llama.cpp для запуска новых моделей. Отключите, если вы только обучаете модели.",
       },
+      startup: {
+        sectionTitle: "Автозапуск",
+        launchAtLogin: "Запускать Unsloth при входе в систему",
+        launchAtLoginDescription:
+          "Запускает Unsloth в фоновом режиме при входе в систему. Приложение остаётся в строке меню или системном трее, пока вы его не откроете.",
+        loadError: "Не удалось загрузить настройку автозапуска.",
+        saveError: "Не удалось обновить настройку автозапуска.",
+      },
       gettingStarted: "Начало работы",
       startOnboarding: "Запустить онбординг",
       startOnboardingDescription:
