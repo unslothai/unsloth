@@ -14,11 +14,11 @@ test("startup messages follow backend phases without regressing", () => {
     INITIAL_STARTUP_MESSAGE,
     "  - loading PyTorch, Unsloth and Transformers...",
   );
-  assert.equal(models, "Loading application services...");
+  assert.equal(models, "Loading models...");
   assert.equal(startupMessageFromLog(models, "unrelated output"), models);
 
   const server = startupMessageFromLog(models, "  - Starting server...");
-  assert.equal(server, "Starting local server...");
+  assert.equal(server, "Nearly done...");
   assert.equal(
     startupMessageFromLog(
       server,
@@ -29,30 +29,40 @@ test("startup messages follow backend phases without regressing", () => {
 });
 
 test("installer progress rotates reassurance without changing actual phases", () => {
-  const expectedTitles = new Map([
-    [-1, "Preparing your installation..."],
-    [2, "Setting up your workspace..."],
-    [4, "Installing required components..."],
-    [6, "Getting local AI tools ready..."],
+  const expectedSubtitles = new Map([
+    [-1, "Preparing your workspace..."],
+    [2, "Downloading required components..."],
+    [4, "Setting up local AI tools..."],
+    [6, "Finishing setup..."],
   ]);
 
-  for (const [step, expectedTitle] of expectedTitles) {
+  for (const [step, expectedSubtitle] of expectedSubtitles) {
     const subtitles = new Set<string>();
     for (let rotation = 0; rotation < 20; rotation += 1) {
       const message = installProgressMessage(step, rotation);
-      assert.equal(message.title, expectedTitle);
-      assert.doesNotMatch(message.title, /nearly done/i);
+      assert.equal(message.title, "Installing Unsloth...");
       subtitles.add(message.subtitle);
     }
+    assert.ok(subtitles.has(expectedSubtitle));
     assert.ok(subtitles.size > 1, `step ${step} should rotate reassurance copy`);
   }
 });
 
 test("startup copy rotates while preserving backend phase transitions", () => {
   assert.equal(startupWaitingMessage(INITIAL_STARTUP_MESSAGE, 0), "Starting Unsloth...");
-  assert.equal(startupWaitingMessage(INITIAL_STARTUP_MESSAGE, 1), "Preparing local services...");
-  assert.equal(startupWaitingMessage(INITIAL_STARTUP_MESSAGE, 2), "Getting your workspace ready...");
-  assert.equal(startupWaitingMessage(INITIAL_STARTUP_MESSAGE, 4), "Preparing local services...");
+  assert.equal(startupWaitingMessage(INITIAL_STARTUP_MESSAGE, 1), "Loading projects...");
+  assert.equal(startupWaitingMessage(INITIAL_STARTUP_MESSAGE, 2), "Starting Unsloth...");
+});
+
+test("nearly done only appears after the backend starts its server", () => {
+  const models = startupMessageFromLog(
+    INITIAL_STARTUP_MESSAGE,
+    "  - loading PyTorch, Unsloth and Transformers...",
+  );
+  const server = startupMessageFromLog(models, "  - Starting server...");
+  assert.notEqual(startupWaitingMessage(INITIAL_STARTUP_MESSAGE, 20), "Nearly done...");
+  assert.notEqual(startupWaitingMessage(models, 20), "Nearly done...");
+  assert.equal(startupWaitingMessage(server, 20), "Nearly done...");
 });
 
 test("status copy rotates every five seconds", () => {

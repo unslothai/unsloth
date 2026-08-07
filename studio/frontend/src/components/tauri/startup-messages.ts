@@ -1,6 +1,6 @@
 export const INITIAL_STARTUP_MESSAGE = "Starting Unsloth...";
-export const MODELS_STARTUP_MESSAGE = "Loading application services...";
-export const SERVER_STARTUP_MESSAGE = "Starting local server...";
+export const MODELS_STARTUP_MESSAGE = "Loading models...";
+export const SERVER_STARTUP_MESSAGE = "Nearly done...";
 export const STATUS_MESSAGE_ROTATION_MS = 5_000;
 
 export interface InstallProgressMessage {
@@ -10,20 +10,20 @@ export interface InstallProgressMessage {
 
 const INSTALL_PHASE_MESSAGES: readonly InstallProgressMessage[] = [
   {
-    title: "Preparing your installation...",
-    subtitle: "Checking what Unsloth needs on this computer.",
+    title: "Installing Unsloth...",
+    subtitle: "Preparing your workspace...",
   },
   {
-    title: "Setting up your workspace...",
-    subtitle: "Creating a private environment for Unsloth.",
+    title: "Installing Unsloth...",
+    subtitle: "Downloading required components...",
   },
   {
-    title: "Installing required components...",
-    subtitle: "Downloading and configuring the Unsloth runtime.",
+    title: "Installing Unsloth...",
+    subtitle: "Setting up local AI tools...",
   },
   {
-    title: "Getting local AI tools ready...",
-    subtitle: "Configuring the remaining local services.",
+    title: "Installing Unsloth...",
+    subtitle: "Finishing setup...",
   },
 ];
 
@@ -62,18 +62,17 @@ export type StartupMessage =
   | typeof SERVER_STARTUP_MESSAGE;
 
 const STARTUP_WAITING_MESSAGES = [
-  "Preparing local services...",
-  "Getting your workspace ready...",
-  "Still getting things ready...",
+  INITIAL_STARTUP_MESSAGE,
+  "Loading projects...",
 ] as const;
 
 export function startupWaitingMessage(
   phaseMessage: StartupMessage,
   rotationIndex: number,
 ): string {
-  if (rotationIndex === 0) return phaseMessage;
+  if (phaseMessage !== INITIAL_STARTUP_MESSAGE) return phaseMessage;
   return STARTUP_WAITING_MESSAGES[
-    normalizedRotationIndex(rotationIndex - 1, STARTUP_WAITING_MESSAGES.length)
+    normalizedRotationIndex(rotationIndex, STARTUP_WAITING_MESSAGES.length)
   ];
 }
 
