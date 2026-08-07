@@ -113,7 +113,10 @@ assert_present "macOS: unrelated app cache kept"             "$H/Library/Caches/
 # ── 2. Linux: bundle-id-keyed XDG default paths are removed ──
 H=$(new_home)
 mkdir -p "$H/.cache/$BID" "$H/.local/share/$BID" "$H/.config/$BID" \
-         "$H/.local/state/$BID" "$H/.cache/other.app"
+         "$H/.local/state/$BID" "$H/.cache/other.app" \
+         "$H/.local/share/applications"
+: > "$H/.local/share/applications/unsloth-studio-handler.desktop"
+: > "$H/.local/share/applications/other-app.desktop"
 : > "$XDG_RUNTIME_DIR/unsloth-studio-launcher-$(id -u).lock"
 # Truncate first: every fixture home has this user's uid, so the Darwin run above logged the
 # same argv and the assertion below would pass on it even if Linux emitted no kill at all.
@@ -127,6 +130,13 @@ assert_gone "linux: ~/.local/share/$BID removed" "$H/.local/share/$BID"
 assert_gone "linux: ~/.config/$BID removed"      "$H/.config/$BID"
 assert_gone "linux: ~/.local/state/$BID removed" "$H/.local/state/$BID"
 assert_present "linux: unrelated app cache kept" "$H/.cache/other.app"
+# tauri-plugin-deep-link rewrites <exe>-handler.desktop on every launch to claim
+# the unsloth:// scheme, so it is present on any machine the app has ever run on.
+# Leaving it points the desktop's scheme handler at a binary that no longer exists.
+assert_gone "linux: deep-link handler .desktop removed" \
+    "$H/.local/share/applications/unsloth-studio-handler.desktop"
+assert_present "linux: another app's .desktop kept" \
+    "$H/.local/share/applications/other-app.desktop"
 # The app kill must be scoped: unscoped, a root-run uninstall signals every user's
 # unsloth-studio. -u takes the owner of the $HOME being cleared, not just `id -u`.
 _want_uid=$(stat -c %u "$H" 2>/dev/null || stat -f %u "$H")

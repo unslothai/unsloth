@@ -619,6 +619,17 @@ _unsloth_uninstall_main() {
             _remove_path "$(_xdg_dir "${XDG_STATE_HOME:-}" "$HOME/.local/state")/$_bid"
             echo "Removing Linux .desktop entry..."
             _remove_path "$HOME/.local/share/applications/unsloth-studio.desktop"
+            # tauri-plugin-deep-link writes "<exe>-handler.desktop" next to it on
+            # every launch to register the unsloth:// scheme, so it exists on any
+            # machine the app has ever started on. Left behind it is a dangling
+            # handler that points at a binary we just deleted. Unlike install.sh's
+            # own shortcut, the plugin resolves the directory through Tauri's
+            # data_dir(), which honours XDG_DATA_HOME, so check both.
+            _un_appdir="$(_xdg_dir "${XDG_DATA_HOME:-}" "$HOME/.local/share")/applications"
+            _remove_path "$_un_appdir/unsloth-studio-handler.desktop"
+            if [ "$_un_appdir" != "$HOME/.local/share/applications" ]; then
+                _remove_path "$HOME/.local/share/applications/unsloth-studio-handler.desktop"
+            fi
             if command -v update-desktop-database >/dev/null 2>&1; then
                 update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
             fi
