@@ -270,8 +270,8 @@ pub async fn stop_server(
 struct BackendLiveness {
     /// The port answered with an Unsloth backend reply.
     alive: bool,
-    /// The backend answered but has not settled its hardware verdict yet, so the torch
-    /// import on its warm thread is still in flight. Alive, but not yet done starting.
+    /// The backend answered but has not finished its background warm, so the ML-stack
+    /// imports on its warm thread are still in flight. Alive, but not yet done starting.
     warming_up: bool,
 }
 
@@ -330,10 +330,22 @@ async fn check_health_inner(port: u16) -> Result<BackendLiveness, reqwest::Error
         .and_then(|v| v.as_str())
         .map(|s| s == "Unsloth UI Backend")
         .unwrap_or(false);
-    // Both routes carry `hardware_detecting` only while the verdict is unsettled, and add
-    // `hardware_detection_deferred` when the warm is switched off and nothing will ever
-    // settle it. A backend too old to send either field reads as settled, which is what
-    // this launcher assumed before, so a downgrade loses the extra grace and nothing else.
+    // Both routes carry `torch_warm_in_progress` while the backend's coordinated warm thread
+    // is running, and drop it the moment that thread is done or was never started. That is
+    // the whole warm, not just its first stage: hardware detection settles early and the
+    // transformers, datasets and unsloth_zoo imports that follow hold the GIL just as hard,
+    // so this is the field that says "startup is still in flight".
+    let warming = json
+        .get("torch_warm_in_progress")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    // `hardware_detecting` is the older, narrower signal, kept as a fallback for backends
+    // that predate the field above; on those it is the only warm-up marker there is. It also
+    // means "this hardware verdict is provisional", which is why a deferred warm sets
+    // `hardware_detection_deferred` alongside it: nothing will ever settle the verdict then,
+    // and counting that as warming up would hold the startup grace open until it expired.
+    // A backend too old to send any of these reads as settled, which is what this launcher
+    // assumed before, so a downgrade loses the extra grace and nothing else.
     let detecting = json
         .get("hardware_detecting")
         .and_then(|v| v.as_bool())
@@ -346,7 +358,7 @@ async fn check_health_inner(port: u16) -> Result<BackendLiveness, reqwest::Error
     let alive = live && correct_service;
     Ok(BackendLiveness {
         alive,
-        warming_up: alive && detecting && !deferred,
+        warming_up: alive && (warming || (detecting && !deferred)),
     })
 }
 
@@ -943,6 +955,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_late_warm_stage_still_counts_as_warming_up() {
+        // The regression: hardware detection is the warm's first stage, so its marker is
+        // gone while transformers, datasets and unsloth_zoo are still importing. Ending the
+        // startup grace here puts a GIL stall from those imports straight back into the
+        // three-strikes count that killed a healthy backend.
+        let (port, _) = probe_test_backend(
+            Some(
+                r#"{"status":"alive","service":"Unsloth UI Backend","torch_warm_in_progress":true}"#
+                    .to_string(),
+            ),
+            ready_health(false),
+        )
+        .await;
+
+        let liveness = super::check_health_inner(port).await.unwrap();
+
+        assert!(liveness.alive);
+        assert!(
+            liveness.warming_up,
+            "a settled hardware verdict does not mean the warm is over; the imports that \
+             hold the GIL longest run after it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_finished_warm_ends_the_startup_grace() {
+        // The other half: the field has to disappear, or the grace never ends on its own
+        // and a genuinely hung backend waits out the full five minutes.
+        let (port, _) = probe_test_backend(
+            Some(
+                r#"{"status":"alive","service":"Unsloth UI Backend","torch_warm_in_progress":false}"#
+                    .to_string(),
+            ),
+            ready_health(false),
+        )
+        .await;
+
+        let liveness = super::check_health_inner(port).await.unwrap();
+
+        assert!(liveness.alive);
+        assert!(!liveness.warming_up);
+    }
+
+    #[tokio::test]
+    async fn a_backend_predating_the_warm_field_still_gets_its_grace() {
+        // Backwards compatibility: a downgraded backend sends only hardware_detecting, and
+        // it is the only warm-up signal that backend has.
+        let (port, _) = probe_test_backend(
+            Some(
+                r#"{"status":"alive","service":"Unsloth UI Backend","hardware_detecting":true}"#
+                    .to_string(),
+            ),
+            ready_health(false),
+        )
+        .await;
+
+        let liveness = super::check_health_inner(port).await.unwrap();
+
+        assert!(liveness.warming_up);
+    }
+
+    #[tokio::test]
     async fn a_deferred_warm_is_not_reported_as_still_warming_up() {
         // With the warm switched off nothing will ever settle the verdict, so treating it
         // as warming up would hold the startup grace open until it expires on its own.
@@ -1125,10 +1199,10 @@ async fn health_watchdog(
         let liveness = check_watchdog_health(&state, generation, port, has_adopted).await;
         if liveness.alive {
             // One answer is proof of life, not proof that startup is over. The backend
-            // imports torch on a warm thread and those C-extension imports hold the GIL, so
-            // a process that replies now can still miss the next three probes while it is
-            // perfectly healthy. Only end the startup grace once the backend reports a
-            // settled hardware verdict, which is the point its heavy imports are done.
+            // imports the ML stack on a warm thread and those C-extension imports hold the
+            // GIL, so a process that replies now can still miss the next three probes while
+            // it is perfectly healthy. Only end the startup grace once the backend reports
+            // that whole warm finished, not merely its first (hardware detection) stage.
             if liveness.warming_up {
                 info!(
                     "Health watchdog: backend on port {} is alive but still warming up, holding the startup grace period",

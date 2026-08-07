@@ -322,6 +322,7 @@ from utils.torch_warmup import (
     join_background_warm,
     reset_background_warm,
     start_background_warm,
+    warm_status,
 )
 from utils.cache_cleanup import clear_unsloth_compiled_cache
 from utils.lifespan_shutdown import run_lifespan_shutdown
@@ -1275,6 +1276,32 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str]]]:
     return None
 
 
+def _torch_warm_in_progress() -> bool:
+    """True while the coordinated warm thread is still working through its stages.
+
+    A separate field from ``hardware_detecting`` on purpose, rather than widening that one.
+    Hardware detection is only ``_STAGES[0]``; inference_backend, transformers, datasets and
+    unsloth_zoo import after it, and those C-extension imports are the ones that hold the GIL
+    for seconds at a time. A launcher ending its startup grace on ``hardware_detecting``
+    alone ends it with the expensive half of the warm still ahead of it, which is the window
+    the grace exists for. But that marker also means "this hardware verdict is provisional,
+    re-read it", and config/hardware-verdict.ts keeps the UI provisional and polling while it
+    is set, so keeping it lit through datasets would hide Train for the whole warm over a
+    verdict that settled seconds in. Two meanings, two fields.
+
+    A snapshot read of module state, no lock and no wait, so /api/liveness stays cheap.
+
+    False whenever no warm thread is running, which is what keeps the deferred case working:
+    with UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 the warm never starts, and one retired mid-stage
+    by a shutdown never finishes. Neither will ever set ``finished``, so deriving this from
+    "not finished" would report warming forever and hold the launcher's startup grace open
+    until it expired on its own. Absence therefore covers both "warm is over" and "no warm is
+    coming", and the field needs no deferred companion of its own.
+    """
+    status = warm_status()
+    return bool(status["started"] and not status["finished"] and status["alive"])
+
+
 @app.get("/api/liveness")
 async def liveness_check():
     """Cheap process liveness for desktop port validation."""
@@ -1294,8 +1321,12 @@ async def liveness_check():
     # are the point of the route: it probes liveness every 15s and holds its startup grace
     # period open until a reply says the warm-up is over, because the warm thread's
     # `import torch` holds the GIL and can stall the next probes on a healthy process.
-    # _hardware_snapshot() is a non-blocking read of module-level state, so unlike health
-    # this neither starts detection nor waits on it and the route stays cheap.
+    # The watchdog reads torch_warm_in_progress for that, not hardware_detecting: the GIL is
+    # held just as hard by transformers and unsloth_zoo, which import after detection settles.
+    # Both are non-blocking reads of module-level state, so unlike health this neither starts
+    # detection nor waits on it and the route stays cheap.
+    if _torch_warm_in_progress():
+        alive["torch_warm_in_progress"] = True
     if _hardware_snapshot() is None:
         alive["hardware_detecting"] = True
         if os.environ.get(DISABLE_ENV_VAR) == "1":
@@ -1336,6 +1367,10 @@ async def health_check(request: Request):
         "native_path_leases_supported": native_path_leases_supported(),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
+    # Lockstep with /api/liveness: the launcher falls back to this route on a backend too old
+    # to have liveness, so the warm marker has to reach it by the same path.
+    if _torch_warm_in_progress():
+        base["torch_warm_in_progress"] = True
     if snapshot is None:
         # chat_only above is the pre-detection default, not a measurement; clients should re-read.
         base["hardware_detecting"] = True
@@ -1382,6 +1417,10 @@ async def health_check(request: Request):
         authed.pop("hardware_detecting", None)
         # Same for the deferred marker: the client reads it first and would keep the old reason.
         authed.pop("hardware_detection_deferred", None)
+        # torch_warm_in_progress deliberately survives. It does not qualify the verdict below;
+        # a settled verdict is exactly the state where the warm has finished stage one and is
+        # off importing transformers, and dropping it here would hand the watchdog the same
+        # too-early "startup is over" this field exists to replace.
     else:
         # A re-detect started during the bearer await and base carries no chat_only_reason, so a
         # client reading this as measured would store reason null and stop the sidebar's recovery

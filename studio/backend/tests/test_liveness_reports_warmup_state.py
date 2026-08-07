@@ -7,11 +7,17 @@ The desktop health watchdog probes this route every 15s and kills the backend af
 consecutive misses. It cannot use /api/health for that -- health awaits hardware detection,
 so a probe is billed for the warm thread's `import torch` -- and it cannot treat one reply
 as "startup finished" either, because those C-extension imports hold the GIL and stall the
-next probes on a process that is perfectly healthy. So liveness carries the same
-`hardware_detecting` marker health publishes, and the watchdog holds its startup grace open
-until a reply omits it. See studio/src-tauri/src/commands.rs.
+next probes on a process that is perfectly healthy. So liveness carries a
+`torch_warm_in_progress` marker and the watchdog holds its startup grace open until a reply
+omits it. See studio/src-tauri/src/commands.rs.
 
-The marker must not cost what health costs: liveness reads the settled snapshot, it must
+That marker tracks the whole coordinated warm, not hardware detection alone: detection is
+only the first of utils/torch_warmup.py's stages and the inference_backend, transformers,
+datasets and unsloth_zoo imports that follow it are the ones that stall a probe. The older
+`hardware_detecting` marker stays exactly what it was, a "this verdict is provisional"
+signal the frontend reads, and is still published beside it.
+
+The markers must not cost what health costs: liveness reads settled snapshots, it must
 never start detection or wait on it.
 
 CPU-only, no network, no GPU, no weights: the subprocess tests stub detection.
@@ -44,6 +50,29 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 hw = main._hw_module
+
+# The real warm imports the ML stack, which is the cost these tests exist to keep off the
+# route, so drive its published state by hand instead. WARM picks which of the four states
+# the thread can be observed in.
+import utils.torch_warmup as tw
+
+class _FakeWarmThread:
+    def __init__(self, alive):
+        self._alive = alive
+    def is_alive(self):
+        return self._alive
+
+# started / finished / thread, per state:
+#   running  -- mid-stage, the state the startup grace is for
+#   finished -- every stage done, so startup really is over
+#   never    -- the kill switch is on and no warm was ever started
+#   retired  -- a shutdown stopped it between stages; it will never set finished
+tw._status["started"], tw._status["finished"], tw._thread = {
+    "running": (True, False, _FakeWarmThread(True)),
+    "finished": (True, True, _FakeWarmThread(False)),
+    "never": (False, False, None),
+    "retired": (True, False, _FakeWarmThread(False)),
+}[%(warm)r]
 
 if %(settled)s:
     hw.DEVICE = hw.DeviceType.CPU
@@ -80,14 +109,24 @@ print("RESULT" + json.dumps({
     "hardware_detecting": body.get("hardware_detecting"),
     "hardware_detection_deferred": body.get("hardware_detection_deferred"),
     "has_detecting_key": "hardware_detecting" in body,
+    "torch_warm_in_progress": body.get("torch_warm_in_progress"),
+    "has_warm_key": "torch_warm_in_progress" in body,
     "studio_root_id": body.get("studio_root_id"),
 }))
 """
 
 
-def _probe(settled: bool, deferred: bool = False) -> dict:
+def _probe(
+    settled: bool,
+    deferred: bool = False,
+    warm: str = "running",
+) -> dict:
     proc = subprocess.run(
-        [sys.executable, "-c", _SNIPPET % {"settled": settled, "deferred": deferred}],
+        [
+            sys.executable,
+            "-c",
+            _SNIPPET % {"settled": settled, "deferred": deferred, "warm": warm},
+        ],
         cwd = str(_BACKEND_DIR),
         capture_output = True,
         text = True,
@@ -108,6 +147,7 @@ def test_an_unsettled_verdict_is_published_as_still_warming_up():
     assert result["status_code"] == 200
     assert result["status"] == "alive"
     assert result["service"] == "Unsloth UI Backend"
+    assert result["torch_warm_in_progress"] is True
     assert result["hardware_detecting"] is True
     assert result["hardware_detection_deferred"] is None, (
         "the warm is running here; a deferred marker would tell the watchdog the verdict "
@@ -115,25 +155,67 @@ def test_an_unsettled_verdict_is_published_as_still_warming_up():
     )
 
 
+def test_a_late_warm_stage_still_holds_the_startup_grace_open():
+    """The regression: hardware detection is _STAGES[0], and inference_backend,
+    transformers, datasets and unsloth_zoo import after it.
+
+    So hardware_detecting is already gone while the warm is at its most expensive. A
+    watchdog reading only that marker ends its grace mid-warm and the next GIL stall,
+    which is exactly what the reported "torch warm finished in 8190.4ms" timeline shows
+    happening well after detection, is billed as three dead probes against a healthy
+    backend."""
+    result = _probe(settled = True, warm = "running")
+
+    assert not result["has_detecting_key"], (
+        "the point of this case is a settled verdict; if detection still reads unsettled "
+        "the late-stage window is not being modelled"
+    )
+    assert result["torch_warm_in_progress"] is True, (
+        "liveness reports startup finished while the warm is still importing transformers, "
+        "datasets and unsloth_zoo; the watchdog ends its grace and the next GIL stall kills "
+        "a backend that is starting normally"
+    )
+
+
 def test_a_settled_verdict_carries_no_warming_up_marker():
-    """The marker is the whole signal, so it has to disappear once detection is done, or
+    """The markers are the whole signal, so they have to disappear once the warm is done, or
     the watchdog never counts a real failure until the grace period expires."""
-    result = _probe(settled = True)
+    result = _probe(settled = True, warm = "finished")
 
     assert result["status"] == "alive"
     assert not result["has_detecting_key"], (
         "liveness still reports hardware_detecting after detection settled; the desktop "
         "watchdog would hold its startup grace open for the full 5 minutes"
     )
+    assert not result["has_warm_key"], (
+        "liveness still reports torch_warm_in_progress after every stage finished; the "
+        "watchdog would never count a failure against a genuinely hung backend"
+    )
 
 
 def test_a_deferred_warm_says_so_instead_of_looking_like_a_slow_start():
     """With UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 nothing will settle the verdict, so a bare
     hardware_detecting would be indistinguishable from a backend still importing torch."""
-    result = _probe(settled = False, deferred = True)
+    result = _probe(settled = False, deferred = True, warm = "never")
 
     assert result["hardware_detecting"] is True
     assert result["hardware_detection_deferred"] is True
+    assert not result["has_warm_key"], (
+        "no warm was started, so nothing will ever finish one; a warm marker here would "
+        "hold the watchdog's startup grace open until it expired on its own"
+    )
+
+
+def test_a_warm_retired_mid_stage_is_not_reported_as_warming_forever():
+    """A shutdown stops the warm at a stage boundary, so it never sets finished and its
+    thread is gone. Deriving the marker from "not finished" alone would leave it lit for
+    the rest of the process, which is the deferred trap by another route."""
+    result = _probe(settled = False, warm = "retired")
+
+    assert not result["has_warm_key"], (
+        "a warm whose thread has exited is reported as still running; the watchdog would "
+        "hold its startup grace open for the full 5 minutes and never trust the backend"
+    )
 
 
 def test_liveness_answers_immediately_and_never_starts_detection():
@@ -165,9 +247,13 @@ def test_the_desktop_watchdog_still_reads_these_fields():
         "the watchdog probe no longer asks for /api/liveness; it must not go back to "
         "/api/health, which awaits hardware detection"
     )
-    assert '"hardware_detecting"' in probe, (
-        "the watchdog probe no longer reads hardware_detecting, so one early reply ends "
+    assert '"torch_warm_in_progress"' in probe, (
+        "the watchdog probe no longer reads torch_warm_in_progress, so one early reply ends "
         "the startup grace again and a GIL stall can kill a healthy backend"
+    )
+    assert '"hardware_detecting"' in probe, (
+        "the watchdog probe dropped its hardware_detecting fallback; a backend older than "
+        "torch_warm_in_progress then gets no startup grace at all"
     )
     assert '"hardware_detection_deferred"' in probe
 
