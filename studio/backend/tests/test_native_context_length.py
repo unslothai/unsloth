@@ -420,7 +420,9 @@ class TestRouteCompleteness:
         count as a reassignment.
         """
         tree = ast.parse(self._source)
-        funcs = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        funcs = [
+            n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
         found = []
         for call in ast.walk(tree):
             if not (
@@ -448,9 +450,7 @@ class TestRouteCompleteness:
                 for node in ast.walk(scope):
                     if not isinstance(node, ast.Assign) or node.lineno >= call.lineno:
                         continue
-                    if any(
-                        isinstance(t, ast.Name) and t.id == kw.value.id for t in node.targets
-                    ):
+                    if any(isinstance(t, ast.Name) and t.id == kw.value.id for t in node.targets):
                         if reaching is None or node.lineno > reaching.lineno:
                             reaching = node
                 if reaching is not None and self._is_runtime_fields_call(reaching.value):
