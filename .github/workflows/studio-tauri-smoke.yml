@@ -24,12 +24,7 @@ on:
       - 'unsloth_cli/**'
       - '.github/workflows/studio-tauri-smoke.yml'
   push:
-    branches: [main, pip]
-    paths:
-      - 'studio/frontend/**'
-      - 'studio/src-tauri/**'
-      - 'unsloth_cli/**'
-      - '.github/workflows/studio-tauri-smoke.yml'
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

@@ -27,18 +27,7 @@ on:
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
   push:
-    branches: [main, pip]
-    paths:
-      - 'install.sh'
-      - 'scripts/uninstall.sh'
-      - 'studio/setup.sh'
-      - 'studio/install_python_stack.py'
-      - 'studio/install_llama_prebuilt.py'
-      - 'studio/backend/requirements/**'
-      - 'unsloth_cli/commands/studio.py'
-      - 'pyproject.toml'
-      - '.github/workflows/studio-update-smoke.yml'
-      - '.github/actions/install-unsloth-local/action.yml'
+    branches: [main]
   workflow_dispatch:
 
 concurrency:

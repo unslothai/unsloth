@@ -28,17 +28,7 @@ on:
       # Same for the /api/health wait that runs after a boot.
       - '.github/scripts/wait-for-health.sh'
   push:
-    branches: [main, pip]
-    paths:
-      - 'studio/**'
-      - 'unsloth/**'
-      - 'unsloth_cli/**'
-      - 'install.ps1'
-      - 'pyproject.toml'
-      - 'tests/studio/**'
-      - '.github/workflows/studio-windows-api-smoke.yml'
-      - '.github/scripts/boot-studio-api-only.sh'
-      - '.github/scripts/wait-for-health.sh'
+    branches: [main]
   workflow_dispatch:
 
 concurrency:

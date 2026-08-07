@@ -42,7 +42,7 @@ on:
       - 'pyproject.toml'
       - '.github/workflows/consolidated-tests-ci.yml'
   push:
-    branches: [main, pip]
+    branches: [main]
     paths:
       - 'unsloth/**'
       - 'unsloth_cli/**'

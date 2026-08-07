@@ -50,20 +50,7 @@ on:
       # studio-mac-api-smoke.yml watched is already covered above, and
       # tests/studio/** covers studio_api_smoke.py itself.
   push:
-    branches: [main, pip]
-    paths:
-      - 'studio/**'
-      - 'unsloth/**'
-      - 'unsloth_cli/**'
-      - 'install.sh'
-      - 'pyproject.toml'
-      - 'tests/studio/**'
-      - '.github/scripts/run-studio-permission-browser.sh'
-      - '.github/workflows/studio-mac-ui-smoke.yml'
-      - '.github/scripts/boot-studio-api-only.sh'
-      - '.github/scripts/wait-for-health.sh'
-      - '.github/actions/install-unsloth-local/action.yml'
-      - 'scripts/uninstall.sh'
+    branches: [main]
   workflow_dispatch:
 
 concurrency:

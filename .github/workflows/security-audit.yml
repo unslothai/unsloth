@@ -62,7 +62,7 @@ on:
       - 'scripts/scan_npm_packages_baseline.json'
       - '.github/workflows/security-audit.yml'
   push:
-    branches: [main, pip]
+    branches: [main]
     paths:
       - 'studio/backend/requirements/**'
       - 'studio/frontend/package.json'

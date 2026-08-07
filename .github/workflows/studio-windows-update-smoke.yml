@@ -35,20 +35,7 @@ on:
       - 'pyproject.toml'
       - '.github/workflows/studio-windows-update-smoke.yml'
   push:
-    branches: [main, pip]
-    paths:
-      - 'install.ps1'
-      - 'scripts/uninstall.ps1'
-      - 'tests/studio/test_uninstall_*.ps1'
-      - 'tests/studio/test_psmodulepath_normalization.ps1'
-      - 'studio/setup.ps1'
-      - 'studio/setup.bat'
-      - 'studio/install_python_stack.py'
-      - 'studio/install_llama_prebuilt.py'
-      - 'studio/backend/requirements/**'
-      - 'unsloth_cli/commands/studio.py'
-      - 'pyproject.toml'
-      - '.github/workflows/studio-windows-update-smoke.yml'
+    branches: [main]
   workflow_dispatch:
 
 concurrency:

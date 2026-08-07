@@ -79,7 +79,7 @@ on:
       - 'tests/conftest.py'
       - '.github/workflows/mlx-ci.yml'
   push:
-    branches: [main, pip]
+    branches: [main]
     paths:
       - 'unsloth/__init__.py'
       - 'unsloth/_gpu_init.py'

@@ -47,17 +47,7 @@ on:
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
   push:
-    branches: [main, pip]
-    paths:
-      - 'studio/**'
-      - 'unsloth/**'
-      - 'unsloth_cli/**'
-      - 'install.sh'
-      - 'pyproject.toml'
-      - '.github/workflows/studio-inference-smoke.yml'
-      - '.github/scripts/boot-studio-api-only.sh'
-      - '.github/scripts/wait-for-health.sh'
-      - '.github/actions/install-unsloth-local/action.yml'
+    branches: [main]
   # Manual trigger for pre-warming HF_HOME caches on main, or re-running
   # against an arbitrary branch without pushing a no-op commit.
   workflow_dispatch:

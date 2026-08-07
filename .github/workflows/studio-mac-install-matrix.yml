@@ -20,14 +20,7 @@ on:
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
   push:
-    branches: [main, pip]
-    paths:
-      - 'studio/install_llama_prebuilt.py'
-      - 'studio/setup.sh'
-      - 'install.sh'
-      - '.github/scripts/assert-llama-loads.sh'
-      - '.github/workflows/studio-mac-install-matrix.yml'
-      - '.github/actions/install-unsloth-local/action.yml'
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
