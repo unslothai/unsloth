@@ -29,6 +29,7 @@ resolve_effective_memory_state = _lsa.resolve_effective_memory_state
 scrub_memory_env = _lsa.scrub_memory_env
 
 import utils.model_memory_settings as mm_settings  # noqa: E402
+
 strip_shadowing_flags = _lsa.strip_shadowing_flags
 
 
@@ -969,7 +970,11 @@ class TestMlockActiveReflectsWhatWillActuallyBePassed:
         return rs._model_memory_response()
 
     @staticmethod
-    def _backend(loaded, mlock_applicable, state = None):
+    def _backend(
+        loaded,
+        mlock_applicable,
+        state = None,
+    ):
         # A host-resident load with residency on carries the lock, so its state
         # says so; a gated one carries nothing. Keeping the two in step matters,
         # because the response reads the launched state rather than the flag.
@@ -1008,12 +1013,20 @@ class TestMlockActiveReflectsWhatWillActuallyBePassed:
         assert resp.mlock_active is False
         assert resp.memlock_limit_bytes is None
 
+
 class TestHostMemoryGate:
     """The full gate, not just the layer count: CPU-placement extras and
     unified-memory devices both keep weights in pageable host RAM."""
 
     @staticmethod
-    def _gate(monkeypatch, *, apple = False, amd = False, vulkan_igpu = False, **kwargs):
+    def _gate(
+        monkeypatch,
+        *,
+        apple = False,
+        amd = False,
+        vulkan_igpu = False,
+        **kwargs,
+    ):
         import utils.hardware
         from core.inference.llama_cpp import LlamaCppBackend
 
@@ -1058,12 +1071,7 @@ class TestHostMemoryGate:
         """The auto branch sets fully_gpu_offloaded, but an extra that pins
         experts on the CPU still leaves weights in RAM, so it must not be
         short-circuited past."""
-        assert (
-            self._gate(
-                monkeypatch, fully_gpu_offloaded = True, extra_args = [flag, "4"]
-            )
-            is True
-        )
+        assert self._gate(monkeypatch, fully_gpu_offloaded = True, extra_args = [flag, "4"]) is True
 
     def test_a_tensor_override_survives_an_auto_full_offload(self, monkeypatch):
         assert (
@@ -1122,7 +1130,6 @@ class TestVulkanIgpuDetection:
     @staticmethod
     def _probe(monkeypatch, rows):
         from core.inference.llama_cpp import LlamaCppBackend
-
         monkeypatch.setattr(
             LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda binary = None: rows)
         )
@@ -1432,4 +1439,3 @@ class TestFitOnRetryReArmsResidency:
             True,
             False,
         )
-
