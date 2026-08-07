@@ -6,8 +6,9 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
-  curatedAudioInventoryTask,
+  communityAudioRowIsRunnable,
   curatedAudioInventoryMatches,
+  curatedAudioInventoryTask,
   macTtsHubRowIsRunnable,
   shouldDiscoverCommunityModels,
   shouldRecommendCommunityModels,
@@ -182,6 +183,58 @@ test("search-only Audio policy discovers community rows without recommending the
   assert.equal(shouldDiscoverCommunityModels("search-only"), true);
   assert.equal(shouldRecommendCommunityModels("search-only"), false);
   assert.equal(shouldRecommendCommunityModels("recommended"), true);
+});
+
+test("community ASR only offers checkpoints the Transformers Whisper sidecar can load", () => {
+  assert.equal(
+    communityAudioRowIsRunnable({
+      isStt: true,
+      isGguf: false,
+      id: "openai/whisper-large-v3",
+      tags: ["transformers", "whisper", "automatic-speech-recognition"],
+      libraryName: "transformers",
+    }),
+    true,
+  );
+  assert.equal(
+    communityAudioRowIsRunnable({
+      isStt: true,
+      isGguf: false,
+      id: "nvidia/parakeet-tdt-0.6b-v2",
+      tags: ["automatic-speech-recognition"],
+      libraryName: "transformers",
+    }),
+    false,
+  );
+  assert.equal(
+    communityAudioRowIsRunnable({
+      isStt: true,
+      isGguf: true,
+      id: "community/whisper-GGUF",
+    }),
+    false,
+  );
+  assert.equal(
+    communityAudioRowIsRunnable({
+      isStt: false,
+      isGguf: false,
+      id: "hexgrad/Kokoro-82M",
+    }),
+    true,
+  );
+});
+
+test("Chat-to-Audio handoff preserves the live Hub task", () => {
+  assert.match(
+    pickerSource,
+    /search:\s*\{[\s\S]*task:\s*meta\.pipelineTag \?\? undefined/,
+  );
+});
+
+test("community Audio feeds participate in both infinite-scroll paths", () => {
+  assert.match(pickerSource, /communityQuerySearch\.fetchMore\(\)/);
+  assert.match(pickerSource, /communityBrowse\.fetchMore\(\)/);
+  assert.match(pickerSource, /recommendedHasMore/);
 });
 
 test("macOS TTS search only offers directly runnable or curated GGUF-backed rows", () => {

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useNavigate } from "@tanstack/react-router";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
@@ -45,7 +44,6 @@ import {
   type HfSortKey,
   useHubModelSearch,
 } from "@/features/hub";
-import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import {
   classifyUnslothSupport,
   downloadManager,
@@ -56,6 +54,7 @@ import {
   useHfTokenStore,
   useOnlineStatus,
 } from "@/features/hub";
+import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import { useDebouncedValue, useGpuInfo, useInferenceGpuInfo } from "@/hooks";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
@@ -77,6 +76,7 @@ import {
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useNavigate } from "@tanstack/react-router";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import {
   type Dispatch,
@@ -91,12 +91,31 @@ import {
   useState,
 } from "react";
 import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventory";
+import {
+  type CommunityModelPolicy,
+  communityAudioRowIsRunnable,
+  curatedAudioInventoryMatches,
+  curatedAudioInventoryTask,
+  macTtsHubRowIsRunnable,
+  shouldDiscoverCommunityModels,
+  shouldRecommendCommunityModels,
+  taskCatalogFormatMatches,
+  taskForMediaPick,
+  taskPickerRowMatches,
+} from "./audio-picker-policy";
 import { FolderBrowser } from "./folder-browser";
 import {
   type ModelCapabilities,
   detectCapabilities,
   hasAnyCapability,
 } from "./model-capabilities";
+import {
+  AUDIO_CATALOG,
+  type CatalogGroup,
+  artifactForRepoId,
+  curatedSizeBytesFor,
+  groupForRepoId,
+} from "./model-catalog";
 import { ModelDeleteAction } from "./model-delete-action";
 import { ModelLoadSettingsAction } from "./model-load-settings-action";
 import { ModelRowMenu } from "./model-row-menu";
@@ -152,25 +171,7 @@ import type {
   ModelOption,
   ModelSelectorChangeMeta,
 } from "./types";
-import {
-  AUDIO_CATALOG,
-  type CatalogGroup,
-  artifactForRepoId,
-  curatedSizeBytesFor,
-  groupForRepoId,
-} from "./model-catalog";
 import { describeVariantListingError } from "./variant-listing-error";
-import {
-  type CommunityModelPolicy,
-  curatedAudioInventoryTask,
-  curatedAudioInventoryMatches,
-  macTtsHubRowIsRunnable,
-  shouldDiscoverCommunityModels,
-  shouldRecommendCommunityModels,
-  taskCatalogFormatMatches,
-  taskPickerRowMatches,
-  taskForMediaPick,
-} from "./audio-picker-policy";
 import {
   shouldMountVariantExpander,
   toggleAutoExpandedRow,
@@ -1695,7 +1696,8 @@ function passesTaskGate(
       (taskMatchesFilter(repoTask, filter) ||
         curatedAudioInventoryMatches({
           isActiveCatalogArtifact: Boolean(
-            repoId && activeCatalogArtifactIds?.has(repoId.trim().toLowerCase()),
+            repoId &&
+              activeCatalogArtifactIds?.has(repoId.trim().toLowerCase()),
           ),
           catalogScope: exactArtifact?.group.scope,
           catalogTask: exactArtifact?.group.task,
@@ -2442,12 +2444,12 @@ export function HubModelPicker({
         );
       return (
         classifyUnslothSupport({
-        modelId: r.id,
-        pipelineTag: r.pipelineTag,
-        tags: r.tags,
-        libraryName: r.libraryName,
-        quantMethod: r.quantMethod,
-        deviceType,
+          modelId: r.id,
+          pipelineTag: r.pipelineTag,
+          tags: r.tags,
+          libraryName: r.libraryName,
+          quantMethod: r.quantMethod,
+          deviceType,
         }).status !== "unsupported"
       );
     },
@@ -2455,18 +2457,32 @@ export function HubModelPicker({
   );
 
   const isTaskRuntimeSupported = useCallback(
-    (result: HfModelResult) =>
-      macTtsHubRowIsRunnable({
-        isMac,
-        isTts: Boolean(task && taskMatchesFilter("text-to-speech", task)),
-        isGguf: result.isGguf,
-        hasRunnableGgufSibling: Boolean(
-          catalog &&
-            groupForRepoId(result.id, catalog)?.artifacts.some(
-              (artifact) => artifact.format === "gguf",
-            ),
-        ),
-      }),
+    (result: HfModelResult) => {
+      const isStt = Boolean(
+        task && taskMatchesFilter("automatic-speech-recognition", task),
+      );
+      return (
+        communityAudioRowIsRunnable({
+          isStt,
+          isGguf: result.isGguf,
+          id: result.id,
+          baseModel: result.baseModel,
+          tags: result.tags,
+          libraryName: result.libraryName,
+        }) &&
+        macTtsHubRowIsRunnable({
+          isMac,
+          isTts: Boolean(task && taskMatchesFilter("text-to-speech", task)),
+          isGguf: result.isGguf,
+          hasRunnableGgufSibling: Boolean(
+            catalog &&
+              groupForRepoId(result.id, catalog)?.artifacts.some(
+                (artifact) => artifact.format === "gguf",
+              ),
+          ),
+        })
+      );
+    },
     [catalog, isMac, task],
   );
 
@@ -2567,7 +2583,7 @@ export function HubModelPicker({
     const keepCommon = (r: HfModelResult) => {
       const isCatalogSeed = catalogSeedIds.has(r.id.toLowerCase());
       return (
-      !isMobileVariant(r.id) &&
+        !isMobileVariant(r.id) &&
         taskPickerRowMatches({
           isCatalogSeed,
           isHidden: isHiddenModelId(r.id),
@@ -2989,7 +3005,11 @@ export function HubModelPicker({
           void navigateToPage({
             to: `/${page}`,
             // The target page uses this verbatim as the gguf filename, so it must be ggufFilename (an exact repo filename), never ggufVariant (a label like "Q4_K_M", which routed a file that does not exist). No filename means a curated non-GGUF pick.
-            search: { model: id, quant: meta.ggufFilename ?? undefined },
+            search: {
+              model: id,
+              quant: meta.ggufFilename ?? undefined,
+              task: meta.pipelineTag ?? undefined,
+            },
           });
           return;
         }
@@ -3238,8 +3258,7 @@ export function HubModelPicker({
     [visibleCachedGguf],
   );
   const otherCachedGguf = useMemo(
-    () =>
-      visibleCachedGguf.filter((c) => !isUnslothPublisherRepoId(c.repo_id)),
+    () => visibleCachedGguf.filter((c) => !isUnslothPublisherRepoId(c.repo_id)),
     [visibleCachedGguf],
   );
   const unslothCachedModelRows = useMemo(
@@ -3392,9 +3411,17 @@ export function HubModelPicker({
   const communitySearchIds = useMemo(() => {
     if (!communityDiscoveryEnabled || !showHfSection) return [];
     const above = new Set(hfIds.map((id) => id.toLowerCase()));
+    const runnable = new Set(
+      communityQuerySearch.results
+        .filter(isTaskRuntimeSupported)
+        .map((result) => result.id.toLowerCase()),
+    );
     return searchIdsFrom(
       communityQuerySearch.results,
-      (id) => !isUnslothOwned(id) && isLoadableCommunityRepo(id),
+      (id) =>
+        !isUnslothOwned(id) &&
+        isLoadableCommunityRepo(id) &&
+        runnable.has(id.toLowerCase()),
     ).filter((id) => !above.has(id.toLowerCase()));
   }, [
     communityDiscoveryEnabled,
@@ -3404,6 +3431,7 @@ export function HubModelPicker({
     searchIdsFrom,
     isUnslothOwned,
     isLoadableCommunityRepo,
+    isTaskRuntimeSupported,
   ]);
 
   /** Unsloth first, then community: one list so rows, keyboard order and the
@@ -3631,13 +3659,33 @@ export function HubModelPicker({
     return map;
   }, [filteredRecommendedIds, recommendedParamCountById, isKnownGgufRepo, gpu]);
 
-  const { scrollRef, sentinelRef } = useHubInfiniteScroll(
+  const searchHasMore =
+    hasMore || (communityDiscoveryEnabled && communityQuerySearch.hasMore);
+  const searchIsLoadingMore =
+    isLoadingMore || communityQuerySearch.isLoadingMore;
+  const fetchSearchMore = useCallback((): boolean | undefined => {
+    if (hasMore) {
+      return fetchMore();
+    }
+    if (communityDiscoveryEnabled && communityQuerySearch.hasMore) {
+      return communityQuerySearch.fetchMore();
+    }
+    return undefined;
+  }, [
+    hasMore,
     fetchMore,
-    scannedCount,
+    communityDiscoveryEnabled,
+    communityQuerySearch.hasMore,
+    communityQuerySearch.fetchMore,
+  ]);
+  const { scrollRef, sentinelRef } = useHubInfiniteScroll(
+    fetchSearchMore,
+    scannedCount + communityQuerySearch.scannedCount,
     {
-      enabled: online && hasMore,
-      isFetching: isLoading || isLoadingMore,
-      resultCount: results.length,
+      enabled: online && searchHasMore,
+      isFetching:
+        isLoading || communityQuerySearch.isLoading || searchIsLoadingMore,
+      resultCount: results.length + communityQuerySearch.results.length,
       resetKey: debouncedQuery,
     },
   );
@@ -3669,13 +3717,33 @@ export function HubModelPicker({
   const recommendedSentinelRef = useCallback((node: HTMLDivElement | null) => {
     setRecommendedSentinel(node);
   }, []);
+  const recommendedHasMore =
+    recommendedSearch.hasMore ||
+    (communityRecommendedEnabled && communityBrowse.hasMore);
+  const recommendedIsLoadingMore =
+    recommendedSearch.isLoadingMore || communityBrowse.isLoadingMore;
+  const fetchRecommendedMore = useCallback(() => {
+    if (recommendedSearch.hasMore) {
+      recommendedSearch.fetchMore();
+      return;
+    }
+    if (communityRecommendedEnabled && communityBrowse.hasMore) {
+      communityBrowse.fetchMore();
+    }
+  }, [
+    recommendedSearch.hasMore,
+    recommendedSearch.fetchMore,
+    communityRecommendedEnabled,
+    communityBrowse.hasMore,
+    communityBrowse.fetchMore,
+  ]);
   useEffect(() => {
-    if (!recommendedSentinel || !recommendedSearch.hasMore) return;
+    if (!recommendedSentinel || !recommendedHasMore) return;
     const root = scrollRef.current;
     if (!root) return;
     const obs = new IntersectionObserver(
       ([e]) => {
-        if (e.isIntersecting) recommendedSearch.fetchMore();
+        if (e.isIntersecting) fetchRecommendedMore();
       },
       { threshold: 0, root },
     );
@@ -3683,9 +3751,10 @@ export function HubModelPicker({
     return () => obs.disconnect();
   }, [
     recommendedSentinel,
-    recommendedSearch.hasMore,
-    recommendedSearch.fetchMore,
+    recommendedHasMore,
+    fetchRecommendedMore,
     recommendedSearch.results.length,
+    communityBrowse.results.length,
     scrollRef,
   ]);
 
@@ -4250,13 +4319,9 @@ export function HubModelPicker({
   const renderAdditionalOnDeviceModelRow = (model: ModelOption) => {
     const optionKey = makeModelOptionKey("additional-on-device", model.id);
     const isSelected = value === model.id;
-    const pipelineTag =
-      typeof task === "string" ? task : (task?.[0] ?? null);
+    const pipelineTag = typeof task === "string" ? task : (task?.[0] ?? null);
     return (
-      <div
-        key={model.id}
-        className={downloadedRowShellClassName(isSelected)}
-      >
+      <div key={model.id} className={downloadedRowShellClassName(isSelected)}>
         <div className="min-w-0 flex-1">
           <ModelRow
             label={model.id}
@@ -4928,7 +4993,10 @@ export function HubModelPicker({
                                     } else if (isGguf) {
                                       toggleGgufExpanded(m.id);
                                     } else {
-                                      onSelect(m.id, localModelMeta(false, m.task));
+                                      onSelect(
+                                        m.id,
+                                        localModelMeta(false, m.task),
+                                      );
                                     }
                                   }}
                                   onArrowDownIntoChildren={
@@ -5069,7 +5137,10 @@ export function HubModelPicker({
                                     } else if (isGguf) {
                                       toggleGgufExpanded(m.id);
                                     } else {
-                                      onSelect(m.id, localModelMeta(false, m.task));
+                                      onSelect(
+                                        m.id,
+                                        localModelMeta(false, m.task),
+                                      );
                                     }
                                   }}
                                   onArrowDownIntoChildren={
@@ -5197,7 +5268,10 @@ export function HubModelPicker({
                                     } else if (isGguf) {
                                       toggleGgufExpanded(m.id);
                                     } else {
-                                      onSelect(m.id, localModelMeta(false, m.task));
+                                      onSelect(
+                                        m.id,
+                                        localModelMeta(false, m.task),
+                                      );
                                     }
                                   }}
                                   onArrowDownIntoChildren={
@@ -5367,11 +5441,11 @@ export function HubModelPicker({
                         );
                       })
                     )}
-                    {recommendedSearch.hasMore && (
+                    {recommendedHasMore && (
                       <>
                         <div ref={recommendedSentinelRef} className="h-px" />
                         {/* Only while a page is in flight; on hasMore it sat under a usable list. */}
-                        {recommendedSearch.isLoadingMore ? (
+                        {recommendedIsLoadingMore ? (
                           <div className="flex items-center justify-center py-2">
                             <Spinner className="size-3.5 text-muted-foreground" />
                           </div>
@@ -5595,7 +5669,7 @@ export function HubModelPicker({
                       })
                     )}
                     <div ref={sentinelRef} className="h-px" />
-                    {isLoadingMore ? (
+                    {searchIsLoadingMore ? (
                       <div className="flex items-center justify-center py-2">
                         <Spinner className="size-3.5 text-muted-foreground" />
                       </div>

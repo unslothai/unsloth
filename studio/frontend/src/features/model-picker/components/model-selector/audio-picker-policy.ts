@@ -20,6 +20,38 @@ export function shouldRecommendCommunityModels(
   return policy === "recommended";
 }
 
+/** Community ASR currently runs through the Transformers Whisper sidecar.
+ * Curated GGUF/MTMD artifacts are handled by the catalog before this gate; an
+ * uncurated row must therefore identify a non-GGUF Whisper checkpoint. */
+export function communityAudioRowIsRunnable({
+  isStt,
+  isGguf,
+  id,
+  baseModel,
+  tags,
+  libraryName,
+}: {
+  isStt: boolean;
+  isGguf: boolean;
+  id: string;
+  baseModel?: string | null;
+  tags?: readonly string[] | null;
+  libraryName?: string | null;
+}): boolean {
+  if (!isStt) {
+    return true;
+  }
+  if (isGguf) {
+    return false;
+  }
+  if (libraryName && libraryName.toLowerCase() !== "transformers") {
+    return false;
+  }
+  return [id, baseModel ?? "", ...(tags ?? [])].some((value) =>
+    value.toLowerCase().includes("whisper"),
+  );
+}
+
 /** The macOS audio runtime can execute TTS only through llama.cpp GGUF. Curated
  * families may expose a non-GGUF canonical row because Audio resolves that row
  * to its published GGUF sibling before loading. */

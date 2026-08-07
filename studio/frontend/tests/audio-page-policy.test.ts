@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -18,6 +19,11 @@ import {
   stagedTtsLoadIsOwned,
   sttSelectionReady,
 } from "../src/features/audio/audio-page-policy.ts";
+
+const audioPageSource = readFileSync(
+  new URL("../src/features/audio/audio-page.tsx", import.meta.url),
+  "utf8",
+);
 
 test("mode transitions cancel generation but wait for non-cancellable work", () => {
   assert.equal(canTransitionAudioMode(null), true);
@@ -215,4 +221,11 @@ test("a resolved microphone permission stream is accepted only by its live reque
   assert.equal(micStreamRequestIsCurrent(4, 4, true), true);
   assert.equal(micStreamRequestIsCurrent(4, 5, true), false);
   assert.equal(micStreamRequestIsCurrent(4, 4, false), false);
+});
+
+test("MediaRecorder setup failures release the acquired microphone stream", () => {
+  assert.match(
+    audioPageSource,
+    /recorder\.start\(\);[\s\S]*?catch \{[\s\S]*?stopRecordStream\(\);/,
+  );
 });

@@ -6,13 +6,7 @@
 // mounted across tab switches (see __root.tsx), so `active` gates polling,
 // popovers and the recorder rather than lifecycle.
 
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import {
   AudioWave01Icon,
   Copy01Icon,
@@ -24,8 +18,15 @@ import {
   StopIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
+import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -36,22 +37,14 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
-import { AdvancedDisclosure } from "@/components/advanced-disclosure";
-import { useScrollFades } from "@/hooks/use-scroll-fades";
-import { ModelSelector } from "@/features/model-picker/components/model-selector";
-import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
-import { AUDIO_CATALOG } from "@/features/model-picker/components/model-selector/model-catalog";
-import type {
-  ModelOption,
-  ModelSelectorChangeMeta,
-} from "@/features/model-picker/components/model-selector/types";
+import { usePlatformStore } from "@/config/env";
 import {
+  type InferenceStatusResponse,
+  ParamSlider,
   getInferenceStatus,
   listGgufVariants,
   loadModel,
-  ParamSlider,
   unloadModel,
-  type InferenceStatusResponse,
 } from "@/features/chat";
 import {
   SttModelNotDownloadedError,
@@ -64,26 +57,50 @@ import {
 } from "@/features/chat/adapters/studio-model-dictation-adapter";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
-import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
-import { usePlatformStore } from "@/config/env";
+import { ModelSelector } from "@/features/model-picker/components/model-selector";
+import { AUDIO_CATALOG } from "@/features/model-picker/components/model-selector/model-catalog";
+import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
+import type {
+  ModelOption,
+  ModelSelectorChangeMeta,
+} from "@/features/model-picker/components/model-selector/types";
 import {
   isTrackingSttDownload,
   trackSttDownload,
 } from "@/features/settings/lib/stt-download-mirror";
 import { sttModelSize } from "@/features/settings/stores/stt-model-catalog";
-import { cn } from "@/lib/utils";
+import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
+import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 
 import {
+  type AudioGalleryClip,
   clearAudioGallery,
   deleteAudioClip,
   fetchClipObjectUrl,
   generateAudio,
   listAudioGallery,
-  type AudioGalleryClip,
 } from "./api";
+import {
+  type AudioBusy,
+  type SttDownloadedArtifact,
+  canTransitionAudioMode,
+  exactGgufLoadSelector,
+  expectedGgufDownloadBytes,
+  macTtsPickAction,
+  micStreamRequestIsCurrent,
+  newlyPersistedClip,
+  reconcileSttSelection,
+  resolveAudioPickTask,
+  resolveSttResidency,
+  selectAutoGgufVariant,
+  stagedTtsLoadIsOwned,
+  sttDownloadedArtifacts,
+  sttSelectionReady,
+} from "./audio-page-policy";
 import {
   audioCapabilityLine,
   audioModelsForTask,
@@ -94,23 +111,6 @@ import {
   sttRepoIdForSidecarKey,
   sttSidecarKeyFor,
 } from "./catalog";
-import {
-  canTransitionAudioMode,
-  exactGgufLoadSelector,
-  expectedGgufDownloadBytes,
-  macTtsPickAction,
-  micStreamRequestIsCurrent,
-  newlyPersistedClip,
-  reconcileSttSelection,
-  resolveSttResidency,
-  resolveAudioPickTask,
-  selectAutoGgufVariant,
-  stagedTtsLoadIsOwned,
-  sttDownloadedArtifacts,
-  sttSelectionReady,
-  type AudioBusy,
-  type SttDownloadedArtifact,
-} from "./audio-page-policy";
 
 const MODELS_BY_MODE: Record<CreateMode, ModelOption[]> = {
   speak: audioModelsForTask("tts"),
@@ -355,7 +355,9 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         : null;
       const stt = await fetchSttStatus(
         undefined,
-        selectedEngine === "transformers" ? (selectedKey ?? undefined) : undefined,
+        selectedEngine === "transformers"
+          ? (selectedKey ?? undefined)
+          : undefined,
       );
       const nextDownloadedArtifacts = sttDownloadedArtifacts(
         stt,
@@ -502,12 +504,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           is_lora: false,
           gguf_variant: ggufFilename ?? null,
         });
-        if (!res.is_audio) {
-          toast.error(`${repoId} loaded but is not a TTS audio model.`, {
+        if (res.is_audio) {
+          toast.success(`Model loaded (${res.audio_type ?? "audio"})`, {
             id: toastId,
           });
         } else {
-          toast.success(`Model loaded (${res.audio_type ?? "audio"})`, {
+          toast.error(`${repoId} loaded but is not a TTS audio model.`, {
             id: toastId,
           });
         }
@@ -877,11 +879,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     ],
   );
 
-  // A pick handed over from the chat model selector arrives as ?model= (+ ?quant=).
+  // A pick handed over from the chat model selector arrives as ?model= (+ ?quant= and task).
   const navigateSelf = useNavigate();
   const routeSearch = useSearch({ strict: false }) as {
     model?: string;
     quant?: string;
+    task?: string;
   };
   const handledRouteModel = useRef<string | null>(null);
   useEffect(() => {
@@ -891,7 +894,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       handledRouteModel.current = null;
       return;
     }
-    const key = `${wanted}|${routeSearch.quant ?? ""}`;
+    const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.task ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
     void navigateSelf({ to: "/audio", search: {}, replace: true });
@@ -902,11 +905,13 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       // Chat-to-Audio routing cannot preserve the inventory flag, so stage the
       // exact forwarded GGUF. An already-cached job completes immediately.
       isDownloaded: routeSearch.quant ? false : undefined,
+      pipelineTag: routeSearch.task ?? null,
     });
   }, [
     active,
     routeSearch.model,
     routeSearch.quant,
+    routeSearch.task,
     handleModelSelect,
     navigateSelf,
   ]);
@@ -1152,6 +1157,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       recorder.start();
       setIsRecording(true);
     } catch {
+      // getUserMedia may have succeeded even if MediaRecorder construction or
+      // start failed. Release that acquired stream instead of leaving the mic
+      // live with no recorder UI capable of stopping it.
+      recorderRef.current = null;
+      setIsRecording(false);
+      stopRecordStream();
       if (
         micStreamRequestIsCurrent(
           requestGeneration,
@@ -1512,12 +1523,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                     className="text-ui-13 file:mr-3 file:rounded-md file:border-0 file:bg-muted file:px-3 file:py-1.5 file:text-ui-13 file:font-medium"
                   />
                 </Field>
-                {!sttSelected ? (
+                {sttSelected ? null : (
                   <p className="text-ui-11p5 leading-snug text-muted-foreground">
                     Pick a speech-to-text model (Whisper or Qwen3-ASR) from the
                     selector above to transcribe.
                   </p>
-                ) : null}
+                )}
               </>
             )}
           </div>
