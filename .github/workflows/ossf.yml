@@ -14,6 +14,18 @@ on:
   push:
     branches: [ "main" ]
 
+# Serialize, never cancel. The value of this workflow is the SARIF history in
+# the code scanning dashboard and the published OpenSSF result, so a superseded
+# run is still a data point worth keeping. Grouping only coalesces the burst of
+# main pushes down to one in-flight run plus one pending.
+concurrency:
+  # The event is part of the group so a scheduled run and a push to main cannot
+  # coalesce. Both resolve to refs/heads/main, and the default queue: single keeps
+  # only one pending run, so without this a merge burst silently drops the nightly:
+  # cancel-in-progress protects the running run, never the pending one.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
+
 # Declare default permissions as read only.
 permissions: read-all
 

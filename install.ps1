@@ -48,6 +48,27 @@ function Install-UnslothStudio {
         }
     }
 
+    # Same UTF-8 invariant as studio/setup.ps1, same ordering constraint: this
+    # rebuilds [Console]::Out, so it precedes the first write.
+    $_UnslothUtf8NoBom = New-Object System.Text.UTF8Encoding $false
+    try {
+        [Console]::OutputEncoding = $_UnslothUtf8NoBom
+    } catch {
+        # No console: the setter drops the cached writer before throwing, so
+        # bind UTF-8 ones explicitly. Same fallback as studio/setup.ps1.
+        try {
+            $_UnslothStdout = New-Object System.IO.StreamWriter -ArgumentList ([Console]::OpenStandardOutput()), $_UnslothUtf8NoBom
+            $_UnslothStdout.AutoFlush = $true
+            [Console]::SetOut($_UnslothStdout)
+            $_UnslothStderr = New-Object System.IO.StreamWriter -ArgumentList ([Console]::OpenStandardError()), $_UnslothUtf8NoBom
+            $_UnslothStderr.AutoFlush = $true
+            [Console]::SetError($_UnslothStderr)
+        } catch { }
+    }
+    $OutputEncoding = $_UnslothUtf8NoBom
+    $env:PYTHONUTF8 = '1'
+    $env:PYTHONIOENCODING = 'utf-8'
+
     # ── Tauri structured output ──
     function Write-TauriLog {
         param([string]$Tag, [string]$Message)
@@ -501,7 +522,6 @@ function Install-UnslothStudio {
             Write-Host ("  {0}{1}{2}{3}{4}{2}" -f $dim, $padded, $rst, $val, $Value)
         } else {
             $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
-            Write-Host ("  {0}" -f $padded) -NoNewline -ForegroundColor DarkGray
             $fc = switch ($Color) {
                 'Green' { 'DarkGreen' }
                 'Yellow' { 'Yellow' }
@@ -509,7 +529,10 @@ function Install-UnslothStudio {
                 'DarkGray' { 'DarkGray' }
                 default { 'DarkGreen' }
             }
-            Write-Host $Value -ForegroundColor $fc
+            # One composed record: two Write-Host calls are two Information
+            # records, and a redirected consumer splits the label from the value
+            # at the boundary. No mirror here, so this is the only sink.
+            Write-Host ("  {0}{1}" -f $padded, $Value) -ForegroundColor $fc
         }
     }
 

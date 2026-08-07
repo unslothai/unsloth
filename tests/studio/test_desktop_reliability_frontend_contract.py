@@ -598,6 +598,30 @@ def test_media_pages_clear_the_custom_titlebar():
         assert "pt-[var(--studio-content-top-inset,0px)]" in shell, page.name
 
 
+def test_media_page_headers_out_stack_the_mac_drag_region():
+    """macOS insets the media pages 0px, so their 48px header overlaps the navbar's 34px drag
+    strip: the band must out-stack it yet stay click-through (controls click, gaps drag)."""
+    navbar = NAVBAR.read_text(encoding = "utf-8")
+
+    # The strip to beat: same z-40, but earlier in DOM order.
+    assert "pointer-events-none absolute inset-x-0 top-0 z-40 h-[48px]" in navbar
+    assert "data-tauri-drag-region" in navbar
+
+    for page in (IMAGES_PAGE, VIDEO_PAGE):
+        source = page.read_text(encoding = "utf-8")
+        before, marker, band = source.partition("h-[48px] shrink-0 items-start justify-between")
+        assert marker, page.name
+        opening = before.rsplit('<div className="', 1)[1]
+        for token in ("pointer-events-none", "relative", "z-40"):
+            assert token in opening, (page.name, token)
+
+        band = band.split("MediaPageLink", 1)[0]
+        groups = re.findall(r'<div className="([^"]*flex items-center gap-[^"]*)"', band)
+        assert len(groups) >= 2, (page.name, groups)
+        for group in groups:
+            assert "pointer-events-auto" in group, (page.name, group)
+
+
 def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():
     """unslothai/unsloth#7793: the support report prints final_status verbatim, so a
     user quitting mid-update must not read as a failed repair."""
