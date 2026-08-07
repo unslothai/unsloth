@@ -4,6 +4,7 @@
 import errno
 import json
 import os
+import shutil
 import sys
 import time
 import types
@@ -915,6 +916,28 @@ def test_completion_marking_reports_a_swapped_in_symlink_as_unsafe(tmp_path):
     entry.cache_dir.rmdir()
     entry.cache_dir.symlink_to(external, target_is_directory = True)
 
+    with pytest.raises(dataset_processed_cache.UnsafeDatasetCachePathError):
+        dataset_processed_cache.mark_app_processed_dataset_cache_complete(entry)
+
+
+def test_completion_marking_reports_a_dangling_symlink_as_unsafe(tmp_path):
+    """A symlinked entry whose target disappears is still a swap, not a purge.
+
+    Strict resolution raises ``FileNotFoundError`` for a dangling link, which a
+    best-effort caller reads as "the entry was purged" -- so the symlink has to be
+    classified before the entry is resolved, or the swap is silently tolerated.
+    """
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    entry = dataset_processed_cache.prepare_app_processed_dataset_cache(repo_id, snapshot)
+    external = tmp_path / "external"
+    external.mkdir()
+    shutil.rmtree(entry.path)
+    entry.path.symlink_to(external, target_is_directory = True)
+    external.rmdir()
+
+    assert entry.path.is_symlink() and not entry.path.exists()
     with pytest.raises(dataset_processed_cache.UnsafeDatasetCachePathError):
         dataset_processed_cache.mark_app_processed_dataset_cache_complete(entry)
 

@@ -206,6 +206,12 @@ def mark_app_processed_dataset_cache_complete(entry: AppProcessedDatasetCache) -
         if _cache_root_is_present():
             raise UnsafeDatasetCachePathError("Dataset cache root is not inside the trusted root")
         raise FileNotFoundError("Dataset cache root is unavailable")
+    # Classify a symlinked entry BEFORE resolving it. A symlink whose target is removed
+    # between the load and here makes strict resolution raise FileNotFoundError, which a
+    # best-effort caller reads as "the entry was purged" -- hiding the very swap this
+    # check exists to catch.
+    if entry.path.is_symlink() or entry.cache_dir.is_symlink():
+        raise UnsafeDatasetCachePathError(f"Dataset cache path is a symlink: {entry.path}")
     entry_path = entry.path.resolve(strict = True)
     try:
         entry_path.relative_to(root)
@@ -213,8 +219,6 @@ def mark_app_processed_dataset_cache_complete(entry: AppProcessedDatasetCache) -
         raise UnsafeDatasetCachePathError(
             f"Dataset cache entry escapes the cache root: {entry.path}"
         ) from error
-    if entry.path.is_symlink() or entry.cache_dir.is_symlink():
-        raise UnsafeDatasetCachePathError(f"Dataset cache path is a symlink: {entry.path}")
     _atomic_write_metadata(
         entry_path / _METADATA_FILENAME,
         _metadata_payload(
