@@ -180,9 +180,6 @@ def test_a_thread_with_no_messages_left_reads_as_a_mismatch(probe):
 def test_the_route_turns_a_failed_precondition_into_409():
     source = ROUTE.read_text(encoding = "utf-8")
     assert 'expected_title = patch.pop("expectedTitle", None)' in source
-    assert (
-        'expected_opening_message_id = patch.pop("expectedOpeningMessageId", None)'
-        in source
-    )
+    assert 'expected_opening_message_id = patch.pop("expectedOpeningMessageId", None)' in source
     assert "except ChatThreadPreconditionFailed:" in source
     assert "status_code = 409," in source
