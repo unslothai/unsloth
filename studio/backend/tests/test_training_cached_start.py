@@ -1927,6 +1927,69 @@ def test_resolve_model_snapshot_keeps_selected_cache_path_strict(monkeypatch):
     assert set(resolved_paths) == {str(fallback_path)}
 
 
+def test_resolve_model_snapshot_uses_cache_path_repo_id(tmp_path):
+    from core.training.training import _resolve_model_snapshot
+
+    repo_root = tmp_path / "models--Qwen--Qwen3-4B-Instruct-2507"
+    snap = repo_root / "snapshots" / "rev"
+    snap.mkdir(parents = True)
+    (snap / "config.json").write_text("{}")
+    (snap / "model.safetensors").write_bytes(b"x")
+    (repo_root / "refs").mkdir()
+    (repo_root / "refs" / "main").write_text("rev")
+
+    resolved = _resolve_model_snapshot(
+        "unsloth/Qwen3-4B-Instruct-2507",
+        str(repo_root),
+    )
+
+    assert resolved == str(snap.resolve())
+
+
+def test_apply_cache_pins_records_path_repo_id(tmp_path):
+    from core.training.training import _apply_cache_pins
+
+    repo_root = tmp_path / "models--Qwen--Qwen3-4B-Instruct-2507"
+    snap = repo_root / "snapshots" / "rev"
+    snap.mkdir(parents = True)
+    (snap / "config.json").write_text("{}")
+    (snap / "model.safetensors").write_bytes(b"x")
+    (repo_root / "refs").mkdir()
+    (repo_root / "refs" / "main").write_text("rev")
+
+    config = {
+        "model_name": "unsloth/Qwen3-4B-Instruct-2507",
+        "model_known_cached": True,
+        "model_local_path": str(repo_root),
+        "hf_dataset": "",
+    }
+    _apply_cache_pins(config)
+
+    assert config["model_snapshot_path"] == str(snap.resolve())
+    assert config["actual_model_repo_id"] == "Qwen/Qwen3-4B-Instruct-2507"
+
+
+def test_training_use_exact_model_name_for_cached_selection():
+    from core.training import worker
+
+    assert worker._training_use_exact_model_name(
+        {
+            "model_name": "unsloth/Qwen3-4B-Instruct-2507",
+            "model_known_cached": True,
+            "model_local_path": "/cache/models--unsloth--Qwen3-4B-Instruct-2507",
+        }
+    )
+    assert worker._training_use_exact_model_name(
+        {
+            "model_name": "unsloth/Qwen3-4B-Instruct-2507",
+            "model_snapshot_path": "/cache/models--unsloth--Qwen3-4B-Instruct-2507/snapshots/rev",
+        }
+    )
+    assert not worker._training_use_exact_model_name(
+        {"model_name": "unsloth/Qwen3-4B-Instruct-2507"}
+    )
+
+
 @pytest.mark.parametrize(
     "resume_from_checkpoint",
     [None, "/outputs/run/checkpoint-5"],
