@@ -304,12 +304,11 @@ def _model_memory_reload_required() -> bool:
 
 
 def _model_memory_lock_is_gated_off() -> bool:
-    """True when the loaded model is one this policy deliberately does not pin.
+    """True when the running model is one this policy deliberately does not pin.
 
-    mlock_active drives the locked-memory cap warning, so reporting it from the
-    toggle pair alone tells a discrete-GPU user to raise a limit that nothing
-    will ever consult. With nothing running there is no launch to read, so the
-    toggles' intent is what gets reported.
+    mlock_active drives the locked-memory cap warning, so taking it from the
+    toggles alone tells a discrete-GPU user to raise a limit nothing consults.
+    With nothing running there is no launch to read, so intent is reported.
     """
     try:
         from routes.inference import get_llama_cpp_backend

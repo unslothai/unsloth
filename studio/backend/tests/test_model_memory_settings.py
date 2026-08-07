@@ -865,10 +865,9 @@ class TestFullOffloadDetection:
 
 
 class TestNegativeDirectIoIsARamReservation:
-    """-ndio / --no-direct-io are not "plain mmap". Upstream maps both to load
-    mode `none`, the same enum value as --no-mmap, so they read the weights into
-    a full host buffer. Modelling them as non-reserving let no-reserve leave one
-    in the argv and then report the process as compliant."""
+    """Upstream maps -ndio / --no-direct-io to mode `none`, like --no-mmap, so
+    they hold a full host buffer. Calling them non-reserving let no-reserve
+    leave one in the argv and still report the process compliant."""
 
     @pytest.mark.parametrize("flag", ["--no-direct-io", "-ndio", "--no_direct_io"])
     def test_the_negative_spellings_reserve_ram(self, flag):
@@ -905,11 +904,9 @@ class TestNegativeDirectIoIsARamReservation:
 
 
 class TestEnvVarsAssignTheWholeMode:
-    """Every LLAMA_ARG_* memory var runs the same handler as its flag, so each
-    assigns the whole load mode and a later one overwrites an earlier one.
-    Treating LLAMA_ARG_MMAP as a reserves_ram bit left mlock standing, so the
-    resolver claimed a lock the child did not have and residency was reported
-    satisfied against an unlocked process."""
+    """Each var runs its flag's handler, so it assigns the whole mode and a
+    later one wins. Treating LLAMA_ARG_MMAP as a reserves_ram bit left mlock
+    standing, so residency read an unlocked child as already satisfied."""
 
     @pytest.mark.parametrize(
         ("env", "expected"),
@@ -950,9 +947,9 @@ class TestEnvVarsAssignTheWholeMode:
 
 
 class TestMlockActiveReflectsWhatWillActuallyBePassed:
-    """mlock_active drives the ulimit -l warning in the UI. Reporting it from
-    the toggle pair alone tells a discrete-GPU user to raise a system limit that
-    nothing will ever consult, because the gate suppresses the lock there."""
+    """mlock_active drives the ulimit -l warning. Taking it from the toggles
+    alone tells a discrete-GPU user to raise a limit nothing consults, since
+    the gate suppresses the lock there."""
 
     @staticmethod
     def _response(keep, no_res, backend, monkeypatch):

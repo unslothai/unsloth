@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The model-memory response carries runtime state (reloadRequired,
-// memlockLimitBytes) that goes stale the moment a model is loaded or swapped, so
-// the module deliberately has no read-through cache and only coalesces
-// concurrent reads. Saving it also has to drop the auto-switch cache, because
-// residency vetoes the idle TTL that endpoint reports. None of that was covered.
+// The response carries runtime state that goes stale as soon as a model is
+// loaded, so the module coalesces concurrent reads but never caches. Saving it
+// must also drop the auto-switch cache, whose idle TTL residency vetoes.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
