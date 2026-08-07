@@ -9,6 +9,7 @@ import {
   fallbackTitleFromUserText,
   isLegacyClippedTitle,
   planLegacyTitleRepairs,
+  repairsStillValid,
   selectLegacyRepairPage,
   threadsMissingMessages,
 } from "../src/features/chat/utils/chat-title.ts";
@@ -195,4 +196,26 @@ test("a chat with nothing stored is left for a later refresh", () => {
   assert.deepEqual(planLegacyTitleRepairs(candidates, messages), [
     { threadId: "a", previousTitle: legacy, title: LONG },
   ]);
+});
+
+test("a rename drops the rewrite even where the guard is not enforced", () => {
+  // The desktop app can meet an older backend, which ignores expectedTitle and
+  // would apply the write. This check is what stops it there.
+  const legacy = LONG.slice(0, 48) + "...";
+  const repairs = [
+    { threadId: "a", previousTitle: legacy, title: LONG },
+    { threadId: "b", previousTitle: legacy, title: LONG },
+    { threadId: "c", previousTitle: legacy, title: LONG },
+  ];
+  const current = new Map([
+    ["a", legacy],
+    // Renamed since the page was planned.
+    ["b", "what the user typed"],
+    // "c" is missing: the thread is gone.
+  ]);
+
+  assert.deepEqual(
+    repairsStillValid(repairs, current).map((r) => r.threadId),
+    ["a"],
+  );
 });

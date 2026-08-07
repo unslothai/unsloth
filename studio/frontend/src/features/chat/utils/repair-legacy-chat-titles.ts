@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { batchListChatMessages } from "../api/chat-api";
+import { batchListChatMessages, listChatThreads } from "../api/chat-api";
 import type { MessageRecord, ThreadRecord } from "../types";
 import { updateStoredChatThread } from "./chat-history-storage";
 import {
   planLegacyTitleRepairs,
+  repairsStillValid,
   selectLegacyRepairPage,
   threadsMissingMessages,
 } from "./chat-title";
@@ -71,12 +72,28 @@ async function runRepairPass(threads: ThreadRecord[]): Promise<number> {
   // a later refresh rather than writing them off for the session.
   for (const id of threadsMissingMessages(ids, messages)) attempted.delete(id);
 
+  // expectedTitle is only enforced by a backend that knows the field. The
+  // desktop app ships its own frontend and can meet an older one, which would
+  // apply the write regardless, so confirm the titles here too. One call for
+  // the page, taken last, so a rename is respected either way.
+  let live: ReturnType<typeof repairsStillValid>;
+  try {
+    const current = await listChatThreads({ includeArchived: true });
+    live = repairsStillValid(
+      repairs,
+      new Map(current.map((thread) => [thread.id, thread.title])),
+    );
+  } catch {
+    for (const id of ids) attempted.delete(id);
+    return 0;
+  }
+
   let repaired = 0;
-  await runWithConcurrency(repairs, REPAIR_CONCURRENCY, async (repair) => {
+  await runWithConcurrency(live, REPAIR_CONCURRENCY, async (repair) => {
     try {
-      // expectedTitle guards the write: a rename that landed since this list
-      // was read answers 409 and keeps the user's title. A title patch leaves
-      // updatedAt alone, so Recents keeps its order.
+      // expectedTitle makes this atomic where the backend enforces it: a
+      // rename landing now answers 409 and keeps the user's title. A title
+      // patch leaves updatedAt alone, so Recents keeps its order.
       await updateStoredChatThread(
         repair.threadId,
         { title: repair.title },

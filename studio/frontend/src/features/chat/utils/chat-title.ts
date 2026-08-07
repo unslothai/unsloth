@@ -100,6 +100,18 @@ export function selectLegacyRepairPage(
   };
 }
 
+/** Repairs whose row still holds the title they were planned from. The write
+ *  carries that title as a guard, but only a backend that knows the field
+ *  enforces it, so an older one needs this check to respect a rename. */
+export function repairsStillValid(
+  repairs: LegacyTitleRepair[],
+  currentTitleById: ReadonlyMap<string, string>,
+): LegacyTitleRepair[] {
+  return repairs.filter(
+    (repair) => currentTitleById.get(repair.threadId) === repair.previousTitle,
+  );
+}
+
 /** Threads nothing is known about at all, so nothing can be concluded. */
 export function threadsMissingMessages(
   ids: readonly string[],

@@ -74,6 +74,17 @@ def test_only_one_repair_pass_runs_at_a_time():
     assert "return serial(() => runRepairPass(threads));" in repair
 
 
+def test_a_rename_wins_even_where_the_guard_is_not_enforced():
+    """expectedTitle is only enforced by a backend that knows the field, and the
+    desktop app ships its own frontend, so it can meet one that does not."""
+    repair = _read(REPAIR)
+    assert "const current = await listChatThreads({ includeArchived: true });" in repair
+    assert "live = repairsStillValid( repairs, new Map(current.map((thread) => [thread.id, thread.title])), );" in repair
+    # The write runs over the confirmed set, not the planned one.
+    assert "await runWithConcurrency(live, REPAIR_CONCURRENCY," in repair
+    assert "{ expectedTitle: repair.previousTitle }," in repair
+
+
 def test_a_failed_read_leaves_the_rows_retryable():
     repair = _read(REPAIR)
     assert (
