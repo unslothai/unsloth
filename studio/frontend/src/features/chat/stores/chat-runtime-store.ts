@@ -14,6 +14,7 @@ import { create } from "zustand";
 import {
   GPU_LAYERS_AUTO,
   recoverDroppedDiffusionSplit,
+  shouldHydrateGpuPlacementControls,
 } from "../lib/gpu-placement";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
 import {
@@ -719,6 +720,9 @@ export function loadedGpuMemoryFields(resp: {
     };
   }
   const mode = resp.gpu_memory_mode ?? "auto";
+  const hydratePlacementControls = shouldHydrateGpuPlacementControls(
+    resp.cpu_fallback_reason,
+  );
   // Keep the user's placement pool editable across status/load hydration.
   // gpu_ids remains the effective fitted subset for diagnostics.
   const reportedGpuIds = requestedGpuIdsFromResponse(resp);
@@ -752,9 +756,13 @@ export function loadedGpuMemoryFields(resp: {
           loadedGpuLayers: resp.gpu_layers ?? null,
           loadedNCpuMoe: resp.n_cpu_moe ?? null,
           loadedSplitRatio: resp.tensor_split ?? null,
-          gpuLayers: resp.gpu_layers ?? GPU_LAYERS_AUTO,
-          nCpuMoe: resp.n_cpu_moe ?? 0,
-          splitRatio: resp.tensor_split ?? null,
+          ...(hydratePlacementControls
+            ? {
+                gpuLayers: resp.gpu_layers ?? GPU_LAYERS_AUTO,
+                nCpuMoe: resp.n_cpu_moe ?? 0,
+                splitRatio: resp.tensor_split ?? null,
+              }
+            : {}),
         }
       : {
           loadedGpuLayers: null,
@@ -781,11 +789,13 @@ export function loadedGpuMemoryFields(resp: {
     // A diffusion GGUF reporting "auto" ran on the runner's defaults, so an inert standing
     // manual preference must survive it. But "manual" means a split was actually applied
     // (#7574): adopt it, or a refresh hydrates back to "auto" while the runner serves one.
-    ...(resp.is_diffusion && mode !== "manual"
-      ? droppedSplit != null
-        ? { gpuMemoryMode: "manual" as const }
-        : {}
-      : { gpuMemoryMode: mode }),
+    ...(hydratePlacementControls
+      ? resp.is_diffusion && mode !== "manual"
+        ? droppedSplit != null
+          ? { gpuMemoryMode: "manual" as const }
+          : {}
+        : { gpuMemoryMode: mode }
+      : {}),
     loadedGpuMemoryMode: mode,
     loadedCpuFallback: resp.cpu_fallback_reason === "vulkan_startup_crash",
     ggufLayerCount: resp.n_layers ?? null,

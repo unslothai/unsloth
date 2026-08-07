@@ -1731,6 +1731,7 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedTensorParallel",
   "gpuMemoryMode",
   "loadedGpuMemoryMode",
+  "loadedCpuFallback",
   "gpuLayers",
   "loadedGpuLayers",
   "nCpuMoe",

@@ -8526,6 +8526,14 @@ class LlamaCppBackend:
         self._cpu_fallback_reason = "vulkan_startup_crash"
         return intent
 
+    @staticmethod
+    def _launch_has_mmproj(cmd: Iterable[str], env: Mapping[str, str]) -> bool:
+        """Whether this launch receives a projector from argv or the environment."""
+        return _extra_args_set_any_flag(cmd, {"--mmproj", "-mm"}) or any(
+            str(env.get(name) or "").strip()
+            for name in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL")
+        )
+
     @classmethod
     def _cpu_isolated_replay(
         cls, cmd: Iterable[str], env: dict[str, str], server_caps: Mapping[str, object]
@@ -8536,10 +8544,7 @@ class LlamaCppBackend:
         that this binary cannot pin to CPU.
         """
         original = [str(arg) for arg in cmd]
-        has_mmproj = _extra_args_set_any_flag(original, {"--mmproj", "-mm"}) or any(
-            str(env.get(name) or "").strip()
-            for name in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL")
-        )
+        has_mmproj = cls._launch_has_mmproj(original, env)
         if has_mmproj and not _paravirtual_mmproj_pinnable(server_caps):
             return None
         has_draft = _extra_args_mtp_draft_path(original, env = env) is not None
@@ -11370,6 +11375,7 @@ class LlamaCppBackend:
                     nonlocal tensor_parallel, tensor_split, gpu_indices, use_fit, _spawn_cwd
                     if not self._is_signal_crash(failed_rc) or not _cpu_fallback_eligible:
                         return False
+                    fallback_has_mmproj = self._launch_has_mmproj(failed_cmd, env)
                     prepared = self._prepare_cpu_fallback_launch(
                         binary, failed_cmd, env, server_caps
                     )
@@ -11395,8 +11401,10 @@ class LlamaCppBackend:
 
                     intent = self._apply_cpu_fallback_state(
                         intent,
-                        is_vision = launched_with_mmproj,
-                        mmproj_has_audio = _launched_mmproj_has_audio,
+                        is_vision = fallback_has_mmproj,
+                        mmproj_has_audio = (
+                            _launched_mmproj_has_audio if fallback_has_mmproj else False
+                        ),
                     )
                     gpu_memory_mode = intent.gpu_memory_mode
                     gpu_layers = intent.gpu_layers
@@ -11720,14 +11728,22 @@ class LlamaCppBackend:
                             # an OS-killed text-only retry still gets the OOM message.
                             _retry_rc = self._process.poll() if self._process is not None else None
                             self._kill_process()
-                            # A confirmed projector error is not evidence of a GPU fault.
-                            if self._is_signal_crash(_retry_rc) and not _projector_msg:
+                            # The text-only signal is independent evidence of a GPU
+                            # startup fault. Keep a confirmed incompatible projector
+                            # out of the CPU replay; a guessed projector crash still
+                            # gets one CPU attempt with vision preserved.
+                            if self._is_signal_crash(_retry_rc):
+                                _cpu_replay_cmd = (
+                                    _last_spawn_cmd
+                                    if _projector_msg
+                                    else _vision_cpu_replay_cmd
+                                )
                                 if _try_auto_vulkan_cpu_fallback(
-                                    _vision_cpu_replay_cmd,
+                                    _cpu_replay_cmd,
                                     _retry_rc,
                                 ):
                                     healthy = True
-                                else:
+                                elif not _projector_msg:
                                     _raise_terminal_load_failure(
                                         self._gpu_init_crash_message(binary)
                                     )

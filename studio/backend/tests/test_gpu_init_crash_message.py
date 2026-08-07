@@ -81,6 +81,118 @@ def _managed_runtime(monkeypatch, tmp_path):
     return binary
 
 
+def _run_cpu_fallback_load(
+    monkeypatch,
+    tmp_path,
+    *,
+    returncodes,
+    first_output = "",
+    mmproj_from_argv = False,
+    mmproj_env = None,
+):
+    def _gguf_string(value: str) -> bytes:
+        encoded = value.encode()
+        return struct.pack("<Q", len(encoded)) + encoded
+
+    metadata = (
+        _gguf_string("general.architecture")
+        + struct.pack("<I", 8)
+        + _gguf_string("llama")
+    )
+    gguf = tmp_path / "model.gguf"
+    gguf.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
+    mmproj = tmp_path / "mmproj.gguf"
+    mmproj.write_bytes(b"projector")
+
+    backend = LlamaCppBackend()
+    backend._get_gpu_memory = lambda _binary = None: []
+    backend._get_gpu_free_memory = lambda _binary = None: []
+    backend._read_gguf_metadata = lambda _path: None
+    backend._can_estimate_kv = lambda: False
+    backend._get_gguf_size_bytes = lambda _path: 1024
+    backend._mmproj_vram_bytes = lambda _path: 0
+    backend._resolve_launch_mmproj_path = lambda **_kwargs: (
+        str(mmproj) if mmproj_from_argv else None
+    )
+    backend._apu_ram_shortfall_message = lambda *_args, **_kwargs: None
+    backend._amd_apu_wants_unified_memory = lambda *_args, **_kwargs: False
+    backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_is_vulkan_backend",
+        staticmethod(lambda _binary = None: True),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_vulkan_prebuilt_was_auto_selected",
+        staticmethod(lambda _binary: True),
+    )
+    backend._fit_off_retry_eligible = lambda *_args, **_kwargs: False
+    backend.probe_server_capabilities = lambda _binary: {
+        "found": True,
+        "supports_no_mmproj_offload": True,
+    }
+    backend._record_server_pid = lambda _pid: None
+    backend._clear_server_pid = lambda: None
+    backend._llama_server_env_for_binary = lambda _binary: {
+        "PATH": os.environ.get("PATH", ""),
+        **(mmproj_env or {}),
+    }
+    backend._is_projector_incompatibility = (
+        lambda output: "projector-incompatible" in output
+    )
+
+    launches = []
+    fallback_sources = []
+
+    class _Process:
+        pid = 123
+        stdout = ()
+
+        def __init__(self, returncode):
+            self.returncode = returncode
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout = None):
+            return self.returncode
+
+        def kill(self):
+            return None
+
+    def _popen(cmd, **kwargs):
+        index = len(launches)
+        launches.append((list(cmd), dict(kwargs["env"])))
+        return _Process(returncodes[index])
+
+    def _wait_for_health(timeout):
+        if len(launches) == 1 and first_output:
+            backend._stdout_lines = [first_output]
+        return returncodes[len(launches) - 1] is None
+
+    def _prepare_cpu_fallback(_binary, failed_cmd, _env, _server_caps):
+        fallback_sources.append(list(failed_cmd))
+        return ["/staged/llama-server", "--device", "none"], None
+
+    backend._wait_for_health = _wait_for_health
+    backend._prepare_cpu_fallback_launch = _prepare_cpu_fallback
+    monkeypatch.setattr(subprocess, "Popen", _popen)
+
+    loaded = backend.load_model(
+        GgufLoadIntent(
+            gguf_path = str(gguf),
+            mmproj_path = str(mmproj) if mmproj_from_argv else None,
+            model_identifier = "owner/model",
+            is_vision = mmproj_from_argv,
+        )
+    )
+    return backend, loaded, launches, fallback_sources
+
+
 class TestGpuInitCrashMessage:
     def _message(self, monkeypatch, backend):
         monkeypatch.setattr(
@@ -281,6 +393,13 @@ class TestAutoVulkanCpuFallbackGate:
 
 
 class TestCpuIsolatedReplay:
+    @pytest.mark.parametrize("name", ["LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"])
+    def test_env_projector_counts_as_a_vision_launch(self, name):
+        assert LlamaCppBackend._launch_has_mmproj(
+            ["llama-server", "-m", "model.gguf"],
+            {name: "projector.gguf"},
+        )
+
     @pytest.mark.parametrize(
         "platform,loader_path",
         [("linux", "LD_LIBRARY_PATH"), ("win32", "PATH")],
@@ -459,6 +578,40 @@ class TestCpuIsolatedReplay:
         assert completed.stdout == "healthy\n"
         backend._cleanup_cpu_fallback_runtime()
         assert not staged_dir.exists()
+
+
+def test_confirmed_projector_failure_replays_the_text_command_on_cpu(monkeypatch, tmp_path):
+    backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [1, -11, None],
+        first_output = "projector-incompatible",
+        mmproj_from_argv = True,
+    )
+
+    assert loaded is True
+    assert len(launches) == 3
+    assert "--mmproj" in launches[0][0]
+    assert "--mmproj" not in launches[1][0]
+    assert len(fallback_sources) == 1
+    assert "--mmproj" not in fallback_sources[0]
+    assert backend._is_vision is False
+
+
+@pytest.mark.parametrize("name", ["LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"])
+def test_env_projector_cpu_recovery_preserves_vision_state(monkeypatch, tmp_path, name):
+    backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [-11, -11, None],
+        mmproj_env = {name: "projector.gguf"},
+    )
+
+    assert loaded is True
+    assert len(launches) == 3
+    assert len(fallback_sources) == 1
+    assert "--mmproj" not in fallback_sources[0]
+    assert backend._is_vision is True
 
 
 @pytest.mark.parametrize(
