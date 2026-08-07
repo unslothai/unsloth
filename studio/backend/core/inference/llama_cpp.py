@@ -11137,8 +11137,8 @@ class LlamaCppBackend:
                 # but must not fight a launch it never touched.
                 # Split out: the fit-off retry can drop _mem_managed, and what is
                 # left decides whether that child still differs from an unmanaged one.
-                _mem_policy_touched_extras = (
-                    bool(_mem_scrubbed) or _mem_extras != list(extra_args or [])
+                _mem_policy_touched_extras = bool(_mem_scrubbed) or _mem_extras != list(
+                    extra_args or []
                 )
                 self._memory_policy_active = bool(_mem_managed) or _mem_policy_touched_extras
                 # Omitting --threads relies on llama.cpp's physical-core default, so
