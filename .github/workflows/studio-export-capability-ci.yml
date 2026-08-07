@@ -22,13 +22,6 @@ on:
       - '.github/workflows/studio-export-capability-ci.yml'
   push:
     branches: [main]
-    paths:
-      - 'studio/backend/utils/hardware/hardware.py'
-      - 'studio/backend/core/export/export.py'
-      - 'studio/backend/routes/export.py'
-      - 'studio/backend/main.py'
-      - 'studio/backend/tests/test_export_capability.py'
-      - '.github/workflows/studio-export-capability-ci.yml'
   workflow_dispatch:
 
 concurrency:
