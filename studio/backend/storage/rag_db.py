@@ -5,8 +5,9 @@
 
 Same pattern as providers_db.py / studio_db.py (module functions, raw sqlite3,
 WAL, per-call connections, lazy schema), but every connection also loads
-sqlite-vec (vec0 needs it per-connection). If it cannot load, RAG_AVAILABLE is
-False and get_connection() raises rather than failing import.
+sqlite-vec (vec0 needs it per-connection). If it cannot load, get_connection()
+raises RagExtensionUnavailable rather than failing import, and rag_available()
+reports the machine as one where RAG cannot run.
 
 One rag.db holds the ``documents`` / ``chunks`` model, the FTS5 lexical index
 (``chunks_fts``) and the sqlite-vec dense index (``chunks_vec``, created lazily
@@ -50,6 +51,11 @@ _schema_ready = False
 # per-job throttle in hub/services/snapshot_progress.py.
 _unavailable_lock = threading.Lock()
 _unavailable_warned = False
+# Set once a connection has actually loaded the extension, so the request gate can
+# answer without reopening the database. Only the positive verdict is kept: a failure
+# stays retried per connection exactly as it was before, so a one-off cannot latch RAG
+# off for the rest of the session.
+_extension_loaded = False
 
 
 def _warn_unavailable_once(exc: BaseException | None = None) -> None:
@@ -64,6 +70,31 @@ def _warn_unavailable_once(exc: BaseException | None = None) -> None:
         _RAG_UNAVAILABLE_MSG,
         f" ({exc})" if exc is not None else "",
     )
+
+
+def rag_available() -> bool:
+    """Whether RAG can actually run in this process.
+
+    RAG_AVAILABLE only records that ``import sqlite_vec`` worked. The vec0 native
+    library it loads is a separate file, and a venv can have the package without it
+    (the common macOS case), which nothing finds out until a connection tries. So try,
+    unless one already got through: a machine where RAG works answers from the flag
+    instead of opening a second connection per request, and a machine where it does not
+    pays the same failed connect it paid before, quietly.
+
+    A genuine database error (locked, corrupt, bad schema) is not an answer to this
+    question, so it propagates instead of being reported as "RAG is off here".
+    """
+    if not RAG_AVAILABLE:
+        return False
+    if _extension_loaded:
+        return True
+    try:
+        conn = get_connection()
+    except RagExtensionUnavailable:
+        return False
+    conn.close()
+    return True
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -145,7 +176,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
 def get_connection() -> sqlite3.Connection:
     """Open rag.db (WAL + sqlite-vec loaded, schema created once). Raises if the extension is unavailable."""
-    global _schema_ready
+    global _schema_ready, _extension_loaded
     if not RAG_AVAILABLE:
         raise RagExtensionUnavailable(_RAG_UNAVAILABLE_MSG)
 
@@ -165,6 +196,9 @@ def get_connection() -> sqlite3.Connection:
         conn.close()
         _warn_unavailable_once(exc)
         raise RagExtensionUnavailable(_RAG_UNAVAILABLE_MSG) from exc
+    # Set before the schema step: the library loaded, so RAG runs on this machine
+    # whatever a broken database does next. A monotonic flip, so no lock.
+    _extension_loaded = True
 
     if not _schema_ready:
         with _schema_lock:
@@ -245,7 +279,10 @@ def reconcile_orphaned_ingestion_jobs() -> int:
     showing as stuck "processing" and become re-ingestible. Run at startup.
     No-op without RAG. Returns the number of jobs reset.
     """
-    if not RAG_AVAILABLE:
+    # rag_available(), not RAG_AVAILABLE: a venv with the package but no vec0 binary
+    # would otherwise raise out of startup and be logged as a reconcile failure, when
+    # there is simply nothing here to reconcile.
+    if not rag_available():
         return 0
     conn = get_connection()
     try:
