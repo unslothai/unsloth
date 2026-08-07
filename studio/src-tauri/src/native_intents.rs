@@ -9,6 +9,7 @@ use crate::native_path_policy::{
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -556,11 +557,22 @@ pub fn read_native_attachment_file(
     let mime_type = attachment_mime_type(path).ok_or_else(|| {
         "Only chat image attachments can be read for vision input.".to_string()
     })?;
-    let metadata = fs::metadata(path).map_err(|e| format!("Path is no longer available: {e}"))?;
+    let file = fs::File::open(path).map_err(|e| format!("Path is no longer available: {e}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|e| format!("Path is no longer available: {e}"))?;
     if !metadata.is_file() || metadata.len() > MAX_NATIVE_ATTACHMENT_BYTES {
         return Err("Image attachment is unavailable or too large.".to_string());
     }
-    let bytes = fs::read(path).map_err(|e| format!("Could not read image attachment: {e}"))?;
+    // The file can still grow between the stat and the read, so cap the reader
+    // itself rather than trusting the size we just measured.
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(MAX_NATIVE_ATTACHMENT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Could not read image attachment: {e}"))?;
+    if bytes.len() as u64 > MAX_NATIVE_ATTACHMENT_BYTES {
+        return Err("Image attachment is unavailable or too large.".to_string());
+    }
     let name = path
         .file_name()
         .map(|value| value.to_string_lossy().into_owned())
