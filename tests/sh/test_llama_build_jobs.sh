@@ -321,7 +321,7 @@ assert_eq "a trailing newline is not eaten" "1024" \
 # rather than the live one: MemAvailable moves between two reads, so comparing
 # a cached host figure against a second read is a race on any Linux runner.
 _RAM_FILE=$(mktemp)
-sed -n '/^_usable_ram_mb()/,/^}/p' "$SETUP_SH" > "$_RAM_FILE"
+sed -n '/^_vm_stat_avail_mb()/,/^}/p;/^_usable_ram_mb()/,/^}/p' "$SETUP_SH" > "$_RAM_FILE"
 printf 'MemTotal:       16777216 kB\nMemAvailable:   12582912 kB\n' > "$_TMPD/meminfo"
 # $1 = the cgroup allowance the stubbed reader returns.
 run_usable_ram() {
@@ -341,6 +341,30 @@ printf 'MemTotal:       16777216 kB\n' > "$_TMPD/meminfo-old"
 assert_eq "pre-3.14 kernels fall back to MemTotal" "16384" \
     "$(bash -c '. "$1"; _cgroup_free_mb() { :; }; _usable_ram_mb "$2"' \
         _ "$_RAM_FILE" "$_TMPD/meminfo-old")"
+
+# macOS has no MemAvailable, so the reclaim-aware figure comes from vm_stat.
+# Fed synthetically: 1024 + 1024 + 512 + 512 pages at the 16 KiB Apple Silicon
+# page size is 48 MiB, and the page size is read rather than assumed to be 4096.
+_VM_SAMPLE=$(printf '%s\n' \
+    "Mach Virtual Memory Statistics: (page size of 16384 bytes)" \
+    "Pages free:                                    1024." \
+    "Pages active:                                999999." \
+    "Pages inactive:                                1024." \
+    "Pages speculative:                              512." \
+    "Pages wired down:                            999999." \
+    "Pages purgeable:                                512.")
+run_vm_stat() { bash -c ". '$_RAM_FILE'; _vm_stat_avail_mb" _; }
+assert_eq "vm_stat sums the reclaimable classes" "48" "$(printf '%s\n' "$_VM_SAMPLE" | run_vm_stat)"
+# active and wired are resident, not reclaimable, and must not be counted.
+assert_eq "vm_stat ignores active and wired" "48" \
+    "$(printf '%s\n' "$_VM_SAMPLE" | sed 's/999999/1/' | run_vm_stat)"
+assert_eq "vm_stat gibberish yields nothing" "" "$(printf 'no stats here\n' | run_vm_stat)"
+
+# And _usable_ram_mb must consult it. An unreadable meminfo path forces the
+# branch that reads hw.memsize, so this runs on Linux runners too.
+assert_eq "_usable_ram_mb prefers vm_stat over hw.memsize" "777" \
+    "$(bash -c '. "$1"; _cgroup_free_mb() { :; }; _vm_stat_avail_mb() { printf "777"; }; _usable_ram_mb "$2"' \
+        _ "$_RAM_FILE" "$_TMPD/no-meminfo")"
 
 # End to end: a 4 GB allowance builds at -j1, not -j(cores).
 assert_eq "4 GB allowance floors at 1 job" "1" "$(run_jobs 20 "$(run_usable_ram 4096)" "")"

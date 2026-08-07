@@ -502,6 +502,22 @@ _cgroup_free_mb() {
     return 0
 }
 
+# macOS available memory in MiB, read from vm_stat on stdin. free + inactive +
+# speculative + purgeable is the reclaim-aware equivalent of MemAvailable; the
+# page size comes from the header rather than being assumed 4096, which is wrong
+# on Apple Silicon. Empty when the output does not parse.
+_vm_stat_avail_mb() {
+    awk '
+        /page size of/ {
+            for (i = 1; i < NF; i++) if ($i == "of") { ps = $(i + 1) + 0; break }
+        }
+        /^Pages (free|inactive|speculative|purgeable)/ {
+            gsub(/\./, "", $NF); pages += $NF
+        }
+        END { if (ps > 0 && pages > 0) printf "%d", pages * ps / 1048576 }'
+    return 0
+}
+
 # Usable RAM in MiB; empty when it cannot be read. MemAvailable, not MemTotal:
 # a workstation with 8 GiB already resident cannot host a 14 GiB compile just
 # because 16 GiB is fitted. /proc is not namespaced either, so a lower cgroup
@@ -509,7 +525,7 @@ _cgroup_free_mb() {
 # installed RAM. $1 is the meminfo file, an argument like every other reader's
 # path here so the tests can pin a number instead of racing the live one.
 _usable_ram_mb() {
-    local _meminfo=${1:-/proc/meminfo} _bytes _mb="" _free
+    local _meminfo=${1:-/proc/meminfo} _bytes _mb="" _free _avail
     if [ -r "$_meminfo" ]; then
         # MemAvailable counts reclaimable page cache; MemFree does not. Absent
         # before Linux 3.14, where MemTotal is the only thing to go on.
@@ -517,6 +533,11 @@ _usable_ram_mb() {
         [ -n "$_mb" ] || _mb=$(awk '/^MemTotal:/ { printf "%d", $2 / 1024; exit }' "$_meminfo")
     elif _bytes=$(sysctl -n hw.memsize 2>/dev/null); then
         [[ "$_bytes" =~ ^[0-9]+$ ]] && _mb=$(( _bytes / 1048576 ))
+        # macOS has no MemAvailable, so hw.memsize is installed RAM and would
+        # hand a busy Mac a budget it cannot honour. vm_stat is the equivalent;
+        # installed RAM stays the fallback if the output does not parse.
+        _avail=$(vm_stat 2>/dev/null | _vm_stat_avail_mb || true)
+        if [[ "$_avail" =~ ^[0-9]+$ ]] && [ "$_avail" -gt 0 ]; then _mb=$_avail; fi
     fi
     _free=$(_cgroup_free_mb /sys/fs/cgroup /proc/self/cgroup /proc/self/mountinfo)
     if [[ "$_free" =~ ^[0-9]+$ ]]; then
