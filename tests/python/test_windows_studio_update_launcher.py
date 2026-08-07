@@ -545,6 +545,7 @@ def test_a_failed_move_aside_warns_that_unsloth_may_not_upgrade(
     # fallback drops --upgrade-package, so unsloth stays at its old version.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     ran = []
+    seen = {}
 
     real_replace = studio.os.replace
 
@@ -557,7 +558,12 @@ def test_a_failed_move_aside_warns_that_unsloth_may_not_upgrade(
         return real_replace(source, destination)
 
     monkeypatch.setattr(studio.os, "replace", refuse_move)
-    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: ran.append(True))
+    def setup(**_kwargs):
+        ran.append(True)
+        # Sampled here: a successful update unlinks the backup on the way out.
+        seen["backup"] = (scripts / "unsloth.exe.update-backup").read_bytes()
+
+    monkeypatch.setattr(studio, "_run_setup_script", setup)
     monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
 
     _update(studio)
@@ -568,3 +574,4 @@ def test_a_failed_move_aside_warns_that_unsloth_may_not_upgrade(
     assert "may not be upgraded" in err
     # The backup still succeeded, so this is the move-aside failure alone.
     assert "could not back up" not in err
+    assert seen["backup"] == ORIGINAL_LAUNCHER
