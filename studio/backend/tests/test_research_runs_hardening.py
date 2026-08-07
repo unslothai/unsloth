@@ -273,7 +273,7 @@ def test_synthesis_length_limit_error_names_context_window():
     }
     message = _synthesis_length_limit_error(usage, requested_max_tokens = 16_384)
     assert "context window" in message.lower()
-    assert "Context Length" in message
+    assert "Increase Context Length" in message
 
 
 def test_every_research_prompt_path_is_budgeted():

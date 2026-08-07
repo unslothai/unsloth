@@ -788,7 +788,7 @@ def _synthesis_length_limit_error(
     if _completion_hit_context_wall(usage, requested_max_tokens = requested_max_tokens):
         return (
             "Local model report hit the loaded context window before completion. "
-            "Lower Context Length in chat settings or reduce the research evidence size."
+            "Increase Context Length in chat settings or reduce the research evidence size."
         )
     return "Local model report reached its output limit before completion"
 
