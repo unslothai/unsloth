@@ -5444,6 +5444,12 @@ class LlamaCppBackend:
         for name in cls._MANUAL_PLACEMENT_ENV_VARS:
             env.pop(name, None)
 
+    @classmethod
+    def _clear_device_placement_env(cls, env: dict[str, str]) -> None:
+        """Remove inherited device placement owned by an explicit ``gpu_ids``."""
+        for name in ("LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU"):
+            env.pop(name, None)
+
     @staticmethod
     def _select_gpus(
         model_size_bytes: int,
@@ -10897,11 +10903,18 @@ class LlamaCppBackend:
                 _mem_env = dict(os.environ)
                 if gpu_memory_mode == "manual":
                     self._clear_manual_placement_env(_mem_env)
+                # A gpu_ids pin drops the device flags from argv and env below,
+                # so classifying on them would pin for a --device cpu the child
+                # never sees. Same helpers the launch uses, so they cannot drift.
+                _mem_extra_args = extra_args
+                if gpu_ids is not None:
+                    _mem_extra_args = self._strip_device_extra_args(extra_args)
+                    self._clear_device_placement_env(_mem_env)
                 _mem_host_resident = self._weights_in_host_memory(
                     fully_gpu_offloaded = fully_gpu_offloaded,
                     gpu_memory_mode = gpu_memory_mode,
                     gpu_layers = gpu_layers,
-                    extra_args = extra_args,
+                    extra_args = _mem_extra_args,
                     gpu_indices = gpu_indices,
                     is_vulkan_backend = is_vulkan_backend,
                     binary = binary,
@@ -11028,8 +11041,7 @@ class LlamaCppBackend:
 
                 # A gpu_ids pin also owns inherited device placement.
                 if gpu_ids is not None:
-                    env.pop("LLAMA_ARG_DEVICE", None)
-                    env.pop("LLAMA_ARG_MAIN_GPU", None)
+                    self._clear_device_placement_env(env)
 
                 # The unpinnable-drafter drop above rewrites argv, which cannot reach the
                 # drafter the child picks up from its own env. The spec type goes too,

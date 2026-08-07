@@ -2138,3 +2138,81 @@ class TestACpuDevicePinIsHostResident:
             )
             is False
         )
+
+
+class TestAGpuIdsPinOverridesADeviceFlag:
+    """gpu_ids owns placement: the launch drops the device flags from argv and
+    the env twin, so the child really is on the GPU. Classifying on the raw
+    extras would pin a redundant host copy for a --device the child never sees.
+    Built with the same helpers the launch uses, so the two cannot drift."""
+
+    @staticmethod
+    def _child(extra_args, env, gpu_ids):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        env = dict(env or {})
+        if gpu_ids is not None:
+            extra_args = LlamaCppBackend._strip_device_extra_args(extra_args)
+            LlamaCppBackend._clear_device_placement_env(env)
+        return extra_args, env
+
+    @pytest.mark.parametrize(
+        "extras", [["--device", "cpu"], ["--device", "none"], ["-dev", "cpu"], ["--device=none"]]
+    )
+    def test_a_pin_makes_the_gate_ignore_the_device_flag(self, monkeypatch, extras):
+        extra_args, env = self._child(extras, None, gpu_ids = [0])
+        assert extra_args == [], "the launch drops these, so the gate must not see them"
+        assert (
+            TestHostMemoryGate._gate(
+                monkeypatch, fully_gpu_offloaded = True, extra_args = extra_args, env = env
+            )
+            is False
+        )
+
+    def test_a_pin_drops_the_env_twin_too(self, monkeypatch):
+        extra_args, env = self._child(None, {"LLAMA_ARG_DEVICE": "none"}, gpu_ids = [0])
+        assert env == {}
+        assert (
+            TestHostMemoryGate._gate(
+                monkeypatch, fully_gpu_offloaded = True, extra_args = extra_args, env = env
+            )
+            is False
+        )
+
+    def test_without_a_pin_the_device_flag_still_counts(self, monkeypatch):
+        extra_args, env = self._child(["--device", "cpu"], None, gpu_ids = None)
+        assert extra_args == ["--device", "cpu"]
+        assert (
+            TestHostMemoryGate._gate(
+                monkeypatch, fully_gpu_offloaded = True, extra_args = extra_args, env = env
+            )
+            is True
+        )
+
+    def test_a_pin_leaves_the_other_placement_extras_alone(self, monkeypatch):
+        """Only the device family is stripped, so -ot still forces host residency."""
+        extra_args, _env = self._child(
+            ["--device", "cpu", "-ot", r"\.ffn_.*=CPU"], None, gpu_ids = [0]
+        )
+        assert extra_args == ["-ot", r"\.ffn_.*=CPU"]
+        assert (
+            TestHostMemoryGate._gate(
+                monkeypatch, fully_gpu_offloaded = True, extra_args = extra_args
+            )
+            is True
+        )
+
+    def test_the_launch_really_sanitizes_before_classifying(self):
+        """Source check: the gate call must receive the stripped extras and env,
+        so this cannot regress into reading the raw ones again."""
+        import inspect
+        import re
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        strip = src.find("_mem_extra_args = self._strip_device_extra_args(extra_args)")
+        assert strip != -1, "the launch no longer strips device flags for the gate"
+        assert re.search(r"self\._clear_device_placement_env\(_mem_env\)", src)
+        call = src.find("self._weights_in_host_memory(", strip)
+        assert call != -1 and "extra_args = _mem_extra_args" in src[call : call + 400]
