@@ -135,7 +135,6 @@ def _replace_openai_citation_markers(text: str, url_citations: list[dict[str, An
     by_source = _build_citation_lookup(url_citations)
 
     def _sub(match: re.Match[str]) -> str:
-        # Resolve source IDs and drop locators or unknown tokens.
         rendered: list[str] = []
         for tok in match.group(1).split(_OPENAI_CITE_DELIM):
             if not tok:
@@ -240,7 +239,6 @@ def _anthropic_thinking_spec(model: str) -> Optional[_AnthropicThinkingSpec]:
     return None
 
 
-# Choose the newest Anthropic tool versions supported by each model family.
 _ANTHROPIC_NEW_WEB_PREFIXES = (
     "claude-opus-4-7",
     "claude-opus-4-6",
@@ -279,11 +277,9 @@ def _anthropic_code_execution_version(model: str) -> str:
     )
 
 
-# Anthropic code-execution versions share one beta header.
 _ANTHROPIC_CODE_EXECUTION_BETA = "code-execution-2025-08-25"
 
 
-# Enable Anthropic context compaction only for supported models.
 _ANTHROPIC_COMPACTION_PREFIXES = (
     "claude-opus-4-7",
     "claude-opus-4-6",
@@ -314,7 +310,6 @@ def _anthropic_supports_fast_mode(model: str) -> bool:
     return any(model == p or model.startswith(f"{p}-") for p in _ANTHROPIC_FAST_MODE_PREFIXES)
 
 
-# Cap forwarded citation text to bound SSE size.
 _CITED_TEXT_MAX_LEN = 512
 
 

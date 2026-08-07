@@ -87,7 +87,6 @@ def _merge_tool_call_delta(
     if isinstance(arguments, str):
         entry["function"]["arguments"] += arguments
     elif isinstance(arguments, Mapping):
-        # Accept mapping-form arguments from Ollama-compatible proxies.
         entry["function"]["arguments"] = json.dumps(arguments, ensure_ascii = False)
 
 

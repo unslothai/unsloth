@@ -205,7 +205,6 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
             try:
                 parsed = urlparse(_normalize_url_scheme(url))
             except ValueError:
-                # Ignore invalid URLs.
                 return "Reading page..."
             if parsed.scheme in ("http", "https") and parsed.hostname:
                 host = parsed.hostname
