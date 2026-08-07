@@ -90,6 +90,11 @@ def test_list_knowledge_bases_still_raises_real_database_errors(
         rag_routes.list_knowledge_bases(subject = "tester")
 
 
+@pytest.mark.skipif(
+    not hasattr(sqlite3.Connection, "enable_load_extension"),
+    reason = "this interpreter's sqlite3 is built without extension loading, so the "
+             "healthy path cannot be exercised (python.org macOS builds, some distros)",
+)
 def test_list_knowledge_bases_works_when_the_extension_loads(rag_home, rag_conn):
     # The healthy path is unchanged: a real connection still lists what is stored.
     from core.rag import store
