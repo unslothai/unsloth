@@ -34,8 +34,36 @@ except Exception as exc:  # noqa: BLE001 - any import failure disables RAG
 
 _RAG_UNAVAILABLE_MSG = "RAG unavailable: sqlite-vec extension could not be loaded"
 
+
+class RagExtensionUnavailable(RuntimeError):
+    """sqlite-vec is installed but its native library will not load (a missing
+    vec0 binary in the venv is the common macOS case). Subclasses RuntimeError so
+    existing ``except RuntimeError`` callers are unaffected; it exists so a caller
+    can tell "RAG is switched off on this machine" from a real database error and
+    degrade instead of returning 500 on every poll."""
+
+
 _schema_lock = threading.Lock()
 _schema_ready = False
+# The dylib is either there or it is not, and the UI polls the KB list on a timer, so
+# one warning per process says everything the repeat lines would. Same shape as the
+# per-job throttle in hub/services/snapshot_progress.py.
+_unavailable_lock = threading.Lock()
+_unavailable_warned = False
+
+
+def _warn_unavailable_once(exc: BaseException | None = None) -> None:
+    """Log the sqlite-vec unavailability at most once per process."""
+    global _unavailable_warned
+    with _unavailable_lock:
+        if _unavailable_warned:
+            return
+        _unavailable_warned = True
+    logger.warning(
+        "%s; RAG features are disabled for this session%s",
+        _RAG_UNAVAILABLE_MSG,
+        f" ({exc})" if exc is not None else "",
+    )
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -119,7 +147,7 @@ def get_connection() -> sqlite3.Connection:
     """Open rag.db (WAL + sqlite-vec loaded, schema created once). Raises if the extension is unavailable."""
     global _schema_ready
     if not RAG_AVAILABLE:
-        raise RuntimeError(_RAG_UNAVAILABLE_MSG)
+        raise RagExtensionUnavailable(_RAG_UNAVAILABLE_MSG)
 
     db_path = rag_db_path()
     ensure_dir(db_path.parent)
@@ -135,7 +163,8 @@ def get_connection() -> sqlite3.Connection:
         conn.enable_load_extension(False)
     except Exception as exc:  # noqa: BLE001
         conn.close()
-        raise RuntimeError(_RAG_UNAVAILABLE_MSG) from exc
+        _warn_unavailable_once(exc)
+        raise RagExtensionUnavailable(_RAG_UNAVAILABLE_MSG) from exc
 
     if not _schema_ready:
         with _schema_lock:
