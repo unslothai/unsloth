@@ -14,6 +14,14 @@ on:
   push:
     branches: [ "main" ]
 
+# Serialize, never cancel. The value of this workflow is the SARIF history in
+# the code scanning dashboard and the published OpenSSF result, so a superseded
+# run is still a data point worth keeping. Grouping only coalesces the burst of
+# main pushes down to one in-flight run plus one pending.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 # Declare default permissions as read only.
 permissions: read-all
 
