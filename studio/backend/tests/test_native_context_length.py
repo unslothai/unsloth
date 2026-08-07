@@ -368,6 +368,8 @@ class TestPydanticModels:
 # =====================================================================
 
 
+_HTTP_METHODS = frozenset({"get", "post", "put", "patch", "delete", "head", "options"})
+
 # `match` capture nodes, which bind a name without an ast.Name store. Looked up rather than named
 # directly so this file still parses on a Python without them.
 _MATCH_CAPTURES = tuple(
@@ -600,6 +602,13 @@ class TestRouteCompleteness:
                     continue
                 if isinstance(child, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
                     targets = child.targets if isinstance(child, ast.Assign) else [child.target]
+                    if len(targets) > 1 and any(
+                        isinstance(t, ast.Name) and t.id == name for t in targets
+                    ):
+                        # `fields = alias = helper(...)` binds the same dict twice. The binding
+                        # check sees one clean helper assignment and every other check is aimed at
+                        # `fields`, so `alias.pop(...)` would pass unseen.
+                        ok = False
                     for target in targets:
                         if not isinstance(target, ast.Subscript):
                             continue
@@ -636,6 +645,27 @@ class TestRouteCompleteness:
         check_reads(scope)
         return ok
 
+    @staticmethod
+    def _route_handler(tree, path: str):
+        """The function registered at ``path``, found through its router decorator.
+
+        The decorator is the definition of the endpoint, so matching on it rather than on the
+        function's name keeps this pointed at whatever serves ``/status`` after a rename.
+        """
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for decorator in node.decorator_list:
+                if not (isinstance(decorator, ast.Call) and decorator.args):
+                    continue
+                func = decorator.func
+                if not (isinstance(func, ast.Attribute) and func.attr in _HTTP_METHODS):
+                    continue
+                first = decorator.args[0]
+                if isinstance(first, ast.Constant) and first.value == path:
+                    return node
+        return None
+
     def _status_calls_getting_runtime_fields(self) -> list:
         """``InferenceStatusResponse(...)`` calls that actually receive the llama runtime fields.
 
@@ -655,13 +685,20 @@ class TestRouteCompleteness:
            edited at the real call site, and a future ``pop`` or ``del`` of
            ``native_context_length`` would leave this contract green while /status stopped
            reporting the field.
+
+        Only the ``/status`` handler is searched. The caller asserts that SOME call qualifies, so
+        over the whole module any unrelated route or helper that happens to hoist the same helper
+        would satisfy it while the GGUF branch of ``get_status`` quietly dropped the fields.
         """
         tree = ast.parse(self._source)
         funcs = [
             n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
         ]
+        handler = self._route_handler(tree, "/status")
+        if handler is None:
+            return []  # no handler to check is not a passing contract
         found = []
-        for call in ast.walk(tree):
+        for call in ast.walk(handler):
             if not (
                 isinstance(call, ast.Call)
                 and isinstance(call.func, ast.Name)
@@ -744,9 +781,10 @@ class TestRouteCompleteness:
         """Run the analyser over a synthetic route function instead of the real file."""
         import textwrap
 
-        self._source = "async def status(llama_backend):\n" + textwrap.indent(
-            textwrap.dedent(body).strip("\n"), "    "
-        )
+        self._source = (
+            '@router.get("/status", response_model = InferenceStatusResponse)\n'
+            "async def get_status(llama_backend):\n"
+        ) + textwrap.indent(textwrap.dedent(body).strip("\n"), "    ")
         return bool(self._status_calls_getting_runtime_fields())
 
     def test_the_hoist_analysis_accepts_the_shape_the_route_actually_uses(self):
@@ -786,7 +824,8 @@ class TestRouteCompleteness:
 
         self._source = textwrap.dedent(
             """
-            async def status(llama_backend, fields):
+            @router.get("/status")
+            async def get_status(llama_backend, fields):
                 response = InferenceStatusResponse(is_gguf = True, **fields)
                 fields = _llama_runtime_fields(llama_backend)
                 return response
@@ -857,6 +896,52 @@ class TestRouteCompleteness:
             return InferenceStatusResponse(is_gguf = True, **fields)
             """
         )
+
+    def test_the_hoist_analysis_rejects_a_chained_assignment(self):
+        """`fields = alias = helper(...)` binds the same dict under two names at once.
+
+        The binding check sees one clean helper assignment, and every other check is aimed at
+        `fields`, so the protected key can leave through `alias` unobserved.
+        """
+        assert not self._accepts(
+            """
+            fields = alias = _llama_runtime_fields(llama_backend)
+            alias.pop("native_context_length")
+            return InferenceStatusResponse(is_gguf = True, **fields)
+            """
+        )
+
+    def test_the_contract_is_tied_to_the_status_route(self):
+        """`test_status_path` asserts only that SOME call qualifies.
+
+        Searched over the whole module, an unrelated route or helper that hoists the same dict
+        would satisfy it while the GGUF branch of the real handler dropped the fields. The handler
+        is found through its router decorator, so a rename of the function still matches.
+        """
+        import textwrap
+
+        self._source = textwrap.dedent(
+            """
+            def _some_helper(llama_backend):
+                fields = _llama_runtime_fields(llama_backend)
+                return InferenceStatusResponse(is_gguf = True, **fields)
+
+            @router.get("/status", response_model = InferenceStatusResponse)
+            async def get_status(llama_backend):
+                return InferenceStatusResponse(is_gguf = True)
+            """
+        )
+        assert not self._status_calls_getting_runtime_fields()
+
+        # And with no /status handler at all there is nothing to certify.
+        self._source = textwrap.dedent(
+            """
+            def _some_helper(llama_backend):
+                fields = _llama_runtime_fields(llama_backend)
+                return InferenceStatusResponse(is_gguf = True, **fields)
+            """
+        )
+        assert not self._status_calls_getting_runtime_fields()
 
     def test_non_gguf_status_path_reports_runtime_context_length(self):
         """Non-GGUF InferenceStatusResponse reports context_length from model_info."""
