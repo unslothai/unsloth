@@ -84,6 +84,6 @@ test("repair rewrites legacy rows and leaves every other row untouched", () => {
   ]);
 
   assert.deepEqual(planLegacyTitleRepairs(threads, messages), [
-    { threadId: "a", title: LONG },
+    { threadId: "a", previousTitle: legacy, title: LONG },
   ]);
 });

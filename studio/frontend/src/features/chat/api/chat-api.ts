@@ -725,16 +725,27 @@ export async function saveChatThread(
   return savedThread;
 }
 
+export interface UpdateChatThreadOptions {
+  /** Apply the patch only while the row still holds this title. The server
+   *  answers 409 otherwise, so a rename beats a background rewrite. */
+  expectedTitle?: string;
+}
+
 export async function updateChatThread(
   threadId: string,
   patch: Partial<ThreadRecord>,
+  options: UpdateChatThreadOptions = {},
 ): Promise<ThreadRecord> {
+  const body =
+    options.expectedTitle === undefined
+      ? patch
+      : { ...patch, expectedTitle: options.expectedTitle };
   const response = await authFetch(
     `/api/chat/threads/${encodeURIComponent(threadId)}`,
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
+      body: JSON.stringify(body),
     },
   );
   const thread = await parseJsonOrThrow<ThreadRecord>(response);

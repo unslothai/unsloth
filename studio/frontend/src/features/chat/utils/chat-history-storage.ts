@@ -22,6 +22,7 @@ import {
   syncChatMessages,
   updateChatProject,
   updateChatThread,
+  type UpdateChatThreadOptions,
 } from "../api/chat-api";
 import { db, DEXIE_DB_NAME } from "../db";
 import type {
@@ -724,11 +725,12 @@ export async function saveStoredChatThread(
 export async function updateStoredChatThread(
   threadId: string,
   patch: Partial<ThreadRecord>,
+  options: UpdateChatThreadOptions = {},
 ): Promise<ThreadRecord | undefined> {
   if (isThreadIncognito(threadId)) return undefined;
   const thread = await ensureStoredChatThread(threadId);
   if (!thread) return undefined;
-  return updateChatThread(threadId, patch);
+  return updateChatThread(threadId, patch, options);
 }
 
 export async function deleteStoredChatThreads(

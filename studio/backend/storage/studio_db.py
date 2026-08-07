@@ -1583,7 +1583,17 @@ def upsert_chat_thread(thread: dict) -> dict:
         conn.close()
 
 
-def update_chat_thread(id: str, patch: dict) -> Optional[dict]:
+class ChatThreadTitleMismatch(Exception):
+    """The thread's title changed between the caller reading it and writing it."""
+
+
+def update_chat_thread(
+    id: str,
+    patch: dict,
+    expected_title: Optional[str] = None,
+) -> Optional[dict]:
+    """Patch a thread. With expected_title, the write only lands while the row
+    still holds that title, so a concurrent rename wins instead of being lost."""
     allowed = {
         "title": ("title", patch.get("title")),
         "modelType": ("model_type", patch.get("modelType")),
@@ -1621,13 +1631,22 @@ def update_chat_thread(id: str, patch: dict) -> Optional[dict]:
 
     conn = get_connection()
     try:
-        conn.execute(
-            f"UPDATE chat_threads SET {', '.join(assignments)} WHERE id = ?",
-            (*values, id),
+        # The title guard rides in the WHERE clause so the check and the write
+        # are one statement.
+        where = "WHERE id = ?" if expected_title is None else "WHERE id = ? AND title = ?"
+        guard = () if expected_title is None else (expected_title,)
+        cursor = conn.execute(
+            f"UPDATE chat_threads SET {', '.join(assignments)} {where}",
+            (*values, id, *guard),
         )
+        applied = cursor.rowcount
         conn.commit()
         row = conn.execute("SELECT * FROM chat_threads WHERE id = ?", (id,)).fetchone()
-        return _chat_thread_from_row(row) if row is not None else None
+        if row is None:
+            return None
+        if expected_title is not None and applied == 0:
+            raise ChatThreadTitleMismatch(id)
+        return _chat_thread_from_row(row)
     finally:
         conn.close()
 

@@ -3,10 +3,7 @@
 
 import { batchListChatMessages } from "../api/chat-api";
 import type { ThreadRecord } from "../types";
-import {
-  listStoredChatThreads,
-  updateStoredChatThread,
-} from "./chat-history-storage";
+import { updateStoredChatThread } from "./chat-history-storage";
 import {
   couldBeLegacyClippedTitle,
   planLegacyTitleRepairs,
@@ -29,30 +26,21 @@ const REPAIR_CONCURRENCY = 4;
 export async function repairLegacyChatTitles(
   threads: ThreadRecord[],
 ): Promise<number> {
-  const ids = threads
+  const candidates = threads
     .filter(
       (thread) =>
         couldBeLegacyClippedTitle(thread.title) && !attempted.has(thread.id),
     )
-    .map((thread) => thread.id)
     .slice(0, REPAIR_PER_PASS);
-  if (ids.length === 0) return 0;
+  if (candidates.length === 0) return 0;
+  const ids = candidates.map((thread) => thread.id);
   for (const id of ids) attempted.add(id);
 
   let repairs: ReturnType<typeof planLegacyTitleRepairs>;
   try {
     // One batched call, not one per row.
     const messagesByThreadId = await batchListChatMessages(ids);
-    // Read the titles last. The caller's list is a snapshot by now, and a
-    // rename that landed since has to win over the rewrite.
-    const current = await listStoredChatThreads({ includeArchived: true });
-    const byId = new Map(current.map((thread) => [thread.id, thread]));
-    repairs = planLegacyTitleRepairs(
-      ids
-        .map((id) => byId.get(id))
-        .filter((thread): thread is ThreadRecord => thread !== undefined),
-      messagesByThreadId,
-    );
+    repairs = planLegacyTitleRepairs(candidates, messagesByThreadId);
   } catch {
     // Nothing was decided, so let a later refresh try these again.
     for (const id of ids) attempted.delete(id);
@@ -60,10 +48,16 @@ export async function repairLegacyChatTitles(
   }
 
   let repaired = 0;
-  // A title patch leaves updatedAt alone, so Recents keeps its order.
   await runWithConcurrency(repairs, REPAIR_CONCURRENCY, async (repair) => {
     try {
-      await updateStoredChatThread(repair.threadId, { title: repair.title });
+      // expectedTitle guards the write: a rename that landed since this list
+      // was read answers 409 and keeps the user's title. A title patch leaves
+      // updatedAt alone, so Recents keeps its order.
+      await updateStoredChatThread(
+        repair.threadId,
+        { title: repair.title },
+        { expectedTitle: repair.previousTitle },
+      );
       repaired += 1;
     } catch {
       attempted.delete(repair.threadId);

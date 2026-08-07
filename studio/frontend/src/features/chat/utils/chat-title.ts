@@ -68,6 +68,8 @@ function textOf(message: MessageRecord | undefined): string {
 
 export interface LegacyTitleRepair {
   threadId: string;
+  /** The clipped title the rewrite is based on, guarding the write. */
+  previousTitle: string;
   title: string;
 }
 
@@ -83,7 +85,12 @@ export function planLegacyTitleRepairs(
     const userText = textOf(messages.find((m) => m.role === "user"));
     if (!isLegacyClippedTitle(thread.title, userText)) continue;
     const title = fallbackTitleFromUserText(userText);
-    if (title !== thread.title) repairs.push({ threadId: thread.id, title });
+    if (title === thread.title) continue;
+    repairs.push({
+      threadId: thread.id,
+      previousTitle: thread.title,
+      title,
+    });
   }
   return repairs;
 }
