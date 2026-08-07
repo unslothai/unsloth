@@ -277,8 +277,21 @@ _resolve_cuda_archs() {
     printf '%s' "$_archs"
 }
 
-# Reserved for the OS, and budgeted per compile job, both in MiB. An nvcc/hipcc
-# translation unit peaks near 2 GiB, so core count alone oversubscribes RAM.
+# Reserved for the OS, and budgeted per compile job, both in MiB.
+#
+# Measured on llama.cpp at ggml-org/llama.cpp master with CUDA 13.1: the
+# heaviest translation units are the flash-attention template instances, which
+# peak at ~400 MiB of RSS each, flat in the number of CUDA archs (nvcc compiles
+# archs one after another, so only wall time scales). A full CUDA build at -j20
+# peaked at 8.2 GiB in aggregate, and -j20 produced ~30 concurrent compiler
+# processes, because nvcc forks cicc and ptxas under itself.
+#
+# 2048 is deliberately above that measurement rather than equal to it. It has to
+# cover the ~1.5x process fan-out, MSVC on Windows and hipcc on ROCm which are
+# not measured here, older CUDA toolkits which were much heavier on the same
+# files (ggml-org/llama.cpp#17844 reports a build climbing past 16 GiB and
+# taking the machine with it), and the link step at the end. Erring high costs
+# build time on a small machine; erring low costs the machine.
 _LLAMA_BUILD_RESERVE_MB=2048
 _LLAMA_BUILD_MB_PER_JOB=2048
 

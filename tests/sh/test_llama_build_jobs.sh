@@ -3,9 +3,11 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # _llama_jobs_for() from studio/setup.sh: the cmake -j count.
 #
-# A 20-thread 16 GB box used to build llama.cpp at -j20. Each nvcc job peaks near
-# 2 GB, so that oversubscribed RAM until the machine stopped responding. The job
-# count is now the smaller of the core count and what RAM can hold.
+# A 20-thread 16 GB box used to build llama.cpp at -j20 and stopped responding.
+# A full CUDA build at -j20 measures ~8.2 GiB in aggregate, from ~30 concurrent
+# compiler processes, which a 16 GB machine with a desktop on it does not have.
+# The job count is now the smaller of the core count and what RAM can hold; see
+# _LLAMA_BUILD_* in setup.sh for where the per-job budget comes from.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

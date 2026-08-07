@@ -599,9 +599,11 @@ function Get-NvccMaxArch {
     return $null
 }
 
-# Reserved for the OS, and budgeted per compile job, both in MB. An nvcc/hipcc
-# translation unit peaks near 2 GB, so core count alone oversubscribes RAM.
-# Keep in step with _LLAMA_BUILD_* in setup.sh.
+# Reserved for the OS, and budgeted per compile job, both in MB. The budget is
+# set above the measured per-translation-unit peak rather than equal to it; see
+# the derivation on _LLAMA_BUILD_* in setup.sh, which these must match and which
+# the shell test pins. MSVC is the compiler here rather than gcc, and it is the
+# platform the freeze was reported on, so the headroom matters more, not less.
 $LlamaBuildReserveMb = 2048
 $LlamaBuildMbPerJob = 2048
 
