@@ -67,65 +67,111 @@ assert_eq "override wins over cores" "64" "$(run_jobs 4 4096 64)"
 assert_eq "zero override ignored" "7" "$(run_jobs 20 16384 0)"
 assert_eq "junk override ignored" "7" "$(run_jobs 20 16384 "lots")"
 
-# ── Container limits ──
-# /proc/meminfo is not namespaced, so it reports the host's RAM inside a
-# container. Without this a 4 GB container on a big host budgets from the host
-# and the build gets OOM-killed.
+# ── Container and slice limits ──
+# /proc/meminfo is not namespaced, so it reports the host inside a container.
+# Reading only the hierarchy root works in a container with a private cgroup
+# namespace, but under Slurm, systemd or --cgroupns=host the binding limit is
+# the process's own path or an ancestor's, and a root-only read sees "max".
 _CG_FILE=$(mktemp)
-sed -n '/^_cgroup_limit_mb()/,/^}/p' "$SETUP_SH" > "$_CG_FILE"
+for _fn in _cg_read _cg_limit _cg_dirs _cgroup_free_mb; do
+    sed -n "/^${_fn}()/,/^}/p" "$SETUP_SH" >> "$_CG_FILE"
+done
 if [ ! -s "$_CG_FILE" ]; then
-    echo "FAIL: could not extract _cgroup_limit_mb from setup.sh"
+    echo "FAIL: could not extract the cgroup readers from setup.sh"
     exit 1
 fi
 
 _TMPD=$(mktemp -d)
+# $1 = cgroup root, $2 = the /proc/self/cgroup stand-in
 run_cgroup() {
-    bash -c ". '$_CG_FILE'; _cgroup_limit_mb \"\$@\"" _ "$@"
+    bash -c ". '$_CG_FILE'; _cgroup_free_mb \"\$1\" \"\$2\"" _ "$1" "$2"
 }
 
-echo "=== cgroup limit ==="
+echo "=== cgroup limits ==="
 
-# 1) cgroup v2 in a 4 GB container.
-printf '4294967296' > "$_TMPD/v2"
-assert_eq "v2 limit read as MiB" "4096" "$(run_cgroup "$_TMPD/v2")"
+# 1) v2, limit on the process's own leaf: the container-with-cgroupns shape.
+mkdir -p "$_TMPD/leaf/a"
+printf 'max\n'        > "$_TMPD/leaf/memory.max"
+printf '4294967296\n' > "$_TMPD/leaf/a/memory.max"
+printf '0::/a\n'      > "$_TMPD/leaf.proc"
+assert_eq "v2 leaf limit" "4096" "$(run_cgroup "$_TMPD/leaf" "$_TMPD/leaf.proc")"
 
-# 2) v2 on an unconstrained host writes the literal "max".
-printf 'max' > "$_TMPD/v2max"
-assert_eq "v2 'max' is not a limit" "" "$(run_cgroup "$_TMPD/v2max")"
+# 2) v2, limit on an ancestor: the systemd slice and Slurm job-step shape. A
+#    root-only reader saw "max" here and budgeted from the host.
+mkdir -p "$_TMPD/anc/a/b"
+printf 'max\n'        > "$_TMPD/anc/memory.max"
+printf '4294967296\n' > "$_TMPD/anc/a/memory.max"
+printf 'max\n'        > "$_TMPD/anc/a/b/memory.max"
+printf '0::/a/b\n'    > "$_TMPD/anc.proc"
+assert_eq "v2 ancestor limit" "4096" "$(run_cgroup "$_TMPD/anc" "$_TMPD/anc.proc")"
 
-# 3) v1 in a 2 GB container, reached only when v2 is absent.
-printf '2147483648' > "$_TMPD/v1"
-assert_eq "v1 limit read as MiB" "2048" "$(run_cgroup "$_TMPD/missing" "$_TMPD/v1")"
+# 3) Usage is subtracted, paired with the directory that set the limit.
+printf '1073741824\n' > "$_TMPD/anc/a/memory.current"
+assert_eq "usage subtracted from its own limit" "3072" "$(run_cgroup "$_TMPD/anc" "$_TMPD/anc.proc")"
 
-# 4) v1's unlimited sentinel is enormous, so it loses the min() below.
-printf '9223372036854771712' > "$_TMPD/v1max"
-assert_eq "v1 sentinel is astronomically large" "8796093022207" "$(run_cgroup "$_TMPD/v1max")"
+# 4) Over-usage floors at zero rather than going negative.
+printf '8589934592\n' > "$_TMPD/anc/a/memory.current"
+assert_eq "over-usage floors at 0" "0" "$(run_cgroup "$_TMPD/anc" "$_TMPD/anc.proc")"
+rm -f "$_TMPD/anc/a/memory.current"
 
-# 5) No cgroup files at all: nothing to report.
-assert_eq "absent files report nothing" "" "$(run_cgroup "$_TMPD/missing" "$_TMPD/also-missing")"
+# 5) memory.high binds as much as memory.max, and the smaller wins.
+printf '2147483648\n' > "$_TMPD/anc/a/memory.high"
+assert_eq "memory.high counts, smallest wins" "2048" "$(run_cgroup "$_TMPD/anc" "$_TMPD/anc.proc")"
+rm -f "$_TMPD/anc/a/memory.high"
 
-# 6) v2 wins when both exist, since it is passed first.
-assert_eq "v2 wins over v1" "4096" "$(run_cgroup "$_TMPD/v2" "$_TMPD/v1")"
+# 6) v2 "max" everywhere is not a limit.
+mkdir -p "$_TMPD/unl"
+printf 'max\n'   > "$_TMPD/unl/memory.max"
+printf '0::/\n'  > "$_TMPD/unl.proc"
+assert_eq "v2 'max' is not a limit" "" "$(run_cgroup "$_TMPD/unl" "$_TMPD/unl.proc")"
 
-# The min() that ties it together. _total_ram_mb hardcodes the real cgroup paths,
-# so stub the reader to prove the wiring rather than just the parts.
+# 7) v1 under <root>/memory, with its own controller column.
+mkdir -p "$_TMPD/v1/memory/slice"
+printf '2147483648\n' > "$_TMPD/v1/memory/slice/memory.limit_in_bytes"
+printf '2:cpu,memory:/slice\n' > "$_TMPD/v1.proc"
+assert_eq "v1 limit via its controller column" "2048" "$(run_cgroup "$_TMPD/v1" "$_TMPD/v1.proc")"
+
+# 8) v1's unlimited sentinel is not a limit.
+printf '9223372036854771712\n' > "$_TMPD/v1/memory/slice/memory.limit_in_bytes"
+assert_eq "v1 sentinel is not a limit" "" "$(run_cgroup "$_TMPD/v1" "$_TMPD/v1.proc")"
+
+# 9) No cgroupfs at all: nothing to report, and no error.
+assert_eq "absent hierarchy reports nothing" "" "$(run_cgroup "$_TMPD/missing" "$_TMPD/missing.proc")"
+
+# The min() that ties it together. _usable_ram_mb hardcodes the real paths, so
+# stub the reader to prove the wiring rather than just the parts.
 _RAM_FILE=$(mktemp)
-sed -n '/^_total_ram_mb()/,/^}/p' "$SETUP_SH" > "$_RAM_FILE"
-# The stub ignores the real paths _total_ram_mb passes it and echoes $FAKE_LIMIT.
-run_total_ram() {
-    FAKE_LIMIT="$1" bash -c \
-        '. "$1"; _cgroup_limit_mb() { printf "%s" "$FAKE_LIMIT"; }; _total_ram_mb' _ "$_RAM_FILE"
+sed -n '/^_usable_ram_mb()/,/^}/p' "$SETUP_SH" > "$_RAM_FILE"
+run_usable_ram() {
+    FAKE_FREE="$1" bash -c \
+        '. "$1"; _cgroup_free_mb() { printf "%s" "$FAKE_FREE"; }; _usable_ram_mb' _ "$_RAM_FILE"
 }
-_HOST_MB=$(run_total_ram "")
+_HOST_MB=$(run_usable_ram "")
 
-# A limit below host RAM wins; one above it, including v1's sentinel, does not.
-assert_eq "a lower cgroup limit wins" "512" "$(run_total_ram 512)"
-assert_eq "a higher limit is ignored" "$_HOST_MB" "$(run_total_ram 8796093022207)"
-assert_eq "no limit leaves host RAM" "$_HOST_MB" "$(run_total_ram "")"
-assert_eq "a zero limit is ignored" "$_HOST_MB" "$(run_total_ram 0)"
+assert_eq "a lower cgroup allowance wins" "512" "$(run_usable_ram 512)"
+assert_eq "a higher allowance is ignored" "$_HOST_MB" "$(run_usable_ram 8796093022207)"
+assert_eq "no cgroup leaves host memory" "$_HOST_MB" "$(run_usable_ram "")"
 
-# End to end: a 4 GB container on this host builds at -j1, not -j(cores).
-assert_eq "4 GB container floors at 1 job" "1" "$(run_jobs 20 "$(run_total_ram 4096)" "")"
+# End to end: a 4 GB allowance builds at -j1, not -j(cores).
+assert_eq "4 GB allowance floors at 1 job" "1" "$(run_jobs 20 "$(run_usable_ram 4096)" "")"
+
+# Host memory comes from what is actually available, not what is installed: a
+# 16 GiB box with 8 GiB resident must not be handed a 14 GiB compile budget.
+# Match the awk field pattern, not the bare word, so prose about MemAvailable
+# cannot satisfy this on its own.
+if grep -q '/\^MemAvailable:/' "$SETUP_SH"; then
+    echo "  PASS: host memory reads MemAvailable"; PASS=$((PASS + 1))
+else
+    echo "  FAIL: host memory still reads MemTotal only"; FAIL=$((FAIL + 1))
+fi
+# MemTotal stays as the pre-3.14 fallback, and must come after MemAvailable.
+_AVAIL_LINE=$(grep -n '/\^MemAvailable:/' "$SETUP_SH" | head -1 | cut -d: -f1)
+_TOTAL_LINE=$(grep -n '/\^MemTotal:/' "$SETUP_SH" | head -1 | cut -d: -f1)
+if [ -n "$_AVAIL_LINE" ] && [ -n "$_TOTAL_LINE" ] && [ "$_AVAIL_LINE" -lt "$_TOTAL_LINE" ]; then
+    echo "  PASS: MemTotal kept as the fallback, after MemAvailable"; PASS=$((PASS + 1))
+else
+    echo "  FAIL: MemTotal must remain, and only as the fallback"; FAIL=$((FAIL + 1))
+fi
 
 rm -rf "$_TMPD" "$_CG_FILE" "$_RAM_FILE"
 
@@ -146,6 +192,11 @@ _check_ps1 "setup.ps1 caps the job count" '^[[:space:]]*\$NumCpu = Get-LlamaBuil
 _check_ps1 "setup.ps1 honours the override" 'UNSLOTH_LLAMA_BUILD_JOBS'
 _check_ps1 "setup.ps1 reserve matches setup.sh" '^\$LlamaBuildReserveMb = 2048$'
 _check_ps1 "setup.ps1 per-job budget matches setup.sh" '^\$LlamaBuildMbPerJob = 2048$'
+# Windows has no cgroups, but it has the same installed-versus-available gap.
+# AvailableMBytes counts the standby list; the Free counters do not.
+_check_ps1 "setup.ps1 budgets from available memory" 'AvailableMBytes'
+_check_ps1 "setup.ps1 feeds it to the job count" 'Get-LlamaJobsFor .*-TotalMb \(Get-UsableMemoryMb\)'
+_check_ps1 "setup.ps1 keeps installed RAM as the fallback" 'TotalPhysicalMemory'
 
 # The bare ProcessorCount is what caused the hang; it must not come back.
 if grep -qE '^\s*\$NumCpu = \[Environment\]::ProcessorCount' "$SETUP_PS1"; then

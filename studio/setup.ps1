@@ -624,8 +624,16 @@ function Get-LlamaJobsFor {
     return $jobs
 }
 
-# Total physical RAM in MB; 0 when it cannot be read.
-function Get-TotalPhysicalMb {
+# Usable RAM in MB; 0 when it cannot be read. Available, not installed: a box
+# with 8 GB already resident cannot host a 14 GB compile just because 16 GB is
+# fitted. AvailableMBytes counts the standby list, which the Free counters do
+# not, and the raw perf class is not localized the way Get-Counter paths are.
+# Installed RAM stays as the fallback, which is the pre-cap behaviour.
+function Get-UsableMemoryMb {
+    try {
+        $avail = (Get-CimInstance Win32_PerfRawData_PerfOS_Memory -ErrorAction Stop).AvailableMBytes
+        if ($avail -gt 0) { return [long]$avail }
+    } catch { }
     try {
         $bytes = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory
         if ($bytes -gt 0) { return [long]($bytes / 1MB) }
@@ -639,7 +647,7 @@ function Get-TotalPhysicalMb {
 }
 
 function Get-LlamaBuildJobs {
-    return (Get-LlamaJobsFor -Cores ([Environment]::ProcessorCount) -TotalMb (Get-TotalPhysicalMb))
+    return (Get-LlamaJobsFor -Cores ([Environment]::ProcessorCount) -TotalMb (Get-UsableMemoryMb))
 }
 
 # Classify the physical NVIDIA inventory for a cu126 fallback: "cu126" when it covers

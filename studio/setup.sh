@@ -302,35 +302,92 @@ _llama_jobs_for() {
     printf '%s' "$_jobs"
 }
 
-# Echo the cgroup memory limit in MiB, or nothing. Args: the v2 then v1 limit
-# files, first readable numeric one wins. v2 writes "max" and v1 an enormous
-# sentinel when unlimited; neither parses as a limit worth applying.
-_cgroup_limit_mb() {
-    local _f _raw
-    for _f in "$@"; do
-        [ -r "$_f" ] || continue
-        _raw=$(cat "$_f" 2>/dev/null || true)
-        [[ "$_raw" =~ ^[0-9]+$ ]] || continue
-        printf '%d' "$(( _raw / 1048576 ))"
-        return 0
-    done
+# Echo the first line of $1 with whitespace stripped, or nothing.
+_cg_read() {
+    [ -r "$1" ] || return 0
+    head -n 1 "$1" 2>/dev/null | tr -d '[:space:]'
     return 0
 }
 
-# Total RAM in MiB; empty when it cannot be read. /proc/meminfo is not namespaced,
-# so it reports the host inside a container and a memory-limited Docker or
-# Kubernetes build would budget from the host and get OOM-killed. A lower cgroup
-# limit wins; v1's unlimited sentinel never is one.
-_total_ram_mb() {
-    local _bytes _mb="" _limit
+# Echo $1 when it is a real limit. v2 writes "max"; v1 a near-2^63 sentinel.
+_cg_limit() {
+    [[ "$1" =~ ^[0-9]+$ ]] || return 0
+    [ "$1" -gt 0 ] && [ "$1" -lt 4611686018427387904 ] && printf '%s' "$1"
+    return 0
+}
+
+# Echo "$1/$2" and every ancestor up to $1, innermost first.
+_cg_dirs() {
+    local _root=$1 _cur
+    if [ -n "${2:-}" ] && [ "$2" != "/" ]; then
+        _cur="$_root/${2#/}"
+        while [ "$_cur" != "$_root" ] && [ "$_cur" != "/" ] && [ "$_cur" != "." ]; do
+            printf '%s\n' "$_cur"
+            _cur=$(dirname "$_cur")
+        done
+    fi
+    printf '%s\n' "$_root"
+}
+
+# Echo the memory free under the binding cgroup limit in MiB, or nothing.
+# Args: cgroup root, /proc/self/cgroup path; both taken as arguments so the
+# tests can drive a real tree. Mirrors unsloth/dataset_num_proc.py: reading the
+# hierarchy root alone only works in a container with a private cgroup
+# namespace, and under Slurm, systemd or --cgroupns=host the binding limit is
+# the process's own path or an ancestor's. Each limit pairs with the usage of
+# the directory that set it, because an ancestor's usage counts siblings this
+# process cannot see. The smallest remaining allowance wins.
+_cgroup_free_mb() {
+    local _root=$1 _proc=$2 _rel _dir _used _limit _free _name _min=""
+    _consider() {
+        [ -n "$1" ] || return 0
+        if [[ "$2" =~ ^[0-9]+$ ]]; then _free=$(( $1 - $2 )); else _free=$1; fi
+        [ "$_free" -lt 0 ] && _free=0
+        if [ -z "$_min" ] || [ "$_free" -lt "$_min" ]; then _min=$_free; fi
+        return 0
+    }
+    if [ -d "$_root" ]; then
+        # The v2 line is "0::<path>"; systemd hybrid mode adds v1 lines alongside.
+        _rel=$(awk -F: '/^0::/ { print $3; exit }' "$_proc" 2>/dev/null || true)
+        while IFS= read -r _dir; do
+            _used=$(_cg_read "$_dir/memory.current")
+            for _name in memory.max memory.high; do
+                _limit=$(_cg_limit "$(_cg_read "$_dir/$_name")")
+                _consider "$_limit" "$_used"
+            done
+        done <<< "$(_cg_dirs "$_root" "$_rel")"
+    fi
+    if [ -d "$_root/memory" ]; then
+        # v1 is "<id>:<controllers>:<path>", and mounts are often combined.
+        _rel=$(awk -F: '$2 ~ /(^|,)memory(,|$)/ { print $3; exit }' "$_proc" 2>/dev/null || true)
+        while IFS= read -r _dir; do
+            _used=$(_cg_read "$_dir/memory.usage_in_bytes")
+            _limit=$(_cg_limit "$(_cg_read "$_dir/memory.limit_in_bytes")")
+            _consider "$_limit" "$_used"
+        done <<< "$(_cg_dirs "$_root/memory" "$_rel")"
+    fi
+    [ -n "$_min" ] && printf '%d' "$(( _min / 1048576 ))"
+    return 0
+}
+
+# Usable RAM in MiB; empty when it cannot be read. MemAvailable, not MemTotal:
+# a workstation with 8 GiB already resident cannot host a 14 GiB compile just
+# because 16 GiB is fitted. /proc is not namespaced either, so a lower cgroup
+# allowance wins. macOS has no comparable reclaim-aware figure, so it keeps
+# installed RAM.
+_usable_ram_mb() {
+    local _bytes _mb="" _free
     if [ -r /proc/meminfo ]; then
-        _mb=$(awk '/^MemTotal:/ { printf "%d", $2 / 1024; exit }' /proc/meminfo)
+        # MemAvailable counts reclaimable page cache; MemFree does not. Absent
+        # before Linux 3.14, where MemTotal is the only thing to go on.
+        _mb=$(awk '/^MemAvailable:/ { printf "%d", $2 / 1024; exit }' /proc/meminfo)
+        [ -n "$_mb" ] || _mb=$(awk '/^MemTotal:/ { printf "%d", $2 / 1024; exit }' /proc/meminfo)
     elif _bytes=$(sysctl -n hw.memsize 2>/dev/null); then
         [[ "$_bytes" =~ ^[0-9]+$ ]] && _mb=$(( _bytes / 1048576 ))
     fi
-    _limit=$(_cgroup_limit_mb /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory/memory.limit_in_bytes)
-    if [[ "$_limit" =~ ^[0-9]+$ ]] && [ "$_limit" -ge 1 ]; then
-        if [ -z "$_mb" ] || [ "$_limit" -lt "$_mb" ]; then _mb=$_limit; fi
+    _free=$(_cgroup_free_mb /sys/fs/cgroup /proc/self/cgroup)
+    if [[ "$_free" =~ ^[0-9]+$ ]]; then
+        if [ -z "$_mb" ] || [ "$_free" -lt "$_mb" ]; then _mb=$_free; fi
     fi
     printf '%s' "$_mb"
     return 0
@@ -339,7 +396,7 @@ _total_ram_mb() {
 _llama_build_jobs() {
     _llama_jobs_for \
         "$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)" \
-        "$(_total_ram_mb)"
+        "$(_usable_ram_mb)"
 }
 
 # Opt-in staged GPU smoke test after a source build (#5854 gap 2). Default off:
