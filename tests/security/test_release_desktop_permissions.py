@@ -54,9 +54,7 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     # scan; creating a missing release is deferred to a separate step so a
     # non-draft release is never published empty for the length of the scan.
     release_step = next(
-        step
-        for step in publish["steps"]
-        if step.get("name") == "Validate versioned release state"
+        step for step in publish["steps"] if step.get("name") == "Validate versioned release state"
     )
     assert "gh release view" in release_step["run"]
     assert "--json tagName,isDraft,isPrerelease" in release_step["run"]
