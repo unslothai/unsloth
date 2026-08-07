@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { usePlatformStore } from "@/config/env";
 import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
@@ -52,11 +53,12 @@ import {
   CONTEXT_LENGTH_MIN,
   DEFAULT_MAX_SEQ_LENGTH,
   DEFAULT_PER_MODEL_CONFIG,
+  DRAFT_N_MAX_SPEC_TYPES,
   KV_CACHE_DTYPES,
   MAX_SEQ_LENGTH_MAX,
   MAX_SEQ_LENGTH_MIN,
   MAX_SEQ_LENGTH_STEP,
-  MTP_SPECULATIVE_TYPES,
+  MLX_KV_BITS,
   N_PARALLEL_MAX,
   N_PARALLEL_MIN,
   type PerModelConfig,
@@ -64,6 +66,7 @@ import {
   deletePerModelConfig,
   floorMaxSeqLength,
   isDefaultConfig,
+  isServedByMlx,
   normalizeMaxSeqLength,
   normalizePerModelConfig,
   readAdvancedSettingsOpen,
@@ -96,6 +99,7 @@ const SPECULATIVE_TYPE_LABELS: Record<
 > = {
   auto: "Auto",
   mtp: "MTP",
+  dspark: "DSpark",
   ngram: "Ngram",
   "mtp+ngram": "MTP+Ngram",
   off: "Off",
@@ -190,7 +194,7 @@ function ChatTemplateSetting({
         <span className={LABEL_CLASS}>Chat Template</span>
         <InfoHint>
           {readOnly
-            ? "Preview the model's chat template. Custom overrides apply to GGUF models for now."
+            ? "Preview the model's chat template. This model's backend cannot take a custom one."
             : "Override the model's chat template with custom Jinja. Applies when the model loads."}
         </InfoHint>
       </div>
@@ -494,10 +498,115 @@ function GpuMemorySettings({
   );
 }
 
+const MLX_KV_BITS_AUTO = "auto";
+
+function AdvancedSettingsToggle({
+  checked,
+  onCheckedChange,
+}: {
+  checked: boolean;
+  onCheckedChange: (next: boolean) => void;
+}) {
+  return (
+    <div className={ROW_CLASS}>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
+          Advanced settings
+        </span>
+        <InfoHint>
+          Extra options for how the model loads. Most setups don't need these.
+        </InfoHint>
+      </div>
+      <Switch
+        className="panel-switch shrink-0"
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+        aria-label="Show advanced settings"
+      />
+    </div>
+  );
+}
+
+function MlxAdvancedSettings({
+  config,
+  update,
+  outcome,
+  servedByMlx,
+  onEditTemplate,
+  templateOutcome,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  /** What the backend reported for this exact setting on the loaded model. */
+  outcome: string | null;
+  /** KV quantization is MLX-only; a CUDA safetensors model has no such control. */
+  servedByMlx: boolean;
+  onEditTemplate: () => void;
+  /** Why the loaded model could not take the override it was given. */
+  templateOutcome: string | null;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      {servedByMlx && (
+        <>
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>KV Cache Dtype</span>
+          <InfoHint>
+            Lower KV cache precision to save memory at the cost of some
+            quality. Auto keeps full precision; 8-bit is the safest reduction,
+            and lower widths save more memory.
+          </InfoHint>
+        </div>
+        <Select
+          value={config.mlxKvBits ? String(config.mlxKvBits) : MLX_KV_BITS_AUTO}
+          onValueChange={(v) =>
+            update({ mlxKvBits: v === MLX_KV_BITS_AUTO ? null : Number(v) })
+          }
+        >
+          <SelectTrigger
+            animateRadius={false}
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            className={`w-[92px] ${SELECT_TRIGGER_CLASS}`}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            <SelectItem value={MLX_KV_BITS_AUTO}>Auto</SelectItem>
+            {MLX_KV_BITS.map((bits) => (
+              <SelectItem key={bits} value={String(bits)}>
+                {bits}-bit
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      {outcome ? (
+        <p className="text-ui-11 leading-snug text-muted-foreground">
+          {outcome}
+        </p>
+      ) : null}
+        </>
+      )}
+      <ChatTemplateSetting
+        config={config}
+        onEditTemplate={onEditTemplate}
+        readOnly={!servedByMlx}
+      />
+      {templateOutcome ? (
+        <p className="text-ui-11 leading-snug text-muted-foreground">
+          {templateOutcome}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function GgufAdvancedSettings({
   config,
   update,
-  isMtp,
+  showDraftTokens,
   speculativeFallback,
   onEditTemplate,
   layerCount,
@@ -509,7 +618,7 @@ function GgufAdvancedSettings({
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
-  isMtp: boolean;
+  showDraftTokens: boolean;
   speculativeFallback: string;
   onEditTemplate: () => void;
   layerCount: number | null;
@@ -561,8 +670,12 @@ function GgufAdvancedSettings({
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS_WRAP}>Speculative Decoding</span>
           <InfoHint>
-            Faster generation with no accuracy hit. Auto picks MTP / ngram based
-            on the model and platform. Pick a strategy to force it.
+            Faster generation. Auto picks the best strategy for the model and
+            platform: DSpark when the model ships a drafter sidecar, otherwise
+            MTP / ngram. Pick a strategy to force it, or Off to disable.
+            DSpark downloads a sidecar of about 11 GB and trades VRAM for speed;
+            on quantized targets its greedy output can differ from a non
+            speculative run. MTP and ngram do not change output.
           </InfoHint>
         </div>
         <Select
@@ -570,8 +683,9 @@ function GgufAdvancedSettings({
           onValueChange={(v) =>
             update({
               speculativeType: v,
-              specDraftNMax:
-                v === "mtp" || v === "mtp+ngram" ? config.specDraftNMax : null,
+              specDraftNMax: DRAFT_N_MAX_SPEC_TYPES.has(v)
+                ? config.specDraftNMax
+                : null,
             })
           }
         >
@@ -593,13 +707,13 @@ function GgufAdvancedSettings({
         </Select>
       </div>
 
-      {isMtp && (
+      {showDraftTokens && (
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Draft Tokens</span>
             <InfoHint>
-              Max MTP draft tokens per step. Leave blank for the platform
-              default (2 on GPU, 3 on CPU/Mac).
+              Max draft tokens per step. Leave blank for the default (MTP: 2 on
+              GPU, 3 on CPU/Mac; DSpark: 3).
             </InfoHint>
           </div>
           <input
@@ -722,6 +836,19 @@ export function ModelConfigPage({
   showHeader = true,
 }: ModelConfigPageProps) {
   const rememberId = useId();
+  const platformDeviceType = usePlatformStore((s) => s.deviceType);
+  const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const mlxKvQuantReason = useChatRuntimeStore((s) => s.mlxKvQuantReason);
+  const chatTemplateOverrideReason = useChatRuntimeStore(
+    (s) => s.chatTemplateOverrideReason,
+  );
+  const loadedChatTemplateOverride = useChatRuntimeStore(
+    (s) => s.loadedChatTemplateOverride,
+  );
+  const mlxKvQuantNote = useChatRuntimeStore((s) => s.mlxKvQuantNote);
+  const loadedMlxKvBitsRequested = useChatRuntimeStore(
+    (s) => s.loadedMlxKvBitsRequested,
+  );
   const isActiveModel = loadedConfig != null;
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const activeNativePathToken = useChatRuntimeStore(
@@ -759,6 +886,26 @@ export function ModelConfigPage({
   const [savedRemember, setSavedRemember] = useState(() => initial.remembered);
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
   const [templateOpen, setTemplateOpen] = useState(false);
+  // Compare against what the backend was asked for, not what it applied: staging a
+  // new value must retire a verdict that answered a different request.
+  const chatTemplateOutcome =
+    isActiveModel &&
+    (configState.chatTemplateOverride ?? null) ===
+      (loadedChatTemplateOverride ?? null)
+      ? chatTemplateOverrideReason
+      : null;
+  const mlxKvQuantOutcome =
+    isActiveModel &&
+    (configState.mlxKvBits ?? null) === (loadedMlxKvBitsRequested ?? null)
+      ? // Both, not either: dropping the note promises savings before the offset
+        // where quantization actually starts.
+        [mlxKvQuantReason, mlxKvQuantNote].filter(Boolean).join(". ") || null
+      : null;
+  const servedByMlx = isServedByMlx(
+    target.isGguf,
+    platformDeviceType,
+    platformChatOnlyReason,
+  );
   // Read live, not snapshotted at mount: the sidebar copy stays mounted while collapsed.
   const advancedPreference = useSyncExternalStore(
     subscribeAdvancedSettingsOpen,
@@ -768,7 +915,14 @@ export function ModelConfigPage({
   // Until the switch is used anywhere, a model carrying non-default advanced values opens the
   // section itself. Frozen at mount so editing a field back to its default cannot close it.
   const [autoOpenAdvanced] = useState(() => hasNonDefaultAdvanced(configState));
-  const showAdvanced = advancedPreference ?? autoOpenAdvanced;
+  // Frozen like the rest of the auto-open decision, so editing the width does not
+  // reopen the section the user just closed.
+  const [initialMlxKvBits] = useState(() => configState.mlxKvBits ?? null);
+  // Applicability stays live, unlike the snapshot above: MLX can become available
+  // after mount, and a width that starts applying then has to surface.
+  const autoOpenForMlxKvBits = servedByMlx && initialMlxKvBits != null;
+  const showAdvanced =
+    advancedPreference ?? (autoOpenAdvanced || autoOpenForMlxKvBits);
   const toggleAdvanced = saveAdvancedSettingsOpen;
   const contextInputRef = useRef<NumericValueInputHandle>(null);
   const maxSeqLengthInputRef = useRef<NumericValueInputHandle>(null);
@@ -881,9 +1035,11 @@ export function ModelConfigPage({
       ...patch,
     }));
 
-  const isMtp =
+  // True for every mode that takes a draft depth, DSpark included, so this
+  // gates the Draft Tokens row rather than naming a drafter.
+  const showDraftTokens =
     config.speculativeType != null &&
-    MTP_SPECULATIVE_TYPES.has(config.speculativeType);
+    DRAFT_N_MAX_SPEC_TYPES.has(config.speculativeType);
   const nativeContextLength =
     target.meta.contextLength ?? stagedDims?.contextLength ?? null;
   const activeLoadedContext =
@@ -1190,7 +1346,7 @@ export function ModelConfigPage({
               <GgufAdvancedSettings
                 config={config}
                 update={update}
-                isMtp={isMtp}
+                showDraftTokens={showDraftTokens}
                 speculativeFallback={speculativeFallback}
                 onEditTemplate={() => setTemplateOpen(true)}
                 layerCount={stagedDims?.layerCount ?? null}
@@ -1202,23 +1358,10 @@ export function ModelConfigPage({
               />
             )}
 
-            <div className={ROW_CLASS}>
-              <div className="flex min-w-0 items-center gap-1.5">
-                <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
-                  Advanced settings
-                </span>
-                <InfoHint>
-                  Extra options for how the model loads. Most setups don't need
-                  these.
-                </InfoHint>
-              </div>
-              <Switch
-                className="panel-switch shrink-0"
-                checked={showAdvanced}
-                onCheckedChange={toggleAdvanced}
-                aria-label="Show advanced settings"
-              />
-            </div>
+            <AdvancedSettingsToggle
+              checked={showAdvanced}
+              onCheckedChange={toggleAdvanced}
+            />
           </>
         )}
         {!target.isGguf && (
@@ -1234,10 +1377,19 @@ export function ModelConfigPage({
                 })
               }
             />
-            <ChatTemplateSetting
-              config={config}
-              onEditTemplate={() => setTemplateOpen(true)}
-              readOnly={true}
+            {showAdvanced && (
+              <MlxAdvancedSettings
+                config={config}
+                update={update}
+                outcome={mlxKvQuantOutcome}
+                servedByMlx={servedByMlx}
+                onEditTemplate={() => setTemplateOpen(true)}
+                templateOutcome={chatTemplateOutcome}
+              />
+            )}
+            <AdvancedSettingsToggle
+              checked={showAdvanced}
+              onCheckedChange={toggleAdvanced}
             />
           </>
         )}
@@ -1301,7 +1453,7 @@ export function ModelConfigPage({
         value={config.chatTemplateOverride}
         defaultTemplate={resolvedDefaultTemplate}
         defaultLoading={resolvedDefaultLoading}
-        readOnly={!target.isGguf}
+        readOnly={!target.isGguf && !servedByMlx}
         onSave={(override) => update({ chatTemplateOverride: override })}
       />
     </div>

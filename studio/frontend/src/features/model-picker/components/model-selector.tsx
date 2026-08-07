@@ -36,7 +36,10 @@ import {
   useState,
 } from "react";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
-import { isOllamaLinkPath } from "../model-config/model-identity";
+import {
+  isOllamaLinkPath,
+  publicModelId,
+} from "../model-config/model-identity";
 import {
   type PerModelConfig,
   resolveInitialConfig,
@@ -761,13 +764,16 @@ export function ModelSelector({
   const currentModel = useMemo(() => {
     if (!selected) return undefined;
     const found = optionById.get(selected);
+    // A model loaded by path is absent from the list, and its raw id fills the
+    // header; label it with the public id the backend reports as active_model.
+    const name = publicModelId(selected);
     if (activeGgufVariant) {
       const desc = `GGUF · ${activeGgufVariant}`;
       return found
         ? { ...found, description: desc }
-        : { id: selected, name: selected, description: desc };
+        : { id: selected, name, description: desc };
     }
-    return found ?? { id: selected, name: selected };
+    return found ?? { id: selected, name };
   }, [selected, optionById, activeGgufVariant]);
 
   function handleSelect(id: string, meta: ModelSelectorChangeMeta) {

@@ -1508,8 +1508,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
     <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
       {/* Top: the model selector, sitting clear of the sidebar and level with the controls column below. Load progress shows in a toast. */}
-      <div className="flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
-        <div className="flex items-center gap-3">
+      <div className="pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+        <div className="pointer-events-auto flex items-center gap-3">
           <ModelSelector
             models={VIDEO_MODELS}
             value={status?.loaded ? status.repo_id ?? undefined : undefined}
@@ -1536,7 +1536,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
             </div>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="pointer-events-auto flex items-center gap-2">
           {/* Images is a separate page, so it sits out here, not in this page's controls. */}
           <MediaPageLink to="/images" label="Images" icon={Image03Icon} />
         </div>
@@ -1545,15 +1545,20 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       {/* Controls rail + preview canvas, as on the Images tabs: no cards, a rule the full page
           height. Full width, so the preview grows with the window.
           Gutters match Images, so both pages' content starts at the same 40px. */}
-      <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-hidden pl-2 pr-5 pt-9 sm:pr-8">
+      {/* overflow-x-hidden: an unset overflow-x computes to auto beside overflow-y-auto,
+          letting a wide row pan the page sideways on a phone. */}
+      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pl-2 pr-5 pt-9 sm:pr-8 md:flex-row md:overflow-hidden">
         {/* Widened by the pl-8 so the controls keep their old width. */}
-        <div className="relative flex w-[400px] shrink-0 flex-col overflow-hidden border-r border-border/60 pl-8">
+        <div className="relative flex w-full shrink-0 flex-col border-b border-border/60 pl-8 md:w-[400px] md:overflow-hidden md:border-r md:border-b-0">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-20 pl-0.5 pr-7",
+              // pb-20 at every width: the floating Generate button below is absolutely
+              // positioned over this rail and stands 72px tall (h-11 + pb-7), so a smaller
+              // phone padding puts it on top of the last control.
+              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 pb-20 pl-0.5 pr-7 md:overflow-y-auto",
               settingsFadeClass,
             )}
           >
@@ -1697,7 +1702,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           </div>
         </div>
 
-        <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden pl-2">
+        <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden pl-2 md:min-h-0">
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6">
             {selected && selectedSrc ? (
               <>
