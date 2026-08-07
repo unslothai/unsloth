@@ -625,7 +625,12 @@ def video_capability() -> dict:
             "Hardware detection failed on this host, so video generation is disabled. The server "
             "log records the underlying error; restart Unsloth Studio to retry detection."
         )
-    elif is_apple_silicon() or get_device() == DeviceType.MLX:
+    elif platform.system() == "Darwin" or get_device() == DeviceType.MLX:
+        # Every Mac, not just Apple Silicon. An Intel Mac detects as plain CPU, so an
+        # is_apple_silicon() test drops it into the branches below and tells the user to
+        # install PyTorch or add a GPU. Neither enables video here: the pipelines have no
+        # supported macOS path at all, so the honest answer is the same on both Macs.
+        # The MLX arm covers an Apple host whose platform probe somehow disagrees.
         reason = "macos_unsupported"
         message = "Video generation on macOS is coming soon."
     elif not _has_torch():
