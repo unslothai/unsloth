@@ -3170,11 +3170,9 @@ _UNICODE_TO_ASCII: dict[str, str] = {
 def _safe_print(*args: object, **kwargs: object) -> None:
     """Drop-in print() replacement that survives non-UTF-8 consoles and detached stdout.
 
-    Also closes an open progress bar line first. _progress() leaves the cursor
-    mid-line, so anything printed between two progress steps would otherwise be
-    glued onto the bar. Doing it here rather than per call site is what makes the
-    rule hold for every message: nothing in this module calls print() directly
-    (enforced by test_no_bare_print_calls).
+    Closes an open progress bar line first: _progress() leaves the cursor mid-line,
+    so centralising it here (nothing calls print() directly -- see
+    test_no_bare_print_calls) keeps every message off the bar.
     """
     _end_progress_line()
     try:
@@ -3265,7 +3263,7 @@ def _end_progress_line() -> None:
     try:
         sys.stdout.write("\n")
         sys.stdout.flush()
-    # Every _safe_print() lands here, so a detached (None) or closed stdout must not
+    # Every _safe_print() lands here: a detached (None) or closed stdout must not
     # take down a message bound for stderr.
     except (AttributeError, OSError, ValueError):
         pass
@@ -3273,11 +3271,7 @@ def _end_progress_line() -> None:
 
 
 def _note(message: str, color_fn = None) -> None:
-    """Print a detail line under the current step, aligned to the value column.
-
-    Closing the progress bar line is _safe_print()'s job; this adds the column
-    alignment, so a mid-install note reads as a detail of the step above it.
-    """
+    """Print a detail line under the current step, aligned to the value column."""
     if color_fn is None:
         color_fn = _dim
     # Verbose prints no bar and no step line, so there is no value column to align to.
@@ -3766,8 +3760,8 @@ def _has_working_git() -> bool:
 def install_python_stack() -> int:
     global USE_UV, _STEP, _TOTAL, _PROGRESS_LINE_ACTIVE
     _STEP = 0
-    # An aborted earlier run in this process would leave it set, and every
-    # _safe_print() now consumes it -- the first message would get a stray newline.
+    # An aborted earlier run leaves it set, and every _safe_print() consumes it --
+    # the first message would get a stray newline.
     _PROGRESS_LINE_ACTIVE = False
 
     # install.sh sets SKIP_STUDIO_BASE=1 to avoid reinstalling base packages;

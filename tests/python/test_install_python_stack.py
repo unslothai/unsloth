@@ -290,8 +290,8 @@ class TestPinnedIndexClearsUvEnv:
 
 class TestProgressLineNotes:
     """_progress() leaves the cursor mid-line, so anything printed between two
-    progress steps has to close that line first. Before this was centralised in
-    _note(), a real install rendered the torchao message glued onto the bar:
+    progress steps must close that line first. Before centralising this, a real
+    install glued the torchao message onto the bar:
       deps  [=======-------------]  5/14  dependency overrides   torch 2.11...
     """
 
@@ -307,8 +307,8 @@ class TestProgressLineNotes:
         with (
             mock.patch.dict(os.environ, {"COLUMNS": columns}),
             mock.patch.object(ips, "VERBOSE", verbose),
-            # _HAS_COLOR is resolved once at import from the tty, so without this the
-            # assertions below break under FORCE_COLOR=1 or `pytest -s` in a terminal.
+            # _HAS_COLOR is resolved once at import from the tty; pinning it keeps the
+            # assertions valid under FORCE_COLOR=1 or `pytest -s` in a terminal.
             mock.patch.object(ips, "_HAS_COLOR", color),
             mock.patch.object(ips, "_TOTAL", 14),
             mock.patch.object(ips, "_STEP", 4),
@@ -336,8 +336,8 @@ class TestProgressLineNotes:
         assert out == f"{' ' * (ips._INDENT + ips._COL)}standalone\n"
 
     def test_step_still_closes_an_active_bar(self):
-        """_step() used to inline the line-break logic that _end_progress_line()
-        now owns; it must keep breaking out of the bar."""
+        """_step() handed its inline line-break logic to _end_progress_line(); it
+        must keep breaking out of the bar."""
         out = self._render(
             lambda: (ips._progress("dependency overrides"), ips._step("deps", "installed"))
         )
@@ -345,8 +345,8 @@ class TestProgressLineNotes:
         assert len(bar_lines) == 1 and "installed" not in bar_lines[0], out
 
     def test_progress_line_state_is_cleared(self):
-        """A stale _PROGRESS_LINE_ACTIVE would insert a blank line before the
-        next note instead of closing a bar that is no longer open."""
+        """A stale _PROGRESS_LINE_ACTIVE blank-lines the next note instead of
+        closing a bar that is no longer open."""
 
         def emit():
             ips._progress("dependency overrides")
@@ -359,9 +359,8 @@ class TestProgressLineNotes:
 
     def test_uv_fallback_warning_does_not_glue_onto_the_bar(self):
         """A real producer, not _note() directly: pip_install() warns on the uv
-        fallback while the bar for its own step is still open. This is the path
-        that survived the first pass of this fix, when only the call sites that
-        already used the '   message' convention were converted."""
+        fallback while the bar for its own step is still open. This path survived
+        the first pass of the fix, which only converted '   message' call sites."""
         fake = mock.Mock(returncode = 1, stdout = "uv output")
         with (
             mock.patch.object(ips, "USE_UV", True),
@@ -380,8 +379,7 @@ class TestProgressLineNotes:
 
     def test_no_bare_print_calls(self):
         """The line-close lives in _safe_print(), so a direct print() anywhere in
-        the module silently reintroduces the glued-line bug. Roughly 50 call
-        sites across the CUDA/ROCm/CPU/XPU repair helpers rely on this."""
+        the module silently reintroduces the glued-line bug."""
         src = Path(ips.__file__).read_text(encoding = "utf-8")
         tree = ast.parse(src)
         allowed = [
@@ -403,9 +401,8 @@ class TestProgressLineNotes:
         )
 
     def test_no_direct_stdout_writes(self):
-        """print() is not the only way to bypass the line-close: _progress() writes
-        the bar with sys.stdout.write, and copying that idiom elsewhere would glue
-        onto the bar again while passing test_no_bare_print_calls."""
+        """Copying _progress()'s sys.stdout.write idiom elsewhere would glue onto
+        the bar again while still passing test_no_bare_print_calls."""
         tree = ast.parse(Path(ips.__file__).read_text(encoding = "utf-8"))
         allowed = [
             (n.lineno, n.end_lineno)
@@ -428,9 +425,8 @@ class TestProgressLineNotes:
         )
 
     def test_no_message_starts_with_a_newline(self):
-        """_safe_print() closes the bar itself now, so a message whose literal still
-        opens with \\n emits a second newline and a blank line. Four ROCm messages
-        carried one from when the leading \\n was the only line terminator."""
+        """_safe_print() closes the bar itself now, so a message literal still
+        opening with \\n emits a second newline and a blank line."""
         tree = ast.parse(Path(ips.__file__).read_text(encoding = "utf-8"))
 
         def leads_with_newline(node) -> bool:
@@ -455,8 +451,8 @@ class TestProgressLineNotes:
         )
 
     def test_note_wraps_at_the_value_column_on_a_narrow_terminal(self):
-        """Wrapping is the only thing separating _note() from _safe_print(), and no
-        other test makes it wrap: every message here fits on one line at COLUMNS=100."""
+        """Wrapping is all that separates _note() from _safe_print(), and no other
+        test makes it wrap: every message fits one line at COLUMNS=100."""
         msg = (
             "AMD GPU detected but ROCm PyTorch could not be auto-installed. Manual install "
             "may be required. See: https://docs.unsloth.ai/get-started/install-and-update/amd"
@@ -471,22 +467,22 @@ class TestProgressLineNotes:
         assert any("https://docs.unsloth.ai" in ln for ln in lines), out
 
     def test_note_falls_back_to_the_flat_indent_in_verbose_mode(self):
-        """Verbose prints no bar and no step line, so aligning to the value column
-        would indent under nothing while neighbouring messages sit at column 3."""
+        """Verbose prints no bar and no step line, so the value column would indent
+        under nothing while neighbouring messages sit at column 3."""
         out = self._render(lambda: ips._note("hello"), verbose = True)
         assert out == "   hello\n", repr(out)
 
     def test_note_still_aligns_when_colour_is_on(self):
-        """The layout has to survive a colour-enabled terminal, where every line
-        carries ANSI codes that do not occupy columns."""
+        """The layout must survive a colour terminal, where every line carries ANSI
+        codes that occupy no columns."""
         out = self._render(lambda: ips._note("hello"), color = True)
         assert "\033[" in out, "expected ANSI codes with _HAS_COLOR on"
         plain = re.sub(r"\033\[[0-9;]*m", "", out)
         assert plain == f"{' ' * (ips._INDENT + ips._COL)}hello\n", repr(plain)
 
     def test_safe_print_to_stderr_survives_a_closed_stdout(self):
-        """_safe_print() touches stdout on every call now, so the manifest error
-        paths that write to stderr must not die on an unrelated stdout failure."""
+        """_safe_print() touches stdout on every call now, so stderr-bound manifest
+        errors must not die on an unrelated stdout failure."""
         closed = io.StringIO()
         closed.close()
         err = io.StringIO()
@@ -499,8 +495,8 @@ class TestProgressLineNotes:
         assert err.getvalue() == "error: boom\n"
 
     def test_install_entry_clears_a_stale_progress_line(self):
-        """_PROGRESS_LINE_ACTIVE outlives an aborted run. On main only _step() read
-        it; now every _safe_print() does, so a stale flag newlines the next run."""
+        """_PROGRESS_LINE_ACTIVE outlives an aborted run, and now every _safe_print()
+        reads it, so a stale flag newlines the next run."""
         src = Path(ips.__file__).read_text(encoding = "utf-8")
         fn = next(
             n
