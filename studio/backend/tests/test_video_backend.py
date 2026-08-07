@@ -2528,6 +2528,49 @@ def test_the_h3_native_load_never_puts_the_vae_on_the_cpu():
     assert "--vae-on-cpu" not in offload_flags(OFFLOAD_MODEL, vae_on_cpu = False)
 
 
+def test_the_h3_native_path_pins_cfg_scale_to_one():
+    """H3 aborts at any cfg above 1.0, so the guidance slider must never reach sd-cli.
+
+    H3 is distilled and CFG-free: the empty unconditional prompt encodes to zero tokens, and the
+    resulting transposed tensor trips `GGML_ASSERT(!ggml_is_transposed(a))` in ggml.c. SIGABRT,
+    exit 134. Measured: cfg 1.0 renders, cfg 1.5 and cfg 4.0 both abort. sd.cpp's own default is
+    7.0, so this is a crash a plausible refactor reintroduces by simply forwarding `guidance` the
+    way every other family does.
+
+    The family already sets `supports_cfg = False`, but that only gates the diffusers path; the
+    native path builds its own params object. Asserted at the source level because reproducing the
+    abort needs a built sd-cli and the H3 weights.
+    """
+    import ast
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parent.parent / "core" / "inference" / "video.py").read_text(
+        encoding = "utf-8"
+    )
+    calls = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "SdCppVideoGenParams"
+    ]
+    assert calls, "video.py no longer builds native video params"
+    for call in calls:
+        pinned = [kw for kw in call.keywords if kw.arg == "cfg_scale"]
+        assert pinned, "the H3 native path must pass cfg_scale explicitly, not fall back to a default"
+        value = pinned[0].value
+        assert isinstance(value, ast.Constant), (
+            "cfg_scale must be a literal 1.0 on the H3 native path; forwarding the request's "
+            "guidance reintroduces GGML_ASSERT(!ggml_is_transposed(a)), SIGABRT exit 134"
+        )
+        assert value.value == 1.0, value.value
+
+    # And the family keeps declaring it has no CFG, so the UI does not offer the slider either.
+    from core.inference.video_families import detect_video_family
+
+    assert detect_video_family("MiniMaxAI/MiniMax-H3").supports_cfg is False
+
+
 def _trim_spy(monkeypatch):
     """Record every install_hunyuan_attention_trim call and report it as engaged."""
     from core.inference import video as video_mod
