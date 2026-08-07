@@ -538,6 +538,25 @@ else
     done
 fi
 
+# ── 3m. uninstall.ps1 must stop the legacy-named desktop process too. Older Windows
+# releases used the product name as MAINBINARYNAME, so they run Unsloth.exe rather than
+# unsloth-studio.exe (installer.nsi migrates away from it). The uninstaller is always
+# fetched fresh from main, so an old install meets this script, and a process it never
+# stops re-creates the WebView profile straight after the delete. Source assertion: the
+# .ps1 is not driven from this suite. ──
+UNINSTALL_PS1="$SCRIPT_DIR/../../scripts/uninstall.ps1"
+if [ ! -f "$UNINSTALL_PS1" ]; then
+    echo "  FAIL: uninstall.ps1 not found"; FAIL=$((FAIL+1))
+else
+    _ps_filter=$(grep -n "Name = 'unsloth-studio.exe'" "$UNINSTALL_PS1" | head -n1 | cut -d: -f2-)
+    case "$_ps_filter" in
+        *"Unsloth.exe"*)
+            echo "  PASS: windows: process query covers the legacy binary name"; PASS=$((PASS+1)) ;;
+        *)
+            echo "  FAIL: windows: process query misses the legacy Unsloth.exe"; FAIL=$((FAIL+1)) ;;
+    esac
+fi
+
 # ── 4. Nothing to remove is a clean no-op (fresh HOME, exit 0) ──
 H=$(new_home)
 if run_uninstall "$H" Darwin; then

@@ -488,7 +488,13 @@ Environment:
     $studioPids = @()
     if ($meSid) {
         try {
-            foreach ($sp in (Get-CimInstance Win32_Process -Filter "Name = 'unsloth-studio.exe'" -ErrorAction SilentlyContinue)) {
+            # Unsloth.exe as well: older releases used the product name as MAINBINARYNAME
+            # (installer.nsi migrates away from it, so an install predating that rename
+            # still runs it). The uninstaller is always fetched fresh from main, so an old
+            # install meets this script, and a missed process re-creates the profile we
+            # just deleted. The owner-SID filter below keeps the broader name safe.
+            $filter = "Name = 'unsloth-studio.exe' OR Name = 'Unsloth.exe'"
+            foreach ($sp in (Get-CimInstance Win32_Process -Filter $filter -ErrorAction SilentlyContinue)) {
                 $spSid = try { (Invoke-CimMethod -InputObject $sp -MethodName GetOwnerSid -ErrorAction SilentlyContinue).Sid } catch { $null }
                 if ($spSid -eq $meSid) { $studioPids += [int]$sp.ProcessId }
             }
