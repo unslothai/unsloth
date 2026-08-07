@@ -1065,6 +1065,14 @@ type ChatRuntimeStore = {
   /** Slots the last successful load sent (null = default); the rollback
    *  re-sends it so a failed switch can't lose the override. */
   loadedNParallel: number | null;
+  /** user --batch-size override for gguf loads (null = llama.cpp default 2048) */
+  nBatch: number | null;
+  /** batch size the last successful load sent (null = default) */
+  loadedNBatch: number | null;
+  /** user --ubatch-size override for gguf loads (null = llama.cpp default 512) */
+  nUbatch: number | null;
+  /** micro-batch size the last successful load sent (null = default) */
+  loadedNUbatch: number | null;
   /** Tensor-parallel split (--split-mode tensor) toggle, GGUF multi-GPU only. */
   tensorParallel: boolean;
   /** Backend-reported tensor-parallel state; null until first hydrated. */
@@ -1617,6 +1625,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedSpecDraftNMax: null,
   nParallel: null,
   loadedNParallel: null,
+  nBatch: null,
+  loadedNBatch: null,
+  nUbatch: null,
+  loadedNUbatch: null,
   tensorParallel: false,
   loadedTensorParallel: null,
   gpuMemoryMode: readPersistedGpuMemoryMode(),
@@ -2074,6 +2086,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedSpecDraftNMax: null,
       nParallel: null,
       loadedNParallel: null,
+      nBatch: null,
+      loadedNBatch: null,
+      nUbatch: null,
+      loadedNUbatch: null,
       tensorParallel: false,
       loadedTensorParallel: null,
       // Standing preference: survives unload, unlike the per-model knobs above.
