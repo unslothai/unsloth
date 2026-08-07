@@ -271,7 +271,9 @@ def _maybe_advise_fla_install(model_types):
 
     The kernels ship with Unsloth (no install needed); this fires only when they
     could not be enabled on this platform (e.g. no CUDA, torch < 2.7 or
-    triton < 3.3), i.e. exactly when transformers uses the slow pure PyTorch path.
+    triton < 3.3), or when Unsloth deliberately disabled them because they are
+    known-broken on this GPU / Triton combination, i.e. exactly when transformers
+    uses the slow pure PyTorch path.
     """
     global _fla_advised
     if _fla_advised:
@@ -291,6 +293,19 @@ def _maybe_advise_fla_install(model_types):
     except Exception:
         return
     _fla_advised = True
+    # Prefer unsloth_zoo's specific reason when it disabled the kernels on purpose.
+    # The generic text below blames CUDA / torch / triton minimums, all of which are
+    # satisfied on e.g. an H100 that hit the fla #640 Triton miscompile, so it would
+    # send that user looking in the wrong place. try/except keeps an unsloth pinned
+    # against an older unsloth_zoo working.
+    try:
+        from unsloth_zoo.temporary_patches.fla_vendor import fla_unavailable_reason
+        reason = fla_unavailable_reason()
+    except Exception:
+        reason = None
+    if reason:
+        print(reason)
+        return
     print(
         "Unsloth: This model uses gated-deltanet linear attention layers. Unsloth\n"
         "bundles the flash-linear-attention kernels, but they could not be enabled\n"
