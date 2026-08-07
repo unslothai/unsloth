@@ -23,6 +23,7 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 from core.inference.chat_template_helpers import (  # noqa: E402
+    append_assistant_turn,
     apply_chat_template_for_generation,
     last_user_text,
     render_vision_prompt,
@@ -266,3 +267,89 @@ def test_last_user_text_scans_back_past_the_partial():
         )
         == ""
     )
+
+
+def test_a_resumed_turn_that_calls_a_tool_stays_one_assistant_message():
+    # Two consecutive assistant turns are rejected by templates that enforce role
+    # alternation, so the tool result would never reach a final answer.
+    conversation = [
+        {"role": "user", "content": "weather?"},
+        {"role": "assistant", "content": "Let me check the "},
+    ]
+    append_assistant_turn(
+        conversation,
+        {
+            "role": "assistant",
+            "content": "forecast.",
+            "tool_calls": [{"id": "c1", "type": "function"}],
+        },
+        continue_final_message = True,
+    )
+    assert [m["role"] for m in conversation] == ["user", "assistant"]
+    assert conversation[-1]["content"] == "Let me check the forecast."
+    assert conversation[-1]["tool_calls"]
+
+
+def test_a_normal_turn_is_appended_untouched():
+    conversation = [{"role": "user", "content": "weather?"}]
+    append_assistant_turn(
+        conversation, {"role": "assistant", "content": "Checking."}, continue_final_message = True
+    )
+    assert [m["role"] for m in conversation] == ["user", "assistant"]
+
+    # Later tool-loop turns end on a tool result, so nothing merges into them.
+    conversation.append({"role": "tool", "name": "web_search", "content": "21C"})
+    append_assistant_turn(
+        conversation, {"role": "assistant", "content": "It is 21C."}, continue_final_message = True
+    )
+    assert [m["role"] for m in conversation] == ["user", "assistant", "tool", "assistant"]
+
+
+def test_without_the_flag_nothing_merges():
+    conversation = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "partial"},
+    ]
+    append_assistant_turn(conversation, {"role": "assistant", "content": "fresh"})
+    assert [m["role"] for m in conversation] == ["user", "assistant", "assistant"]
+
+
+def test_mlx_registered_vlm_recovery_preserves_the_continuation(monkeypatch):
+    """The mlx-vlm recovery renderer must not reopen the assistant turn.
+
+    It is reached when a VLM's primary template render is rejected, and it hardcodes
+    a generation prompt, so without the partial it silently restarts the answer.
+    """
+    import sys
+    import types
+
+    prompt_utils = types.ModuleType("mlx_vlm.prompt_utils")
+    prompt_utils.MODEL_CONFIG = {"fake_vlm": object()}
+
+    def _apply(processor, config, messages, add_generation_prompt = True, **kw):
+        rendered = "".join(f"<{m['role']}>{m['content']}" for m in messages)
+        return rendered + ("<assistant>" if add_generation_prompt else "")
+
+    prompt_utils.apply_chat_template = _apply
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = prompt_utils
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.prompt_utils", prompt_utils)
+
+    from core.inference.mlx_inference import _render_registered_vlm_prompt
+
+    class _Model:
+        config = {"model_type": "fake_vlm"}
+
+    messages = [
+        {"role": "user", "content": "what is this"},
+        {"role": "assistant", "content": "It is a bar"},
+    ]
+    restart = _render_registered_vlm_prompt(object(), _Model(), messages, 1)
+    assert restart.endswith("<assistant>")
+
+    resumed = _render_registered_vlm_prompt(
+        object(), _Model(), messages, 1, continue_partial = "It is a bar"
+    )
+    assert resumed.endswith("It is a bar")
+    assert not resumed.endswith("<assistant>")

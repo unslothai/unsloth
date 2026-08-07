@@ -972,6 +972,7 @@ class InferenceBackend:
             thread_id = thread_id,
             rag_scope = rag_scope,
             reasoning_prefilled = reasoning_prefilled,
+            continue_final_message = continue_final_message,
         )
 
     def generate_chat_response(

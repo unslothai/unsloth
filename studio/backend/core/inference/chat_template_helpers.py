@@ -2342,6 +2342,35 @@ def last_user_text(messages: list) -> str:
     return ""
 
 
+def append_assistant_turn(
+    conversation: list,
+    assistant_msg: dict,
+    *,
+    continue_final_message: bool = False,
+) -> None:
+    """Append a generated assistant turn to *conversation*.
+
+    A continuation leaves the resumed partial as the trailing assistant turn, so a
+    plain append produces two consecutive assistant messages and templates that
+    enforce role alternation reject the next render. The partial and what the model
+    just added are one turn, so they are merged. Self-limiting: after a tool result
+    the conversation no longer ends with a plain assistant turn.
+    """
+    prev = conversation[-1] if conversation else None
+    if (
+        continue_final_message
+        and isinstance(prev, dict)
+        and prev.get("role") == "assistant"
+        and not prev.get("tool_calls")
+        and isinstance(prev.get("content"), str)
+        and isinstance(assistant_msg.get("content"), str)
+    ):
+        assistant_msg["content"] = f"{prev['content']}{assistant_msg['content']}"
+        conversation[-1] = assistant_msg
+        return
+    conversation.append(assistant_msg)
+
+
 def render_vision_prompt(processor, messages: list, continue_partial: Optional[str]) -> str:
     """Render a vision turn through the processor's own template.
 

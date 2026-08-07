@@ -66,6 +66,7 @@ from core.inference.tool_loop_controller import (
     status_for_tool,
     tool_event_provenance,
 )
+from core.inference.chat_template_helpers import append_assistant_turn
 from core.inference.tool_stream_exec import stream_tool_execution
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
@@ -492,6 +493,7 @@ def run_safetensors_tool_loop(
     bypass_permissions: bool = False,
     permission_mode: Optional[str] = None,
     reasoning_prefilled: bool = False,
+    continue_final_message: bool = False,
     markup = None,
     renderable_tools = None,
 ) -> Generator[dict, None, None]:
@@ -1213,7 +1215,13 @@ def run_safetensors_tool_loop(
 
             if not assistant_appended:
                 assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
-                conversation.append(assistant_msg)
+                # Merges into a resumed partial, so a continued turn that calls a
+                # tool stays one assistant message.
+                append_assistant_turn(
+                    conversation,
+                    assistant_msg,
+                    continue_final_message = continue_final_message,
+                )
                 assistant_appended = True
             else:
                 assistant_msg.setdefault("tool_calls", []).append(decision.as_assistant_tool_call())

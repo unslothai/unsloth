@@ -14089,6 +14089,7 @@ class LlamaCppBackend:
             # Build payload -- stream: True so we detect tool signals
             # in the first 1-2 chunks without a non-streaming penalty.
             from core.inference.chat_template_helpers import (
+                append_assistant_turn,
                 neutralize_control_markup_in_messages,
                 trailing_assistant_text,
             )
@@ -15020,7 +15021,13 @@ class LlamaCppBackend:
 
                     if not assistant_appended:
                         assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
-                        conversation.append(assistant_msg)
+                        # Merges into a resumed partial, so a continued turn that
+                        # calls a tool stays one assistant message.
+                        append_assistant_turn(
+                            conversation,
+                            assistant_msg,
+                            continue_final_message = continue_final_message,
+                        )
                         assistant_appended = True
                     else:
                         assistant_msg.setdefault("tool_calls", []).append(

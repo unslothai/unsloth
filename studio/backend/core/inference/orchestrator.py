@@ -1757,6 +1757,7 @@ class InferenceOrchestrator:
             bypass_permissions = bypass_permissions,
             permission_mode = permission_mode,
             reasoning_prefilled = reasoning_prefilled,
+            continue_final_message = continue_final_message,
         )
 
     def generate_with_adapter_control(

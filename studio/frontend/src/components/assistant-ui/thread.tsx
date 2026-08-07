@@ -66,7 +66,10 @@ import {
   forkChatThread,
   getForkCount,
 } from "@/features/chat/api/chat-api";
-import { sentAudioNames } from "@/features/chat/api/chat-adapter";
+import {
+  findLatestUserAudioBase64,
+  sentAudioNames,
+} from "@/features/chat/api/chat-adapter";
 import {
   PromptStorageDialog,
   exportConversationShareGPT,
@@ -4934,6 +4937,11 @@ const ContinueMessageBar: FC = () => {
   const continuable = useAuiState(({ message }) =>
     isContinuableContent(message.content),
   );
+  // Audio input routes to a generator that re-listens to the recording and answers
+  // afresh rather than resuming, so continuing there would append a second answer.
+  const fromAudioInput = useAuiState(({ thread }) =>
+    Boolean(findLatestUserAudioBase64(thread.messages, false)),
+  );
 
   // Cancelled comes through status (the adapter yields nothing after an abort);
   // the other two are stamped on metadata so they survive a reload.
@@ -4951,6 +4959,7 @@ const ContinueMessageBar: FC = () => {
     researchRunId ||
     researchActive ||
     !continuable ||
+    fromAudioInput ||
     !partial.trim()
   ) {
     return null;

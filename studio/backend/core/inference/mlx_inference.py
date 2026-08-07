@@ -106,8 +106,14 @@ def _render_registered_vlm_prompt(
     messages,
     num_images,
     num_audios = 0,
+    continue_partial = None,
 ):
-    """Render through mlx-vlm when it declares a formatter for this model."""
+    """Render through mlx-vlm when it declares a formatter for this model.
+
+    With *continue_partial* the trailing assistant turn is dropped from the render and
+    appended raw, so this recovery path resumes the partial like the primary one rather
+    than opening a fresh turn.
+    """
     from mlx_vlm import prompt_utils
 
     config, model_type = _mlx_vlm_model_config(model)
@@ -116,17 +122,20 @@ def _render_registered_vlm_prompt(
     if model_type not in getattr(prompt_utils, "MODEL_CONFIG", {}):
         return None
 
+    render_messages = messages[:-1] if continue_partial else messages
     # Recovery path: renders the caller's original list, not the neutralized copy (#7066).
     rendered = prompt_utils.apply_chat_template(
         processor,
         config,
-        neutralize_control_markup_in_messages(messages, None, markup_for_tokenizer(processor)),
+        neutralize_control_markup_in_messages(
+            render_messages, None, markup_for_tokenizer(processor)
+        ),
         add_generation_prompt = True,
         num_images = num_images,
         num_audios = num_audios,
     )
     if isinstance(rendered, str) and rendered.strip():
-        return rendered
+        return f"{rendered}{continue_partial}" if continue_partial else rendered
     raise RuntimeError("mlx-vlm's registered renderer returned an empty prompt.")
 
 
@@ -1114,6 +1123,7 @@ class MLXInferenceBackend:
         from core.inference.chat_template_helpers import (
             apply_chat_template_for_generation,
             chat_render_target,
+            trailing_assistant_text,
         )
 
         # Pick the chat-template-aware caller: processors with their own
@@ -1178,6 +1188,11 @@ class MLXInferenceBackend:
                     self._model,
                     messages,
                     len(images),
+                    continue_partial = (
+                        trailing_assistant_text(messages)
+                        if continue_final_message
+                        else None
+                    ),
                 )
             except Exception as recovery_error:
                 if prompt_error is not None:

@@ -3903,6 +3903,14 @@ export function createOpenAIStreamAdapter(
 
         return pinTextThoughtSignature(assembled);
       };
+
+      // Yielded before the request starts: an abort during load skips the partial-content
+      // yield below, which would save an empty message and strand the resumed text on the
+      // sibling branch with no way back to it.
+      if (continuation) {
+        yield { content: buildAssistantContent(cumulativeText) };
+      }
+
       const parseToolProvenance = (
         value: unknown,
       ): ToolCallProvenance | undefined => {
