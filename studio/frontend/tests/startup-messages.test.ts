@@ -28,16 +28,23 @@ test("startup messages follow backend phases without regressing", () => {
   );
 });
 
-test("installer progress rotates without making false completion claims", () => {
-  assert.equal(installProgressMessage(-1, 0).title, "Preparing your installation...");
-  assert.equal(installProgressMessage(2, 0).title, "Setting up your workspace...");
-  assert.equal(installProgressMessage(4, 0).title, "Installing required components...");
-  assert.equal(installProgressMessage(6, 0).title, "Getting local AI tools ready...");
-  assert.equal(installProgressMessage(6, 1).title, "Setup is still working...");
-  assert.equal(installProgressMessage(6, 2).title, "Preparing your installation...");
+test("installer progress rotates reassurance without changing actual phases", () => {
+  const expectedTitles = new Map([
+    [-1, "Preparing your installation..."],
+    [2, "Setting up your workspace..."],
+    [4, "Installing required components..."],
+    [6, "Getting local AI tools ready..."],
+  ]);
 
-  for (let rotation = 0; rotation < 20; rotation += 1) {
-    assert.doesNotMatch(installProgressMessage(999, rotation).title, /nearly done/i);
+  for (const [step, expectedTitle] of expectedTitles) {
+    const subtitles = new Set<string>();
+    for (let rotation = 0; rotation < 20; rotation += 1) {
+      const message = installProgressMessage(step, rotation);
+      assert.equal(message.title, expectedTitle);
+      assert.doesNotMatch(message.title, /nearly done/i);
+      subtitles.add(message.subtitle);
+    }
+    assert.ok(subtitles.size > 1, `step ${step} should rotate reassurance copy`);
   }
 });
 

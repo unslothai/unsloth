@@ -8,7 +8,7 @@ export interface InstallProgressMessage {
   subtitle: string;
 }
 
-const INSTALL_PROGRESS_MESSAGES: readonly InstallProgressMessage[] = [
+const INSTALL_PHASE_MESSAGES: readonly InstallProgressMessage[] = [
   {
     title: "Preparing your installation...",
     subtitle: "Checking what Unsloth needs on this computer.",
@@ -19,17 +19,19 @@ const INSTALL_PROGRESS_MESSAGES: readonly InstallProgressMessage[] = [
   },
   {
     title: "Installing required components...",
-    subtitle: "This can take a few minutes.",
+    subtitle: "Downloading and configuring the Unsloth runtime.",
   },
   {
     title: "Getting local AI tools ready...",
-    subtitle: "Setup will continue automatically.",
-  },
-  {
-    title: "Setup is still working...",
-    subtitle: "Some components take longer to configure.",
+    subtitle: "Configuring the remaining local services.",
   },
 ];
+
+const INSTALL_WAITING_SUBTITLES = [
+  "Setup will continue automatically.",
+  "This can take a few minutes.",
+  "Some components take longer to configure.",
+] as const;
 
 function normalizedRotationIndex(index: number, length: number): number {
   const wholeIndex = Number.isFinite(index) ? Math.trunc(index) : 0;
@@ -40,11 +42,18 @@ export function installProgressMessage(
   currentStepIndex: number,
   rotationIndex = 0,
 ): InstallProgressMessage {
-  const phaseOffset =
+  const phaseIndex =
     currentStepIndex < 2 ? 0 : currentStepIndex < 4 ? 1 : currentStepIndex < 6 ? 2 : 3;
-  return INSTALL_PROGRESS_MESSAGES[
-    normalizedRotationIndex(phaseOffset + rotationIndex, INSTALL_PROGRESS_MESSAGES.length)
-  ];
+  const phaseMessage = INSTALL_PHASE_MESSAGES[phaseIndex];
+  if (rotationIndex === 0) return phaseMessage;
+
+  return {
+    title: phaseMessage.title,
+    subtitle:
+      INSTALL_WAITING_SUBTITLES[
+        normalizedRotationIndex(rotationIndex - 1, INSTALL_WAITING_SUBTITLES.length)
+      ],
+  };
 }
 
 export type StartupMessage =
