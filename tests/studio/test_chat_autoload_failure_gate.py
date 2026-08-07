@@ -82,6 +82,25 @@ function resolveInferenceCheckpointId(status: any) {
 function snapshotQueuedChatRunSettings(state: any) {
   return { ...state, params: { ...state.params } };
 }
+// Mirrors ../lib/mlx-runtime-state. No scenario here loads an MLX model, so the
+// non-MLX branch is the only one reached, but the symbol has to exist.
+function mlxRuntimeStateFrom(resp: any) {
+  if (resp?.is_mlx !== true) {
+    return {
+      loadedMlxKvBitsRequested: null,
+      mlxKvQuantReason: null,
+      chatTemplateOverrideReason: null,
+      mlxKvQuantNote: null,
+    };
+  }
+  return {
+    mlxKvBits: resp.mlx_kv_bits_requested ?? null,
+    loadedMlxKvBitsRequested: resp.mlx_kv_bits_requested ?? null,
+    mlxKvQuantReason: resp.mlx_kv_quant_reason ?? null,
+    chatTemplateOverrideReason: resp.chat_template_override_reason ?? null,
+    mlxKvQuantNote: resp.mlx_kv_quant_note ?? null,
+  };
+}
 
 function makeStore(): any {
   const state: any = {
