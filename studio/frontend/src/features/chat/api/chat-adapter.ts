@@ -1648,8 +1648,8 @@ type AutoLoadCandidate = {
   successLabel: string;
 };
 
-// Same case rules as autoLoadSourceKey: folding a POSIX load target would let
-// a failed /models/Foo mark a distinct /models/foo as already tried.
+// Same case rules as autoLoadSourceKey: folding a POSIX target would let a
+// failed /models/Foo mark a distinct /models/foo as already tried.
 function autoLoadCandidateKey(
   kind: LastLocalModelKind,
   id: string,
@@ -1879,22 +1879,19 @@ function isChattableCachedRepo(repo: {
   return (
     repo.partial !== true &&
     repo.capabilities?.can_chat !== false &&
-    // Same rule isAutoLoadableLocalRow applies to the local twin: an adapter
-    // carries no base weights, so /load reads base_model_name_or_path and
-    // fetches the base from the Hub when it is not cached. The backend reports
-    // can_chat true for the adapter format on file layout alone, so this is the
-    // only gate. Absent on an older backend, which keeps its behaviour.
+    // Same rule isAutoLoadableLocalRow applies locally: an adapter has no base
+    // weights, so /load fetches the base from the Hub when it is not cached,
+    // and can_chat is reported true for the format on file layout alone.
     repo.model_format !== "adapter" &&
     // Cached diffusion repos report can_chat true on file format alone.
     !IMAGE_OR_VIDEO_TASKS.has(repo.task ?? "")
   );
 }
 
-// Image and video tasks the backend tags a row with. A chat model is tagged
-// "text-generation" or left null, so the exclusion is by this list, not by
-// "has a task". The chat picker routes these to the Images/Video page on
-// click; a background load has no routing step, so it must skip them or the
-// chat turn goes to a diffusion runtime.
+// Chat models are tagged "text-generation" or left null, so this is a list
+// rather than a "has a task" test. The picker routes these rows to the
+// Images/Video page on click; a background load has no routing step, so
+// without this the chat turn goes to a diffusion runtime.
 const IMAGE_OR_VIDEO_TASKS: ReadonlySet<string> = new Set([
   "text-to-image",
   "text-to-video",
@@ -1916,25 +1913,23 @@ const AUTO_LOAD_LOCAL_SOURCES: ReadonlySet<string> = new Set([
  */
 function isAutoLoadableLocalRow(
   row: LocalModelInfo,
-  // Set when a cached lookup failed. The excluded hf_cache rows are then the only
-  // evidence of that cache, and dropping them left a device whose one model lives
-  // there with nothing to load and no fallback, since the gap blocks the default.
+  // Set when a cached lookup failed: the excluded hf_cache rows are then the
+  // only evidence of that cache, and dropping them left a device whose one
+  // model lives there with nothing to load.
   admitHfCache = false,
 ): boolean {
   return (
     (AUTO_LOAD_LOCAL_SOURCES.has(row.source) ||
       (admitHfCache && row.source === "hf_cache")) &&
-    // Absent capabilities means the backend did not classify, not "not chat":
-    // requiring true skipped the row and fell through to downloading the
-    // default. Same rule the cached rows use; an explicit false still excludes.
+    // Absent capabilities means unclassified, not "not chat": requiring true
+    // skipped the row and fell through to downloading the default.
     row.capabilities?.can_chat !== false &&
     row.partial !== true &&
-    // An allowlist, because the exclusions below were only as good as the
-    // classification: "unknown" is what the backend sends when it cannot tell a
-    // format apart, and an older one omits the field, so both slipped past a
-    // `!== "checkpoint"` test and made a pickle eligible for a background load.
-    // A checkpoint is a directory like a safetensors one, so nothing in the path
-    // separates them and this has to fail closed. GGUF is still recognised by
+    // An allowlist, because an exclusion is only as good as the classification:
+    // the backend sends "unknown" when it cannot tell a format apart and an
+    // older one omits the field, so both slipped past a `!== "checkpoint"` test
+    // and made a pickle eligible. A checkpoint directory looks like a
+    // safetensors one, so this has to fail closed; GGUF is still recognised by
     // suffix, so an unclassified .gguf row keeps loading.
     (isGgufLocalRow(row) || row.model_format === "safetensors") &&
     !IMAGE_OR_VIDEO_TASKS.has(row.task ?? "") &&
@@ -1943,24 +1938,20 @@ function isAutoLoadableLocalRow(
   );
 }
 
-/**
- * Chat-only installs run GGUF anywhere and MLX on a Mac; the picker hides every
- * other local format there. Reads the store, so no fetch.
- */
 // model_format is optional, so an older backend omits it on a direct .gguf row.
-// Both callers have to agree: reading only the field there made such a row a
-// Transformers source, which sends the safetensors context length to /load and
-// remembers the wrong kind.
+// Reading only the field made such a row a Transformers source, which sends the
+// safetensors context length to /load and remembers the wrong kind.
 function isGgufLocalRow(row: LocalModelInfo): boolean {
   return row.model_format === "gguf" || row.path.toLowerCase().endsWith(".gguf");
 }
 
+/** Chat-only installs run GGUF anywhere and MLX on a Mac; the picker hides
+ * every other local format there. */
 function runsOnThisPlatform(row: LocalModelInfo): boolean {
   const platform = usePlatformStore.getState();
-  // Until the backend reports it, the store holds a BROWSER guess: a Mac
-  // browser on a remote Linux Studio reads chatOnly, and gating on that would
-  // hide every local safetensors model and fetch the default instead. An
-  // ineligible candidate is rejected at validation without a load attempt.
+  // Until the backend reports it, chatOnly is a BROWSER guess: a Mac browser on
+  // a remote Linux Studio would hide every local safetensors model and fetch
+  // the default. Failing open is safe: validation refuses an ineligible pick.
   if (!platform.fetched || !platform.isChatOnly()) return true;
   if (isGgufLocalRow(row)) {
     return true;
@@ -1973,20 +1964,15 @@ function runsOnThisPlatform(row: LocalModelInfo): boolean {
   );
 }
 
-/**
- * Chat-only installs cannot run a cached non-GGUF repo, and the picker hides
- * those rows outright there (visibleCachedModelRows). Same wait-for-the-server
- * rule as runsOnThisPlatform.
- */
+/** The picker hides cached non-GGUF rows outright on a chat-only install
+ * (visibleCachedModelRows). Same wait-for-the-server rule as above. */
 function cachedModelsRunOnThisPlatform(): boolean {
   const platform = usePlatformStore.getState();
   return !platform.fetched || !platform.isChatOnly();
 }
 
-/**
- * One loadable thing on this device, from any inventory. `listVariants` is
- * lazy, so only the repos the cascade actually reaches are scanned.
- */
+/** One loadable thing on this device, from any inventory. `listVariants` is
+ * lazy, so only the repos the cascade reaches are scanned. */
 type AutoLoadSource = {
   kind: LastLocalModelKind;
   /** Catalog id: per-model settings, toasts, remembered-model matching. */
@@ -1999,7 +1985,7 @@ type AutoLoadSource = {
   listVariants: (() => Promise<GgufVariantDetail[]>) | null;
 };
 
-// Case-sensitive stores keep their case (Linux distinguishes /models/Foo from
+// Case-sensitive targets keep their case (Linux distinguishes /models/Foo from
 // /models/foo; \\wsl$\ reaches the same ext4). Repo ids and Windows paths fold,
 // separators included, so C:\a\m.gguf and C:/a/m.gguf are one key. NFC first:
 // macOS returns decomposed names for the same file.
@@ -2012,10 +1998,9 @@ function normalizeTarget(value: string): string {
   return /^[/~]/.test(target) ? target : target.toLowerCase();
 }
 
-// Keyed on the load target alone, not the kind. A repo holding both GGUF and
-// safetensors yields a row in each list, but the backend resolves one target
-// to one model and probes GGUF first, so keeping both would spend a second
-// attempt on the same files and record the wrong kind.
+// The load target alone, not the kind: a repo holding both GGUF and safetensors
+// yields a row in each list, but the backend resolves one target to one model,
+// so keeping both would spend a second attempt on the same files.
 function autoLoadSourceKey(source: AutoLoadSource): string {
   return normalizeTarget(source.loadId);
 }
@@ -2083,7 +2068,7 @@ function isRememberedSource(
 ): boolean {
   if (source.kind !== remembered.kind) return false;
   // Same case rules as the dedupe key: folding a POSIX path would mark two
-  // models that differ only by casing as both being the remembered one.
+  // models differing only by case as both being the remembered one.
   const target = normalizeTarget(remembered.id);
   return (
     normalizeTarget(source.id) === target ||
@@ -2103,18 +2088,15 @@ function orderAutoLoadSources(
   // Unknown sizes sort last so a sizeless row cannot shadow a real one.
   const size = (source: AutoLoadSource): number =>
     source.sizeBytes > 0 ? source.sizeBytes : Number.MAX_SAFE_INTEGER;
-  // Same-target twins are kept, ordered behind the one the cascade would reach
-  // first. Dropping them here discarded a loadable safetensors row whenever its
-  // GGUF twin resolved no quant, so the cascade skips a twin at run time instead,
-  // and only once the preferred row has actually produced a candidate.
+  // Same-target twins are kept, just ordered behind the preferred row: dropping
+  // them here lost a loadable safetensors row whenever its GGUF twin resolved
+  // no quant, so the cascade skips a twin at run time instead.
   return [...sources].sort((a, b) => rank(a) - rank(b) || size(a) - size(b));
 }
 
-/**
- * The candidate to attempt, resolving a GGUF quant when one is needed:
+/** The candidate to attempt, resolving a GGUF quant when one is needed:
  * remembered quant first, then smallest, skipping quants already tried so one
- * bad file cannot sink a whole repo. null when nothing here is loadable.
- */
+ * bad file cannot sink a whole repo. null when nothing here is loadable. */
 async function resolveAutoLoadCandidate(
   source: AutoLoadSource,
   rememberedVariant: string | null,
@@ -2169,12 +2151,9 @@ function formatDownloadBytes(bytes: number): string {
     : `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
 }
 
-/**
- * Fetch the default model through the Hub download manager rather than letting
- * /api/inference/load pull it inline: the manager gives it a download panel
- * entry, live progress, and a working Cancel. "ready" means the bytes are on
- * disk.
- */
+/** Fetch the default through the Hub download manager rather than letting
+ * /api/inference/load pull it inline: the manager gives it a panel entry, live
+ * progress, and a working Cancel. "ready" means the bytes are on disk. */
 async function ensureDefaultModelDownloaded(
   hfToken: string | null,
   abortSignal: AbortSignal | undefined,
@@ -2197,12 +2176,10 @@ async function ensureDefaultModelDownloaded(
   }
   abortSignal?.throwIfAborted();
 
-  // startJob reads the stored token straight from the store and sends it, with
-  // none of the recovery validateModel and loadModel get. An expired token
-  // would fail the download of a public repo the lookup above just read
-  // anonymously. Run after the on-disk check so nothing prompts when there is
-  // nothing to download; choosing anonymous clears the shared token, which is
-  // the same one startJob reads.
+  // startJob sends the stored token raw, with none of the recovery validateModel
+  // and loadModel get, so an expired one would fail the download of a public
+  // repo the lookup above just read anonymously. After the on-disk check, so
+  // nothing prompts when there is nothing to download.
   const prepared = await prepareHfTokenForUse(hfToken);
   abortSignal?.throwIfAborted();
   if (!prepared.proceed) return "cancelled";
@@ -2215,15 +2192,14 @@ async function ensureDefaultModelDownloaded(
   };
   const jobKey = jobKeyOf(request.kind, request.repoId, request.variant);
   // requestStart runs transport preflights before the job exists, and cancel()
-  // no-ops on a missing key. Remember the click and re-issue it once the job
-  // appears, or the first Cancel is silently swallowed.
+  // no-ops on a missing key, so remember the click and replay it once the job
+  // appears or the first Cancel is silently swallowed.
   let cancelRequested = false;
   let cancelInFlight = false;
   let cancelEverIssued = false;
-  // Cancelling patches the job, which wakes the store subscription below, so
-  // this must not re-enter while a request is outstanding or the two bounce
-  // off each other. A cancel that fails restores the job to running, so the
-  // latch clears when the request settles and a later click can retry.
+  // Cancelling patches the job and wakes the subscription below, so this must
+  // not re-enter while a request is outstanding. The latch clears when the
+  // request settles, since a failed cancel leaves the job running for a retry.
   const issueCancel = (): boolean => {
     const active = selectActiveJob(
       useDownloadManagerStore.getState(),
@@ -2271,7 +2247,7 @@ async function ensureDefaultModelDownloaded(
     // Before the start request, so a fast completion cannot be missed.
     cleanups.push(
       subscribeJobListeners(request.kind, request.repoId, {
-        // A cancel can fail and the transfer finish anyway. The user asked for
+        // A cancel can fail and the transfer finish anyway; the user asked for
         // it to stop, so the bytes are not handed to a load.
         onComplete: (variant) =>
           isOurVariant(variant) &&
@@ -2285,9 +2261,9 @@ async function ensureDefaultModelDownloaded(
       useDownloadManagerStore.subscribe((state) => {
         const job = state.jobs[jobKey];
         if (!job) return;
-        // Cancelled during the preflights: stop it as soon as it exists. Only
-        // the deferred first attempt; a failed cancel is retried by the user
-        // clicking again, not on every store tick.
+        // Cancelled during the preflights: stop it as soon as it exists. The
+        // deferred first attempt only; a retry comes from another click, not
+        // from every store tick.
         if (cancelRequested) {
           if (!cancelEverIssued) issueCancel();
           return;
@@ -2618,8 +2594,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       skippedAutoLoadCandidates.add(
         autoLoadCandidateKey(
           candidate.kind,
-          // Keyed by load target: a cached repo and a local row can alias the
-          // same files, so blocking one must block the other.
+          // A cached repo and a local row can alias the same files, so
+          // blocking one must block the other.
           candidate.loadId ?? candidate.id,
           candidate.ggufVariant,
         ),
@@ -2805,12 +2781,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     return true;
   }
   try {
-    // Fail closed. These three lists are the only evidence of what is on the
+    // Fail closed: these three lists are the only evidence of what is on the
     // device, and `.catch(() => [])` turned one flaky request into "the user
-    // has nothing", downloading a model over a loadable local one.
-    // Both cached calls take the run signal: they are raw fetches with no
-    // timeout, so a stall would hold the model-loading lease open after the
-    // user stops the send. listLocalModels has its own 30s bound.
+    // has nothing", downloading a model over a loadable local one. Both cached
+    // calls take the run signal because they are raw fetches with no timeout of
+    // their own; listLocalModels has its own 30s bound.
     const inventory = await Promise.allSettled([
       listCachedGguf(options?.abortSignal),
       listCachedModels(hfToken, options?.abortSignal),
@@ -2818,9 +2793,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     ]);
     options?.abortSignal?.throwIfAborted();
     // Settled, not all: a rejection is one unknown source, not an empty device.
-    // Rejecting the whole batch threw away the lists that did arrive, so a
-    // broken local scan skipped a loadable cached model. Keep what came back
-    // and let the gap block only the default download below.
+    // Failing the whole batch threw away the lists that did arrive, so a broken
+    // local scan skipped a loadable cached model. Keep what came back and let
+    // the gap block only the default download below.
     const [ggufSettled, modelsSettled, localSettled] = inventory;
     const allGgufRepos =
       ggufSettled.status === "fulfilled" ? ggufSettled.value : [];
@@ -2850,10 +2825,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       lastLoaded,
     );
 
-    // One load target can appear in both cached lists. The backend resolves it to
-    // one model, so once a row for it has produced a candidate its twin is the
-    // same files and must not spend a second attempt. A twin is only reached when
-    // the preferred row resolved nothing at all.
+    // One load target can appear in more than one list. Once a row for it has
+    // produced a candidate its twin is the same files and must not spend a
+    // second attempt, so a twin is reached only if the preferred row resolved
+    // nothing at all.
     const candidateResolvedFor = new Set<string>();
     for (const source of sources) {
       if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
@@ -2871,9 +2846,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ),
         );
       try {
-        // A repo can hold several downloaded quants. Each failure marks that
-        // quant tried and comes back for the next one, so one corrupt file
-        // does not cost the whole repo. The attempt cap bounds the loop.
+        // A repo can hold several downloaded quants: each failure marks that
+        // quant tried and comes back for the next, so one corrupt file does not
+        // cost the whole repo. The attempt cap bounds the loop.
         while (!autoLoadCancelled && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS) {
           const candidate = await resolveAutoLoadCandidate(
             source,
@@ -2896,9 +2871,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           } catch {
             options?.abortSignal?.throwIfAborted();
             hadNonTrustFailure = true;
-            // Refused candidates are recorded by loadAutoLoadCandidate; a
-            // rejected load is not, so mark it here or the next pass through
-            // this source resolves the same quant forever.
+            // loadAutoLoadCandidate records a refusal but not a rejection, so
+            // mark it here or the next pass resolves the same quant forever.
             skippedAutoLoadCandidates.add(
               autoLoadCandidateKey(
                 candidate.kind,
@@ -2943,8 +2917,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       };
     }
 
-    // Only an empty *complete* inventory means the device has nothing. With a
-    // source still unknown, downloading risks duplicating a model already here.
+    // Only an empty *complete* inventory means the device has nothing; with a
+    // source unknown, downloading risks duplicating a model already here.
     if (inventoryIncomplete) {
       toast.dismiss(toastId);
       return { loaded: false, blockedByTrustRemoteCode: false };
@@ -2961,11 +2935,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         rt.selectedGpuIds,
         rt.selectedGpuIndexKind,
       );
-      // Preflight BEFORE the transfer. Active training or the GPU placement
-      // guard can refuse this model, and finding that out after several
-      // gigabytes have been pulled costs the user bandwidth and a long wait
-      // for nothing. The load below reuses this snapshot so it sends exactly
-      // what was cleared here.
+      // Preflight BEFORE the transfer: active training or the GPU placement
+      // guard can refuse this model, and learning that after several gigabytes
+      // costs the user bandwidth and a long wait for nothing. The load below
+      // reuses this snapshot, so it sends exactly what was cleared here.
       if (
         !(await canAutoLoad({
           model_path: DEFAULT_CHAT_MODEL_REPO,

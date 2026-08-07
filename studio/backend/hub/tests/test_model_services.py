@@ -4499,17 +4499,15 @@ def _write_local_model(
     ],
 )
 def test_local_transformers_chat_classification(tmp_path, config, modules, expected):
-    """A safetensors dir is marked chat-capable on file format alone, so an
-    embedding export looked like a chat model. Chat auto-load picks the
-    smallest candidate first, and those are small."""
+    """A safetensors dir is chat-capable on file format alone, so an embedding
+    export looked like a chat model, and auto-load tries the smallest first."""
     path = _write_local_model(tmp_path, "row", config, modules = modules)
     assert model_common._local_transformers_can_chat(path) is expected
 
 
 def test_local_embedding_model_is_not_chat_capable(tmp_path):
-    """End to end through the scanner: the row is still listed (it is how the
-    user sees and deletes it) but can_chat is false, so background chat
-    auto-load skips it."""
+    """End to end through the scanner: the row is still listed, since that is
+    how the user deletes it, but can_chat is false so auto-load skips it."""
     _write_local_model(
         tmp_path,
         "all-MiniLM-L6-v2",
@@ -4533,8 +4531,8 @@ def test_local_embedding_model_is_not_chat_capable(tmp_path):
 
 
 def test_cached_encoder_repo_is_not_chat_capable(tmp_path):
-    """Cached rows build capabilities from file format too, so a cached BERT or
-    CLIP repo looked like a chat model to background auto-load."""
+    """Cached rows build capabilities from file format too, so a cached BERT
+    looked like a chat model to auto-load."""
     snapshot = _write_local_model(
         tmp_path, "snap", {"architectures": ["BertModel"], "model_type": "bert"}
     )
@@ -4588,8 +4586,8 @@ def test_cached_row_without_a_snapshot_keeps_its_format_capability(tmp_path):
 )
 def test_non_chat_conditional_generation_is_not_chat_capable(tmp_path, config):
     """These end in ForConditionalGeneration but cannot answer a text turn, and
-    are often smaller than a real chat model, so the cascade would stop there.
-    The managed cache already hides Whisper; scan folders did not."""
+    are small enough that the cascade would stop there. The managed cache
+    already hides Whisper; scan folders did not."""
     path = _write_local_model(tmp_path, "row", config)
     assert model_common._local_transformers_can_chat(path) is False
 
@@ -4618,16 +4616,16 @@ def test_real_conditional_generation_chat_models_are_unaffected(tmp_path, config
     ],
 )
 def test_bare_vision_and_audio_backbones_are_not_chat_capable(tmp_path, config):
-    """Their class names carry no task suffix, so only the model type gives
-    them away, and they are small enough to be tried before a chat model."""
+    """Their class names carry no task suffix, so only the model type gives them
+    away."""
     path = _write_local_model(tmp_path, "row", config)
     assert model_common._local_transformers_can_chat(path) is False
 
 
 def test_unreadable_config_never_fails_the_scan(tmp_path):
-    """The classifier runs per row, so one bad config.json must classify as
-    unknown, not take the inventory request down with it. Deep nesting raises
-    RecursionError, which is neither JSONDecodeError nor OSError."""
+    """One bad config.json must classify as unknown, not take the inventory
+    request down. Deep nesting raises RecursionError, which is neither
+    JSONDecodeError nor OSError."""
     cases = {
         "deep": "[" * 60000 + "]" * 60000,
         "truncated": '{"architectures": ["Llam',
@@ -4670,8 +4668,8 @@ def test_a_fifo_named_config_json_does_not_block_the_scan(tmp_path):
 )
 def test_an_encoder_without_architectures_is_still_not_chat_capable(tmp_path, model_type):
     """google/siglip2-* ships config.json with no architectures key, and the
-    encoder-only branch used to require one. Those rows stayed chat-capable, and
-    an encoder is small enough to sort first and spend the attempt budget."""
+    encoder-only branch used to require one, so those rows stayed chat-capable
+    and sorted ahead of a real chat model."""
     path = tmp_path / model_type
     path.mkdir()
     (path / "config.json").write_text(json.dumps({"model_type": model_type}), encoding = "utf-8")
@@ -4680,8 +4678,8 @@ def test_an_encoder_without_architectures_is_still_not_chat_capable(tmp_path, mo
 
 
 def test_a_causal_lm_without_architectures_still_fails_open(tmp_path):
-    """Control: the exclusion is keyed on the encoder-only type list, so an
-    unknown or generative type with no architectures stays inconclusive."""
+    """Control: keyed on the encoder-only type list, so an unknown type with no
+    architectures stays inconclusive."""
     path = tmp_path / "custom"
     path.mkdir()
     (path / "config.json").write_text(json.dumps({"model_type": "some_new_llm"}), encoding = "utf-8")
@@ -4699,9 +4697,8 @@ def test_a_causal_lm_without_architectures_still_fails_open(tmp_path):
     ],
 )
 def test_an_image_captioner_is_not_chat_capable(tmp_path, config):
-    """These generate text, but only about an image, so a plain text turn fails.
-    They are smaller than a chat model, so the smallest-first cascade would load
-    one and stop looking."""
+    """These generate text, but only about an image, so a plain text turn fails,
+    and the smallest-first cascade would load one and stop looking."""
     path = tmp_path / "captioner"
     path.mkdir()
     (path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
@@ -4714,8 +4711,8 @@ def test_an_image_captioner_is_not_chat_capable(tmp_path, config):
     ["CLIPTextModelWithProjection", "CLIPVisionModelWithProjection", "CLIPTextModel"],
 )
 def test_a_projection_head_encoder_is_not_chat_capable(tmp_path, architecture):
-    """The encoder-only branch used to also require the name to end in Model, so a
-    projection variant fell through and kept the safetensors format capability."""
+    """The encoder-only branch also required the name to end in Model, so a
+    projection variant fell through and kept its format capability."""
     path = tmp_path / "proj"
     path.mkdir()
     (path / "config.json").write_text(
@@ -4734,8 +4731,8 @@ def test_a_projection_head_encoder_is_not_chat_capable(tmp_path, architecture):
     ],
 )
 def test_a_generative_head_still_wins_over_the_encoder_type(tmp_path, config):
-    """Control for both gates above: a generative architecture is accepted before
-    the type list is consulted, so bert plus an LM head stays chat-capable."""
+    """Control for both gates above: a generative architecture is accepted
+    before the type list is consulted."""
     path = tmp_path / "gen"
     path.mkdir()
     (path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
@@ -4754,7 +4751,7 @@ def test_a_generative_head_still_wins_over_the_encoder_type(tmp_path, config):
 )
 def test_a_bare_text_backbone_is_not_chat_capable(tmp_path, config):
     """AutoModel.save_pretrained writes the backbone name, and a backbone has no
-    LM head, so the cascade would load one and stop before a usable chat model."""
+    LM head, so the cascade would stop on one before a usable chat model."""
     path = tmp_path / "backbone"
     path.mkdir()
     (path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
@@ -4763,8 +4760,8 @@ def test_a_bare_text_backbone_is_not_chat_capable(tmp_path, config):
 
 
 def test_an_unfamiliar_backbone_still_fails_open(tmp_path):
-    """The list is explicit, not shape-matched, so a custom FooModel stays
-    inconclusive and keeps its format capability."""
+    """The list is explicit, not shape-matched, so a custom FooModel keeps its
+    format capability."""
     path = tmp_path / "custom"
     path.mkdir()
     (path / "config.json").write_text(
@@ -4801,8 +4798,7 @@ def test_lmstudio_scan_matches_gguf_suffix_case_insensitively(tmp_path, layout):
 )
 def test_custom_promotion_keeps_the_classifier_verdict(tmp_path, config, expected):
     """Promotion rebuilt capabilities from the format alone, which restored
-    can_chat on rows the classifier had ruled out, so a BERT in a scan folder was
-    auto-loadable again and small enough to sort ahead of a real chat model."""
+    can_chat on rows the classifier had ruled out."""
     model_dir = tmp_path / "scan" / "model"
     model_dir.mkdir(parents = True)
     (model_dir / "config.json").write_text(json.dumps(config), encoding = "utf-8")

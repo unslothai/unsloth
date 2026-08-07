@@ -91,9 +91,8 @@ def test_chat_autoload_toast_is_persistent_and_dismissible():
     # Progress + the terminal "download stopped" notice; success/error use their
     # own toast.success / toast.error helpers.
     assert auto_load.count("toast.message(") == 3
-    # The single progress toast is re-titled through every phase: the on-device
-    # cascade updates it directly, and the default-model download keeps it live
-    # via the same updater handed to ensureDefaultModelDownloaded.
+    # One progress toast re-titled through every phase: the cascade updates it
+    # directly, and the download keeps it live via the same updater.
     assert auto_load.count("updateAutoLoadToast(") >= 2
     assert (
         "ensureDefaultModelDownloaded(\n        hfToken,\n        options?.abortSignal,\n        updateAutoLoadToast,\n      )"
@@ -540,8 +539,8 @@ def test_chat_autoload_scopes_variant_lookup_to_cached_repo_path():
     """Autoload must probe the exact cache row it will load, including rows
     retained from a previously selected Hugging Face cache."""
     src = _read("features/chat/api/chat-adapter.ts")
-    # Both cache-backed sources (Hub GGUF repos and indexed local GGUF folders)
-    # scan the exact path they will load from, not the bare repo id.
+    # Both cache-backed sources scan the exact path they will load from, not the
+    # bare repo id.
     sources = src.split("function buildAutoLoadSources", 1)[1]
     sources = sources.split("function isRememberedSource", 1)[0]
     assert sources.count("preferLocalCache: true") == 2
@@ -2407,9 +2406,9 @@ def test_the_primary_action_keeps_its_four_labels():
 
 
 def test_autoload_sees_every_on_device_inventory_and_fails_closed():
-    """#7374: Send downloaded a model over a perfectly loadable local one. The
-    cascade only read the two managed-cache lists, and both were wrapped in
-    `.catch(() => [])`, so a flaky request also read as "device is empty"."""
+    """#7374: Send downloaded a model over a loadable local one. The cascade read
+    only the two managed-cache lists, both wrapped in `.catch(() => [])`, so a
+    flaky request also read as "device is empty"."""
     src = _read("features/chat/api/chat-adapter.ts")
     auto_load = src.split("async function autoLoadSmallestModel", 1)[1]
     discovery = auto_load.split("for (const source of sources)", 1)[0]
@@ -2431,17 +2430,16 @@ def test_autoload_local_rows_follow_the_picker_policy():
     policy = policy.split("\n}", 1)[0]
     assert "AUTO_LOAD_LOCAL_SOURCES.has(row.source)" in policy
     # Not `=== true`: normalizeCapabilities falls back to the format capability
-    # when the backend sends no can_chat, so the picker shows such a row. `===
-    # true` skipped it and fell through to downloading the default instead.
+    # when the backend sends no can_chat, so the picker shows such a row while
+    # `=== true` skipped it and fell through to downloading the default.
     assert "row.capabilities?.can_chat !== false" in policy
     assert "row.partial !== true" in policy
-    # An adapter resolves its base model, which for an uncached base is a Hub
-    # fetch; a scan-folder checkpoint is a pickle with no Hub security scan.
-    # Stated as an allowlist, which subsumes both: neither format can satisfy it.
-    # Excluding them by name was only as good as the classification, and the
-    # backend sends "unknown" when it cannot tell, so a pickle got through.
-    # That neither format loads is asserted behaviourally by
-    # test_a_local_row_the_picker_would_hide_is_never_auto_loaded.
+    # An adapter resolves its base model, a Hub fetch when that base is uncached;
+    # a scan-folder checkpoint is a pickle with no Hub security scan. Stated as
+    # an allowlist, which subsumes both: excluding them by name was only as good
+    # as the classification, and the backend sends "unknown" when it cannot tell.
+    # test_a_local_row_the_picker_would_hide_is_never_auto_loaded covers the
+    # behaviour.
     assert '(isGgufLocalRow(row) || row.model_format === "safetensors")' in policy
     assert "isHiddenModelId(row.model_id, row.id, row.path)" in policy
 
@@ -2455,9 +2453,8 @@ def test_autoload_local_rows_follow_the_picker_policy():
 
 
 def test_default_model_download_is_visible_and_cancellable():
-    """When the device really is empty Studio still fetches a model, but as a
-    managed download: a panel entry with progress and a Cancel that stops it,
-    never an inline pull hidden inside /api/inference/load."""
+    """On a genuinely empty device Studio still fetches a model, but as a managed
+    download with progress and a Cancel, never an inline pull inside /load."""
     src = _read("features/chat/api/chat-adapter.ts")
     helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
     helper = helper.split("async function autoLoadSmallestModel", 1)[0]
@@ -2496,8 +2493,7 @@ def test_default_chat_model_is_gemma_4_e2b():
 
 def test_first_download_toast_is_informative_not_alarming():
     """The old copy read as a warning about the user's machine ("No downloaded
-    models found") and named a raw repo/quant. It now explains what is
-    happening and what the user can do about it."""
+    models found") and named a raw repo/quant."""
     src = _read("features/chat/api/chat-adapter.ts")
     assert "No downloaded models found" not in src
     assert "Downloading a small model" not in src
@@ -2527,9 +2523,8 @@ def test_indexed_local_loads_are_remembered_without_bypassing_leases():
 
 
 def test_autoload_skips_image_and_video_rows():
-    """The backend only tags an on-device row with a task for image/video
-    models, and the chat picker routes those away on click. A background load
-    has no routing step."""
+    """The backend tags a row with a task only for image/video models, and the
+    picker routes those away on click. A background load has no routing step."""
     src = _read("features/chat/api/chat-adapter.ts")
     tasks = src.split("const IMAGE_OR_VIDEO_TASKS", 1)[1].split("]", 1)[0]
     assert '"text-to-image"' in tasks
@@ -2560,9 +2555,9 @@ def test_cached_inventory_lookups_take_the_run_signal():
 
 
 def test_download_cancel_survives_the_pending_start_window():
-    """cancel() no-ops on a key with no job yet, so a click landing during
-    requestStart's preflights has to be replayed once the job exists, and
-    exactly once: cancelling patches the job and wakes the subscription."""
+    """cancel() no-ops on a key with no job, so a click during requestStart's
+    preflights is replayed once the job exists, and exactly once: cancelling
+    patches the job and wakes the subscription."""
     src = _read("features/chat/api/chat-adapter.ts")
     helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
     helper = helper.split("async function autoLoadSmallestModel", 1)[0]
@@ -2585,8 +2580,8 @@ def test_a_failed_quant_is_marked_tried_so_the_repo_continues():
 
 def test_local_safetensors_chat_capability_is_classified_not_assumed():
     """An embedding export is config.json plus model.safetensors, which the
-    format-only rule marked chat-capable; those are small, so chat auto-load
-    would try them first."""
+    format-only rule marked chat-capable, and it is small enough to be tried
+    first."""
     src = _read_backend("hub/services/models/common.py")
     assert "def _local_transformers_can_chat(" in src
     assert "can_chat_override" in src
@@ -2601,14 +2596,11 @@ def test_local_safetensors_chat_capability_is_classified_not_assumed():
 
 
 def test_sources_dedupe_on_the_load_target_alone():
-    """A repo holding both GGUF and safetensors yields a row in each cached
-    list, but the backend resolves one target to one model and probes GGUF
-    first, so keeping both spends a second attempt on the same files.
-
-    Skipped in the cascade rather than dropped while ordering: dropping the twin
-    outright lost a loadable safetensors row whenever its GGUF twin resolved no
-    quant, so the skip has to wait until a candidate actually came back.
-    """
+    """A repo holding both GGUF and safetensors yields a row in each cached list,
+    but the backend resolves one target to one model, so keeping both spends a
+    second attempt on the same files. Skipped in the cascade rather than dropped
+    while ordering, because dropping the twin lost a loadable safetensors row
+    whenever its GGUF twin resolved no quant."""
     src = _read("features/chat/api/chat-adapter.ts")
     key = src.split("function autoLoadSourceKey", 1)[1].split("\n}", 1)[0]
     assert "return normalizeTarget(source.loadId);" in key
@@ -2648,8 +2640,7 @@ def test_cached_rows_classify_chat_capability_too():
 
 def test_every_load_target_comparison_uses_the_same_case_rules():
     """Source dedupe, remembered matching, and tried-candidate keys all compare
-    load targets, so all three must agree on POSIX case or they disagree about
-    which model is which."""
+    load targets, so they must agree on POSIX case."""
     src = _read("features/chat/api/chat-adapter.ts")
     for fn in ("autoLoadSourceKey", "isRememberedSource", "autoLoadCandidateKey"):
         body = src.split(f"function {fn}(", 1)[1].split("\n}", 1)[0]
@@ -2708,8 +2699,8 @@ def test_a_cancelled_download_is_never_handed_to_a_load():
 
 
 def test_cached_classification_reads_the_snapshot_the_row_loads():
-    """_scan_cached_models passes only `identity`, so reading snapshot_path
-    alone classified nothing and the gate was a no-op in production."""
+    """_scan_cached_models passes only `identity`, so snapshot_path alone
+    classified nothing and the gate was a no-op in production."""
     src = _read_backend("hub/services/models/cache_inventory.py")
     fields = src.split("def _cache_inventory_fields", 1)[1].split("\ndef ", 1)[0]
     assert "classify_snapshot = identity.load_snapshot or snapshot_path" in fields
@@ -2735,16 +2726,16 @@ def test_non_chat_conditional_generation_is_excluded_before_the_suffix_check():
 
 
 def test_format_gates_wait_for_the_server_reported_platform():
-    """The store's initial chatOnly is a browser guess: a Mac browser on a
-    remote Linux Studio would otherwise hide every local safetensors model."""
+    """The store's initial chatOnly is a browser guess: a Mac browser on a remote
+    Linux Studio would hide every local safetensors model."""
     src = _read("features/chat/api/chat-adapter.ts")
     gate = src.split("function runsOnThisPlatform", 1)[1].split("\n}", 1)[0]
     assert "if (!platform.fetched || !platform.isChatOnly()) return true;" in gate
 
 
 def test_the_default_is_preflighted_before_the_managed_download():
-    """A refusal from the training or placement guard must not cost several
-    gigabytes first."""
+    """A refusal from the training or placement guard must not cost gigabytes
+    first."""
     src = _read("features/chat/api/chat-adapter.ts")
     fallback = src.split("// Nothing on the device:", 1)[1]
     fallback = fallback.split("export function createOpenAIStreamAdapter", 1)[0]
@@ -2766,8 +2757,7 @@ def test_cached_non_gguf_rows_get_the_chat_only_platform_gate():
 
 
 def test_bare_vision_and_audio_backbones_are_classified_non_chat():
-    """A ViTModel class name has no task suffix, so only the model type
-    identifies it."""
+    """A ViTModel name has no task suffix, so only the model type identifies it."""
     src = _read_backend("hub/services/models/common.py")
     encoders = src.split("_ENCODER_ONLY_MODEL_TYPES = frozenset(", 1)[1]
     encoders = encoders.split(")", 1)[0]

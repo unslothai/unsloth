@@ -8,9 +8,9 @@ import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
-// The shipped helper, lifted out of chat-adapter.ts rather than copied, so a
-// change to the real source is what these assert against. Importing the module
-// would drag in the stores and the toast layer for one pure string function.
+// The shipped helper is lifted out of chat-adapter.ts rather than copied, so
+// these assert against the real source. Importing the module would drag in the
+// stores and the toast layer for one pure string function.
 const adapterPath = fileURLToPath(
   new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
 );
@@ -27,8 +27,8 @@ const normalizeTarget = new Function(
 const sameKey = (a: string, b: string) => normalizeTarget(a) === normalizeTarget(b);
 
 test("one Windows file spelled with either separator is one candidate", () => {
-  // Two keys meant the same file twice: one spelling burned an auto-load
-  // attempt, and a remembered record written as C:\ never matched C:/.
+  // Two keys meant one spelling burned an attempt on the same file, and a
+  // remembered record written as C:\ never matched C:/.
   assert.ok(sameKey("C:\\Users\\a\\models\\M.gguf", "C:/Users/a/models/M.gguf"));
 });
 

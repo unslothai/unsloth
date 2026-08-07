@@ -504,8 +504,8 @@ export interface CachedModelRepo {
   repo_id: string;
   load_id?: string | null;
   size_bytes: number;
-  /** Backend-detected weights format ("adapter" for a cached LoRA, which has no
-   * base weights of its own). Optional for older-backend compatibility. */
+  /** Weights format; "adapter" is a LoRA with no base weights of its own.
+   * Optional for older-backend compatibility. */
   model_format?: string | null;
   /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
    * newest-first. Optional for older-backend compatibility. */

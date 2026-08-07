@@ -1390,9 +1390,9 @@ export function useChatModelRuntime() {
               (loadResponse.is_gguf || isGguf || ggufVariant) &&
                 !isExternalModelId(modelId),
             );
-            // Indexed on-device picks are remembered so auto-load re-picks
-            // what the user ran, not the smallest model it finds. Native
-            // file-picker paths stay out: they need a signed, expiring lease.
+            // Remembered so auto-load re-picks what the user ran, not the
+            // smallest. Native file-picker paths need a signed, expiring lease,
+            // so they stay out.
             const indexedLocalPick =
               typeof selection !== "string" && selection.source === "local";
             if (

@@ -602,9 +602,8 @@ def _run(scenario_expr: str) -> dict:
         cwd = str(run_dir),
         capture_output = True,
         text = True,
-        # Explicit, because text alone decodes with the ANSI code page on
-        # Windows (cp1252), which mangles the non-ASCII characters in the toast
-        # copy node emits as UTF-8 and fails an exact comparison there only.
+        # Explicit: text alone decodes with the Windows ANSI code page, which
+        # mangles the non-ASCII toast copy node emits as UTF-8.
         encoding = "utf-8",
         timeout = 60,
         env = dict(os.environ, NODE_NO_WARNINGS = "1"),
@@ -879,9 +878,9 @@ def test_an_inventory_failure_never_reads_as_an_empty_device(inventory):
 
 @pytest.mark.parametrize("broken", ["ggufRepos", "modelRepos", "localModels"])
 def test_one_broken_inventory_still_loads_a_model_another_one_found(broken):
-    """A failure is one unknown source, not a verdict on the other two. Awaiting
-    the three with Promise.all rejected the batch, discarding lists that had
-    already arrived, so a broken local scan left a loadable model unused."""
+    """A failure is one unknown source, not a verdict on the other two.
+    Promise.all rejected the batch, discarding lists that had already arrived,
+    so a broken local scan left a loadable model unused."""
     # Put the model in a source that is not the one being broken.
     holder = "localModels" if broken != "localModels" else "ggufRepos"
     rows = "[LOCAL_GGUF]" if holder == "localModels" else "[GEMMA]"
@@ -1001,10 +1000,9 @@ def test_a_mac_chat_only_install_still_auto_loads_a_local_mlx_model():
 
 
 def test_an_image_generation_row_is_never_auto_loaded_for_chat():
-    """The backend tags on-device diffusion rows with an image/video task while
-    can_chat stays true on file format alone. The chat picker routes those to
-    the Images page on click; a background load has no routing step, so it has
-    to skip them or the chat turn is sent to a diffusion runtime."""
+    """Diffusion rows carry an image/video task while can_chat stays true on
+    file format alone. The picker routes them to the Images page on click; a
+    background load has no routing step, so it has to skip them."""
     for task in ("text-to-image", "text-to-video", "image-diffusion-unsupported"):
         rows = (
             f"{{ ...LOCAL_GGUF, id: 'img', load_id: 'img', path: 'img', task: '{task}',"
@@ -1022,8 +1020,7 @@ def test_a_chat_row_with_no_task_tag_still_auto_loads():
 
 
 def test_a_failed_quant_falls_through_to_the_next_one_in_the_same_repo():
-    """A repo can hold several downloaded quants. The smallest being corrupt
-    must not cost the whole repo when a larger valid quant sits beside it."""
+    """One corrupt quant must not cost a repo that holds a valid one."""
     variants = (
         "{ variants: ["
         "{ quant: 'Q2_K', filename: 'm-Q2_K.gguf', downloaded: true, size_bytes: 100 },"
@@ -1068,9 +1065,8 @@ def test_cached_inventory_lookups_carry_the_run_abort_signal():
 
 
 def test_cancel_during_the_download_preflight_still_stops_it():
-    """requestStart runs transport preflights before the job exists, and cancel
-    no-ops on a missing key, so the first Cancel click used to be swallowed and
-    the download started anyway."""
+    """requestStart runs transport preflights before the job exists and cancel
+    no-ops on a missing key, so the first Cancel click was swallowed."""
     out = _run("scenario({ cancelDuringStart: true })")
 
     assert [event["kind"] for event in out["events"]].count("download.cancel") >= 1
@@ -1105,10 +1101,9 @@ def test_remembered_posix_paths_match_case_sensitively():
 
 
 def test_a_mixed_cached_repo_is_attempted_once_not_twice():
-    """A repo holding both GGUF and safetensors appears in both cached lists.
-    The backend resolves one load target to one model and probes GGUF first,
-    so keeping both rows spends a second attempt on the same files and records
-    the wrong kind."""
+    """A repo holding both GGUF and safetensors appears in both cached lists,
+    but the backend resolves one load target to one model, so keeping both rows
+    spends a second attempt on the same files."""
     out = _run(
         "scenario({ ggufRepos: [GEMMA],"
         " modelRepos: [{ repo_id: GEMMA.repo_id, load_id: GEMMA.load_id, size_bytes: 15800000000 }],"
@@ -1154,9 +1149,8 @@ def test_variant_scans_carry_the_run_abort_signal():
 
 
 def test_a_failed_path_does_not_mark_a_case_distinct_sibling_as_tried():
-    """On Linux /models/Foo.gguf and /models/foo.gguf are two models. Folding
-    the tried-candidate key made the first one's failure suppress the second,
-    which can leave nothing loaded."""
+    """On Linux /models/Foo.gguf and /models/foo.gguf are two models, so folding
+    the tried-candidate key let one failure suppress the other."""
     rows = (
         "{ ...LOCAL_GGUF, id: '/models/Foo.gguf', load_id: '/models/Foo.gguf',"
         " path: '/models/Foo.gguf', size_bytes: 1 },"
@@ -1186,9 +1180,8 @@ def test_the_default_variant_lookup_carries_the_run_abort_signal():
 
 
 def test_a_download_that_survives_a_failed_cancel_is_not_loaded():
-    """cancelJob can fail its request, probe the transfer as still running, and
-    restore the job. The user asked for it to stop, so the bytes that arrive
-    anyway must not be handed to a load."""
+    """cancelJob can fail and the transfer keep running, but the user asked for
+    it to stop, so the bytes that arrive anyway must not reach a load."""
     out = _run("scenario({ cancelDuringStart: true, cancelFails: true })")
 
     assert _loaded_paths(out) == []
@@ -1211,9 +1204,9 @@ def test_a_failed_cancel_does_not_latch_the_toast_action_off():
 
 
 def test_an_expired_token_is_prepared_before_the_managed_start():
-    """startJob reads the stored token and sends it with none of the recovery
-    validateModel and loadModel get, so a public default discovered
-    anonymously would fail its own download."""
+    """startJob sends the stored token raw, with none of the recovery
+    validateModel and loadModel get, so an expired one would fail the download
+    of a public repo the lookup just read anonymously."""
     out = _run("scenario({})")
     kinds = [event["kind"] for event in out["events"]]
     assert "prepareHfToken" in kinds
@@ -1263,9 +1256,8 @@ def test_a_cached_text_generation_repo_still_auto_loads():
 
 
 def test_a_provisional_mac_platform_does_not_hide_a_remote_backends_models():
-    """Before the health probe lands the store holds a browser guess. A Mac
-    browser on a remote Linux Studio reads chatOnly, and gating on that would
-    hide every local safetensors model and fetch the default instead."""
+    """Before the probe lands chatOnly is a browser guess: a Mac browser on a
+    remote Linux Studio would hide every local safetensors model."""
     safetensors = (
         "{ ...LOCAL_GGUF, id: 'st', load_id: 'st', path: '/models/st',"
         " model_format: 'safetensors' }"
@@ -1292,9 +1284,8 @@ def test_a_server_reported_chat_only_platform_still_gates():
 
 
 def test_the_default_is_validated_before_its_download_starts():
-    """Active training or the GPU placement guard can refuse the default.
-    Finding that out after several gigabytes costs bandwidth and a long wait
-    for nothing."""
+    """Active training or the GPU placement guard can refuse the default, and
+    learning that after several gigabytes costs a long wait for nothing."""
     out = _run(
         "scenario({ validate: () => ({ requires_trust_remote_code: false,"
         " requires_security_review: false, requires_transformers_upgrade: true }) })"
@@ -1343,10 +1334,9 @@ def test_a_provisional_platform_does_not_hide_cached_non_gguf_rows():
 
 
 def test_a_cached_adapter_repo_is_never_auto_loaded():
-    """A cached LoRA has no weights of its own: /load resolves
-    base_model_name_or_path and fetches the base from the Hub when it is not
-    cached, which is exactly why isAutoLoadableLocalRow already drops the local
-    twin. Adapters are tiny, so the size order puts one first."""
+    """A cached LoRA has no weights of its own: /load fetches the base from the
+    Hub when it is not cached, which is why the local twin is dropped too.
+    Adapters are tiny, so the size order puts one first."""
     out = _run(
         "scenario({ modelRepos: [{ repo_id: 'org/lora', load_id: 'org/lora',"
         " size_bytes: 40000000, model_format: 'adapter',"
@@ -1373,10 +1363,9 @@ def test_a_cached_safetensors_repo_is_still_auto_loaded():
 @pytest.mark.parametrize("broken", ["ggufRepos", "modelRepos"])
 def test_an_hf_cache_row_is_used_when_the_cached_lookup_fails(broken):
     """/api/hub/local also reports hf_cache rows, which autoload normally skips
-    because the cached lists already carry them. When one of those lists fails
-    they are the only evidence left, and dropping them left a device whose one
-    model lives in that cache with nothing to load: the gap also blocks the
-    default, so the send ended with no model at all."""
+    as duplicates. When a cached list fails they are the only evidence left, and
+    dropping them ended the send with no model at all, since the gap also blocks
+    the default."""
     row = "{ ...LOCAL_GGUF, source: 'hf_cache' }"
     out = _run(f"scenario({{ {broken}: 'throw', localModels: [{row}] }})")
 
@@ -1395,9 +1384,9 @@ def test_an_hf_cache_row_stays_excluded_when_both_lookups_answer():
 
 
 def test_an_admitted_hf_cache_row_is_not_attempted_twice():
-    """Only one of the two cached lookups failed, so the surviving list may name
-    the same model the admitted hf_cache row does. The load target dedupe has to
-    collapse them or the pair spends two of the three attempts on one model."""
+    """The surviving cached list may name the same model as the admitted
+    hf_cache row, so the load-target dedupe has to collapse them or the pair
+    spends two of the three attempts on one model."""
     row = (
         "{ ...LOCAL_GGUF, source: 'hf_cache', load_id: 'org/dup', path: 'org/dup', id: 'org/dup' }"
     )
@@ -1412,10 +1401,9 @@ def test_an_admitted_hf_cache_row_is_not_attempted_twice():
 
 
 def test_a_safetensors_twin_survives_a_gguf_row_with_no_loadable_quant():
-    """One load target can appear in both cached lists. Dedupe keeps the GGUF row
-    because the backend probes GGUF first, but if that repo resolves no quant --
-    every variant big-endian, say -- the safetensors twin was already discarded
-    and a complete inventory fell through to downloading the default."""
+    """Dedupe keeps the GGUF row because the backend probes GGUF first, but when
+    that repo resolves no quant -- every variant big-endian, say -- the twin was
+    already discarded and a full inventory fell through to the default."""
     out = _run(
         "scenario({ ggufRepos: [{ ...GEMMA, repo_id: 'org/both', load_id: 'org/both' }],"
         " variants: { 'org/both': [{ quant: 'Q4_K_M',"
@@ -1430,9 +1418,9 @@ def test_a_safetensors_twin_survives_a_gguf_row_with_no_loadable_quant():
 
 def test_a_legacy_gguf_row_without_model_format_loads_as_gguf():
     """model_format is optional, so an older backend omits it on a direct .gguf
-    row. runsOnThisPlatform already fell back to the suffix but the source builder
-    did not, so the row became a Transformers source: /load got the safetensors
-    context length instead of 0 and the remembered kind was wrong."""
+    row. The source builder did not fall back to the suffix, so the row became a
+    Transformers source: /load got the safetensors context length instead of 0
+    and the remembered kind was wrong."""
     row = "{ ...LOCAL_GGUF, model_format: undefined }"
     out = _run(f"scenario({{ localModels: [{row}] }})")
 
@@ -1443,11 +1431,11 @@ def test_a_legacy_gguf_row_without_model_format_loads_as_gguf():
 
 @pytest.mark.parametrize("fmt", ["'unknown'", "undefined"])
 def test_an_unclassified_local_row_is_never_auto_loaded(fmt):
-    """The gate was a denylist, so a row the backend could not classify passed it:
-    "unknown" is what the backend sends when it cannot tell, and an older one omits
-    the field entirely. Either way the row may be a pickle checkpoint, which is the
-    exact thing the adapter/checkpoint exclusions exist to keep out of a background
-    load. A directory gives no suffix to tell them apart, so this fails closed."""
+    """The gate was a denylist, so a row the backend could not classify passed
+    it: "unknown" is what the backend sends when it cannot tell, and an older one
+    omits the field. Either way the row may be the pickle checkpoint the
+    exclusions exist to keep out, and a directory gives no suffix to tell them
+    apart, so this fails closed."""
     row = f"{{ ...LOCAL_GGUF, id: 'x', load_id: '/models/x', path: '/models/x', model_format: {fmt} }}"
     out = _run(f"scenario({{ localModels: [{row}] }})")
 

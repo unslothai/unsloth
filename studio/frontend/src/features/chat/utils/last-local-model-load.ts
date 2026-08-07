@@ -46,8 +46,7 @@ export function readLastLocalModelLoad(): LastLocalModelLoad | null {
     ) {
       return null;
     }
-    // A cached repo holds many quants, so a record without one names no file.
-    // A local .gguf path is the file.
+    // A quant-less cached repo names no file; a local .gguf path is the file.
     if (
       parsed.kind === "gguf" &&
       !isPathLikeId(parsed.id) &&

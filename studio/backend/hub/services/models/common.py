@@ -118,9 +118,7 @@ def _runtime_for_format(model_format: ModelFormat) -> ModelRuntime:
     return "unknown"
 
 
-# Transformers class names for generation-capable models. Deliberately narrow:
-# an unknown or custom architecture must not be called non-chat merely because
-# its class name is unfamiliar.
+# Deliberately narrow: an unfamiliar class name must not read as non-chat.
 _GENERATIVE_ARCHITECTURE_SUFFIXES = (
     "ForCausalLM",
     "ForConditionalGeneration",
@@ -148,13 +146,10 @@ _NON_GENERATIVE_ARCHITECTURE_SUFFIXES = (
     "ForVideoClassification",
     "ForZeroShotImageClassification",
 )
-# Conditional-generation architectures that generate something other than a
-# chat reply. They match the generative suffix below, and the managed cache
-# already hides Whisper snapshots, so only the scan-folder rows need this.
+# Generative, but not of a chat reply: they match a generative suffix below yet
+# cannot answer a text turn, and they are small enough to be tried first.
 _NON_CHAT_GENERATIVE_MODEL_TYPES = frozenset(
     {
-        # Captioners generate text but only about an image, so a plain text turn
-        # fails. They are small enough to sort ahead of a real chat model.
         "blip",
         "blip-2",
         "blip_2",
@@ -236,9 +231,8 @@ _ENCODER_ONLY_MODEL_TYPES = frozenset(
         "squeezebert",
         "vision-text-dual-encoder",
         "xlm-roberta",
-        # Vision and audio backbones. Their bare ``*Model`` class names carry no
-        # task suffix, so only the model type identifies them, and they are
-        # small enough to be tried before a real chat model.
+        # Vision and audio backbones: their bare ``*Model`` names carry no task
+        # suffix, so only the model type identifies them.
         "beit",
         "convnext",
         "convnextv2",
@@ -266,14 +260,13 @@ _ENCODER_ONLY_MODEL_TYPES = frozenset(
 )
 
 
-# Real configs are a few KB. The cap keeps a huge or hostile file from being
-# read into memory during a scan.
+# Real configs are a few KB; the cap keeps a huge or hostile file out of memory.
 _MAX_LOCAL_JSON_BYTES = 1 << 20
 
 
 def _read_local_json_object(path: Path) -> dict:
-    """Config metadata, or ``{}``. Never raises: this runs per row in a scan, so
-    one unreadable file must not fail the whole inventory."""
+    """Config metadata, or ``{}``. Never raises: one unreadable file must not
+    fail the whole scan."""
     try:
         # is_file() also skips a FIFO, whose read would block the scan forever.
         if not path.is_file() or path.stat().st_size > _MAX_LOCAL_JSON_BYTES:
@@ -289,19 +282,16 @@ def _read_local_json_object(path: Path) -> dict:
 def _local_transformers_can_chat(path: Path) -> Optional[bool]:
     """False for a locally identifiable non-generative Transformers row.
 
-    ``None`` means the metadata is inconclusive and the format capability
-    stands. Fails open, so a custom architecture is never hidden.
-
-    Without this, an embedding export (config.json plus model.safetensors) is
-    marked chat-capable on file format alone. Those are small, so chat
-    auto-load would try them before a real local chat model and could spend
-    its whole attempt budget on them.
+    ``None`` means inconclusive and the format capability stands, so a custom
+    architecture is never hidden. Without this, an embedding export is
+    chat-capable on file format alone, and those are small enough that chat
+    auto-load spends its whole attempt budget on them.
     """
     if not _safe_is_dir(path):
         return None
 
-    # SentenceTransformers exports carry this marker even when the config
-    # names a broadly reusable encoder class.
+    # SentenceTransformers exports carry this even when the config names a
+    # broadly reusable encoder class.
     try:
         if (path / "modules.json").is_file():
             return False
@@ -326,9 +316,8 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
     )
     model_type_raw = config.get("model_type")
     normalized_type = model_type_raw.strip().lower() if isinstance(model_type_raw, str) else ""
-    # Checked before the generative suffix: Whisper and friends end in
-    # ForConditionalGeneration but cannot answer a text turn, and they are
-    # often smaller than a real chat model so the cascade would stop there.
+    # Before the generative suffix: Whisper and friends end in
+    # ForConditionalGeneration but cannot answer a text turn.
     if normalized_type in _NON_CHAT_GENERATIVE_MODEL_TYPES or any(
         name in _NON_CHAT_GENERATIVE_ARCHITECTURES for name in names
     ):
@@ -338,17 +327,15 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
     if names and all(name.endswith(_NON_GENERATIVE_ARCHITECTURE_SUFFIXES) for name in names):
         return False
     # AutoModel.save_pretrained on a chat family writes the backbone name, and a
-    # backbone has no LM head to generate with. Named explicitly rather than by
-    # shape so an unfamiliar FooModel still fails open.
+    # backbone has no LM head. Listed explicitly, not shape-matched, so an
+    # unfamiliar FooModel still fails open.
     if names and all(name in _BARE_TEXT_BACKBONE_ARCHITECTURES for name in names):
         return False
 
-    # The type alone decides. Matching on the name shape too kept rows chat-capable
-    # whenever it did not fit: google/siglip2-* omits architectures entirely, and
-    # CLIPTextModelWithProjection ends in neither Model nor a known suffix. Both are
-    # small enough to sort first and spend the whole attempt budget before a real
-    # chat model. Anything generative already returned True above, including
-    # BertLMHeadModel via the LMHeadModel suffix, so no chat row reaches here.
+    # The type alone decides: requiring the name shape too kept rows chat-capable
+    # when it did not fit, e.g. google/siglip2-* omits architectures entirely and
+    # CLIPTextModelWithProjection ends in neither Model nor a known suffix.
+    # Anything generative returned True above, so no chat row reaches here.
     if normalized_type in _ENCODER_ONLY_MODEL_TYPES:
         return False
     return None
