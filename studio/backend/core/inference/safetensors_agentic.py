@@ -1191,7 +1191,11 @@ def run_safetensors_tool_loop(
 
             if not decision.should_execute:
                 if content_text and not assistant_appended:
-                    conversation.append(assistant_msg)
+                    append_assistant_turn(
+                        conversation,
+                        assistant_msg,
+                        continue_final_message = continue_final_message,
+                    )
                     assistant_appended = True
                 if provisional_match and not provisional_resolved:
                     # A provisional render_html card is already on screen for

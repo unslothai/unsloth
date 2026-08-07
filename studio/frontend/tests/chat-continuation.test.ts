@@ -145,3 +145,21 @@ test("Anthropic is the provider that rejects a trailing assistant turn", () => {
   assert.equal(rejectsAssistantPrefill("openai"), false);
   assert.equal(rejectsAssistantPrefill(undefined), false);
 });
+
+test("the overlap repair can eat a legitimate repeat, so local output skips it", () => {
+  // A local backend resumes at the exact token boundary, so its output is already the
+  // rest of the answer. Running the repair over it would delete a phrase the model
+  // meant to write, which is why the adapter only repairs external provider output.
+  const partial = "Ranking them, the clear winner is the second result";
+  const continuation = "the second result held up best under load.";
+  // "the second result" is trimmed as a repeat even though the model wrote it.
+  assert.equal(
+    stripContinuationOverlap(partial, continuation),
+    " held up best under load.",
+  );
+  // Verbatim concatenation is what a token-exact backend needs.
+  assert.equal(
+    `${partial} ${continuation}`,
+    "Ranking them, the clear winner is the second result the second result held up best under load.",
+  );
+});

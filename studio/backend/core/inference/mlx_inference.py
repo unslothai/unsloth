@@ -17,6 +17,7 @@ from core.inference.chat_template_helpers import (
     markup_for_tokenizer,
     neutralize_control_markup_in_messages,
     normalize_reasoning_snapshots,
+    trailing_assistant_text,
 )
 from utils.models.model_config import is_audio_input_type
 from loggers import get_logger
@@ -106,13 +107,14 @@ def _render_registered_vlm_prompt(
     messages,
     num_images,
     num_audios = 0,
-    continue_partial = None,
+    continue_final_message = False,
 ):
     """Render through mlx-vlm when it declares a formatter for this model.
 
-    With *continue_partial* the trailing assistant turn is dropped from the render and
-    appended raw, so this recovery path resumes the partial like the primary one rather
-    than opening a fresh turn.
+    With *continue_final_message* the trailing assistant turn is dropped from the render
+    and appended as text, so this recovery path resumes the partial rather than opening a
+    fresh turn. The appended text is taken from the SWEPT messages: a raw partial could
+    close the turn or open another role instead of resuming (#7066).
     """
     from mlx_vlm import prompt_utils
 
@@ -122,20 +124,21 @@ def _render_registered_vlm_prompt(
     if model_type not in getattr(prompt_utils, "MODEL_CONFIG", {}):
         return None
 
-    render_messages = messages[:-1] if continue_partial else messages
-    # Recovery path: renders the caller's original list, not the neutralized copy (#7066).
+    # Recovery path: sweeps the caller's original list rather than reusing a copy (#7066).
+    swept = neutralize_control_markup_in_messages(
+        messages, None, markup_for_tokenizer(processor)
+    )
+    partial = trailing_assistant_text(swept) if continue_final_message else None
     rendered = prompt_utils.apply_chat_template(
         processor,
         config,
-        neutralize_control_markup_in_messages(
-            render_messages, None, markup_for_tokenizer(processor)
-        ),
+        swept[:-1] if partial else swept,
         add_generation_prompt = True,
         num_images = num_images,
         num_audios = num_audios,
     )
     if isinstance(rendered, str) and rendered.strip():
-        return f"{rendered}{continue_partial}" if continue_partial else rendered
+        return f"{rendered}{partial}" if partial else rendered
     raise RuntimeError("mlx-vlm's registered renderer returned an empty prompt.")
 
 
@@ -1123,7 +1126,6 @@ class MLXInferenceBackend:
         from core.inference.chat_template_helpers import (
             apply_chat_template_for_generation,
             chat_render_target,
-            trailing_assistant_text,
         )
 
         # Pick the chat-template-aware caller: processors with their own
@@ -1188,9 +1190,7 @@ class MLXInferenceBackend:
                     self._model,
                     messages,
                     len(images),
-                    continue_partial = (
-                        trailing_assistant_text(messages) if continue_final_message else None
-                    ),
+                    continue_final_message = continue_final_message,
                 )
             except Exception as recovery_error:
                 if prompt_error is not None:

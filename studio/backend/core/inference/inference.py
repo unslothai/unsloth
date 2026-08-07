@@ -1283,7 +1283,10 @@ class InferenceBackend:
             user_msg = next(m for m in reversed(vision_messages) if m.get("role") == "user")
 
             def _render_vision(msgs):
-                return render_vision_prompt(processor, msgs, continue_partial)
+                # Partial taken from the swept msgs, not the raw pre-sweep capture.
+                return render_vision_prompt(
+                    processor, msgs, continue_final_message = bool(continue_partial)
+                )
 
             try:
                 input_text = _render_vision(vision_messages)

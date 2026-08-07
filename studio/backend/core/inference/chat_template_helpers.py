@@ -2371,13 +2371,21 @@ def append_assistant_turn(
     conversation.append(assistant_msg)
 
 
-def render_vision_prompt(processor, messages: list, continue_partial: Optional[str]) -> str:
+def render_vision_prompt(
+    processor,
+    messages: list,
+    continue_final_message: bool = False,
+) -> str:
     """Render a vision turn through the processor's own template.
 
-    With *continue_partial* the prompt ends inside the trailing assistant turn, so
-    the model resumes it. Processors predating the kwarg get a manual splice.
+    With *continue_final_message* the prompt ends inside the trailing assistant turn,
+    so the model resumes it. Processors predating the kwarg get a manual splice, whose
+    text comes from *messages* rather than a separate copy: the caller sweeps these for
+    control markup, and a raw partial could otherwise close the turn or open another
+    role instead of being resumed as text (#7066).
     """
-    if not continue_partial:
+    partial = trailing_assistant_text(messages) if continue_final_message else None
+    if not partial:
         return processor.apply_chat_template(messages, add_generation_prompt = True, tokenize = False)
     try:
         return processor.apply_chat_template(
@@ -2390,7 +2398,7 @@ def render_vision_prompt(processor, messages: list, continue_partial: Optional[s
         prefix = processor.apply_chat_template(
             messages[:-1], add_generation_prompt = True, tokenize = False
         )
-        return f"{prefix}{continue_partial}"
+        return f"{prefix}{partial}"
 
 
 def apply_chat_template_for_generation(

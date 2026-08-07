@@ -3779,8 +3779,13 @@ export function createOpenAIStreamAdapter(
       // lets the finalizers re-derive the new output and repair a repeat/restart.
       let cumulativeText = continuation ? continuation.partial : "";
       const continuationPartial = continuation?.partial ?? "";
+      // Local backends resume at the exact token boundary, so their output is already
+      // the rest of the answer: trimming an overlap there could only delete words the
+      // model meant to write (a sentence legitimately restating the preceding phrase).
+      // The repair is for providers that may ignore the prefill and repeat or restart.
+      const repairContinuation = isExternalRequest;
       const mergeContinuation = (text: string): string =>
-        continuationPartial
+        continuationPartial && repairContinuation
           ? joinContinuation(
               continuationPartial,
               text.slice(continuationPartial.length),
