@@ -118,6 +118,35 @@ export function joinContinuation(
 }
 
 /**
+ * Whether a finished local turn used its whole budget, i.e. stopped for length.
+ *
+ * MLX alone needs the inference: it reports finish_reason "stop" at the cap, so an
+ * exhausted budget is the only signal there. External providers and llama-server report
+ * "length" themselves, and llama-server's tool loop sums completion_tokens over every
+ * pass against a per-pass cap, so the sum marks a finished multi-pass answer truncated.
+ */
+export function budgetImpliesTruncation({
+  isExternal,
+  isGguf,
+  maxTokens,
+  completionTokens,
+}: {
+  isExternal: boolean;
+  isGguf: boolean;
+  maxTokens: number | undefined;
+  completionTokens: number | undefined;
+}): boolean {
+  if (isExternal || isGguf) {
+    return false;
+  }
+  return (
+    typeof maxTokens === "number" &&
+    typeof completionTokens === "number" &&
+    completionTokens >= maxTokens
+  );
+}
+
+/**
  * Whether an assistant turn can be resumed at all.
  *
  * A turn that called a tool cannot: the continuation runs as a sibling, so the tool

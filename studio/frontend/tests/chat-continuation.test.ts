@@ -9,6 +9,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 registerBundlerResolver();
 
 const {
+  budgetImpliesTruncation,
   incompleteLabel,
   isContinuableContent,
   isRestart,
@@ -65,6 +66,31 @@ test("mid-stream the restart check is deferred", () => {
   );
 });
 
+test("a live yield is repaired like the terminal one, so Stop saves clean text", () => {
+  // Stop is an end a continuation reaches without a terminal yield: assistant-ui applies
+  // nothing the generator yields after the abort, so the last LIVE yield is what persists.
+  // Streaming raw text saved the provider's repeat as the cancelled answer.
+  assert.equal(
+    joinContinuation(PARTIAL, "warm the bowl and cover it with"),
+    `${PARTIAL} cover it with`,
+  );
+
+  // A partial longer than the overlap scan is where the two joins diverge: only the
+  // restart check reaches back that far, so a live yield runs the same join as the end.
+  const long = `${PARTIAL} ${Array.from(
+    { length: 12 },
+    (_, i) => `Step ${i} is to knead it for ${i} minutes without adding flour.`,
+  ).join(" ")}`;
+  const restart = `${long} Second, shape the loaf.`;
+  assert.ok(long.length > 400);
+  assert.equal(joinContinuation(long, restart), restart);
+  // The streaming option would have kept both copies.
+  assert.equal(
+    joinContinuation(long, restart, { streaming: true }),
+    `${long}${restart}`,
+  );
+});
+
 test("a partial too short to judge is never treated as a restart", () => {
   assert.equal(isRestart("Sure!", "Sure! Here is the answer."), false);
   assert.equal(
@@ -75,6 +101,49 @@ test("a partial too short to judge is never treated as a restart", () => {
 
 test("an empty partial yields the continuation alone", () => {
   assert.equal(joinContinuation("", "anything"), "anything");
+});
+
+test("an exhausted budget only implies truncation on the MLX route", () => {
+  const capped = { maxTokens: 256, completionTokens: 256 };
+  assert.equal(
+    budgetImpliesTruncation({ isExternal: false, isGguf: false, ...capped }),
+    true,
+  );
+  // llama-server's tool loop reports completion_tokens summed over every pass while
+  // max_tokens caps each pass, so a 30-token nudge plus a 230-token answer that ended
+  // on its own reads as 260 of 256. It reports "length" itself, so nothing is lost.
+  assert.equal(
+    budgetImpliesTruncation({
+      isExternal: false,
+      isGguf: true,
+      maxTokens: 256,
+      completionTokens: 260,
+    }),
+    false,
+  );
+  assert.equal(
+    budgetImpliesTruncation({ isExternal: true, isGguf: false, ...capped }),
+    false,
+  );
+  // A route that sends no usage, and an answer inside the budget, stay complete.
+  assert.equal(
+    budgetImpliesTruncation({
+      isExternal: false,
+      isGguf: false,
+      maxTokens: 256,
+      completionTokens: undefined,
+    }),
+    false,
+  );
+  assert.equal(
+    budgetImpliesTruncation({
+      isExternal: false,
+      isGguf: false,
+      maxTokens: 256,
+      completionTokens: 255,
+    }),
+    false,
+  );
 });
 
 test("incomplete metadata round-trips and unknown reasons are ignored", () => {

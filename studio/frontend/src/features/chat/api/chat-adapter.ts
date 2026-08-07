@@ -117,6 +117,7 @@ import {
 } from "../utils/reasoning-duration";
 import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import {
+  budgetImpliesTruncation,
   CONTINUE_INSTRUCTION,
   type IncompleteReason,
   joinContinuation,
@@ -3797,6 +3798,11 @@ export function createOpenAIStreamAdapter(
               text.slice(continuationPartial.length),
             )
           : text;
+      // Every streamed yield carries the repaired text, not just the terminal ones:
+      // assistant-ui drops whatever the generator yields after an abort, so on Stop the
+      // last STREAMED yield is the saved answer, and raw text saves the repeat/restart.
+      const liveAssistantContent = () =>
+        buildAssistantContent(mergeContinuation(cumulativeText));
       // Provisional reason carried on every streamed yield: an abort stops the
       // generator without reaching a terminal yield, and a reload rebuilds messages
       // with status "complete", so a stopped turn would otherwise lose the reason it
@@ -3807,9 +3813,10 @@ export function createOpenAIStreamAdapter(
       });
       // Why this turn stopped early. Drives the Continue affordance.
       let incompleteReason: IncompleteReason | null = null;
-      // Safetensors/MLX report finish_reason "stop" even at the cap, so an
-      // exhausted budget is the only truncation signal on those routes.
+      // MLX reports finish_reason "stop" even at the cap, so an exhausted budget is the
+      // only truncation signal on that route. llama-server reports "length" honestly.
       let requestedMaxTokens: number | undefined;
+      const isGgufRequest = activeModel?.isGguf === true;
       const reasoningDurationTracker = createReasoningDurationTracker();
       // True while wrapping a `delta.reasoning_content` stream in
       // <think>...</think> for parseAssistantContent. Lives outside the
@@ -4663,7 +4670,7 @@ export function createOpenAIStreamAdapter(
                         argsText: partial.argsText,
                       };
                       yield {
-                        content: buildAssistantContent(cumulativeText),
+                        content: liveAssistantContent(),
                         metadata: {
                           timing: buildTiming(
                             streamStartTime,
@@ -4958,7 +4965,7 @@ export function createOpenAIStreamAdapter(
                   }
                 }
                 yield {
-                  content: buildAssistantContent(cumulativeText),
+                  content: liveAssistantContent(),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
@@ -5161,7 +5168,7 @@ export function createOpenAIStreamAdapter(
                   }
                 }
                 yield {
-                  content: buildAssistantContent(cumulativeText),
+                  content: liveAssistantContent(),
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
@@ -5206,7 +5213,7 @@ export function createOpenAIStreamAdapter(
                   "",
                 );
               }
-              const assistantContent = buildAssistantContent(cumulativeText);
+              const assistantContent = liveAssistantContent();
 
               // Fallback when no server-side reasoning_summary arrives.
               const parsedReasoningGroupCount =
@@ -5340,16 +5347,14 @@ export function createOpenAIStreamAdapter(
           }
         }
 
-        // Local routes only: they report "stop" whether the model finished or hit the
-        // cap, so the budget is the sole signal there. External providers report the
-        // reason honestly, and inferring over their explicit "stop" would offer
-        // Continue on a complete answer that happened to use the whole budget.
         if (
           incompleteReason === null &&
-          !isExternalRequest &&
-          typeof requestedMaxTokens === "number" &&
-          typeof meta?.usage?.completion_tokens === "number" &&
-          meta.usage.completion_tokens >= requestedMaxTokens
+          budgetImpliesTruncation({
+            isExternal: isExternalRequest,
+            isGguf: isGgufRequest,
+            maxTokens: requestedMaxTokens,
+            completionTokens: meta?.usage?.completion_tokens,
+          })
         ) {
           incompleteReason = "length";
         }
