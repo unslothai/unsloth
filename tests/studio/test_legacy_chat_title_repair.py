@@ -61,4 +61,7 @@ def test_the_next_page_is_scheduled_rather_than_waited_for():
 
 def test_a_failed_read_leaves_the_rows_retryable():
     repair = _read(REPAIR)
-    assert "} catch { // Nothing was decided, so let a later refresh try these again. for (const id of ids) attempted.delete(id); return 0; }" in repair
+    assert (
+        "} catch { // Nothing was decided, so let a later refresh try these again. for (const id of ids) attempted.delete(id); return 0; }"
+        in repair
+    )
