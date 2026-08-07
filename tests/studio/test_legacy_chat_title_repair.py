@@ -51,11 +51,13 @@ def test_a_legacy_only_chat_falls_back_to_a_local_read():
     # Any row no rewrite could be made of, not just an empty one: a chat can be
     # part imported, holding its opening turn locally and later ones remotely.
     assert "const unexplained = threadsWithoutRepairs(candidates, repairs);" in repair
-    assert "const local = await listLegacyChatMessages(id);" in repair
-    assert "messages.set(id, mergeMessagesById(messages.get(id) ?? [], local));" in repair
+    # Per row: one failing local read must not throw away the page's other
+    # repairs or stop it advancing to the rows behind it.
+    assert "await listUnimportedChatMessages(id, backend.length).catch( () => [], )" in repair
+    assert "messages.set(id, mergeMessagesById(backend, local));" in repair
 
     storage = _read(STORAGE)
-    assert "export async function listLegacyChatMessages(" in storage
+    assert "export async function listUnimportedChatMessages(" in storage
     assert 'db.messages .where("threadId") .equals(threadId) .toArray()' in storage
 
 
@@ -73,6 +75,21 @@ def test_the_next_page_is_scheduled_rather_than_waited_for():
 def test_rows_with_nothing_found_stay_retryable():
     repair = _read(REPAIR)
     assert "for (const id of threadsMissingMessages(ids, messages)) attempted.delete(id);" in repair
+
+
+def test_only_one_repair_pass_runs_at_a_time():
+    """Several sidebars can be mounted at once, so the write concurrency cap
+    only holds if their passes queue."""
+    repair = _read(REPAIR)
+    assert "const serial = createSerialQueue();" in repair
+    assert "return serial(() => runRepairPass(threads, known));" in repair
+
+
+def test_a_leftover_dexie_row_is_not_read_back_as_the_opening_prompt():
+    """Deleting a message prunes the backend and leaves the Dexie copy, so the
+    repair must not resurrect it into the title."""
+    storage = _read(STORAGE)
+    assert "if (!trustsLocalOnlyMessages(isLegacyChatImportDone(), backendCount)) { return []; }" in storage
 
 
 def test_a_local_read_is_sorted_like_the_backend_lists_messages():

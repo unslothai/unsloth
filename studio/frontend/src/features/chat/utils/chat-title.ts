@@ -100,6 +100,16 @@ export function selectLegacyRepairPage(
   };
 }
 
+/** Whether a Dexie row the backend does not have still counts as real. Once the
+ *  import is done and the backend has the thread, it is a leftover: a deletion
+ *  prunes the backend without clearing Dexie. */
+export function trustsLocalOnlyMessages(
+  importDone: boolean,
+  backendCount: number,
+): boolean {
+  return !importDone || backendCount === 0;
+}
+
 /** Candidates no rewrite could be made of. Their opening message may just be
  *  missing from what was read, so they are worth a local look before being
  *  written off. */

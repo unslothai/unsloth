@@ -4,7 +4,7 @@
 import { batchListChatMessages } from "../api/chat-api";
 import type { MessageRecord, ThreadRecord } from "../types";
 import {
-  listLegacyChatMessages,
+  listUnimportedChatMessages,
   updateStoredChatThread,
 } from "./chat-history-storage";
 import {
@@ -15,6 +15,7 @@ import {
   threadsWithoutRepairs,
 } from "./chat-title";
 import { runWithConcurrency } from "./run-with-concurrency";
+import { createSerialQueue } from "./serial-queue";
 
 /** Threads already tried. A repaired title stops matching anyway; this keeps
  *  the ones that could not be rewritten off every later refresh. */
@@ -30,9 +31,20 @@ const REPAIR_CONCURRENCY = 4;
 /** Breather between pages. */
 const REPAIR_PAGE_PAUSE_MS = 500;
 
+/** Several sidebars can be mounted at once, so REPAIR_CONCURRENCY only holds
+ *  if their passes queue rather than run alongside each other. */
+const serial = createSerialQueue();
+
 /** Rewrite titles stored pre-cut at 48 chars so they grow with the sidebar
  *  again. `known` is the caller's own message map, when it already has one. */
-export async function repairLegacyChatTitles(
+export function repairLegacyChatTitles(
+  threads: ThreadRecord[],
+  known?: Map<string, MessageRecord[]>,
+): Promise<number> {
+  return serial(() => runRepairPass(threads, known));
+}
+
+async function runRepairPass(
   threads: ThreadRecord[],
   known?: Map<string, MessageRecord[]>,
 ): Promise<number> {
@@ -61,9 +73,14 @@ export async function repairLegacyChatTitles(
     const unexplained = threadsWithoutRepairs(candidates, repairs);
     if (unexplained.length > 0) {
       await runWithConcurrency(unexplained, REPAIR_CONCURRENCY, async (id) => {
-        const local = await listLegacyChatMessages(id);
+        const backend = messages.get(id) ?? [];
+        // A read that fails leaves this row unexplained. The page still writes
+        // what it planned and still moves on to the rest.
+        const local = await listUnimportedChatMessages(id, backend.length).catch(
+          () => [],
+        );
         if (local.length === 0) return;
-        messages.set(id, mergeMessagesById(messages.get(id) ?? [], local));
+        messages.set(id, mergeMessagesById(backend, local));
       });
       repairs = planLegacyTitleRepairs(candidates, messages);
     }
