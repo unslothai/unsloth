@@ -1319,6 +1319,47 @@ def test_companion_search_root_keeps_non_quant_directories(tmp_path):
         assert _local_gguf_companion_search_root(str(directory), str(weight)) == str(directory)
 
 
+def test_custom_scan_folder_variant_finds_nested_mtp_drafter(tmp_path, monkeypatch):
+    """Custom-folder scan roots are passed with a nested gguf_variant (#8077).
+
+      Companions sit beside the model directory, not at the scan root. Using the
+    selected scan folder as the companion search root would miss them.
+    """
+    scan_root = tmp_path / "custom"
+    model_dir = scan_root / "unsloth" / "gemma-4-31b-it"
+    quant_dir = model_dir / "Q4_K_M"
+    quant_dir.mkdir(parents = True)
+    weight = quant_dir / "gemma-4-31B-it-Q4_K_M.gguf"
+    weight.write_bytes(b"x")
+    drafter = model_dir / "mtp-gemma-4-31B-it.gguf"
+    drafter.write_bytes(b"x")
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(scan_root)}])
+
+    assert _local_gguf_companion_search_root(str(scan_root), str(weight)) == str(model_dir)
+    config = ModelConfig.from_identifier(str(scan_root), gguf_variant = "Q4_K_M")
+    assert config and config.is_gguf
+    assert config.gguf_file == str(weight.resolve())
+    assert config.gguf_mtp_file == str(drafter.resolve())
+
+
+def test_custom_scan_folder_variant_finds_nested_dspark_sidecar(tmp_path, monkeypatch):
+    scan_root = tmp_path / "custom"
+    model_dir = scan_root / "deepseek"
+    quant_dir = model_dir / "UD-Q4_K_M"
+    quant_dir.mkdir(parents = True)
+    weight = quant_dir / "DeepSeek-V4-Flash-0731-UD-Q4_K_M.gguf"
+    weight.write_bytes(b"x")
+    dspark_dir = model_dir / "dspark"
+    dspark_dir.mkdir()
+    sidecar = dspark_dir / "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+    sidecar.write_bytes(b"x")
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(scan_root)}])
+
+    config = ModelConfig.from_identifier(str(scan_root), gguf_variant = "UD-Q4_K_M")
+    assert config and config.is_gguf
+    assert config.gguf_dspark_file == str(sidecar.resolve())
+
+
 # ── DSpark drafters (DeepSeek V4 Flash) ──────────────────────────────
 
 DEEPSEEK_SIBLINGS = [

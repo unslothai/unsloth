@@ -2324,12 +2324,27 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
     gguf_path = Path(gguf_file)
     # One shared quant vocabulary: a local copy fell behind on bpw, hiding IQ4_XS-3.53bpw dirs.
     quant_dir_re = rf"{_GGUF_KNOWN_QUANT_RE.pattern}(-[0-9]+(?:\.[0-9]+)?bpw)?"
-    search_dir = gguf_path.parent if selected.suffix.lower() == ".gguf" else selected
-    if not search_dir.name:
-        return str(search_dir)
-    if re.fullmatch(quant_dir_re, search_dir.name, re.IGNORECASE):
-        return str(search_dir.parent)
-    return str(search_dir)
+
+    def _promote_quant_dir(directory: Path) -> Path:
+        if directory.name and re.fullmatch(quant_dir_re, directory.name, re.IGNORECASE):
+            return directory.parent
+        return directory
+
+    if selected.suffix.lower() == ".gguf":
+        return str(_promote_quant_dir(gguf_path.parent))
+
+    # Directory selection: a registered custom scan folder or a publisher directory
+    # is often passed here together with a nested ``gguf_variant``. Companions
+    # (mmproj, MTP, DSpark) live beside the model folder, not at the scan root.
+    try:
+        gguf_path.resolve().relative_to(selected.resolve())
+        search_dir = gguf_path.parent
+    except (OSError, ValueError):
+        search_dir = selected
+        if not search_dir.name:
+            return str(search_dir)
+
+    return str(_promote_quant_dir(search_dir))
 
 
 def _snapshot_selection_key(snapshot: Path) -> tuple[float, str]:
