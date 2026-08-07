@@ -39,15 +39,11 @@ from hub.workers import hf_download
 
 @pytest.fixture(autouse = True)
 def _denylist_inert(monkeypatch):
-    # The browse tests here exercise allowlist containment, symlink safety and
-    # the sensitive-name filter, not the system-directory denylist (which has
-    # its own suite in tests/test_browse_denylist.py). On macOS tmp_path
-    # resolves under /private/var, a denied prefix, so _resolve_browse_target
-    # would 403 the fixture dirs before that logic runs. Keep the denylist inert
-    # so these assertions hold on every platform. folder_browser binds
-    # is_denied_system_path at import, so patch it on that module, not on
-    # scan_folders. The "rejects" cases still 403 via the allowlist/sensitive
-    # checks, and the non-browse tests never call it.
+    # These browse tests exercise allowlist containment, symlink safety and the sensitive-name
+    # filter, not the system-directory denylist (its own suite is tests/test_browse_denylist.py).
+    # On macOS tmp_path resolves under /private/var, a denied prefix, so keep the denylist inert
+    # for cross-platform parity. folder_browser binds is_denied_system_path at import, so patch it
+    # there. The "rejects" cases still 403 via the allowlist/sensitive checks.
     monkeypatch.setattr(folder_browser, "is_denied_system_path", lambda _p: False)
 
 
@@ -154,8 +150,7 @@ def test_custom_inventory_filters_mtp_companions_at_registered_root(tmp_path, mo
 
 
 def test_custom_inventory_filters_dspark_companions_at_registered_root(tmp_path):
-    # Registering dspark/ as the scan root strips it from every relative path,
-    # so the dspark- basename prefix has to carry the exclusion.
+    # Registering dspark/ as the scan root strips it from every relative path, so the basename prefix carries the exclusion.
     root = tmp_path / "dspark"
     root.mkdir()
     for name in (
@@ -420,7 +415,10 @@ def test_list_local_gguf_variants_skips_big_endian_sibling(tmp_path):
     ]
 
 
-@pytest.mark.parametrize("repo_id", ["bert-base-uncased", "owner/repo"])
+@pytest.mark.parametrize(
+    "repo_id",
+    ["bert-base-uncased", "owner/repo", "_owner/_repo_", "repo_"],
+)
 def test_repo_id_validation_accepts_hf_repo_id_contract(repo_id):
     assert paths.is_valid_repo_id(repo_id)
 
@@ -454,7 +452,7 @@ def test_download_state_preserves_readable_keys_when_safe(monkeypatch, tmp_path)
     assert path.name == "models--owner--repo--variant--q4_k_m.json"
 
 
-@pytest.mark.parametrize("variant", ["bad variant with spaces", "q" * 64])
+@pytest.mark.parametrize("variant", ["bad variant with spaces", "q" * 64, "q" * 65])
 def test_download_state_bounds_long_repo_variant_filenames(monkeypatch, tmp_path, variant):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path)
     repo_id = f"{'a' * 96}/{'b' * 96}"
@@ -496,6 +494,9 @@ def test_download_state_bounds_long_repo_variant_filenames(monkeypatch, tmp_path
     assert list(download_manifest.iter_variant_manifests("model", repo_id)) == [
         (variant, manifest_path)
     ]
+    assert download_manifest.purge_all_state_for_repo("model", repo_id) == 1
+    assert not download_manifest.has_cancel_marker("model", repo_id, variant)
+    assert download_manifest.read_manifest("model", repo_id, variant) is None
 
 
 def test_download_state_isolated_across_hub_cache_switches(monkeypatch, tmp_path):
@@ -679,8 +680,7 @@ def test_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tmp_path)
 
 
 def test_get_models_folder_response_creates_and_returns_dir(monkeypatch, tmp_path):
-    # The endpoint creates the cache dir on demand so the desktop "Open folder"
-    # action works even before the first download.
+    # The endpoint creates the cache dir on demand so "Open folder" works before the first download.
     target = tmp_path / "hub"
     monkeypatch.setattr(local_inventory, "_resolve_hf_cache_dir", lambda: target)
 
@@ -979,7 +979,7 @@ def _diffusion_scan(monkeypatch, tmp_path, repo_id: str, files: list, *, task: s
         cache_inventory, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
     # The real signature takes snapshot_dir; a double that omits it raises TypeError, which the
-    # per-repo except swallows into an empty row list and every assertion below stops running.
+    # per-repo except swallows into an empty row list, silently skipping every assertion below.
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_snapshot_partial",
@@ -1022,7 +1022,11 @@ def test_cached_models_scan_keeps_a_complete_pipeline_loadable(monkeypatch, tmp_
             _file("model_index.json", 900),
             _file("vae/diffusion_pytorch_model.safetensors", 300_000_000),
             _file("text_encoder/model.safetensors", 900_000_000),
-            _file("transformer/diffusion_pytorch_model-00001-of-00002.safetensors", 4_000_000_000),
+            # Unsharded, because this fixture stands for a COMPLETE pipeline. It used to name a
+            # lone "-00001-of-00002" shard with no index, which is not loadable at all: with no
+            # index diffusers reads the component as unsharded and asks for the plain name, never
+            # the numbered file. The scan now calls that partial, as it always should have.
+            _file("transformer/diffusion_pytorch_model.safetensors", 4_000_000_000),
         ],
         task = "text-to-image",
     )
@@ -1046,6 +1050,74 @@ def test_cached_models_scan_flags_a_single_file_diffusion_checkpoint(monkeypatch
 
     assert row["single_file"] is True
     assert row["partial"] is False
+
+
+def test_a_companion_mirror_carries_the_flag_on_the_hub_row(monkeypatch, tmp_path):
+    """The chat picker is backed by /api/hub/cached-models, NOT the legacy /api/models one, so a
+    flag set only on the legacy route arrives as undefined here -- the same trap single_file fell
+    into. A mirror that reaches this scan must carry it.
+
+    Given a config.json, because the real mirrors have none: see the test below for what that
+    means today.
+    """
+    row = _diffusion_scan(
+        monkeypatch,
+        tmp_path,
+        "unsloth/Z-Image-Turbo-ComfyUI",
+        [_file("config.json", 12), _file("model.safetensors", 300_000_000)],
+        task = None,
+    )
+
+    assert row["companion"] is True
+    # Startup auto-load filters on capabilities.can_chat (isChattableCachedRepo), never on the
+    # flag, so a row carrying only the flag was still auto-loadable as a chat model.
+    assert row["capabilities"]["can_chat"] is False
+
+
+def test_an_ordinary_repo_is_not_flagged_as_a_companion(monkeypatch, tmp_path):
+    """The flag names an exact set of mirrors, so a repo of the same shape is untouched."""
+    row = _diffusion_scan(
+        monkeypatch,
+        tmp_path,
+        "unsloth/Qwen3-8B",
+        [_file("config.json", 12), _file("model.safetensors", 100)],
+        task = None,
+    )
+
+    assert row["companion"] is False
+    # ...and an ordinary chat repo keeps its chat capability.
+    assert row["capabilities"]["can_chat"] is True
+
+
+def test_the_real_companion_shape_never_reaches_a_row_at_all(monkeypatch, tmp_path):
+    """Why the flag above is a latch, not a live fix.
+
+    The published mirrors are ComfyUI-style: weights under split_files/ and no config.json or
+    model_index.json. _repo_non_gguf_model_payload classifies that as ``unknown``, so
+    has_runnable_weights is False and _scan_cached_models drops the repo before any row exists.
+    Pinned because the flag's whole value is covering the day that classifier learns to admit
+    these -- if this test starts failing, the flag is what stops a denoiser-less repo becoming a
+    chat pick.
+    """
+    from types import SimpleNamespace
+
+    snapshot = tmp_path / "snapshots" / _SNAPSHOT_SHA
+    snapshot.mkdir(parents = True)
+    files = [_file("split_files/vae/ae.safetensors", 300_000_000), _file("README.md", 100)]
+    for f in files:
+        target = snapshot / f.file_name
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_bytes(b"\0" * 16)
+    repo = SimpleNamespace(
+        repo_id = "unsloth/Z-Image-Turbo-ComfyUI",
+        repo_type = "model",
+        repo_path = tmp_path,
+        revisions = [SimpleNamespace(files = files, snapshot_path = snapshot, commit_hash = _SNAPSHOT_SHA)],
+    )
+    payload = cache_inventory._repo_non_gguf_model_payload(repo)
+
+    assert payload.model_format == "unknown"
+    assert payload.has_runnable_weights is False
 
 
 def test_cached_models_scan_leaves_chat_repos_unflagged(monkeypatch, tmp_path):
@@ -1175,10 +1247,8 @@ def test_cached_scans_hide_embedders_configured_by_snapshot_path(monkeypatch, tm
 def test_cached_models_scan_keeps_unrelated_repo_with_custom_generic_embedder(
     monkeypatch, tmp_path
 ):
-    # A custom embedder with a generic basename ("org/model") must be hidden by
-    # EXACT repo-id match only. An unrelated cached chat model whose id merely
-    # contains "model" (e.g. "user/model-chat") must stay on device: substring
-    # basename matching used to drop real chat models from the inventory.
+    # A custom embedder with a generic basename ("org/model") must be hidden by EXACT repo-id
+    # match only: substring basename matching used to drop real chat models from the inventory.
     from core.rag import config as rag_config
 
     monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "org/model")
@@ -1585,6 +1655,237 @@ def test_download_dataset_continues_without_metadata_manifest(monkeypatch, tmp_p
     assert verified == [("dataset", "Org/Data", None, str(tmp_path))]
 
 
+def test_download_dataset_recovers_commit_completion_after_transient_metadata_failure(
+    monkeypatch, tmp_path
+):
+    hub_cache = tmp_path / "hub"
+    snapshot = hub_cache / "datasets--Org--Data" / "snapshots" / "dataset-commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "data.parquet").write_bytes(b"rows")
+    metadata_calls = []
+
+    def _metadata(*_args, **_kwargs):
+        metadata_calls.append(True)
+        if len(metadata_calls) == 1:
+            raise RuntimeError("metadata down")
+        return SimpleNamespace(
+            sha = snapshot.name,
+            siblings = [SimpleNamespace(rfilename = "data.parquet", size = 4)],
+        )
+
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = hub_cache),
+    )
+    monkeypatch.setattr(hf_download, "_dataset_info_with_retry", _metadata)
+    monkeypatch.setattr(
+        download_registry,
+        "prepare_cache_for_transport",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download = lambda **_kwargs: str(snapshot)),
+    )
+
+    hf_download._download_dataset("Org/Data", None, "http")
+
+    manifest = download_manifest.read_manifest(
+        "dataset",
+        "Org/Data",
+        hub_cache = hub_cache,
+    )
+    completion = download_manifest.read_dataset_completion(
+        "Org/Data",
+        snapshot.name,
+        hub_cache = hub_cache,
+    )
+    assert len(metadata_calls) == 2
+    assert manifest is not None
+    assert manifest.commit_hash == snapshot.name
+    assert manifest.metadata_derived is True
+    assert completion is not None
+    assert completion.expected_files[0].path == "data.parquet"
+
+
+def test_download_dataset_promotes_existing_disk_manifest_after_metadata_recovers(
+    monkeypatch, tmp_path
+):
+    hub_cache = tmp_path / "hub"
+    snapshot = hub_cache / "datasets--Org--Data" / "snapshots" / "dataset-commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "data.parquet").write_bytes(b"rows")
+    metadata_calls = []
+
+    def _metadata(*_args, **_kwargs):
+        metadata_calls.append(True)
+        if len(metadata_calls) == 1:
+            raise RuntimeError("metadata down")
+        return SimpleNamespace(
+            sha = snapshot.name,
+            siblings = [SimpleNamespace(rfilename = "data.parquet", size = 4)],
+        )
+
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = hub_cache),
+    )
+    assert download_manifest.write_manifest(
+        "dataset",
+        "Org/Data",
+        None,
+        [download_manifest.ExpectedFile("data.parquet", 4)],
+        "http",
+        hub_cache = hub_cache,
+    )
+    monkeypatch.setattr(hf_download, "_dataset_info_with_retry", _metadata)
+    monkeypatch.setattr(
+        download_registry,
+        "prepare_cache_for_transport",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download = lambda **_kwargs: str(snapshot)),
+    )
+
+    hf_download._download_dataset("Org/Data", None, "http")
+
+    manifest = download_manifest.read_manifest(
+        "dataset",
+        "Org/Data",
+        hub_cache = hub_cache,
+    )
+    completion = download_manifest.read_dataset_completion(
+        "Org/Data",
+        snapshot.name,
+        hub_cache = hub_cache,
+    )
+    assert len(metadata_calls) == 2
+    assert manifest is not None
+    assert manifest.metadata_derived is True
+    assert manifest.commit_hash == snapshot.name
+    assert completion is not None
+
+
+def test_download_dataset_recovery_commit_mismatch_is_not_attested(monkeypatch, tmp_path):
+    hub_cache = tmp_path / "hub"
+    snapshot = hub_cache / "datasets--Org--Data" / "snapshots" / "downloaded-commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "data.parquet").write_bytes(b"rows")
+    metadata_calls = []
+
+    def _metadata(*_args, **_kwargs):
+        metadata_calls.append(True)
+        if len(metadata_calls) == 1:
+            raise RuntimeError("metadata down")
+        return SimpleNamespace(
+            sha = "different-commit",
+            siblings = [SimpleNamespace(rfilename = "data.parquet", size = 4)],
+        )
+
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = hub_cache),
+    )
+    monkeypatch.setattr(hf_download, "_dataset_info_with_retry", _metadata)
+    monkeypatch.setattr(
+        download_registry,
+        "prepare_cache_for_transport",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download = lambda **_kwargs: str(snapshot)),
+    )
+
+    hf_download._download_dataset("Org/Data", None, "http")
+
+    manifest = download_manifest.read_manifest(
+        "dataset",
+        "Org/Data",
+        hub_cache = hub_cache,
+    )
+    assert len(metadata_calls) == 2
+    assert manifest is not None
+    assert manifest.commit_hash is None
+    assert manifest.metadata_derived is False
+    assert (
+        download_manifest.read_dataset_completion(
+            "Org/Data",
+            snapshot.name,
+            hub_cache = hub_cache,
+        )
+        is None
+    )
+    assert (
+        download_manifest.read_dataset_completion(
+            "Org/Data",
+            "different-commit",
+            hub_cache = hub_cache,
+        )
+        is None
+    )
+
+
+def test_download_dataset_disk_fallback_is_not_attested(monkeypatch, tmp_path):
+    hub_cache = tmp_path / "hub"
+    snapshot = hub_cache / "datasets--Org--Data" / "snapshots" / "dataset-commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "data.parquet").write_bytes(b"rows")
+
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = hub_cache),
+    )
+    monkeypatch.setattr(
+        hf_download,
+        "_dataset_info_with_retry",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("metadata down")),
+    )
+    monkeypatch.setattr(
+        download_registry,
+        "prepare_cache_for_transport",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        hf_cache_state,
+        "has_active_incomplete_blobs",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download = lambda **_kwargs: str(snapshot)),
+    )
+
+    hf_download._download_dataset("Org/Data", None, "http")
+
+    manifest = download_manifest.read_manifest(
+        "dataset",
+        "Org/Data",
+        hub_cache = hub_cache,
+    )
+    assert manifest is not None
+    assert manifest.commit_hash is None
+    assert manifest.metadata_derived is False
+    assert (
+        download_manifest.read_dataset_completion(
+            "Org/Data",
+            snapshot.name,
+            hub_cache = hub_cache,
+        )
+        is None
+    )
+
+
 def test_download_snapshot_fails_when_metadata_unavailable_and_partial_remains(
     monkeypatch, tmp_path
 ):
@@ -1890,8 +2191,7 @@ def test_gguf_progress_subtracts_new_job_completed_baseline(monkeypatch, tmp_pat
 
 
 def test_gguf_progress_shows_main_when_companion_left_the_count(monkeypatch, tmp_path):
-    # The mmproj companion that seeded the baseline is gone, so completed_bytes
-    # is main-only and below the baseline; it must not be subtracted to 0.
+    # The mmproj companion that seeded the baseline is gone, so completed_bytes is main-only and below it.
     entry = tmp_path / "models--Org--Model-GGUF"
     blobs = entry / "blobs"
     blobs.mkdir(parents = True)
@@ -1962,10 +2262,8 @@ def test_gguf_progress_shows_main_when_companion_left_the_count(monkeypatch, tmp
 
 
 def test_gguf_progress_complete_on_disk_ignores_full_baseline(monkeypatch, tmp_path):
-    # A variant already complete on disk carries a baseline equal to its full
-    # size; subtracting it would report 0/0 for a finished variant (frontend
-    # evicts it as gone). Once complete_on_disk is verified, the full figures
-    # must survive.
+    # A variant already complete on disk carries a baseline equal to its full size; subtracting it
+    # would report 0/0 for a finished variant, which the frontend evicts as gone.
     entry = tmp_path / "models--Org--Model-GGUF"
     snap = entry / "snapshots" / "rev0"
     blobs = entry / "blobs"
@@ -2061,10 +2359,8 @@ def test_gguf_progress_complete_on_disk_ignores_full_baseline(monkeypatch, tmp_p
 
 
 def test_gguf_progress_scoped_hashes_exclude_sibling_quant(monkeypatch, tmp_path):
-    # The "instant ~900 MB" bug: a sibling quant is fully cached when a different
-    # variant starts. With this variant's hashes resolved, progress counts ONLY
-    # its in-progress blob, never the sibling's finalized bytes in the shared
-    # blobs/ dir.
+    # The "instant ~900 MB" bug: with this variant's hashes resolved, progress counts ONLY its
+    # in-progress blob, never a sibling quant's finalized bytes in the shared blobs/ dir.
     entry = tmp_path / "models--Org--Model-GGUF"
     blobs = entry / "blobs"
     blobs.mkdir(parents = True)
@@ -4102,12 +4398,14 @@ def test_download_gguf_variant_writes_manifest_for_xet(monkeypatch, tmp_path):
 def test_download_dataset_writes_manifest_for_xet(monkeypatch, tmp_path):
     written = []
     verified = []
+    snapshot_calls = []
 
     monkeypatch.setattr(
         hf_download,
         "_dataset_info_with_retry",
         lambda *_args, **_kwargs: SimpleNamespace(
-            siblings = [SimpleNamespace(rfilename = "data.parquet", size = 30)]
+            sha = "dataset-commit",
+            siblings = [SimpleNamespace(rfilename = "data.parquet", size = 30)],
         ),
     )
     monkeypatch.setattr(
@@ -4118,19 +4416,33 @@ def test_download_dataset_writes_manifest_for_xet(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(download_manifest, "clear_cancel_marker", lambda *_args: None)
     monkeypatch.setattr(
-        download_manifest, "write_manifest", lambda *args: written.append(args) or True
+        download_manifest,
+        "write_manifest",
+        lambda *args, **kwargs: written.append((args, kwargs)) or True,
     )
     monkeypatch.setitem(
         sys.modules,
         "huggingface_hub",
-        SimpleNamespace(snapshot_download = lambda **_kwargs: str(tmp_path)),
+        SimpleNamespace(
+            snapshot_download = (lambda **kwargs: snapshot_calls.append(kwargs) or str(tmp_path))
+        ),
     )
 
     hf_download._download_dataset("Org/Data", None, "xet")
 
     assert written, "XET dataset download must still record a manifest"
-    assert written[0][0:3] == ("dataset", "Org/Data", None)
-    assert written[0][3][0].path == "data.parquet"
+    assert written[0][0][0:3] == ("dataset", "Org/Data", None)
+    assert written[0][0][3][0].path == "data.parquet"
+    assert written[0][1] == {"commit_hash": "dataset-commit", "metadata_derived": True}
+    assert snapshot_calls == [
+        {
+            "repo_id": "Org/Data",
+            "token": False,
+            "repo_type": "dataset",
+            "max_workers": 1,
+            "revision": "dataset-commit",
+        }
+    ]
     assert verified == [("dataset", "Org/Data", None, str(tmp_path))]
 
 

@@ -1314,15 +1314,19 @@ def test_the_mtp_fallback_gets_the_requested_slots_back():
 
 
 def test_the_startup_retry_drops_the_mtp_the_extras_and_the_env_carry():
-    """A trailing --spec-default cannot override MTP that extras or the env supplied:
-    llama.cpp applies the env first and appends types rather than replacing them, so the
-    retry would relaunch the mode that just failed and lose a main model that loads fine
-    without it. It strips the spec group, and takes the child env with it."""
+    """A trailing --spec-default cannot override MTP or DSpark that extras or the env
+    supplied: llama.cpp applies the env first and appends types rather than replacing
+    them, so the retry would relaunch the mode that just failed and lose a main model
+    that loads fine without it. It strips the spec group, and takes the child env with
+    it."""
     src = _load_model_source()
     retry = src[
         src.index("_fb_tail = cmd[_spec_start") : src.index("fallback_cmd = cmd[:_spec_start]")
     ]
-    assert "_extra_args_requests_mtp(extra_args, env = _launch_spec_env)" in retry
+    # Whitespace-insensitive: the guard wraps across lines once both drafters are named.
+    compact = "".join(retry.split())
+    assert "_extra_args_requests_mtp(extra_args,env=_launch_spec_env)" in compact
+    assert "_extra_args_requests_dspark(extra_args,env=_launch_spec_env)" in compact
     assert "strip_spec = True" in retry
     assert "env.pop(_fb_spec_var, None)" in retry
     # ...and that strip really removes the group rather than shadowing it.

@@ -3,6 +3,7 @@
 
 """Static contracts for focused packaged-desktop reliability behavior."""
 
+import re
 from pathlib import Path
 
 
@@ -21,9 +22,14 @@ THREAD = FRONTEND / "components/assistant-ui/thread.tsx"
 THREAD_SIDEBAR = FRONTEND / "features/chat/thread-sidebar.tsx"
 SHARED_COMPOSER = FRONTEND / "features/chat/shared-composer.tsx"
 TITLEBAR = FRONTEND / "components/tauri/window-titlebar.tsx"
+SHEET = FRONTEND / "components/ui/sheet.tsx"
+RESEARCH_ACTIVITY_PANEL = FRONTEND / "features/chat/components/research-activity-panel.tsx"
+RESPONSE_DETAILS_SHEET = FRONTEND / "components/assistant-ui/message-response-details-sheet.tsx"
+DOCUMENT_PREVIEW_SHEET = FRONTEND / "features/rag/components/document-preview-sheet.tsx"
 NATIVE_DIALOGS = REPO / "studio/src-tauri/src/native_file_dialogs.rs"
 NATIVE_CLIPBOARD = REPO / "studio/src-tauri/src/native_clipboard.rs"
 TAURI_MAIN = REPO / "studio/src-tauri/src/main.rs"
+TAURI_COMMANDS = REPO / "studio/src-tauri/src/commands.rs"
 TAURI_UPDATE_CONTEXT = FRONTEND / "hooks/tauri-update-context.ts"
 TAURI_UPDATE_HOOK = FRONTEND / "hooks/use-tauri-update.ts"
 UPDATE_INSTRUCTIONS = FRONTEND / "features/settings/components/update-studio-instructions.tsx"
@@ -33,11 +39,18 @@ DESKTOP_UPDATE_POLICY = REPO / "studio/src-tauri/src/desktop_update_policy.rs"
 
 
 APP_PROVIDER = FRONTEND / "app/provider.tsx"
+ROOT_ROUTE = FRONTEND / "app/routes/__root.tsx"
+IMAGES_PAGE = FRONTEND / "features/images/images-page.tsx"
+VIDEO_PAGE = FRONTEND / "features/video/video-page.tsx"
+
+REMOTE_ACCESS_SECTION = FRONTEND / "features/settings/components/remote-access-section.tsx"
+PASSWORD_DIALOG = FRONTEND / "features/settings/components/change-password-dialog.tsx"
+GENERAL_TAB = FRONTEND / "features/settings/tabs/general-tab.tsx"
 
 CLIPBOARD_FILES = FRONTEND / "features/chat/utils/clipboard-files.ts"
 TAURI_CAPABILITIES = REPO / "studio/src-tauri/capabilities/default.json"
 CHAT_PAGE = FRONTEND / "features/chat/chat-page.tsx"
-TRAINING_SECTION = FRONTEND / "features/studio/sections/training-section.tsx"
+TRAINING_CONFIG_ACTIONS = FRONTEND / "features/studio/wizard/config-actions.tsx"
 MARKDOWN_TEXT = FRONTEND / "components/assistant-ui/markdown-text.tsx"
 IMAGE = FRONTEND / "components/assistant-ui/image.tsx"
 AUDIO_PLAYER = FRONTEND / "components/assistant-ui/audio-player.tsx"
@@ -55,8 +68,7 @@ def test_desktop_update_offer_remains_actionable_from_settings():
     assert "{appContent}" in provider[context_start:context_end]
     assert "appContent={" in provider
     assert "useContext(TauriUpdateContext)" in context
-    # Scope these: bare substrings also match setTimeout(checkForUpdate, 5000)
-    # and the installUpdate() reset.
+    # Scope these: bare substrings also match setTimeout(checkForUpdate, 5000) and installUpdate().
     assert "checkForUpdate," in hook.split("  return {", 1)[1]
     manual = hook.split("async function checkForUpdate()", 1)[1]
     assert "checkedRef.current = true;" in manual.split("try {", 1)[0]
@@ -120,8 +132,7 @@ def test_desktop_update_check_failures_are_retryable():
     assert "setCheckError(String(e));" in hook
     assert "update.checkError !== null" in settings
     assert 't("settings.about.update.retryCheck")' in settings
-    # The reason must reach the user without guessing that every failure is
-    # caused by their network connection.
+    # The reason must reach the user without guessing that every failure is a network problem.
     assert "description = update.checkError ?? label;" in settings
     assert 't("settings.about.update.desktopCheckFailedDescription")' not in settings
     assert "server returned HTTP {status}" in policy
@@ -205,7 +216,7 @@ def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
 
 def test_generated_download_buttons_use_the_native_save_boundary():
     helper = NATIVE_FILES.read_text(encoding = "utf-8")
-    training = TRAINING_SECTION.read_text(encoding = "utf-8")
+    training = TRAINING_CONFIG_ACTIONS.read_text(encoding = "utf-8")
     markdown = MARKDOWN_TEXT.read_text(encoding = "utf-8")
     image = IMAGE.read_text(encoding = "utf-8")
     audio = AUDIO_PLAYER.read_text(encoding = "utf-8")
@@ -213,7 +224,7 @@ def test_generated_download_buttons_use_the_native_save_boundary():
     assert "downloadFile(bytes, filename" in helper
     assert "browserUrlDownload(url, filename)" in helper
     assert "if (!isTauri)" in helper
-    assert "downloadFile(yamlStr, filename" in training
+    assert "downloadFile(yaml, filename" in training
     assert "downloadFile(text, filename" in markdown
     assert "fallbackExt" in markdown
     assert 'rust: "rs"' in markdown
@@ -309,6 +320,37 @@ def test_mac_dock_reopens_hidden_main_window():
     assert "show_main_window(app)" in reopen_handler
 
 
+def test_desktop_manages_the_remote_password_through_the_account_dialog():
+    section = REMOTE_ACCESS_SECTION.read_text(encoding = "utf-8")
+    dialog = PASSWORD_DIALOG.read_text(encoding = "utf-8")
+
+    row = section.split("function RemotePasswordRow", 1)[1].split(
+        "export function RemoteAccessSection", 1
+    )[0]
+    assert "if (!(isTauri && status)) {" in row
+    assert "initial={status.passwordPending}" in row
+    assert "<RemotePasswordRow status={status} onDone={refreshStatus} />" in section
+    assert "{isTauri ? null : (" in GENERAL_TAB.read_text(encoding = "utf-8")
+    # A password change rotates credentials outside the polling requests.
+    refresh = section.split("const refreshStatus = useCallback(", 1)[1].split("}, []);", 1)[0]
+    assert "mutationEpoch.current += 1;" in refresh
+    assert "setPollRevision(" in refresh
+    # Initial mode sends no current password; the web flow it serves keeps it.
+    body = dialog.split("function changePasswordBody", 1)[1].split("function dialogCopy", 1)[0]
+    assert '? [["new_password", nextPassword]]' in body
+    assert '["current_password", currentPassword],' in body
+    post = dialog.split("function postChangePassword", 1)[1].split(
+        "async function requestPasswordChange", 1
+    )[0]
+    assert '? "/api/auth/desktop-initial-password"' in post
+    assert ': "/api/auth/change-password",' in post
+    assert "{initial ? null : (" in dialog
+    assert "if (!initial && currentPassword.length < MIN_PASSWORD_LENGTH)" in dialog
+    submitted = dialog.split("async function submit", 1)[1].split("\n  }", 1)[0]
+    assert "storeAuthTokens(accessToken, refreshToken)" in submitted
+    assert "onDone?.()" in submitted
+
+
 def test_desktop_startup_waits_for_auth_without_intermediate_handoff():
     source = APP_PROVIDER.read_text(encoding = "utf-8")
 
@@ -359,8 +401,7 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     assert "<DesktopTitlebarNavigation" in source
     assert "const contentBorderLeft = pinned" in source
     assert ': "0px";' in source
-    # The curved transition and sidebar-colored backing are expanded-only;
-    # collapsed content is square and its divider spans the sidebar too.
+    # The curved transition and sidebar-colored backing are expanded-only.
     assert source.count("{showSidebarSurface && pinned && (") == 2
     assert (
         'className="pointer-events-none absolute top-full size-3 -translate-x-px bg-sidebar"'
@@ -377,7 +418,12 @@ def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
     sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
     header = sidebar.split("<SidebarHeader", 1)[1].split("</SidebarHeader>", 1)[0]
 
-    assert 'import { ArrowLeft, ArrowRight } from "lucide-react";' in titlebar
+    # The names, not the whole import list: #8025 added Minus/Square/X to the
+    # same line for the window controls and this went red on every open PR.
+    lucide = re.search(r"import \{([^}]*)\} from \"lucide-react\";", titlebar)
+    assert lucide is not None, "titlebar no longer imports from lucide-react"
+    icons = {name.strip() for name in lucide.group(1).split(",")}
+    assert {"ArrowLeft", "ArrowRight"} <= icons, icons
     assert "<ArrowLeft" in titlebar
     assert "<ArrowRight" in titlebar
     assert "window.history.back()" in titlebar
@@ -397,7 +443,7 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert navigation.count('aria-label="Go back"') == 1
     assert navigation.count('aria-label="Go forward"') == 1
 
-    assert "inline-flex size-[33px] shrink-0" in navigation
+    assert "inline-flex size-[30px] shrink-0" in navigation
 
     assert navigation.count("onDoubleClick={stopTitlebarDrag}") == 3
     assert "maximized" not in navigation
@@ -413,7 +459,7 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert '"--studio-collapsed-chat-controls-inset": "188px"' in APP_PROVIDER.read_text(
         encoding = "utf-8"
     )
-    assert 'className="!size-[33px] rounded-[10px] text-muted-foreground"' in chat_page
+    assert 'className="!size-[30px] rounded-[10px] text-muted-foreground"' in chat_page
     assert 'aria-label="New chat"' in chat_page
     new_chat_click = chat_page.index("onClick={handleDesktopNewChat}")
     assert new_chat_click < chat_page.index("<ModelSelector", new_chat_click)
@@ -443,6 +489,36 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
     )
     assert "aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
     assert "inert={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
+
+
+def test_fixed_sheets_start_below_the_custom_titlebar():
+    provider = APP_PROVIDER.read_text(encoding = "utf-8")
+    sheet = SHEET.read_text(encoding = "utf-8")
+
+    # Portalled sheets read the height off <html>, so the mirror has to stay.
+    assert 'set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null)' in provider
+
+    # Only viewport-fixed sheets clear the titlebar; the absolute recipe block
+    # sheet sits in its own container and keeps a plain top edge.
+    assert 'position === "fixed" ? VIEWPORT_TOP_EDGE : CONTAINED_TOP_EDGE' in sheet
+    for side in ("left", "right", "top"):
+        assert f"data-[side={side}]:top-[var(--studio-custom-titlebar-height,0px)]" in sheet
+        assert f"data-[side={side}]:top-0" in sheet
+
+    # Anchor both edges so the inset shrinks the sheet; h-full would instead
+    # push its bottom past the viewport.
+    for side in ("left", "right"):
+        assert f"data-[side={side}]:bottom-0" in sheet
+        assert f"data-[side={side}]:h-full" not in sheet
+
+    # The shared class is the only sheet offset; a local one would double up.
+    # Dialogs still read --studio-window-chrome-top (DesktopChromeVarsEffect).
+    for portalled in (
+        RESEARCH_ACTIVITY_PANEL,
+        RESPONSE_DETAILS_SHEET,
+        DOCUMENT_PREVIEW_SHEET,
+    ):
+        assert "studio-custom-titlebar-height" not in portalled.read_text(encoding = "utf-8")
 
 
 def test_visible_mac_sidebar_header_is_a_drag_region():
@@ -510,3 +586,26 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # Must not reveal every sidebar-row-action (project/run/nav rows lack padding).
     assert ".sidebar-row-action {\n\t\t\t@apply opacity-100" not in coarse_block
     assert ".sidebar-row-action.sidebar-touch-reveal" in coarse_block
+
+
+def test_media_pages_clear_the_custom_titlebar():
+    """The chat-style layout gives the media pages no outer inset, so each applies its own."""
+    root = ROOT_ROUTE.read_text(encoding = "utf-8")
+
+    assert "const isChatLike = isChatRoute || isImagesRoute || isVideoRoute;" in root
+    for page in (IMAGES_PAGE, VIDEO_PAGE):
+        shell = page.read_text(encoding = "utf-8").split('"diffusion-surface', 1)[1].split(">", 1)[0]
+        assert "pt-[var(--studio-content-top-inset,0px)]" in shell, page.name
+
+
+def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():
+    """unslothai/unsloth#7793: the support report prints final_status verbatim, so a
+    user quitting mid-update must not read as a failed repair."""
+    source = TAURI_COMMANDS.read_text(encoding = "utf-8")
+    stopped_arm = source.split("if msg == update::UPDATE_STOPPED", 1)[1].split(
+        "return Err(msg);", 1
+    )[0]
+    # The status argument of the call, so the surrounding comment cannot satisfy this.
+    call = stopped_arm.split("finish_repair_group(", 1)[1].split(");", 1)[0]
+    assert '"canceled"' in call
+    assert '"failed"' not in call

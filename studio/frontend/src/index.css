@@ -967,6 +967,16 @@ html[data-chat-font] .aui-root {
 		@apply h-full;
 	}
 
+	html.tauri {
+		overflow: hidden;
+		overscroll-behavior: none;
+	}
+
+	html.tauri body,
+	html.tauri #root {
+		overflow: hidden;
+	}
+
 	body[data-scroll-locked] {
 		margin-right: 0 !important;
 	}
@@ -2280,11 +2290,6 @@ html[data-chat-font] .aui-root {
 		}
 	}
 
-	/* Fine-tuning Studio: equal minimum card height, grows with content (md+) */
-	.min-h-studio-config-column {
-		@apply md:min-h-[520px];
-	}
-
 	[data-streamdown="unordered-list"] {
 		list-style-type: disc;
 		list-style-position: outside;
@@ -2516,6 +2521,11 @@ html[data-chat-font] .aui-root {
 	padding-right: 48px !important;
 }
 
+/* Toast buttons are pills, matching the dialog actions they stand in for. */
+[data-sonner-toast] [data-button] {
+	border-radius: 9999px !important;
+}
+
 /* Loading toast keeps its own vertical padding from #7683. */
 [data-sonner-toast][data-styled='true'].chat-model-load-toast {
 	display: flex !important;
@@ -2666,42 +2676,49 @@ html[data-chat-font] .aui-root {
 	background: oklch(0.72 0 0 / 0.5);
 }
 
-/* Sidebars, settings and search: hide the scroll thumb at rest and reveal it
-   only while the area is hovered, so the rail never sits visible over content. */
-.sidebar-scroll-fade,
+/* Settings and search: hide the scroll thumb at rest and reveal it only while
+   the area is hovered, so the rail never sits visible over content. */
 .run-settings-scroll,
 .hover-scrollbar {
 	scrollbar-color: transparent transparent;
 }
 
-.sidebar-scroll-fade::-webkit-scrollbar-thumb,
 .run-settings-scroll::-webkit-scrollbar-thumb,
 .hover-scrollbar::-webkit-scrollbar-thumb {
 	background: transparent;
 }
 
-.sidebar-scroll-fade:hover,
 .run-settings-scroll:hover,
 .hover-scrollbar:hover {
 	scrollbar-color: oklch(0.5 0 0 / 0.4) transparent;
 }
 
-.sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,
 .run-settings-scroll:hover::-webkit-scrollbar-thumb,
 .hover-scrollbar:hover::-webkit-scrollbar-thumb {
 	background: oklch(0.5 0 0 / 0.4);
 }
 
-.dark .sidebar-scroll-fade:hover,
 .dark .run-settings-scroll:hover,
 .dark .hover-scrollbar:hover {
 	scrollbar-color: oklch(0.72 0 0 / 0.4) transparent;
 }
 
-.dark .sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,
 .dark .run-settings-scroll:hover::-webkit-scrollbar-thumb,
 .dark .hover-scrollbar:hover::-webkit-scrollbar-thumb {
 	background: oklch(0.72 0 0 / 0.4);
+}
+
+/* Sidebar list: no scroll rail. A rail narrows the rows inside the scroller,
+   so their pills came out short of New Chat above it, by 8px on WebKit, a thin
+   rail on Chromium, nothing under macOS overlay scrollbars. The thumb was
+   already transparent at rest, and the fades still show there is more list. */
+.sidebar-scroll-fade {
+	scrollbar-width: none;
+}
+
+.sidebar-scroll-fade::-webkit-scrollbar {
+	width: 0;
+	height: 0;
 }
 
 /* Run settings: always reserve the scrollbar gutter so the header close
@@ -3063,4 +3080,58 @@ html[data-chat-font] .aui-root {
    passed) but keep its fixed --size on the scale in case that changes. */
 [data-sonner-toast] .sonner-loading-wrapper {
 	--size: var(--ui-icon-size) !important;
+}
+
+@layer components {
+	.elevated-card {
+		border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+		border-radius: 20px;
+		box-shadow: 0 0 60px 8px
+			color-mix(in srgb, var(--foreground) 5%, transparent);
+	}
+
+	@media (min-width: 640px) {
+		.elevated-card {
+			border-radius: 28px;
+		}
+	}
+
+	@media (min-width: 1024px) {
+		.elevated-card {
+			border-radius: 32px;
+		}
+	}
+
+	.dark .elevated-card {
+		border-color: transparent;
+		box-shadow: none;
+	}
+
+	.dark .elevated-card.elevated-card-dark-border {
+		border-color: color-mix(in srgb, var(--border) 70%, transparent);
+	}
+
+	.page-title-halo {
+		text-shadow:
+			0 0 24px color-mix(in srgb, var(--primary) 18%, transparent),
+			0 0 56px color-mix(in srgb, var(--primary) 12%, transparent),
+			0 0 96px color-mix(in srgb, var(--primary) 8%, transparent);
+	}
+
+	.dark .page-title-halo {
+		text-shadow: none;
+	}
+
+	.train-section-chip {
+		background-color: color-mix(
+			in srgb,
+			var(--chip-tint, transparent) 12%,
+			transparent
+		);
+		color: color-mix(
+			in srgb,
+			var(--control-accent) 60%,
+			var(--foreground)
+		);
+	}
 }

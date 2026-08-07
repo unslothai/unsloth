@@ -633,11 +633,53 @@ def _detect_rocm_version() -> tuple[int, int] | None:
     return None
 
 
-def _pick_visible_index(num_tokens: int) -> int:
-    """Resolve HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES to an index into a
-    list of length num_tokens. Returns 0 (first GPU) for unset, empty, '-1',
-    UUID-style, or out-of-range values."""
-    for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+# APU gfx arches whose board commonly also carries a discrete Radeon. HIP often
+# enumerates the APU first, so an index-0 pick installs wheels for the iGPU and the
+# dGPU is never used (#7776: gfx1036 Raphael shadowing a gfx1200 RX 9060 XT). Excludes
+# the Strix arches (gfx1150/1151/1152): first-class training targets, left untouched.
+_SHADOWING_INTEGRATED_GFX: "frozenset[str]" = frozenset(
+    {
+        "gfx90c",  # Renoir / Cezanne
+        "gfx1013",  # Cyan Skillfish
+        "gfx1033",  # Van Gogh
+        "gfx1035",  # Rembrandt
+        "gfx1036",  # Raphael / Mendocino
+        "gfx1103",  # Phoenix / Hawk Point
+        "gfx1153",  # Krackan Point 2
+    }
+)
+
+
+def _visible_devices_pinned() -> bool:
+    """True when the user selected devices via HIP_VISIBLE_DEVICES /
+    ROCR_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES.
+
+    First-set-wins, and ANY value counts -- including "" and "-1", which select
+    *no* GPU rather than meaning "unset". The ROCm runtime stores an explicitly
+    empty var as " " (clr `flags.cpp`) and then picks the HIP mask whenever its
+    first byte is not NUL (`paldevice.cpp` / `rocdevice.cpp`), so an empty
+    HIP_VISIBLE_DEVICES shadows CUDA_VISIBLE_DEVICES instead of deferring to it;
+    `parseRequestedDeviceList` then surfaces zero devices for " " and "-1", which
+    ROCR states outright. Whatever the user selected is honoured verbatim, so the
+    iGPU-shadowing preference below never overrides a deliberate choice. Same
+    precedence as `_pick_rocm_gfx_target` in install_llama_prebuilt.py."""
+    for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        if os.environ.get(_env) is not None:
+            return True
+    return False
+
+
+def _pick_visible_index(num_tokens: int, warn: bool = True) -> int:
+    """Resolve HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES
+    to an index into a list of length num_tokens. Returns 0 (first GPU) for
+    unset, empty, '-1', UUID-style, or out-of-range values.
+
+    First-set-wins, matching `_visible_devices_pinned()` and
+    `_pick_rocm_gfx_target` in install_llama_prebuilt.py. Falling through to the
+    next var on "" / "-1" would contradict the runtime: an empty HIP mask
+    shadows CUDA_VISIBLE_DEVICES rather than deferring to it, and selects no GPU
+    at all."""
+    for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         _val = os.environ.get(_env)
         if _val is None:
             continue
@@ -649,8 +691,22 @@ def _pick_visible_index(num_tokens: int) -> int:
             _idx = int(_first)
             if 0 <= _idx < num_tokens:
                 return _idx
+            # Say so rather than silently installing for GPU 0, which on a mixed host
+            # is the iGPU the user tried to mask off (setup.ps1's Resolve-VisibleGpuIndex
+            # warns the same). Callers with a deduplicated list pass warn=False: there the
+            # index space is arches, not devices, so out of range is normal.
+            if warn:
+                print(
+                    f"   [WARN] {_env}={_first} is out of range ({num_tokens} GPU(s) "
+                    f"detected); defaulting to GPU 0 for arch selection."
+                )
         except ValueError:
-            pass
+            if warn:
+                print(
+                    f"   [WARN] {_env}={_val} is not a device index; defaulting to "
+                    f"GPU 0 for arch selection. Use UNSLOTH_ROCM_GFX_ARCH to choose "
+                    f"the arch directly."
+                )
         return 0
     return 0
 
@@ -664,20 +720,81 @@ def _detect_windows_gfx_arch() -> str | None:
     return early and `studio update` cannot repair a CPU-only venv.
 
     On multi-GPU hosts, detected gfx tokens are deduplicated (preserving
-    enumeration order) and HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES picks
-    which to install for. The first GPU is used when no env var is set.
+    enumeration order) and HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES /
+    CUDA_VISIBLE_DEVICES picks which to install for. Without a mask, the
+    first GPU is used -- except when it is a shadowing iGPU leading the
+    enumeration, in which case the discrete GPU is preferred (issue #7776).
     """
     # 1. Explicit override (matches PowerShell installer's env-var path).
     _override = os.environ.get("UNSLOTH_ROCM_GFX_ARCH")
     if _override and _override.strip():
         return _override.strip().lower()
 
-    def _dedup_pick(tokens: list[str]) -> "str | None":
+    def _dedup_pick(
+        tokens: list[str],
+        mask_resolved: bool = False,
+        warn: bool = True,
+    ) -> "str | None":
         if not tokens:
             return None
-        # Index into the full ordered list so HIP_VISIBLE_DEVICES addresses
-        # GPU N on mixed-arch hosts, then return that arch.
-        return tokens[_pick_visible_index(len(tokens))]
+        # Index into the full ordered list so the mask addresses GPU N on mixed-arch
+        # hosts. mask_resolved probes already did that: hipinfo is itself a HIP
+        # application, so under a mask it enumerates only the VISIBLE devices,
+        # renumbered from 0. Indexing that again applies the mask twice, so
+        # CUDA_VISIBLE_DEVICES=1,0 would read token 1 (the iGPU) on a host whose mask
+        # put the dGPU first. amd-smi and WMI list every GPU, so those keep the index.
+        _pick = tokens[0 if mask_resolved else _pick_visible_index(len(tokens), warn = warn)]
+        _distinct = list(dict.fromkeys(tokens))
+        if len(_distinct) < 2 or _visible_devices_pinned():
+            # A pin is honoured verbatim, but say so when it selected a card with no AMD
+            # Windows wheels while another enumerated GPU has them: torch silently drops
+            # to CPU and the mask is the reason.
+            if (
+                len(_distinct) >= 2
+                and _windows_rocm_index_url(_pick) is None
+                and any(_windows_rocm_index_url(t) for t in _distinct)
+            ):
+                _usable = [t for t in _distinct if _windows_rocm_index_url(t)]
+                print(
+                    f"   [WARN] the pinned GPU is {_pick}, which has no AMD Windows "
+                    f"wheels, so torch will be CPU-only. {', '.join(_usable)} on this "
+                    f"host does have wheels -- clear the visible-device mask or point "
+                    f"it at that GPU to use it."
+                )
+            return _pick
+        # Unpinned mixed-arch host: skip a leading shadowing iGPU so the discrete card
+        # decides the wheel family (#7776), and say so, since only enumeration order
+        # put the APU first and the user may still want a different device.
+        if _pick in _SHADOWING_INTEGRATED_GFX:
+            _others = [t for t in tokens if t not in _SHADOWING_INTEGRATED_GFX]
+            # Deposing the pick for a card with no Windows wheels (gfx1036 + an older
+            # gfx1010) resolves to no index and drops the host to CPU, so prefer a
+            # wheel-backed candidate; fall back only when the pick has no wheels either.
+            _withWheels = [t for t in _others if _windows_rocm_index_url(t) is not None]
+            _candidates = _withWheels or (
+                [] if _windows_rocm_index_url(_pick) is not None else _others
+            )
+            if _candidates:
+                _other = _candidates[0]
+                # Not always device 1: on gfx1036,gfx1010,gfx1200 it is device 2, and
+                # saying "mask 1" would expose the gfx1010 the wheels do not target.
+                _other_idx = tokens.index(_other)
+                print(
+                    f"   multiple AMD GPUs detected ({', '.join(_distinct)}); "
+                    f"installing for {_other} instead of the integrated {_pick}."
+                )
+                print(
+                    f"   Run 'setx HIP_VISIBLE_DEVICES {_other_idx}' and reopen your "
+                    f"terminal so Unsloth uses {_other} at runtime too, not just at "
+                    f"install time."
+                )
+                return _other
+        print(
+            f"   multiple AMD GPUs detected ({', '.join(_distinct)}); "
+            f"installing for {_pick}. Set HIP_VISIBLE_DEVICES to the GPU index "
+            f"you want (then rerun) to install for a different device."
+        )
+        return _pick
 
     # 2. hipinfo via PATH, then HIP_PATH\bin / ROCM_PATH\bin.
     hipinfo = shutil.which("hipinfo")
@@ -712,10 +829,14 @@ def _detect_windows_gfx_arch() -> str | None:
             text = result.stdout.decode(errors = "replace")
             # findall gets every gcnArchName line so multi-GPU hosts are
             # enumerable and HIP_VISIBLE_DEVICES selects correctly.
+            # Split on ':' like setup.ps1: "gfx90a:sramecc+:xnack-" matches neither
+            # the wheel table nor the shadowing set.
             _tokens = [
-                t.strip().lower() for t in re.findall(r"(?im)^\s*gcnArchName\s*:\s*(\S+)", text)
+                t.split(":")[0].strip().lower()
+                for t in re.findall(r"(?im)^\s*gcnArchName\s*:\s*(\S+)", text)
             ]
-            _pick = _dedup_pick(_tokens)
+            # hipinfo already applied the mask, so do not apply it again.
+            _pick = _dedup_pick(_tokens, mask_resolved = True)
             if _pick:
                 return _pick
         except Exception:
@@ -757,6 +878,12 @@ def _detect_windows_gfx_arch() -> str | None:
     #    (amd-smi does not exist on Windows at all), but the display driver
     #    always knows the GPU name. Mirrors setup.ps1's $nameArchTable so a
     #    standalone `studio update` can repair a CPU-only venv on such hosts.
+    #
+    #    ConfigManagerErrorCode 0 is "working properly". WMI keeps listing adapters that
+    #    are disabled or on a driver error, and _dedup_pick()'s shadowing skip would let
+    #    one depose the working iGPU. Same filter setup.ps1 applies to $wmiGpus, incl. the
+    #    AMD name match: the masks index AMD devices, so an Intel or NVIDIA adapter would
+    #    shift every index away from what HIP_VISIBLE_DEVICES names.
     try:
         result = subprocess.run(
             [
@@ -764,7 +891,9 @@ def _detect_windows_gfx_arch() -> str | None:
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "(Get-CimInstance Win32_VideoController).Name",
+                "Get-CimInstance Win32_VideoController | Where-Object { "
+                "$_.Name -match 'AMD|Radeon' } | ForEach-Object { "
+                '"$($_.Name)|$($_.ConfigManagerErrorCode)" }',
             ],
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
@@ -772,15 +901,56 @@ def _detect_windows_gfx_arch() -> str | None:
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode == 0:
-            _tokens = []
-            for _name in result.stdout.decode(errors = "replace").splitlines():
-                _arch = _gfx_arch_from_gpu_name(_name.strip())
-                if _arch:
-                    _tokens.append(_arch)
-            _pick = _dedup_pick(_tokens)
+            # Lines are "<name>|<ConfigManagerErrorCode>"; a bare name (older probe
+            # output, and the shape most tests use) counts as healthy.
+            _all_names, _healthy = [], []
+            for _line in result.stdout.decode(errors = "replace").splitlines():
+                _line = _line.strip()
+                if not _line:
+                    continue
+                _nm, _sep, _code = _line.rpartition("|")
+                if not _sep:
+                    _nm, _code = _line, "0"
+                _nm = _nm.strip()
+                # Re-apply the vendor filter rather than trusting the command string:
+                # everything below treats these as AMD devices, and a stray NVIDIA or
+                # Intel adapter would shift the mask index and warn at a non-AMD user.
+                if not _nm or not re.search(r"AMD|Radeon", _nm, re.IGNORECASE):
+                    continue
+                _all_names.append(_nm)
+                if _code.strip() in ("", "0"):
+                    _healthy.append(_nm)
+            # Drop adapters Windows flags as not working so one cannot depose a live card.
+            # If that leaves NOTHING, the filter alone made the host look GPU-less and
+            # returning None hands it CPU torch: code 45 ("not connected") is routine on
+            # muxless laptops with a parked dGPU. Fall back to the full list -- with no
+            # healthy peer there is nothing to depose.
+            _names = _healthy or _all_names
+            _tokens = [_a for _a in map(_gfx_arch_from_gpu_name, _names) if _a]
+            # Resolve the mask over the ADAPTER list (setup.ps1's $nameIdx): a name the
+            # table does not know drops out of _tokens, and indexing that shortened list
+            # would name a different card.
+            _sel = _pick_visible_index(len(_names)) if _names else 0
+            _named = _gfx_arch_from_gpu_name(_names[_sel]) if _names else None
+            # Borrow another adapter's arch only when unpinned: under a mask,
+            # substituting installs for a GPU the user masked away.
+            if not _named and not _visible_devices_pinned() and _tokens:
+                _named = _tokens[0]
+            # Repick only when every AMD adapter mapped: an unknown name may BE the
+            # discrete card, so skipping the iGPU could pick the wrong one and the index
+            # would count arches, not devices. warn=False since the mask was already
+            # resolved and reported against the adapter list above.
+            _pick = _dedup_pick(_tokens, warn = False) if len(_tokens) == len(_names) else _named
             if _pick:
                 print(f"   gfx arch inferred from GPU name (WMI): {_pick}")
                 return _pick
+            if _names and not _pick:
+                # No arch means CPU-only torch; name the adapter instead of failing silently.
+                print(
+                    f"   [WARN] could not map '{_names[_sel]}' to a gfx arch, so torch "
+                    f"will be CPU-only. Set UNSLOTH_ROCM_GFX_ARCH to your GPU's arch "
+                    f"(e.g. gfx1200) to install AMD wheels."
+                )
     except Exception:
         pass
     return None
@@ -962,6 +1132,57 @@ def _windows_rocm_index_url(gfx_arch: str | None) -> str | None:
     if arch_family is None:
         return None
     return f"{_ROCM_WINDOWS_INDEX_BASE}/{arch_family}/"
+
+
+def _rocm_family_token(text: str) -> "str | None":
+    """Family out of a 'rocm-sdk-libraries-<family>' name or requirement string."""
+    _m = re.search(r"rocm[-_]sdk[-_]libraries[-_]([A-Za-z0-9][A-Za-z0-9._-]*)", text, re.IGNORECASE)
+    if not _m:
+        return None
+    # Requirement strings carry a specifier and marker: "...-gfx120X-all==7.13.0; extra".
+    return re.split(r"[=<>!~;,\[\]()\s]", _m.group(1))[0].strip().lower().replace("_", "-")
+
+
+def _installed_rocm_wheel_family() -> str | None:
+    """The AMD per-arch family the installed torch actually runs on, normalized (e.g.
+    'gfx120x-all'), or None when nothing on disk identifies it unambiguously.
+
+    torch.version.hip only says "some ROCm build", so it cannot tell a gfx103X wheel
+    from a gfx120X one. AMD's torch requires rocm[libraries], and that extra resolves
+    to the arch-specific rocm-sdk-libraries-<family> runtime, so the installed `rocm`
+    meta-package names the active family. Read it there rather than by scanning for a
+    rocm-sdk-libraries-* distribution: `rocm` is upgraded in place across a family
+    switch, but the previous arch-specific runtime keeps its own distribution name and
+    so is never uninstalled, and mistaking that orphan for the active family would
+    reinstall the multi-GB stack on every update.
+
+    None means "unknowable" -- an older wheel predating the split runtime, a pinned
+    index, or two runtimes with no `rocm` to arbitrate. Callers must leave the install
+    alone rather than guess.
+    """
+    try:
+        from importlib import metadata
+        for _req in metadata.requires("rocm") or []:
+            _fam = _rocm_family_token(_req)
+            if _fam:
+                return _fam
+    except Exception:
+        pass
+    # No `rocm` meta-package: fall back to the runtimes on disk, but only when exactly
+    # one is present, since with several there is nothing left to say which is active.
+    try:
+        from importlib import metadata
+
+        _found = set()
+        for _dist in metadata.distributions():
+            _fam = _rocm_family_token((_dist.metadata["Name"] or "").strip())
+            if _fam:
+                _found.add(_fam)
+        if len(_found) == 1:
+            return _found.pop()
+    except Exception:
+        return None
+    return None
 
 
 def _detect_bnb_rocm_dll_ver() -> str | None:
@@ -1211,17 +1432,52 @@ def _has_usable_nvidia_gpu() -> bool:
     return False
 
 
-def _detect_amd_gfx_codes() -> list[str]:
+# Which probe answered the last _detect_amd_gfx_codes() call: only rocminfo is subject
+# to a visible-device mask, so the Strix reroute needs to know. None when stubbed, which
+# keeps the plain indexing behaviour.
+_LAST_AMD_GFX_PROBE: "str | None" = None
+
+
+def _detect_amd_gfx_codes(dedup: bool = True) -> list[str]:
     """Return the AMD gfx ISA strings visible to ROCm (e.g. ['gfx1151']).
 
     Probes rocminfo, then falls back to ``amd-smi list`` and ``amd-smi
     static --asic`` for runtime-only Radeon hosts that ship amd-smi but no
     rocminfo. Returns an empty list when no probe yields a gfx target.
+
+    dedup=False keeps one entry per DEVICE instead of one per arch, which a
+    caller resolving HIP_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES needs: those
+    mask values are device ordinals, so indexing a deduplicated list reads the
+    wrong card whenever the host has two GPUs of the same arch. rocminfo prints
+    the same token several times per agent (Name, ISA, marketing name), so split
+    on agent headers first, exactly as _list_rocm_gfx_targets() does, or one GPU
+    contributes several entries and every ordinal after it is wrong.
+
+    Records the answering probe in _LAST_AMD_GFX_PROBE, since only rocminfo is
+    filtered by a visible-device mask (and only by ROCR_VISIBLE_DEVICES).
     """
+    global _LAST_AMD_GFX_PROBE
+    _LAST_AMD_GFX_PROBE = None
 
     def _extract(text: str) -> list[str]:
-        codes = re.findall(r"gfx([1-9][0-9a-z]{2,3})", text.lower())
-        return list(dict.fromkeys(f"gfx{c}" for c in codes))
+        if dedup:
+            codes = [f"gfx{c}" for c in re.findall(r"gfx([1-9][0-9a-z]{2,3})", text.lower())]
+            return list(dict.fromkeys(codes))
+        # One entry per agent section; fall back to dedup for flat output.
+        _sections = re.split(
+            r"(?mi)^\s*\*+\s*$\s*agent\s+\d+\s*$|\bagent\s+\d+\b|\bdevice\s*#\s*\d+\b",
+            text,
+        )
+        if len(_sections) > 1:
+            _per_device = []
+            for _sec in _sections[1:]:
+                _m = re.search(r"gfx[1-9][0-9a-z]{2,3}", _sec.lower())
+                if _m:
+                    _per_device.append(_m.group(0))
+            if _per_device:
+                return _per_device
+        _raw = [f"gfx{c}" for c in re.findall(r"gfx([1-9][0-9a-z]{2,3})", text.lower())]
+        return list(dict.fromkeys(_raw))
 
     probes: list[list[str]] = []
     if shutil.which("rocminfo"):
@@ -1246,8 +1502,17 @@ def _detect_amd_gfx_codes() -> list[str]:
             continue
         codes = _extract(result.stdout)
         if codes:
+            _LAST_AMD_GFX_PROBE = cmd[0]
             return codes
     return []
+
+
+def _first_set_visible_mask() -> "str | None":
+    """Name of the visible-device variable in force, first-set-wins, or None."""
+    for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        if os.environ.get(_env) is not None:
+            return _env
+    return None
 
 
 # Set by _ensure_rocm_torch() on success; suppresses the post-install AMD warning.
@@ -2322,6 +2587,19 @@ def _ensure_rocm_torch() -> None:
                 _torch_already_rocm = True
         except (OSError, subprocess.TimeoutExpired):
             pass
+        # "Is ROCm" is not "is the RIGHT ROCm": wheels are per-family, so a host whose arch
+        # now resolves elsewhere (dGPU added, or the #7776 repick) would keep the old family
+        # forever. setup.ps1 force-reinstalls every run, so this only bites standalone
+        # `studio update`. Act only on a family read back positively, never on a guess.
+        if _torch_already_rocm and _win_rocm_pin is None:
+            _want = (_GFX_TO_AMD_INDEX_ARCH.get(gfx_arch or "") or "").lower()
+            _have = _installed_rocm_wheel_family()
+            if _want and _have and _have != _want:
+                print(
+                    f"   installed ROCm torch is the {_have} build but {gfx_arch} needs "
+                    f"{_want} -- reinstalling for this GPU"
+                )
+                _torch_already_rocm = False
         if not _torch_already_rocm:
             index_url = _win_rocm_pin or _windows_rocm_index_url(gfx_arch)
             if index_url is None:
@@ -2500,13 +2778,29 @@ def _ensure_rocm_torch() -> None:
         and _explicit_rocm_torch_index_url() is None
         and not _gfx906_arch_override
     ):
-        gfx_codes = _detect_amd_gfx_codes()
+        # One entry per DEVICE: the mask names a device ordinal, so a deduplicated list
+        # picks the wrong card when two GPUs share an arch (gfx1100,gfx1100,gfx1151
+        # would read index 1 as the Strix).
+        gfx_devices = _detect_amd_gfx_codes(dedup = False)
+        gfx_codes = list(dict.fromkeys(gfx_devices))
         _strix_gfx = {"gfx1151", "gfx1150", "gfx1152"}
         _detected_strix = _strix_gfx.intersection(gfx_codes)
         if _detected_strix:
-            # Runtime-visible GPU (HIP_VISIBLE_DEVICES index into gfx_codes, else first);
-            # skip the override unless it's Strix.
-            _runtime_gfx = gfx_codes[_pick_visible_index(len(gfx_codes))] if gfx_codes else None
+            # rocminfo links HSA/ROCr directly and never loads HIP, so only
+            # ROCR_VISIBLE_DEVICES filters and renumbers its output; HIP_VISIBLE_DEVICES
+            # and CUDA_VISIBLE_DEVICES (a HIP-layer alias) do not touch it. Re-indexing an
+            # already-ROCR-filtered list applies the mask twice, while skipping the index
+            # for the other two would ignore the pin. amd-smi reads the driver and is
+            # filtered by none of them, so it always indexes.
+            _rocr_applied = (
+                _LAST_AMD_GFX_PROBE == "rocminfo"
+                and _first_set_visible_mask() == "ROCR_VISIBLE_DEVICES"
+            )
+            _runtime_gfx = (
+                gfx_devices[0 if _rocr_applied else _pick_visible_index(len(gfx_devices))]
+                if gfx_devices
+                else None
+            )
             if _runtime_gfx in _strix_gfx:
                 _selected_gfx = _runtime_gfx
                 _amd_mirror = (
@@ -2845,10 +3139,6 @@ LOCAL_DD_UNSTRUCTURED_PLUGIN = (
     SCRIPT_DIR / "backend" / "plugins" / "data-designer-unstructured-seed"
 )
 LOCAL_DD_GITHUB_PLUGIN = SCRIPT_DIR / "backend" / "plugins" / "data-designer-github-repo-seed"
-
-# mlx-lm 0.31.3 broke gemma4 / qwen3_5 loading (strict load_weights rejects the
-# QK-norm q_norm/k_norm tensors); exclude just that release. See mlx-lm #1242.
-MLX_LM_BAD_VERSION_EXCLUSION = "!=0.31.3"
 
 # Apple Silicon: override mlx-vlm/mlx-lm's transformers pin (see overrides).
 # _uv_safe_path: uv truncates UV_OVERRIDE at the first space too (issue #6503).
@@ -3511,8 +3801,6 @@ def install_python_stack() -> int:
 
     # macOS arm64: install MLX stack at latest (UV_OVERRIDE relaxes the
     # mlx-vlm / mlx-lm transformers pin -- set at module load).
-    # Exclude mlx-lm 0.31.3 (see MLX_LM_BAD_VERSION_EXCLUSION); it broke
-    # gemma4 / qwen3_5 QK-norm loading. mlx-lm #1242.
     if IS_MAC_ARM and not skip_base:
         _progress("MLX stack (Apple Silicon)")
         pip_install(
@@ -3521,7 +3809,7 @@ def install_python_stack() -> int:
             "--upgrade",
             "mlx",
             "mlx-metal",
-            f"mlx-lm{MLX_LM_BAD_VERSION_EXCLUSION}",
+            "mlx-lm",
             "mlx-vlm",
         )
 

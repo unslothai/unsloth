@@ -4,7 +4,7 @@
 import type { TransferSample } from "@/lib/transfer-stats";
 import type { InventoryHint } from "../inventory/types";
 import type { DownloadJobState } from "./api";
-import type { DownloadKind } from "./constants";
+import type { DownloadKind, ResolvedTransport } from "./constants";
 import type { TransportConflictInfo } from "./types";
 
 export interface ManagedDownload {
@@ -28,6 +28,18 @@ export interface ManagedDownload {
   serverGeneration?: number;
   /** Files a scoped job is fetching, when known. Every file set of one repo rides the same scope slot (see `scopedVariant`), so this separates "my transfer is already running" from "a different quant of this repo is running": adopting the latter would report ready for files nobody fetched. Unknown stays adoptable only for an UNSCOPED job. */
   scopedFiles?: string[];
+  // The transport this run resolved to, so a surface can say whether stopping
+  // keeps a resumable partial. Absent only when neither the backend nor
+  // persisted state identifies an adopted job's transport.
+  transport?: ResolvedTransport;
+  /** A Xet run that fell back to HTTP keeps its original cancel marker, so
+   * stopping it still leaves a restart-only partial. Set only in that case,
+   * and it, not `transport`, decides the stop control. */
+  cancelTransport?: ResolvedTransport;
+  // Driven by another subsystem (see external-jobs.ts), not the poll loop. Such
+  // a job is never persisted, probed against the hub API, or published as a
+  // chat-inventory hint when it completes.
+  external?: boolean;
 }
 
 export interface DownloadRequest {
