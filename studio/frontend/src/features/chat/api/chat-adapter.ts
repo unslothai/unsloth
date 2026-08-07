@@ -1950,12 +1950,17 @@ type AutoLoadSource = {
   listVariants: (() => Promise<GgufVariantDetail[]>) | null;
 };
 
-// POSIX paths keep their case (Linux distinguishes /models/Foo from
-// /models/foo); repo ids and Windows paths fold, as the backend resolves them.
+// Case-sensitive stores keep their case (Linux distinguishes /models/Foo from
+// /models/foo; \\wsl$\ reaches the same ext4). Repo ids and Windows paths fold,
+// separators included, so C:\a\m.gguf and C:/a/m.gguf are one key. NFC first:
+// macOS returns decomposed names for the same file.
 function normalizeTarget(value: string): string {
-  const target = value.trim();
-  const posixPath = /^[/~]/.test(target) && !/^[A-Za-z]:[\\/]/.test(target);
-  return posixPath ? target : target.toLowerCase();
+  const target = value.trim().normalize("NFC");
+  if (/^[A-Za-z]:[\\/]/.test(target) || target.startsWith("\\\\")) {
+    const slashed = target.replace(/\\/g, "/");
+    return /^\/\/wsl[$.]/i.test(slashed) ? slashed : slashed.toLowerCase();
+  }
+  return /^[/~]/.test(target) ? target : target.toLowerCase();
 }
 
 // Keyed on the load target alone, not the kind. A repo holding both GGUF and
