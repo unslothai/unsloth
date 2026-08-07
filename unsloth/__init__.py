@@ -12,9 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os, importlib.util, platform
+import os, importlib.util, platform, sys
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
+
+# Transformers 4.x imports TensorFlow / Flax merely because they are installed:
+# `image_transforms.py` does `if is_tf_available(): import tensorflow`, reached
+# from `processing_utils`, which is on Unsloth's own import path. So a BROKEN
+# optional backend breaks Unsloth, which never uses either one. Seen on Colab,
+# where TF ships preinstalled and an install cell that moves protobuf leaves it
+# raising `cannot import name 'runtime_version' from 'google.protobuf'` at the
+# first `from unsloth import ...`, with nothing in the traceback saying why a
+# torch library is importing TensorFlow.
+#
+# `setdefault`, so an explicit USE_TF=1 still wins for anyone who wants those
+# classes in the same process. Transformers reads these once at import, so this
+# only bites if it lands first; that is the documented order, and if it does not
+# there is nothing to fix, since an already-imported Transformers has settled
+# the question. 5.x dropped both backends and ignores the variables.
+if "transformers" not in sys.modules:
+    os.environ.setdefault("USE_TF", "0")
+    os.environ.setdefault("USE_FLAX", "0")
 
 # Relax Metal's context-store timeout before MLX modules can initialize Metal.
 # Keep an explicit user value authoritative.
