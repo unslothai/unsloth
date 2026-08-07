@@ -2,14 +2,15 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 # Multi-language supply-chain audit. Triggers:
-#   - PRs touching any dependency manifest (Python / npm / Cargo), a
-#     scanner or its allowlist baseline, or this workflow file,
-#   - push to main / pip,
+#   - every pull request, deliberately not path-filtered, so nothing
+#     slips past the audit by touching only files outside the
+#     dependency manifests,
+#   - push to main,
 #   - nightly @ 04:13 UTC so newly-published advisories surface even
 #     when no PR opens,
 #   - workflow_dispatch for ad-hoc invocations.
 #
-# Two jobs:
+# Six jobs:
 #   - advisory-audit:    one runner that runs pip-audit + npm audit +
 #                        cargo audit back-to-back. All three are
 #                        advisory-DB lookups -- fast, lockfile-driven,
@@ -24,6 +25,12 @@
 #                        independent so a CVE-DB hit in advisory-audit
 #                        does not block the supply-chain pattern scan
 #                        (or vice versa).
+#   - npm-scan-packages: npm tarball content scan, no npm install.
+#   - workflow-trigger-lint:
+#                        bans pull_request_target + shared cache keys.
+#   - tests-security:    pytest tests/security regression suite.
+#   - npm-provenance-and-install-scripts:
+#                        npm audit signatures + new-postinstall gate.
 #
 # All steps are non-blocking initially. The default branch already
 # carries a known-vuln backlog (the dependabot banner shows 17 today,
