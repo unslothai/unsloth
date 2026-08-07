@@ -464,9 +464,8 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() {
-    // Before anything can open an X display: GTK3 does not call XInitThreads
-    // itself, and this process has more than one thread on X. See x11_threads
-    // for the crash that leaves behind.
+    // Must precede any Xlib call: GTK3 never calls XInitThreads and this
+    // process drives X from several threads. See x11_threads for the crash.
     x11_threads::init_x11_threads();
 
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)

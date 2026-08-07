@@ -131,39 +131,35 @@ jobs:
           file "$BIN"
           du -h "$BIN"
 
-      # The bundle job in desktop-app-clean-machine-ci.yml launches a SHIPPED
-      # release, so it cannot see a source change. This does, and it is the only
-      # place a Linux startup regression can be caught before a release is cut.
+      # desktop-app-clean-machine-ci.yml launches a SHIPPED release, so this is
+      # the only job that catches a Linux startup regression from a source change
+      # before a release is cut.
       #
-      # Repeats deliberately. The X11 startup race behind #8062 killed the app on
-      # roughly a third of launches, so a single launch passes two times in three
-      # with the bug present. Ten independent launches miss it 1.7% of the time.
+      # Ten launches, not one: the #8062 X11 race killed roughly one launch in
+      # three, so a single launch passes two times in three with the bug present.
       #
-      # The backend is a stub: preflight only needs `-h` to exit 0 and
-      # `studio desktop-capabilities --json` to answer, and the crash happens
-      # milliseconds after the spawn, before a real backend has written anything.
-      # That buys the whole startup-to-app-shell transition without a Python
-      # install, so this stays a ~4 minute step.
+      # The backend is a stub -- preflight only needs `-h` to exit 0 and
+      # `studio desktop-capabilities --json` to answer, and the crash lands
+      # milliseconds after the spawn -- which covers the whole startup-to-app-shell
+      # transition without a Python install, in ~4 minutes.
       - name: Launch repeatedly under Xvfb
         run: |
           set -u
           BIN="$PWD/studio/src-tauri/target/debug/unsloth-studio"
           [ -x "$BIN" ] || { echo "::error::no debug binary at $BIN"; exit 1; }
 
-          # How sharp this job is depends on the runner's libX11. From 1.8
-          # (April 2022) libX11 calls XInitThreads() from its own constructor, so
-          # the #8062 race cannot happen there and these launches would pass with
-          # the fix reverted. ubuntu-22.04 ships 1.7.5, which does not.
+          # From libX11 1.8 the library calls XInitThreads() from its own
+          # constructor, so the #8062 race cannot happen and these launches would
+          # pass even with the fix reverted. ubuntu-22.04 ships 1.7.5, which does not.
           x11ver="$(dpkg-query -W -f='${Version}' libx11-6 2>/dev/null || true)"
           echo "libx11-6: ${x11ver:-not installed}"
           if [ -z "$x11ver" ] || dpkg --compare-versions "$x11ver" ge 2:1.8; then
             echo "::warning::libX11 ${x11ver:-unknown} initialises threading itself, so these launches no longer cover the #8062 race, only that the app starts. Keep this job on a runner with libX11 < 1.8 to keep that coverage."
           fi
 
-          # Read the minimum the app enforces rather than restating it: a bump to
-          # MIN_DESKTOP_BACKEND_VERSION would otherwise leave the stub Stale,
-          # park the app on the repair screen and quietly stop testing the
-          # startup transition this job exists to test.
+          # Derived, not hardcoded: a bump to MIN_DESKTOP_BACKEND_VERSION would
+          # leave the stub Stale, park the app on the repair screen and quietly
+          # stop testing the startup transition this job exists to test.
           STUB_VERSION="$(sed -n 's/.*MIN_DESKTOP_BACKEND_VERSION: &str = "\([^"]*\)".*/\1/p' \
             studio/src-tauri/src/preflight/version.rs)"
           [ -n "$STUB_VERSION" ] || {
@@ -200,7 +196,7 @@ jobs:
             (
               export DISPLAY=":$D" HOME="$H" XDG_RUNTIME_DIR="$H/xdg" XDG_CONFIG_HOME="$H/.config"
               # Without this GTK drops its fatal-X-error report and the app exits
-              # 1 with no output whatsoever, which is what made #8062 so opaque.
+              # 1 with no output at all, which is what made #8062 so opaque.
               export G_MESSAGES_DEBUG=all RUST_BACKTRACE=full
               unset UNSLOTH_STUDIO_HOME STUDIO_HOME
               exec "$BIN"
@@ -209,9 +205,9 @@ jobs:
             for _ in $(seq 1 20); do kill -0 "$APP" 2>/dev/null || break; sleep 1; done
             if kill -0 "$APP" 2>/dev/null; then
               kill -TERM "$APP" 2>/dev/null || true
-              # Surviving only counts if the launch got as far as the transition
-              # that used to kill it. An app parked on the install or repair
-              # screen also survives 20s while testing none of this.
+              # Surviving only counts if the launch reached the transition that
+              # used to kill it: an app parked on the install or repair screen
+              # also survives 20s while testing none of this.
               if grep -q "start_managed_server spawned" "launch-logs/app-$i.log"; then
                 echo "launch $i: reached the backend spawn and stayed up"
               else
@@ -229,8 +225,7 @@ jobs:
             wait "$XV" 2>/dev/null || true
           done
 
-          # Every launch must reach the app shell and stay there. Anything else is
-          # a user watching the window vanish on startup.
+          # Anything less is a user watching the window vanish on startup.
           if [ "$fails" -ne 0 ]; then
             echo "::error::$fails of 10 launches did not reach the app shell and stay there"
             exit 1
