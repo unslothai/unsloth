@@ -61,6 +61,19 @@ def test_runtime_gate_handoff_is_one_shot(monkeypatch):
     assert gate.consume_runtime_gate_handoff() is False
 
 
+def _slice_between(source, start, end):
+    """The text from `start` up to `end`, or a failure that names what moved.
+
+    These are source-scraping contract tests, so a renamed anchor is a real
+    signal -- but `str.index` reports it as a bare `ValueError: substring not
+    found` with no clue which anchor went, which is how #8092's rename read as
+    an unexplained repo-wide red. Say which one.
+    """
+    for anchor in (start, end):
+        assert anchor in source, f"anchor moved or was renamed: {anchor!r}"
+    return source[source.index(start):source.index(end)]
+
+
 def test_terminal_launch_boundaries_use_the_runtime_gate():
     source = STUDIO_COMMAND.read_text(encoding = "utf-8")
     assert source.count("with _studio_runtime_launch_guard(") >= 4
@@ -70,19 +83,27 @@ def test_terminal_launch_boundaries_use_the_runtime_gate():
 
 def test_terminal_update_holds_the_gate_through_environment_mutation():
     source = STUDIO_COMMAND.read_text(encoding = "utf-8")
-    body = source[source.index("def update(") : source.index("def _release_self_exe_lock_windows")]
+    # Ended at the next definition rather than at a named helper inside the
+    # body: #8092 replaced `_release_self_exe_lock_windows` with the launcher
+    # transaction, and the old anchor took the whole slice down with it, which
+    # read as a repo-wide red rather than as the contract change it was.
+    body = _slice_between(source, "def update(", "class _WindowsLauncherUpdateTransaction")
     consume = body.index("_studio_runtime_gate.consume_runtime_gate_handoff()")
     guard = body.index("with _studio_runtime_launch_guard(", consume)
     idle_scan = body.index("_studio_runtime_gate.ensure_managed_environment_is_idle", guard)
-    release_self = body.index("_release_self_exe_lock_windows()", idle_scan)
-    setup = body.index("_run_setup_script(", release_self)
-    verify = body.index("_fail_if_install_damaged()", setup)
-    assert consume < guard < idle_scan < release_self < setup < verify
+    # The launcher transaction sits INSIDE the gate: it renames the running
+    # launcher aside, so a second Studio the gate never excluded would be
+    # mutating the same install underneath it.
+    launcher = body.index("with _WindowsLauncherUpdateTransaction(", idle_scan)
+    setup = body.index("_run_setup_script(", launcher)
+    validate = body.index("launcher_update.validate_launcher()", setup)
+    verify = body.index("_fail_if_install_damaged()", validate)
+    assert consume < guard < idle_scan < launcher < setup < validate < verify
 
 
 def test_terminal_setup_holds_the_gate_through_environment_mutation():
     source = STUDIO_COMMAND.read_text(encoding = "utf-8")
-    body = source[source.index("def setup(") : source.index("def _fail_if_install_damaged")]
+    body = _slice_between(source, "def setup(", "def _fail_if_install_damaged")
     consume = body.index("_studio_runtime_gate.consume_runtime_gate_handoff()")
     guard = body.index("with _studio_runtime_launch_guard(", consume)
     idle_scan = body.index("_studio_runtime_gate.ensure_managed_environment_is_idle", guard)

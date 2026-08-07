@@ -496,9 +496,9 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
     assert "translate-y-[var(--studio-titlebar-navigation-offset-y,0px)]" in TITLEBAR.read_text(
         encoding = "utf-8"
     )
-    assert '"--studio-titlebar-navigation-offset-y": "2px"' in APP_PROVIDER.read_text(
-        encoding = "utf-8"
-    )
+    # A small positive nudge: zero puts the row on the traffic lights, and a
+    # large one drops it out of the 48px titlebar.
+    assert 0 < _provider_css_px("--studio-titlebar-navigation-offset-y") <= 8
     assert "aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
     assert "inert={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
 
@@ -542,14 +542,33 @@ def test_visible_mac_sidebar_header_is_a_drag_region():
     assert header.index(drag_region) < header.index('"relative z-10 flex items-center')
 
 
+def _provider_css_px(name):
+    """The px value the provider sets for a CSS custom property.
+
+    Read rather than pinned as a literal: #8102 nudged the mac titlebar by 2px
+    and reddened the whole repo, because these assertions spelled out the
+    number. What the layout actually depends on is that the row keeps its
+    shape, so that is what is asserted below.
+    """
+    import re
+
+    provider = APP_PROVIDER.read_text(encoding = "utf-8")
+    found = re.findall(rf'"{re.escape(name)}":\s*"(-?\d+)px"', provider)
+    assert found, f"the provider no longer sets {name}"
+    assert len(set(found)) == 1, f"{name} is set to more than one value: {sorted(set(found))}"
+    return int(found[0])
+
+
 def test_mac_chat_header_controls_share_the_titlebar_row():
     source = CHAT_PAGE.read_text(encoding = "utf-8")
-    provider = APP_PROVIDER.read_text(encoding = "utf-8")
 
     assert "shouldUseNativeMacWindowTitlebar" not in source
     assert "[--studio-content-top-inset:var(--studio-mac-titlebar-height" not in source
     assert source.count("var(--studio-mac-traffic-light-inset") == 2
-    assert '"--studio-chat-header-padding-top": "7px"' in provider
+    # The chat header sits one row below the titlebar navigation, and the two
+    # move together: this gap is what keeps them on the same visual line.
+    assert (_provider_css_px("--studio-chat-header-padding-top")
+            - _provider_css_px("--studio-titlebar-navigation-offset-y")) == 5
     assert "pt-[var(--studio-content-top-inset,0px)] md:flex-row" in source
     assert "absolute top-[var(--studio-content-top-inset,0px)]" in source
 
