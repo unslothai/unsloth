@@ -1829,17 +1829,12 @@ class TestPairedWritesAreInvalidatedTogether:
         )
         calls: list[tuple] = []
         real = mm._invalidate
-        monkeypatch.setattr(
-            mm, "_invalidate", lambda *keys: (calls.append(keys), real(*keys))[1]
-        )
+        monkeypatch.setattr(mm, "_invalidate", lambda *keys: (calls.append(keys), real(*keys))[1])
 
         mm.set_model_memory_settings(keep_resident = True, no_ram_reserve = True)
 
         assert len(calls) == 1, f"the pair must be dropped in one call, got {calls}"
-        assert set(calls[0]) == {
-            mm.KEEP_RESIDENT_SETTING_KEY,
-            mm.NO_RAM_RESERVE_SETTING_KEY,
-        }
+        assert set(calls[0]) == {mm.KEEP_RESIDENT_SETTING_KEY, mm.NO_RAM_RESERVE_SETTING_KEY}
 
     def test_invalidating_a_pair_bumps_both_generations(self):
         import utils.model_memory_settings as mm
@@ -1867,6 +1862,6 @@ class TestPairedWritesAreInvalidatedTogether:
                     for c in ast.walk(node)
                     if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
                 }
-                assert "_invalidate" not in called, (
-                    "_invalidate is back in a loop, so the pair is not atomic"
-                )
+                assert (
+                    "_invalidate" not in called
+                ), "_invalidate is back in a loop, so the pair is not atomic"
