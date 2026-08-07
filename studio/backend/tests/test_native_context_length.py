@@ -451,6 +451,11 @@ class TestRouteCompleteness:
         def walk(node) -> None:
             for child in ast.iter_child_nodes(node):
                 if isinstance(child, self._NESTED_SCOPES):
+                    # The BODY is a separate scope, but a `def`/`class` also binds its own
+                    # name out here, so `def fields(): ...` after the hoist leaves the splat
+                    # receiving a function. Record the declaration, skip the body.
+                    if getattr(child, "name", None) == name:
+                        found.append((child, None))
                     continue
                 if isinstance(child, ast.Assign):
                     for target in child.targets:
@@ -478,7 +483,12 @@ class TestRouteCompleteness:
                     found.append((child, None))
                 elif isinstance(child, ast.ExceptHandler) and child.name == name:
                     found.append((child, None))
-                elif isinstance(child, ast.alias) and (child.asname or child.name) == name:
+                elif isinstance(child, ast.alias) and name in (
+                    child.asname,
+                    # `import a.b` with no asname binds only the TOP package, and the alias
+                    # node spells the whole dotted path, so comparing the raw name misses it.
+                    None if child.asname else child.name.split(".")[0],
+                ):
                     found.append((child, None))
                 elif isinstance(child, (ast.Global, ast.Nonlocal)) and name in child.names:
                     found.append((child, None))
@@ -628,11 +638,14 @@ class TestRouteCompleteness:
         if not ok:
             return False
 
+        # Nested scopes ARE walked here, unlike the allow-scan above. A closure that
+        # names the dict can do anything to it, and its call site reads nothing
+        # syntactically: `def scrub(): fields.pop("native_context_length")` followed by
+        # `scrub()` is invisible to both a mutation list and a call-site check. Reading
+        # the name inside a closure is therefore itself the disqualifier.
         def check_reads(node) -> None:
             nonlocal ok
             for child in ast.iter_child_nodes(node):
-                if isinstance(child, self._NESTED_SCOPES):
-                    continue
                 if (
                     isinstance(child, ast.Name)
                     and child.id == name
@@ -666,6 +679,30 @@ class TestRouteCompleteness:
                     return node
         return None
 
+    @staticmethod
+    def _returned_calls(scope, class_name: str) -> list:
+        """``return ClassName(...)`` in ``scope``'s OWN body, nested scopes excluded.
+
+        Two narrowings, both because the caller only asks whether SOME call qualifies. A nested
+        helper is a separate scope the handler may never call, so a hoist left behind in one
+        certifies nothing; and a construction that is not returned is a value the caller never
+        sees, so it cannot stand in for the response that goes out.
+        """
+        calls: list = []
+
+        def walk(node) -> None:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+                    continue
+                if isinstance(child, ast.Return) and isinstance(child.value, ast.Call):
+                    call = child.value
+                    if isinstance(call.func, ast.Name) and call.func.id == class_name:
+                        calls.append(call)
+                walk(child)
+
+        walk(scope)
+        return calls
+
     def _status_calls_getting_runtime_fields(self) -> list:
         """``InferenceStatusResponse(...)`` calls that actually receive the llama runtime fields.
 
@@ -686,9 +723,11 @@ class TestRouteCompleteness:
            ``native_context_length`` would leave this contract green while /status stopped
            reporting the field.
 
-        Only the ``/status`` handler is searched. The caller asserts that SOME call qualifies, so
-        over the whole module any unrelated route or helper that happens to hoist the same helper
-        would satisfy it while the GGUF branch of ``get_status`` quietly dropped the fields.
+        Only the ``/status`` handler is searched, and only what it RETURNS. The caller asserts
+        that SOME call qualifies, so anything looser certifies the wrong code: over the whole
+        module, an unrelated route hoisting the same helper; inside the handler but in a nested
+        helper, one the handler may never call; anywhere but a return, a constructed response that
+        is discarded while the real answer goes out without the fields.
         """
         tree = ast.parse(self._source)
         funcs = [
@@ -698,13 +737,7 @@ class TestRouteCompleteness:
         if handler is None:
             return []  # no handler to check is not a passing contract
         found = []
-        for call in ast.walk(handler):
-            if not (
-                isinstance(call, ast.Call)
-                and isinstance(call.func, ast.Name)
-                and call.func.id == "InferenceStatusResponse"
-            ):
-                continue
+        for call in self._returned_calls(handler, "InferenceStatusResponse"):
             for kw in call.keywords:
                 if kw.arg is not None:
                     continue
@@ -942,6 +975,73 @@ class TestRouteCompleteness:
             """
         )
         assert not self._status_calls_getting_runtime_fields()
+
+    def test_the_hoist_analysis_rejects_a_qualifying_call_the_route_never_returns(self):
+        """A nested helper is a scope the handler may never call, and a discarded construction
+        is a value the caller never sees. Either one standing in for the response means the
+        real `/status` answer can lose the fields with this contract still green."""
+        import textwrap
+
+        # A qualifying hoist inside a nested helper, and a bare response returned.
+        self._source = textwrap.dedent(
+            """
+            @router.get("/status")
+            async def get_status(llama_backend):
+                def _unused():
+                    fields = _llama_runtime_fields(llama_backend)
+                    return InferenceStatusResponse(is_gguf = True, **fields)
+                return InferenceStatusResponse(is_gguf = True)
+            """
+        )
+        assert not self._status_calls_getting_runtime_fields()
+
+        # A qualifying construction that is built and thrown away.
+        self._source = textwrap.dedent(
+            """
+            @router.get("/status")
+            async def get_status(llama_backend):
+                fields = _llama_runtime_fields(llama_backend)
+                InferenceStatusResponse(is_gguf = True, **fields)
+                return InferenceStatusResponse(is_gguf = True)
+            """
+        )
+        assert not self._status_calls_getting_runtime_fields()
+
+    def test_the_hoist_analysis_rejects_a_closure_that_touches_the_dict(self):
+        """A closure's call site reads nothing syntactically.
+
+        `def scrub(): fields.pop("native_context_length")` then `scrub()` removes the field
+        while no statement in the handler names `fields` at all, so naming it inside a nested
+        scope has to be the disqualifier.
+        """
+        assert not self._accepts(
+            """
+            fields = _llama_runtime_fields(llama_backend)
+            def _scrub():
+                fields.pop("native_context_length")
+            _scrub()
+            return InferenceStatusResponse(is_gguf = True, **fields)
+            """
+        )
+
+    def test_the_hoist_analysis_rejects_a_declaration_that_shadows_the_dict(self):
+        """`def`/`class` bind their own name in the enclosing scope, and `import a.b` binds `a`.
+
+        The body of a `def` is a separate scope, but the name it creates is not, so skipping
+        the whole node let a later declaration shadow the hoisted dict unnoticed.
+        """
+        for shadow in (
+            "def fields():\n                    pass",
+            "class fields:\n                    pass",
+            "import fields.submodule",
+        ):
+            assert not self._accepts(
+                f"""
+                fields = _llama_runtime_fields(llama_backend)
+                {shadow}
+                return InferenceStatusResponse(is_gguf = True, **fields)
+                """
+            ), f"{shadow!r} left the /status contract green"
 
     def test_non_gguf_status_path_reports_runtime_context_length(self):
         """Non-GGUF InferenceStatusResponse reports context_length from model_info."""
