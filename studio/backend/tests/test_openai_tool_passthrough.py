@@ -2323,7 +2323,7 @@ class TestGgufVisionToolRouting:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 snapshot = queue.snapshot()
                 assert snapshot.active == 1
                 assert snapshot.queued == 1
@@ -2512,7 +2512,7 @@ class TestGgufVisionToolRouting:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 snapshot = queue.snapshot()
                 assert snapshot.active == 1
                 assert snapshot.queued == 1
@@ -5168,10 +5168,15 @@ class TestApiMonitorProviderAndCompletionStreams:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 assert cancel_id in inf_mod._CANCEL_REGISTRY
 
                 blocker.release()
+                # The lease is announced before handover, so drain that marker first.
+                assert (
+                    await asyncio.wait_for(iterator.__anext__(), timeout = 1.0)
+                    == ": admission-done\n\n"
+                )
                 pending = asyncio.create_task(iterator.__anext__())
                 for _ in range(100):
                     if "body" in body_holder:
@@ -5275,10 +5280,15 @@ class TestApiMonitorProviderAndCompletionStreams:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
 
                 blocker.release()
-                first = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
+                # The lease is announced before handover, so the payload is the next chunk.
+                assert (
+                    await asyncio.wait_for(iterator.__anext__(), timeout = 1.0)
+                    == ": admission-done\n\n"
+                )
+                first = await asyncio.wait_for(iterator.__anext__(), timeout = 1.0)
                 assert "hello" in first
 
                 pending = asyncio.create_task(iterator.__anext__())
@@ -5454,7 +5464,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 snapshot = queue.snapshot()
                 assert snapshot.active == 1
                 assert snapshot.queued == 1
@@ -6997,7 +7007,7 @@ class TestResponsesChatTemplateKwargs:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 snapshot = queue.snapshot()
                 assert snapshot.active == 1
                 assert snapshot.queued == 1

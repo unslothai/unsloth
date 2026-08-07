@@ -41,6 +41,8 @@ on:
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
       - '.github/scripts/boot-studio-api-only.sh'
+      # Same for the /api/health wait that runs after a boot.
+      - '.github/scripts/wait-for-health.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
@@ -150,16 +152,7 @@ jobs:
 
       - name: Wait for /api/health
         run: |
-          for i in $(seq 1 180); do
-            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
-              jq -e '.status == "healthy"' /tmp/health.json
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "Unsloth did not become healthy in 180s"
-          tail -200 logs/studio.log
-          exit 1
+          bash .github/scripts/wait-for-health.sh --port "$STUDIO_PORT"
 
       - name: Password rotation (old must fail, new must work)
         run: |
