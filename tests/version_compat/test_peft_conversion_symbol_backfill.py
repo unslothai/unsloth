@@ -585,13 +585,9 @@ def test_a_nested_package_resolves_relative_imports_from_its_own_path(monkeypatc
     pages = {
         "transformers_weight_conversion/__init__.py": "from .sub.core import build\n",
         "transformers_weight_conversion/sub/core.py": "from .ops import apply\n",
-        "transformers_weight_conversion/sub/ops.py": (
-            "from transformers.nested import DeepOne\n"
-        ),
+        "transformers_weight_conversion/sub/ops.py": ("from transformers.nested import DeepOne\n"),
         # The wrong resolution would land here instead.
-        "transformers_weight_conversion/ops.py": (
-            "from transformers.wrong_level import NotThis\n"
-        ),
+        "transformers_weight_conversion/ops.py": ("from transformers.wrong_level import NotThis\n"),
     }
 
     def fake_urlopen(request, timeout = None):
