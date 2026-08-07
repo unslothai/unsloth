@@ -575,23 +575,19 @@ def _wrap_grpo_generate_and_score(trainer_cls):
 
 
 def _wrap_sft_evaluate_cap(trainer_cls):
-    """Cap a pre-tokenized eval split handed to `evaluate()` after construction.
+    """Cap a pre-tokenized split handed to `evaluate()`/`predict()` later on.
 
     The padding-free branch caps the init-time splits itself and then clears
     `args.max_length`, because that is what TRL's guard demands. Only the splits
-    present at construction went through it, so `evaluate(eval_dataset = ...)`
-    prepares a later one with `max_length = None`, and Zoo's prep leaves rows
-    that already carry `input_ids` alone: overlength rows reach the collator
-    with nothing enforcing the cap. The cap itself survives on
-    `args.max_seq_length`, so apply it here to exactly the rows nothing else
-    will truncate.
-    """
-    if not hasattr(trainer_cls, "evaluate"):
-        return
-    original = trainer_cls.evaluate
-    if getattr(original, "_unsloth_eval_cap_wrapped", False):
-        return
+    present at construction went through it, so a split supplied afterwards is
+    prepared with `max_length = None`, and Zoo's prep leaves rows that already
+    carry `input_ids` alone: overlength rows reach the collator with nothing
+    enforcing the cap. The cap itself survives on `args.max_seq_length`, so
+    apply it here to exactly the rows nothing else will truncate.
 
+    Both entry points, not just `evaluate`: `predict(test_dataset = ...)` comes
+    from the base Trainer and reaches the same collator by the same route.
+    """
     def _cap(dataset, cap):
         names = getattr(dataset, "column_names", None) or ()
         if "input_ids" not in names:
@@ -618,22 +614,31 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         except Exception:
             return dataset  # never turn an eval call into a hard error
 
-    def wrapped(self, *args, **kwargs):
-        cap = getattr(getattr(self, "args", None), "max_seq_length", None)
-        given = kwargs.get("eval_dataset", args[0] if args else None)
-        if cap and given is not None and getattr(self.args, "max_length", None) is None:
-            if isinstance(given, dict):
-                capped = {k: _cap(v, cap) for k, v in given.items()}
-            else:
-                capped = _cap(given, cap)
-            if "eval_dataset" in kwargs:
-                kwargs["eval_dataset"] = capped
-            else:
-                args = (capped,) + tuple(args[1:])
-        return original(self, *args, **kwargs)
+    def _make(original, keyword):
+        def wrapped(self, *args, **kwargs):
+            cap = getattr(getattr(self, "args", None), "max_seq_length", None)
+            given = kwargs.get(keyword, args[0] if args else None)
+            if cap and given is not None and getattr(self.args, "max_length", None) is None:
+                if isinstance(given, dict):
+                    capped = {k: _cap(v, cap) for k, v in given.items()}
+                else:
+                    capped = _cap(given, cap)
+                if keyword in kwargs:
+                    kwargs[keyword] = capped
+                else:
+                    args = (capped,) + tuple(args[1:])
+            return original(self, *args, **kwargs)
 
-    wrapped._unsloth_eval_cap_wrapped = True
-    trainer_cls.evaluate = wrapped
+        wrapped._unsloth_eval_cap_wrapped = True
+        return wrapped
+
+    for name, keyword in (("evaluate", "eval_dataset"),
+                          ("predict", "test_dataset")):
+        original = getattr(trainer_cls, name, None)
+        if original is None or getattr(
+                original, "_unsloth_eval_cap_wrapped", False):
+            continue
+        setattr(trainer_cls, name, _make(original, keyword))
 
 
 _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER = "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__"
@@ -1518,17 +1523,35 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # So gating on the flag left an all-zero assistant mask in place, and
                     # the collator turned the row into all -100: no supervised token, and a
                     # batch of them is a NaN loss.
-                    # `completion_only_loss` defaults to None, which TRL reads as "on for a
-                    # prompt-completion dataset", so only an explicit False opts out.
-                    # `labels` is unconditional: it IS the supervision.
-                    "            _unsloth_supervision = [('labels', -100), ('assistant_masks', 0)]\n"
-                    "            if getattr(args, 'completion_only_loss', None) is not False:\n"
-                    "                _unsloth_supervision.append(('completion_mask', 0))\n"
+                    # A None `completion_only_loss` is NOT "on". TRL resolves it from
+                    # the dataset shape:
+                    #     if args.completion_only_loss is None:
+                    #         self.completion_only_loss = "prompt" in dataset_sample and "completion" in dataset_sample
+                    # (sft_trainer.py:736). A pre-tokenized split has neither column, so
+                    # the effective mode is False and the collator ignores the mask
+                    # entirely; treating None as enabled deleted rows that still had
+                    # valid full-sequence supervision, and could empty the split.
+                    "            _unsloth_cols = getattr(_new, 'column_names', None) or ()\n"
+                    "            _unsloth_col_loss = getattr(args, 'completion_only_loss', None)\n"
+                    "            if _unsloth_col_loss is None:\n"
+                    "                _unsloth_col_loss = ('prompt' in _unsloth_cols and 'completion' in _unsloth_cols)\n"
+                    "            _unsloth_masks = []\n"
+                    "            if _unsloth_col_loss and 'completion_mask' in _unsloth_cols:\n"
+                    "                _unsloth_masks.append('completion_mask')\n"
+                    "            if 'assistant_masks' in _unsloth_cols:\n"
+                    "                _unsloth_masks.append('assistant_masks')\n"
                     "            try:\n"
-                    "                _unsloth_cols = getattr(_new, 'column_names', None) or ()\n"
-                    "                for _unsloth_sup, _unsloth_empty in _unsloth_supervision:\n"
-                    "                    if _unsloth_sup not in _unsloth_cols: continue\n"
-                    "                    _new = _new.filter(lambda _e, _c = _unsloth_sup, _z = _unsloth_empty: any(_l != _z for _l in _e[_c]), **_kw)\n"
+                    # `labels` is unconditional: it IS the supervision.
+                    "                if 'labels' in _unsloth_cols:\n"
+                    "                    _new = _new.filter(lambda _e: any(_l != -100 for _l in _e['labels']), **_kw)\n"
+                    # The masks are applied one after another onto the same labels, so
+                    # what survives is their INTERSECTION. Filtering each on its own kept
+                    # rows whose two masks light up in different positions, which TRL then
+                    # labels all -100 -- the very rows this filter exists to drop. zip
+                    # stops at the shorter, which is what an intersection means for a
+                    # ragged pair.
+                    "                if _unsloth_masks:\n"
+                    "                    _new = _new.filter(lambda _e, _c = tuple(_unsloth_masks): any(all(_v) for _v in zip(*[_e[_n] for _n in _c])), **_kw)\n"
                     "            except Exception:\n"
                     "                pass\n"
                     "            return _new, (True if _unsloth_is_stream(_new) else _unsloth_within_cap(_new))\n"

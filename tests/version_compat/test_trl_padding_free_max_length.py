@@ -969,11 +969,19 @@ def test_the_codegen_carries_the_third_round_fixes():
 
     # Supervision is carried three ways and only `labels` was filtered. The two
     # masks are gated the way TRL's collator gates them, which is not the same
-    # for both: `completion_mask` behind `completion_only_loss`, `assistant_masks`
-    # on presence alone.
-    assert "_unsloth_supervision = [('labels', -100), ('assistant_masks', 0)]" in block
-    assert "getattr(args, 'completion_only_loss', None) is not False" in block
+    # for both: `completion_mask` behind the RESOLVED `completion_only_loss`,
+    # `assistant_masks` on presence alone.
+    assert "'assistant_masks' in _unsloth_cols" in block
     assert "getattr(args, 'assistant_only_loss'" not in block
+
+    # A None `completion_only_loss` is resolved from the dataset the way TRL
+    # resolves it, not read as "on".
+    assert "getattr(args, 'completion_only_loss', None) is not False" not in block
+    assert "'prompt' in _unsloth_cols and 'completion' in _unsloth_cols" in block
+
+    # The masks apply onto the same labels one after another, so a row survives
+    # only where they all agree.
+    assert "any(all(_v) for _v in zip(*[_e[_n] for _n in _c]))" in block
 
     # skip_prepare_dataset must not exempt the overlength check.
     assert "if not _unsloth_skip_prepare and not (_unsloth_within_cap" not in block
@@ -1068,3 +1076,57 @@ def test_wrapping_evaluate_twice_is_a_no_op():
     first = Stub.evaluate
     _wrap_sft_evaluate_cap(Stub)
     assert Stub.evaluate is first
+
+
+
+def test_a_none_completion_only_loss_does_not_filter_a_pretokenized_split():
+    """TRL resolves `None` from the dataset shape:
+
+        if args.completion_only_loss is None:
+            self.completion_only_loss = "prompt" in dataset_sample and "completion" in dataset_sample
+
+    (sft_trainer.py:736). A pre-tokenized split has neither column, so the
+    effective mode is False and the collator ignores `completion_mask`
+    entirely. Reading `None` as "on" deleted rows that still had valid
+    full-sequence supervision, and could empty the split outright."""
+    block = _padding_free_codegen_block()
+    i = block.index("_unsloth_col_loss")
+    window = block[i:i + 400]
+    assert "is None" in window and "'prompt' in _unsloth_cols" in window
+
+
+def test_the_predict_entry_point_is_capped_too():
+    """`predict(test_dataset = ...)` comes from the base Trainer and reaches
+    the same collator by the same route as `evaluate`."""
+    from unsloth.models.rl import _wrap_sft_evaluate_cap
+
+    seen = {}
+
+    class Stub:
+        def evaluate(self, eval_dataset = None, **kw):
+            seen["eval"] = eval_dataset
+
+        def predict(self, test_dataset = None, **kw):
+            seen["predict"] = test_dataset
+
+    _wrap_sft_evaluate_cap(Stub)
+    assert getattr(Stub.predict, "_unsloth_eval_cap_wrapped", False)
+
+    _, tok = _load_plain()
+    late = _tokenized_dataset(tok)
+    stub = Stub()
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
+    stub.predict(test_dataset = late)
+    assert max(len(r) for r in seen["predict"]["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
+
+
+def test_a_trainer_without_predict_is_not_broken():
+    """Not every generated trainer has one; absence must not raise."""
+    from unsloth.models.rl import _wrap_sft_evaluate_cap
+
+    class OnlyEvaluate:
+        def evaluate(self, eval_dataset = None, **kw):
+            return eval_dataset
+
+    _wrap_sft_evaluate_cap(OnlyEvaluate)
+    assert not hasattr(OnlyEvaluate, "predict")
