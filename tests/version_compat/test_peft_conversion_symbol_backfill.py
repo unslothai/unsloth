@@ -500,9 +500,7 @@ def test_the_package_walk_survives_a_circular_relative_import(monkeypatch):
         raise urllib.error.HTTPError(request.full_url, 404, "Not Found", None, None)
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    assert _transformers_imports(_peft_converter_source()) == {
-        "transformers.utils": {"logging"},
-    }
+    assert _transformers_imports(_peft_converter_source()) == {"transformers.utils": {"logging"}}
 
 
 def test_an_unrecoverable_conversion_map_fails_on_use(caplog):
@@ -535,16 +533,20 @@ def test_an_unrecoverable_map_is_what_the_backfill_actually_installs(fake_module
     """The stand-in only helps if the backfill installs it instead of an empty dict."""
     monkeypatch.setattr(F, "_recover_conversion_pattern_map", lambda _real: None)
     assert F._backfill_missing_conversion_symbols() is True
-    installed = getattr(fake_modules["transformers.conversion_mapping"], "_MODEL_TO_CONVERSION_PATTERN")
-    assert isinstance(installed, F._UnavailableConversionPatternMap), (
-        "an empty dict here is the silent mis-conversion this exists to stop"
+    installed = getattr(
+        fake_modules["transformers.conversion_mapping"], "_MODEL_TO_CONVERSION_PATTERN"
     )
+    assert isinstance(
+        installed, F._UnavailableConversionPatternMap
+    ), "an empty dict here is the silent mis-conversion this exists to stop"
 
     # And a real map still comes through as an ordinary dict.
     monkeypatch.setattr(F, "_recover_conversion_pattern_map", lambda _real: {"qwen3_moe": "qwen3"})
     delattr(fake_modules["transformers.conversion_mapping"], "_MODEL_TO_CONVERSION_PATTERN")
     assert F._backfill_missing_conversion_symbols() is True
-    recovered = getattr(fake_modules["transformers.conversion_mapping"], "_MODEL_TO_CONVERSION_PATTERN")
+    recovered = getattr(
+        fake_modules["transformers.conversion_mapping"], "_MODEL_TO_CONVERSION_PATTERN"
+    )
     assert recovered == {"qwen3_moe": "qwen3"}
     assert not isinstance(recovered, F._UnavailableConversionPatternMap)
 

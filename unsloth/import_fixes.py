@@ -2473,7 +2473,11 @@ class _UnavailableConversionPatternMap(dict):
         dict.update(new, self)
         return new
 
-    def get(self, key, default = None):
+    def get(
+        self,
+        key,
+        default = None,
+    ):
         if dict.__contains__(self, key):
             return dict.__getitem__(self, key)
         raise RuntimeError(self._MESSAGE)
@@ -2537,9 +2541,7 @@ def _backfill_conversion_symbols_once(builders, added):
                 setattr(
                     real,
                     symbol,
-                    dict(recovered)
-                    if recovered
-                    else _UnavailableConversionPatternMap(),
+                    dict(recovered) if recovered else _UnavailableConversionPatternMap(),
                 )
                 added.append(qualified)
                 continue
