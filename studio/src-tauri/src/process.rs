@@ -606,6 +606,14 @@ pub fn start_backend(
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
 
+    // read_output_stream decodes as UTF-8; without these, Python encodes its
+    // redirected streams with the locale code page and non-ASCII lands as U+FFFD.
+    #[cfg(windows)]
+    {
+        cmd.env("PYTHONUTF8", "1");
+        cmd.env("PYTHONIOENCODING", "utf-8");
+    }
+
     // Reset state, spawn, and store the child while holding the backend mutex.
     // This keeps the no-child check atomic: a concurrent start/stop cannot slip
     // into the old window between generation reset and child storage.

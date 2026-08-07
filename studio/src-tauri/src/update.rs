@@ -94,6 +94,14 @@ fn spawn_update(
     // shortcuts (Tauri owns its own bundle entries).
     cmd.env("UNSLOTH_TAURI_UPDATE", "1");
 
+    // read_lossy_lines decodes as UTF-8, and here the child is Python itself,
+    // which otherwise encodes redirected streams with the locale code page.
+    #[cfg(windows)]
+    {
+        cmd.env("PYTHONUTF8", "1");
+        cmd.env("PYTHONIOENCODING", "utf-8");
+    }
+
     #[cfg(windows)]
     let mut child: Box<dyn ChildWrapper + Send> = {
         use std::os::windows::process::CommandExt;
