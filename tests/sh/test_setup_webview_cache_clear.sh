@@ -177,9 +177,8 @@ else
     echo "  FAIL: setup.sh never calls _clear_webview_caches"; FAIL=$((FAIL+1))
 fi
 
-# ── 7b. setup.ps1 must have the same ordering. It is not driven here, so this is a
-# source-order assertion: the call has to come after the override validation, or a
-# mistyped UNSLOTH_STUDIO_HOME on Windows wipes the cache and then aborts. ──
+# ── 7b. setup.ps1 is not driven here, so assert on source order: the call must come
+# after the override validation, or a mistyped override wipes the cache and then aborts ──
 SETUP_PS1="$SCRIPT_DIR/../../studio/setup.ps1"
 if [ ! -f "$SETUP_PS1" ]; then
     echo "  FAIL: setup.ps1 not found"; FAIL=$((FAIL+1))
@@ -198,9 +197,8 @@ else
     fi
 fi
 
-# ── 7c. An override that EXISTS and is writable but holds no Studio install. Validating
-# the directory is not enough: setup aborts later at the venv check, and clearing first
-# would cost the cache for a run that then does nothing. ──
+# ── 7c. An override that exists and is writable but holds no Studio install: setup
+# aborts later at the venv check, so clearing first would cost the cache for nothing ──
 _novenv_home=$(new_home)
 _novenv_root="$_TMP_ROOT/exists-but-empty.$$"
 mkdir -p "$_novenv_root"
@@ -221,10 +219,9 @@ assert_present "existing-but-empty override leaves the cache alone" \
     "$_novenv_home/.local/share/$BID/WebKitCache/asset.js"
 
 # ── 8. a bad override must not cost the user their cache ──
-# Every case above extracts the function, so none of them sees where the call sits.
-# setup.sh runs under `set -euo pipefail` with no trap, so a clear placed before the
-# UNSLOTH_STUDIO_HOME validation turns a typo into cache loss plus the same abort.
-# Driven in situ, the only way to observe the ordering.
+# The cases above extract the function, so none sees where the call sits; driven in situ.
+# Under `set -euo pipefail` with no trap, clearing before the UNSLOTH_STUDIO_HOME
+# validation turns a typo into cache loss plus the same abort.
 _ord_home=$(new_home)
 mkdir -p "$_ord_home/.local/share/$BID/WebKitCache" "$_ord_home/.local/share/$BID/CacheStorage"
 : > "$_ord_home/.local/share/$BID/WebKitCache/asset.js"

@@ -1625,11 +1625,8 @@ if ($script:StudioVtOk -and -not $env:NO_COLOR) {
 
 # WebView2 caches keyed by the bundle id can keep serving the previous frontend
 # after an update. Cache-only: storage, cookies, settings, models and the studio
-# database are untouched.
-#
-# Defined here, called after the UNSLOTH_STUDIO_HOME / STUDIO_HOME override is validated.
-# Clearing first would make a mistyped override wipe the cache and then abort, the same
-# side effect setup.sh delays the call to avoid.
+# database are untouched. Called only once the UNSLOTH_STUDIO_HOME / STUDIO_HOME
+# override is validated, so a mistyped override cannot wipe the cache and then abort.
 function Clear-WebViewCaches {
     if (-not $env:LOCALAPPDATA) { return }
     $wvDefault = Join-Path $env:LOCALAPPDATA "ai.unsloth.studio\EBWebView\Default"
@@ -3444,12 +3441,10 @@ if ($_studioOverride) {
 
 $VenvDir = Join-Path $StudioHome "unsloth_studio"
 
-# The override is known good and points at a real installation, so the clear cannot turn
-# a typo into cache loss. Gated on the venv because validating the directory is not
-# enough: an override that exists and is writable but holds no Studio install fails at
-# the venv check further down, and clearing first would cost the cache for a run that
-# then does nothing. A fresh install has neither a venv nor a cache, so nothing real is
-# skipped. Still before any install work, which is the ordering that matters.
+# The override is validated, so a typo can no longer cost the cache. Venv-gated because
+# a writable-but-empty override still fails at the venv check below, and clearing first
+# would cost the cache for a run that then does nothing; a fresh install has neither venv
+# nor cache. Still before any install work.
 if (Test-Path -LiteralPath (Join-Path $VenvDir "Scripts\python.exe") -PathType Leaf) {
     Clear-WebViewCaches
 }

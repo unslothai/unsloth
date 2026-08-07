@@ -589,10 +589,8 @@ _clear_webview_caches() {
     fi
     return 0
 }
-# Deliberately NOT called here: setup.sh runs under `set -euo pipefail` with no
-# trap and the UNSLOTH_STUDIO_HOME / STUDIO_HOME override is not validated until
-# further down, so clearing first would let a typo'd override delete the cache
-# and only then abort. The call site is after the override is known to be good.
+# Not called here: under `set -e` with no trap, clearing before the UNSLOTH_STUDIO_HOME
+# / STUDIO_HOME override is validated lets a typo'd override delete the cache, then abort.
 
 # ── Detect Colab ──
 IS_COLAB=false
@@ -644,13 +642,10 @@ VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
 VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"
 VENV_T5_510_DIR="$STUDIO_HOME/.venv_t5_510"
 
-# The override is validated and points at a real installation, so a typo can no longer
-# cost the cache. Gated on the venv because validating the directory is not enough: an
-# override that exists and is writable but holds no Studio install aborts at the venv
-# check further down, and clearing first would make that path cost the cache for a run
-# that then does nothing. A genuinely fresh install has neither a venv nor a cache, so
-# the guard skips nothing real. Still before any install work, which is the ordering
-# that matters: the caches must go while the old frontend is the one on disk.
+# The override is validated, so a typo can no longer cost the cache. Venv-gated because
+# a writable-but-empty override still aborts at the venv check below, and clearing first
+# would cost the cache for a run that then does nothing; a fresh install has neither venv
+# nor cache. Still before any install work, while the old frontend is the one on disk.
 if [ -x "$VENV_DIR/bin/python" ]; then
     _clear_webview_caches
 fi
