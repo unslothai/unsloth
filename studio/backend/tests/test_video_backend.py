@@ -2557,7 +2557,9 @@ def test_the_h3_native_path_pins_cfg_scale_to_one():
     assert calls, "video.py no longer builds native video params"
     for call in calls:
         pinned = [kw for kw in call.keywords if kw.arg == "cfg_scale"]
-        assert pinned, "the H3 native path must pass cfg_scale explicitly, not fall back to a default"
+        assert (
+            pinned
+        ), "the H3 native path must pass cfg_scale explicitly, not fall back to a default"
         value = pinned[0].value
         assert isinstance(value, ast.Constant), (
             "cfg_scale must be a literal 1.0 on the H3 native path; forwarding the request's "
