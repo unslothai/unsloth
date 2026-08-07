@@ -20,6 +20,7 @@ TOOL = {
         "parameters": {"type": "object", "properties": {}},
     },
 }
+SYSTEM = {"role": "system", "content": "Keep this instruction."}
 
 
 def _configure(
@@ -83,7 +84,7 @@ def _payload(**kwargs):
     return ChatCompletionRequest(
         model = "default",
         external_model = kwargs.pop("external_model", "model"),
-        messages = [{"role": "user", "content": "hello"}],
+        messages = [SYSTEM, {"role": "user", "content": "hello"}],
         stream = kwargs.pop("stream", True),
         provider_id = "saved",
         provider_type = "ollama",
@@ -123,7 +124,9 @@ def test_saved_opt_in_owns_routing_and_empty_selection_falls_through(monkeypatch
     assert path in captured
     if path == "managed":
         assert captured["managed"]["tools"] == [TOOL]
-        assert "Do not answer from memory" in captured["managed"]["messages"][0]["content"]
+        system_content = captured["managed"]["messages"][0]["content"]
+        assert "Keep this instruction." in system_content
+        assert "Do not answer from memory" in system_content
         assert captured["tracker"]["track_active_generation"] is False
         with pytest.raises(inference_mod.HTTPException):
             _run(_payload(stream = False))

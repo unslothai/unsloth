@@ -3770,6 +3770,10 @@ export function createOpenAIStreamAdapter(
                       const mins = useChatRuntimeStore.getState().toolCallTimeout;
                       return mins >= 9999 ? 9999 : mins * 60;
                     })(),
+                  }
+                : {}),
+              ...(externalUsesStudioTools
+                ? {
                     cancel_id: cancelId,
                     ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
                     ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),

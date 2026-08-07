@@ -9068,7 +9068,7 @@ async def _proxy_to_external_provider(
             rag_scope = payload.rag_scope,
         )
         if _external_nudge:
-            chat_messages = _set_or_prepend_system_message(chat_messages, _external_nudge)
+            chat_messages = _append_to_system_message(chat_messages, _external_nudge)
 
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
