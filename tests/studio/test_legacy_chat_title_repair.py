@@ -14,6 +14,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 FRONTEND = REPO / "studio/frontend/src/features/chat"
+BACKEND = REPO / "studio/backend"
 REPAIR = FRONTEND / "utils/repair-legacy-chat-titles.ts"
 HOOK = FRONTEND / "hooks/use-chat-sidebar-items.ts"
 STORAGE = FRONTEND / "utils/chat-history-storage.ts"
@@ -86,6 +87,22 @@ def test_a_rename_wins_even_where_the_guard_is_not_enforced():
     # The write runs over the confirmed set, not the planned one.
     assert "await runWithConcurrency(live, REPAIR_CONCURRENCY," in repair
     assert "{ expectedTitle: repair.previousTitle }," in repair
+
+
+def test_the_migration_stays_off_where_the_guard_is_not_enforced():
+    """A backend from before expectedTitle drops it and writes anyway. Sending
+    one to find out is the destructive act itself, so the served schema is what
+    answers, and anything unreadable counts as unsupported."""
+    repair = _read(REPAIR)
+    assert "if (!(await backendEnforcesTitleGuard())) return 0;" in repair
+    assert 'const response = await authFetch("/openapi.json");' in repair
+    assert "return schemaDeclaresExpectedTitle(await response.json());" in repair
+    # A failed probe is not cached, or one hiccup parks the migration all session.
+    assert "guardSupport = null;" in repair
+
+    backend = (BACKEND / "routes/chat_history.py").read_text(encoding = "utf-8")
+    # The probe reads the schema, so the field has to be declared on the model.
+    assert "expectedTitle: Optional[str] = None" in backend
 
 
 def test_a_failed_read_leaves_the_rows_retryable():

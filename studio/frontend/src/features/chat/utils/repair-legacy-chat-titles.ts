@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { authFetch } from "@/features/auth";
 import { batchListChatMessages, listChatThreads } from "../api/chat-api";
 import type { MessageRecord, ThreadRecord } from "../types";
 import { updateStoredChatThread } from "./chat-history-storage";
@@ -10,6 +11,7 @@ import {
   selectLegacyRepairPage,
   threadsMissingMessages,
 } from "./chat-title";
+import { schemaDeclaresExpectedTitle } from "./openapi-support";
 import { runWithConcurrency } from "./run-with-concurrency";
 import { createSerialQueue } from "./serial-queue";
 
@@ -31,6 +33,29 @@ const REPAIR_PAGE_PAUSE_MS = 500;
  *  if their passes queue rather than run alongside each other. */
 const serial = createSerialQueue();
 
+/** Cached once the served schema answers. A failed probe is not cached, so a
+ *  hiccup at startup does not park the migration for the session. */
+let guardSupport: Promise<boolean> | null = null;
+
+/** Whether this backend enforces the conditional title patch.
+ *
+ *  Probing by sending one is not an option: an older backend would apply the
+ *  write, which is the harm being checked for. The served schema says so
+ *  without touching anything. Anything unreadable reads as unsupported. */
+function backendEnforcesTitleGuard(): Promise<boolean> {
+  guardSupport ??= (async () => {
+    try {
+      const response = await authFetch("/openapi.json");
+      if (!response.ok) return false;
+      return schemaDeclaresExpectedTitle(await response.json());
+    } catch {
+      guardSupport = null;
+      return false;
+    }
+  })();
+  return guardSupport;
+}
+
 /** Rewrite titles stored pre-cut at 48 chars so they grow with the sidebar
  *  again. */
 export function repairLegacyChatTitles(
@@ -40,6 +65,10 @@ export function repairLegacyChatTitles(
 }
 
 async function runRepairPass(threads: ThreadRecord[]): Promise<number> {
+  // Nothing is claimed or marked until the guard is known to be enforced: a
+  // rewrite that can silently beat a rename is not worth a tidier title.
+  if (!(await backendEnforcesTitleGuard())) return 0;
+
   const { candidates, rest, hasMore } = selectLegacyRepairPage(
     threads,
     attempted,

@@ -31,6 +31,10 @@ function userMessage(threadId: string, text: string): MessageRecord {
   } as MessageRecord;
 }
 
+/** A high surrogate with no low after it, or a low with no high before it. */
+const UNPAIRED_SURROGATE =
+  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
 test("a title the sidebar can clip keeps the whole first line", () => {
   assert.equal(fallbackTitleFromUserText(LONG), LONG);
   assert.equal(fallbackTitleFromUserText("  spaced   out  "), "spaced out");
@@ -41,23 +45,37 @@ test("a title the sidebar can clip keeps the whole first line", () => {
 test("only a pasted wall of text is cut, and with a real ellipsis", () => {
   const wall = "x".repeat(200);
   const title = fallbackTitleFromUserText(wall);
-  assert.equal(title.length, 121);
+  // 120 UTF-16 units all in, the ellipsis included, which is what the rename
+  // input accepts. A longer one cannot be edited until a character is deleted.
+  assert.equal(title.length, 120);
   assert.ok(title.endsWith("…"));
   assert.ok(!title.includes("..."));
 });
 
-/** A high surrogate with no low after it, or a low with no high before it. */
-const UNPAIRED_SURROGATE =
-  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+test("an emoji wall is capped by the same budget the input counts", () => {
+  // maxLength counts UTF-16 units, so 120 astral code points would be 240.
+  const title = fallbackTitleFromUserText("\u{1F600}".repeat(200));
+  assert.ok(title.length <= 120);
+  assert.equal(UNPAIRED_SURROGATE.test(title), false);
+  assert.ok(title.endsWith("…"));
+});
+
+test("a line already inside the budget is stored whole", () => {
+  const exact = "y".repeat(120);
+  assert.equal(fallbackTitleFromUserText(exact), exact);
+});
 
 test("the cap never splits an emoji into a lone surrogate", () => {
   // A lone surrogate survives JSON.stringify but fails the backend's SQLite
   // bind, so the title write would 500.
   const line = "x".repeat(119) + "\u{1F600} tail";
+  // A raw cut at the budget lands mid-pair.
   assert.equal(UNPAIRED_SURROGATE.test(line.slice(0, 120)), true);
   const title = fallbackTitleFromUserText(line);
   assert.equal(UNPAIRED_SURROGATE.test(title), false);
-  assert.equal(title, "x".repeat(119) + "\u{1F600}" + "…");
+  // The emoji needs two units and only one is left, so it is left out whole.
+  assert.equal(title, "x".repeat(119) + "…");
+  assert.equal(title.length, 120);
 });
 
 test("a legacy title is recognised only against the text it was cut from", () => {

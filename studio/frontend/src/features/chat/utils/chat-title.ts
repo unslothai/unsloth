@@ -4,8 +4,9 @@
 import type { MessageRecord, ThreadRecord } from "../types";
 
 /** The sidebar clips the title with CSS, so store the whole first line and a
- *  wider sidebar shows more of it. Caps a pasted wall of text, at the rename
- *  input's maxLength. */
+ *  wider sidebar shows more of it. Caps a pasted wall of text, and matches the
+ *  rename input's maxLength, which counts UTF-16 units and includes any
+ *  ellipsis this adds. */
 export const FALLBACK_TITLE_MAX = 120;
 
 /** Older titles were stored pre-cut at 48 chars with a literal "...", so no
@@ -18,14 +19,25 @@ function firstLineOf(text: string): string {
   return firstLine.replace(/\s+/g, " ").trim();
 }
 
+/** Cut to at most `maxUnits` UTF-16 units, the unit maxLength counts, without
+ *  splitting an astral character in half. A lone surrogate parses fine and then
+ *  fails the backend's SQLite bind. */
+function cutToUnits(text: string, maxUnits: number): string {
+  let out = "";
+  for (const character of text) {
+    if (out.length + character.length > maxUnits) break;
+    out += character;
+  }
+  return out;
+}
+
 export function fallbackTitleFromUserText(userText: string): string {
   const cleaned = firstLineOf(userText);
   if (!cleaned) return "New Chat";
-  // Cut on code points: a UTF-16 cut can halve an emoji, and the lone
-  // surrogate that leaves fails the backend's SQLite bind.
-  const points = Array.from(cleaned);
-  if (points.length <= FALLBACK_TITLE_MAX) return cleaned;
-  return points.slice(0, FALLBACK_TITLE_MAX).join("").trimEnd() + "…";
+  if (cleaned.length <= FALLBACK_TITLE_MAX) return cleaned;
+  // The ellipsis takes one of the budget, so the whole title still fits what
+  // the rename input accepts.
+  return cutToUnits(cleaned, FALLBACK_TITLE_MAX - 1).trimEnd() + "…";
 }
 
 /** Pre-filter on the title alone: only these are worth fetching messages for. */
