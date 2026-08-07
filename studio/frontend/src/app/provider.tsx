@@ -525,6 +525,8 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const [desktopAuthReady, setDesktopAuthReady] = useState(!isTauri);
   const [desktopAuthRetry, setDesktopAuthRetry] = useState(0);
   const [nativeMacControlsHidden, setNativeMacControlsHidden] = useState(false);
+
+  const [windowRevealRevision, setWindowRevealRevision] = useState(0);
   const usesCustomTitlebar = shouldUseCustomWindowTitlebar();
   const usesNativeMacTitlebar = shouldUseNativeMacWindowTitlebar();
   const hidesTitlebarSidebar = HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
@@ -534,6 +536,35 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     return () => {
       windowLayoutGenerationRef.current += 1;
       appliedWindowModeRef.current = null;
+    };
+  }, []);
+
+
+  useEffect(() => {
+    if (!isTauri) return;
+    let disposed = false;
+    let stopListening: (() => void) | undefined;
+
+    void wasLaunchedHidden().then(async (hiddenAtLaunch) => {
+      if (!hiddenAtLaunch || disposed) return;
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      const unlisten = await getCurrentWindow().onFocusChanged(({ payload }) => {
+        if (!payload || disposed) return;
+        stopListening?.();
+        stopListening = undefined;
+        // Native tray reveal focuses the window. Re-run the deferred layout now
+        // that currentMonitor() can resolve the restored display.
+        launchedHidden = Promise.resolve(false);
+        appliedWindowModeRef.current = null;
+        setWindowRevealRevision((revision) => revision + 1);
+      });
+      if (disposed) unlisten();
+      else stopListening = unlisten;
+    });
+
+    return () => {
+      disposed = true;
+      stopListening?.();
     };
   }, []);
 
@@ -567,7 +598,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         /* swallow; window may still be functional */
       }
     });
-  }, [status]);
+  }, [status, windowRevealRevision]);
 
   useEffect(() => {
     if (!isTauri) {
