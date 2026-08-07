@@ -25,7 +25,6 @@ import {
   type UpdateChatThreadOptions,
 } from "../api/chat-api";
 import { db, DEXIE_DB_NAME } from "../db";
-import { trustsLocalOnlyMessages } from "./chat-title";
 import type {
   MessageRecord,
   ModelType,
@@ -532,31 +531,6 @@ export async function listStoredChatMessages(
   }
   return legacyMessages.filter(
     (message) => !isChatThreadDeleted(message.threadId),
-  );
-}
-
-/** Dexie rows for a thread the backend could not account for.
- *
- *  Local-only messages are trusted on the same terms as `listStoredChatMessages`
- *  merges them: while the import is unfinished, or when the backend holds
- *  nothing. Past that, a Dexie row the backend does not have is a leftover, not
- *  news, since deleting a message prunes the backend and leaves Dexie alone. */
-export async function listUnimportedChatMessages(
-  threadId: string,
-  backendCount: number,
-): Promise<MessageRecord[]> {
-  if (isThreadIncognito(threadId)) return [];
-  if (isChatThreadDeleted(threadId)) return [];
-  if (!trustsLocalOnlyMessages(isLegacyChatImportDone(), backendCount)) {
-    return [];
-  }
-  const messages = await db.messages
-    .where("threadId")
-    .equals(threadId)
-    .toArray();
-  // Index order, so sort it the way the backend lists messages.
-  return messages.sort(
-    (a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id),
   );
 }
 

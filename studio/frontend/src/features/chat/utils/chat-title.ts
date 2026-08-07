@@ -100,42 +100,6 @@ export function selectLegacyRepairPage(
   };
 }
 
-/** Whether a Dexie row the backend does not have still counts as real. Once the
- *  import is done and the backend has the thread, it is a leftover: a deletion
- *  prunes the backend without clearing Dexie. */
-export function trustsLocalOnlyMessages(
-  importDone: boolean,
-  backendCount: number,
-): boolean {
-  return !importDone || backendCount === 0;
-}
-
-/** Candidates no rewrite could be made of. Their opening message may just be
- *  missing from what was read, so they are worth a local look before being
- *  written off. */
-export function threadsWithoutRepairs(
-  candidates: ThreadRecord[],
-  repairs: LegacyTitleRepair[],
-): string[] {
-  const planned = new Set(repairs.map((repair) => repair.threadId));
-  return candidates
-    .map((thread) => thread.id)
-    .filter((id) => !planned.has(id));
-}
-
-/** Both sources for one thread, newest duplicate dropped by id. A part-imported
- *  chat can hold its opening message locally and its later turns remotely. */
-export function mergeMessagesById(
-  first: readonly MessageRecord[],
-  second: readonly MessageRecord[],
-): MessageRecord[] {
-  const byId = new Map(first.map((message) => [message.id, message]));
-  for (const message of second) {
-    if (!byId.has(message.id)) byId.set(message.id, message);
-  }
-  return [...byId.values()];
-}
-
 /** Threads nothing is known about at all, so nothing can be concluded. */
 export function threadsMissingMessages(
   ids: readonly string[],

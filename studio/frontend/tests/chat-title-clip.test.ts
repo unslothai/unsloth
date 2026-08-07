@@ -8,12 +8,9 @@ import type {
 import {
   fallbackTitleFromUserText,
   isLegacyClippedTitle,
-  mergeMessagesById,
   planLegacyTitleRepairs,
   selectLegacyRepairPage,
   threadsMissingMessages,
-  threadsWithoutRepairs,
-  trustsLocalOnlyMessages,
 } from "../src/features/chat/utils/chat-title.ts";
 
 const LONG =
@@ -181,56 +178,21 @@ test("a thread the backend has nothing for still gets a local read", () => {
   ]);
 });
 
-test("a part-imported chat is spotted and planned from both sources", () => {
-  // The backend holds a later turn, so the row does not read as empty and the
-  // clipped title cannot be explained from it alone.
+
+
+test("a chat with nothing stored is left for a later refresh", () => {
+  // Its messages may simply not be imported yet. The row is not written off,
+  // and once they land a later pass rewrites the title from them.
   const legacy = LONG.slice(0, 48) + "...";
   const candidates = [thread("a", legacy)];
-  const remote: MessageRecord = {
-    ...userMessage("a", "a later question entirely"),
-    id: "a-m9",
-    createdAt: 99,
-  };
-  const local: MessageRecord = {
-    ...userMessage("a", LONG),
-    id: "a-m1",
-    createdAt: 1,
-  };
+  const messages = new Map<string, MessageRecord[]>();
 
-  const messages = new Map<string, MessageRecord[]>([["a", [remote]]]);
-  const first = planLegacyTitleRepairs(candidates, messages);
-  assert.deepEqual(first, []);
-  // Not empty, so the old empty-only check would never have looked locally.
+  assert.deepEqual(planLegacyTitleRepairs(candidates, messages), []);
+  assert.deepEqual(threadsMissingMessages(["a"], messages), ["a"]);
+
+  messages.set("a", [userMessage("a", LONG)]);
   assert.deepEqual(threadsMissingMessages(["a"], messages), []);
-  assert.deepEqual(threadsWithoutRepairs(candidates, first), ["a"]);
-
-  messages.set("a", mergeMessagesById(messages.get("a") ?? [], [local]));
   assert.deepEqual(planLegacyTitleRepairs(candidates, messages), [
     { threadId: "a", previousTitle: legacy, title: LONG },
   ]);
-});
-
-test("merging keeps one copy of a message both sources hold", () => {
-  const shared = userMessage("a", LONG);
-  const other: MessageRecord = {
-    ...userMessage("a", "next"),
-    id: "a-m2",
-    createdAt: 2,
-  };
-  const merged = mergeMessagesById([shared], [shared, other]);
-  assert.deepEqual(
-    merged.map((m) => m.id),
-    ["a-m1", "a-m2"],
-  );
-});
-
-test("a local-only message is a leftover once the import is done", () => {
-  // Deleting a message prunes the backend and leaves the Dexie copy, so past
-  // the import a local-only row must not be read back as the opening prompt.
-  assert.equal(trustsLocalOnlyMessages(true, 3), false);
-  // Nothing on the backend: nothing has been pruned, so Dexie is all there is.
-  assert.equal(trustsLocalOnlyMessages(true, 0), true);
-  // Import unfinished: the backend's view is not authoritative yet.
-  assert.equal(trustsLocalOnlyMessages(false, 3), true);
-  assert.equal(trustsLocalOnlyMessages(false, 0), true);
 });
