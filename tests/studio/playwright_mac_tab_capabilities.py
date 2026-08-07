@@ -51,6 +51,10 @@ BASE = os.environ["BASE_URL"]
 # STUDIO_OLD_PW is what the repo's own macOS workflow exports; STUDIO_PW is what the
 # staging harness exports. Accept either so the same script runs under both.
 OLD = os.environ.get("STUDIO_OLD_PW") or os.environ["STUDIO_PW"]
+# What to rotate the bootstrap password to, when the app forces a change on first
+# login. Only used on that path: a harness that already rotated over the API (the
+# staging one) never reaches it. Must differ from OLD, or the change is rejected.
+NEW = os.environ.get("STUDIO_NEW_PW") or f"{OLD}-Rotated1!"
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_mac_tabs"))
 ART.mkdir(parents = True, exist_ok = True)
 
@@ -202,6 +206,37 @@ class BackendSurvivalPoller:
                 )
 
 
+def rotate_password(page) -> None:
+    """Complete the forced password change a bootstrap login lands on.
+
+    Studio seeds a one-time bootstrap password and requires it to be replaced before
+    the app proper is reachable. A harness that rotates it over the API first (the
+    staging one does) never sees this screen; a harness that hands over the raw
+    bootstrap password (this repo's macOS smoke does) always does. Handling it here
+    means the script works under both instead of only the one it was written against.
+
+    The current-password box is rendered only when the page did NOT receive the
+    bootstrap password (auth-form.tsx:362), so fill it when present rather than
+    requiring it.
+    """
+    step("completing the forced password change")
+    try:
+        page.locator("#new-password").wait_for(state = "visible", timeout = 60000)
+        current = page.locator("#current-password")
+        if current.count() > 0:
+            current.fill(OLD)
+        page.locator("#new-password").fill(NEW)
+        confirm = page.locator("#confirm-password")
+        if confirm.count() > 0:
+            confirm.fill(NEW)
+        page.get_by_role("button", name = re.compile(r"^change password$", re.I)).first.click()
+        page.wait_for_url(lambda url: not signed_out(url), timeout = 60000)
+        info("password rotated")
+    except Exception as exc:
+        info(f"forced password change did not complete: {exc!r}")
+        page.screenshot(path = str(ART / "change_password_failed.png"))
+
+
 def log_in(page) -> bool:
     """Sign in and prove it took. Returns False if the app is still signed out.
 
@@ -217,18 +252,36 @@ def log_in(page) -> bool:
     * The submit button is labelled "Login", not "Sign in".
     """
     page.goto(BASE, wait_until = "domcontentloaded", timeout = 120000)
+    # A backend that still has its one-time bootstrap password injects it into the page
+    # and signs itself in, landing on /change-password with no login form ever rendered.
+    # Check that BEFORE waiting on #password, or the wait burns 60s and reports "no
+    # password field" for a session that is actually authenticated.
+    try:
+        page.wait_for_url(
+            lambda url: "/change-password" in url or "/login" in url,
+            timeout = 30000,
+        )
+    except Exception:
+        pass
+    if "/change-password" in page.url:
+        rotate_password(page)
     try:
         # #password is the login field; the change-password screen uses
         # #current-password / #new-password, which we never want to touch here.
-        pw_box = page.locator("#password")
-        try:
-            pw_box.wait_for(state = "visible", timeout = 60000)
-        except Exception:
-            # No form after a full minute is either a genuinely password-less
-            # desktop build or a frontend that never rendered. The redirect check
-            # below tells the two apart, so do not conclude anything here.
-            info("no password field appeared within 60s")
-            pw_box = None
+        # Only look for a login form when still on a signed-out route. After the
+        # bootstrap rotation above we are already authenticated, and waiting a full
+        # minute for a form that is correctly absent burns CI time and logs a
+        # misleading "no password field".
+        pw_box = page.locator("#password") if signed_out(page.url) else None
+        if pw_box is not None:
+            try:
+                pw_box.wait_for(state = "visible", timeout = 60000)
+            except Exception:
+                # No form after a full minute is either a genuinely password-less
+                # desktop build or a frontend that never rendered. The redirect check
+                # below tells the two apart, so do not conclude anything here.
+                info("no password field appeared within 60s")
+                pw_box = None
         if pw_box is not None:
             pw_box.fill(OLD)
             submit = page.get_by_role("button", name = re.compile(r"^(login|sign in)$", re.I))
@@ -241,6 +294,12 @@ def log_in(page) -> bool:
                 )
             except Exception:
                 info(f"still on {page.url} 60s after submitting the login form")
+            # A first login with the bootstrap password lands on /change-password
+            # (session.ts:93 getPostAuthRoute -> mustChangePassword), which is a
+            # signed-out route here because it has no sidebar to assert against.
+            # The session is real, so finish the rotation instead of giving up.
+            if "/change-password" in page.url:
+                rotate_password(page)
     except Exception as exc:
         info(f"login form interaction raised {exc!r}")
 
