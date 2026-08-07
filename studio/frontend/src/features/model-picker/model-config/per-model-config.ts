@@ -63,8 +63,9 @@ export const N_BATCH_LLAMA_DEFAULT = 2048;
 export const MAX_SEQ_LENGTH_MIN = 128;
 export const MAX_SEQ_LENGTH_MAX = 1048576;
 export const MAX_SEQ_LENGTH_STEP = 128;
-// App-default max sequence length when a non-GGUF model has no override. Both paths fall back
-// here rather than an active model's runtime value, so an unconfigured pane never OOMs.
+// App-default max sequence length for a model no local backend sizes itself. Every path
+// falls back here rather than an active model's runtime value, so an unconfigured pane
+// never inherits another model's larger context and OOMs.
 export const DEFAULT_MAX_SEQ_LENGTH = 4096;
 export const CONTEXT_LENGTH_MIN = 128;
 
@@ -318,6 +319,49 @@ export function normalizeMaxSeqLength(value: unknown): number | null {
   }
   const snapped = Math.round(value / MAX_SEQ_LENGTH_STEP) * MAX_SEQ_LENGTH_STEP;
   return Math.max(MAX_SEQ_LENGTH_MIN, Math.min(MAX_SEQ_LENGTH_MAX, snapped));
+}
+
+/** The context a saved record pins, whichever field it was written in.
+ *
+ *  MLX's pin moved into `customContextLength` beside llama.cpp's, while transformers
+ *  keeps its own in `maxSeqLength` and a record written before the move still carries an
+ *  MLX pin there. The same record is read on a host that serves it with a different
+ *  backend, so every read has to honour both.
+ *
+ *  A *saved* record only. `currentRuntimePerModelConfig` builds the same shape from the
+ *  live store, where `maxSeqLength` is the length the model resolved to rather than one
+ *  anybody chose; read that through `customContextLength` alone.
+ */
+export function savedContextPin(config: {
+  customContextLength?: number | null;
+  maxSeqLength?: number | null;
+}): number | null {
+  return config.customContextLength ?? normalizeMaxSeqLength(config.maxSeqLength ?? null);
+}
+
+/** The patch that pins a context for a non-GGUF target, on the backend serving it.
+ *
+ *  An edit leaves a pin in exactly one field, clearing whichever the record arrived with:
+ *  a record holding both loads at a different length depending on who asked -- the picker
+ *  resolves `customContextLength` first, the API's auto-switch load `maxSeqLength`.
+ */
+export function contextPinPatch(value: number, isMlx: boolean): Partial<PerModelConfig> {
+  // Held to what a load may ask for, but not rounded to the control's step: a pin taken
+  // from a resolved window need not sit on that grid.
+  const pin = boundContextPin(value) ?? MAX_SEQ_LENGTH_MIN;
+  return isMlx
+    ? { customContextLength: pin, maxSeqLength: null }
+    : { customContextLength: null, maxSeqLength: pin };
+}
+
+function boundContextPin(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return Math.max(
+    MAX_SEQ_LENGTH_MIN,
+    Math.min(MAX_SEQ_LENGTH_MAX, Math.floor(value)),
+  );
 }
 
 export function floorMaxSeqLength(value: unknown): number | null {

@@ -58,10 +58,12 @@ import {
   resolveInferenceCheckpointId,
 } from "../lib/apply-inference-status-to-store";
 import {
+  loadedContextForParams,
   mergeBackendRecommendedInference,
   resolveFitMaxSeqLength,
+  retainedContextPin,
+  unpinnedLoadContext,
   resolveLoadMaxSeqLength,
-  resolveManualAutoCtxPin,
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import { refreshContextUsage } from "../utils/refresh-context-usage";
@@ -72,10 +74,13 @@ import {
 import { isExternalModelId } from "../external-providers";
 import {
   applyPerModelConfigToRuntime,
+  isServedByMlx,
   normalizeMaxSeqLength,
+  resolveInitialConfig,
   type PerModelConfig,
   loadedContextFields,
 } from "@/features/model-picker";
+import { usePlatformStore } from "@/config/env";
 import type {
   ChatLoraSummary,
   ChatModelSummary,
@@ -827,11 +832,19 @@ export function useChatModelRuntime() {
           const currentCheckpoint =
             useChatRuntimeStore.getState().params.checkpoint;
           const stateBeforeUnload = useChatRuntimeStore.getState();
+          const platform = usePlatformStore.getState();
           let trustRemoteCode = stateBeforeUnload.params.trustRemoteCode ?? false;
           let approvedRemoteCodeFingerprint: string | null = null;
+          // A staged config carries its own pin. An entry point that applied the saved
+          // record and then selected the model carries none, and the record's pre-move
+          // field is the only place its pin survives.
+          const pinnedMaxSeqLength = normalizeMaxSeqLength(
+            pendingLoadConfig
+              ? pendingLoadConfig.maxSeqLength
+              : resolveInitialConfig(modelId, ggufVariant).config.maxSeqLength,
+          );
           const maxSeqLength =
-            normalizeMaxSeqLength(pendingLoadConfig?.maxSeqLength) ??
-            stateBeforeUnload.params.maxSeqLength;
+            pinnedMaxSeqLength ?? stateBeforeUnload.params.maxSeqLength;
           const previousActiveNativePathToken =
             stateBeforeUnload.activeNativePathToken;
           const previousActiveLoadId = stateBeforeUnload.activeLoadId;
@@ -848,18 +861,30 @@ export function useChatModelRuntime() {
             (typeof selection !== "string"
               ? selection.previousConfig?.maxSeqLength
               : null) ?? maxSeqLength;
-          // Respect the rolled-back model's auto-layers mode: a Manual+Auto model
-          // with an unpinned context must reload with 0 (so --fit re-auto-sizes),
-          // not the positive context it picked (which the backend treats as a pin).
-          const rollbackMaxSeqLength = resolveFitMaxSeqLength(
+          // The intent the model had, not the length it ended up at: sending the
+          // resolved length would pin a model nobody pinned.
+          const previousIsMlx = isServedByMlx(
             previousIsGguf,
-            stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
-            stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
-            stateBeforeUnload.loadedCustomContextLength,
-            previousIsGguf
-              ? (stateBeforeUnload.loadedContextLength ?? 0)
-              : previousMaxSeqLength,
+            platform.deviceType,
+            platform.chatOnlyReason,
           );
+          // What the outgoing model loaded with, not the control's current value: a pin
+          // typed and never applied would change a window the failed switch never
+          // touched. The runtime snapshot carries no intent either.
+          const previousPin = stateBeforeUnload.loadedCustomContextLength;
+          // A pin the outgoing model loaded with is what it reloads at, whichever
+          // backend served it; only llama.cpp's placement rules override that, and only
+          // where they own the sizing.
+          const rollbackMaxSeqLength = previousIsGguf
+            ? resolveFitMaxSeqLength(
+                previousIsGguf,
+                stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
+                stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
+                stateBeforeUnload.loadedCustomContextLength,
+                stateBeforeUnload.loadedContextLength ?? 0,
+              )
+            : (previousPin ??
+              unpinnedLoadContext(false, previousIsMlx, previousMaxSeqLength));
           const hfToken = stateBeforeUnload.hfToken || null;
           const previousModelRequiresTrustRemoteCode =
             stateBeforeUnload.modelRequiresTrustRemoteCode;
@@ -988,7 +1013,9 @@ export function useChatModelRuntime() {
                 loadedContextLength: loadContextLength,
                 currentCheckpoint,
                 activeGgufVariant: loadActiveGgufVariant,
-                maxSeqLength,
+                isMlx: isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason),
+                pinnedMaxSeqLength,
+                defaultMaxSeqLength: stateBeforeUnload.params.maxSeqLength,
                 presetSource: loadActivePresetSource,
               }),
             );
@@ -1181,7 +1208,9 @@ export function useChatModelRuntime() {
               loadedContextLength: loadContextLength,
               currentCheckpoint,
               activeGgufVariant: loadActiveGgufVariant,
-              maxSeqLength,
+              isMlx: isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason),
+              pinnedMaxSeqLength,
+              defaultMaxSeqLength: stateBeforeUnload.params.maxSeqLength,
               presetSource: loadActivePresetSource,
             });
             const loadMaxSeqLength = resolveFitMaxSeqLength(
@@ -1245,14 +1274,28 @@ export function useChatModelRuntime() {
             persistGpuMemoryModeOnLoad(loadResponse, loadGpuMemoryMode);
 
             const currentParams = useChatRuntimeStore.getState().params;
-            setParams(
-              mergeBackendRecommendedInference({
+            setParams({
+              ...mergeBackendRecommendedInference({
                 current: currentParams,
                 response: loadResponse,
                 modelId,
                 presetSource: useChatRuntimeStore.getState().activePresetSource,
+                loadedContextLength: loadedContextFields(loadResponse).loadedContextLength,
               }),
-            );
+              // The window the model serves, as the background and compare loads
+              // already record. The request cannot stand in: a self-sizing backend is
+              // sent the auto-size sentinel, and the active model would report a context
+              // it is not running at.
+              ...(isGguf
+                ? {}
+                : {
+                    maxSeqLength: loadedContextForParams(
+                      loadedContextFields(loadResponse).loadedContextLength,
+                      loadMaxSeqLength,
+                      currentParams.maxSeqLength,
+                    ),
+                  }),
+            });
             // Qwen3.5/3.6 small models (0.8B, 2B, 4B, 9B) disable thinking by default.
             // Anchored regex: first "Xb" / "X.Xb" after start-of-string or
             // [-_/.] so the version literal in "qwen3.5" / "qwen3.6" doesn't
@@ -1307,11 +1350,16 @@ export function useChatModelRuntime() {
             // revert it to Auto) and retain the user's requested context so
             // re-open/re-save keeps the intended override, not the backend's
             // auto-fit context; null stays null.
-            const keepCustomCtx = resolveManualAutoCtxPin(
-              loadGpuMemoryMode,
-              loadGpuLayers,
-              loadCustomContextLength,
-            );
+            const keepCustomCtx = retainedContextPin({
+              isGguf,
+              isMlx: isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason),
+              gpuMemoryMode: loadGpuMemoryMode,
+              gpuLayers: loadGpuLayers,
+              // What the load asked for, not the field it came from: a record written
+              // before the pin moved carries it in maxSeqLength, and keeping only
+              // customContextLength would apply it once and then reload auto-sized.
+              requestedContextLength: loadMaxSeqLength,
+            });
             const reasoningAlwaysOn = loadResponse.reasoning_always_on ?? false;
             const reasoningStyle = loadResponse.reasoning_style ?? "enable_thinking";
             const supportsReasoning = loadResponse.supports_reasoning ?? false;

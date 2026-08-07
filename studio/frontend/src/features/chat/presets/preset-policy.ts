@@ -9,6 +9,9 @@ import type { PresetLoadConfig } from "./preset-load-config";
 
 export const defaultInferenceParams = DEFAULT_INFERENCE_PARAMS;
 
+/** The fewest tokens the Max Tokens control offers, and so the least any ceiling may be. */
+export const MAX_TOKENS_MIN = 64;
+
 export interface Preset {
   name: string;
   params: InferenceParams;
@@ -263,11 +266,15 @@ export function mergeBackendRecommendedInference({
   response,
   modelId,
   presetSource,
+  loadedContextLength,
 }: {
   current: InferenceParams;
   response: BackendInferenceEnvelope;
   modelId: string;
   presetSource: ChatPresetSource;
+  /** The window the response reports, as the context constructor reads it -- not the raw
+   *  field, where a backend that sizes nothing echoes the length it was asked for. */
+  loadedContextLength: number | null;
 }): InferenceParams {
   const inference = response.inference;
   const next: InferenceParams = {
@@ -285,9 +292,10 @@ export function mergeBackendRecommendedInference({
 
   // A window the response did not report leaves Max Tokens on the ceiling the settings
   // sheet gives it, rather than on whatever the previous model left behind.
-  const defaultMaxTokens = response.is_gguf
-    ? (response.context_length ?? current.maxSeqLength)
-    : 4096;
+  const defaultMaxTokens = localMaxTokensCeiling(
+    loadedContextLength,
+    unreportedWindowMaxTokens(response.is_gguf ?? false, current.maxTokens),
+  );
   return {
     ...next,
     maxTokens: defaultMaxTokens,
@@ -311,7 +319,9 @@ export function resolveLoadMaxSeqLength({
   loadedContextLength,
   currentCheckpoint,
   activeGgufVariant,
-  maxSeqLength,
+  isMlx,
+  pinnedMaxSeqLength,
+  defaultMaxSeqLength,
   presetSource,
 }: {
   modelId: string;
@@ -321,7 +331,9 @@ export function resolveLoadMaxSeqLength({
   loadedContextLength: number | null;
   currentCheckpoint: string;
   activeGgufVariant?: string | null;
-  maxSeqLength: number;
+  isMlx?: boolean | null;
+  pinnedMaxSeqLength: number | null;
+  defaultMaxSeqLength: number;
   presetSource: ChatPresetSource;
 }): number {
   const isDirectGgufFile = modelId.toLowerCase().endsWith(".gguf");
@@ -343,7 +355,161 @@ export function resolveLoadMaxSeqLength({
   if (isGgufLoad) {
     return 0;
   }
-  return maxSeqLength;
+  if (pinnedMaxSeqLength != null) {
+    return pinnedMaxSeqLength;
+  }
+  return unpinnedLoadContext(isGgufLoad, isMlx, defaultMaxSeqLength);
+}
+
+/** The context pin to hold after a status refresh reports the resident model, and the
+ *  baseline the controls compare it against.
+ *
+ *  An echoed request answers both: it is the only evidence that a pin was adopted rather
+ *  than merely typed or remembered. It still yields to an unapplied edit, since a poll
+ *  runs on a timer with no user action behind it.
+ *
+ *  Without an echo the two part company. While the model is unchanged both keep what they
+ *  hold. On a model change the control takes the incoming model's remembered choice and
+ *  the baseline takes nothing -- something else may have loaded this model, and claiming
+ *  the choice was applied would roll a failed switch back to it.
+ */
+export function refreshedContextPin({
+  isGguf,
+  gpuMemoryMode,
+  gpuLayers,
+  requestedContextLength,
+  modelChanged,
+  storePin,
+  loadedBaseline,
+  rememberedPin,
+}: {
+  isGguf: boolean;
+  gpuMemoryMode: "auto" | "manual";
+  gpuLayers: number;
+  requestedContextLength: number | null;
+  modelChanged: boolean;
+  storePin: number | null;
+  loadedBaseline: number | null;
+  rememberedPin: number | null;
+}): { pin: number | null; baseline: number | null } {
+  if (isGguf) {
+    const echoed = resolveManualAutoCtxPin(gpuMemoryMode, gpuLayers, requestedContextLength);
+    return { pin: echoed, baseline: echoed };
+  }
+  if (requestedContextLength != null) {
+    const echoed = requestedContextLength > 0 ? requestedContextLength : null;
+    const editPending = !modelChanged && storePin !== loadedBaseline;
+    return { pin: editPending ? storePin : echoed, baseline: echoed };
+  }
+  if (!modelChanged) {
+    return { pin: storePin, baseline: loadedBaseline };
+  }
+  return { pin: rememberedPin, baseline: null };
+}
+
+/** The context pin to keep for a model that has just loaded, or null if it has none.
+ *
+ *  The two backends pin for different reasons: llama.cpp's means something only under
+ *  manual GPU memory with automatic layers, where `--fit` owns the sizing, while MLX
+ *  sizes its own window whenever the load asks for nothing, so any positive request was
+ *  the user's choice.
+ */
+export function retainedContextPin({
+  isGguf,
+  isMlx,
+  gpuMemoryMode,
+  gpuLayers,
+  requestedContextLength,
+}: {
+  isGguf: boolean;
+  isMlx?: boolean | null;
+  gpuMemoryMode: "auto" | "manual";
+  gpuLayers: number;
+  requestedContextLength: number | null;
+}): number | null {
+  if (isGguf) {
+    return resolveManualAutoCtxPin(gpuMemoryMode, gpuLayers, requestedContextLength);
+  }
+  if (isMlx) {
+    return (requestedContextLength ?? 0) > 0 ? requestedContextLength : null;
+  }
+  return null;
+}
+
+/** The context a preset records, in the one field that replays as a pin.
+ *
+ *  A window nobody pinned is not recorded: replaying asks for nothing and the backend
+ *  arrives at it again on its own, while storing it would turn it into a request.
+ *  llama.cpp is the exception -- its window depends on the machine, so the one it ran at
+ *  is the only way to reproduce the setup.
+ */
+export function capturedContextLength({
+  isGguf,
+  controlPin,
+  loadedContextLength,
+}: {
+  isGguf: boolean;
+  controlPin: number | null | undefined;
+  loadedContextLength: number | null | undefined;
+}): number | null {
+  return controlPin ?? (isGguf ? (loadedContextLength ?? null) : null);
+}
+
+/** The context length to record for a model that has just loaded.
+ *
+ *  The window the backend reports, not what the load asked for: a backend sizing its own
+ *  window was asked for the non-positive sentinel, which is below the control's minimum.
+ *  Only where no window was reported does the request stand.
+ */
+export function loadedContextForParams(
+  reportedContextLength: number | null | undefined,
+  requestedMaxSeqLength: number,
+  previousMaxSeqLength: number,
+): number {
+  if (reportedContextLength != null) {
+    return reportedContextLength;
+  }
+  return requestedMaxSeqLength > 0 ? requestedMaxSeqLength : previousMaxSeqLength;
+}
+
+/** What bounds Max Tokens when the model reported no window at all.
+ *
+ *  llama.cpp reports a window whenever it can read one, so a missing one is a failed read
+ *  and the value already held stands. A backend that never reports one keeps the app
+ *  default, since the length the session holds is a request and on a model change is
+ *  still the outgoing model's.
+ */
+export function unreportedWindowMaxTokens(
+  isGguf: boolean,
+  currentMaxTokens: number,
+): number {
+  return isGguf ? currentMaxTokens : defaultInferenceParams.maxSeqLength;
+}
+
+/** The most tokens a local model may be asked to generate.
+ *
+ *  The control's own minimum outranks the window, because a slider whose maximum sits
+ *  below its minimum cannot be operated at all. That is reachable: an API load may ask
+ *  for a handful of tokens and MLX honours a positive request verbatim.
+ */
+export function localMaxTokensCeiling(
+  loadedContextLength: number | null,
+  unreportedWindowFallback: number,
+): number {
+  return Math.max(MAX_TOKENS_MIN, loadedContextLength ?? unreportedWindowFallback);
+}
+
+/** What a load asks for when the user has pinned no context of their own.
+ *
+ *  Both local backends take the same non-positive sentinel to mean "size it yourself".
+ *  The app default covers the remaining case, where nothing fits a window.
+ */
+export function unpinnedLoadContext(
+  isGgufLoad: boolean,
+  isMlx: boolean | null | undefined,
+  appDefault: number,
+): number {
+  return isGgufLoad || isMlx ? 0 : appDefault;
 }
 
 /**
