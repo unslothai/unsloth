@@ -8914,8 +8914,7 @@ async def _proxy_to_external_provider(
                 status_code = 400,
                 detail = f"Provider '{config['display_name']}' is disabled.",
             )
-        # A saved provider id is the trust boundary for Studio execution.
-        # Never let request-supplied routing fields retarget its opt-in.
+        # Trust saved routing, not request-supplied overrides.
         provider_type = config["provider_type"]
         base_url = config["base_url"]
         studio_tool_execution = bool(config.get("studio_tool_execution", 0))
@@ -8964,15 +8963,9 @@ async def _proxy_to_external_provider(
         provider_type = provider_type,
         base_url = base_url,
     )
-    # `top_k` defaults to 20 in ChatCompletionRequest because the local path
-    # expects an int, but the external-provider path treats "field omitted from
-    # JSON" as "use provider default" so callers sending only model/messages
-    # don't silently get different sampling than before this PR. Pydantic's
-    # `model_fields_set` tracks explicit-vs-default per request.
+    # Preserve provider defaults when top_k is omitted.
     _top_k_explicit = payload.top_k if "top_k" in payload.model_fields_set else None
-    # Only a saved connection can opt into Studio execution. The server-side
-    # setting is authoritative: request fields and provider names cannot enable
-    # local/MCP execution on their own.
+    # Only saved connections may enable Studio execution.
     from state.tool_policy import get_tool_policy as _get_external_tool_policy
 
     _external_tool_policy = _get_external_tool_policy()
@@ -9111,7 +9104,6 @@ async def _proxy_to_external_provider(
                 model = model,
                 tools = _external_studio_tools,
                 request_kwargs = {
-                    # Provider-hosted tools are passed separately below.
                     "temperature": payload.temperature,
                     "top_p": payload.top_p,
                     "max_tokens": _effective_max_tokens(payload),

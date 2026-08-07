@@ -9,7 +9,7 @@ export interface ExternalToolSelection {
   imageGeneration: boolean;
 }
 
-/** Build the union sent to the backend without losing hosted capabilities. */
+/** Preserve hosted tools when adding Studio tools. */
 export function buildExternalEnabledTools({
   studioToolExecution,
   webSearch,

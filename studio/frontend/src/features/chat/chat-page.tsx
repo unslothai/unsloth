@@ -2186,10 +2186,6 @@ export function ChatPage({
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
-      // The saved connection opt-in exposes Studio's local/MCP runtime.
-      // Provider-hosted capabilities remain separate under supportsBuiltin*:
-      // Search (OpenAI/Anthropic/OpenRouter/Kimi), Code (Claude 4.x, gpt-5.5),
-      // and Images (OpenAI cloud Responses API).
       supportsTools: supportsStudioTools,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
@@ -2726,8 +2722,6 @@ export function ChatPage({
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
-          // Studio tools are enabled only by the saved connection opt-in;
-          // provider-hosted capabilities remain under supportsBuiltin*.
           supportsTools: supportsStudioTools,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,

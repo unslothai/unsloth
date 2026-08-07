@@ -3727,10 +3727,6 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // Keep provider-hosted tools and Studio functions in one
-              // de-duplicated request catalog. When Studio execution is on,
-              // Search/Code resolve to local functions while unrelated hosted
-              // capabilities (Fetch/Image) remain available.
               ...(webSearchEnabledForThisTurn ||
               webFetchEnabledForThisTurn ||
               codeExecEnabledForThisTurn ||

@@ -69,7 +69,6 @@ def _merge_tool_call_delta(
     )
     call_id = raw_call.get("id")
     if isinstance(call_id, str) and call_id:
-        # Do not concatenate repeated IDs.
         if not entry["id"]:
             entry["id"] = call_id
     call_type = raw_call.get("type")
@@ -77,7 +76,6 @@ def _merge_tool_call_delta(
         entry["type"] = call_type
     extra_content = raw_call.get("extra_content")
     if isinstance(extra_content, Mapping):
-        # Preserve opaque provider continuation metadata.
         entry["extra_content"] = copy.deepcopy(dict(extra_content))
     raw_function = raw_call.get("function")
     if not isinstance(raw_function, Mapping):
@@ -89,7 +87,7 @@ def _merge_tool_call_delta(
     if isinstance(arguments, str):
         entry["function"]["arguments"] += arguments
     elif isinstance(arguments, Mapping):
-        # Support Ollama-style arguments from compatible proxies.
+        # Accept mapping-form arguments from Ollama-compatible proxies.
         entry["function"]["arguments"] = json.dumps(arguments, ensure_ascii = False)
 
 
@@ -207,10 +205,9 @@ def _without_tool_transport(
         if meaningful_delta or choice.get("finish_reason") is not None:
             kept_choices.append(choice)
     cloned["choices"] = kept_choices
-    # Hide intermediate usage, but keep errors.
+    # Drop intermediate usage; keep errors and final usage-only chunks.
     if has_tool_calls and not kept_choices and "error" not in cloned and "_toolEvent" not in cloned:
         return None
-    # Keep final usage-only chunks.
     if (
         not kept_choices
         and "usage" not in cloned
@@ -466,7 +463,6 @@ async def stream_external_chat_with_tools(
                 yield _combined_usage_line(usage_template, aggregate_usage)
                 usage_emitted = True
             return
-        # A non-conforming final pass must not loop.
         if final_pass:
             if aggregate_usage and usage_template is not None and not usage_emitted:
                 yield _combined_usage_line(usage_template, aggregate_usage)
@@ -540,7 +536,6 @@ async def stream_external_chat_with_tools(
                 assistant_calls.append(assistant_call)
             assistant_message["tool_calls"] = assistant_calls
 
-            # Restore Anthropic thinking blocks to message scope.
             preserved_thinking_blocks: list[dict[str, Any]] = []
             for _decision, raw_call in decision_pairs:
                 extra_content = raw_call.get("extra_content")

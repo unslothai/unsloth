@@ -14,7 +14,7 @@ export interface ExternalProviderConfig {
   models: string[];
   /** Cached available model ids from the provider's /models response. */
   availableModels?: string[];
-  /** Allow this saved connection to request Studio-managed local and MCP tools. */
+  /** Enable Studio-managed local and MCP tools. */
   studioToolExecution: boolean;
   /** Whether to ask supported hosted providers to use prompt caching. */
   enablePromptCaching?: boolean;

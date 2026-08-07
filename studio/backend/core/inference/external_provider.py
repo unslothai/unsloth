@@ -22,7 +22,6 @@ import structlog
 # Local and custom endpoints apply their own chat template (#7066).
 _TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom"})
 
-# Use structlog for backend JSON diagnostics.
 logger = structlog.get_logger(__name__)
 
 
@@ -662,7 +661,6 @@ async def _safe_fetch_image_for_gemini(
     return await asyncio.to_thread(_safe_fetch_image_for_gemini_sync, url, fallback_mime, max_bytes)
 
 
-# Mark provider-side synthetic tool events for the frontend.
 _SERVER_SIDE_BUILTIN_TOOL_NAMES = frozenset(
     {"web_search", "web_fetch", "code_execution", "image_generation"}
 )
@@ -1842,8 +1840,7 @@ class ExternalProviderClient:
                             if title:
                                 doc_block["title"] = title
                             anthropic_parts.append(doc_block)
-                # Hosted blocks ran after visible assistant text but before the
-                # managed client calls they accompanied. Restore that order.
+                # Restore hosted blocks before managed client calls.
                 if msg.get("role") == "assistant":
                     anthropic_parts.extend(_native_hosted_blocks(msg))
                 # Assistant tool_calls -> Anthropic tool_use blocks appended to
@@ -2067,7 +2064,6 @@ class ExternalProviderClient:
             not _anthropic_tool_choice_disabled and not _anthropic_tool_choice_forced_function
         )
 
-        # Translate OpenAI function declarations into Anthropic client tools.
         anthropic_function_tools: list[dict[str, Any]] = []
         for tool in tools or []:
             if not isinstance(tool, dict) or tool.get("type") != "function":
@@ -2311,8 +2307,7 @@ class ExternalProviderClient:
                 # and emit on content_block_stop so the chat-adapter can persist
                 # it onto the assistant message for next-turn round-tripping.
                 current_compaction: Optional[dict[str, Any]] = None
-                # Client calls may be parallel, so key state by Anthropic's
-                # content-block index rather than sharing hosted-tool state.
+                # Track parallel calls by content-block index.
                 client_tool_uses: dict[int, dict[str, Any]] = {}
                 thinking_blocks: dict[int, dict[str, Any]] = {}
                 hosted_blocks: dict[int, dict[str, Any]] = {}
@@ -2343,9 +2338,7 @@ class ExternalProviderClient:
                 def _content_chunk(text: str, *, thinking_display: bool = False) -> str:
                     delta: dict[str, Any] = {"content": text}
                     if thinking_display:
-                        # This marker lets the managed tool loop keep the
-                        # display-only <think> wrapper out of provider history.
-                        # It contains no signature or other opaque metadata.
+                        # Exclude display-only thinking from provider history.
                         delta["extra_content"] = {"anthropic": {"thinking_display": True}}
                     chunk = {
                         "id": completion_id,
@@ -2716,8 +2709,6 @@ class ExternalProviderClient:
                                     and signature
                                 ):
                                     thinking_blocks[block_index]["signature"] = signature
-                            # Other delta types are not user-visible.
-
                         elif event_type == "content_block_stop":
                             block_index = event.get("index")
                             if isinstance(block_index, int) and block_index in client_tool_uses:
@@ -2737,9 +2728,7 @@ class ExternalProviderClient:
                                     },
                                 }
                                 if thinking_blocks:
-                                    # Transport private native blocks on the
-                                    # normalized call. The managed loop consumes
-                                    # this field before forwarding the SSE.
+                                    # Attach native blocks for the managed loop.
                                     tool_call["extra_content"] = {
                                         "anthropic": {
                                             "thinking_blocks": [
@@ -4845,16 +4834,12 @@ class ExternalProviderClient:
                         continuation_response_id = candidate
                         break
                 if continuation_response_id:
-                    # The prior Responses object already contains its text,
-                    # hosted-tool items, reasoning, and function calls. Link to
-                    # it and send only the new function_call_output items that
-                    # follow this assistant message.
+                    # Link the prior response and send only new function outputs.
                     previous_response_id = continuation_response_id
                     input_items = []
                     openai_replay_items = []
                     continue
-                # A manually managed Responses continuation must replay the
-                # native reasoning items that preceded its function calls.
+                # Replay native reasoning before managed function calls.
                 replayed_reasoning_ids: set[str] = set()
                 for _tc in _tool_calls:
                     if not isinstance(_tc, dict):
