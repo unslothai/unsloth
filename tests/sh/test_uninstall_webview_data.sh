@@ -494,6 +494,15 @@ for _case in dbremoved nodb; do
             echo "  PASS: $_case: says where the keys actually are"; PASS=$((PASS+1)) ;;
         *)  echo "  FAIL: $_case: never says where the keys actually are"; FAIL=$((FAIL+1)) ;;
     esac
+    # Removing the WebView profile clears the desktop app's session only. A browser
+    # session keeps its tokens in localStorage (frontend/src/features/auth/session.ts),
+    # which this script never touches, so an unqualified claim is wrong there too.
+    case "$_out" in
+        *"the signed-in session is gone"*)
+            echo "  FAIL: $_case: unqualified signed-out claim"; FAIL=$((FAIL+1)) ;;
+        *)  echo "  PASS: $_case: signed-out claim scoped to the desktop app"
+            PASS=$((PASS+1)) ;;
+    esac
 done
 
 # ── 3k. _set_marker itself must survive a write it cannot perform. 3i only proves the

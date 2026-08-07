@@ -126,7 +126,16 @@ Environment:
         if ($hadDb) {
             try {
                 $dbItem = Get-Item -LiteralPath $dbPath -Force -ErrorAction SilentlyContinue
-                if ($dbItem -and $dbItem.Target) { $dbPath = @($dbItem.Target)[0] }
+                if ($dbItem -and $dbItem.Target) {
+                    $t = @($dbItem.Target)[0]
+                    # Target can be relative ("..\data\studio.db"). Anchor it to the
+                    # link's own directory, or the post-delete Test-Path resolves it
+                    # against the uninstaller's working directory and always reads absent.
+                    if (-not [System.IO.Path]::IsPathRooted($t)) {
+                        $t = Join-Path (Split-Path -LiteralPath $dbItem.FullName -Parent) $t
+                    }
+                    $dbPath = $t
+                }
             } catch { }
         }
         _RemovePath $Path
@@ -746,7 +755,9 @@ Environment:
         # No studio.db was deleted, so only the WebView-local data is accounted for.
         # Claiming the keys and history are gone would be false for an env-mode install
         # whose root this run never discovered.
-        Write-Host "Note: this also removed the app's WebView data, so the signed-in session is gone."
+        Write-Host "Note: this also removed the app's WebView data, so the desktop app's session"
+        Write-Host "      is gone. A browser session is not affected: its tokens live in the same"
+        Write-Host "      localStorage as the API keys below."
         Write-Host "      No studio.db was found, so any chat history in an install root this run"
         Write-Host "      did not see is still on disk."
     }

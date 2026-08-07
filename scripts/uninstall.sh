@@ -790,7 +790,9 @@ _unsloth_uninstall_main() {
         # No studio.db was deleted, so only the WebView-local data is accounted for.
         # Claiming the keys and history are gone would be false for an env-mode install
         # whose root this run never discovered.
-        echo "Note: this also removed the app's WebView data, so the signed-in session is gone."
+        echo "Note: this also removed the app's WebView data, so the desktop app's session is"
+        echo "      gone. A browser session is not affected: its tokens live in the same"
+        echo "      localStorage as the API keys below."
         echo "      No studio.db was found, so any chat history in an install root this run"
         echo "      did not see is still on disk."
     fi
