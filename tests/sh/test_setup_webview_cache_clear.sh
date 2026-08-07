@@ -204,9 +204,8 @@ _novenv_root="$_TMP_ROOT/exists-but-empty.$$"
 mkdir -p "$_novenv_root"
 mkdir -p "$_novenv_home/.local/share/$BID/WebKitCache"
 : > "$_novenv_home/.local/share/$BID/WebKitCache/asset.js"
-# Between the clear and the venv check, setup.sh provisions Node and builds the
-# frontend. Report no system node/npm and opt out of the isolated install so
-# decide_node_source returns "skip": no download, no npm, no writes to dist/.
+# Stub node/npm as failing and opt out of the isolated install so setup.sh reaches the
+# venv check without provisioning Node or building the frontend.
 _novenv_bin="$_TMP_ROOT/no-node.$$"
 mkdir -p "$_novenv_bin"
 for _stub in node npm; do
@@ -225,7 +224,7 @@ if [ "$_novenv_rc" = 0 ]; then
 else
     echo "  PASS: override without a venv aborts (rc=$_novenv_rc)"; PASS=$((PASS+1))
 fi
-# The abort has to be the venv check, or the cache survived for an unrelated reason.
+# Or the cache survived for an unrelated reason.
 case "$_novenv_out" in
     *"venv not found at"*) echo "  PASS: the abort is the venv check"; PASS=$((PASS+1)) ;;
     *) echo "  FAIL: aborted before the venv check"; FAIL=$((FAIL+1)) ;;

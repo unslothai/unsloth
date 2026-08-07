@@ -800,25 +800,19 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// Root shared by the WebView profile and the version stamp below. Tauri points the
-// WebView at BaseDirectory::LocalData/<bid> (PathResolver uses dirs::data_local_dir)
-// and wry keys the WebKitGTK base-cache dir to it, so resolve it through the same
-// call: dirs drops a relative XDG_DATA_HOME as the spec requires, and falls back to
-// the passwd database and the Windows known folder when the environment is stripped,
-// which a direct HOME/LOCALAPPDATA read cannot.
+// Root shared by the WebView profile and the version stamp below. dirs::data_local_dir
+// is the call Tauri's PathResolver makes for LocalData/<bid>, and it falls back to the
+// passwd database and the Windows known folder where a raw env read cannot.
 fn webview_profile_root(bundle_id: &str) -> Option<std::path::PathBuf> {
     dirs::data_local_dir().map(|d| d.join(bundle_id))
 }
 
-// Clear WebView caches after an update, before the webview initializes: the
-// in-app update runs setup.sh/setup.ps1 while the old WebView still holds these
-// files, so its clear fails and a relaunch can serve the previous frontend.
-// Version-stamped so an ordinary launch does not discard the Windows compiled-JS
-// cache for nothing. Cache-only; LocalStorage, IndexedDB, cookies and app data are
-// kept. Mirrors setup.sh _clear_webview_caches / setup.ps1. Runs from a plugin
-// registered after single-instance, so a duplicate launch has already exited; the
-// returned lock, held for the rest of the process, covers the case where that
-// arbitration is unavailable (no session bus) and a second launch reaches here.
+// Clear WebView caches after an update: the in-app update runs setup.sh/setup.ps1 while
+// the old WebView still holds these files, so its clear fails and a relaunch serves the
+// previous frontend. Version-stamped so an ordinary launch does not discard the Windows
+// compiled-JS cache. Cache-only (storage and cookies kept), mirroring setup.sh
+// _clear_webview_caches / setup.ps1. The caller runs after single-instance, so a duplicate
+// launch has exited; the returned lock covers the no-session-bus case, where it has not.
 #[must_use]
 fn clear_webview_caches(bundle_id: &str, version: &str) -> Option<fs::File> {
     let root = webview_profile_root(bundle_id)?;
@@ -872,14 +866,12 @@ fn clear_webview_caches(bundle_id: &str, version: &str) -> Option<fs::File> {
     Some(lock)
 }
 
-// Never dropped: the profile lock has to outlive the clear (see the function).
+// Never dropped: the lock has to outlive the clear (see the function).
 static WEBVIEW_PROFILE_LOCK: std::sync::OnceLock<Option<fs::File>> = std::sync::OnceLock::new();
 
-// Register this directly after tauri_plugin_single_instance. Plugin setup hooks run
-// inside Builder::build(), in registration order, and the config-defined window (with
-// the WebView that locks these files) is only created later, from App::run(). So this
-// is the one point that is both after a duplicate launch has exited and before the
-// WebView exists.
+// Register directly after tauri_plugin_single_instance: setup hooks run in registration
+// order inside Builder::build(), while the config window (and its WebView, which locks
+// these files) is only created later, from App::run().
 fn webview_cache_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("unsloth-webview-cache")
         .setup(|app, _api| {
@@ -1168,8 +1160,7 @@ mod tests {
         assert!(live.is_some(), "the clearing instance must get the lock");
         assert!(!root.join("WebKitCache").exists(), "the first launch did not clear");
 
-        // A second launch that got past single-instance (no session bus) must
-        // leave the first one's live profile alone.
+        // A second launch past single-instance (no session bus) must leave it alone.
         fs::create_dir_all(root.join("WebKitCache")).unwrap();
         let second = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.1"));
         assert!(second.is_none(), "a duplicate launch took the lock");
