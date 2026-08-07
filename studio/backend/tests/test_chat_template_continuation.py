@@ -52,9 +52,7 @@ class _ChatMLTokenizer:
         **kw,
     ):
         if add_generation_prompt and continue_final_message:
-            raise ValueError(
-                "Cannot set both add_generation_prompt and continue_final_message."
-            )
+            raise ValueError("Cannot set both add_generation_prompt and continue_final_message.")
         out = []
         for index, message in enumerate(messages):
             body = message.get("content") or ""
@@ -71,7 +69,13 @@ class _ChatMLTokenizer:
 class _LegacyTokenizer(_ChatMLTokenizer):
     """A tokenizer predating ``continue_final_message`` (transformers < 4.44)."""
 
-    def apply_chat_template(self, messages, *, tokenize = False, **kw):
+    def apply_chat_template(
+        self,
+        messages,
+        *,
+        tokenize = False,
+        **kw,
+    ):
         if "continue_final_message" in kw:
             raise TypeError(
                 "apply_chat_template() got an unexpected keyword argument "
@@ -149,15 +153,23 @@ def test_trailing_assistant_text_joins_text_parts_and_rejects_the_rest():
     assert trailing_assistant_text(_conv()) == _PARTIAL
     assert (
         trailing_assistant_text(
-            [{"role": "assistant", "content": [
-                {"type": "text", "text": "ab"},
-                {"type": "text", "text": "cd"},
-            ]}]
+            [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "ab"},
+                        {"type": "text", "text": "cd"},
+                    ],
+                }
+            ]
         )
         == "abcd"
     )
     # No resume point inside an image part.
-    assert trailing_assistant_text(
-        [{"role": "assistant", "content": [{"type": "image_url", "image_url": {}}]}]
-    ) is None
+    assert (
+        trailing_assistant_text(
+            [{"role": "assistant", "content": [{"type": "image_url", "image_url": {}}]}]
+        )
+        is None
+    )
     assert trailing_assistant_text([]) is None

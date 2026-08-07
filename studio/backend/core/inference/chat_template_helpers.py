@@ -2388,9 +2388,7 @@ def apply_chat_template_for_generation(
         return neutralize_control_markup_in_messages(msgs, None, _fallback_markup)
 
     # Anything not continuable renders as an ordinary new turn.
-    _continue_text = (
-        trailing_assistant_text(messages) if continue_final_message else None
-    )
+    _continue_text = trailing_assistant_text(messages) if continue_final_message else None
     _continuing = _continue_text is not None
     _boundary_kwargs = (
         {"add_generation_prompt": False, "continue_final_message": True}

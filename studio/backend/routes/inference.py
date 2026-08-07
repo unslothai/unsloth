@@ -285,30 +285,22 @@ def _continue_final_message(payload) -> bool:
     if role != "assistant":
         return False
     tool_calls = (
-        last.get("tool_calls") if isinstance(last, dict)
-        else getattr(last, "tool_calls", None)
+        last.get("tool_calls") if isinstance(last, dict) else getattr(last, "tool_calls", None)
     )
     if tool_calls:
         return False
-    content = (
-        last.get("content") if isinstance(last, dict)
-        else getattr(last, "content", None)
-    )
+    content = last.get("content") if isinstance(last, dict) else getattr(last, "content", None)
     if isinstance(content, str):
         return bool(content)
     if isinstance(content, list):
         # No resume point inside an image or tool-result part.
         texts = []
         for part in content:
-            part_type = (
-                part.get("type") if isinstance(part, dict)
-                else getattr(part, "type", None)
-            )
+            part_type = part.get("type") if isinstance(part, dict) else getattr(part, "type", None)
             if part_type != "text":
                 return False
             texts.append(
-                part.get("text") if isinstance(part, dict)
-                else getattr(part, "text", None)
+                part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
             )
         return any(texts)
     return False
