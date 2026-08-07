@@ -733,12 +733,33 @@ jobs:
           echo "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # ── Windows: verify signing CLI is accessible ──
+      # Fails closed. This used to print a message and exit 0 on both branches,
+      # so a missing or broken binary reported success and the failure only
+      # surfaced later, inside the Tauri bundling step, as a signing error with
+      # no obvious cause. It matters more now that the binary comes from a
+      # cache: a truncated or corrupt cache entry restores, skips the install
+      # above, and would otherwise sail through this check.
       - name: Verify trusted-signing-cli
         if: matrix.platform == 'windows-latest'
         run: |
+          $ErrorActionPreference = "Stop"
           Write-Output "PATH: $env:PATH"
-          Get-Command trusted-signing-cli -ErrorAction SilentlyContinue || Write-Output "trusted-signing-cli NOT in PATH"
-          trusted-signing-cli --version || Write-Output "trusted-signing-cli failed to run"
+
+          $cli = Get-Command trusted-signing-cli -ErrorAction SilentlyContinue
+          if (-not $cli) {
+            Write-Output "::error::trusted-signing-cli is not on PATH. If the cache restored a bad entry, bump the key in 'Restore trusted-signing-cli' to force a rebuild."
+            exit 1
+          }
+          Write-Output "resolved: $($cli.Source)"
+
+          # Call through the resolved path and read $LASTEXITCODE explicitly:
+          # a native binary that exits non-zero does not raise, so
+          # $ErrorActionPreference alone would not catch it.
+          & $cli.Source --version
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error::trusted-signing-cli is on PATH but exited $LASTEXITCODE. If the cache restored a bad entry, bump the key in 'Restore trusted-signing-cli' to force a rebuild."
+            exit 1
+          }
 
       # ── Linux: pin AppImage packaging toolchain ──
       - name: Pin thin AppImage toolchain
