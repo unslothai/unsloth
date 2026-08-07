@@ -277,6 +277,48 @@ _resolve_cuda_archs() {
     printf '%s' "$_archs"
 }
 
+# Reserved for the OS, and budgeted per compile job, both in MiB. An nvcc/hipcc
+# translation unit peaks near 2 GiB, so core count alone oversubscribes RAM.
+_LLAMA_BUILD_RESERVE_MB=2048
+_LLAMA_BUILD_MB_PER_JOB=2048
+
+# Echo the cmake -j count. Args: core count, total RAM MiB ("" = unreadable,
+# which keeps the old core-count behaviour). UNSLOTH_LLAMA_BUILD_JOBS wins.
+# Pure so the tests can drive it without faking hardware.
+_llama_jobs_for() {
+    local _cores=$1 _mem_mb=$2 _jobs
+    if [[ "${UNSLOTH_LLAMA_BUILD_JOBS:-}" =~ ^[0-9]+$ ]] && [ "$UNSLOTH_LLAMA_BUILD_JOBS" -ge 1 ]; then
+        printf '%s' "$UNSLOTH_LLAMA_BUILD_JOBS"
+        return 0
+    fi
+    if ! [[ "$_cores" =~ ^[0-9]+$ ]] || [ "$_cores" -lt 1 ]; then _cores=4; fi
+    if ! [[ "$_mem_mb" =~ ^[0-9]+$ ]]; then
+        printf '%s' "$_cores"
+        return 0
+    fi
+    _jobs=$(( (_mem_mb - _LLAMA_BUILD_RESERVE_MB) / _LLAMA_BUILD_MB_PER_JOB ))
+    [ "$_jobs" -lt 1 ] && _jobs=1
+    [ "$_jobs" -gt "$_cores" ] && _jobs=$_cores
+    printf '%s' "$_jobs"
+}
+
+# Total physical RAM in MiB; empty when it cannot be read.
+_total_ram_mb() {
+    local _bytes
+    if [ -r /proc/meminfo ]; then
+        awk '/^MemTotal:/ { printf "%d", $2 / 1024; exit }' /proc/meminfo
+    elif _bytes=$(sysctl -n hw.memsize 2>/dev/null); then
+        [[ "$_bytes" =~ ^[0-9]+$ ]] && printf '%d' "$(( _bytes / 1048576 ))"
+    fi
+    return 0
+}
+
+_llama_build_jobs() {
+    _llama_jobs_for \
+        "$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)" \
+        "$(_total_ram_mb)"
+}
+
 # Opt-in staged GPU smoke test after a source build (#5854 gap 2). Default off:
 # llama-server's first GPU forward pass JIT-compiles CUDA kernels and stalls
 # installs for minutes on Blackwell. Same env as install_llama_prebuilt.py.
@@ -2217,7 +2259,8 @@ else
 
             substep "$_BUILD_DESC..."
 
-            NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+            NCPU=$(_llama_build_jobs)
+            verbose_substep "parallel jobs: $NCPU (RAM-capped; UNSLOTH_LLAMA_BUILD_JOBS overrides)"
             CMAKE_GENERATOR_ARGS=""
             if command -v ninja &>/dev/null; then
                 CMAKE_GENERATOR_ARGS="-G Ninja"

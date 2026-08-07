@@ -599,6 +599,49 @@ function Get-NvccMaxArch {
     return $null
 }
 
+# Reserved for the OS, and budgeted per compile job, both in MB. An nvcc/hipcc
+# translation unit peaks near 2 GB, so core count alone oversubscribes RAM.
+# Keep in step with _LLAMA_BUILD_* in setup.sh.
+$LlamaBuildReserveMb = 2048
+$LlamaBuildMbPerJob = 2048
+
+# The cmake -j count. $TotalMb of 0 means RAM was unreadable, which keeps the
+# old core-count behaviour. UNSLOTH_LLAMA_BUILD_JOBS wins. Pure so the tests
+# can drive it without faking hardware.
+function Get-LlamaJobsFor {
+    param([int]$Cores, [long]$TotalMb)
+
+    $override = 0
+    if ($env:UNSLOTH_LLAMA_BUILD_JOBS -and
+        [int]::TryParse($env:UNSLOTH_LLAMA_BUILD_JOBS.Trim(), [ref]$override) -and $override -ge 1) {
+        return $override
+    }
+    if ($Cores -lt 1) { $Cores = 4 }
+    if ($TotalMb -le 0) { return $Cores }
+    $jobs = [int][Math]::Floor(($TotalMb - $LlamaBuildReserveMb) / $LlamaBuildMbPerJob)
+    if ($jobs -lt 1) { $jobs = 1 }
+    if ($jobs -gt $Cores) { $jobs = $Cores }
+    return $jobs
+}
+
+# Total physical RAM in MB; 0 when it cannot be read.
+function Get-TotalPhysicalMb {
+    try {
+        $bytes = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory
+        if ($bytes -gt 0) { return [long]($bytes / 1MB) }
+    } catch { }
+    try {
+        # TotalVisibleMemorySize is in KB and excludes hardware-reserved RAM.
+        $kb = (Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).TotalVisibleMemorySize
+        if ($kb -gt 0) { return [long]($kb / 1KB) }
+    } catch { }
+    return 0
+}
+
+function Get-LlamaBuildJobs {
+    return (Get-LlamaJobsFor -Cores ([Environment]::ProcessorCount) -TotalMb (Get-TotalPhysicalMb))
+}
+
 # Classify the physical NVIDIA inventory for a cu126 fallback: "cu126" when it covers
 # every GPU, "uncovered" for an incompatible mix, empty when no fallback is needed or the
 # inventory is unreadable. CUDA_VISIBLE_DEVICES is ignored because the wheel must support
@@ -5863,13 +5906,12 @@ if ($LocalLlamaCppLinked) {
     }
 
     # -- Step C: Build llama-server --
-    $NumCpu = [Environment]::ProcessorCount
-    if ($NumCpu -lt 1) { $NumCpu = 4 }
+    $NumCpu = Get-LlamaBuildJobs
 
     if ($BuildOk) {
         Write-Host ""
         Write-Host "--- cmake build (llama-server) ---" -ForegroundColor Cyan
-        Write-Host "   Parallel jobs: $NumCpu" -ForegroundColor Gray
+        Write-Host "   Parallel jobs: $NumCpu of $([Environment]::ProcessorCount) cores (RAM-capped; UNSLOTH_LLAMA_BUILD_JOBS overrides)" -ForegroundColor Gray
         Write-Host ""
 
         $output = cmake --build $BuildDir --config Release --target llama-server -j $NumCpu 2>&1 | Out-String
