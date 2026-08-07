@@ -595,27 +595,33 @@ def _wrap_sft_evaluate_cap(trainer_cls):
     def _cap(dataset, cap):
         names = getattr(dataset, "column_names", None) or ()
         if "input_ids" not in names:
-            return dataset          # raw text: prep tokenizes it with the cap
+            return dataset  # raw text: prep tokenizes it with the cap
         try:
             first = dataset[0]["input_ids"]
-            if len(first) <= cap and max(
-                    len(r) for r in dataset["input_ids"]) <= cap:
+            if len(first) <= cap and max(len(r) for r in dataset["input_ids"]) <= cap:
                 return dataset
-            per_token = [c for c in names
-                         if c in ("input_ids", "attention_mask", "labels",
-                                  "completion_mask", "assistant_masks",
-                                  "token_type_ids", "position_ids")]
-            return dataset.map(
-                lambda e: {c: e[c][:cap] for c in per_token})
+            per_token = [
+                c
+                for c in names
+                if c
+                in (
+                    "input_ids",
+                    "attention_mask",
+                    "labels",
+                    "completion_mask",
+                    "assistant_masks",
+                    "token_type_ids",
+                    "position_ids",
+                )
+            ]
+            return dataset.map(lambda e: {c: e[c][:cap] for c in per_token})
         except Exception:
-            return dataset          # never turn an eval call into a hard error
+            return dataset  # never turn an eval call into a hard error
 
     def wrapped(self, *args, **kwargs):
         cap = getattr(getattr(self, "args", None), "max_seq_length", None)
-        given = kwargs.get("eval_dataset",
-                           args[0] if args else None)
-        if (cap and given is not None
-                and getattr(self.args, "max_length", None) is None):
+        given = kwargs.get("eval_dataset", args[0] if args else None)
+        if cap and given is not None and getattr(self.args, "max_length", None) is None:
             if isinstance(given, dict):
                 capped = {k: _cap(v, cap) for k, v in given.items()}
             else:
@@ -2300,9 +2306,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         try:
             _wrap_sft_evaluate_cap(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
-            logger.info(
-                f"Unsloth: Could not wrap evaluate for {RLTrainer_name}: {e}"
-            )
+            logger.info(f"Unsloth: Could not wrap evaluate for {RLTrainer_name}: {e}")
 
     if trainer_file == "grpo_trainer":
         try:

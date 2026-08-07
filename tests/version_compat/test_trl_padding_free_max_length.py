@@ -987,7 +987,11 @@ def _stub_trainer_class():
     seen = {}
 
     class Stub:
-        def evaluate(self, eval_dataset = None, **kw):
+        def evaluate(
+            self,
+            eval_dataset = None,
+            **kw,
+        ):
             seen["ds"] = eval_dataset
 
     _wrap_sft_evaluate_cap(Stub)
@@ -1019,8 +1023,7 @@ def test_evaluate_caps_a_pretokenized_split_handed_over_later():
     got = seen["ds"]
     assert max(len(r) for r in got["input_ids"]) <= cap
     # The per-token sidecars move with `input_ids`, or the mask stops lining up.
-    assert all(len(a) == len(i) for a, i
-               in zip(got["attention_mask"], got["input_ids"]))
+    assert all(len(a) == len(i) for a, i in zip(got["attention_mask"], got["input_ids"]))
 
 
 def test_evaluate_leaves_a_split_alone_when_trl_still_holds_the_cap():
@@ -1052,8 +1055,7 @@ def test_evaluate_caps_every_split_of_a_dict():
     Stub, seen = _stub_trainer_class()
     stub = Stub()
     stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
-    stub.evaluate(eval_dataset = {"a": _tokenized_dataset(tok),
-                                  "b": _tokenized_dataset(tok)})
+    stub.evaluate(eval_dataset = {"a": _tokenized_dataset(tok), "b": _tokenized_dataset(tok)})
     for split in seen["ds"].values():
         assert max(len(r) for r in split["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
 
