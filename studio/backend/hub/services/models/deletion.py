@@ -19,7 +19,7 @@ from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.gguf import (
     extract_quant_label,
     extract_quant_token,
-    is_mtp_only_drafter_path as _is_mtp_only_drafter_path,
+    is_reclaimable_drafter_path as _is_reclaimable_drafter_path,
 )
 from hub.utils.hf_cache_state import (
     INCOMPLETE_SUFFIX,
@@ -217,12 +217,11 @@ def _delete_gguf_variant_from_repos(
         if matched and not sibling_active and not _has_remaining_main_gguf(target_repo):
             companion_matches = _repo_file_matches(
                 target_repo,
-                # Companions: mmproj and the MTP drafter -- downloaded with
-                # every variant, so the last variant's delete reclaims them.
-                # MTP only: DSpark is opt-in and in no variant plan, so Studio
-                # never fetched it and must not reclaim it.
+                # Companions: mmproj and the drafters Studio downloads (MTP with
+                # every variant, DSpark on opt-in). No main GGUF is left, so they
+                # cannot be launched; reclaim them with the last variant.
                 lambda name: _is_gguf_filename(name)
-                and (_is_mmproj_filename(name) or _is_mtp_only_drafter_path(name)),
+                and (_is_mmproj_filename(name) or _is_reclaimable_drafter_path(name)),
             )
             for snap, _blob, name in companion_matches:
                 try:

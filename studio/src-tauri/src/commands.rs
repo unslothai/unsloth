@@ -125,15 +125,6 @@ pub async fn check_install_status() -> bool {
         cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
     }
 
-    // Match the same AppImage env clearing used in process.rs and install.rs,
-    // otherwise the probe can fail due to bundled libs even when the install is fine.
-    #[cfg(target_os = "linux")]
-    if std::env::var_os("APPIMAGE").is_some() {
-        cmd.env_remove("LD_LIBRARY_PATH");
-        cmd.env_remove("PYTHONHOME");
-        cmd.env_remove("PYTHONPATH");
-    }
-
     // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
     // probe subprocesses must follow the same isolation as process.rs.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
@@ -682,7 +673,7 @@ mod tests {
             String::new()
         };
         format!(
-            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.3","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{ROOT_ID}"{owner}}}"#
+            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{ROOT_ID}"{owner}}}"#
         )
     }
 

@@ -38,10 +38,14 @@ ROOT_ROUTE = FRONTEND / "app/routes/__root.tsx"
 IMAGES_PAGE = FRONTEND / "features/images/images-page.tsx"
 VIDEO_PAGE = FRONTEND / "features/video/video-page.tsx"
 
+REMOTE_ACCESS_SECTION = FRONTEND / "features/settings/components/remote-access-section.tsx"
+PASSWORD_DIALOG = FRONTEND / "features/settings/components/change-password-dialog.tsx"
+GENERAL_TAB = FRONTEND / "features/settings/tabs/general-tab.tsx"
+
 CLIPBOARD_FILES = FRONTEND / "features/chat/utils/clipboard-files.ts"
 TAURI_CAPABILITIES = REPO / "studio/src-tauri/capabilities/default.json"
 CHAT_PAGE = FRONTEND / "features/chat/chat-page.tsx"
-TRAINING_SECTION = FRONTEND / "features/studio/sections/training-section.tsx"
+TRAINING_CONFIG_ACTIONS = FRONTEND / "features/studio/wizard/config-actions.tsx"
 MARKDOWN_TEXT = FRONTEND / "components/assistant-ui/markdown-text.tsx"
 IMAGE = FRONTEND / "components/assistant-ui/image.tsx"
 AUDIO_PLAYER = FRONTEND / "components/assistant-ui/audio-player.tsx"
@@ -59,8 +63,7 @@ def test_desktop_update_offer_remains_actionable_from_settings():
     assert "{appContent}" in provider[context_start:context_end]
     assert "appContent={" in provider
     assert "useContext(TauriUpdateContext)" in context
-    # Scope these: bare substrings also match setTimeout(checkForUpdate, 5000)
-    # and the installUpdate() reset.
+    # Scope these: bare substrings also match setTimeout(checkForUpdate, 5000) and installUpdate().
     assert "checkForUpdate," in hook.split("  return {", 1)[1]
     manual = hook.split("async function checkForUpdate()", 1)[1]
     assert "checkedRef.current = true;" in manual.split("try {", 1)[0]
@@ -124,8 +127,7 @@ def test_desktop_update_check_failures_are_retryable():
     assert "setCheckError(String(e));" in hook
     assert "update.checkError !== null" in settings
     assert 't("settings.about.update.retryCheck")' in settings
-    # The reason must reach the user without guessing that every failure is
-    # caused by their network connection.
+    # The reason must reach the user without guessing that every failure is a network problem.
     assert "description = update.checkError ?? label;" in settings
     assert 't("settings.about.update.desktopCheckFailedDescription")' not in settings
     assert "server returned HTTP {status}" in policy
@@ -209,7 +211,7 @@ def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
 
 def test_generated_download_buttons_use_the_native_save_boundary():
     helper = NATIVE_FILES.read_text(encoding = "utf-8")
-    training = TRAINING_SECTION.read_text(encoding = "utf-8")
+    training = TRAINING_CONFIG_ACTIONS.read_text(encoding = "utf-8")
     markdown = MARKDOWN_TEXT.read_text(encoding = "utf-8")
     image = IMAGE.read_text(encoding = "utf-8")
     audio = AUDIO_PLAYER.read_text(encoding = "utf-8")
@@ -217,7 +219,7 @@ def test_generated_download_buttons_use_the_native_save_boundary():
     assert "downloadFile(bytes, filename" in helper
     assert "browserUrlDownload(url, filename)" in helper
     assert "if (!isTauri)" in helper
-    assert "downloadFile(yamlStr, filename" in training
+    assert "downloadFile(yaml, filename" in training
     assert "downloadFile(text, filename" in markdown
     assert "fallbackExt" in markdown
     assert 'rust: "rs"' in markdown
@@ -323,6 +325,37 @@ def test_windows_browser_guard_runs_only_in_release_builds():
     assert before_call.rstrip().endswith("#[cfg(all(windows, not(debug_assertions)))]")
 
 
+def test_desktop_manages_the_remote_password_through_the_account_dialog():
+    section = REMOTE_ACCESS_SECTION.read_text(encoding = "utf-8")
+    dialog = PASSWORD_DIALOG.read_text(encoding = "utf-8")
+
+    row = section.split("function RemotePasswordRow", 1)[1].split(
+        "export function RemoteAccessSection", 1
+    )[0]
+    assert "if (!(isTauri && status)) {" in row
+    assert "initial={status.passwordPending}" in row
+    assert "<RemotePasswordRow status={status} onDone={refreshStatus} />" in section
+    assert "{isTauri ? null : (" in GENERAL_TAB.read_text(encoding = "utf-8")
+    # A password change rotates credentials outside the polling requests.
+    refresh = section.split("const refreshStatus = useCallback(", 1)[1].split("}, []);", 1)[0]
+    assert "mutationEpoch.current += 1;" in refresh
+    assert "setPollRevision(" in refresh
+    # Initial mode sends no current password; the web flow it serves keeps it.
+    body = dialog.split("function changePasswordBody", 1)[1].split("function dialogCopy", 1)[0]
+    assert '? [["new_password", nextPassword]]' in body
+    assert '["current_password", currentPassword],' in body
+    post = dialog.split("function postChangePassword", 1)[1].split(
+        "async function requestPasswordChange", 1
+    )[0]
+    assert '? "/api/auth/desktop-initial-password"' in post
+    assert ': "/api/auth/change-password",' in post
+    assert "{initial ? null : (" in dialog
+    assert "if (!initial && currentPassword.length < MIN_PASSWORD_LENGTH)" in dialog
+    submitted = dialog.split("async function submit", 1)[1].split("\n  }", 1)[0]
+    assert "storeAuthTokens(accessToken, refreshToken)" in submitted
+    assert "onDone?.()" in submitted
+
+
 def test_desktop_startup_waits_for_auth_without_intermediate_handoff():
     source = APP_PROVIDER.read_text(encoding = "utf-8")
 
@@ -373,8 +406,7 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     assert "<DesktopTitlebarNavigation" in source
     assert "const contentBorderLeft = pinned" in source
     assert ': "0px";' in source
-    # The curved transition and sidebar-colored backing are expanded-only;
-    # collapsed content is square and its divider spans the sidebar too.
+    # The curved transition and sidebar-colored backing are expanded-only.
     assert source.count("{showSidebarSurface && pinned && (") == 2
     assert (
         'className="pointer-events-none absolute top-full size-3 -translate-x-px bg-sidebar"'
@@ -411,7 +443,7 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert navigation.count('aria-label="Go back"') == 1
     assert navigation.count('aria-label="Go forward"') == 1
 
-    assert "inline-flex size-[33px] shrink-0" in navigation
+    assert "inline-flex size-[30px] shrink-0" in navigation
 
     assert navigation.count("onDoubleClick={stopTitlebarDrag}") == 3
     assert "maximized" not in navigation
@@ -427,7 +459,7 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert '"--studio-collapsed-chat-controls-inset": "188px"' in APP_PROVIDER.read_text(
         encoding = "utf-8"
     )
-    assert 'className="!size-[33px] rounded-[10px] text-muted-foreground"' in chat_page
+    assert 'className="!size-[30px] rounded-[10px] text-muted-foreground"' in chat_page
     assert 'aria-label="New chat"' in chat_page
     new_chat_click = chat_page.index("onClick={handleDesktopNewChat}")
     assert new_chat_click < chat_page.index("<ModelSelector", new_chat_click)

@@ -11,8 +11,8 @@
 # The build job stays on Linux; signed desktop builds remain in the manual
 # release workflow.
 #
-# A compile-only Windows job covers `#[cfg(windows)]` code. Linux cannot
-# cross-compile it because `ring` requires MSVC `lib.exe`.
+# A second job covers `#[cfg(windows)]` code, which Linux strips before type
+# checking and cannot cross-compile because `ring` requires MSVC `lib.exe`.
 
 name: Unsloth Tauri CI
 
@@ -58,8 +58,13 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
 
-      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
+          # Save only on main. This action defaults to saving on every ref, and
+          # a PR-scoped rust cache (550-840MB here) can only be restored by
+          # re-runs of that same PR while still counting against the 10GB
+          # per-repo budget, evicting main's copy that every PR can restore.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: studio/src-tauri -> target
 
       - name: Install pinned Tauri CLI (matches release-desktop.yml)
@@ -150,36 +155,59 @@ jobs:
           if-no-files-found: warn
           retention-days: 1
 
-  windows-check:
-    name: Tauri Windows type check (compile only)
+  # install.rs carries a Windows-only path normalizer for PowerShell 5.1. The
+  # job above is Linux, and `cfg(windows)` items are stripped before type
+  # checking, so nothing there compiles that code, let alone runs its tests.
+  # That is how the RemoteSigned regression in #7819 reached two draft bundles.
+  windows-unit-tests:
+    name: Rust unit tests (windows)
     runs-on: windows-latest
-    # A cold cache compiles both debug and release dependency trees.
+    # A cold cache compiles both the debug and the release dependency tree.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
 
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '24'
+
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
 
-      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2.9.1
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
+          # Save only on main. This action defaults to saving on every ref, and
+          # a PR-scoped rust cache (550-840MB here) can only be restored by
+          # re-runs of that same PR while still counting against the 10GB
+          # per-repo budget, evicting main's copy that every PR can restore.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: studio/src-tauri -> target
-          key: windows-check
 
-      - name: Placeholder frontend dist
-        # `tauri::generate_context!` only needs `frontendDist` to exist. The Linux
-        # job builds and verifies the real frontend output.
-        shell: bash
+      # Windows runners expose `python`, not `python3`, so pin an interpreter
+      # the way every other windows job here does.
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Lockfile supply-chain audit (pre-install scan)
+        run: python scripts/lockfile_supply_chain_audit.py
+
+      # tauri-build resolves frontendDist at compile time, so dist/ must exist
+      # before cargo test, exactly as in the Linux job.
+      - name: Frontend build (npm ci, vite)
+        working-directory: studio/frontend
         run: |
-          mkdir -p studio/frontend/dist
-          echo '<!doctype html><title>ci</title>' > studio/frontend/dist/index.html
+          npm ci --no-fund --no-audit
+          npm run build
 
-      - name: cargo check (Windows)
+      - name: Rust unit tests (studio/src-tauri)
         working-directory: studio/src-tauri
-        # Check all targets and both profiles because Windows paths differ under
-        # `debug_assertions`. Bash ensures either Cargo failure stops the step.
-        shell: bash
-        run: |
-          cargo check --all-targets
-          cargo check --all-targets --release
+        run: cargo test --no-fail-fast
+
+      # `cargo test` builds only the debug profile, and the browser guard is
+      # installed under `not(debug_assertions)`, so nothing above compiles its
+      # call site. Check the release profile so that path cannot rot.
+      - name: Rust release type check (studio/src-tauri)
+        working-directory: studio/src-tauri
+        run: cargo check --all-targets --release

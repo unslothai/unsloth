@@ -25,16 +25,16 @@ use simplelog::{
     CombinedLogger, Config, LevelFilter, SharedLogger, TermLogger, TerminalMode, WriteLogger,
 };
 use std::fs;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
-/// Serializes the exit paths that must reap the backend: the tray "Quit" item,
-/// the Unix termination signal listener, and `RunEvent::Exit`. Exactly one path
-/// runs cleanup; the others block until it is done, so the process never exits
-/// out from under a cleanup that is still killing the backend tree.
+/// Serializes the exit paths that reap the backend: `request_quit` (tray "Quit" and,
+/// outside macOS, the close button), the Unix signal listener, and `RunEvent::Exit`.
+/// Exactly one runs cleanup; the others block, so the process never exits mid-reap.
 static TERMINATION_CLEANUP: Once = Once::new();
 
 #[tauri::command]
@@ -193,7 +193,7 @@ fn setup_windows_browser_guards(app: &tauri::App) -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-/// A Tauri quit never fires beforeunload, so the frontend mirrors run state here.
+/// A Tauri quit never fires beforeunload, so the frontend mirrors quit protection here.
 pub type TrainingActivityState = std::sync::Arc<std::sync::Mutex<bool>>;
 
 fn new_training_activity_state() -> TrainingActivityState {
@@ -207,7 +207,8 @@ fn set_training_active(state: tauri::State<'_, TrainingActivityState>, active: b
     }
 }
 
-/// Ask before quitting mid-training (true to proceed). Tray Quit only, as below.
+/// Ask before quitting while training is starting or active (true to proceed).
+/// request_quit only, as below.
 fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -219,8 +220,8 @@ fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
     }
     app.dialog()
         .message(
-            "Training is still running. Quitting now stops the run and the \
-             progress since the last checkpoint is lost.",
+            "Training is starting or still running. Quitting now can stop the \
+             run and lose progress since the last checkpoint.",
         )
         .kind(MessageDialogKind::Warning)
         .title("Training in progress")
@@ -231,8 +232,96 @@ fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
         .blocking_show()
 }
 
+/// Renderer-only activity, mirrored here for the same reason: Hub downloads, which the
+/// backend runs but only the frontend tracks, and the Tauri shell self-update, which
+/// `update::is_update_running` stops covering once `downloadAndInstall` takes over.
+#[derive(Default)]
+pub struct RendererActivity {
+    pub downloads: bool,
+    pub shell_update: bool,
+}
+
+pub type RendererActivityState = std::sync::Arc<std::sync::Mutex<RendererActivity>>;
+
+fn new_renderer_activity_state() -> RendererActivityState {
+    std::sync::Arc::new(std::sync::Mutex::new(RendererActivity::default()))
+}
+
+/// The command body without the `tauri::State` wrapper, so tests can drive it directly.
+fn apply_renderer_activity(state: &RendererActivityState, kind: &str, active: bool) {
+    if let Ok(mut activity) = state.lock() {
+        match kind {
+            "downloads" => activity.downloads = active,
+            "shell_update" => activity.shell_update = active,
+            // An unknown kind is a renderer/Rust mismatch, never a reason to flip a flag.
+            _ => {}
+        }
+    }
+}
+
+#[tauri::command]
+fn set_renderer_activity(state: tauri::State<'_, RendererActivityState>, kind: &str, active: bool) {
+    apply_renderer_activity(state.inner(), kind, active);
+}
+
+/// Ask before quitting mid shell update (true to proceed). request_quit only, as below.
+fn confirm_quit_during_shell_update(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    let Some(state) = app.try_state::<RendererActivityState>() else {
+        return true;
+    };
+    if !state
+        .lock()
+        .map(|activity| activity.shell_update)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    app.dialog()
+        .message(
+            "The app update is still installing. Quitting now interrupts the \
+             installer part-way and can leave the app half-updated.",
+        )
+        .kind(MessageDialogKind::Warning)
+        .title("Update in progress")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Quit anyway".to_string(),
+            "Keep updating".to_string(),
+        ))
+        .blocking_show()
+}
+
+/// Ask before quitting mid-download (true to proceed). request_quit only, as below.
+fn confirm_quit_during_downloads(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    let Some(state) = app.try_state::<RendererActivityState>() else {
+        return true;
+    };
+    if !state
+        .lock()
+        .map(|activity| activity.downloads)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    app.dialog()
+        .message(
+            "Downloads are still running. Quitting now stops the backend and \
+             cancels the downloads in progress.",
+        )
+        .kind(MessageDialogKind::Warning)
+        .title("Downloads in progress")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Quit anyway".to_string(),
+            "Keep downloading".to_string(),
+        ))
+        .blocking_show()
+}
+
 /// Ask before quitting mid-install (true to proceed): `cleanup_child_processes` SIGTERMs the
-/// installer, leaving a venv that looks healthy but cannot start. Tray Quit only, since
+/// installer, leaving a venv that looks healthy but cannot start. request_quit only, since
 /// RunEvent::Exit must never block on a dialog nobody can answer.
 fn confirm_quit_during_install(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
@@ -384,6 +473,59 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+/// One quit confirmation at a time: the dialogs are unparented, so repeat close
+/// presses would stack another one.
+static QUIT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// Clears the flag on cancel or panic, so a quit cannot leave the close button inert.
+struct QuitGuard;
+
+impl Drop for QuitGuard {
+    fn drop(&mut self) {
+        QUIT_IN_PROGRESS.store(false, Ordering::SeqCst);
+    }
+}
+
+fn begin_quit() -> Option<QuitGuard> {
+    (!QUIT_IN_PROGRESS.swap(true, Ordering::SeqCst)).then_some(QuitGuard)
+}
+
+/// Confirm, reap the backend, then exit. Off the caller's thread because the confirmations
+/// block, and never exit first: that would orphan the backend tree.
+fn request_quit(app: &tauri::AppHandle) {
+    let Some(guard) = begin_quit() else {
+        info!("Quit already awaiting confirmation, ignoring the repeat request");
+        return;
+    };
+    let app = app.clone();
+    // The guard moves into the closure, so a failed spawn drops it and the next request retries.
+    let spawned = std::thread::Builder::new()
+        .name("request-quit".to_string())
+        .spawn(move || {
+            let _guard = guard;
+            if !confirm_quit_during_install(&app) {
+                return;
+            }
+            if !confirm_quit_during_update(&app) {
+                return;
+            }
+            if !confirm_quit_during_shell_update(&app) {
+                return;
+            }
+            if !confirm_quit_during_training(&app) {
+                return;
+            }
+            if !confirm_quit_during_downloads(&app) {
+                return;
+            }
+            cleanup_child_processes(&app);
+            app.exit(0);
+        });
+    if let Err(error) = spawned {
+        warn!("Could not spawn the quit thread: {error}");
+    }
+}
+
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let open = MenuItemBuilder::with_id("open", "Open Unsloth").build(app)?;
     let toggle = MenuItemBuilder::with_id("toggle", "Start/Stop Server").build(app)?;
@@ -401,26 +543,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             "toggle" => {
                 let _ = app.emit("tray-toggle-server", ());
             }
-            "quit" => {
-                // Run cleanup off the menu callback, but only exit after the
-                // backend tree has been reaped. Exiting first can terminate this
-                // process while a detached cleanup thread is still waiting,
-                // leaving the backend orphaned.
-                let app_handle = app.clone();
-                std::thread::spawn(move || {
-                    if !confirm_quit_during_install(&app_handle) {
-                        return;
-                    }
-                    if !confirm_quit_during_update(&app_handle) {
-                        return;
-                    }
-                    if !confirm_quit_during_training(&app_handle) {
-                        return;
-                    }
-                    cleanup_child_processes(&app_handle);
-                    app_handle.exit(0);
-                });
-            }
+            "quit" => request_quit(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -468,12 +591,14 @@ fn main() {
         .manage(diagnostics::new_diagnostics_state())
         .manage(install::new_install_state())
         .manage(new_training_activity_state())
+        .manage(new_renderer_activity_state())
         .manage(native_intents::new_native_intake_state())
         .manage(new_backend_state())
         .manage(process::new_shutdown_flag())
         .manage(update::new_update_state())
         .invoke_handler(tauri::generate_handler![
             set_training_active,
+            set_renderer_activity,
             app_layout::has_initialized_app_window_layout,
             app_layout::mark_app_window_layout_initialized,
             app_layout::reset_app_window_layout_initialized,
@@ -500,9 +625,11 @@ fn main() {
             native_clipboard::read_native_clipboard_png,
             native_file_dialogs::save_native_file,
             native_file_dialogs::pick_native_chat_import,
+            native_file_dialogs::pick_native_training_config,
             native_intents::drain_native_intents,
             native_intents::register_native_model_path,
             native_intents::register_native_attachment_path,
+            native_intents::register_native_dataset_path,
             native_intents::pick_native_model,
             native_intents::pick_hugging_face_cache_dir,
             native_intents::consume_native_path_token,
@@ -530,21 +657,23 @@ fn main() {
         })
         .on_window_event(|window, event| {
             // Record real drops here, in Rust, so the renderer can only register paths the
-            // OS actually handed us (see native_intents::register_native_attachment_path).
+            // OS actually handed to the native intake commands.
             if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
                 window
                     .state::<native_intents::NativeIntakeState>()
                     .note_dropped_paths(paths);
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Hide window instead of closing, because this is a tray app.
-                // Processes keep running so the backend stays available.
-                // Full cleanup happens via:
-                //   - Tray "Quit" menu item (explicit user action)
-                //   - The Unix termination signal listener (logout, kill, Ctrl-C)
-                //   - RunEvent::Exit, for framework-driven exits
-                let _ = window.hide();
+                // Never close directly: the only window, so closing exits before the reap.
                 api.prevent_close();
+                if cfg!(target_os = "macos") {
+                    // Closing a window leaves the app in the Dock; Reopen restores it.
+                    let _ = window.hide();
+                } else {
+                    // Elsewhere the close button means quit, not hiding what the user
+                    // believes they just closed.
+                    request_quit(window.app_handle());
+                }
             }
         })
         .build(tauri::generate_context!())
@@ -564,4 +693,84 @@ fn main() {
             }
             _ => {}
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // One test, not three: `QUIT_IN_PROGRESS` is process-global and cargo tests run in parallel.
+    #[test]
+    fn quit_guard_admits_one_quit_and_always_re_arms() {
+        assert!(!QUIT_IN_PROGRESS.load(Ordering::SeqCst));
+
+        {
+            let _first = begin_quit().expect("the first quit must be admitted");
+            assert!(
+                begin_quit().is_none(),
+                "a repeat close must not stack a second confirmation"
+            );
+        }
+
+        // Cancelling drops the guard, which re-arms the close button.
+        {
+            let _second = begin_quit().expect("cancelling must re-arm the close button");
+        }
+
+        let unwound = std::panic::catch_unwind(|| {
+            let _guard = begin_quit().expect("admitted");
+            panic!("quit thread unwound");
+        });
+        assert!(unwound.is_err());
+        assert!(
+            begin_quit().is_some(),
+            "a panicking quit must release the guard"
+        );
+    }
+
+    fn renderer_activity(state: &RendererActivityState) -> (bool, bool) {
+        let activity = state.lock().expect("the activity mutex must not be poisoned");
+        (activity.downloads, activity.shell_update)
+    }
+
+    #[test]
+    fn renderer_activity_starts_clear_and_round_trips_each_kind() {
+        let state = new_renderer_activity_state();
+        assert_eq!(renderer_activity(&state), (false, false));
+
+        apply_renderer_activity(&state, "downloads", true);
+        assert_eq!(renderer_activity(&state), (true, false));
+        apply_renderer_activity(&state, "downloads", false);
+        assert_eq!(renderer_activity(&state), (false, false));
+
+        apply_renderer_activity(&state, "shell_update", true);
+        assert_eq!(renderer_activity(&state), (false, true));
+        apply_renderer_activity(&state, "shell_update", false);
+        assert_eq!(renderer_activity(&state), (false, false));
+    }
+
+    #[test]
+    fn renderer_activity_kinds_are_independent() {
+        let state = new_renderer_activity_state();
+
+        apply_renderer_activity(&state, "downloads", true);
+        apply_renderer_activity(&state, "shell_update", true);
+        assert_eq!(renderer_activity(&state), (true, true));
+
+        // Downloads finishing must not clear an update that is still installing.
+        apply_renderer_activity(&state, "downloads", false);
+        assert_eq!(renderer_activity(&state), (false, true));
+    }
+
+    #[test]
+    fn renderer_activity_ignores_an_unknown_kind() {
+        let state = new_renderer_activity_state();
+        apply_renderer_activity(&state, "shell_update", true);
+
+        // A renderer/Rust mismatch must never flip a flag it did not name.
+        apply_renderer_activity(&state, "training", true);
+        apply_renderer_activity(&state, "", false);
+        apply_renderer_activity(&state, "Downloads", true);
+        assert_eq!(renderer_activity(&state), (false, true));
+    }
 }
