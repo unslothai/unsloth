@@ -1319,6 +1319,18 @@ jobs:
         with:
           egress-policy: audit
 
+      # This job publishes artifacts built elsewhere, so it historically needed no
+      # source tree. The VirusTotal step runs a repo script, so it does now. Sparse:
+      # a full checkout of this repo to fetch one file would be wasteful, and a
+      # missing script would be swallowed by that step's continue-on-error and
+      # publish the release with no scan at all.
+      - name: Check out the scan script
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/virustotal_scan.py
+          sparse-checkout-cone-mode: false
+
       - name: Download signed release assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
@@ -1378,6 +1390,12 @@ jobs:
           VT_API_KEY: ${{ secrets.VIRUS_TOTAL_API_TOKEN }}
         run: |
           set -euo pipefail
+          # continue-on-error means a silent failure here would publish an unscanned
+          # release with only a terse "no summary" note, so name the cause loudly.
+          if [ ! -f scripts/virustotal_scan.py ]; then
+            echo "::error::scripts/virustotal_scan.py is missing; the checkout step in this job must provide it"
+            exit 1
+          fi
           python3 scripts/virustotal_scan.py \
             "$RUNNER_TEMP/desktop-release-assets" \
             --output-markdown "$RUNNER_TEMP/virustotal-summary.md"

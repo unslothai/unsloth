@@ -47,6 +47,9 @@ DEFAULT_TIMEOUT_SECONDS = 1500.0
 DEFAULT_FAIL_THRESHOLD = 0
 
 _MAX_ATTEMPTS = 4
+# A failed upload means fetching a fresh signed URL, so this is deliberately
+# small: each retry re-sends 40+ MB and spends two more requests of quota.
+_UPLOAD_ATTEMPTS = 2
 _SOCKET_TIMEOUT = 300.0
 
 # Transport contract: (method, url, headers, body) -> (status_code, response_bytes).
@@ -243,11 +246,21 @@ class VirusTotalClient:
         body: bytes | None = None,
         extra_headers: dict[str, str] | None = None,
         allow_status: Sequence[int] = (),
+        max_attempts: int = _MAX_ATTEMPTS,
+        deadline: float | None = None,
     ) -> tuple[int, object]:
         """Issue one API call, retrying 429s and transient network errors.
 
         Returns (status, decoded_json_or_None). Raises RuntimeError once the retry
         budget is spent so the caller can degrade to a warning row.
+
+        `max_attempts = 1` disables retrying, which is mandatory for a POST to a
+        single-use signed upload URL: replaying it can only ever be rejected.
+
+        `deadline` is checked BEFORE each attempt. One attempt can block for the
+        full socket timeout, so a loop that only checks afterwards can overrun the
+        caller's budget by minutes and get the whole step killed before it writes
+        a summary.
         """
         headers = {"x-apikey": self._api_key, "accept": "application/json"}
         if extra_headers:
@@ -255,7 +268,11 @@ class VirusTotalClient:
 
         backoff = self._request_interval if self._request_interval > 0 else 1.0
         last_error = ""
-        for attempt in range(1, _MAX_ATTEMPTS + 1):
+        for attempt in range(1, max_attempts + 1):
+            if deadline is not None and self._clock() >= deadline:
+                raise TimeoutError(
+                    f"deadline reached before {method} {_redact_url(url)}"
+                )
             self._throttle()
             try:
                 status, payload = self._transport(method, url, headers, body)
@@ -268,12 +285,12 @@ class VirusTotalClient:
             if status == 429:
                 # Quota or minute-rate exhaustion. Exponential backoff, then retry.
                 last_error = "429 rate limited"
-                if attempt < _MAX_ATTEMPTS:
+                if attempt < max_attempts:
                     self._sleep(backoff * (2 ** (attempt - 1)))
                 continue
             if status == 0 or status >= 500:
                 last_error = last_error or f"HTTP {status}"
-                if attempt < _MAX_ATTEMPTS:
+                if attempt < max_attempts:
                     self._sleep(backoff * (2 ** (attempt - 1)))
                 continue
             if status >= 400 and status not in allow_status:
@@ -287,58 +304,89 @@ class VirusTotalClient:
                 return status, None
 
         raise RuntimeError(
-            f"VirusTotal request failed after {_MAX_ATTEMPTS} attempts: {last_error}"
+            f"VirusTotal request failed after {max_attempts} attempt(s): {last_error}"
         )
 
-    def lookup_hash(self, sha256: str) -> object | None:
+    def lookup_hash(self, sha256: str, deadline: float | None = None) -> object | None:
         """Return the existing file report, or None when VirusTotal has never seen it.
 
         Doing this first is both a quota saving and a disclosure saving: a bundle that
         VirusTotal already holds gains nothing from being uploaded again.
         """
-        status, payload = self.request("GET", f"{API_ROOT}/files/{sha256}", allow_status = (404,))
+        status, payload = self.request(
+            "GET",
+            f"{API_ROOT}/files/{sha256}",
+            allow_status = (404,),
+            deadline = deadline,
+        )
         if status == 404:
             return None
         return payload
 
-    def upload(self, path: Path) -> str:
+    def upload(self, path: Path, deadline: float | None = None) -> str:
         """Upload via the large-file flow and return the analysis id.
 
         Every desktop bundle is 41-46 MB, which is over the 32 MB cap on
         `POST /files`, so the signed upload URL is the only path that works here.
-        Each of those URLs is single use, hence one fetch per file.
-        """
-        _, payload = self.request("GET", f"{API_ROOT}/files/upload_url")
-        upload_url = payload.get("data") if isinstance(payload, dict) else None
-        if not isinstance(upload_url, str) or not upload_url:
-            raise RuntimeError("VirusTotal did not return an upload URL")
-        # Mask before the URL is ever used, so anything that later echoes it -- a
-        # traceback, a future debug print, a library error string -- is scrubbed.
-        _mask_in_actions(upload_url)
 
+        Each signed URL is SINGLE USE, so the POST is issued with retries disabled.
+        Replaying one after, say, the response body failed to read would be rejected
+        no matter how many times we tried, and would report the asset as unavailable
+        while an analysis was in fact already running. Retrying instead means going
+        back for a fresh URL, which is what the loop below does.
+        """
+        attempts = max(1, _UPLOAD_ATTEMPTS)
+        last_error: Exception | None = None
         body, content_type = _build_multipart(path)
-        _, payload = self.request(
-            "POST",
-            upload_url,
-            body = body,
-            extra_headers = {"content-type": content_type},
-        )
-        analysis_id = None
-        if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
-            analysis_id = payload["data"].get("id")
-        if not isinstance(analysis_id, str) or not analysis_id:
-            raise RuntimeError("VirusTotal upload did not return an analysis id")
-        return analysis_id
+
+        for attempt in range(1, attempts + 1):
+            _, payload = self.request("GET", f"{API_ROOT}/files/upload_url", deadline = deadline)
+            upload_url = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(upload_url, str) or not upload_url:
+                raise RuntimeError("VirusTotal did not return an upload URL")
+            # Mask before the URL is ever used, so anything that later echoes it -- a
+            # traceback, a future debug print, a library error string -- is scrubbed.
+            _mask_in_actions(upload_url)
+
+            try:
+                _, payload = self.request(
+                    "POST",
+                    upload_url,
+                    body = body,
+                    extra_headers = {"content-type": content_type},
+                    max_attempts = 1,
+                    deadline = deadline,
+                )
+            except TimeoutError:
+                raise
+            except Exception as error:
+                last_error = error
+                if attempt < attempts:
+                    continue
+                raise
+
+            analysis_id = None
+            if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
+                analysis_id = payload["data"].get("id")
+            if not isinstance(analysis_id, str) or not analysis_id:
+                raise RuntimeError("VirusTotal upload did not return an analysis id")
+            return analysis_id
+
+        raise RuntimeError(f"VirusTotal upload failed after {attempts} attempt(s): {last_error}")
 
     def wait_for_analysis(self, analysis_id: str, deadline: float) -> object:
         """Poll until the analysis completes or the caller's deadline passes."""
         while True:
-            _, payload = self.request("GET", f"{API_ROOT}/analyses/{analysis_id}")
+            # Checked inside request() too, but raising the analysis-specific message
+            # here keeps the summary row readable.
+            if self._clock() >= deadline:
+                raise TimeoutError(f"analysis {analysis_id} did not complete before the deadline")
+            _, payload = self.request(
+                "GET", f"{API_ROOT}/analyses/{analysis_id}", deadline = deadline
+            )
             attributes = _attributes(payload)
             if attributes.get("status") == "completed":
                 return payload
-            if self._clock() >= deadline:
-                raise TimeoutError(f"analysis {analysis_id} did not complete before the deadline")
             if self._request_interval <= 0:
                 # With throttling disabled (premium key) the loop would otherwise spin.
                 self._sleep(1.0)
@@ -392,7 +440,7 @@ def scan_file(client: VirusTotalClient, path: Path, deadline: float) -> FileRepo
     report.sha256 = sha256_of(path)
 
     try:
-        existing = client.lookup_hash(report.sha256)
+        existing = client.lookup_hash(report.sha256, deadline = deadline)
         if existing is not None:
             attributes = _attributes(existing)
             report.source = "known to VirusTotal (no upload)"
@@ -400,7 +448,7 @@ def scan_file(client: VirusTotalClient, path: Path, deadline: float) -> FileRepo
             report.detections = parse_detections(attributes.get("last_analysis_results"))
             return report
 
-        analysis_id = client.upload(path)
+        analysis_id = client.upload(path, deadline = deadline)
         attributes = _attributes(client.wait_for_analysis(analysis_id, deadline))
         report.source = "uploaded"
         report.stats = parse_stats(attributes.get("stats"))

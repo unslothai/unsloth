@@ -287,6 +287,109 @@ class TestSignedUrlMasking:
         assert capsys.readouterr().out == ""
 
 
+class TestSingleUseUploadUrl:
+    """A signed upload URL is single use, so replaying one can only ever be
+    rejected. A failed upload must go back for a fresh URL instead."""
+
+    def test_upload_post_is_not_retried_on_the_same_url(self, tmp_path):
+        bundle = tmp_path / "big.exe"
+        bundle.write_bytes(b"payload")
+        seen_upload_urls = []
+
+        class Transport:
+            def __init__(self):
+                self.posts = 0
+
+            def __call__(self, method, url, headers, body):
+                if url.endswith("/files/upload_url"):
+                    token = f"https://up.example/{len(seen_upload_urls)}"
+                    seen_upload_urls.append(token)
+                    return 200, b'{"data": "' + token.encode() + b'"}'
+                self.posts += 1
+                if self.posts == 1:
+                    return 500, b""  # server-side blip on the first signed URL
+                return 200, b'{"data": {"id": "an-2"}}'
+
+        transport = Transport()
+        client = vt.VirusTotalClient(
+            "k", transport = transport, request_interval = 0.0, sleep = lambda _s: None
+        )
+        assert client.upload(bundle) == "an-2"
+        # Two distinct signed URLs were fetched: the failed POST was not replayed.
+        assert len(seen_upload_urls) == 2
+        assert transport.posts == 2
+
+    def test_max_attempts_one_disables_retry(self, tmp_path):
+        calls = []
+
+        def transport(method, url, headers, body):
+            calls.append(url)
+            return 500, b""
+
+        client = vt.VirusTotalClient(
+            "k", transport = transport, request_interval = 0.0, sleep = lambda _s: None
+        )
+        with pytest.raises(RuntimeError):
+            client.request("POST", "https://up.example/x", max_attempts = 1)
+        assert len(calls) == 1
+
+
+class TestDeadlineEnforcement:
+    """One attempt can block for the full socket timeout, so the deadline has to be
+    checked BEFORE a request, not after, or the step timeout kills the process
+    before any summary is written."""
+
+    def test_request_checks_deadline_before_issuing(self):
+        calls = []
+
+        def transport(method, url, headers, body):
+            calls.append(url)
+            return 200, b"{}"
+
+        client = vt.VirusTotalClient(
+            "k", transport = transport, request_interval = 0.0,
+            sleep = lambda _s: None, clock = lambda: 1000.0,
+        )
+        with pytest.raises(TimeoutError):
+            client.request("GET", "https://api.example/x", deadline = 999.0)
+        assert calls == []
+
+    def test_wait_for_analysis_stops_at_the_deadline(self):
+        def transport(method, url, headers, body):
+            return 200, b'{"data": {"attributes": {"status": "queued"}}}'
+
+        now = [0.0]
+        client = vt.VirusTotalClient(
+            "k", transport = transport, request_interval = 0.0,
+            sleep = lambda _s: None, clock = lambda: now[0],
+        )
+        with pytest.raises(TimeoutError):
+            now[0] = 100.0
+            client.wait_for_analysis("an-1", deadline = 50.0)
+
+    def test_scan_file_reports_a_timeout_row_rather_than_raising(self, tmp_path):
+        bundle = tmp_path / "a.exe"
+        bundle.write_bytes(b"payload")
+        client = vt.VirusTotalClient(
+            "k", transport = lambda *a: (200, b"{}"), request_interval = 0.0,
+            sleep = lambda _s: None, clock = lambda: 1000.0,
+        )
+        report = vt.scan_file(client, bundle, deadline = 0.0)
+        assert report.source == "timed out"
+        assert report.note
+
+    def test_summary_is_still_written_when_every_asset_times_out(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(vt.API_KEY_ENV, "k")
+        (tmp_path / "a.exe").write_bytes(b"x")
+        summary = tmp_path / "s.md"
+        rc = vt.main([
+            str(tmp_path), "--output-markdown", str(summary),
+            "--timeout-seconds", "0", "--request-interval", "0",
+        ])
+        assert rc == 0
+        assert "VirusTotal pre-flight scan" in summary.read_text()
+
+
 class TestRenderMarkdown:
     def test_advisory_footer_when_threshold_disabled(self):
         text = vt.render_markdown(
