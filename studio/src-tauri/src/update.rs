@@ -52,7 +52,11 @@ fn build_update_command(bin: &std::path::Path) -> Result<Command, String> {
         let mut cmd = Command::new(python);
         // Isolated mode prevents a project-local unsloth_cli module or an
         // inherited Python search path from shadowing the managed package.
-        cmd.args(["-I", "-c", WINDOWS_CLI_ENTRYPOINT, "studio", "update"]);
+        //
+        // -X utf8, not PYTHONUTF8: -I implies -E, so this process ignores every
+        // PYTHON* variable and its own output would reach read_lossy_lines in
+        // the locale encoding. The env vars still apply to descendants.
+        cmd.args(["-X", "utf8", "-I", "-c", WINDOWS_CLI_ENTRYPOINT, "studio", "update"]);
         cmd.env_remove("PYTHONHOME");
         cmd.env_remove("PYTHONPATH");
         Ok(cmd)
@@ -85,13 +89,8 @@ fn spawn_update(
     let mut cmd = build_update_command(bin)?;
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    // AppImage sets LD_LIBRARY_PATH to its bundled libs, which breaks Python
     #[cfg(target_os = "linux")]
-    if std::env::var_os("APPIMAGE").is_some() {
-        cmd.env_remove("LD_LIBRARY_PATH");
-        cmd.env_remove("PYTHONHOME");
-        cmd.env_remove("PYTHONPATH");
-    }
+    crate::process::scrub_appimage_python_env(&mut cmd);
 
     // Tauri manages the legacy root; scrub so 'unsloth studio update' targets
     // the same install the desktop app uses, not an inherited custom root.
@@ -101,6 +100,16 @@ fn spawn_update(
     // desktop bundle so it skips re-creating CLI launchers/.app/.desktop
     // shortcuts (Tauri owns its own bundle entries).
     cmd.env("UNSLOTH_TAURI_UPDATE", "1");
+    #[cfg(windows)]
+    cmd.env(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
+
+    // read_lossy_lines decodes as UTF-8, and here the child is Python itself,
+    // which otherwise encodes redirected streams with the locale code page.
+    #[cfg(windows)]
+    {
+        cmd.env("PYTHONUTF8", "1");
+        cmd.env("PYTHONIOENCODING", "utf-8");
+    }
 
     #[cfg(windows)]
     let mut child: Box<dyn ChildWrapper + Send> = {
@@ -213,7 +222,7 @@ fn wait_for_exit(state: &UpdateState) -> Result<(ExitStatus, bool), String> {
                     return Err(format!("Error waiting for update: {}", e));
                 }
             },
-            None if intentional => return Err("Update stopped.".to_string()),
+            None if intentional => return Err(UPDATE_STOPPED.to_string()),
             None => return Err("Update process disappeared unexpectedly.".to_string()),
         }
 
@@ -281,33 +290,27 @@ fn run_backend_update_with_terminal_events(
     };
     let _ = app.emit(progress_event, "Starting backend update...");
 
-    let (stdout, stderr) = match spawn_update(&bin, &state) {
-        Ok(handles) => handles,
-        Err(msg) => {
-            diagnostics::finish_attempt(
-                &diagnostics,
-                &attempt,
-                None,
-                false,
-                Some(format!("spawn_update: {msg}")),
-            );
-            clear_current_attempt(&state);
-            return Err(msg);
-        }
-    };
-    let threads = stream_output(
-        &app,
-        progress_event,
-        diagnostics.clone(),
-        attempt.clone(),
-        stdout,
-        stderr,
-    );
+    // Update mutates the managed environment for its whole lifetime. This function
+    // is synchronous, so the thread-owned Win32 mutex never crosses an await.
+    let result = crate::process::with_studio_runtime_launch_guard(|| {
+        crate::process::ensure_managed_environment_is_idle(&bin)?;
+        let (stdout, stderr) =
+            spawn_update(&bin, &state).map_err(|msg| format!("spawn_update: {msg}"))?;
+        let threads = stream_output(
+            &app,
+            progress_event,
+            diagnostics.clone(),
+            attempt.clone(),
+            stdout,
+            stderr,
+        );
 
-    let result = wait_for_exit(&state);
-    for handle in threads {
-        let _ = handle.join();
-    }
+        let result = wait_for_exit(&state);
+        for handle in threads {
+            let _ = handle.join();
+        }
+        result
+    });
 
     match result {
         Ok((status, _)) if status.success() => {
@@ -331,11 +334,11 @@ fn run_backend_update_with_terminal_events(
                 &attempt,
                 Some(status.to_string()),
                 true,
-                Some("Update stopped.".to_string()),
+                Some(UPDATE_STOPPED.to_string()),
             );
             clear_current_attempt(&state);
             info!("[update] Update stopped intentionally");
-            Err("Update stopped.".to_string())
+            Err(UPDATE_STOPPED.to_string())
         }
         Ok((status, intentional)) => {
             let code = status.code().unwrap_or(-1);
@@ -372,6 +375,13 @@ fn clear_current_attempt(state: &UpdateState) {
     }
 }
 
+pub fn is_update_running(state: &UpdateState) -> bool {
+    state
+        .lock()
+        .map(|update| update.child.is_some())
+        .unwrap_or(false)
+}
+
 pub fn record_update_intentional_stop(state: &UpdateState, diagnostics: &DiagnosticsState) {
     let attempt = state
         .lock()
@@ -387,6 +397,8 @@ pub fn record_update_intentional_stop(state: &UpdateState, diagnostics: &Diagnos
         );
     }
 }
+
+pub const UPDATE_STOPPED: &str = "Update stopped.";
 
 pub fn stop_update(state: &UpdateState) -> Result<(), String> {
     let mut child = {
@@ -483,6 +495,9 @@ mod tests {
         assert_eq!(
             cmd.get_args().map(OsString::from).collect::<Vec<_>>(),
             vec![
+                // -X utf8 leads: -I implies -E, so PYTHONUTF8 would be ignored.
+                OsString::from("-X"),
+                OsString::from("utf8"),
                 OsString::from("-I"),
                 OsString::from("-c"),
                 OsString::from(WINDOWS_CLI_ENTRYPOINT),

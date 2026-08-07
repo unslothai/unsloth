@@ -1,12 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  INITIAL_STARTUP_MESSAGE,
+  installProgressMessage,
+  SERVER_STARTUP_MESSAGE,
+  SERVER_START_FALLBACK_MS,
+  type StartupMessage,
+} from "@/components/tauri/startup-messages";
 import { ShimmerButton } from "@/components/ui/shimmer-button";
 import { Spinner } from "@/components/ui/spinner";
 import type { BackendStatus } from "@/hooks/use-tauri-backend";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 import { AnimatePresence, motion } from "motion/react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 interface StartupScreenProps {
   status: BackendStatus;
@@ -14,6 +21,7 @@ interface StartupScreenProps {
   error: string | null;
   currentStepIndex: number;
   progressDetail: string | null;
+  startupMessage: StartupMessage;
   elevationPackages: string[];
   onInstall: () => void;
   onRetry: () => void;
@@ -83,15 +91,6 @@ function DiagnosticsCopyActions({
 // Constants
 // ---------------------------------------------------------------------------
 
-const INSTALL_STEPS = [
-  "Detecting your system",
-  "Checking dependencies",
-  "Setting up package manager",
-  "Creating Python environment",
-  "Installing ML framework",
-  "Installing Unsloth",
-  "Finalizing setup",
-] as const;
 
 const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 
@@ -184,34 +183,40 @@ function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
 }
 
 function InstallingContent({
+  logs,
   currentStepIndex,
   progressDetail,
 }: {
+  logs: string[];
   currentStepIndex: number;
   progressDetail: string | null;
 }) {
-  const stepNum = Math.max(0, currentStepIndex) + 1;
-  const stepLabel = INSTALL_STEPS[Math.min(currentStepIndex, INSTALL_STEPS.length - 1)];
+  const message = installProgressMessage(currentStepIndex);
+  const detailLines = progressDetail
+    ? [...logs, progressDetail]
+    : logs;
 
   return (
-    <div className="flex h-full flex-col items-center">
+    <div className="flex h-full w-full flex-col items-center">
       <div className="flex flex-1 items-center">
         <Logo />
       </div>
-      <div className="mb-10 flex flex-col items-center gap-2">
+      <div className="mb-10 flex w-full flex-col items-center gap-2">
         <Spinner className="size-6 text-primary" />
-        <p className="text-sm font-bold text-foreground">Installing...</p>
-        <p className="text-sm font-bold text-muted-foreground">
-          Your AI workspace is taking shape. Chat with AI, build projects, and
-          train models, all on your computer.
+        <p className="text-sm font-bold text-foreground" aria-live="polite">
+          {message.title}
         </p>
-        {currentStepIndex >= 0 && (
-          <p className="mt-1 text-xs font-bold text-muted-foreground">
-            Step {stepNum} of {INSTALL_STEPS.length}: {stepLabel}
-          </p>
-        )}
-        {progressDetail && (
-          <p className="text-xs text-muted-foreground/70">{progressDetail}</p>
+        <p className="text-sm text-muted-foreground">{message.subtitle}</p>
+        {detailLines.length > 0 && (
+          <details className="group mt-2 w-full max-w-sm text-left">
+            <summary className="mx-auto w-fit cursor-pointer select-none rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <span className="group-open:hidden">Show installation details</span>
+              <span className="hidden group-open:inline">Hide installation details</span>
+            </summary>
+            <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/50 bg-muted/30 p-3 font-mono text-ui-10 leading-relaxed text-muted-foreground">
+              {detailLines.join("\n")}
+            </pre>
+          </details>
         )}
       </div>
     </div>
@@ -225,18 +230,29 @@ function RepairingContent({
   logs: string[];
   progressDetail: string | null;
 }) {
-  const latest = progressDetail ?? logs.at(-1);
+  const detailLines = progressDetail
+    ? [...logs, progressDetail]
+    : logs;
 
   return (
-    <div className="flex h-full flex-col items-center">
+    <div className="flex h-full w-full flex-col items-center">
       <div className="flex flex-1 items-center">
         <Logo />
       </div>
-      <div className="mb-10 flex flex-col items-center gap-2">
+      <div className="mb-10 flex w-full flex-col items-center gap-2">
         <Spinner className="size-6 text-primary" />
-        <p className="text-sm font-bold text-foreground">Updating existing Unsloth install...</p>
-        {latest && (
-          <p className="max-w-xs text-center text-xs text-muted-foreground">{latest}</p>
+        <p className="text-sm font-bold text-foreground">Getting things ready...</p>
+        <p className="text-sm text-muted-foreground">This won’t take long.</p>
+        {detailLines.length > 0 && (
+          <details className="group mt-2 w-full max-w-sm text-left">
+            <summary className="mx-auto w-fit cursor-pointer select-none rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <span className="group-open:hidden">Show setup details</span>
+              <span className="hidden group-open:inline">Hide setup details</span>
+            </summary>
+            <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/50 bg-muted/30 p-3 font-mono text-ui-10 leading-relaxed text-muted-foreground">
+              {detailLines.join("\n")}
+            </pre>
+          </details>
         )}
       </div>
     </div>
@@ -324,7 +340,23 @@ function NeedsElevationContent({
   );
 }
 
-function StartingContent() {
+function StartingContent({ message }: { message: StartupMessage }) {
+  const [showFallback, setShowFallback] = useState(false);
+
+  useEffect(() => {
+    if (message !== SERVER_STARTUP_MESSAGE) {
+      return;
+    }
+
+    const fallback = window.setTimeout(
+      () => setShowFallback(true),
+      SERVER_START_FALLBACK_MS,
+    );
+    return () => window.clearTimeout(fallback);
+  }, [message]);
+
+  const displayMessage = showFallback ? INITIAL_STARTUP_MESSAGE : message;
+
   return (
     <div className="flex h-full flex-col items-center">
       <div className="flex flex-1 items-center">
@@ -332,7 +364,7 @@ function StartingContent() {
       </div>
       <div className="mb-10 flex flex-col items-center gap-2">
         <Spinner className="size-6 text-primary" />
-        <p className="text-sm text-muted-foreground">Starting server...</p>
+        <p className="text-sm text-muted-foreground">{displayMessage}</p>
       </div>
     </div>
   );
@@ -387,6 +419,7 @@ export function StartupScreen({
   error,
   currentStepIndex,
   progressDetail,
+  startupMessage,
   elevationPackages,
   onInstall,
   onRetry,
@@ -402,7 +435,13 @@ export function StartupScreen({
       case "not-installed":
         return <NotInstalledContent onInstall={onInstall} />;
       case "installing":
-        return <InstallingContent currentStepIndex={currentStepIndex} progressDetail={progressDetail} />;
+        return (
+          <InstallingContent
+            logs={logs}
+            currentStepIndex={currentStepIndex}
+            progressDetail={progressDetail}
+          />
+        );
       case "install-error":
         return (
           <InstallErrorContent
@@ -430,7 +469,7 @@ export function StartupScreen({
           />
         );
       case "starting":
-        return <StartingContent />;
+        return <StartingContent key={startupMessage} message={startupMessage} />;
       case "running":
         return null;
       case "stopped":

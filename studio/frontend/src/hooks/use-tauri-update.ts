@@ -69,6 +69,16 @@ const DEFAULT_UPDATE_POLICY: DesktopUpdatePolicy = {
   releaseTagPrefix: "desktop-v",
 };
 
+// Desktop quit never fires beforeunload, and only the renderer sees the shell installer.
+function publishShellUpdateActive(active: boolean): void {
+  if (!isTauri) return;
+  void import("@tauri-apps/api/core")
+    .then(({ invoke }) =>
+      invoke("set_renderer_activity", { kind: "shell_update", active }),
+    )
+    .catch(() => {});
+}
+
 const UPDATE_VERSION_RE = /^v?\d+\.\d+\.\d+(?:(?:[-+][0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)|(?:\.(?:post|dev|rc)\d*)|(?:(?:post|dev|rc|a|b)\d*))?$/;
 
 function normalizeUpdateVersion(version: string): string | null {
@@ -348,26 +358,45 @@ export function useTauriUpdate(isExternalServer = false) {
 
       let downloaded = 0;
       let contentLength = 0;
-      await update.downloadAndInstall((event) => {
-        switch (event.event) {
-          case "Started":
-            contentLength = event.data.contentLength ?? 0;
-            break;
-          case "Progress":
-            downloaded += event.data.chunkLength;
-            if (contentLength > 0) {
-              setUpdateProgress(Math.round((downloaded / contentLength) * 100));
-            }
-            break;
-          case "Finished":
-            setUpdatePhase("shell_install");
-            setStatus("installing");
-            break;
-        }
-      });
+      // `update::is_update_running` is already false here, and quitting mid-install
+      // leaves a half-updated app.
+      publishShellUpdateActive(true);
+      try {
+        await update.downloadAndInstall((event) => {
+          switch (event.event) {
+            case "Started":
+              contentLength = event.data.contentLength ?? 0;
+              break;
+            case "Progress":
+              downloaded += event.data.chunkLength;
+              if (contentLength > 0) {
+                setUpdateProgress(
+                  Math.round((downloaded / contentLength) * 100),
+                );
+              }
+              break;
+            case "Finished":
+              setUpdatePhase("shell_install");
+              setStatus("installing");
+              break;
+          }
+        });
+      } finally {
+        // Success, failure and cancel alike: the installer is no longer running.
+        publishShellUpdateActive(false);
+      }
 
+      // relaunch() re-execs with the original argv, so flag the inherited --hidden as not a login
+      // start. It only fails when there is a --hidden to suppress, so let it stop the restart.
+      await invoke("mark_in_app_relaunch");
       const { relaunch } = await import("@tauri-apps/plugin-process");
-      await relaunch();
+      try {
+        await relaunch();
+      } catch (relaunchError) {
+        // No replacement process, so the marker would outlive it and unhide a later login start.
+        await invoke("clear_in_app_relaunch").catch(() => {});
+        throw relaunchError;
+      }
     } catch (e) {
       console.error("Update failed:", e);
       const msg = String(e);

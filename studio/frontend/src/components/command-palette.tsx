@@ -107,7 +107,11 @@ function PaletteContent() {
   const t = useT();
   const navigate = useNavigate();
   const close = useCommandPaletteStore((s) => s.close);
+  // Until /api/health answers, `chatOnly` is the browser-platform seed, not a verdict; gating
+  // on it would hide Train on every Mac at first paint. Match the sidebar and wait for it.
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
+  const chatOnlyMeasured = chatOnly && !capabilitiesUnknown;
   const { isDark, toggleTheme, anchorRef } = useAnimatedThemeToggle();
   const [query, setQuery] = useState("");
   const hasQuery = query.trim().length > 0;
@@ -169,18 +173,19 @@ function PaletteContent() {
             <HugeiconsIcon icon={Image03Icon} strokeWidth={1.75} />
             <span>{t("shell.navigation.images")}</span>
           </CommandItem>
-          {/* Video is diffusers-only, so chat-only hosts omit it, like the sidebar disables it. */}
-          {!chatOnly && (
-            <CommandItem
-              onSelect={runAndClose(() => navigate({ to: "/video" }))}
-              keywords={["video", "generate"]}
-            >
-              <HugeiconsIcon icon={FlimSlateIcon} strokeWidth={1.75} />
-              <span>{t("shell.navigation.video")}</span>
-            </CommandItem>
-          )}
-          {/* chat-only guard redirects /studio; omit rather than dead-end */}
-          {!chatOnly && (
+          {/* /video is allowed on chat-only hosts (VideoPage explains an unsupported host
+              itself), so it is always listed, like the sidebar always renders the row. */}
+          <CommandItem
+            onSelect={runAndClose(() => navigate({ to: "/video" }))}
+            keywords={["video", "generate"]}
+          >
+            <HugeiconsIcon icon={FlimSlateIcon} strokeWidth={1.75} />
+            <span>{t("shell.navigation.video")}</span>
+          </CommandItem>
+          {/* chat-only guard redirects /studio; omit rather than dead-end. Only a measured
+              verdict counts: the pre-measurement guess is chat-only on every Mac, and acting
+              on it would drop Train from the palette on a host that supports it. */}
+          {!chatOnlyMeasured && (
             <CommandItem
               onSelect={runAndClose(() => navigate({ to: "/studio" }))}
               keywords={["studio", "fine-tune", "training"]}

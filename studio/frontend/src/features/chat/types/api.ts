@@ -52,17 +52,19 @@ export interface LoadModelRequest {
   approved_remote_code_fingerprint?: string | null;
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
+  mlx_kv_bits?: number | null;
   /**
    * Speculative decoding mode for GGUF models. Canonical values: "auto"
    * (platform-aware: MTP on MTP GGUFs, ngram-mod fallback for sub-3B), "mtp"
-   * (force draft-mtp), "ngram" (force ngram-mod), "mtp+ngram" (ngram-mod +
+   * (force draft-mtp), "dspark" (force draft-dspark with a sidecar),
+   * "ngram" (force ngram-mod), "mtp+ngram" (ngram-mod +
    * draft-mtp chain), "off". Legacy "default"/"draft-mtp"/"ngram-mod"/
    * "ngram-simple" are still accepted by the backend.
    */
   speculative_type?: string | null;
   /**
    * Override --spec-draft-n-max for MTP speculative decoding. Applied only
-   * when speculative_type resolves to "mtp" or "mtp+ngram".
+   * when speculative_type resolves to "mtp", "mtp+ngram", or "dspark".
    */
   spec_draft_n_max?: number | null;
   /**
@@ -162,6 +164,7 @@ export function isMultimodalResponse(
 }
 
 export interface LoadModelResponse {
+  is_mlx?: boolean;
   status: string;
   model: string;
   display_name: string;
@@ -199,6 +202,12 @@ export interface LoadModelResponse {
   supports_preserve_thinking?: boolean;
   supports_tools?: boolean;
   cache_type_kv?: string | null;
+  mlx_kv_bits?: number | null;
+  mlx_kv_bits_requested?: number | null;
+  mlx_kv_quant_eligibility?: string | null;
+  mlx_kv_quant_reason?: string | null;
+  chat_template_override_reason?: string | null;
+  mlx_kv_quant_note?: string | null;
   chat_template?: string | null;
   /** Canonical UI-facing mode the load request resolved to. See LoadModelRequest. */
   speculative_type?: string | null;
@@ -232,6 +241,7 @@ export interface UnloadModelRequest {
 }
 
 export interface InferenceStatusResponse {
+  is_mlx?: boolean;
   active_model: string | null;
   model_identifier?: string | null;
   is_vision: boolean;
@@ -271,6 +281,12 @@ export interface InferenceStatusResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   cache_type_kv?: string | null;
+  mlx_kv_bits?: number | null;
+  mlx_kv_bits_requested?: number | null;
+  mlx_kv_quant_eligibility?: string | null;
+  mlx_kv_quant_reason?: string | null;
+  chat_template_override_reason?: string | null;
+  mlx_kv_quant_note?: string | null;
   chat_template_override?: string | null;
   /** Canonical UI-facing mode currently active. See LoadModelRequest. */
   speculative_type?: string | null;
@@ -298,13 +314,20 @@ export interface InferenceStatusResponse {
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;
   /**
-   * Why MTP was disabled on the loaded model despite being requested.
+   * Why a speculative drafter was disabled despite being requested.
    * "binary_no_mtp" / "binary_outdated" -> updating llama.cpp would re-enable
    * it; "runtime_error" -> the current build could not run it;
+   * "drafter_not_found" -> its MTP or DSpark sidecar was unavailable;
    * "mla_mtp_disabled" -> an Auto-mode policy downgrade for MLA models
    * (GLM-5.2 et al.) whose llama.cpp MTP path is slower than no speculation
    * (updating won't help; choose MTP in Settings to force it). Null otherwise.
    */
+  /**
+   * Which drafter the resolution was about, "mtp" or "dspark". Auto resolves the
+   * kind itself, so speculative_type still reads "auto", and a fallback leaves
+   * the engaged type at "default": neither names the file to fix.
+   */
+  spec_drafter_kind?: string | null;
   spec_fallback_reason?: string | null;
 }
 
@@ -449,6 +472,12 @@ export interface OpenAIChatCompletionsRequest {
     | "xhigh"
     | null;
   preserve_thinking?: boolean | null;
+  /**
+   * Resume the trailing assistant turn rather than opening a new one: the rendered
+   * prompt ends inside the partial answer, so the model emits its next token. Local
+   * models only -- the external-provider proxy forwards an explicit field list.
+   */
+  continue_final_message?: boolean;
   thinking?: { type: "disabled" | "enabled" } | null;
   enable_tools?: boolean | null;
   enabled_tools?: string[];

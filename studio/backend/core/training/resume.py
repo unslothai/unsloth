@@ -6,19 +6,26 @@
 import json
 import pickletools
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional
 
 from utils.paths import outputs_root, resolve_output_dir
 
 
+def _is_foreign_absolute_path(path_value: str) -> bool:
+    native = Path(path_value)
+    return not native.is_absolute() and (
+        PureWindowsPath(path_value).is_absolute() or PurePosixPath(path_value).is_absolute()
+    )
+
+
 def _is_under_outputs(path: Path) -> bool:
-    resolved = path.resolve(strict = False)
-    root = outputs_root().resolve(strict = False)
     try:
+        resolved = path.resolve(strict = False)
+        root = outputs_root().resolve(strict = False)
         resolved.relative_to(root)
         return True
-    except ValueError:
+    except (OSError, RuntimeError, ValueError):
         return False
 
 
@@ -156,8 +163,7 @@ def is_resume_checkpoint_valid(
     else:
         valid_bundle = (
             _has_model_state(path)
-            # optimizer/scheduler state can be validly tensor-free (e.g. SGD without
-            # momentum); _has_model_state still requires real model tensors.
+            # optimizer/scheduler state can be validly tensor-free (e.g. SGD without momentum).
             and _valid_state_file(path / "optimizer.pt", require_tensor = False)
             and _valid_state_file(path / "scheduler.pt", require_tensor = False)
         )
@@ -168,10 +174,27 @@ def is_resume_checkpoint_valid(
     return step_valid and valid_bundle
 
 
+def artifacts_present(path_value: Optional[str]) -> bool:
+    if not path_value:
+        return False
+    if _is_foreign_absolute_path(path_value):
+        return False
+    try:
+        path = resolve_output_dir(path_value)
+        return _is_under_outputs(path) and path.is_dir()
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def get_resume_checkpoint_path(
     path_value: str, expected_step: Optional[int] = None
 ) -> Optional[str]:
-    path = resolve_output_dir(path_value)
+    if _is_foreign_absolute_path(path_value):
+        return None
+    try:
+        path = resolve_output_dir(path_value)
+    except (OSError, RuntimeError, ValueError):
+        return None
     if not _is_under_outputs(path) or not path.is_dir():
         return None
     if is_resume_checkpoint_valid(path, expected_step):
@@ -190,13 +213,19 @@ def get_resume_checkpoint_path(
 
 
 def normalize_resume_output_dir(path_value: str) -> str:
-    path = resolve_output_dir(path_value)
+    if _is_foreign_absolute_path(path_value):
+        raise ValueError("Resume checkpoint uses a path from a different operating system.")
+    try:
+        path = resolve_output_dir(path_value)
+        path.resolve(strict = True)
+    except (OSError, RuntimeError) as error:
+        raise ValueError("Resume checkpoint path could not be resolved.") from error
     if not _is_under_outputs(path):
         raise ValueError("Resume checkpoint must be inside Unsloth outputs.")
     return str(path)
 
 
-def _run_config(run: dict) -> dict:
+def training_run_config(run: dict) -> dict:
     raw_config = run.get("config_json")
     if isinstance(raw_config, dict):
         return raw_config
@@ -210,11 +239,44 @@ def _run_config(run: dict) -> dict:
 
 
 def _uses_s3_dataset(run: dict) -> bool:
-    config = _run_config(run)
+    config = training_run_config(run)
     return config.get("dataset_source") == "s3" or "s3_dataset" in config
 
 
-def can_resume_run(run: dict) -> bool:
+def _resource_resume_cache_key(config: dict) -> Optional[str]:
+    marker = config.get("resource_provenance")
+    if isinstance(marker, dict):
+        marker = {
+            key: marker.get(key)
+            for key in (
+                "version",
+                "status",
+                "model_status",
+                "model_load_mode",
+                "dataset_status",
+            )
+        }
+    values = {
+        "resource_provenance": marker,
+        "model_name": config.get("model_name"),
+        "actual_model_repo_id": config.get("actual_model_repo_id"),
+        "model_snapshot_path": config.get("model_snapshot_path"),
+        "load_in_4bit": config.get("load_in_4bit"),
+        "hf_dataset": config.get("hf_dataset"),
+        "dataset_snapshot_path": config.get("dataset_snapshot_path"),
+    }
+    try:
+        return json.dumps(
+            values,
+            sort_keys = True,
+            separators = (",", ":"),
+            ensure_ascii = False,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def can_resume_run(run: dict, *, resource_cache: Optional[dict[str, bool]] = None) -> bool:
     if run.get("resumed_later"):
         return False
     # Set when a stop-and-save failed to write a current-step checkpoint.
@@ -226,14 +288,28 @@ def can_resume_run(run: dict) -> bool:
     status = run.get("status")
     if status == "error":
         # A save-time crash can report final_step == total_steps with no artifacts; checkpoint state alone decides resumability.
-        return has_resume_state(run.get("output_dir"))
+        resume_state_available = has_resume_state(run.get("output_dir"))
+    else:
+        final_step = run.get("final_step")
+        total_steps = run.get("total_steps")
+        has_remaining_steps = (
+            not isinstance(final_step, int)
+            or not isinstance(total_steps, int)
+            or total_steps <= 0
+            or final_step < total_steps
+        )
+        resume_state_available = (
+            status == "stopped" and has_remaining_steps and has_resume_state(run.get("output_dir"))
+        )
+    if not resume_state_available:
+        return False
 
-    final_step = run.get("final_step")
-    total_steps = run.get("total_steps")
-    has_remaining_steps = (
-        not isinstance(final_step, int)
-        or not isinstance(total_steps, int)
-        or total_steps <= 0
-        or final_step < total_steps
-    )
-    return status == "stopped" and has_remaining_steps and has_resume_state(run.get("output_dir"))
+    from core.training.provenance import resource_provenance_allows_resume
+
+    config = training_run_config(run)
+    cache_key = _resource_resume_cache_key(config)
+    if resource_cache is None or cache_key is None:
+        return resource_provenance_allows_resume(config)
+    if cache_key not in resource_cache:
+        resource_cache[cache_key] = resource_provenance_allows_resume(config)
+    return resource_cache[cache_key]

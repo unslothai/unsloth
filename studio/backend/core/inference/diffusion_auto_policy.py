@@ -81,7 +81,9 @@ def family_bf16_components_gb(
     """(transformer, text encoders, VAE) bf16-resident sizes in GB, or None when the family isn't
     in the table (callers fall back to file-size estimates)."""
     if base_repo:
-        override = _BASE_REPO_BF16_GB.get(base_repo)
+        # Keyed on UPSTREAM ids, and a miss falls through quietly to the coarser family table.
+        from .diffusion_families import canonical_base
+        override = _BASE_REPO_BF16_GB.get(canonical_base(base_repo))
         if override is not None:
             return override
     name = getattr(fam, "name", None)

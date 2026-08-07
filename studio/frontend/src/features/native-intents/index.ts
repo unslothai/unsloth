@@ -7,6 +7,7 @@ export {
   consumeNativePathToken,
   openModelsDir,
   pickHuggingFaceCacheDir,
+  registerNativeDatasetPath,
 } from "./api";
 export {
   NativeAttachmentTargetContext,
