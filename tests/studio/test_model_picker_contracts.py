@@ -1116,9 +1116,9 @@ def test_diffusion_pages_stage_downloads_through_the_manager():
             # image pick therefore needs the backend's cache-aware plan; only local picks
             # can bypass it. The plan returns no entries when the full load is cached.
             assert 'source !== "hub"' in body, f"{rel}: local picks would be planned"
-            assert "isDownloaded !== false" not in body, (
-                f"{rel}: cached checkpoint would hide missing companion assets"
-            )
+            assert (
+                "isDownloaded !== false" not in body
+            ), f"{rel}: cached checkpoint would hide missing companion assets"
         else:
             # Video currently has no independent companion-footprint resolver, so a fully
             # cached selection can still take the direct path.
