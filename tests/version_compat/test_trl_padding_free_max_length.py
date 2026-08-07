@@ -2844,11 +2844,18 @@ def test_a_later_row_that_cannot_take_the_slice_does_not_raise():
     ]
 
     class Split:
-        def __len__(self): return len(rows)
-        def __getitem__(self, i): return rows[i]
-        def __iter__(self): return iter(rows)
+        def __len__(self):
+            return len(rows)
 
-    capped = _CappedRows(Split(), slice(None, 4), (), ("input_ids", "attention_mask", "token_type_ids"))
+        def __getitem__(self, i):
+            return rows[i]
+
+        def __iter__(self):
+            return iter(rows)
+
+    capped = _CappedRows(
+        Split(), slice(None, 4), (), ("input_ids", "attention_mask", "token_type_ids")
+    )
     out = list(capped)
     assert [len(r["input_ids"]) for r in out] == [4, 4]
     assert out[0]["token_type_ids"] == [0] * 4

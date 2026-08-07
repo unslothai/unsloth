@@ -852,9 +852,7 @@ def _mutation_token(dataset):
 
 def _mark_capped(dataset, cap, drop_unsupervised):
     try:
-        setattr(
-            dataset, _CAP_SIGNATURE_ATTR, (cap, drop_unsupervised, _mutation_token(dataset))
-        )
+        setattr(dataset, _CAP_SIGNATURE_ATTR, (cap, drop_unsupervised, _mutation_token(dataset)))
     except Exception:
         pass  # a split that refuses attributes just gets scanned twice
     return dataset
