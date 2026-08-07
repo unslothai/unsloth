@@ -560,12 +560,11 @@ def test_media_pages_clear_the_custom_titlebar():
 
 
 def test_media_page_headers_out_stack_the_mac_drag_region():
-    """macOS gives the media pages a 0px inset, so their 48px header lands on top of the
-    navbar's 34px drag strip. The band has to out-stack that strip yet stay click-through,
-    so its controls take clicks and its empty space still drags the window."""
+    """macOS insets the media pages 0px, so their 48px header overlaps the navbar's 34px drag
+    strip: the band must out-stack it yet stay click-through (controls click, gaps drag)."""
     navbar = NAVBAR.read_text(encoding = "utf-8")
 
-    # The strip the band has to beat: same z-40, but earlier in DOM order.
+    # The strip to beat: same z-40, but earlier in DOM order.
     assert "pointer-events-none absolute inset-x-0 top-0 z-40 h-[48px]" in navbar
     assert "data-tauri-drag-region" in navbar
 
