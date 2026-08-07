@@ -334,6 +334,7 @@ function NavItem({
   onIntent,
   badge,
   overlay,
+  testId,
 }: {
   icon: typeof ZapIcon;
   label: string;
@@ -345,6 +346,9 @@ function NavItem({
   className?: string;
   spinner?: boolean;
   onIntent?: () => void;
+  // Stable hook for the UI smokes, which assert a row spins rather than greys out
+  // while its capability verdict is still unmeasured.
+  testId?: string;
   // Overrides the hover tooltip; explains why a disabled item is greyed out.
   tooltip?: string;
   // Trailing "New" pill text.
@@ -363,6 +367,8 @@ function NavItem({
           onFocus={disabled ? undefined : onIntent}
           isActive={active}
           data-tour={dataTour}
+          data-testid={testId}
+          data-spinner={spinner ? "true" : undefined}
           className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
         >
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 translate-x-0.5 group-hover/menu-button:animate-icon-pop" />
@@ -1965,6 +1971,7 @@ export function AppSidebar() {
                     disabled={rowState.disabled}
                     tooltip={rowState.tooltip}
                     spinner={rowState.spinner}
+                    testId={`nav-row-${id}`}
                     onClick={row.onClick}
                     onIntent={row.onIntent}
                     className={cn(
