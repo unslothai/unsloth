@@ -239,6 +239,7 @@ import {
   useState,
 } from "react";
 import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/update-thread-message";
+import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
 
 // True while a file is dragged anywhere over the chat page, so the composer
@@ -2072,7 +2073,12 @@ const Composer: FC<{
     (artifactsEnabled ? 1 : 0) +
     (mcpEnabledForChat ? 1 : 0) +
     (effectiveDeepResearchEnabled ? 1 : 0);
-  const pillsCompact = isMobile || pillCount > 4;
+  // Under the count threshold the row still overflows on long labels ("Run
+  // automatically" next to "Deep research"), which dropped the dictate and
+  // send buttons onto a second line. Measuring collapses just enough.
+  const { pillRowRef, pillCompact } = useComposerPillFit(
+    isMobile || pillCount > 4,
+  );
   const setPendingImageEditReference = useChatRuntimeStore(
     (s) => s.setPendingImageEditReference,
   );
@@ -3057,8 +3063,9 @@ const Composer: FC<{
         data-dictating={isDictating ? "true" : undefined}
       >
         <div
+          ref={pillRowRef}
           className="unsloth-composer-left"
-          data-pill-compact={pillsCompact ? "true" : undefined}
+          data-pill-compact={pillCompact}
         >
           <ComposerToolsMenu
             side={effectiveMenuSide}
