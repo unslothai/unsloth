@@ -506,9 +506,15 @@ _GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("Qwen/Qwen-Image", "unsloth/Qwen-Image"),
     ("Qwen/Qwen-Image-Edit-2511", "unsloth/Qwen-Image-Edit-2511"),
     ("black-forest-labs/FLUX.2-klein-4B", "unsloth/FLUX.2-klein-4B"),
+    # Lookup is by exact id, so every VARIANT a pick can resolve to needs its own row: the base-4B
+    # is what `unsloth/FLUX.2-klein-base-4B-GGUF` resolves to from its card tag, and Dev / Fast are
+    # offered directly as bf16 pipeline picks. Without these three the table silently misses them.
+    ("black-forest-labs/FLUX.2-klein-base-4B", "unsloth/FLUX.2-klein-base-4B"),
     ("Tongyi-MAI/Z-Image-Turbo", "unsloth/Z-Image-Turbo"),
     ("Alpha-VLLM/Lumina-Image-2.0", "unsloth/Lumina-Image-2.0"),
     ("HiDream-ai/HiDream-I1-Full", "unsloth/HiDream-I1-Full"),
+    ("HiDream-ai/HiDream-I1-Dev", "unsloth/HiDream-I1-Dev"),
+    ("HiDream-ai/HiDream-I1-Fast", "unsloth/HiDream-I1-Fast"),
     ("stabilityai/stable-diffusion-xl-base-1.0", "unsloth/stable-diffusion-xl-base-1.0"),
     ("stabilityai/sdxl-turbo", "unsloth/sdxl-turbo"),
     # NOT mirrored: hunyuanvideo-community/HunyuanImage-2.1-Diffusers. The Tencent Hunyuan

@@ -11,6 +11,7 @@ GPU, weights, or network access is needed (sub-second, CI-friendly).
 from __future__ import annotations
 
 import contextlib
+import re
 import sys
 import threading
 import types
@@ -176,7 +177,7 @@ def _all_cached(monkeypatch):
 
 def test_gated_mirror_table_round_trips():
     """Both directions, exact case: canonical_base must hand back a real repo id."""
-    assert len(_GATED_MIRROR_PAIRS) == 21
+    assert len(_GATED_MIRROR_PAIRS) == 24
     for upstream, mirror in _GATED_MIRROR_PAIRS:
         assert mirror_repo(upstream) == mirror
         assert canonical_base(mirror) == upstream
@@ -200,6 +201,35 @@ def test_no_mirror_is_a_companion_only_repo():
     companions = sd_cpp_companion_only_repo_ids()
     for _upstream, mirror in _GATED_MIRROR_PAIRS:
         assert mirror.lower() not in companions, mirror
+
+
+def test_every_third_party_bf16_pipeline_the_catalog_offers_is_mirrored():
+    """Lookup is by exact id, so a variant the catalog offers is silently missed until listed.
+
+    Adding a family's flagship is not enough: HiDream ships Full, Dev and Fast, and FLUX.2 klein
+    ships 4B and base-4B. Each is its own repo id, so each needs its own row or the pick keeps
+    fetching tens of GB from the vendor while the change claims to have stopped that. Read the
+    catalog rather than restating the table, so a newly offered variant fails here instead of
+    quietly bypassing the mirrors.
+    """
+    catalog = (
+        Path(__file__).resolve().parents[2]
+        / "frontend/src/features/model-picker/components/model-selector/model-catalog.ts"
+    ).read_text(encoding = "utf-8")
+    # Image side only: the video bases are ungated AND out of this table's scope, and mirroring
+    # them is a separate call. Slice at VIDEO_CATALOG so a new video entry does not fail this.
+    images = catalog.split("export const IMAGE_CATALOG", 1)[1].split("export const VIDEO_CATALOG", 1)[0]
+    offered = set(re.findall(r'bf16Pipeline\(\s*"([^"]+)"', images))
+    mirrored = {u.lower() for u, _m in _GATED_MIRROR_PAIRS}
+    # Anything under unsloth/ is already ours, and the deliberate Hunyuan exception is recorded
+    # beside the table with the territorial reason it cannot be mirrored.
+    missing = sorted(
+        repo for repo in offered
+        if not repo.lower().startswith("unsloth/")
+        and "hunyuan" not in repo.lower()
+        and repo.lower() not in mirrored
+    )
+    assert not missing, f"catalog offers these vendor bases with no unsloth mirror: {missing}"
 
 
 def test_the_qwen_2512_mirror_covers_the_card_tag_route(monkeypatch):
