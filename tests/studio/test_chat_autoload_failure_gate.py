@@ -1439,3 +1439,17 @@ def test_a_legacy_gguf_row_without_model_format_loads_as_gguf():
     assert _loaded_paths(out) == [LOCAL_GGUF_PATH]
     remembered = [e for e in out["events"] if e["kind"] == "recordLastLocal"]
     assert remembered and remembered[0]["modelKind"] == "gguf", remembered
+
+
+@pytest.mark.parametrize("fmt", ["'unknown'", "undefined"])
+def test_an_unclassified_local_row_is_never_auto_loaded(fmt):
+    """The gate was a denylist, so a row the backend could not classify passed it:
+    "unknown" is what the backend sends when it cannot tell, and an older one omits
+    the field entirely. Either way the row may be a pickle checkpoint, which is the
+    exact thing the adapter/checkpoint exclusions exist to keep out of a background
+    load. A directory gives no suffix to tell them apart, so this fails closed."""
+    row = f"{{ ...LOCAL_GGUF, id: 'x', load_id: '/models/x', path: '/models/x', model_format: {fmt} }}"
+    out = _run(f"scenario({{ localModels: [{row}] }})")
+
+    assert "/models/x" not in _loaded_paths(out)
+    assert _loaded_paths(out) == [DEFAULT_MODEL]

@@ -2437,8 +2437,12 @@ def test_autoload_local_rows_follow_the_picker_policy():
     assert "row.partial !== true" in policy
     # An adapter resolves its base model, which for an uncached base is a Hub
     # fetch; a scan-folder checkpoint is a pickle with no Hub security scan.
-    assert 'row.model_format !== "adapter"' in policy
-    assert 'row.model_format !== "checkpoint"' in policy
+    # Stated as an allowlist, which subsumes both: neither format can satisfy it.
+    # Excluding them by name was only as good as the classification, and the
+    # backend sends "unknown" when it cannot tell, so a pickle got through.
+    # That neither format loads is asserted behaviourally by
+    # test_a_local_row_the_picker_would_hide_is_never_auto_loaded.
+    assert '(isGgufLocalRow(row) || row.model_format === "safetensors")' in policy
     assert "isHiddenModelId(row.model_id, row.id, row.path)" in policy
 
     sources = src.split("const AUTO_LOAD_LOCAL_SOURCES", 1)[1].split("]", 1)[0]

@@ -1929,8 +1929,14 @@ function isAutoLoadableLocalRow(
     // default. Same rule the cached rows use; an explicit false still excludes.
     row.capabilities?.can_chat !== false &&
     row.partial !== true &&
-    row.model_format !== "adapter" &&
-    row.model_format !== "checkpoint" &&
+    // An allowlist, because the exclusions below were only as good as the
+    // classification: "unknown" is what the backend sends when it cannot tell a
+    // format apart, and an older one omits the field, so both slipped past a
+    // `!== "checkpoint"` test and made a pickle eligible for a background load.
+    // A checkpoint is a directory like a safetensors one, so nothing in the path
+    // separates them and this has to fail closed. GGUF is still recognised by
+    // suffix, so an unclassified .gguf row keeps loading.
+    (isGgufLocalRow(row) || row.model_format === "safetensors") &&
     !IMAGE_OR_VIDEO_TASKS.has(row.task ?? "") &&
     runsOnThisPlatform(row) &&
     !isHiddenModelId(row.model_id, row.id, row.path)
