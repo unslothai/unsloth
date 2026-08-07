@@ -1865,11 +1865,18 @@ function applyAutoLoadRuntimeState(
 function isChattableCachedRepo(repo: {
   partial?: boolean;
   task?: string | null;
+  model_format?: string | null;
   capabilities?: { can_chat?: boolean } | null;
 }): boolean {
   return (
     repo.partial !== true &&
     repo.capabilities?.can_chat !== false &&
+    // Same rule isAutoLoadableLocalRow applies to the local twin: an adapter
+    // carries no base weights, so /load reads base_model_name_or_path and
+    // fetches the base from the Hub when it is not cached. The backend reports
+    // can_chat true for the adapter format on file layout alone, so this is the
+    // only gate. Absent on an older backend, which keeps its behaviour.
+    repo.model_format !== "adapter" &&
     // Cached diffusion repos report can_chat true on file format alone.
     !IMAGE_OR_VIDEO_TASKS.has(repo.task ?? "")
   );

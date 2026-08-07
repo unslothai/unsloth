@@ -577,6 +577,10 @@ def _run(scenario_expr: str) -> dict:
         cwd = str(run_dir),
         capture_output = True,
         text = True,
+        # Explicit, because text alone decodes with the ANSI code page on
+        # Windows (cp1252), which mangles the non-ASCII characters in the toast
+        # copy node emits as UTF-8 and fails an exact comparison there only.
+        encoding = "utf-8",
         timeout = 60,
         env = dict(os.environ, NODE_NO_WARNINGS = "1"),
     )
@@ -1311,3 +1315,31 @@ def test_a_provisional_platform_does_not_hide_cached_non_gguf_rows():
         " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }] })"
     )
     assert _loaded_paths(out) == ["org/st"]
+
+
+def test_a_cached_adapter_repo_is_never_auto_loaded():
+    """A cached LoRA has no weights of its own: /load resolves
+    base_model_name_or_path and fetches the base from the Hub when it is not
+    cached, which is exactly why isAutoLoadableLocalRow already drops the local
+    twin. Adapters are tiny, so the size order puts one first."""
+    out = _run(
+        "scenario({ modelRepos: [{ repo_id: 'org/lora', load_id: 'org/lora',"
+        " size_bytes: 40000000, model_format: 'adapter',"
+        " capabilities: { can_chat: true } }] })"
+    )
+
+    assert "org/lora" not in _loaded_paths(out)
+    # Nothing loadable on device, so the default download is the correct answer.
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
+
+
+def test_a_cached_safetensors_repo_is_still_auto_loaded():
+    """Control for the gate above: only the adapter format is dropped."""
+    out = _run(
+        "scenario({ modelRepos: [{ repo_id: 'org/base', load_id: 'org/base',"
+        " size_bytes: 40000000, model_format: 'safetensors',"
+        " capabilities: { can_chat: true } }] })"
+    )
+
+    assert _loaded_paths(out) == ["org/base"]
+    assert _downloads_started(out) == []

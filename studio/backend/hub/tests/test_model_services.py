@@ -4662,3 +4662,29 @@ def test_a_fifo_named_config_json_does_not_block_the_scan(tmp_path):
     path.mkdir()
     os.mkfifo(path / "config.json")
     assert model_common._local_transformers_can_chat(path) is None
+
+
+@pytest.mark.parametrize(
+    "model_type", ["siglip", "clip", "bert", "vit", "wav2vec2"],
+)
+def test_an_encoder_without_architectures_is_still_not_chat_capable(tmp_path, model_type):
+    """google/siglip2-* ships config.json with no architectures key, and the
+    encoder-only branch used to require one. Those rows stayed chat-capable, and
+    an encoder is small enough to sort first and spend the attempt budget."""
+    path = tmp_path / model_type
+    path.mkdir()
+    (path / "config.json").write_text(json.dumps({"model_type": model_type}), encoding = "utf-8")
+
+    assert model_common._local_transformers_can_chat(path) is False
+
+
+def test_a_causal_lm_without_architectures_still_fails_open(tmp_path):
+    """Control: the exclusion is keyed on the encoder-only type list, so an
+    unknown or generative type with no architectures stays inconclusive."""
+    path = tmp_path / "custom"
+    path.mkdir()
+    (path / "config.json").write_text(
+        json.dumps({"model_type": "some_new_llm"}), encoding = "utf-8"
+    )
+
+    assert model_common._local_transformers_can_chat(path) is None

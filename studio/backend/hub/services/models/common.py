@@ -304,10 +304,13 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
     if names and all(name.endswith(_NON_GENERATIVE_ARCHITECTURE_SUFFIXES) for name in names):
         return False
 
-    if (
-        normalized_type in _ENCODER_ONLY_MODEL_TYPES
-        and names
-        and all(name.endswith("Model") for name in names)
+    # No architectures is the common case, not a rare one: google/siglip2-* ships
+    # config.json without the key. Requiring it left those rows chat-capable, and
+    # an encoder is small enough to sort first and spend the whole attempt budget
+    # before a real chat model. The generative checks above already ran, and every
+    # type in the set is encoder-only, so an empty list is safe to exclude here.
+    if normalized_type in _ENCODER_ONLY_MODEL_TYPES and all(
+        name.endswith("Model") for name in names
     ):
         return False
     return None
