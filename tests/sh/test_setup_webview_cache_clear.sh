@@ -134,6 +134,44 @@ else
     echo "  FAIL: unset HOME -> rc=$_wvc_rc out=$_wvc_out"; FAIL=$((FAIL+1))
 fi
 
+# ── 6b. The clear must invalidate the app's version stamp. ──
+# The app skips its own clear whenever .webview-cache-cleared matches the running
+# version (main.rs). An update runs while the old WebView still holds these files, so
+# the rm here can fail and the app's clear is the retry. A repair or a local frontend
+# rebuild leaves the version unchanged, so a surviving stamp suppresses that retry and
+# the cache we could not remove stays forever.
+_st_home=$(new_home)
+_st_data="$_st_home/.local/share/$BID"
+mkdir -p "$_st_data/WebKitCache"
+: > "$_st_data/WebKitCache/asset.js"
+printf '2026.4.8' > "$_st_data/.webview-cache-cleared"
+uname() { echo Linux; }
+( HOME="$_st_home" _clear_webview_caches >/dev/null 2>&1 )
+assert_gone "linux: version stamp invalidated so the app retries" \
+    "$_st_data/.webview-cache-cleared"
+
+# The stamp must go even when nothing was removable, which is the case that matters:
+# an unremovable cache plus a surviving stamp is what makes the staleness permanent.
+_st_home=$(new_home)
+_st_data="$_st_home/.local/share/$BID"
+mkdir -p "$_st_data"
+printf '2026.4.8' > "$_st_data/.webview-cache-cleared"
+( HOME="$_st_home" _clear_webview_caches >/dev/null 2>&1 )
+assert_gone "linux: stamp dropped even with no cache dirs present" \
+    "$_st_data/.webview-cache-cleared"
+
+# macOS keeps the stamp under Application Support, not Caches, so the two paths differ.
+_st_home=$(new_home)
+mkdir -p "$_st_home/Library/Caches/$BID" "$_st_home/Library/Application Support/$BID"
+: > "$_st_home/Library/Caches/$BID/stale.js"
+printf '2026.4.8' > "$_st_home/Library/Application Support/$BID/.webview-cache-cleared"
+uname() { echo Darwin; }
+( HOME="$_st_home" _clear_webview_caches >/dev/null 2>&1 )
+assert_gone "macos: stamp under Application Support invalidated" \
+    "$_st_home/Library/Application Support/$BID/.webview-cache-cleared"
+assert_gone "macos: Caches/<bid> still cleared" "$_st_home/Library/Caches/$BID/stale.js"
+unset -f uname
+
 # ── 7. setup.sh still calls it (the sed extract above cannot prove that) ──
 if grep -qE '^[[:space:]]*_clear_webview_caches[[:space:]]*$' "$SETUP_SH"; then
     echo "  PASS: setup.sh invokes _clear_webview_caches"; PASS=$((PASS+1))

@@ -543,11 +543,15 @@ _clear_webview_caches() {
     [ -n "${HOME:-}" ] || return 0
     _wvc_bid="ai.unsloth.studio"
     _wvc_paths=()
+    # Where the desktop app keeps its version stamp (main.rs webview_profile_root).
+    # Not the same directory as the caches on macOS, so it is tracked separately.
+    _wvc_root=""
     case "$(uname -s 2>/dev/null)" in
         Darwin)
             # WKWebView keeps every cache-typed store under Library/Caches/<bid>;
             # Library/WebKit/<bid> is user storage and is left alone.
             _wvc_paths=("$HOME/Library/Caches/$_wvc_bid")
+            _wvc_root="$HOME/Library/Application Support/$_wvc_bid"
             ;;
         Linux)
             # wry points WebKitGTK's base-cache dir at the app data dir, so the
@@ -563,9 +567,22 @@ _clear_webview_caches() {
                 "$_wvc_data/CacheStorage"
                 "$_wvc_data/serviceworkers"
             )
+            _wvc_root="$_wvc_data"
             ;;
         *) return 0 ;;
     esac
+    # Drop the app's version stamp before touching anything. An update runs while the
+    # old WebView still holds these files, so an rm here can fail; the app's own clear
+    # is the retry, and it is skipped whenever the stamp already matches the running
+    # version. A repair or a local frontend rebuild leaves the version unchanged, so
+    # without this the retry never happens and the cache we failed to remove survives.
+    # Unconditional: whether the rm below succeeds is not knowable for files another
+    # process holds open, and a redundant clear on the next launch is the cheap side.
+    # An `if`, not `[ ... ] && rm`: under `set -e` that compound returns 1 when the
+    # guard is false and would abort the whole install.
+    if [ -n "$_wvc_root" ]; then
+        rm -f "$_wvc_root/.webview-cache-cleared" 2>/dev/null || true
+    fi
     _wvc_cleared=false
     for _wvc_p in "${_wvc_paths[@]}"; do
         # -L too: a dangling symlink still occupies the path.
