@@ -8029,6 +8029,12 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 and _reported_chat_template_override == _auto_chat_template_override
             ):
                 _reported_chat_template_override = None
+            # chat_template_override is one of the runtime fields, so it arrives in the
+            # dict below as the raw backend value. Overwrite it rather than passing it
+            # as a second keyword: two values for one keyword is a TypeError, whatever
+            # the values are.
+            _runtime_fields = _llama_runtime_fields(llama_backend)
+            _runtime_fields["chat_template_override"] = _reported_chat_template_override
             return InferenceStatusResponse(
                 active_model = _display_model_id,
                 model_identifier = _reported_model_identifier,
@@ -8040,8 +8046,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 loading = [],
                 loaded = [_display_model_id] if _display_model_id else [],
                 inference = _inference_cfg,
-                **_llama_runtime_fields(llama_backend),
-                chat_template_override = _reported_chat_template_override,
+                **_runtime_fields,
                 requested_context_length = llama_backend.requested_n_ctx,
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
