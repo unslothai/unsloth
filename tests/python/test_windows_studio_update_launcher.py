@@ -514,3 +514,23 @@ def test_a_non_runnable_backup_falls_through_to_the_legacy_copy(monkeypatch, stu
     _update(studio)
 
     assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+
+
+def test_the_update_lock_lives_outside_the_replaceable_venv(monkeypatch, studio, tmp_path):
+    # setup.ps1 removes the whole $VenvDir to rebuild a stale torch, and Windows
+    # refuses a recursive delete while a handle inside it is open. A lock under
+    # Scripts/ therefore broke exactly the repair path it was meant to guard.
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
+    seen = {}
+
+    def setup(**_kwargs):
+        seen["venv_locks"] = list(scripts.glob("*.update-lock"))
+        seen["home_locks"] = list((studio.STUDIO_HOME).glob("*.update-lock"))
+
+    monkeypatch.setattr(studio, "_run_setup_script", setup)
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
+
+    _update(studio)
+
+    assert seen["venv_locks"] == []
+    assert len(seen["home_locks"]) == 1

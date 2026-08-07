@@ -3215,6 +3215,10 @@ class _WindowsLauncherUpdateTransaction:
         import msvcrt
 
         assert self.lock_path is not None
+        try:
+            self.lock_path.parent.mkdir(parents = True, exist_ok = True)
+        except OSError:
+            pass
         lock_file = self.lock_path.open("a+b")
         try:
             lock_file.seek(0, os.SEEK_END)
@@ -3410,7 +3414,11 @@ class _WindowsLauncherUpdateTransaction:
         self.launcher = scripts / "unsloth.exe"
         self.backup = scripts / "unsloth.exe.update-backup"
         self.legacy_backup = scripts / "unsloth.exe.deleteme"
-        self.lock_path = scripts / "unsloth.exe.update-lock"
+        # Under the Studio home, not the venv: setup.ps1 removes the whole
+        # $VenvDir to rebuild a stale torch, and an open handle inside it makes
+        # Windows refuse the recursive delete. One lock per Studio home is the
+        # right grain anyway, since that is what names the managed venv.
+        self.lock_path = STUDIO_HOME / "unsloth.exe.update-lock"
         # install.ps1 hardlinks this to the launcher, so it survives the old
         # updater's .deleteme unlink and is a valid recovery source.
         self.shim = STUDIO_HOME / "bin" / "unsloth.exe"
