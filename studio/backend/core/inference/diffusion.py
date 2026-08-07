@@ -1601,16 +1601,12 @@ class DiffusionBackend:
             )
             total += int(sum(size for _name, size in files))
         gguf_entry_wanted = gguf_filename and not Path(repo_id).expanduser().exists()
-        # #8001: an entry for a file already on disk announces bytes that never move, so a pick
-        # whose only real cost is its companions reads as re-downloading the model (a cached 13 GB
-        # Q4_K_M plus 16.8 GB of companions was shown as one ~30 GB download).
-        #
-        # Pinned to the revision model_info just reported. try_to_load_from_cache reads the LOCAL
-        # refs/main and never touches the network, so an unpinned hit also matches a snapshot taken
-        # before the repo republished the file. The load's own hf_hub_download revalidates and would
-        # then pull the new multi-GB checkpoint inline, outside the manager's progress, cancellation
-        # and disk preflight. No sha means the lookup failed, so keep the job: announcing a download
-        # that turns out to be free is the harmless direction.
+        # #8001: an entry for a file already on disk announces bytes that never move (a cached
+        # 13 GB Q4_K_M plus 16.8 GB of companions read as one ~30 GB download).
+        # Pinned to the revision model_info just reported, because try_to_load_from_cache reads the
+        # LOCAL refs/main: an unpinned hit also matches a pre-republish snapshot, and the load would
+        # then revalidate and pull the new checkpoint inline, outside the manager's progress,
+        # cancellation and disk preflight. No sha means the lookup failed, so keep the job.
         if gguf_entry_wanted and _hub_file_cached(
             repo_id, gguf_filename, revision = revisions.get("checkpoint")
         ):
