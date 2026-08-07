@@ -1537,10 +1537,18 @@ def _late_cap_helpers():
     seen = {}
 
     class Stub:
-        def evaluate(self, eval_dataset = None, **kw):
+        def evaluate(
+            self,
+            eval_dataset = None,
+            **kw,
+        ):
             seen["ds"] = eval_dataset
 
-        def predict(self, test_dataset = None, **kw):
+        def predict(
+            self,
+            test_dataset = None,
+            **kw,
+        ):
             seen["ds"] = test_dataset
 
     _wrap_sft_evaluate_cap(Stub)
@@ -1548,7 +1556,13 @@ def _late_cap_helpers():
 
 
 class _EvalArgs:
-    def __init__(self, cap, max_length = None, eval_packing = None, packing = False):
+    def __init__(
+        self,
+        cap,
+        max_length = None,
+        eval_packing = None,
+        packing = False,
+    ):
         self.max_seq_length = cap
         self.max_length = max_length
         self.eval_packing = eval_packing
@@ -1572,8 +1586,7 @@ def test_a_streaming_late_split_stays_iterable_style():
 
         def __iter__(self):
             for _ in range(3):
-                yield {"input_ids": list(long_row),
-                       "attention_mask": [1] * len(long_row)}
+                yield {"input_ids": list(long_row), "attention_mask": [1] * len(long_row)}
 
     Stub, seen = _late_cap_helpers()
     stub = Stub()
@@ -1581,8 +1594,7 @@ def test_a_streaming_late_split_stays_iterable_style():
     stub.evaluate(eval_dataset = _Stream())
 
     got = seen["ds"]
-    assert isinstance(got, tud.IterableDataset), \
-        "the cap turned a stream into a map-style dataset"
+    assert isinstance(got, tud.IterableDataset), "the cap turned a stream into a map-style dataset"
     rows = list(got)
     assert rows and all(len(r["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH for r in rows)
 
@@ -1647,8 +1659,7 @@ def test_an_already_short_split_with_nothing_to_drop_is_handed_back_as_is():
     from datasets import Dataset
 
     ids = list(range(8))
-    short = Dataset.from_list(
-        [{"input_ids": ids, "attention_mask": [1] * 8}] * 3)
+    short = Dataset.from_list([{"input_ids": ids, "attention_mask": [1] * 8}] * 3)
     Stub, seen = _late_cap_helpers()
     stub = Stub()
     stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH)

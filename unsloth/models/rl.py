@@ -738,7 +738,12 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         packing = getattr(args, "eval_packing", None)
         return getattr(args, "packing", False) if packing is None else packing
 
-    def _cap(dataset, cap, args, packed_downstream = True):
+    def _cap(
+        dataset,
+        cap,
+        args,
+        packed_downstream = True,
+    ):
         names = _column_names(dataset)
         if "input_ids" not in names:
             return dataset  # raw text: prep tokenizes it with the cap
@@ -843,8 +848,9 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                 given = getattr(self, "eval_dataset", None)
             if cap and given is not None and getattr(self.args, "max_length", None) is None:
                 if isinstance(given, dict):
-                    capped = {k: _cap(v, cap, self.args, packed_downstream)
-                              for k, v in given.items()}
+                    capped = {
+                        k: _cap(v, cap, self.args, packed_downstream) for k, v in given.items()
+                    }
                 else:
                     capped = _cap(given, cap, self.args, packed_downstream)
                 if keyword in kwargs or from_attribute:
@@ -858,8 +864,10 @@ def _wrap_sft_evaluate_cap(trainer_cls):
 
     # The flag is "TRL will pack this split downstream", which is only true of
     # the evaluate path.
-    for name, keyword, packs in (("evaluate", "eval_dataset", True),
-                                 ("predict", "test_dataset", False)):
+    for name, keyword, packs in (
+        ("evaluate", "eval_dataset", True),
+        ("predict", "test_dataset", False),
+    ):
         original = getattr(trainer_cls, name, None)
         if original is None or getattr(original, "_unsloth_eval_cap_wrapped", False):
             continue
