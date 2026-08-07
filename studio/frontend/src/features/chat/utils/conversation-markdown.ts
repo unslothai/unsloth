@@ -45,7 +45,13 @@ export type ConversationMarkdownBlock =
 
 const GENERATED_IMAGE_PLACEHOLDER = "[generated image omitted]";
 const GENERATED_IMAGE_BYTES_KEY = "image_b64";
+const GENERATED_AUDIO_PLACEHOLDER = "[generated audio omitted]";
+const INLINE_DATA_PLACEHOLDER = "[inline data omitted]";
 const LINE_BREAK_PATTERN = /[\r\n]/;
+// Chat stores generated audio as a custom tag holding a base64 data URI; the
+// bytes are for the player, not for a transcript.
+const AUDIO_DATA_URI_PATTERN = /<audio-player\s+src="data:[^"]*"\s*\/>/g;
+const DETAILS_CLOSE_PATTERN = /<\/(details)\s*>/gi;
 
 // Long enough to not be closed early by backticks inside the body.
 function fence(body: string, language = ""): string {
@@ -69,7 +75,7 @@ function inlineCode(value: string): string {
 }
 
 function escapeMarkdownLabel(value: string): string {
-  return value.replace(/([\\[\]])/g, "\\$1");
+  return value.replace(/([\\[\]*])/g, "\\$1");
 }
 
 function safeSourceUrl(raw: string): string {
@@ -101,10 +107,9 @@ function renderValue(label: string, value: unknown): string[] {
   const escapedLabel = escapeMarkdownLabel(label);
   if (typeof value === "string") {
     if (value.includes("\n")) return [`**${escapedLabel}:**`, fence(value)];
-    // Prose stays prose; anything that could be read as markup or a fence
-    // becomes an inline code span so it renders as itself.
-    const inert = /[<`]/.test(value) ? inlineCode(value) : value;
-    return [`**${escapedLabel}:** ${inert}`];
+    // A code span rather than escaping: tool values are data, and any list of
+    // markdown metacharacters to escape is one another syntax slips past.
+    return [`**${escapedLabel}:** ${inlineCode(value)}`];
   }
   if (value === undefined) return [];
   return [
@@ -121,9 +126,12 @@ function renderBlock(block: ConversationMarkdownBlock): string {
   }
   if (block.kind === "thinking") {
     if (!block.text.trim()) return "";
+    // Reasoning that quotes a closing details tag would end the block early;
+    // the entity renders as that same literal text.
+    const text = block.text.replace(DETAILS_CLOSE_PATTERN, "&lt;/$1>");
     // Collapsed so a transcript reads as the conversation first, with the
     // reasoning still there for anyone who wants it.
-    return `<details>\n<summary>thinking</summary>\n\n${block.text}\n\n</details>`;
+    return `<details>\n<summary>thinking</summary>\n\n${text}\n\n</details>`;
   }
   if (block.kind === "attachment") {
     return block.label;
@@ -133,7 +141,7 @@ function renderBlock(block: ConversationMarkdownBlock): string {
     const url = safeSourceUrl(block.url);
     return url ? `**source:** [${title}](<${url}>)` : `**source:** ${title}`;
   }
-  const parts: string[] = [`**tool call:** \`${block.name}\``];
+  const parts: string[] = [`**tool call:** ${inlineCode(block.name)}`];
   if (isPlainObject(block.args)) {
     for (const [key, value] of Object.entries(block.args)) {
       parts.push(...renderValue(key, value));
@@ -148,23 +156,66 @@ function renderBlock(block: ConversationMarkdownBlock): string {
 }
 
 function withoutGeneratedImageBytes(value: unknown): unknown {
-  if (!isPlainObject(value) || typeof value.image_b64 !== "string") {
+  if (
+    !isPlainObject(value) ||
+    typeof value[GENERATED_IMAGE_BYTES_KEY] !== "string"
+  ) {
     return value;
   }
   const metadata = Object.fromEntries(
     Object.entries(value).filter(([key]) => key !== GENERATED_IMAGE_BYTES_KEY),
   );
-  return { image: GENERATED_IMAGE_PLACEHOLDER, ...metadata };
+  // Placeholder last: a result carrying its own image key must not shadow it.
+  return { ...metadata, image: GENERATED_IMAGE_PLACEHOLDER };
+}
+
+function withoutInlineDataBytes(
+  part: Record<string, unknown>,
+): Record<string, unknown> {
+  const inlineData = part.inlineData;
+  if (!isPlainObject(inlineData) || typeof inlineData.data !== "string") {
+    return part;
+  }
+  return {
+    ...part,
+    inlineData: { ...inlineData, data: INLINE_DATA_PLACEHOLDER },
+  };
+}
+
+// Gemini keeps a code-execution turn replayable by stashing the raw part in
+// args.google.native_part, base64 inlineData included. Same reasoning as
+// generated images: keep the metadata, drop the bytes.
+function withoutNativePartBytes(args: unknown): unknown {
+  if (!isPlainObject(args) || !isPlainObject(args.google)) return args;
+  const google = args.google;
+  const native = google.native_part;
+  if (!isPlainObject(native)) return args;
+  const cleaned = Array.isArray(native.parts)
+    ? {
+        ...native,
+        parts: native.parts.map((part) =>
+          isPlainObject(part) ? withoutInlineDataBytes(part) : part,
+        ),
+      }
+    : withoutInlineDataBytes(native);
+  return { ...args, google: { ...google, native_part: cleaned } };
+}
+
+function withoutGeneratedAudioBytes(text: string): string {
+  return text.replace(AUDIO_DATA_URI_PATTERN, GENERATED_AUDIO_PLACEHOLDER);
 }
 
 export function contentBlocksToMarkdownBlocks(
   content: unknown,
-  normalizeToolResult: (
-    result: unknown,
-  ) => unknown = withoutGeneratedImageBytes,
+  normalizeToolResult: (result: unknown) => unknown = (result) => result,
 ): ConversationMarkdownBlock[] {
   if (typeof content === "string") {
-    return [{ kind: "text", text: content }];
+    return [{ kind: "text", text: withoutGeneratedAudioBytes(content) }];
+  }
+  // A record written without content at all would otherwise stringify to the
+  // undefined value, not a string, and take the whole export down with it.
+  if (content == null) {
+    return [];
   }
   if (!Array.isArray(content)) {
     return [{ kind: "text", text: JSON.stringify(content) }];
@@ -175,7 +226,7 @@ export function contentBlocksToMarkdownBlocks(
     if (!part || typeof part !== "object") continue;
     const p = part as Record<string, unknown>;
     if (p.type === "text" && typeof p.text === "string") {
-      blocks.push({ kind: "text", text: p.text });
+      blocks.push({ kind: "text", text: withoutGeneratedAudioBytes(p.text) });
     } else if (p.type === "reasoning" || p.type === "thinking") {
       const thinkText =
         typeof p.thinking === "string"
@@ -188,7 +239,7 @@ export function contentBlocksToMarkdownBlocks(
       blocks.push({
         kind: "tool-call",
         name: typeof p.toolName === "string" ? p.toolName : "unknown",
-        args: p.args,
+        args: withoutNativePartBytes(p.args),
         result: withoutGeneratedImageBytes(normalizeToolResult(p.result)),
       });
     } else if (

@@ -86,14 +86,14 @@ test("renders a multi-line arg as code instead of an escaped json string", () =>
       "</html>",
       "```",
       "",
-      "**title:** Canvas",
+      "**title:** `Canvas`",
       "",
-      "**result:** Rendered HTML canvas: Canvas.",
+      "**result:** `Rendered HTML canvas: Canvas.`",
     ].join("\n"),
   );
 });
 
-test("keeps single line markup inert without fencing prose", () => {
+test("keeps single line markup inert without fencing it", () => {
   assert.equal(
     renderConversationBlocks([
       {
@@ -108,7 +108,60 @@ test("keeps single line markup inert without fencing prose", () => {
       "",
       "**code:** `<script>alert(1)</script>`",
       "",
-      "**result:** ok",
+      "**result:** `ok`",
+    ].join("\n"),
+  );
+});
+
+test("renders markdown syntax in a tool value as its own text", () => {
+  assert.equal(
+    renderConversationBlocks([
+      {
+        kind: "tool-call",
+        name: "search",
+        args: { top_hit: "[login](https://phish.test)" },
+        result: "![x](https://evil.test/pixel.png) **bold**",
+      },
+    ]),
+    [
+      "**tool call:** `search`",
+      "",
+      "**top_hit:** `[login](https://phish.test)`",
+      "",
+      "**result:** `![x](https://evil.test/pixel.png) **bold**`",
+    ].join("\n"),
+  );
+});
+
+test("keeps a tool name with a backtick inside its code span", () => {
+  assert.equal(
+    renderConversationBlocks([{ kind: "tool-call", name: "foo`bar" }]),
+    "**tool call:** ``foo`bar``",
+  );
+});
+
+test("escapes emphasis characters in an arg key", () => {
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "tool-call", name: "run", args: { "a*b": "1" } },
+    ]),
+    ["**tool call:** `run`", "", "**a\\*b:** `1`"].join("\n"),
+  );
+});
+
+test("reasoning that quotes a closing details tag stays inside the block", () => {
+  const markdown = renderConversationBlocks([
+    { kind: "thinking", text: "the tag is </details> here" },
+  ]);
+  assert.equal(
+    markdown,
+    [
+      "<details>",
+      "<summary>thinking</summary>",
+      "",
+      "the tag is &lt;/details> here",
+      "",
+      "</details>",
     ].join("\n"),
   );
 });
@@ -187,6 +240,94 @@ test("omits generated image bytes while retaining useful result metadata", () =>
   assert.match(markdown, /generated image omitted/);
   assert.match(markdown, /image\/png/);
   assert.match(markdown, /1024x1024/);
+});
+
+test("keeps the placeholder when a result carries its own image key", () => {
+  const markdown = renderConversationBlocks(
+    contentBlocksToMarkdownBlocks([
+      {
+        type: "tool-call",
+        toolName: "image_generation",
+        result: {
+          image_b64: "very-large-base64-payload",
+          image: "thumbnail-that-should-not-win",
+        },
+      },
+    ]),
+  );
+  assert.match(markdown, /generated image omitted/);
+  assert.doesNotMatch(markdown, /thumbnail-that-should-not-win/);
+});
+
+test("omits Gemini inline data bytes while keeping the part metadata", () => {
+  const markdown = renderConversationBlocks(
+    contentBlocksToMarkdownBlocks([
+      {
+        type: "tool-call",
+        toolName: "code_execution",
+        args: {
+          google: {
+            native_part: {
+              parts: [
+                { executableCode: { code: "print(1)", language: "PYTHON" } },
+                {
+                  inlineData: {
+                    mimeType: "image/png",
+                    data: "very-large-base64-payload",
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    ]),
+  );
+  assert.doesNotMatch(markdown, /very-large-base64-payload/);
+  assert.match(markdown, /inline data omitted/);
+  assert.match(markdown, /image\/png/);
+  assert.match(markdown, /print\(1\)/);
+});
+
+test("omits Gemini inline data bytes from a legacy single-object part", () => {
+  const markdown = renderConversationBlocks(
+    contentBlocksToMarkdownBlocks([
+      {
+        type: "tool-call",
+        toolName: "code_execution",
+        args: {
+          google: {
+            native_part: {
+              inlineData: { mimeType: "image/png", data: "legacy-payload" },
+            },
+          },
+        },
+      },
+    ]),
+  );
+  assert.doesNotMatch(markdown, /legacy-payload/);
+  assert.match(markdown, /inline data omitted/);
+});
+
+test("omits generated audio bytes from a text part", () => {
+  const markdown = renderConversationBlocks(
+    contentBlocksToMarkdownBlocks([
+      {
+        type: "text",
+        text: 'Here it is: <audio-player src="data:audio/wav;base64,QUJD" />',
+      },
+    ]),
+  );
+  assert.equal(markdown, "Here it is: [generated audio omitted]");
+});
+
+test("returns no blocks for a message stored without content", () => {
+  assert.deepEqual(contentBlocksToMarkdownBlocks(undefined), []);
+  assert.deepEqual(contentBlocksToMarkdownBlocks(null), []);
+  assert.equal(
+    renderConversationBlocks(contentBlocksToMarkdownBlocks(undefined)),
+    "",
+  );
 });
 
 test("preserves assistant citation sources in markdown exports", () => {
