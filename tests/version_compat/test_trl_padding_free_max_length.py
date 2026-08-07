@@ -2165,3 +2165,107 @@ def test_a_transformed_split_is_not_memoized_by_fingerprint():
     supervised["both"] = False
     stub.evaluate(eval_dataset = split)
     assert len(seen["ds"]) == 1, "the memo served a cap taken before the change"
+
+
+def test_evaluate_caps_the_split_a_string_key_names():
+    """`evaluate(eval_dataset = "validation")` is the supported way to pick one
+    split out of a stored dict: `get_eval_dataloader` resolves it as
+    `self.eval_dataset[eval_dataset]`. Capping the KEY is a no-op, so the split
+    it names reached the collator over `max_seq_length` with `max_length = None`.
+    """
+    _, tok = _load_plain()
+    Stub, seen = _stub_with_stored_eval()
+    stub = Stub()
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
+    stub.eval_dataset = {"validation": _tokenized_dataset(tok)}
+    stub.evaluate("validation")
+
+    assert seen["ds"] == "validation", "the key itself must still be handed down"
+    stored = stub.eval_dataset["validation"]
+    assert max(len(r) for r in stored["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
+
+
+def test_an_unknown_string_key_is_handed_straight_back():
+    """A key that is not in the stored dict, or no dict at all, is HF's problem
+    to report: capping must not turn it into a different error."""
+    Stub, seen = _stub_with_stored_eval()
+    stub = Stub()
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
+    stub.eval_dataset = {"validation": None}
+    stub.evaluate("missing")
+
+    assert seen["ds"] == "missing"
+
+
+def _transformed_tokenized_dataset(tok):
+    """A split whose backing table says `text` while it yields long `input_ids`."""
+    from datasets import Dataset
+
+    ids = tok("The quick brown fox. " * 200)["input_ids"]
+    ds = Dataset.from_list([{"text": "x"}] * 4)
+    return ds.with_transform(lambda batch: {
+        "input_ids": [list(ids)] * len(batch["text"]),
+        "attention_mask": [[1] * len(ids)] * len(batch["text"]),
+    })
+
+
+class _SharedIteratorStream:
+    """A single-pass stream with no `column_names`: `iter()` hands back the same
+    exhausting generator every time, so a probe read is a row the run loses."""
+
+    def __init__(self, rows):
+        self._rows = iter(rows)
+
+    def __iter__(self):
+        return self._rows
+
+
+def test_a_transformed_tokenized_split_keeps_its_cap(tmp_path, trl_has_guard):
+    """`column_names` describes the BACKING table, so a `with_transform` split
+    storing `text` and yielding `input_ids` answered "raw" and the cap was
+    cleared for rows preparation then never truncates."""
+    if not trl_has_guard:
+        pytest.skip("no guard in this TRL: the block under test is not generated at all")
+    tok = _load_plain()[1]
+    trainer = _build(
+        tmp_path,
+        dataset = _transformed_tokenized_dataset,
+        padding_free = True,
+        max_length = _MODEL_MAX_SEQ_LENGTH,
+    )
+    assert trainer.args.max_length is not None, "nothing else enforces the cap"
+
+
+def test_an_unprobeable_tokenized_stream_keeps_its_cap(tmp_path, trl_has_guard):
+    """A stream with no schema and no spare row cannot be ruled tokenized, and
+    clearing the cap on that guess leaves padding-free training uncapped."""
+    if not trl_has_guard:
+        pytest.skip("no guard in this TRL: the block under test is not generated at all")
+    tok = _load_plain()[1]
+    ids = tok("The quick brown fox. " * 200)["input_ids"]
+    rows = [{"input_ids": list(ids), "attention_mask": [1] * len(ids)}] * 4
+    trainer = _build(
+        tmp_path,
+        dataset = lambda _tok: _SharedIteratorStream(rows),
+        padding_free = True,
+        max_length = _MODEL_MAX_SEQ_LENGTH,
+    )
+    assert trainer.args.max_length is not None, "nothing else enforces the cap"
+
+
+def test_the_schema_read_distrusts_a_transform_and_an_unprobeable_stream():
+    """The source-level half of the two tests above, which only run on a TRL that
+    ships the guard. A `with_transform` split must not be believed on its backing
+    `column_names`, and a stream that cannot spare a row must refuse rather than
+    assume preparation will truncate it."""
+    block = _padding_free_codegen_block()
+    assert "_unsloth_transformed" in block, "the transform is not detected at all"
+    assert (
+        "None if _unsloth_transformed else getattr(train_dataset, 'column_names', None)"
+        in block
+    ), "a transformed split is still read off its backing columns"
+    guard = "if _unsloth_probe_cols is train_dataset or _unsloth_probe_cols is iter(train_dataset):"
+    assert guard in block
+    refusal = block.index("_unsloth_prep_truncates = False", block.index(guard))
+    assert refusal - block.index(guard) < 200, (
+        "an unprobeable stream still claims preparation will truncate it")

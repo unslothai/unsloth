@@ -950,6 +950,17 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         cap,
         drop_unsupervised = True,
     ):
+        # `evaluate(eval_dataset = "validation")` is the supported way to pick one
+        # split out of a stored dict: `get_eval_dataloader` resolves it as
+        # `self.eval_dataset[eval_dataset]`. Capping the KEY is a no-op, so the
+        # split it names reached the collator uncapped. Cap it where it is stored
+        # and hand the key straight back.
+        if isinstance(given, str):
+            stored = getattr(trainer, "eval_dataset", None)
+            if isinstance(stored, dict) and given in stored:
+                capped = _cap_cached(trainer, stored[given], cap, drop_unsupervised)
+                if capped is not stored[given]: stored[given] = capped
+            return given
         if isinstance(given, dict):
             capped = {k: _cap_cached(trainer, v, cap, drop_unsupervised) for k, v in given.items()}
             if all(capped[k] is v for k, v in given.items()):
@@ -1697,21 +1708,33 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # it, and nothing here chains it back, so the run began at row 2.
                     # `iter(x) is iter(x)` marks the streams that cannot spare one --
                     # the same signal the cap scan and the schema probe use.
+                    # A `with_transform` split reports its BACKING columns, so a
+                    # transform yielding `input_ids` over a stored `text` answered
+                    # "raw" and the cap was cleared for rows nothing then truncates.
+                    # Its rows are rebuilt on every read, so probing one is free.
+                    # An unprobeable stream cannot be ruled tokenized either, and
+                    # `True` there clears the cap on the same guess: refuse instead
+                    # and keep `max_length` for TRL's collator.
                     "    try:\n"
-                    "        _unsloth_columns = getattr(train_dataset, 'column_names', None)\n"
+                    "        _unsloth_fmt = getattr(train_dataset, 'format', None)\n"
+                    "        _unsloth_fmt = _unsloth_fmt.get('type') if isinstance(_unsloth_fmt, dict) else None\n"
+                    "        _unsloth_transformed = (_unsloth_fmt or getattr(train_dataset, '_format_type', None)) == 'custom'\n"
+                    "        _unsloth_columns = None if _unsloth_transformed else getattr(train_dataset, 'column_names', None)\n"
                     "        if _unsloth_columns is None and train_dataset is not None:\n"
                     "            _unsloth_probe_cols = iter(train_dataset)\n"
-                    "            if not (_unsloth_probe_cols is train_dataset or _unsloth_probe_cols is iter(train_dataset)):\n"
+                    "            if _unsloth_probe_cols is train_dataset or _unsloth_probe_cols is iter(train_dataset):\n"
+                    "                _unsloth_prep_truncates = False\n"
+                    "            else:\n"
                     "                _unsloth_first_row = next(_unsloth_probe_cols, None)\n"
                     "                if isinstance(_unsloth_first_row, dict): _unsloth_columns = list(_unsloth_first_row.keys())\n"
-                    "        if _unsloth_columns is None:\n"
+                    "        if _unsloth_columns is None and not _unsloth_transformed:\n"
                     "            _unsloth_columns = getattr(train_dataset, 'column_names', None)\n"
                     "            if isinstance(_unsloth_columns, dict):\n"
                     "                _unsloth_columns = [_c for _v in _unsloth_columns.values() for _c in (_v or [])]\n"
                     "        if _unsloth_columns is not None and ('input_ids' in _unsloth_columns or 'labels' in _unsloth_columns):\n"
                     "            _unsloth_prep_truncates = False\n"
                     "    except Exception:\n"
-                    "        pass\n"
+                    "        _unsloth_prep_truncates = False\n"
                     # Already-tokenized rows are not a dead end. TRL's own _prepare_dataset
                     # truncates them (sft_trainer.py: `elif args.max_length is not None:
                     # truncate_dataset(...)`), and the LM collator it builds passes no
