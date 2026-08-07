@@ -539,3 +539,58 @@ def test_other_providers_do_not_get_the_continuation_flags(monkeypatch, provider
     body = _continuation_body(monkeypatch, provider_type, base_url)
     assert "continue_final_message" not in body
     assert "add_generation_prompt" not in body
+
+
+@pytest.mark.parametrize(
+    "provider_type, expected",
+    [
+        ("vllm", True),
+        ("openrouter", True),
+        ("kimi", True),
+        # Any user-supplied base_url: a strict endpoint 400s on an unknown field.
+        ("custom", False),
+        ("ollama", False),
+        # "openai" is absent: it routes to /v1/responses, which reports usage itself.
+    ],
+)
+def test_streamed_usage_is_requested_only_where_documented(
+    monkeypatch, provider_type, expected
+):
+    # An OAI-compatible stream omits usage without stream_options.include_usage, and
+    # these providers report no llama.cpp timings, so the monitor has no token count to
+    # derive a speed from and the row shows a blank Speed for every completed request.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = provider_type,
+            base_url = "http://provider.example/v1",
+            api_key = "sk-test",
+        )
+        await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "m",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 64,
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    assert captured["body"]["stream"] is True
+    if expected:
+        assert captured["body"]["stream_options"] == {"include_usage": True}
+    else:
+        assert "stream_options" not in captured["body"]

@@ -31,6 +31,14 @@ _TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom
 # /v1/chat/completions.
 _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 
+# The subset documenting stream_options.include_usage. An OAI-compatible stream omits
+# usage without it, and these providers report no llama.cpp timings either, so the
+# monitor has no token count to derive a speed from. Same caution as the flag above:
+# "custom" is any user-supplied base_url and a strict endpoint 400s on an unknown field.
+# "openai" is absent because it never reaches this body: it routes to /v1/responses,
+# which reports usage on its own.
+_USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
+
 # structlog so INFO diagnostics reach the backend's JSON log stream (the
 # stdlib root logger defaults to WARNING with no handlers). It accepts the
 # existing printf-style positional args.
@@ -998,6 +1006,9 @@ class ExternalProviderClient:
             "presence_penalty": presence_penalty,
             **_continue_body,
         }
+        # Only alongside stream=True: the field is rejected on a non-streaming request.
+        if stream and self.provider_type in _USAGE_STREAM_OPTION_PROVIDERS:
+            body["stream_options"] = {"include_usage": True}
         if max_tokens is not None:
             # Newer OpenAI models (gpt-4o, gpt-5.x) reject max_tokens
             if self.provider_type == "openai":

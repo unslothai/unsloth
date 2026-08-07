@@ -11269,9 +11269,7 @@ async def openai_chat_completions(
                         _stream_usage,
                         _monitor_context_length(),
                         timings = _stream_timings,
-                        stop_reason = _clamp_finish_reason(_stream_finish)
-                        if _stream_finish
-                        else None,
+                        stop_reason = _clamp_finish_reason(_stream_finish),
                     )
                     api_monitor.finish(
                         monitor_id, "cancelled" if cancel_event.is_set() else "completed"
@@ -11597,9 +11595,7 @@ async def openai_chat_completions(
                     },
                     _monitor_context_length(),
                     timings = completion_timings,
-                    stop_reason = _clamp_finish_reason(completion_finish)
-                    if completion_finish
-                    else None,
+                    stop_reason = _clamp_finish_reason(completion_finish),
                 )
                 api_monitor.finish(
                     monitor_id, "cancelled" if cancel_event.is_set() else "completed"
@@ -11841,9 +11837,7 @@ async def openai_chat_completions(
                         _stream_usage,
                         _monitor_context_length(),
                         timings = _stream_timings,
-                        stop_reason = _clamp_finish_reason(_stream_finish)
-                        if _stream_finish
-                        else None,
+                        stop_reason = _clamp_finish_reason(_stream_finish),
                     )
                     api_monitor.finish(
                         monitor_id, "cancelled" if cancel_event.is_set() else "completed"
