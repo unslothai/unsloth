@@ -722,6 +722,72 @@ def test_cached_inventory_requests_share_scan(monkeypatch, inventory_request, sc
     assert scans == 1 and cache_inventory._cached_inventory_flights == {}
 
 
+@pytest.mark.parametrize(
+    "scanner_name, inventory_call",
+    [
+        ("_scan_cached_gguf", "gguf"),
+        ("_scan_cached_models", "models"),
+    ],
+)
+def test_cached_inventory_discards_a_scan_that_raced_an_invalidation(
+    monkeypatch, scanner_name, inventory_call
+):
+    """A delete landing mid-scan must supersede the rows that scan produced.
+
+    The pre-scan epoch check only covers the source read; the walk itself takes
+    seconds, which is exactly when a download or deletion completes.
+    """
+    epoch, scans = [0], []
+
+    def scan(**_kwargs):
+        scans.append(1)
+        if len(scans) == 1:
+            epoch[0] += 1          # a deletion completes while this walk runs
+            return [{"repo_id": "Org/Deleted"}]
+        return [{"repo_id": "Org/Kept"}]
+
+    monkeypatch.setattr(cache_inventory, scanner_name, scan)
+    monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: [])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = Path("/cache")),
+    )
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
+    monkeypatch.setattr(cache_inventory, "_last_confirmed_inventory", {})
+
+    rows = asyncio.run(cache_inventory._shared_cached_inventory_scan(inventory_call, scan))
+    assert rows == [{"repo_id": "Org/Kept"}], "rows from the superseded walk were served"
+    assert len(scans) == 2, "the superseded walk was not retried"
+    assert cache_inventory._cached_inventory_flights == {}
+
+
+def test_cached_inventory_scan_stops_retrying_under_constant_invalidation(monkeypatch):
+    """Bounded retries: an invalidation rate above the scan rate must still answer."""
+    epoch, scans = [0], []
+
+    def scan(**_kwargs):
+        scans.append(1)
+        epoch[0] += 1              # every walk is superseded before it returns
+        return [{"repo_id": "Org/Model"}]
+
+    monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: [])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = Path("/cache")),
+    )
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
+    monkeypatch.setattr(cache_inventory, "_last_confirmed_inventory", {})
+
+    async def run():
+        return await asyncio.wait_for(
+            cache_inventory._shared_cached_inventory_scan("gguf", scan), timeout = 5
+        )
+
+    assert asyncio.run(run()) == []
+    assert len(scans) == cache_inventory._INVENTORY_SCAN_MAX_ATTEMPTS
+    assert cache_inventory._cached_inventory_flights == {}
+
+
 def test_shared_scan_scopes_tasks_to_event_loop():
     flights, results = {}, []
     barrier = threading.Barrier(3)

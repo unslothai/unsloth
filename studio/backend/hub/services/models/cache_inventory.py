@@ -63,6 +63,12 @@ _cached_inventory_flights: dict[
     tuple[asyncio.AbstractEventLoop, tuple[str, int]], asyncio.Task[list[dict]]
 ] = {}
 
+# Retrying a superseded scan is only worth it while invalidations are occasional;
+# past this the endpoint has to answer instead of restarting the walk forever.
+_INVENTORY_SCAN_MAX_ATTEMPTS = 8
+# Last scan per inventory name that confirmed its epoch, served when the cap is hit.
+_last_confirmed_inventory: dict[str, list[dict]] = {}
+
 # Identity for a cached file with no HF blob (Windows without Developer Mode: hf
 # moves the blob into snapshots/ and leaves blobs/ empty).
 _LOCAL_SIZE_IDENTITY_PREFIX = "size:"
@@ -564,20 +570,38 @@ def _scan_cached_inventory_snapshot(scanner, expected_epoch: int) -> list[dict]:
     cache_scans = all_hf_cache_scans()
     if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
         raise _CacheSourceChanged
-    return scanner(cache_scans = cache_scans, active_hub_cache = active_hub_cache)
+    rows = scanner(cache_scans = cache_scans, active_hub_cache = active_hub_cache)
+    # The walk itself takes seconds, so a delete or a finished download landing
+    # during it supersedes these rows just as surely as one landing before it:
+    # without this a repo deleted mid-scan is still listed in the response.
+    if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
+        raise _CacheSourceChanged
+    return rows
 
 
 async def _shared_cached_inventory_scan(name: str, scanner) -> list[dict]:
-    while True:
+    for _attempt in range(_INVENTORY_SCAN_MAX_ATTEMPTS):
         epoch = hf_cache_scan.hf_cache_scans_epoch()
         try:
-            return await hf_cache_scan.shared_scan(
+            rows = await hf_cache_scan.shared_scan(
                 _cached_inventory_flights,
                 (name, epoch),
-                lambda: asyncio.to_thread(_scan_cached_inventory_snapshot, scanner, epoch),
+                lambda expected_epoch = epoch: asyncio.to_thread(
+                    _scan_cached_inventory_snapshot, scanner, expected_epoch
+                ),
             )
         except _CacheSourceChanged:
             continue
+        _last_confirmed_inventory[name] = rows
+        return rows
+    # Invalidations are arriving faster than the walk completes, so no scan will
+    # confirm as current. Answer with the last one that did rather than spin a
+    # full cache walk per epoch forever.
+    logger.warning(
+        "Cached %s inventory kept racing cache invalidations; serving the last confirmed scan",
+        name,
+    )
+    return _last_confirmed_inventory.get(name, [])
 
 
 async def list_cached_gguf_response(hf_token: Optional[str] = None):
