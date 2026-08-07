@@ -39,6 +39,8 @@ from utils.helper_precache_settings import (
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
 from utils.openai_auto_switch_settings import (
+    BATCH_SIZE_MAX,
+    BATCH_SIZE_MIN,
     DEFAULT_AUTO_UNLOAD_KEEP_KV,
     DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED,
     DEFAULT_OPENAI_AUTO_SWITCH_ENABLED,
@@ -176,10 +178,15 @@ class ModelOverridePayload(BaseModel):
     max_seq_length: Optional[int] = Field(default = None, ge = 1, le = 1048576)
     custom_context_length: Optional[int] = Field(default = None, ge = 1, le = 1048576)
     kv_cache_dtype: Optional[str] = Field(default = None, max_length = 32)
+    # A discrete set, enforced by the normalizer; these bounds only block absurd values.
+    mlx_kv_bits: Optional[int] = Field(default = None, ge = 2, le = 8)
     speculative_type: Optional[str] = Field(default = None, max_length = 32)
     spec_draft_n_max: Optional[int] = Field(default = None, ge = 1, le = 16)
     # Parallel decode slots (llama-server --parallel), GGUF-only; None follows the server default.
     n_parallel: Optional[int] = Field(default = None, ge = PARALLEL_SLOTS_MIN, le = PARALLEL_SLOTS_MAX)
+    # prompt batch sizes (--batch-size / --ubatch-size), gguf-only; none = llama.cpp defaults
+    n_batch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
+    n_ubatch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
     tensor_parallel: bool = False
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
     chat_template_override: Optional[str] = None
@@ -213,6 +220,8 @@ class ModelOverridePayload(BaseModel):
         "custom_context_length",
         "spec_draft_n_max",
         "n_parallel",
+        "n_batch",
+        "n_ubatch",
         "gpu_layers",
         "n_cpu_moe",
         "gpu_ids",
@@ -607,9 +616,12 @@ def update_openai_auto_switch_override(
                 max_seq_length = payload.max_seq_length,
                 custom_context_length = payload.custom_context_length,
                 kv_cache_dtype = payload.kv_cache_dtype,
+                mlx_kv_bits = payload.mlx_kv_bits,
                 speculative_type = payload.speculative_type,
                 spec_draft_n_max = payload.spec_draft_n_max,
                 n_parallel = payload.n_parallel,
+                n_batch = payload.n_batch,
+                n_ubatch = payload.n_ubatch,
                 tensor_parallel = payload.tensor_parallel,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,

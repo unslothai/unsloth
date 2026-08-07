@@ -20,6 +20,9 @@ from pydantic import BaseModel
 from typing import List, Optional
 import structlog
 from loggers import get_logger
+
+# Dependency-light leaf (PEP 562 package init): no llama.cpp / torch import chain.
+from core.inference.model_ids import display_model_name
 from utils.utils import canonical_model_repo_id, log_and_http_error
 
 import re as _re
@@ -1806,7 +1809,7 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
             _audio_type = model_data.get("audio_type")
             model_info = ModelDetails(
                 id = model_name,
-                name = model_name.split("/")[-1] if "/" in model_name else model_name,
+                name = display_model_name(model_name),
                 is_vision = _is_vision,
                 is_lora = model_data.get("is_lora", False),
                 is_mlx = model_data.get("is_mlx", False),
@@ -1817,15 +1820,17 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
             )
             loaded_models.append(model_info)
 
-        # Include active GGUF model (loaded via llama-server).
-        from routes.inference import get_llama_cpp_backend
+        # Active GGUF model (llama-server), labelled from the display id
+        # /api/inference/status publishes; the id stays raw for agents-tab's path filter.
+        from routes.inference import _llama_status_model_ids, get_llama_cpp_backend
 
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_loaded and llama_backend.model_identifier:
+            display_id, _reported_identifier = _llama_status_model_ids(llama_backend)
             loaded_models.append(
                 ModelDetails(
                     id = llama_backend.model_identifier,
-                    name = llama_backend.model_identifier.split("/")[-1],
+                    name = display_model_name(display_id or llama_backend.model_identifier),
                     is_gguf = True,
                     is_vision = llama_backend.is_vision,
                     is_audio = getattr(llama_backend, "_is_audio", False),
@@ -1842,7 +1847,7 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
             if model_id not in seen_ids:
                 model_info = loaded_by_id.get(model_id) or ModelDetails(
                     id = model_id,
-                    name = model_id.split("/")[-1] if "/" in model_id else model_id,
+                    name = display_model_name(model_id),
                     is_gguf = model_id.upper().endswith("-GGUF"),
                     is_mlx = _looks_like_mlx_repo(model_id),
                 )
@@ -3279,12 +3284,16 @@ async def get_gguf_variants(
                     downloaded = bool(v.downloaded),
                     update_available = bool(getattr(v, "update_available", False)),
                     partial = bool(getattr(v, "partial", False)),
+                    cleanable = bool(getattr(v, "cleanable", False)),
                 )
                 for v in response.variants
             ],
             has_vision = response.has_vision,
             default_variant = response.default_variant,
             context_length = await _read_native_context_length_bounded(context_model, local),
+            resolved_locally = bool(getattr(response, "resolved_locally", False)),
+            loadable_variants = getattr(response, "loadable_variants", None),
+            loadable = getattr(response, "loadable", None),
         )
     except HTTPException:
         raise

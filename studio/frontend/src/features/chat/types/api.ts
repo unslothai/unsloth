@@ -52,6 +52,7 @@ export interface LoadModelRequest {
   approved_remote_code_fingerprint?: string | null;
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
+  mlx_kv_bits?: number | null;
   /**
    * Speculative decoding mode for GGUF models. Canonical values: "auto"
    * (platform-aware: MTP on MTP GGUFs, ngram-mod fallback for sub-3B), "mtp"
@@ -71,6 +72,10 @@ export interface LoadModelRequest {
    * the launch default. The VRAM fitter may launch fewer to stay on GPU.
    */
   n_parallel?: number | null;
+  /** prompt batch size (--batch-size), 1..65536; omit/null = llama.cpp default 2048, gguf only */
+  n_batch?: number | null;
+  /** prompt micro-batch size (--ubatch-size), 1..65536; omit/null = llama.cpp default 512, capped at the batch size */
+  n_ubatch?: number | null;
   /**
    * Split the model across GPUs by tensor (--split-mode tensor) instead
    * of by layer for GGUF models. Multi-GPU only; no effect on a single GPU.
@@ -163,6 +168,7 @@ export function isMultimodalResponse(
 }
 
 export interface LoadModelResponse {
+  is_mlx?: boolean;
   status: string;
   model: string;
   display_name: string;
@@ -200,6 +206,12 @@ export interface LoadModelResponse {
   supports_preserve_thinking?: boolean;
   supports_tools?: boolean;
   cache_type_kv?: string | null;
+  mlx_kv_bits?: number | null;
+  mlx_kv_bits_requested?: number | null;
+  mlx_kv_quant_eligibility?: string | null;
+  mlx_kv_quant_reason?: string | null;
+  chat_template_override_reason?: string | null;
+  mlx_kv_quant_note?: string | null;
   chat_template?: string | null;
   /** Canonical UI-facing mode the load request resolved to. See LoadModelRequest. */
   speculative_type?: string | null;
@@ -223,6 +235,10 @@ export interface LoadModelResponse {
   /** Slots llama-server actually runs, after any fit-time reduction. Null for
    * non-GGUF loads. */
   parallel_slots?: number | null;
+  /** batch size (--batch-size) the load was invoked with; null = default */
+  requested_n_batch?: number | null;
+  /** micro-batch size (--ubatch-size) the load was invoked with; null = default */
+  requested_n_ubatch?: number | null;
 }
 
 export interface UnloadModelRequest {
@@ -233,6 +249,7 @@ export interface UnloadModelRequest {
 }
 
 export interface InferenceStatusResponse {
+  is_mlx?: boolean;
   active_model: string | null;
   model_identifier?: string | null;
   is_vision: boolean;
@@ -272,6 +289,12 @@ export interface InferenceStatusResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   cache_type_kv?: string | null;
+  mlx_kv_bits?: number | null;
+  mlx_kv_bits_requested?: number | null;
+  mlx_kv_quant_eligibility?: string | null;
+  mlx_kv_quant_reason?: string | null;
+  chat_template_override_reason?: string | null;
+  mlx_kv_quant_note?: string | null;
   chat_template_override?: string | null;
   /** Canonical UI-facing mode currently active. See LoadModelRequest. */
   speculative_type?: string | null;
@@ -295,6 +318,10 @@ export interface InferenceStatusResponse {
   /** Slots llama-server actually runs, after any fit-time reduction. Null when
    * no GGUF model is loaded. */
   parallel_slots?: number | null;
+  /** batch size (--batch-size) the active load was invoked with; null = default */
+  requested_n_batch?: number | null;
+  /** micro-batch size (--ubatch-size) the active load was invoked with; null = default */
+  requested_n_ubatch?: number | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;
@@ -457,6 +484,12 @@ export interface OpenAIChatCompletionsRequest {
     | "xhigh"
     | null;
   preserve_thinking?: boolean | null;
+  /**
+   * Resume the trailing assistant turn rather than opening a new one: the rendered
+   * prompt ends inside the partial answer, so the model emits its next token. Local
+   * models only -- the external-provider proxy forwards an explicit field list.
+   */
+  continue_final_message?: boolean;
   thinking?: { type: "disabled" | "enabled" } | null;
   enable_tools?: boolean | null;
   enabled_tools?: string[];

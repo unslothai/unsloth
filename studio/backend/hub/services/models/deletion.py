@@ -82,13 +82,28 @@ def _path_exists_or_symlink(path: Path) -> bool:
 
 
 def _repo_file_matches(target_repo, predicate) -> list[tuple[Path, Optional[Path], str]]:
+    """Files whose snapshot-relative path satisfies *predicate*.
+
+    Relative, not the bare ``file_name``: huggingface_hub sets that to
+    ``file_path.name`` (and our own recovery scan to ``entry.name``), so a
+    companion in ``dspark/`` or ``MTP/`` arrived here indistinguishable from a
+    root file. Every predicate below keys on the directory for at least one
+    supported layout, and the quant labels they extract are unchanged by the
+    prefix.
+    """
     matches: list[tuple[Path, Optional[Path], str]] = []
     for rev in getattr(target_repo, "revisions", ()):
+        snapshot = getattr(rev, "snapshot_path", None)
         for f in getattr(rev, "files", ()):
             name = str(getattr(f, "file_name", ""))
+            file_path = getattr(f, "file_path", None)
+            if snapshot and file_path:
+                try:
+                    name = Path(file_path).relative_to(Path(snapshot)).as_posix()
+                except ValueError:
+                    pass
             if not predicate(name):
                 continue
-            file_path = getattr(f, "file_path", None)
             if not file_path:
                 continue
             blob_path = getattr(f, "blob_path", None)

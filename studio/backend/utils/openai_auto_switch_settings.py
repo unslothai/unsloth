@@ -279,11 +279,17 @@ VALID_SPECULATIVE_TYPES = frozenset(
 # Only these consume spec_draft_n_max (mirrors DRAFT_N_MAX_SPEC_TYPES in the UI).
 DRAFT_N_MAX_SPEC_TYPES = frozenset({"mtp", "mtp+ngram", "draft-mtp", "dspark", "draft-dspark"})
 VALID_GPU_MEMORY_MODES = frozenset({"auto", "manual"})
+# Mirrors MLX_KV_BITS_CHOICES in core/inference/mlx_inference.py; a set, not a range.
+VALID_MLX_KV_BITS = frozenset({8, 6, 5, 4, 3, 2})
 
 # Mirrors PARALLEL_MIN/MAX in llama_server_args.py. Mirrored not imported: that module owns
 # the extra-args allow-list this one must stay out of.
 PARALLEL_SLOTS_MIN = 1
 PARALLEL_SLOTS_MAX = 64
+
+# mirrors BATCH_MIN/MAX in llama_server_args.py, same reason as the slot bounds
+BATCH_SIZE_MIN = 1
+BATCH_SIZE_MAX = 65536
 
 MAX_SEQ_LENGTH_CEILING = 1048576
 MAX_CHAT_TEMPLATE_OVERRIDE_BYTES = 65_536
@@ -340,6 +346,11 @@ def normalize_model_override(payload: dict[str, Any]) -> dict[str, Any]:
     if kv_cache_dtype:
         entry["kv_cache_dtype"] = kv_cache_dtype
 
+    # MLX quantizes by bit width, not by a llama.cpp dtype name, so it is its own field.
+    mlx_kv_bits = payload.get("mlx_kv_bits")
+    if not isinstance(mlx_kv_bits, bool) and mlx_kv_bits in VALID_MLX_KV_BITS:
+        entry["mlx_kv_bits"] = int(mlx_kv_bits)
+
     speculative_type = _clean_str(payload.get("speculative_type"), VALID_SPECULATIVE_TYPES)
     if speculative_type:
         entry["speculative_type"] = speculative_type
@@ -356,6 +367,12 @@ def normalize_model_override(payload: dict[str, Any]) -> dict[str, Any]:
     )
     if n_parallel:
         entry["n_parallel"] = n_parallel
+
+    # blank or out of range means "follow the llama.cpp defaults (2048 / 512)"
+    for key in ("n_batch", "n_ubatch"):
+        parsed = _bounded_int(payload.get(key), minimum = BATCH_SIZE_MIN, maximum = BATCH_SIZE_MAX)
+        if parsed:
+            entry[key] = parsed
 
     if _coerce_bool(payload.get("tensor_parallel")):
         entry["tensor_parallel"] = True
@@ -439,6 +456,8 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
     for source, target in (
         ("llama_extra_args", "llama_extra_args"),
         ("kv_cache_dtype", "cache_type_kv"),
+        # Ungated like the UI's own load payload: non-MLX backends ignore it.
+        ("mlx_kv_bits", "mlx_kv_bits"),
         ("speculative_type", "speculative_type"),
         ("spec_draft_n_max", "spec_draft_n_max"),
         ("tensor_parallel", "tensor_parallel"),
@@ -451,6 +470,11 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         # Slots are a llama-server flag, and the picker sends them for GGUF only.
         if override.get("n_parallel") is not None:
             kwargs["n_parallel"] = override["n_parallel"]
+        # batch sizes are llama-server flags too (--batch-size / --ubatch-size)
+        if override.get("n_batch") is not None:
+            kwargs["n_batch"] = override["n_batch"]
+        if override.get("n_ubatch") is not None:
+            kwargs["n_ubatch"] = override["n_ubatch"]
         if override.get("gpu_memory_mode") is not None:
             kwargs["gpu_memory_mode"] = override["gpu_memory_mode"]
         if override.get("gpu_layers") is not None:
@@ -484,6 +508,8 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             # Sent only when on, so it is always the Tensor Parallelism toggle overriding the
             # flag; an override that leaves the toggle off keeps a row/none/layer split mode.
             strip_split_mode = bool(kwargs.get("tensor_parallel")),
+            strip_batch = "n_batch" in kwargs,
+            strip_ubatch = "n_ubatch" in kwargs,
         )
     return kwargs
 
