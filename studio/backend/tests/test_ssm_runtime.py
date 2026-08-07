@@ -145,9 +145,13 @@ def test_ssm_model_installs_causal_then_mamba(monkeypatch):
 
     monkeypatch.setattr(ssm_runtime, "_install_kernel", fake_install)
     ssm_runtime.ensure_ssm_runtime("unsloth/NVIDIA-Nemotron-3-Nano-4B")
-    assert order == ["causal_conv1d", "mamba_ssm"]
+    expected = ["mamba_ssm"] if sys.platform == "win32" else ["causal_conv1d", "mamba_ssm"]
+    assert order == expected
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason = "causal-conv1d is skipped on Windows (no prebuilt wheel)"
+)
 def test_causal_only_model_skips_mamba(monkeypatch):
     order = []
     monkeypatch.setattr(
