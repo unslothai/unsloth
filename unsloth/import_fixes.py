@@ -2438,6 +2438,15 @@ def _unsupported_conversion_symbol(qualified, donor_value = None):
 # `minimax`, `mellum`, `qwen3_next`, `solar_open` and `flex_olmo` are all fused
 # MoE and none of them say so.
 _PEFT_MOE_CONVERSION_PATTERNS = {
+    # The two base patterns map to themselves, and leaving them out was not the
+    # harmless omission it looked like: `mixtral` says nothing about MoE, so the
+    # substring hint answered the default for it -- the silent None this stand-in
+    # exists to prevent -- and the drift test failed outright on transformers
+    # 5.5.0, which pyproject permits. `qwen3_5_moe` is here for 5.3.0, where it
+    # is a separate key; the hint would catch that one, but only by its name.
+    "mixtral": "mixtral",
+    "qwen2_moe": "qwen2_moe",
+    "qwen3_5_moe": "qwen2_moe",
     "minimax": "mixtral",
     "minimax_m2": "mixtral",
     "afmoe": "qwen2_moe",

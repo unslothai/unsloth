@@ -280,6 +280,11 @@ def _peft_converter_source():
     return "\n".join(sources)
 
 
+# The converter package itself, so an absolute import of its own children
+# can be told from an unrelated one.
+_CONVERTER_MODULE = "peft.utils.transformers_weight_conversion"
+
+
 def _resolved_relative_targets(package, src):
     """`_relative_import_targets`, resolved against the importing module's package.
 
@@ -293,6 +298,9 @@ def _resolved_relative_targets(package, src):
     parts = package.split(".") if package else []
     resolved = []
     for level, name in _relative_import_targets(src):
+        if level == 0:      # absolute, already rooted at the converter package
+            resolved.append(name)
+            continue
         drop = level - 1
         if drop > len(parts):
             continue
@@ -316,6 +324,23 @@ def _relative_import_targets(src):
 
     def visit(body) -> None:
         for node in body:
+            # Absolute, but still the package's own child: peft can re-export
+            # its implementation as `from peft.utils.transformers_weight_conversion
+            # .core import build`, which loads the same file a relative import
+            # would and was queued by neither branch. Level 0 marks a name that
+            # is already rooted at the converter package.
+            if isinstance(node, ast.ImportFrom) and not node.level and \
+                (node.module or "").startswith(_CONVERTER_MODULE):
+                inner = (node.module or "")[len(_CONVERTER_MODULE):].lstrip(".")
+                if inner: targets.append((0, inner))
+                targets.extend((0, f"{inner}.{a.name}" if inner else a.name)
+                               for a in node.names if a.name != "*")
+                continue
+            if isinstance(node, ast.Import):
+                for a in node.names:
+                    if a.name.startswith(_CONVERTER_MODULE + "."):
+                        targets.append((0, a.name[len(_CONVERTER_MODULE) + 1:]))
+                continue
             if isinstance(node, ast.ImportFrom) and node.level:
                 if node.module:
                     targets.append((node.level, node.module))
@@ -341,7 +366,7 @@ def _relative_import_targets(src):
             # Same import-time traversal as `_transformers_imports`: a package can pull its
             # implementation in from inside `if not TYPE_CHECKING:` or a `try:`, and importing
             # it still runs that, so those children have to be walked too.
-            for field in ("body", "orelse", "finalbody", "handlers"):
+            for field in ("body", "orelse", "finalbody", "handlers", "cases"):
                 child = getattr(node, field, None)
                 if not isinstance(child, list):
                     continue
@@ -410,7 +435,7 @@ def _transformers_imports(src):
                 # `if TYPE_CHECKING:` never runs; `if not TYPE_CHECKING:` runs the OTHER branch.
                 visit(node.body if isinstance(node.test, ast.UnaryOp) else node.orelse)
                 continue
-            for field in ("body", "orelse", "finalbody", "handlers"):
+            for field in ("body", "orelse", "finalbody", "handlers", "cases"):
                 child = getattr(node, field, None)
                 if not isinstance(child, list):
                     continue
@@ -1171,3 +1196,77 @@ def test_a_module_form_transformers_import_is_a_dependency():
 def test_a_module_form_import_inside_a_function_is_still_ignored():
     """The control: it never runs at import time, so it cannot break startup."""
     assert _transformers_imports("def f():\n    import transformers.core_model_loading\n") == {}
+
+
+def test_an_absolute_import_of_a_child_is_queued():
+    """A package can re-export its implementation absolutely.
+
+    `from peft.utils.transformers_weight_conversion.core import build` loads the
+    same file the relative form would, and the relative-only branch queued
+    nothing, so the fetcher read `__init__.py` and none of the transformers
+    imports in `core.py`. Level 0 marks a name already rooted at the package.
+    """
+    src = f"from {_CONVERTER_MODULE}.core import build\n"
+    assert (0, "core") in _relative_import_targets(src)
+    assert _resolved_relative_targets("", src) == ["core", "core.build"]
+
+
+def test_an_absolute_import_from_the_package_root_is_queued():
+    """`from peft.utils.transformers_weight_conversion import core` names the
+    child directly."""
+    src = f"from {_CONVERTER_MODULE} import core\n"
+    assert _resolved_relative_targets("", src) == ["core"]
+
+
+def test_a_module_form_absolute_child_import_is_queued():
+    """`import peft.utils.transformers_weight_conversion.core` loads it too."""
+    src = f"import {_CONVERTER_MODULE}.core\n"
+    assert _resolved_relative_targets("", src) == ["core"]
+
+
+def test_an_unrelated_absolute_import_is_not_queued():
+    """The control: only the converter's own children are followed."""
+    assert _relative_import_targets("from peft.tuners.lora import Linear\n") == []
+
+
+def test_an_import_in_a_module_level_match_case_is_collected():
+    """The selected case runs at import time, so an import inside one can raise
+    the startup error this guard exists to catch. `ast.Match` keeps its
+    statements under `cases`, which the walk did not descend into."""
+    src = (
+        "import sys\n"
+        "match sys.version_info[0]:\n"
+        "    case 3:\n"
+        "        from transformers.core_model_loading import Loader\n"
+        "    case _:\n"
+        "        from transformers.utils import logging\n"
+    )
+    assert _transformers_imports(src) == {
+        "transformers.core_model_loading": {"Loader"},
+        "transformers.utils": {"logging"},
+    }
+
+
+def test_an_import_in_a_match_case_inside_a_function_is_still_ignored():
+    """The control: a function body never runs at import time."""
+    assert _transformers_imports(
+        "def f(x):\n"
+        "    match x:\n"
+        "        case 1:\n"
+        "            from transformers.utils import logging\n"
+    ) == {}
+
+
+def test_the_two_base_patterns_are_in_the_snapshot():
+    """`mixtral` and `qwen2_moe` map to themselves and were left out.
+
+    Not harmless: the substring hint answers False for `mixtral`, which says
+    nothing about MoE, so the stand-in handed back the silent default for a type
+    peft really does rewrite. It also failed the live comparison outright on
+    transformers 5.5.0, which pyproject permits.
+    """
+    for name in ("mixtral", "qwen2_moe"):
+        assert F._PEFT_MOE_CONVERSION_PATTERNS.get(name) == name
+    stand_in = F._UnavailableConversionPatternMap()
+    assert stand_in._is_moe("mixtral"), "the hint alone never saw this one"
+    assert stand_in._is_moe("qwen2_moe")
