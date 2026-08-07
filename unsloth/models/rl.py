@@ -604,7 +604,14 @@ def _column_names(dataset):
     source = dataset
     try:
         iterator = iter(dataset)
-        single_pass = iterator is dataset
+        # `iterator is dataset` catches a bare generator and misses an
+        # `IterableDataset` whose `__iter__` hands back one stored generator:
+        # that is not the dataset, but it is still the only pass there is. Two
+        # `iter()` calls returning the same object covers both, and a
+        # `datasets.IterableDataset` restarts, so it answers False and is
+        # rewound rather than chained. Both calls happen before anything is
+        # read.
+        single_pass = iterator is dataset or iterator is iter(dataset)
         row = next(iterator, None)
         if single_pass and row is not None:
             import itertools
@@ -890,7 +897,19 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         whenever the rows do, so those are safe to keep. Anything else is
         recomputed, which is the cheap case anyway: the scan this memo exists to
         skip needs a materialised `input_ids` column that these do not have.
+
+        A `with_transform` split is excluded even though it has a fingerprint:
+        that covers the backing table, not the transform, so a transform closing
+        over mutable state yields different rows under an unchanged fingerprint
+        and the memo would replay a filter decided against the old ones.
         """
+        try:
+            fmt = getattr(dataset, "format", None)
+            kind = fmt.get("type") if isinstance(fmt, dict) else None
+            if (kind or getattr(dataset, "_format_type", None)) == "custom":
+                return None
+        except Exception:
+            return None
         fingerprint = getattr(dataset, "_fingerprint", None)
         return None if fingerprint is None else fingerprint
 
@@ -1673,11 +1692,18 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            _unsloth_skip_prepare = True\n"
                     "    except Exception:\n"
                     "        pass\n"
+                    # Metadata first and a row only as a fallback, the other way round
+                    # from before: reading a row off a one-shot training stream consumes
+                    # it, and nothing here chains it back, so the run began at row 2.
+                    # `iter(x) is iter(x)` marks the streams that cannot spare one --
+                    # the same signal the cap scan and the schema probe use.
                     "    try:\n"
-                    "        _unsloth_columns = None\n"
-                    "        if train_dataset is not None:\n"
-                    "            _unsloth_first_row = next(iter(train_dataset), None)\n"
-                    "            if isinstance(_unsloth_first_row, dict): _unsloth_columns = list(_unsloth_first_row.keys())\n"
+                    "        _unsloth_columns = getattr(train_dataset, 'column_names', None)\n"
+                    "        if _unsloth_columns is None and train_dataset is not None:\n"
+                    "            _unsloth_probe_cols = iter(train_dataset)\n"
+                    "            if not (_unsloth_probe_cols is train_dataset or _unsloth_probe_cols is iter(train_dataset)):\n"
+                    "                _unsloth_first_row = next(_unsloth_probe_cols, None)\n"
+                    "                if isinstance(_unsloth_first_row, dict): _unsloth_columns = list(_unsloth_first_row.keys())\n"
                     "        if _unsloth_columns is None:\n"
                     "            _unsloth_columns = getattr(train_dataset, 'column_names', None)\n"
                     "            if isinstance(_unsloth_columns, dict):\n"
@@ -1751,9 +1777,22 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # example into more chunks. Cutting rows at the cap first throws that away.
                     "    _unsloth_eval_packing = getattr(args, 'packing', False) if getattr(args, 'eval_packing', None) is None else getattr(args, 'eval_packing')\n"
                     "    _unsloth_completion_only = getattr(args, 'completion_only_loss', None)\n"
+                    # Column names first, and a row only if reading one is free. On a
+                    # one-shot stream this probe consumed the first TRAINING example --
+                    # nothing chains it back here, so the run started at row 2. The
+                    # same `iter(x) is iter(x)` signal the cap scan uses marks those,
+                    # and an unreadable schema resolves to False, which is what TRL
+                    # itself answers for a split with no `prompt`/`completion`.
                     "    if _unsloth_completion_only is None:\n"
                     "        try:\n"
-                    "            _unsloth_train_sample = next(iter(train_dataset), None) or {}\n"
+                    "            _unsloth_train_sample = dict.fromkeys(\n"
+                    "                getattr(train_dataset, 'column_names', None) or [])\n"
+                    "            if not _unsloth_train_sample:\n"
+                    "                _unsloth_probe = iter(train_dataset)\n"
+                    "                if _unsloth_probe is train_dataset or _unsloth_probe is iter(train_dataset):\n"
+                    "                    _unsloth_train_sample = {}\n"
+                    "                else:\n"
+                    "                    _unsloth_train_sample = next(_unsloth_probe, None) or {}\n"
                     "        except Exception:\n"
                     "            _unsloth_train_sample = {}\n"
                     "        _unsloth_completion_only = ('prompt' in _unsloth_train_sample and 'completion' in _unsloth_train_sample)\n"

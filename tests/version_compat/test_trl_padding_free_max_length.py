@@ -1105,8 +1105,10 @@ def test_a_none_completion_only_loss_does_not_filter_a_pretokenized_split():
     entirely. Reading `None` as "on" deleted rows that still had valid
     full-sequence supervision, and could empty the split outright."""
     block = _padding_free_codegen_block()
+    # Bounded by the next anchor rather than by a byte count: a comment added
+    # inside the block used to push the assertions out of a fixed window.
     i = block.index("_unsloth_completion_only")
-    window = block[i : i + 600]
+    window = block[i : block.index("args._unsloth_completion_only_loss", i)]
     assert "is None" in window
     # From the training sample, which is the sample TRL reads.
     assert "'prompt' in _unsloth_train_sample and 'completion' in _unsloth_train_sample" in window
@@ -2059,3 +2061,105 @@ def test_an_optional_rewrite_still_only_warns():
         )
         == source
     )
+
+
+# ── round ten: the same one-shot signal, everywhere it is probed ─────────────
+def _shared_iterator_split(rows):
+    """An `IterableDataset` whose `__iter__` hands back one stored generator.
+
+    Not `self`, so `iter(x) is x` misses it, and still single-pass: the object
+    a second `iter()` returns is the same one, which is the signal that works.
+    """
+    import torch.utils.data as _tud
+
+    class _Shared(_tud.IterableDataset):
+        def __init__(self, rows):
+            self._it = iter(list(rows))
+
+        def __iter__(self):
+            return self._it
+
+    return _Shared(rows)
+
+
+def test_the_schema_probe_replays_a_shared_iterator_row():
+    """`iterator is dataset` is true for a bare generator and false for a split
+    whose `__iter__` returns a stored one, so the probed row was dropped and the
+    split started at row 2."""
+    from unsloth.models.rl import _column_names
+
+    rows = [{"input_ids": [i]} for i in range(3)]
+    names, source = _column_names(_shared_iterator_split(rows))
+
+    assert "input_ids" in names, "the probe still has to read the schema"
+    assert [r["input_ids"] for r in source] == [[0], [1], [2]], "row 0 was eaten"
+
+
+def test_a_rewindable_stream_is_not_chained():
+    """The control. A `datasets.IterableDataset` restarts, so chaining the
+    probed row on to a fresh pass would duplicate it."""
+    from datasets import Dataset
+
+    from unsloth.models.rl import _column_names
+
+    split = Dataset.from_dict({"input_ids": [[0], [1], [2]]}).to_iterable_dataset()
+    names, source = _column_names(split)
+
+    assert "input_ids" in names
+    assert [r["input_ids"] for r in source] == [[0], [1], [2]], "row 0 duplicated"
+
+
+def test_the_completion_only_probe_does_not_eat_a_training_row():
+    """That probe read the first TRAINING example and chained nothing back, so
+    a one-shot stream trained from row 2. Columns first, and a row only when
+    reading one is free."""
+    block = _padding_free_codegen_block()
+    assert "_unsloth_probe is train_dataset or _unsloth_probe is iter(train_dataset)" in block
+    assert "next(iter(train_dataset), None)" not in block, "the destructive probe is back"
+    # And the cheap path is tried first.
+    names_at = block.index("getattr(train_dataset, 'column_names', None)")
+    probe_at = block.index("_unsloth_probe = iter(train_dataset)")
+    assert names_at < probe_at
+
+
+def test_a_transformed_split_is_not_memoized_by_fingerprint():
+    """`_fingerprint` covers the backing table, not the transform.
+
+    A transform closing over mutable state yields different rows under an
+    unchanged fingerprint, so the memo replayed a filter decided against the old
+    ones: rows kept that should now be dropped, or dropped that should be kept.
+    """
+    from datasets import Dataset
+
+    ids = list(range(8))
+    other = list(reversed(ids))
+    backing = Dataset.from_dict({
+        "input_ids": [list(ids), list(other)],
+        "attention_mask": [[1] * 8, [1] * 8],
+        "labels": [list(ids), list(other)],
+    })
+    supervised = {"both": True}
+
+    def _mask_second(batch):
+        # Keyed on the row's own contents: a transform is handed whatever batch
+        # the reader asks for, so positions in the batch say nothing about
+        # positions in the split.
+        out = dict(batch)
+        out["labels"] = [
+            [-100] * 8 if (not supervised["both"] and list(row) == other) else list(lab)
+            for row, lab in zip(batch["input_ids"], batch["labels"])
+        ]
+        return out
+
+    split = backing.with_transform(_mask_second)
+    Stub, seen = _late_cap_helpers()
+    stub = Stub()
+    stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH)
+
+    stub.evaluate(eval_dataset = split)
+    assert len(seen["ds"]) == 2, "both rows are supervised on the first pass"
+
+    # Same object, same `_fingerprint`; only the transform's closure moved.
+    supervised["both"] = False
+    stub.evaluate(eval_dataset = split)
+    assert len(seen["ds"]) == 1, "the memo served a cap taken before the change"
