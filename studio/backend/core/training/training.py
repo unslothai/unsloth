@@ -1254,7 +1254,10 @@ class TrainingBackend:
                 not owns_current or existing.error_code == _START_CANCELLED_ERROR_CODE
             ):
                 if existing.error_code == _START_CANCELLED_ERROR_CODE:
-                    self._reserve_start_cancel_tombstone_locked(start_request_id)
+                    self._reserve_start_cancel_tombstone_locked(
+                        start_request_id,
+                        reclaim_capacity = True,
+                    )
                     self._start_requests.pop(start_request_id, None)
                     self._commit_start_cancel_tombstone_locked(start_request_id, existing)
                 if self._status_start_request_id == start_request_id:
@@ -1262,7 +1265,10 @@ class TrainingBackend:
                 return "cancelled", existing
 
             if existing.state == "pending" and not owns_current:
-                self._reserve_start_cancel_tombstone_locked(start_request_id)
+                self._reserve_start_cancel_tombstone_locked(
+                    start_request_id,
+                    reclaim_capacity = True,
+                )
                 cancelled = replace(
                     existing,
                     state = "rejected",
@@ -1279,7 +1285,8 @@ class TrainingBackend:
                 return "cancelled", cancelled
 
             reserved_cancel_tombstone = self._reserve_start_cancel_tombstone_locked(
-                start_request_id
+                start_request_id,
+                reclaim_capacity = owns_current,
             )
 
         try:
@@ -1297,14 +1304,15 @@ class TrainingBackend:
                     if latest is None:
                         return "superseded", existing
                     existing = latest
-                    if not reserved_cancel_tombstone:
-                        reserved_cancel_tombstone = self._reserve_start_cancel_tombstone_locked(
-                            start_request_id
-                        )
                     owns_current = (
                         self.current_start_request_id == start_request_id
                         and self.current_job_id == existing.job_id
                     )
+                    if not reserved_cancel_tombstone:
+                        reserved_cancel_tombstone = self._reserve_start_cancel_tombstone_locked(
+                            start_request_id,
+                            reclaim_capacity = owns_current,
+                        )
                     if existing.error_code == _START_CANCELLED_ERROR_CODE:
                         if self._status_start_request_id == start_request_id:
                             self._status_start_request_id = None
@@ -1437,7 +1445,12 @@ class TrainingBackend:
             if expires_at <= now:
                 del self._start_cancel_tombstones[request_id]
 
-    def _reserve_start_cancel_tombstone_locked(self, start_request_id: str) -> bool:
+    def _reserve_start_cancel_tombstone_locked(
+        self,
+        start_request_id: str,
+        *,
+        reclaim_capacity: bool = False,
+    ) -> bool:
         self._prune_start_cancel_tombstones_locked()
         if start_request_id in self._start_cancel_tombstones:
             return False
@@ -1449,9 +1462,15 @@ class TrainingBackend:
             len(self._start_cancel_tombstones) + len(self._start_cancel_tombstone_reservations)
             >= _MAX_START_CANCEL_TOMBSTONES
         ):
-            raise TrainingStartCancellationCapacityError(
-                "Too many training start cancellations are pending"
+            if not reclaim_capacity or not self._start_cancel_tombstones:
+                raise TrainingStartCancellationCapacityError(
+                    "Too many training start cancellations are pending"
+                )
+            reclaimed_request_id = min(
+                self._start_cancel_tombstones,
+                key = lambda request_id: self._start_cancel_tombstones[request_id][0],
             )
+            del self._start_cancel_tombstones[reclaimed_request_id]
         self._start_cancel_tombstone_reservations[start_request_id] = 1
         return True
 
