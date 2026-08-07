@@ -41,15 +41,13 @@ static TERMINATION_CLEANUP: Once = Once::new();
 
 const IN_APP_RELAUNCH_MARKER_FILE: &str = "in-app-relaunch-v1";
 
-/// Resolved once, at setup: the marker is consumed there, so no later caller can flip the answer.
+/// Resolved once, at setup, where the marker is consumed, so no later caller can flip the answer.
 static LAUNCHED_HIDDEN: OnceLock<bool> = OnceLock::new();
 
-/// The updater's `relaunch()` re-execs with the original argv, so a login start's `--hidden`
-/// would survive into the restarted app and hide it. Written before that restart.
+/// Marks the next start as an in-app relaunch, whose inherited `--hidden` is not a login start.
 #[tauri::command]
 fn mark_in_app_relaunch(app: tauri::AppHandle) -> Result<(), String> {
-    // Without a `--hidden` to inherit there is nothing to suppress, so an unwritable config
-    // directory must not stop the restart. The caller skips the restart when this fails.
+    // Nothing to suppress without an inherited `--hidden`; the caller stops the restart on failure.
     if !argv_has_hidden_flag() {
         return Ok(());
     }
@@ -63,8 +61,7 @@ fn mark_in_app_relaunch(app: tauri::AppHandle) -> Result<(), String> {
     write_in_app_relaunch_marker(&dir)
 }
 
-/// Undo the marker when the relaunch it was written for never happens, so it cannot be
-/// consumed by an unrelated later start.
+/// Undo the marker when its relaunch never happens, so an unrelated later start cannot consume it.
 #[tauri::command]
 fn clear_in_app_relaunch(app: tauri::AppHandle) -> Result<(), String> {
     let dir = in_app_relaunch_config_dir(&app)?;
@@ -92,8 +89,7 @@ fn write_in_app_relaunch_marker(config_dir: &Path) -> Result<(), String> {
     })
 }
 
-/// Consumes the marker. A failed removal only ever leaves a start that would have been hidden
-/// showing its window, never the reverse.
+/// Consumes the marker. A failed removal can only show a would-be-hidden start, never the reverse.
 fn take_in_app_relaunch_marker(config_dir: &Path) -> bool {
     let path = in_app_relaunch_marker_path(config_dir);
     if !path.exists() {
@@ -108,23 +104,21 @@ fn take_in_app_relaunch_marker(config_dir: &Path) -> bool {
     true
 }
 
-/// args_os, not args: the latter panics on an argument that is not valid Unicode, which argv[0]
-/// is whenever the binary sits under a non-UTF-8 path.
+/// args_os, not args: args panics on non-Unicode argv, e.g. argv[0] under a non-UTF-8 path.
 fn argv_has_hidden_flag() -> bool {
     std::env::args_os().any(|arg| arg == *OsStr::new("--hidden"))
 }
 
 fn resolve_launched_hidden(app: &tauri::AppHandle) -> bool {
-    // Consume unconditionally, so a marker left by a relaunch that never happened cannot
-    // outlive a start that carries no `--hidden` anyway.
+    // Consume unconditionally, so a marker left by a relaunch that never happened cannot outlive it.
     let relaunched = in_app_relaunch_config_dir(app)
         .map(|dir| take_in_app_relaunch_marker(&dir))
         .unwrap_or(false);
     argv_has_hidden_flag() && !relaunched
 }
 
-/// Started by the OS login autostart entry, so the frontend keeps the window hidden in the tray.
-/// False after an in-app relaunch, which inherits `--hidden` without being a login start.
+/// True for a login autostart start (window stays in the tray); false for an in-app relaunch,
+/// which inherits `--hidden` without being one.
 #[tauri::command]
 fn was_launched_hidden(app: tauri::AppHandle) -> bool {
     *LAUNCHED_HIDDEN.get_or_init(|| resolve_launched_hidden(&app))
@@ -175,8 +169,8 @@ fn harden_autostart_entry(app: &tauri::AppHandle) {
     rewrite_macos_launch_agent(app);
 }
 
-/// auto-launch writes the Run value unquoted, so Windows parses a path with a space
-/// ("C:\Users\Jane Doe\...") into the wrong executable. None when already quoted.
+/// auto-launch writes the Run value unquoted, so a spaced path resolves to the wrong executable.
+/// None when already quoted.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn quoted_windows_run_command(value: &str) -> Option<String> {
     if value.starts_with('"') {
@@ -210,9 +204,8 @@ fn quote_windows_run_value(app: &tauri::AppHandle) {
     }
 }
 
-/// Exec is whitespace-delimited, so a binary path holding reserved characters is quoted, with
-/// `"`, `` ` ``, `$` and `\` escaped inside the quotes. A literal `%` starts a field code, so it
-/// becomes `%%` regardless of quoting.
+/// Exec is whitespace-delimited: quote a path holding reserved characters, escaping `"`, `` ` ``,
+/// `$` and `\` inside, and double a literal `%` regardless, since it would start a field code.
 fn exec_quoted(binary: &str) -> String {
     let binary = binary.replace('%', "%%");
     const RESERVED: &str = " \t\n\"'\\><~|&;$*?#()`";
@@ -222,8 +215,8 @@ fn exec_quoted(binary: &str) -> String {
     let mut quoted = String::with_capacity(binary.len() + 2);
     quoted.push('"');
     for c in binary.chars() {
-        // The string escape rule runs before the quoting rule, so the escaping backslash must
-        // itself be escaped; a single one is invalid and launchers drop the whole Exec.
+        // The string rule runs before the quoting rule, so the escaping backslash is itself
+        // escaped; a single one is invalid and launchers drop the whole Exec.
         match c {
             '"' | '`' | '$' => {
                 quoted.push_str("\\\\");
@@ -237,9 +230,8 @@ fn exec_quoted(binary: &str) -> String {
     quoted
 }
 
-/// auto-launch writes the Exec binary unquoted with no TryExec. Quote it (spaces word-split) and
-/// add TryExec: launchers skip an entry whose TryExec binary is missing, so a removed install goes
-/// inert without postrm touching user homes. TryExec is a plain string field and stays unquoted.
+/// Quote auto-launch's unquoted Exec binary and add TryExec, which launchers skip when missing, so
+/// a removed install goes inert without postrm touching user homes. TryExec stays unquoted.
 fn hardened_autostart_entry(entry: &str) -> Option<String> {
     if entry.lines().any(|line| line.starts_with("TryExec=")) {
         return None;
@@ -313,8 +305,8 @@ fn xml_escaped(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// auto-launch interpolates the executable path into plist XML unescaped, so a path with & or <
-/// writes a malformed LaunchAgent. Same structure as the plugin's template, with strings escaped.
+/// The plugin's template, but escaped: it interpolates the path unescaped, so a path with & or <
+/// writes a malformed LaunchAgent.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn macos_launch_agent_plist(label: &str, binary: &str) -> String {
     format!(
@@ -358,8 +350,8 @@ fn rewrite_macos_launch_agent(app: &tauri::AppHandle) {
     let _ = fs::write(&path, plist);
 }
 
-/// A moved or re-downloaded AppImage leaves the entry pointing at the old path while `is_enabled`
-/// only checks the file exists, so rewrite the entry to the current executable on every startup.
+/// A moved or re-downloaded AppImage leaves a stale path that `is_enabled` still accepts, so
+/// repoint the entry at the current executable on every startup.
 fn reconcile_autostart_entry(app: &tauri::AppHandle) {
     use tauri_plugin_autostart::ManagerExt;
     // A dev run would repoint the entry at target/debug.
@@ -962,8 +954,7 @@ fn main() {
 mod tests {
     use super::*;
 
-    /// std::env::args() panics on a non-Unicode argument, which argv[0] is under a
-    /// non-UTF-8 install path, so the flag scan has to run over OsStr.
+    /// args() panics on a non-Unicode argv[0], so the flag scan has to run over OsStr.
     #[test]
     fn hidden_flag_scan_tolerates_non_unicode_args() {
         use std::ffi::OsString;
