@@ -357,3 +357,116 @@ def test_mlx_install_env_routes_uv_override_through_safe_path(monkeypatch):
     assert "path" in seen
     assert str(seen["path"]).endswith("overrides-darwin-arm64.txt")
     assert env["UV_OVERRIDE"] == "/space_free/marker.txt"
+
+
+def _fake_venv(tmp_path: Path) -> Path:
+    """A venv-shaped directory: uv accepts a root that carries pyvenv.cfg."""
+    (tmp_path / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding = "utf-8")
+    (tmp_path / "bin").mkdir()
+    return tmp_path
+
+
+def test_venv_root_is_none_outside_a_venv(monkeypatch, tmp_path):
+    monkeypatch.setattr(mr.sys, "prefix", str(tmp_path))
+    monkeypatch.setattr(mr.sys, "base_prefix", str(tmp_path))
+    assert mr._venv_root() is None
+
+
+def test_venv_root_requires_the_marker_file(monkeypatch, tmp_path):
+    # A half-deleted tree must not be offered to uv as an install target.
+    monkeypatch.setattr(mr.sys, "prefix", str(tmp_path))
+    monkeypatch.setattr(mr.sys, "base_prefix", "/usr")
+    assert mr._venv_root() is None
+    _fake_venv(tmp_path)
+    assert mr._venv_root() == str(tmp_path)
+
+
+def test_install_env_names_the_target_venv_for_uv(monkeypatch, tmp_path):
+    # VIRTUAL_ENV is set from sys.prefix, never forwarded from os.environ: it names
+    # the environment uv installs into, so inheriting it would let a caller
+    # redirect the install.
+    venv = _fake_venv(tmp_path)
+    monkeypatch.setattr(mr.sys, "prefix", str(venv))
+    monkeypatch.setattr(mr.sys, "base_prefix", "/usr")
+    monkeypatch.setenv("VIRTUAL_ENV", "/tmp/attacker-controlled")
+
+    env = mr._mlx_install_env()
+
+    assert env["VIRTUAL_ENV"] == str(venv)
+
+
+def test_unresolvable_venv_reports_the_unsloth_repair_command(monkeypatch, tmp_path, capsys):
+    # uv's own text tells the user to run `uv venv`, which would build an
+    # environment Unsloth does not manage. Point at `unsloth studio update`.
+    venv = _fake_venv(tmp_path)
+    monkeypatch.setattr(mr.sys, "prefix", str(venv))
+    monkeypatch.setattr(mr.sys, "base_prefix", "/usr")
+    monkeypatch.setattr(mr, "_uv_executable", lambda: "/usr/bin/uv")
+    monkeypatch.setattr(mr, "_transformers_constraint_args", lambda: ([], None))
+
+    class _Result:
+        returncode = 2
+        stdout = "error: No virtual environment or system Python installation found\n"
+
+    monkeypatch.setattr(mr.subprocess, "run", lambda cmd, **kw: _Result())
+
+    assert mr.attempt_mlx_repair() is False
+
+    # structlog renders to stdout, not through the stdlib logging caplog handler.
+    text = capsys.readouterr().out
+    assert "unsloth studio update" in text
+    assert "uv venv" not in text.split("uv said:")[0]
+
+
+def test_virtual_env_is_not_advertised_as_a_dangling_symlink_recovery():
+    """The docstring must not re-sell the reverted placebo.
+
+    _mlx_install_env once claimed VIRTUAL_ENV let uv "identify the target environment
+    even when bin/python no longer resolves", and named a _uv_python_target helper. Both
+    were removed: an explicit --python outranks VIRTUAL_ENV, so uv reports the same
+    unresolved-interpreter error either way. The claim outlived the code and then misled a
+    reviewer into asking for the mechanism back, so pin it rather than trusting prose.
+    """
+    src = (Path(mr.__file__)).read_text(encoding = "utf-8")
+    assert "_uv_python_target" not in src, (
+        "_uv_python_target was deleted with the venv-root retry; a reference to it means "
+        "the placebo is back or the comment is stale again"
+    )
+    doc = mr._mlx_install_env.__doc__ or ""
+    assert "even when bin/python no longer resolves" not in doc, (
+        "the docstring claims VIRTUAL_ENV recovers a dangling interpreter, which uv "
+        "disproves: --python outranks it and both paths report the same error"
+    )
+
+
+def test_an_unresolvable_interpreter_is_diagnosed_not_retried(monkeypatch, tmp_path):
+    """One uv attempt, then a diagnosis -- never a second install with a different target.
+
+    --target and --prefix do exit 0 against a broken venv, but resolve against whatever
+    ambient interpreter uv finds and write a wrong-ABI or off-sys.path install. That looks
+    like a repair while leaving mlx_stack_available() False, so it must never be reached.
+    """
+    venv = _fake_venv(tmp_path)
+    monkeypatch.setattr(mr.sys, "prefix", str(venv))
+    monkeypatch.setattr(mr.sys, "base_prefix", "/usr")
+    monkeypatch.setattr(mr, "_uv_executable", lambda: "/usr/bin/uv")
+    monkeypatch.setattr(mr, "_transformers_constraint_args", lambda: ([], None))
+
+    calls = []
+
+    class _Result:
+        returncode = 2
+        stdout = "error: No virtual environment or system Python installation found\n"
+
+    def _run(cmd, **kw):
+        calls.append(cmd)
+        return _Result()
+
+    monkeypatch.setattr(mr.subprocess, "run", _run)
+
+    assert mr.attempt_mlx_repair() is False
+    assert len(calls) == 1, f"uv was invoked {len(calls)} times; the retry is back: {calls}"
+    flat = " ".join(str(part) for part in calls[0])
+    assert (
+        "--target" not in flat and "--prefix" not in flat
+    ), f"a corrupting install target reached the uv command line: {flat}"

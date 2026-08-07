@@ -42,6 +42,10 @@ from utils.uv_path_safety import uv_safe_path
 logger = structlog.get_logger(__name__)
 
 DISABLE_ENV_VAR = "UNSLOTH_DISABLE_MLX_AUTOREPAIR"
+# uv's wording when --python names a path it will not install into. Matched on the
+# stable leading clause only: uv appends the offending path and a "run `uv venv`"
+# hint, and has reworded the tail across releases.
+_UNRESOLVED_PYTHON_MARKER = "No virtual environment or system Python installation found"
 # Minimum versions unsloth-zoo requires on Apple Silicon (its pyproject darwin
 # deps). mlx-vlm especially must be >=0.4.4: an older one still imports but
 # breaks VLM Train/Export, so installing it would wrongly clear chat-only.
@@ -179,6 +183,21 @@ def _uv_executable() -> str | None:
     return None
 
 
+def _venv_root() -> str | None:
+    """The venv directory this interpreter runs from, or None outside a venv.
+
+    `sys.prefix` differs from `sys.base_prefix` exactly when a venv is active.
+    Confirm the marker file so a half-deleted tree is never named as the target."""
+    if sys.prefix == sys.base_prefix:
+        return None
+    try:
+        if (Path(sys.prefix) / "pyvenv.cfg").is_file():
+            return sys.prefix
+    except OSError:
+        pass
+    return None
+
+
 def _uv_install_cmd(*args: str) -> list[str] | None:
     uv = _uv_executable()
     if not uv:
@@ -201,8 +220,24 @@ def _mlx_install_env() -> dict[str, str]:
     by silently backtracking mlx-vlm to an old, unsupported version (uv honours
     UV_OVERRIDE; plain pip ignores it, so the transformers constraint below is the
     pip-path safety net). We set UV_OVERRIDE ourselves, so a poisoned one in the
-    process env is ignored."""
+    process env is ignored.
+
+    VIRTUAL_ENV is set from sys.prefix rather than forwarded from os.environ, for
+    the same reason: it names the environment uv must install into, and taking it
+    from the process env would let a caller redirect the install elsewhere.
+
+    It does NOT rescue a venv whose bin/python has stopped resolving. An explicit
+    --python outranks VIRTUAL_ENV, so uv reports the same unresolved-interpreter
+    error either way; this once claimed otherwise, and named an interpreter-probe
+    helper that was deleted with it. Nothing passable to `uv pip install` recovers
+    that state -- --target and --prefix do exit 0, but resolve against whatever
+    ambient interpreter uv finds and write a wrong-ABI or off-sys.path install,
+    which is worse than staying chat-only because it defeats the
+    mlx_stack_available() gate. That case is detected and reported instead: see
+    the _UNRESOLVED_PYTHON_MARKER branch in attempt_mlx_repair."""
     env = {key: os.environ[key] for key in _MLX_ENV_ALLOWLIST if key in os.environ}
+    if (venv_root := _venv_root()) is not None:
+        env["VIRTUAL_ENV"] = venv_root
     override = (
         Path(__file__).resolve().parents[1]
         / "requirements"
@@ -292,6 +327,24 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
                 pass
     if result.returncode != 0:
         tail = (result.stdout or "")[-2000:]
+        if _UNRESOLVED_PYTHON_MARKER in (result.stdout or ""):
+            # uv will not install into this environment at all, so the venv is broken
+            # rather than merely missing MLX, and no install flag recovers it from in
+            # here: `--python <venv>/bin/python`, `--python <venv>` and a bare
+            # VIRTUAL_ENV all report the same error against an interpreter uv cannot
+            # resolve. Only rebuilding the environment fixes it, so name the command
+            # that does. uv's own text says to run `uv venv`, which would build an
+            # environment Unsloth does not manage.
+            logger.warning(
+                "MLX self-heal could not use the Unsloth environment at %s: uv did not "
+                "recognise it as a virtual environment. This usually means the venv's "
+                "bin/python points at an interpreter that has since been upgraded or "
+                "removed. Train/Export stay disabled until the environment is rebuilt: "
+                "run `unsloth studio update`. uv said:\n%s",
+                _venv_root() or sys.prefix,
+                tail,
+            )
+            return False
         logger.warning("MLX self-heal failed (staying chat-only):\n%s", tail)
         return False
     importlib.invalidate_caches()

@@ -27,6 +27,7 @@ use simplelog::{
 };
 use std::ffi::OsStr;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Once, OnceLock};
@@ -380,6 +381,87 @@ fn has_saved_window_state(app: tauri::AppHandle) -> bool {
     dir.join(app.filename()).is_file()
 }
 
+/// Append target for `tauri.log` that rotates while the app runs, not only at launch.
+///
+/// The size check used to happen once in `setup_logging`, so a session left open for
+/// days (the backend's own log lines are mirrored here as they arrive) grew the file
+/// past the cap until the next restart. Tracking the byte count as we write applies the
+/// same 5 MiB threshold continuously. Rotation closes the handle before renaming, which
+/// Windows requires and which also means the reopened file is the one being written.
+struct RotatingLogFile {
+    path: PathBuf,
+    rotated_path: PathBuf,
+    max_bytes: u64,
+    file: Option<fs::File>,
+    written: u64,
+}
+
+impl RotatingLogFile {
+    fn open(
+        path: PathBuf,
+        rotated_path: PathBuf,
+        max_bytes: u64,
+    ) -> std::io::Result<RotatingLogFile> {
+        let mut rotating = RotatingLogFile {
+            path,
+            rotated_path,
+            max_bytes,
+            file: None,
+            written: 0,
+        };
+        rotating.reopen()?;
+        Ok(rotating)
+    }
+
+    fn reopen(&mut self) -> std::io::Result<()> {
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+        // Pick up where a previous session left off, so an already-oversized file
+        // rotates on its first write instead of growing for another whole session.
+        self.written = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+        self.file = Some(file);
+        Ok(())
+    }
+
+    /// Move the current log aside and start a fresh one. Best effort: if reopening
+    /// fails we drop lines rather than take the app down over a log file.
+    fn rotate(&mut self) {
+        self.file = None;
+        let _ = fs::remove_file(&self.rotated_path);
+        let _ = fs::rename(&self.path, &self.rotated_path);
+        if self.reopen().is_err() {
+            self.file = None;
+            self.written = 0;
+        }
+    }
+}
+
+impl Write for RotatingLogFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.written >= self.max_bytes {
+            self.rotate();
+        }
+        match self.file.as_mut() {
+            Some(file) => {
+                let written = file.write(buf)?;
+                self.written += written as u64;
+                Ok(written)
+            }
+            // No usable handle: report the bytes as taken so the logger does not spin.
+            None => Ok(buf.len()),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self.file.as_mut() {
+            Some(file) => file.flush(),
+            None => Ok(()),
+        }
+    }
+}
+
 fn setup_logging() {
     let mut loggers: Vec<Box<dyn SharedLogger>> = vec![];
 
@@ -398,18 +480,7 @@ fn setup_logging() {
             let log_path = log_dir.join("tauri.log");
             let rotated_path = log_dir.join("tauri.log.1");
             let max_log_bytes = 5 * 1024 * 1024;
-            if fs::metadata(&log_path)
-                .map(|meta| meta.len() >= max_log_bytes)
-                .unwrap_or(false)
-            {
-                let _ = fs::remove_file(&rotated_path);
-                let _ = fs::rename(&log_path, &rotated_path);
-            }
-            if let Ok(file) = fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-            {
+            if let Ok(file) = RotatingLogFile::open(log_path, rotated_path, max_log_bytes) {
                 loggers.push(WriteLogger::new(LevelFilter::Info, Config::default(), file));
             }
         }
@@ -958,6 +1029,47 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn log_file_rotates_mid_session_and_keeps_one_generation() {
+        let directory = tempfile::tempdir().unwrap();
+        let log_path = directory.path().join("tauri.log");
+        let rotated_path = directory.path().join("tauri.log.1");
+
+        let mut file = RotatingLogFile::open(log_path.clone(), rotated_path.clone(), 8).unwrap();
+        file.write_all(b"aaaaaaaaaa").unwrap();
+        file.flush().unwrap();
+        // Still the first generation: the threshold is checked before a write, so the
+        // line that crosses it is written whole rather than split across two files.
+        assert!(!rotated_path.exists());
+
+        file.write_all(b"bbbb").unwrap();
+        file.flush().unwrap();
+        assert_eq!(fs::read_to_string(&rotated_path).unwrap(), "aaaaaaaaaa");
+        assert_eq!(fs::read_to_string(&log_path).unwrap(), "bbbb");
+
+        // A second rotation replaces .1 rather than piling up generations.
+        file.write_all(b"cccccccccc").unwrap();
+        file.write_all(b"dddd").unwrap();
+        file.flush().unwrap();
+        assert_eq!(fs::read_to_string(&rotated_path).unwrap(), "bbbbcccccccccc");
+        assert_eq!(fs::read_to_string(&log_path).unwrap(), "dddd");
+    }
+
+    #[test]
+    fn an_oversized_log_from_a_previous_session_rotates_on_the_first_write() {
+        let directory = tempfile::tempdir().unwrap();
+        let log_path = directory.path().join("tauri.log");
+        let rotated_path = directory.path().join("tauri.log.1");
+        fs::write(&log_path, b"stale-and-oversized").unwrap();
+
+        let mut file = RotatingLogFile::open(log_path.clone(), rotated_path.clone(), 8).unwrap();
+        file.write_all(b"fresh").unwrap();
+        file.flush().unwrap();
+
+        assert_eq!(fs::read_to_string(&rotated_path).unwrap(), "stale-and-oversized");
+        assert_eq!(fs::read_to_string(&log_path).unwrap(), "fresh");
+    }
 
     /// args() panics on a non-Unicode argv[0], so the flag scan has to run over OsStr.
     #[test]
