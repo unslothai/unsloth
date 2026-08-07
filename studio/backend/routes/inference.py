@@ -2420,15 +2420,19 @@ class _TrackedCancel:
         # kind reaches the swap prompt: embeddings and raw completions have no conversation, so
         # naming them chats would offer to stop something the user never started from a thread.
         self._active = (
-            active_generations.ActiveGeneration(
-                event, thread_id = thread_id, model = model, kind = kind
-            )
+            active_generations.ActiveGeneration(event, thread_id = thread_id, model = model, kind = kind)
             if track_active_generation
             else None
         )
 
     @classmethod
-    def for_payload(cls, event: threading.Event, payload, *keys, track_active_generation = True):
+    def for_payload(
+        cls,
+        event: threading.Event,
+        payload,
+        *keys,
+        track_active_generation = True,
+    ):
         """Track the run against the conversation its request names."""
         return cls(
             event,

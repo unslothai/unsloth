@@ -207,7 +207,10 @@ def test_dropped_over_budget_call_unlinks_openai_response_and_keeps_gemini_parts
     ][-1]
     assert [call["id"] for call in assistant["tool_calls"]] == ["call_0"]
     assert "extra_content" not in assistant["tool_calls"][0]
-    assert assistant["extra_content"]["google"] == {"hosted_parts": [native], "thought_signature": "sig"}
+    assert assistant["extra_content"]["google"] == {
+        "hosted_parts": [native],
+        "thought_signature": "sig",
+    }
     assert assistant["content"] == [
         {"type": "compaction", "content": "summary"},
         {"type": "text", "text": "signed"},
