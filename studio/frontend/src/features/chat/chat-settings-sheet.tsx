@@ -86,6 +86,8 @@ import {
   getPresetSaveState,
   getPresetSource,
   isSamePresetConfig,
+  MAX_TOKENS_MIN,
+  localMaxTokensCeiling,
   toPresetParams,
 } from "./presets/preset-policy";
 import {
@@ -711,13 +713,8 @@ export function ChatSettingsPanel({
     ? parseExternalModelId(currentCheckpoint)
     : null;
   const maxTokensMax = isExternalModel
-      ? getExternalMaxOutputTokens(
-          externalProviderType,
-          externalSelection?.modelId,
-        )
-      : isGguf && baseContext
-        ? baseContext
-        : Math.max(64, params.maxSeqLength);
+    ? getExternalMaxOutputTokens(externalProviderType, externalSelection?.modelId)
+    : localMaxTokensCeiling(baseContext, params.maxSeqLength);
   const showOpenAICodeExecSection =
     activeExternalProvider != null &&
     providerSupportsBuiltinCodeExecution(
@@ -1386,19 +1383,15 @@ export function ChatSettingsPanel({
               min={
                 isExternalModel
                   ? getExternalMinOutputTokens(externalProviderType)
-                  : 64
+                  : MAX_TOKENS_MIN
               }
               max={maxTokensMax}
               step={64}
               onChange={set("maxTokens")}
               displayValue={
-                isGguf && baseContext && params.maxTokens >= baseContext
+                !isExternalModel && params.maxTokens >= maxTokensMax
                   ? "Max"
-                  : !isExternalModel &&
-                      !isGguf &&
-                      params.maxTokens >= maxTokensMax
-                    ? "Max"
-                    : undefined
+                  : undefined
               }
               info="Maximum number of tokens to generate per response. Generation stops at this limit or when the model emits an end-of-sequence token."
             />
