@@ -2179,59 +2179,6 @@ def _llama_lib_dir(binary: str) -> Path:
     return resolved.parent
 
 
-_OLLAMA_CUDA_ROOT = Path("/usr/local/lib/ollama")
-
-
-def _linux_ollama_cuda_runtime_dirs(
-    binary_dir: Union[str, Path], ollama_root: Optional[Union[str, Path]] = None
-) -> list[str]:
-    """Return Ollama's private CUDA runtime matching the installed prebuilt.
-
-    The prebuilt installer considers ``/usr/local/lib/ollama/cuda_v*`` when it
-    selects a CUDA runtime line. Those directories are private to Ollama and
-    are not normally visible to the dynamic linker, so the same directory must
-    be propagated to llama-server. Use the install marker to avoid placing an
-    unrelated CUDA major ahead of the host runtime.
-    """
-    marker = Path(binary_dir).parent.parent / "UNSLOTH_PREBUILT_INFO.json"
-    try:
-        metadata = json.loads(marker.read_text(encoding = "utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return []
-
-    if not isinstance(metadata, dict):
-        return []
-
-    runtime_line = metadata.get("runtime_line")
-    match = re.fullmatch(r"cuda(\d+)", runtime_line if isinstance(runtime_line, str) else "")
-    if match is None:
-        return []
-
-    major = match.group(1)
-    root = Path(ollama_root) if ollama_root is not None else _OLLAMA_CUDA_ROOT
-    try:
-        candidates = sorted(root.glob(f"cuda_v{major}*"))
-    except OSError:
-        return []
-
-    runtime_dirs: list[str] = []
-    name_pattern = re.compile(rf"cuda_v{re.escape(major)}(?:[._-].*)?")
-    for directory in candidates:
-        try:
-            if not directory.is_dir() or name_pattern.fullmatch(directory.name) is None:
-                continue
-            has_cudart = any(directory.glob(f"libcudart.so.{major}*"))
-            has_cublas = any(directory.glob(f"libcublas.so.{major}*"))
-        except OSError:
-            continue
-        if has_cudart and has_cublas:
-            try:
-                runtime_dirs.append(str(directory.resolve()))
-            except OSError:
-                continue
-    return runtime_dirs
-
-
 def _lib_dir_has_ggml_backend(lib_dir: Path, backend: str) -> bool:
     """Match an exact or versioned ggml backend library soname."""
     stem = f"ggml-{backend}.dll" if sys.platform == "win32" else f"libggml-{backend}.so"
@@ -4295,18 +4242,17 @@ class LlamaCppBackend:
                 if os.path.isdir(cuda_lib):
                     lib_dirs.append(cuda_lib)
 
-            # The installer also detects CUDA runtimes shipped privately by
-            # Ollama. Keep that runtime behind pip/toolkit and inherited paths:
-            # the selected CUDA major may have been qualified by Torch instead,
-            # while Ollama should still rescue hosts where it is the only source.
-            ollama_cuda_dirs = (
-                _linux_ollama_cuda_runtime_dirs(binary_dir)
-                if sys.platform.startswith("linux")
-                else []
-            )
+            # Last resort: a CUDA runtime another application ships privately.
+            # Behind the wheel/toolkit dirs and the inherited path on purpose --
+            # the installed build's CUDA major may have been qualified by Torch,
+            # and this only has to rescue hosts where nothing else provides it.
+            from utils.llama_cpp_freshness import read_install_marker
+            from utils.prebuilt.runtime_libs import vendored_cuda_runtime_dirs
+
+            vendored_cuda_dirs = vendored_cuda_runtime_dirs(read_install_marker(binary))
             existing_ld = env.get("LD_LIBRARY_PATH", "")
             env["LD_LIBRARY_PATH"] = ":".join(
-                path for path in [*lib_dirs, existing_ld, *ollama_cuda_dirs] if path
+                path for path in [*lib_dirs, existing_ld, *vendored_cuda_dirs] if path
             )
 
         return env

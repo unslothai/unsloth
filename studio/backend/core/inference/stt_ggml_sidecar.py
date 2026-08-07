@@ -308,12 +308,21 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
         for pattern in ("libggml-cuda.so*", "ggml-cuda*.dll")
         for path in bundle_dir.glob(pattern)
     )
+    # Same rescue as the llama-server launcher: a CUDA runtime another app ships
+    # privately, appended after everything else so it only fills a real gap.
+    vendored_cuda_dirs: list[str] = []
     if has_cuda_module:
         try:
             from utils.prebuilt.runtime_libs import python_runtime_dirs
             cuda_runtime_dirs = python_runtime_dirs()
         except Exception:
             cuda_runtime_dirs = []
+        try:
+            from utils.prebuilt.runtime_libs import vendored_cuda_runtime_dirs
+            from utils.whisper_cpp_freshness import read_install_marker
+            vendored_cuda_dirs = vendored_cuda_runtime_dirs(read_install_marker(binary))
+        except Exception:
+            vendored_cuda_dirs = []
     if sys.platform == "win32":
         var, lead = "PATH", [bin_dir, *cuda_runtime_dirs]
     elif sys.platform == "darwin":
@@ -325,7 +334,7 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
             lead = [*wsl_rocm, bin_dir, *cuda_runtime_dirs]
             env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
     existing = [p for p in env.get(var, "").split(os.pathsep) if p]
-    env[var] = os.pathsep.join(_dedupe_existing_dirs([*lead, *existing]))
+    env[var] = os.pathsep.join(_dedupe_existing_dirs([*lead, *existing, *vendored_cuda_dirs]))
     return env
 
 

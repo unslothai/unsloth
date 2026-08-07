@@ -65,7 +65,6 @@ from core.inference.llama_cpp import (
     _extra_args_set_spec_type,
     _is_mtp_model_name,
     _kv_unified_from_args,
-    _linux_ollama_cuda_runtime_dirs,
     _mla_mtp_auto_enabled,
     _swa_full_from_args_or_env,
 )
@@ -694,12 +693,8 @@ def test_probe_server_capabilities_uses_binary_library_env(tmp_path, monkeypatch
     assert "/already-there" in ld_dirs
 
 
-def _make_ollama_cuda_runtime(
-    tmp_path: Path,
-    runtime_line: str = "cuda13",
-    *,
-    complete: bool = True,
-) -> tuple[Path, Path]:
+def _make_vendored_cuda_runtime(tmp_path: Path, runtime_line: str = "cuda13") -> tuple[Path, Path]:
+    """A prebuilt install tree plus the private CUDA runtime its marker selects."""
     binary_dir = tmp_path / "llama.cpp" / "build" / "bin"
     binary_dir.mkdir(parents = True)
     marker = binary_dir.parent.parent / "UNSLOTH_PREBUILT_INFO.json"
@@ -709,71 +704,33 @@ def _make_ollama_cuda_runtime(
     runtime_dir = tmp_path / "ollama" / f"cuda_v{major}"
     runtime_dir.mkdir(parents = True)
     (runtime_dir / f"libcudart.so.{major}.0").write_bytes(b"")
-    if complete:
-        (runtime_dir / f"libcublas.so.{major}.0").write_bytes(b"")
+    (runtime_dir / f"libcublas.so.{major}.0").write_bytes(b"")
     return binary_dir, runtime_dir
 
 
-def test_ollama_cuda_runtime_matches_prebuilt_marker(tmp_path):
-    binary_dir, runtime_dir = _make_ollama_cuda_runtime(tmp_path)
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "LD_LIBRARY_PATH is Linux-only")
+def test_llama_server_env_appends_vendored_cuda_runtime(tmp_path, monkeypatch):
+    """The private runtime lands on LD_LIBRARY_PATH, but behind every other source."""
+    import utils.prebuilt.runtime_libs as runtime_libs
+    from utils.llama_cpp_freshness import reset_caches
 
-    assert _linux_ollama_cuda_runtime_dirs(binary_dir, tmp_path / "ollama") == [
-        str(runtime_dir.resolve())
-    ]
-
-
-def test_ollama_cuda_runtime_ignores_other_cuda_major(tmp_path):
-    binary_dir, _runtime_dir = _make_ollama_cuda_runtime(tmp_path, "cuda12")
-    cuda13 = tmp_path / "ollama" / "cuda_v13"
-    cuda13.mkdir(parents = True)
-    (cuda13 / "libcudart.so.13").write_bytes(b"")
-    (cuda13 / "libcublas.so.13").write_bytes(b"")
-
-    result = _linux_ollama_cuda_runtime_dirs(binary_dir, tmp_path / "ollama")
-
-    assert all(Path(path).name != "cuda_v13" for path in result)
-
-
-def test_ollama_cuda_runtime_requires_complete_runtime(tmp_path):
-    binary_dir, _runtime_dir = _make_ollama_cuda_runtime(tmp_path, complete = False)
-
-    assert _linux_ollama_cuda_runtime_dirs(binary_dir, tmp_path / "ollama") == []
-
-
-def test_ollama_cuda_runtime_requires_valid_prebuilt_marker(tmp_path):
-    binary_dir = tmp_path / "llama.cpp" / "build" / "bin"
-    binary_dir.mkdir(parents = True)
-
-    assert _linux_ollama_cuda_runtime_dirs(binary_dir, tmp_path / "ollama") == []
-
-
-@pytest.mark.parametrize("metadata", [None, [], "cuda13"])
-def test_ollama_cuda_runtime_ignores_non_object_marker(tmp_path, metadata):
-    binary_dir = tmp_path / "llama.cpp" / "build" / "bin"
-    binary_dir.mkdir(parents = True)
-    marker = binary_dir.parent.parent / "UNSLOTH_PREBUILT_INFO.json"
-    marker.write_text(json.dumps(metadata))
-
-    assert _linux_ollama_cuda_runtime_dirs(binary_dir, tmp_path / "ollama") == []
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason = "LD_LIBRARY_PATH is POSIX-only")
-def test_llama_server_env_includes_selected_ollama_runtime(tmp_path, monkeypatch):
-    binary_dir, runtime_dir = _make_ollama_cuda_runtime(tmp_path)
+    binary_dir, runtime_dir = _make_vendored_cuda_runtime(tmp_path)
     binary = binary_dir / "llama-server"
     binary.write_bytes(b"")
     python_cuda_dir = tmp_path / "site-packages" / "nvidia" / "cublas" / "lib"
     python_cuda_dir.mkdir(parents = True)
 
-    monkeypatch.setattr("core.inference.llama_cpp._OLLAMA_CUDA_ROOT", tmp_path / "ollama")
+    reset_caches()
+    monkeypatch.setattr(
+        runtime_libs, "_VENDORED_CUDA_ROOTS", ((tmp_path / "ollama", "cuda_v{major}"),)
+    )
     monkeypatch.setattr(
         "core.inference.llama_cpp.child_env_without_native_path_secret",
         lambda: {"LD_LIBRARY_PATH": "/already-there"},
     )
     monkeypatch.setattr("core.inference.llama_cpp._wsl_system_rocm_lib_dirs", lambda: [])
     monkeypatch.setattr(
-        "core.inference.llama_cpp._native_linux_system_rocm_lib_dirs",
-        lambda _binary_dir: [],
+        "core.inference.llama_cpp._native_linux_system_rocm_lib_dirs", lambda _binary_dir: []
     )
     monkeypatch.setattr(
         "glob.glob",
@@ -783,13 +740,46 @@ def test_llama_server_env_includes_selected_ollama_runtime(tmp_path, monkeypatch
     )
 
     env = LlamaCppBackend._llama_server_env_for_binary(str(binary))
+    reset_caches()
 
     ld_dirs = env["LD_LIBRARY_PATH"].split(os.pathsep)
-    assert str(runtime_dir.resolve()) in ld_dirs
+    vendored = str(runtime_dir.resolve())
+    assert vendored in ld_dirs
     assert str(binary_dir.resolve()) in ld_dirs
-    assert "/already-there" in ld_dirs
-    assert ld_dirs.index(str(python_cuda_dir)) < ld_dirs.index(str(runtime_dir.resolve()))
-    assert ld_dirs.index("/already-there") < ld_dirs.index(str(runtime_dir.resolve()))
+    # Never ahead of the bundle, the wheel runtime, or what we inherited.
+    assert ld_dirs.index(str(binary_dir.resolve())) < ld_dirs.index(vendored)
+    assert ld_dirs.index(str(python_cuda_dir)) < ld_dirs.index(vendored)
+    assert ld_dirs.index("/already-there") < ld_dirs.index(vendored)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "LD_LIBRARY_PATH is Linux-only")
+def test_llama_server_env_without_vendored_runtime_is_unchanged(tmp_path, monkeypatch):
+    """No private runtime on the host -> the loader path is exactly what it was."""
+    import utils.prebuilt.runtime_libs as runtime_libs
+    from utils.llama_cpp_freshness import reset_caches
+
+    binary_dir, _runtime_dir = _make_vendored_cuda_runtime(tmp_path)
+    binary = binary_dir / "llama-server"
+    binary.write_bytes(b"")
+
+    reset_caches()
+    monkeypatch.setattr(
+        runtime_libs, "_VENDORED_CUDA_ROOTS", ((tmp_path / "nonexistent", "cuda_v{major}"),)
+    )
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.child_env_without_native_path_secret",
+        lambda: {"LD_LIBRARY_PATH": "/already-there"},
+    )
+    monkeypatch.setattr("core.inference.llama_cpp._wsl_system_rocm_lib_dirs", lambda: [])
+    monkeypatch.setattr(
+        "core.inference.llama_cpp._native_linux_system_rocm_lib_dirs", lambda _binary_dir: []
+    )
+    monkeypatch.setattr("glob.glob", lambda pattern: [])
+
+    env = LlamaCppBackend._llama_server_env_for_binary(str(binary))
+    reset_caches()
+
+    assert env["LD_LIBRARY_PATH"] == f"{binary_dir.resolve()}{os.pathsep}/already-there"
 
 
 @_NEEDS_BASH
