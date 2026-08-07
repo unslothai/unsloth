@@ -187,7 +187,7 @@ def test_dropped_parallel_call_unlinks_openai_response_and_keeps_gemini_parts(mo
         [
             [
                 "data: " + json.dumps(event),
-                _chunk(delta = {"tool_calls": calls, "reasoning_details": reasoning}),
+                _chunk(delta = {"tool_calls": calls, "reasoning_details": reasoning, "reasoning_content": "think"}),
                 _chunk(delta = {}, finish = "tool_calls"),
                 "data: [DONE]",
             ],
@@ -197,11 +197,13 @@ def test_dropped_parallel_call_unlinks_openai_response_and_keeps_gemini_parts(mo
 
     asyncio.run(_collect(client, parallel_tool_calls = False))
 
+    assert client.calls[0]["parallel_tool_calls"] is False
     assistant = client.calls[1]["messages"][-2]
     assert [call["id"] for call in assistant["tool_calls"]] == ["call_0"]
     assert "extra_content" not in assistant["tool_calls"][0]
     assert assistant["extra_content"]["google"]["hosted_parts"] == [native]
     assert assistant["reasoning_details"] == reasoning
+    assert assistant["reasoning_content"] == "think"
 
 
 def test_usage_precedes_provider_error(monkeypatch):

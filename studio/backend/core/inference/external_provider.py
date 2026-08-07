@@ -804,6 +804,7 @@ class ExternalProviderClient:
         tool_choice: Optional[Any] = None,
         fast_mode: Optional[bool] = None,
         stream: bool = True,
+        parallel_tool_calls: Optional[bool] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Yield OpenAI-format SSE lines from the external provider.
@@ -864,6 +865,7 @@ class ExternalProviderClient:
                 compaction_threshold,
                 tools,
                 tool_choice,
+                parallel_tool_calls,
                 fast_mode = fast_mode,
             ):
                 yield line
@@ -889,6 +891,7 @@ class ExternalProviderClient:
                 compaction_threshold,
                 tools,
                 tool_choice,
+                parallel_tool_calls,
             ):
                 yield line
             return
@@ -1030,6 +1033,8 @@ class ExternalProviderClient:
             body["tools"] = tools
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
+        if parallel_tool_calls is not None and tools:
+            body["parallel_tool_calls"] = parallel_tool_calls
 
         url = f"{self.base_url}/chat/completions"
         logger.info(
@@ -1630,6 +1635,7 @@ class ExternalProviderClient:
         compaction_threshold: Optional[int] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
+        parallel_tool_calls: Optional[bool] = None,
         *,
         fast_mode: Optional[bool] = None,
     ) -> AsyncGenerator[str, None]:
@@ -2147,6 +2153,10 @@ class ExternalProviderClient:
                     "type": "tool",
                     "name": tool_choice["function"]["name"],
                 }
+            if parallel_tool_calls is False:
+                native_tool_choice = body.setdefault("tool_choice", {"type": "auto"})
+                if native_tool_choice.get("type") in ("auto", "any", "tool"):
+                    native_tool_choice["disable_parallel_tool_use"] = True
 
         # Server-side compaction (beta `compact-2026-01-12`). Clamps below-min
         # thresholds to 50K so the request doesn't 400.
@@ -4743,6 +4753,7 @@ class ExternalProviderClient:
         compaction_threshold: Optional[int] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
+        parallel_tool_calls: Optional[bool] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Call OpenAI's /v1/responses endpoint and translate its SSE stream back
@@ -5212,6 +5223,8 @@ class ExternalProviderClient:
                 body["tools"] = tools_array
         if responses_tool_choice is not None:
             body["tool_choice"] = responses_tool_choice
+        if parallel_tool_calls is not None and responses_user_function_tools:
+            body["parallel_tool_calls"] = parallel_tool_calls
 
         url = f"{self.base_url}/responses"
         completion_id = f"chatcmpl-openai-{model.replace('/', '-')}"

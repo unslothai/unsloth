@@ -2167,7 +2167,7 @@ export function ChatPage({
       CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
     );
     const nextToolsEnabled = (supportsBuiltinWebSearch || supportsStudioTools)
-      ? isKimi
+      ? isKimi && !supportsStudioTools
         ? false
         : (storedToolsEnabled ?? searchOnByDefault)
       : false;
@@ -2697,7 +2697,7 @@ export function ChatPage({
           CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
         );
         const nextToolsEnabled = (supportsBuiltinWebSearch || supportsStudioTools)
-          ? isKimi
+          ? isKimi && !supportsStudioTools
             ? false
             : (storedToolsEnabled ?? searchOnByDefault)
           : false;

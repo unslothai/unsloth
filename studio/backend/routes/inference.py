@@ -9079,6 +9079,7 @@ async def _proxy_to_external_provider(
             compaction_threshold = payload.compaction_threshold,
             tools = payload.tools,
             tool_choice = payload.tool_choice,
+            parallel_tool_calls = payload.parallel_tool_calls,
             fast_mode = payload.fast_mode,
             stream = payload.stream,
         )
