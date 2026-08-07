@@ -1219,9 +1219,9 @@ def test_legacy_unscoped_download_state_falls_back_only_for_selected_cache(monke
 @pytest.mark.parametrize(
     "variant",
     [
-        "unknown/variant with spaces",   # unsafe characters force the hashed filename
-        "double--hyphen",                # aliases the --variant-- delimiter, also hashed
-        "Q4_K_M",                        # spelled literally, the control
+        "unknown/variant with spaces",  # unsafe characters force the hashed filename
+        "double--hyphen",  # aliases the --variant-- delimiter, also hashed
+        "Q4_K_M",  # spelled literally, the control
     ],
 )
 def test_index_finds_an_unreadable_marker_stored_under_a_hashed_filename(
