@@ -663,9 +663,7 @@ def test_will_serve_only_treats_definite_absence_as_unloadable(
     assert gguf_variants._will_serve(os.fspath(gguf)) is serves
 
 
-def test_loadable_variants_stays_unanswered_for_an_unstatable_direct_file(
-    in_tmp_cwd, monkeypatch
-):
+def test_loadable_variants_stays_unanswered_for_an_unstatable_direct_file(in_tmp_cwd, monkeypatch):
     # An empty list reads as authoritative at the attach gate and rejects the variant, so a
     # direct file locked by llama-server has to stay unanswered: from_identifier ignores the
     # variant for a file and would load it regardless.
