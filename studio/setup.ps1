@@ -1644,12 +1644,18 @@ if ($env:SKIP_STUDIO_BASE -ne "1") {
         # $StudioHome is resolved much later, so mirror its override precedence
         # here for the message only. llama.cpp is a sibling of studio under
         # ~/.unsloth on a default install, so name the parent.
+        $_unslothRoot = Join-Path $env:USERPROFILE ".unsloth"
         $_elevRoot = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
             $env:UNSLOTH_STUDIO_HOME.Trim()
         } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
             $env:STUDIO_HOME.Trim()
         } else {
-            Join-Path $env:USERPROFILE ".unsloth"
+            $_unslothRoot
+        }
+        # An override equal to the legacy default is not a custom root downstream:
+        # llama.cpp and node stay siblings under ~/.unsloth, so name that parent.
+        if ($_elevRoot.TrimEnd('\', '/') -ieq (Join-Path $_unslothRoot "studio").TrimEnd('\', '/')) {
+            $_elevRoot = $_unslothRoot
         }
         Write-Host ""
         Write-Host "  [WARNING] Running as administrator. Unsloth does not need this." -ForegroundColor Yellow

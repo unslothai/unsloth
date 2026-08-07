@@ -60,9 +60,9 @@ def test_diag_marker_prefix_is_still_parsed_and_reported():
     markers become invisible without either file changing."""
     assert '"[TAURI:DIAG] "' in _read(INSTALL_RS), "install.rs no longer parses [TAURI:DIAG]"
     assert "record_diag_marker" in _read(INSTALL_RS), "the marker is parsed but not recorded"
-    assert "installer_diag_markers" in _read(
-        REPORT_RS
-    ), "the support report no longer prints markers"
+    assert "installer_diag_markers" in _read(REPORT_RS), (
+        "the support report no longer prints markers"
+    )
 
 
 # ── Elevation ──
@@ -105,9 +105,9 @@ def test_install_ps1_warns_before_anything_is_created():
         "uv venv $VenvDir --python",
         'step "setup" "running unsloth studio setup..."',
     ):
-        assert notice_idx < src.index(
-            marker
-        ), f"the elevation notice must be printed before {marker!r}"
+        assert notice_idx < src.index(marker), (
+            f"the elevation notice must be printed before {marker!r}"
+        )
 
 
 def test_install_ps1_marker_uses_the_parsed_tauri_flag():
@@ -121,9 +121,9 @@ def test_install_ps1_marker_uses_the_parsed_tauri_flag():
         src[src.index("function Write-ElevationNotice") : src.index("$ElevationRoot = if")]
     )
     assert "[TAURI:DIAG] elevated=$State" in notice
-    assert (
-        "$env:UNSLOTH_TAURI_MODE" not in notice
-    ), "the env var is unset at this point; gate on the --tauri flag instead"
+    assert "$env:UNSLOTH_TAURI_MODE" not in notice, (
+        "the env var is unset at this point; gate on the --tauri flag instead"
+    )
     assert "-Tauri:$TauriMode" in src, "the parsed --tauri flag must be what drives the marker"
     # The flag has to be parsed before the call, or it is always false.
     assert src.index('"--tauri"    { $TauriMode = $true }') < src.index("-Tauri:$TauriMode")
@@ -138,17 +138,49 @@ def test_install_ps1_warning_names_the_root_actually_written():
     notice = src[src.index("function Write-ElevationNotice") : src.index("-Tauri:$TauriMode")]
     assert "$Root" in notice, "the warning must name the resolved root, not a fixed path"
     assert "outlives an uninstall" in notice, "the warning must say reinstalling does not clear it"
-    root = src[src.index("$ElevationRoot = if") : src.index("-Tauri:$TauriMode")]
+    root = src[src.index("$UnslothRoot = Join-Path") : src.index("-Tauri:$TauriMode")]
     assert '".unsloth"' in root, "a default install must name the parent that also holds llama.cpp"
     # The notice runs before the resolver, so $StudioHome does not exist yet and
     # naming it would render empty; mirror the override precedence instead.
     assert "$StudioHome" not in root, "$StudioHome is not assigned until the resolver below"
-    assert (
-        "UNSLOTH_STUDIO_HOME" in root and "$env:STUDIO_HOME" in root
-    ), "both override names must be honoured, in that order"
-    assert root.index("UNSLOTH_STUDIO_HOME") < root.index(
-        "$env:STUDIO_HOME"
-    ), "UNSLOTH_STUDIO_HOME wins when both are set"
+    assert "UNSLOTH_STUDIO_HOME" in root and "$env:STUDIO_HOME" in root, (
+        "both override names must be honoured, in that order"
+    )
+    assert root.index("UNSLOTH_STUDIO_HOME") < root.index("$env:STUDIO_HOME"), (
+        "UNSLOTH_STUDIO_HOME wins when both are set"
+    )
+
+
+def test_a_legacy_equal_override_names_its_parent():
+    """An override that resolves to %USERPROFILE%\\.unsloth\\studio is not a custom
+    root downstream: the canonical comparison in setup.ps1 treats it as a default
+    install and keeps llama.cpp and node as siblings under ~/.unsloth. Naming only
+    the studio directory would send the user past the admin-owned assets."""
+    for path, var in ((INSTALL_PS1, "$ElevationRoot"), (SETUP_PS1, "$_elevRoot")):
+        src = _read(path)
+        idx = src.index(f"{var} = if") - 400
+        block = src[idx : idx + 1200]
+        assert '"studio"' in block, f"{path.name} does not compare against the legacy root"
+        assert "-ieq" in block, f"{path.name} must compare case-insensitively"
+        assert "TrimEnd" in block, f"{path.name} must ignore a trailing separator"
+
+
+def test_installer_restores_skip_studio_base():
+    """`irm ... | iex` runs in the caller's shell. A leaked SKIP_STUDIO_BASE=1
+    makes the next direct setup or update look like an installer child, which
+    suppresses both the elevation notice and the degraded-repair marker."""
+    src = _read(INSTALL_PS1)
+    assert "$previousSkipStudioBase = $env:SKIP_STUDIO_BASE" in src
+    set_idx = src.index('$env:SKIP_STUDIO_BASE = "1"')
+    save_idx = src.index("$previousSkipStudioBase = $env:SKIP_STUDIO_BASE")
+    assert save_idx < set_idx, "the previous value must be captured before it is overwritten"
+    restore = src[src.index("} finally {") :]
+    assert "$env:SKIP_STUDIO_BASE = $previousSkipStudioBase" in restore, (
+        "the flag must be restored alongside UNSLOTH_TAURI_MODE"
+    )
+    assert "Remove-Item Env:SKIP_STUDIO_BASE" in restore, (
+        "an unset value must be removed again, not left as an empty string"
+    )
 
 
 def test_both_scripts_resolve_the_warning_root_the_same_way():
@@ -157,11 +189,11 @@ def test_both_scripts_resolve_the_warning_root_the_same_way():
     directory."""
     install_root = _read(INSTALL_PS1)
     install_root = install_root[
-        install_root.index("$ElevationRoot = if") : install_root.index("-Tauri:$TauriMode")
+        install_root.index("$UnslothRoot = Join-Path") : install_root.index("-Tauri:$TauriMode")
     ]
     setup_src = _read(SETUP_PS1)
     setup_root = setup_src[
-        setup_src.index("$_elevRoot = if") : setup_src.index("# Back up User PATH")
+        setup_src.index("$_unslothRoot = Join-Path") : setup_src.index("# Back up User PATH")
     ]
     for fragment in (
         "IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)",
@@ -202,18 +234,18 @@ def test_setup_ps1_warning_names_the_root_actually_written():
     idx = src.index('if ($env:SKIP_STUDIO_BASE -ne "1") {')
     block = src[idx : src.index("# Back up User PATH")]
     assert "$_elevRoot" in block, "the warning must name a resolved root"
-    assert (
-        "UNSLOTH_STUDIO_HOME" in block and "STUDIO_HOME" in block
-    ), "both override names must be honoured, in that order"
-    assert block.index("UNSLOTH_STUDIO_HOME") < block.index(
-        "$env:STUDIO_HOME"
-    ), "UNSLOTH_STUDIO_HOME wins when both are set"
+    assert "UNSLOTH_STUDIO_HOME" in block and "STUDIO_HOME" in block, (
+        "both override names must be honoured, in that order"
+    )
+    assert block.index("UNSLOTH_STUDIO_HOME") < block.index("$env:STUDIO_HOME"), (
+        "UNSLOTH_STUDIO_HOME wins when both are set"
+    )
     for phrase in ("Close this window", "normal PowerShell"):
         assert phrase not in block, f"{phrase!r} is wrong for the desktop repair flow"
     # Naming $StudioHome directly here would render empty.
-    assert idx < src.index(
-        "$StudioHome = Join-Path $env:USERPROFILE"
-    ), "this test is only meaningful while the notice precedes the resolver"
+    assert idx < src.index("$StudioHome = Join-Path $env:USERPROFILE"), (
+        "this test is only meaningful while the notice precedes the resolver"
+    )
 
 
 # ── Degraded llama.cpp ──
@@ -226,9 +258,9 @@ def test_degraded_llama_cpp_is_recorded_not_only_flashed():
         assert "llama_cpp=unavailable" in src, f"{path.name} does not record the degraded verdict"
         progress_idx = src.index("llama.cpp unavailable; GGUF inference is disabled")
         marker_idx = src.index("llama_cpp=unavailable")
-        assert (
-            marker_idx > progress_idx
-        ), f"{path.name} must keep the user-facing progress line and add the marker beside it"
+        assert marker_idx > progress_idx, (
+            f"{path.name} must keep the user-facing progress line and add the marker beside it"
+        )
 
 
 def test_degraded_llama_cpp_still_fails_outside_tauri_mode():
@@ -260,6 +292,6 @@ def test_desktop_repair_marker_does_not_change_the_update_contract():
     for path in (SETUP_SH, SETUP_PS1):
         block = _code_only(_repair_block(path))
         for forbidden in ("setup_fail", "Exit-SetupFailure", "TAURI:PROGRESS", "exit "):
-            assert (
-                forbidden not in block
-            ), f"{path.name}: the repair block must be marker-only, found {forbidden!r}"
+            assert forbidden not in block, (
+                f"{path.name}: the repair block must be marker-only, found {forbidden!r}"
+            )

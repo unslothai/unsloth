@@ -299,12 +299,18 @@ function Install-UnslothStudio {
     # mirroring its override precedence here rather than reusing $StudioHome.
     # llama.cpp is a sibling of studio under ~/.unsloth on a default install, so
     # name the parent; a custom root holds every artefact itself.
+    $UnslothRoot = Join-Path $env:USERPROFILE ".unsloth"
     $ElevationRoot = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
         $env:UNSLOTH_STUDIO_HOME.Trim()
     } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
         $env:STUDIO_HOME.Trim()
     } else {
-        Join-Path $env:USERPROFILE ".unsloth"
+        $UnslothRoot
+    }
+    # An override equal to the legacy default is not a custom root downstream:
+    # llama.cpp and node stay siblings under ~/.unsloth, so name that parent.
+    if ($ElevationRoot.TrimEnd('\', '/') -ieq (Join-Path $UnslothRoot "studio").TrimEnd('\', '/')) {
+        $ElevationRoot = $UnslothRoot
     }
     Write-ElevationNotice -State (Get-ElevationState) -Root $ElevationRoot -Tauri:$TauriMode
 
@@ -3593,7 +3599,11 @@ exit 0
         Write-Host "        Try re-running the installer or see: https://github.com/unslothai/unsloth?tab=readme-ov-file#-quickstart" -ForegroundColor Yellow
         return (Exit-InstallFailure "unsloth CLI was not installed correctly")
     }
-    # Tell setup.ps1 to skip base package installation (install.ps1 already did it)
+    # Tell setup.ps1 to skip base package installation (install.ps1 already did it).
+    # Saved and restored below: `irm | iex` runs in the caller's shell, and a
+    # leaked "1" makes a later direct setup or update look like an installer child.
+    $previousSkipStudioBase = $env:SKIP_STUDIO_BASE
+    $hadPreviousSkipStudioBase = ($null -ne $previousSkipStudioBase)
     $env:SKIP_STUDIO_BASE = "1"
     $env:STUDIO_PACKAGE_NAME = $PackageName
     $env:UNSLOTH_NO_TORCH = if ($SkipTorch) { "true" } else { "false" }
@@ -3651,6 +3661,11 @@ exit 0
             $env:UNSLOTH_TAURI_MODE = $previousTauriMode
         } else {
             Remove-Item Env:UNSLOTH_TAURI_MODE -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousSkipStudioBase) {
+            $env:SKIP_STUDIO_BASE = $previousSkipStudioBase
+        } else {
+            Remove-Item Env:SKIP_STUDIO_BASE -ErrorAction SilentlyContinue
         }
         Remove-Item Env:UNSLOTH_LOCAL_LLAMA_CPP_DIR -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
