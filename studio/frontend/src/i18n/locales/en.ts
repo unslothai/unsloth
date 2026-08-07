@@ -313,6 +313,13 @@ export const en = {
         title: "Change password",
         description:
           "Enter your current password and choose a new one (at least {minLength} characters).",
+        setTrigger: "Set remote password",
+        setTitle: "Set remote password",
+        setDescription:
+          "Choose the password remote browsers sign in with as unsloth (at least {minLength} characters). The Unsloth Desktop App keeps signing in automatically.",
+        setSubmit: "Set password",
+        setting: "Setting...",
+        setDone: "Password set.",
         currentPassword: "Current password",
         newPassword: "New password",
         confirmPassword: "Confirm new password",
@@ -393,6 +400,14 @@ export const en = {
         showLlamaUpdates: "llama.cpp update notifications",
         showLlamaUpdatesDescription:
           "Notify when a newer llama.cpp build is available to run new models. Turn off if you only train.",
+      },
+      startup: {
+        sectionTitle: "Startup",
+        launchAtLogin: "Run Unsloth at login",
+        launchAtLoginDescription:
+          "Start Unsloth in the background when you log in. It stays in the menu bar or system tray until you open it.",
+        loadError: "Failed to load the launch at login setting.",
+        saveError: "Failed to update the launch at login setting.",
       },
       gettingStarted: "Getting started",
       startOnboarding: "Start onboarding",

@@ -21,13 +21,22 @@ on:
       - 'tests/studio/**'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/workflows/studio-windows-ui-smoke.yml'
+      # Every server boot in this workflow shells out to that script, so an edit
+      # to it changes what this workflow actually runs.
+      - '.github/scripts/boot-studio-api-only.sh'
+      # Same for the /api/health wait that runs after a boot.
+      - '.github/scripts/wait-for-health.sh'
   push:
-    branches: [main, pip]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -80,13 +89,17 @@ jobs:
           # then fatal-errors with "Cache folder path is retrieved
           # for pip but doesn't exist on disk".
 
+      # Cross-OS shared entry. The tree under `hf-cache` is byte-identical on
+      # Linux, macOS and Windows, so the key carries no `runner.os`, and
+      # enableCrossOsArchive lets Windows (which tars with --force-local) join it.
       - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
         id: cache-hf
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         continue-on-error: true
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
+          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
+          enableCrossOsArchive: true
 
       - name: Prime HF_HOME with the GGUF
         id: prime-hf
@@ -111,11 +124,12 @@ jobs:
         # same 4.6GB model held four times on four different PR refs and no copy
         # on main at all. That is the thrash loop: PR misses -> downloads ->
         # saves its own copy -> evicts main's -> next PR misses.
-        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success'
+        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
+          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
+          enableCrossOsArchive: true
 
       - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
         shell: pwsh
@@ -308,21 +322,11 @@ jobs:
       - name: Reset auth + boot Unsloth
         run: |
           # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
-            > logs/studio.log 2>&1 &
-          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
 
       - name: Wait for /api/health
         run: |
-          for i in $(seq 1 180); do
-            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
-              jq -e '.status == "healthy"' /tmp/health.json && break
-            fi
-            sleep 1
-          done
-          jq -e '.status == "healthy"' /tmp/health.json
+          bash .github/scripts/wait-for-health.sh --port "$STUDIO_PORT"
 
       - name: Pass bootstrap password to the Playwright step
         run: |
@@ -363,21 +367,13 @@ jobs:
 
       - name: Reset auth + boot Unsloth for extra UI tests (port 18897)
         run: |
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18897 \
-            > logs/studio_extra.log 2>&1 &
-          echo "STUDIO_EXTRA_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port 18897 --log logs/studio_extra.log --pid-var STUDIO_EXTRA_PID
 
       - name: Wait for /api/health on 18897
         run: |
-          for i in $(seq 1 180); do
-            if curl -fs "http://127.0.0.1:18897/api/health" > /tmp/health2.json; then
-              jq -e '.status == "healthy"' /tmp/health2.json && break
-            fi
-            sleep 1
-          done
-          jq -e '.status == "healthy"' /tmp/health2.json
+          bash .github/scripts/wait-for-health.sh \
+            --port 18897 --log logs/studio_extra.log --tmp /tmp/health2.json
 
       - name: Pass bootstrap pw for extra UI test
         run: |

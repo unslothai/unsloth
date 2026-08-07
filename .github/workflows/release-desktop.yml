@@ -50,11 +50,50 @@ env:
 concurrency:
   group: release-desktop-${{ github.repository }}
   cancel-in-progress: false
+  # publish-desktop-updater.yml shares this group and already sets queue: max.
+  # Without it here, the default queue: single silently cancels a *pending*
+  # release the moment a second one is dispatched or a publish lands, which
+  # looks identical to a release that was never dispatched. A queued release
+  # holds no runner, so waiting is free.
+  queue: max
 
 jobs:
+  # Ask the sweeper to stand scheduled CI down while this release builds. Same
+  # repository, so this needs no secret: the job's own GITHUB_TOKEN with
+  # actions: write is enough, and there is no credential to rotate or leak.
+  #
+  # Deliberately not a `needs:` of anything. Freeing capacity is an
+  # optimisation, so a failure here must never hold up or fail a release, and
+  # the build must not wait on it either.
+  #
+  # ci-capacity.yml ships inert. Until CI_PREEMPT_ENABLED is set on this
+  # repository it resolves what it would have cancelled, prints that to the job
+  # summary, and touches nothing. That is the intended state for now: this wires
+  # the request up so the dry-run summary shows what a real sweep would free.
+  free-capacity:
+    name: Ask CI to free runner capacity
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch the capacity sweeper
+        # A release must never fail because the request did not land.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh workflow run ci-capacity.yml --repo "$GITHUB_REPOSITORY" --ref main \
+            -f mode=sweep \
+            -f events=schedule \
+            -f classes=linux,windows \
+            -f reason="release-desktop run ${GITHUB_RUN_ID}"
+
   prepare-version:
     name: Prepare release versions
     runs-on: ubuntu-latest
+    # Version resolution only; observed 8-16s.
+    timeout-minutes: 15
     outputs:
       studio_version: ${{ steps.prepare.outputs.studio_version }}
       app_version: ${{ steps.prepare.outputs.app_version }}
@@ -363,6 +402,8 @@ jobs:
     name: Build ${{ matrix.label }}
     needs: prepare-version
     runs-on: ${{ matrix.platform }}
+    # 6.9-20.9 min observed across platforms and cache states.
+    timeout-minutes: 60
 
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -663,10 +704,32 @@ jobs:
           rm -f certificate.p12
 
       # ── Windows: install Azure Trusted Signing CLI ──
-      - name: Install trusted-signing-cli
+      # `cargo install` builds this from source: 241s and 248s on the last two
+      # cache-miss runs. It was only ever fast when the ~550 MB rust-cache
+      # happened to restore `~/.cargo/bin` too, and that entry is the first
+      # thing evicted under repo cache pressure, which is why Windows swung
+      # between 8.8 min and 20.9 min. A dedicated single-binary cache keeps the
+      # compile off the critical path independently of the big Rust cache.
+      - name: Restore trusted-signing-cli
+        id: cache_trusted_signing_cli
         if: matrix.platform == 'windows-latest'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: ~/.cargo/bin/trusted-signing-cli.exe
+          # The version is in the key, so a bump invalidates the cache instead
+          # of silently reusing the old binary.
+          key: trusted-signing-cli-0.10.0-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install trusted-signing-cli
+        if: matrix.platform == 'windows-latest' && steps.cache_trusted_signing_cli.outputs.cache-hit != 'true'
         run: |
           cargo install trusted-signing-cli --version 0.10.0 --locked
+
+      # Unconditional: on a cache hit the install step above is skipped, and the
+      # cargo bin dir still has to reach PATH or signing fails.
+      - name: Add cargo bin to PATH
+        if: matrix.platform == 'windows-latest'
+        run: |
           echo "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # ── Windows: verify signing CLI is accessible ──
@@ -728,7 +791,14 @@ jobs:
         env:
           ARTIFACT_PATHS: ${{ steps.build_linux.outputs.artifactPaths }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # The signing key is not password protected, and no secret of this name
+          # exists, so this expression has always resolved to the empty string.
+          # Stated literally rather than left pointing at a secret that is not
+          # there: the value is unchanged, but it no longer reads as configuration
+          # someone forgot to set. Empty is not the same as unset here -- tauri
+          # prompts for a password when the variable is absent, which would hang
+          # the job, so the line stays.
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         run: |
           set -euo pipefail
           deb_path="$(
@@ -777,7 +847,14 @@ jobs:
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # The signing key is not password protected, and no secret of this name
+          # exists, so this expression has always resolved to the empty string.
+          # Stated literally rather than left pointing at a secret that is not
+          # there: the value is unchanged, but it no longer reads as configuration
+          # someone forgot to set. Empty is not the same as unset here -- tauri
+          # prompts for a password when the variable is absent, which would hang
+          # the job, so the line stays.
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -798,9 +875,9 @@ jobs:
         if: matrix.platform == 'macos-latest'
         shell: bash
         # `--timeout` below caps the polling, but not the upload that precedes
-        # it. This job sets no timeout of its own, so without a backstop a stuck
-        # Notary service would hold `max-parallel: 1` for GitHub's 6h default
-        # and discard the Linux and Windows builds with it.
+        # it. Without a step-level backstop a stuck Notary service would hold
+        # `max-parallel: 1` for the whole job budget and discard the Linux and
+        # Windows builds with it, so cap it tighter than the job here.
         timeout-minutes: 45
         env:
           ARTIFACT_PATHS: ${{ steps.build_macos.outputs.artifactPaths }}
@@ -935,7 +1012,14 @@ jobs:
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # The signing key is not password protected, and no secret of this name
+          # exists, so this expression has always resolved to the empty string.
+          # Stated literally rather than left pointing at a secret that is not
+          # there: the value is unchanged, but it no longer reads as configuration
+          # someone forgot to set. Empty is not the same as unset here -- tauri
+          # prompts for a password when the variable is absent, which would hang
+          # the job, so the line stays.
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
@@ -982,8 +1066,32 @@ jobs:
           Update-MpSignature -UpdateSource MicrosoftUpdateServer -ErrorAction Continue
           & $mp -SignatureUpdate 2>&1 | Write-Host
 
-          $status = Get-MpComputerStatus
-          $pref = Get-MpPreference
+          # Read these defensively. A runner can come up with the Defender WMI
+          # provider dead ("Provider load failure") and the service RPC endpoint
+          # down (0x800106ba), which is how the platform incident on 2026-08-06
+          # presented: the cmdlets throw, $status/$pref land null, and every check
+          # below then reads as a misconfiguration it is not.
+          $status = $null
+          $pref = $null
+          $unavailable = @()
+          try { $status = Get-MpComputerStatus -ErrorAction Stop }
+          catch { $unavailable += "Get-MpComputerStatus: $($_.Exception.Message)" }
+          try { $pref = Get-MpPreference -ErrorAction Stop }
+          catch { $unavailable += "Get-MpPreference: $($_.Exception.Message)" }
+          if (-not $unavailable -and -not $status) { $unavailable += 'Get-MpComputerStatus returned nothing' }
+          if (-not $unavailable -and -not $pref)   { $unavailable += 'Get-MpPreference returned nothing' }
+
+          # Absent scanner vs. bad verdict. Everything below this point assumes a
+          # Defender that answers; when it does not answer at all there is no scan
+          # to interpret, so skip instead of failing closed. This is deliberately
+          # narrow: it triggers only when the cmdlets themselves fail, which is an
+          # unavailable engine. A Defender that IS present but misconfigured still
+          # fails below, and an actual detection still fails the job.
+          if ($unavailable) {
+            Write-Host "::warning::Defender is unavailable on this runner ($($unavailable -join '; ')); skipping the bundle scan. This is a missing scanner, not a clean verdict - these bundles were not scanned."
+            exit 0
+          }
+
           Write-Host "engine $($status.AMEngineVersion), signatures $($status.AntivirusSignatureVersion) ($($status.AntivirusSignatureLastUpdated))"
 
           # Set-MpPreference can return cleanly and still be ignored, so verify.
@@ -1278,6 +1386,8 @@ jobs:
     name: Publish desktop release
     needs: [prepare-version, build]
     runs-on: ubuntu-latest
+    # Artifact download plus release upload; observed 17-40s.
+    timeout-minutes: 20
     permissions:
       contents: write  # create the versioned Release and replace updater-channel metadata
     env:

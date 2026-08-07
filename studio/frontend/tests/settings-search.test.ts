@@ -21,3 +21,18 @@ test("browser update searches keep routing to About", () => {
   assert.ok(!index.general.includes(UPDATE_ENTRY));
   assert.ok(index.about.includes(UPDATE_ENTRY));
 });
+
+const STARTUP_ENTRIES = [
+  "settings.general.startup.sectionTitle",
+  "settings.general.startup.launchAtLogin",
+] as const;
+
+test("startup entries are searchable on desktop only", () => {
+  const desktop = createSettingsSearchIndex(true);
+  const browser = createSettingsSearchIndex(false);
+
+  for (const entry of STARTUP_ENTRIES) {
+    assert.ok(desktop.general.includes(entry));
+    assert.ok(!browser.general.includes(entry));
+  }
+});

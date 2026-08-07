@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import ast
+import contextlib
 import glob
 import importlib
+import io
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -282,3 +286,228 @@ class TestPinnedIndexClearsUvEnv:
         configuration still applies to base packages."""
         env = ips._install_env_for_cmd(["uv", "pip", "install", "unsloth"])
         assert env is None
+
+
+class TestProgressLineNotes:
+    """_progress() leaves the cursor mid-line, so anything printed between two
+    progress steps must close that line first. Before centralising this, a real
+    install glued the torchao message onto the bar:
+      deps  [=======-------------]  5/14  dependency overrides   torch 2.11...
+    """
+
+    def _render(
+        self,
+        emit,
+        *,
+        columns = "100",
+        verbose = False,
+        color = False,
+    ) -> str:
+        buf = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"COLUMNS": columns}),
+            mock.patch.object(ips, "VERBOSE", verbose),
+            # _HAS_COLOR is resolved once at import from the tty; pinning it keeps the
+            # assertions valid under FORCE_COLOR=1 or `pytest -s` in a terminal.
+            mock.patch.object(ips, "_HAS_COLOR", color),
+            mock.patch.object(ips, "_TOTAL", 14),
+            mock.patch.object(ips, "_STEP", 4),
+            mock.patch.object(ips, "_PROGRESS_LINE_ACTIVE", False),
+            contextlib.redirect_stdout(buf),
+        ):
+            emit()
+        return buf.getvalue()
+
+    def test_note_does_not_glue_onto_the_progress_bar(self):
+        msg = "torch 2.11.0+cu130 detected -- installing torchao==0.17.0"
+        out = self._render(lambda: (ips._progress("dependency overrides"), ips._note(msg)))
+        bar_lines = [ln for ln in out.split("\n") if "5/14" in ln]
+        assert len(bar_lines) == 1, f"expected one bar line, got {bar_lines!r}"
+        assert msg not in bar_lines[0], f"note glued onto the bar: {bar_lines[0]!r}"
+        assert any(ln.strip() == msg for ln in out.split("\n")), out
+
+    def test_note_aligns_under_the_step_value_column(self):
+        out = self._render(lambda: (ips._progress("dependency overrides"), ips._note("hello")))
+        note_line = next(ln for ln in out.split("\n") if ln.strip() == "hello")
+        assert len(note_line) - len(note_line.lstrip()) == ips._INDENT + ips._COL
+
+    def test_note_without_an_active_bar_prints_on_its_own(self):
+        out = self._render(lambda: ips._note("standalone"))
+        assert out == f"{' ' * (ips._INDENT + ips._COL)}standalone\n"
+
+    def test_step_still_closes_an_active_bar(self):
+        """_step() handed its inline line-break logic to _end_progress_line(); it
+        must keep breaking out of the bar."""
+        out = self._render(
+            lambda: (ips._progress("dependency overrides"), ips._step("deps", "installed"))
+        )
+        bar_lines = [ln for ln in out.split("\n") if "5/14" in ln]
+        assert len(bar_lines) == 1 and "installed" not in bar_lines[0], out
+
+    def test_progress_line_state_is_cleared(self):
+        """A stale _PROGRESS_LINE_ACTIVE blank-lines the next note instead of
+        closing a bar that is no longer open."""
+
+        def emit():
+            ips._progress("dependency overrides")
+            ips._note("first")
+            assert ips._PROGRESS_LINE_ACTIVE is False
+            ips._note("second")
+
+        out = self._render(emit)
+        assert "\n\n" not in out, out
+
+    def test_uv_fallback_warning_does_not_glue_onto_the_bar(self):
+        """A real producer, not _note() directly: pip_install() warns on the uv
+        fallback while the bar for its own step is still open. This path survived
+        the first pass of the fix, which only converted '   message' call sites."""
+        fake = mock.Mock(returncode = 1, stdout = "uv output")
+        with (
+            mock.patch.object(ips, "USE_UV", True),
+            mock.patch.object(ips, "subprocess") as sp,
+            mock.patch.object(ips, "run") as fallback,
+        ):
+            sp.run.return_value = fake
+            sp.PIPE, sp.STDOUT = -1, -2
+            out = self._render(
+                lambda: (ips._progress("studio deps"), ips.pip_install("Installing studio deps"))
+            )
+        assert fallback.called, "expected the pip fallback to run"
+        bar_lines = [ln for ln in out.split("\n") if "5/14" in ln]
+        assert len(bar_lines) == 1, f"expected one bar line, got {bar_lines!r}"
+        assert "uv failed" not in bar_lines[0], f"warning glued onto the bar: {bar_lines[0]!r}"
+
+    def test_no_bare_print_calls(self):
+        """The line-close lives in _safe_print(), so a direct print() anywhere in
+        the module silently reintroduces the glued-line bug."""
+        src = Path(ips.__file__).read_text(encoding = "utf-8")
+        tree = ast.parse(src)
+        allowed = [
+            (n.lineno, n.end_lineno)
+            for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "_safe_print"
+        ]
+        offenders = [
+            n.func.lineno
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "print"
+            and not any(lo <= n.func.lineno <= hi for lo, hi in allowed)
+        ]
+        assert not offenders, (
+            f"install_python_stack.py:{offenders} call print() directly; "
+            "use _safe_print() or _note() so an open progress bar line is closed first"
+        )
+
+    def test_no_direct_stdout_writes(self):
+        """Copying _progress()'s sys.stdout.write idiom elsewhere would glue onto
+        the bar again while still passing test_no_bare_print_calls."""
+        tree = ast.parse(Path(ips.__file__).read_text(encoding = "utf-8"))
+        allowed = [
+            (n.lineno, n.end_lineno)
+            for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name in {"_progress", "_end_progress_line"}
+        ]
+        offenders = [
+            n.lineno
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr in {"write", "flush"}
+            and isinstance(n.func.value, ast.Attribute)
+            and n.func.value.attr == "stdout"
+            and not any(lo <= n.lineno <= hi for lo, hi in allowed)
+        ]
+        assert not offenders, (
+            f"install_python_stack.py:{offenders} write to sys.stdout directly; "
+            "only _progress()/_end_progress_line() may, everything else uses _safe_print()"
+        )
+
+    def test_no_message_starts_with_a_newline(self):
+        """_safe_print() closes the bar itself now, so a message literal still
+        opening with \\n emits a second newline and a blank line."""
+        tree = ast.parse(Path(ips.__file__).read_text(encoding = "utf-8"))
+
+        def leads_with_newline(node) -> bool:
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                return node.value.startswith("\n")
+            if isinstance(node, ast.JoinedStr) and node.values:
+                return leads_with_newline(node.values[0])
+            return False
+
+        offenders = [
+            n.lineno
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id in {"_safe_print", "_note"}
+            and n.args
+            and leads_with_newline(n.args[0])
+        ]
+        assert not offenders, (
+            f"install_python_stack.py:{offenders} start a message with a newline; "
+            "_safe_print() already closes the progress bar line, so this blank-lines the output"
+        )
+
+    def test_note_wraps_at_the_value_column_on_a_narrow_terminal(self):
+        """Wrapping is all that separates _note() from _safe_print(), and no other
+        test makes it wrap: every message fits one line at COLUMNS=100."""
+        msg = (
+            "AMD GPU detected but ROCm PyTorch could not be auto-installed. Manual install "
+            "may be required. See: https://docs.unsloth.ai/get-started/install-and-update/amd"
+        )
+        out = self._render(lambda: ips._note(msg), columns = "60")
+        lines = [ln for ln in out.split("\n") if ln.strip()]
+        assert len(lines) > 1, f"expected the message to wrap, got {out!r}"
+        for line in lines:
+            assert len(line) - len(line.lstrip()) == ips._INDENT + ips._COL, repr(line)
+        assert " ".join(ln.strip() for ln in lines) == msg
+        # break_long_words = False keeps the URL clickable rather than splitting it.
+        assert any("https://docs.unsloth.ai" in ln for ln in lines), out
+
+    def test_note_falls_back_to_the_flat_indent_in_verbose_mode(self):
+        """Verbose prints no bar and no step line, so the value column would indent
+        under nothing while neighbouring messages sit at column 3."""
+        out = self._render(lambda: ips._note("hello"), verbose = True)
+        assert out == "   hello\n", repr(out)
+
+    def test_note_still_aligns_when_colour_is_on(self):
+        """The layout must survive a colour terminal, where every line carries ANSI
+        codes that occupy no columns."""
+        out = self._render(lambda: ips._note("hello"), color = True)
+        assert "\033[" in out, "expected ANSI codes with _HAS_COLOR on"
+        plain = re.sub(r"\033\[[0-9;]*m", "", out)
+        assert plain == f"{' ' * (ips._INDENT + ips._COL)}hello\n", repr(plain)
+
+    def test_safe_print_to_stderr_survives_a_closed_stdout(self):
+        """_safe_print() touches stdout on every call now, so stderr-bound manifest
+        errors must not die on an unrelated stdout failure."""
+        closed = io.StringIO()
+        closed.close()
+        err = io.StringIO()
+        with (
+            mock.patch.object(ips, "VERBOSE", False),
+            mock.patch.object(ips, "_PROGRESS_LINE_ACTIVE", True),
+            mock.patch.object(ips.sys, "stdout", closed),
+        ):
+            ips._safe_print("error: boom", file = err)
+        assert err.getvalue() == "error: boom\n"
+
+    def test_install_entry_clears_a_stale_progress_line(self):
+        """_PROGRESS_LINE_ACTIVE outlives an aborted run, and now every _safe_print()
+        reads it, so a stale flag newlines the next run."""
+        src = Path(ips.__file__).read_text(encoding = "utf-8")
+        fn = next(
+            n
+            for n in ast.walk(ast.parse(src))
+            if isinstance(n, ast.FunctionDef) and n.name == "install_python_stack"
+        )
+        assert any(
+            isinstance(n, ast.Global) and "_PROGRESS_LINE_ACTIVE" in n.names for n in ast.walk(fn)
+        ), "install_python_stack() must declare _PROGRESS_LINE_ACTIVE global"
+        assert any(
+            isinstance(n, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "_PROGRESS_LINE_ACTIVE" for t in n.targets)
+            for n in ast.walk(fn)
+        ), "install_python_stack() must reset _PROGRESS_LINE_ACTIVE"

@@ -35,6 +35,11 @@ on:
       - 'tests/studio/**'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/workflows/studio-mac-ui-smoke.yml'
+      # Every server boot in this workflow shells out to that script, so an edit
+      # to it changes what this workflow actually runs.
+      - '.github/scripts/boot-studio-api-only.sh'
+      # Same for the /api/health wait that runs after a boot.
+      - '.github/scripts/wait-for-health.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
@@ -45,12 +50,16 @@ on:
       # studio-mac-api-smoke.yml watched is already covered above, and
       # tests/studio/** covers studio_api_smoke.py itself.
   push:
-    branches: [main, pip]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -85,13 +94,17 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
+      # Cross-OS shared entry. The tree under `hf-cache` is byte-identical on
+      # Linux, macOS and Windows, so the key carries no `runner.os`, and
+      # enableCrossOsArchive lets Windows (which tars with --force-local) join it.
       - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
         id: cache-hf
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         continue-on-error: true
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
+          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
+          enableCrossOsArchive: true
 
       - name: Prime HF_HOME with the GGUF
         id: prime-hf
@@ -124,11 +137,12 @@ jobs:
         # same 4.6GB model held four times on four different PR refs and no copy
         # on main at all. That is the thrash loop: PR misses -> downloads ->
         # saves its own copy -> evicts main's -> next PR misses.
-        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success'
+        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
+          key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
+          enableCrossOsArchive: true
 
       - name: Install Unsloth (--local, --no-torch)
         id: install_unsloth
@@ -196,21 +210,11 @@ jobs:
       - name: Reset auth + boot Unsloth
         run: |
           # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
-            > logs/studio.log 2>&1 &
-          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
 
       - name: Wait for /api/health
         run: |
-          for i in $(seq 1 180); do
-            if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
-              jq -e '.status == "healthy"' /tmp/health.json && break
-            fi
-            sleep 1
-          done
-          jq -e '.status == "healthy"' /tmp/health.json
+          bash .github/scripts/wait-for-health.sh --port "$STUDIO_PORT"
 
       - name: Pass bootstrap password to the Playwright step
         run: |
@@ -301,21 +305,13 @@ jobs:
 
       - name: Reset auth + boot Unsloth for extra UI tests (port 18897)
         run: |
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18897 \
-            > logs/studio_extra.log 2>&1 &
-          echo "STUDIO_EXTRA_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port 18897 --log logs/studio_extra.log --pid-var STUDIO_EXTRA_PID
 
       - name: Wait for /api/health on 18897
         run: |
-          for i in $(seq 1 180); do
-            if curl -fs "http://127.0.0.1:18897/api/health" > /tmp/health2.json; then
-              jq -e '.status == "healthy"' /tmp/health2.json && break
-            fi
-            sleep 1
-          done
-          jq -e '.status == "healthy"' /tmp/health2.json
+          bash .github/scripts/wait-for-health.sh \
+            --port 18897 --log logs/studio_extra.log --tmp /tmp/health2.json
 
       - name: Pass bootstrap pw for extra UI test
         run: |
@@ -389,6 +385,67 @@ jobs:
           sleep 2
 
       # ---------------------------------------------------------------
+      # Tab-capability phase. The assertion is that the Train row SPINS rather than
+      # greying out while the hardware verdict is unmeasured.
+      #
+      # It gets its own boot on a cold port anyway, and no "wait for healthy" step
+      # where every other phase has one, because a settled backend is the wrong
+      # starting state to walk the tabs from. But do not read that as the phase
+      # keeping the provisional window open for the script: it does not, and this
+      # comment used to claim it did. `hardware_detecting` covers stage 0 of the warm
+      # only, and on this runner's --no-torch install with no MLX present that stage
+      # is a failed `import torch` plus one failed metadata lookup, so the verdict
+      # settles inside a second of the port binding -- while Playwright is still
+      # launching Chromium. Boot ordering buys the first /api/health probe a
+      # provisional reply and nothing past it.
+      #
+      # So the script does not depend on the window being open. It holds the
+      # browser's own /api/health at hardware_detecting=true and asserts against
+      # that, which is open for as long as it needs on any host. The real warm is
+      # still sampled when it happens to still be running, and still fails on a real
+      # grey-out, but nothing is required of it.
+      # ---------------------------------------------------------------
+      - name: Reset auth + boot Unsloth for the tab-capability smoke (port 18893)
+        run: |
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port 18893 --log logs/studio_tabs.log --pid-var STUDIO_TABS_PID
+
+      - name: Pass bootstrap pw for the tab-capability smoke
+        run: |
+          # Wait for the password file, not for health: health is the thing under test.
+          for i in $(seq 1 180); do
+            [ -f ~/.unsloth/studio/auth/.bootstrap_password ] && break
+            sleep 1
+          done
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          echo "::add-mask::$OLD"
+          echo "STUDIO_TABS_OLD_PW=$OLD" >> "$GITHUB_ENV"
+
+      - name: Drive the Train/Video capability gate with Playwright
+        env:
+          BASE_URL: http://127.0.0.1:18893
+          STUDIO_OLD_PW: ${{ env.STUDIO_TABS_OLD_PW }}
+          PW_ART_DIR: logs/playwright_mac_tabs
+          # The default 330s outlives the launcher's 300s startup grace, which is the
+          # point when a Tauri shell is driving the backend. Nothing here runs that
+          # watchdog (this phase boots `unsloth studio` directly), so the full window
+          # would spend five macOS-runner minutes proving something this job cannot
+          # observe. The watchdog itself is covered by the Rust tests in
+          # studio/src-tauri/src/commands.rs. What is unique to this phase is the
+          # first-paint tab assertion, so keep the liveness poll just long enough to
+          # cover the warm and the tab walk.
+          STUDIO_MAC_SURVIVAL_S: '120'
+        run: |
+          mkdir -p logs/playwright_mac_tabs
+          python tests/studio/playwright_mac_tab_capabilities.py
+
+      - name: Stop tab-capability Unsloth
+        if: always()
+        run: |
+          kill "${STUDIO_TABS_PID}" 2>/dev/null || true
+          sleep 2
+
+      # ---------------------------------------------------------------
       # API + auth phase, absorbed from studio-mac-api-smoke.yml.
       # Runs on 18894: 18896 and 18897 were used by the UI phases above and
       # 18895 by the permission-browser script, so a fresh port keeps this
@@ -400,21 +457,13 @@ jobs:
       - name: Reset auth + boot Unsloth (API-only, port 18894)
         run: |
           # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18894 \
-            > logs/studio_api.log 2>&1 &
-          echo "STUDIO_API_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port 18894 --log logs/studio_api.log --pid-var STUDIO_API_PID
 
       - name: Wait for /api/health on 18894
         run: |
-          for i in $(seq 1 180); do
-            if curl -fs "http://127.0.0.1:18894/api/health" > /tmp/health_api.json; then
-              jq -e '.status == "healthy"' /tmp/health_api.json && break
-            fi
-            sleep 1
-          done
-          jq -e '.status == "healthy"' /tmp/health_api.json
+          bash .github/scripts/wait-for-health.sh \
+            --port 18894 --log logs/studio_api.log --tmp /tmp/health_api.json
 
       - name: Pass bootstrap password + rotated targets to the API test
         run: |
@@ -579,6 +628,8 @@ jobs:
             logs/playwright-permissions-*
             logs/playwright_extra
             logs/studio-permissions-*.log
+            logs/studio_tabs.log
+            logs/playwright_mac_tabs
           # 1 day, matching the repository-wide cap. A larger value here is
           # silently clamped to that cap today, so stating 7 only invites the
           # artifacts to re-inflate if the cap is ever raised.

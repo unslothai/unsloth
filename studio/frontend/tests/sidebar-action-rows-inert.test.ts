@@ -73,22 +73,36 @@ test("footer profile sits 11px above the sidebar edge", async () => {
   );
 });
 
-test("Tauri primary navigation sits 1px left", async () => {
+test("every sidebar row pill sits in one shared box", async () => {
+  // A recent chat's pill has to match New Chat's, so the padding is defined
+  // once and every group takes it.
   const source = await sidebarSource();
-  const shiftedInsets = source.match(
-    /usesDesktopTitlebar \? "pl-\[5px\] pr-2" : "pl-1\.5 pr-1\.75"/g,
+  assert.match(
+    source,
+    /const rowPadding = usesDesktopTitlebar\s*\?\s*"pl-\[5px\] pr-2"\s*:\s*"pl-1\.5 pr-1\.75"/,
   );
-  assert.equal(shiftedInsets?.length, 2);
+  // New Chat, the nav rows, pinned projects, Recents, training runs, footer.
+  assert.equal(source.match(/(?<!const )rowPadding[,}]/g)?.length, 6);
+  assert.equal(source.match(/"pl-2 pr-\[5px\]"/g), null);
 });
 
-test("Tauri chat Recents sits 2px right", async () => {
+test("the sidebar list keeps no scroll rail to steal row width", async () => {
+  // A rail narrows every row under New Chat, which sits above the scroller.
+  const css = await readFile(
+    new URL("../src/index.css", import.meta.url),
+    "utf8",
+  );
+  assert.match(css, /\.sidebar-scroll-fade \{\s*scrollbar-width: none;\s*\}/);
+  assert.match(
+    css,
+    /\.sidebar-scroll-fade::-webkit-scrollbar \{\s*width: 0;\s*height: 0;\s*\}/,
+  );
+});
+
+test("Tauri chat Recents label keeps its 2px shift", async () => {
   const source = await sidebarSource();
   assert.match(
     source,
     /scrolled && "is-scrolled",\s*usesDesktopTitlebar && "translate-x-\[2px\]"/,
-  );
-  assert.match(
-    source,
-    /usesDesktopTitlebar\s*\?\s*"pl-2 pr-\[5px\]"\s*:\s*"pl-1\.5 pr-1\.75"/,
   );
 });
