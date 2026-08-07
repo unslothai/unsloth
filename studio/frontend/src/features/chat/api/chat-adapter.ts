@@ -1941,6 +1941,14 @@ function isAutoLoadableLocalRow(
  * Chat-only installs run GGUF anywhere and MLX on a Mac; the picker hides every
  * other local format there. Reads the store, so no fetch.
  */
+// model_format is optional, so an older backend omits it on a direct .gguf row.
+// Both callers have to agree: reading only the field there made such a row a
+// Transformers source, which sends the safetensors context length to /load and
+// remembers the wrong kind.
+function isGgufLocalRow(row: LocalModelInfo): boolean {
+  return row.model_format === "gguf" || row.path.toLowerCase().endsWith(".gguf");
+}
+
 function runsOnThisPlatform(row: LocalModelInfo): boolean {
   const platform = usePlatformStore.getState();
   // Until the backend reports it, the store holds a BROWSER guess: a Mac
@@ -1948,7 +1956,7 @@ function runsOnThisPlatform(row: LocalModelInfo): boolean {
   // hide every local safetensors model and fetch the default instead. An
   // ineligible candidate is rejected at validation without a load attempt.
   if (!platform.fetched || !platform.isChatOnly()) return true;
-  if (row.model_format === "gguf" || row.path.toLowerCase().endsWith(".gguf")) {
+  if (isGgufLocalRow(row)) {
     return true;
   }
   return (
@@ -2041,7 +2049,7 @@ function buildAutoLoadSources(
     });
   }
   for (const row of localRows) {
-    const isGguf = row.model_format === "gguf";
+    const isGguf = isGgufLocalRow(row);
     // A quant folder needs one picked; a .gguf path is already the file.
     const needsVariant = isGguf && row.capabilities?.requires_variant === true;
     sources.push({

@@ -224,7 +224,9 @@ function resolveSpeculativeSettingsForLoad() {
   return { speculativeType: null, specDraftNMax: 0 };
 }
 function readLastLocalModelLoad() { return SCENARIO.lastLoaded; }
-function recordLastLocalModelLoad(_x: any) {}
+function recordLastLocalModelLoad(x: any) {
+  EVENTS.push({ kind: "recordLastLocal", id: x.id, modelKind: x.kind });
+}
 function resolveInitialConfig(_id: string, _variant: any) {
   return { config: {
     customContextLength: null, maxSeqLength: null, gpuMemoryMode: null,
@@ -402,6 +404,8 @@ async function loadModel(payload: any) {
     kind: "loadModel",
     model_path: payload.model_path,
     gguf_variant: payload.gguf_variant ?? null,
+    // GGUF sources send 0; a Transformers source sends the safetensors length.
+    max_seq_length: payload.max_seq_length,
     rejected: result instanceof Error,
   });
   if (result instanceof Error) throw result;
@@ -1422,3 +1426,16 @@ def test_a_safetensors_twin_survives_a_gguf_row_with_no_loadable_quant():
 
     assert _loaded_paths(out) == ["org/both"]
     assert _downloads_started(out) == []
+
+
+def test_a_legacy_gguf_row_without_model_format_loads_as_gguf():
+    """model_format is optional, so an older backend omits it on a direct .gguf
+    row. runsOnThisPlatform already fell back to the suffix but the source builder
+    did not, so the row became a Transformers source: /load got the safetensors
+    context length instead of 0 and the remembered kind was wrong."""
+    row = "{ ...LOCAL_GGUF, model_format: undefined }"
+    out = _run(f"scenario({{ localModels: [{row}] }})")
+
+    assert _loaded_paths(out) == [LOCAL_GGUF_PATH]
+    remembered = [e for e in out["events"] if e["kind"] == "recordLastLocal"]
+    assert remembered and remembered[0]["modelKind"] == "gguf", remembered
