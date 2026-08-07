@@ -689,6 +689,29 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             # the wrapped split's own answer.
             return getattr(self._inner, attribute)
 
+    def _capped_stream(inner, cut, supervision, per_token):
+        """The same cap, for a split with no length.
+
+        `_CappedRows` is map-style: it defines `__len__` and `__getitem__`, and
+        `isinstance(it, IterableDataset)` is False, so Trainer builds a
+        map-style sampler and asks for a length the stream cannot give -- which
+        raises before one capped row is yielded. A stream has to stay a stream.
+        """
+        rows = _CappedRows(inner, cut, supervision, per_token)
+        try:
+            from torch.utils.data import IterableDataset as _IterableDataset
+        except Exception:
+            return rows
+
+        class _CappedStream(_IterableDataset):
+            def __iter__(self):
+                return iter(rows)
+
+            def __getattr__(self, attribute):
+                return getattr(inner, attribute)
+
+        return _CappedStream()
+
     def _supervision_columns(args, names):
         """Columns that decide whether a row still has a supervised token.
 
@@ -715,14 +738,17 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         packing = getattr(args, "eval_packing", None)
         return getattr(args, "packing", False) if packing is None else packing
 
-    def _cap(dataset, cap, args):
+    def _cap(dataset, cap, args, packed_downstream = True):
         names = _column_names(dataset)
         if "input_ids" not in names:
             return dataset  # raw text: prep tokenizes it with the cap
         # TRL packs a split it will pack rather than truncating it, and every
         # strategy owns the overflow: `wrapped` concatenates the stream before
         # chunking, `bfd_split` turns an overlength example into more chunks.
-        if _eval_packing_on(args):
+        # Only on the `evaluate` path, though: `predict` comes from the base
+        # Trainer and never runs TRL's eval-packing prep, so deferring to a
+        # packer that will not run leaves the split neither packed nor capped.
+        if packed_downstream and _eval_packing_on(args):
             return dataset
         # A packed split carries document lengths, not tokens. Slicing `input_ids`
         # under a `seq_lengths` that still describes the longer row makes
@@ -739,22 +765,36 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             # the catch below and handed the eval call its uncapped stream back.
             # map() is lazy and applies to every row it will ever yield.
             stream = not hasattr(dataset, "__len__")
+            supervision = _supervision_columns(args, names)
+            already_short = False
             if not stream:
                 try:
-                    if max(len(r) for r in dataset["input_ids"]) <= cap:
-                        return dataset
+                    already_short = max(len(r) for r in dataset["input_ids"]) <= cap
                 except Exception:
                     # The scan only exists to skip a pointless map. A split with no
                     # column access (a custom map-style dataset) cannot answer it, and
                     # that is not a reason to hand it back uncapped.
                     pass
+            if already_short:
+                # Nothing to truncate. The supervision filter still has to run:
+                # `args.max_length` is None on this path, so TRL's own
+                # post-truncation filter does not, and a row that arrived already
+                # all -100 reaches the collator and reports a NaN loss. The
+                # construction-time cap filters those for the splits it saw.
+                if not supervision or not hasattr(dataset, "filter"):
+                    return dataset
+                return dataset.filter(
+                    lambda e, c = tuple(supervision): any(
+                        all((x != -100) if n == "labels" else x for n, x in zip(c, v))
+                        for v in zip(*[e[n] for n in c])
+                    )
+                )
             # TRL slices [-max_length:] for `keep_end`, and so does the
             # construction-time cap. Always keeping the prefix evaluates the wrong
             # half of every long row for callers whose completion sits at the tail.
             keep_end = getattr(args, "truncation_mode", "keep_start") == "keep_end"
             cut = slice(-cap, None) if keep_end else slice(None, cap)
             per_token = [c for c in names if c in _PER_TOKEN]
-            supervision = _supervision_columns(args, names)
             # A split we cannot rewrite is capped on read instead. `map` belongs to
             # `datasets`, and a `with_transform` split has it but recreates its rows
             # on every read, so mapping writes a table nobody reads.
@@ -764,6 +804,8 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                 or not hasattr(dataset, "filter")
                 or transform == "custom"
             ):
+                if stream:
+                    return _capped_stream(dataset, cut, supervision, per_token)
                 return _CappedRows(dataset, cut, supervision, per_token)
             new = dataset.map(lambda e: {c: e[c][cut] for c in per_token})
             # Truncating can leave a row with every label at -100, or a mask that is
@@ -788,16 +830,24 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         except Exception:
             return dataset  # never turn an eval call into a hard error
 
-    def _make(original, keyword):
+    def _make(original, keyword, packed_downstream):
         def wrapped(self, *args, **kwargs):
             cap = getattr(getattr(self, "args", None), "max_seq_length", None)
             given = kwargs.get(keyword, args[0] if args else None)
+            # `evaluate()` with no argument falls back to `self.eval_dataset`, so
+            # a split installed on the trainer after construction was never seen
+            # by the construction-time cap and never reached this one either.
+            # Passed back explicitly, since `original` re-reads the attribute.
+            from_attribute = given is None and keyword == "eval_dataset"
+            if from_attribute:
+                given = getattr(self, "eval_dataset", None)
             if cap and given is not None and getattr(self.args, "max_length", None) is None:
                 if isinstance(given, dict):
-                    capped = {k: _cap(v, cap, self.args) for k, v in given.items()}
+                    capped = {k: _cap(v, cap, self.args, packed_downstream)
+                              for k, v in given.items()}
                 else:
-                    capped = _cap(given, cap, self.args)
-                if keyword in kwargs:
+                    capped = _cap(given, cap, self.args, packed_downstream)
+                if keyword in kwargs or from_attribute:
                     kwargs[keyword] = capped
                 else:
                     args = (capped,) + tuple(args[1:])
@@ -806,11 +856,14 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         wrapped._unsloth_eval_cap_wrapped = True
         return wrapped
 
-    for name, keyword in (("evaluate", "eval_dataset"), ("predict", "test_dataset")):
+    # The flag is "TRL will pack this split downstream", which is only true of
+    # the evaluate path.
+    for name, keyword, packs in (("evaluate", "eval_dataset", True),
+                                 ("predict", "test_dataset", False)):
         original = getattr(trainer_cls, name, None)
         if original is None or getattr(original, "_unsloth_eval_cap_wrapped", False):
             continue
-        setattr(trainer_cls, name, _make(original, keyword))
+        setattr(trainer_cls, name, _make(original, keyword, packs))
 
 
 _UNSLOTH_RETURN_HIDDEN_STATES_SUPPORT_MARKER = "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__"

@@ -1524,3 +1524,133 @@ def test_evaluate_caps_a_with_transform_split():
     got = seen["ds"]
     assert got is not shaped, "the transformed split came back untouched"
     assert all(len(r["input_ids"]) <= cap for r in got)
+
+
+# --- round 6: the late cap's four gaps ---------------------------------------
+
+
+def _late_cap_helpers():
+    """`_cap`, `_CappedRows` and friends out of the closure `_wrap_sft_evaluate_cap`
+    builds them in, by wrapping a stub and reading what it captured."""
+    from unsloth.models.rl import _wrap_sft_evaluate_cap
+
+    seen = {}
+
+    class Stub:
+        def evaluate(self, eval_dataset = None, **kw):
+            seen["ds"] = eval_dataset
+
+        def predict(self, test_dataset = None, **kw):
+            seen["ds"] = test_dataset
+
+    _wrap_sft_evaluate_cap(Stub)
+    return Stub, seen
+
+
+class _EvalArgs:
+    def __init__(self, cap, max_length = None, eval_packing = None, packing = False):
+        self.max_seq_length = cap
+        self.max_length = max_length
+        self.eval_packing = eval_packing
+        self.packing = packing
+        self.completion_only_loss = None
+        self.assistant_only_loss = False
+        self.truncation_mode = "keep_start"
+
+
+def test_a_streaming_late_split_stays_iterable_style():
+    """The read-side wrapper is map-style: it defines `__len__`/`__getitem__`,
+    and `isinstance(it, IterableDataset)` is False, so Trainer picks a map-style
+    sampler and asks a stream for a length it cannot give -- raising before one
+    capped row is yielded."""
+    import torch.utils.data as tud
+
+    long_row = list(range(_MODEL_MAX_SEQ_LENGTH * 2))
+
+    class _Stream(tud.IterableDataset):
+        column_names = ["input_ids", "attention_mask"]
+
+        def __iter__(self):
+            for _ in range(3):
+                yield {"input_ids": list(long_row),
+                       "attention_mask": [1] * len(long_row)}
+
+    Stub, seen = _late_cap_helpers()
+    stub = Stub()
+    stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH)
+    stub.evaluate(eval_dataset = _Stream())
+
+    got = seen["ds"]
+    assert isinstance(got, tud.IterableDataset), \
+        "the cap turned a stream into a map-style dataset"
+    rows = list(got)
+    assert rows and all(len(r["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH for r in rows)
+
+
+def test_predict_is_capped_even_when_eval_packing_is_on():
+    """`predict` comes from the base Trainer and never runs TRL's eval-packing
+    prep, so deferring to a packer that will not run leaves the split neither
+    packed nor capped."""
+    _, tok = _load_plain()
+    late = _tokenized_dataset(tok)
+    Stub, seen = _late_cap_helpers()
+    stub = Stub()
+    stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH, eval_packing = True)
+
+    stub.predict(test_dataset = late)
+    assert max(len(r) for r in seen["ds"]["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
+
+    # evaluate keeps deferring: TRL's packer really does own that split.
+    stub.evaluate(eval_dataset = late)
+    assert seen["ds"] is late
+
+
+def test_evaluate_caps_a_split_installed_on_the_trainer():
+    """`evaluate()` with no argument falls back to `self.eval_dataset`, which
+    the construction-time cap never saw either."""
+    _, tok = _load_plain()
+    Stub, seen = _late_cap_helpers()
+    stub = Stub()
+    stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH)
+    stub.eval_dataset = _tokenized_dataset(tok)
+
+    stub.evaluate()
+    assert seen["ds"] is not None, "evaluate() was handed nothing to cap"
+    assert max(len(r) for r in seen["ds"]["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
+
+
+def test_an_already_short_late_split_still_drops_unsupervised_rows():
+    """Nothing to truncate, but `args.max_length` is None on this path so TRL's
+    own post-truncation filter does not run: a row that arrived already all
+    -100 reaches the collator and reports a NaN loss."""
+    from datasets import Dataset
+
+    ids = list(range(8))
+    good = {"input_ids": ids, "attention_mask": [1] * 8, "labels": list(ids)}
+    dead = {"input_ids": ids, "attention_mask": [1] * 8, "labels": [-100] * 8}
+    short = Dataset.from_list([dict(good), dict(dead), dict(good)])
+    assert max(len(r) for r in short["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
+
+    Stub, seen = _late_cap_helpers()
+    stub = Stub()
+    stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH)
+    stub.evaluate(eval_dataset = short)
+
+    got = seen["ds"]
+    assert len(got) == 2, "the all -100 row survived"
+    for row in got:
+        assert any(x != -100 for x in row["labels"])
+
+
+def test_an_already_short_split_with_nothing_to_drop_is_handed_back_as_is():
+    """The filter must not cost a rewrite when there is nothing to remove."""
+    from datasets import Dataset
+
+    ids = list(range(8))
+    short = Dataset.from_list(
+        [{"input_ids": ids, "attention_mask": [1] * 8}] * 3)
+    Stub, seen = _late_cap_helpers()
+    stub = Stub()
+    stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH)
+    stub.evaluate(eval_dataset = short)
+    assert seen["ds"] is short
