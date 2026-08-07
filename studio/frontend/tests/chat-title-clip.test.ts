@@ -78,6 +78,22 @@ test("the cap never splits an emoji into a lone surrogate", () => {
   assert.equal(title.length, 120);
 });
 
+test("a lone surrogate is dropped even when the line is under the cap", () => {
+  // The cut sanitises what it walks, so only over-cap input used to be safe.
+  // Under the cap the line was stored as it came, and one unpaired surrogate
+  // reaching the backend fails its SQLite bind and 500s the title write.
+  const line = "x".repeat(60) + "\uD83D";
+  assert.ok(line.length <= 120);
+  assert.equal(UNPAIRED_SURROGATE.test(line), true);
+  const title = fallbackTitleFromUserText(line);
+  assert.equal(UNPAIRED_SURROGATE.test(title), false);
+  assert.equal(title, "x".repeat(60));
+  // A trailing low surrogate with no high before it goes the same way.
+  assert.equal(fallbackTitleFromUserText("hi \uDE00"), "hi");
+  // A valid pair under the cap is untouched.
+  assert.equal(fallbackTitleFromUserText("hi \u{1F600}"), "hi \u{1F600}");
+});
+
 test("a legacy title is recognised only against the text it was cut from", () => {
   const legacy = LONG.slice(0, 48) + "...";
   assert.equal(isLegacyClippedTitle(legacy, LONG), true);

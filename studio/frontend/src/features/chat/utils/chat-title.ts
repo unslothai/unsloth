@@ -14,9 +14,24 @@ export const FALLBACK_TITLE_MAX = 120;
 export const LEGACY_FALLBACK_TITLE_MAX = 48;
 const LEGACY_FALLBACK_SUFFIX = "...";
 
+/** Drop unpaired surrogates. They render as nothing, and one reaching the
+ *  backend fails its SQLite bind, so the title write 500s. Iteration yields a
+ *  valid pair whole, leaving a lone surrogate as a single unit in the range. */
+function dropLoneSurrogates(text: string): string {
+  let out = "";
+  for (const character of text) {
+    const code = character.codePointAt(0) ?? 0;
+    if (character.length === 1 && code >= 0xd800 && code <= 0xdfff) continue;
+    out += character;
+  }
+  return out;
+}
+
 function firstLineOf(text: string): string {
   const firstLine = (text || "").split(/\r?\n/, 1)[0] ?? "";
-  return firstLine.replace(/\s+/g, " ").trim();
+  // Drop first: a surrogate removed from between two spaces would otherwise
+  // leave the pair behind, and one at the end would leave a trailing space.
+  return dropLoneSurrogates(firstLine).replace(/\s+/g, " ").trim();
 }
 
 /** Cut to at most `maxUnits` UTF-16 units, the unit maxLength counts, without
