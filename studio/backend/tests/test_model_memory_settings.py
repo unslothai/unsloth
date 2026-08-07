@@ -1439,3 +1439,44 @@ class TestFitOnRetryReArmsResidency:
             True,
             False,
         )
+
+
+class TestTheRetryCanReadTheGate:
+    """The re-arm above runs inside _spawn_and_wait but assigns
+    _mem_host_resident, which is a load_model local. Without a nonlocal that
+    assignment makes it local to _spawn_and_wait, so reading it first is an
+    UnboundLocalError and the --fit on retry raises instead of retrying."""
+
+    @staticmethod
+    def _load_model_ast():
+        import ast
+        from pathlib import Path
+
+        src = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
+        for node in ast.walk(ast.parse(src.read_text())):
+            if isinstance(node, ast.FunctionDef) and node.name == "load_model":
+                return node
+        raise AssertionError("load_model not found")
+
+    def test_every_writer_of_the_gate_can_also_read_it(self):
+        import ast
+        outer = self._load_model_ast()
+        for inner in ast.walk(outer):
+            if not isinstance(inner, ast.FunctionDef) or inner is outer:
+                continue
+            writes = any(
+                isinstance(n, ast.Name)
+                and n.id == "_mem_host_resident"
+                and isinstance(n.ctx, ast.Store)
+                for n in ast.walk(inner)
+            )
+            if not writes:
+                continue
+            declared = any(
+                isinstance(n, ast.Nonlocal) and "_mem_host_resident" in n.names
+                for n in ast.walk(inner)
+            )
+            assert declared, (
+                f"{inner.name} assigns _mem_host_resident without a nonlocal, so "
+                f"reading it there raises UnboundLocalError"
+            )

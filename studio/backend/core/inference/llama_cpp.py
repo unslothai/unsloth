@@ -11056,7 +11056,10 @@ class LlamaCppBackend:
                     crashes during startup and run_cmd is eligible (see
                     _fit_off_retry_eligible).
                     """
-                    nonlocal _last_spawn_cmd
+                    # _mem_host_resident too: the --fit on retry re-arms the
+                    # page-lock and writes it back, which without this makes the
+                    # read below an UnboundLocalError instead.
+                    nonlocal _last_spawn_cmd, _mem_host_resident
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
                     for _spawn_attempt in (0, 1):
                         # Defensive kill: drop an orphan Popen a concurrent load may
