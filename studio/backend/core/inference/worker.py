@@ -539,6 +539,7 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
             "enable_thinking",
             "reasoning_effort",
             "preserve_thinking",
+            "continue_final_message",
         ):
             if opt_key in cmd:
                 gen_kwargs[opt_key] = cmd[opt_key]

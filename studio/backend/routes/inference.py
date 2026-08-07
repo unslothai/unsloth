@@ -269,6 +269,51 @@ def _clamp_finish_reason(value) -> str:
     )
 
 
+def _continue_final_message(payload) -> bool:
+    """Whether this request resumes the trailing assistant turn.
+
+    An ill-formed request (no assistant turn to resume, or one holding tool calls)
+    degrades to an ordinary new turn rather than erroring.
+    """
+    if not getattr(payload, "continue_final_message", None):
+        return False
+    messages = getattr(payload, "messages", None) or []
+    if not messages:
+        return False
+    last = messages[-1]
+    role = last.get("role") if isinstance(last, dict) else getattr(last, "role", None)
+    if role != "assistant":
+        return False
+    tool_calls = (
+        last.get("tool_calls") if isinstance(last, dict)
+        else getattr(last, "tool_calls", None)
+    )
+    if tool_calls:
+        return False
+    content = (
+        last.get("content") if isinstance(last, dict)
+        else getattr(last, "content", None)
+    )
+    if isinstance(content, str):
+        return bool(content)
+    if isinstance(content, list):
+        # No resume point inside an image or tool-result part.
+        texts = []
+        for part in content:
+            part_type = (
+                part.get("type") if isinstance(part, dict)
+                else getattr(part, "type", None)
+            )
+            if part_type != "text":
+                return False
+            texts.append(
+                part.get("text") if isinstance(part, dict)
+                else getattr(part, "text", None)
+            )
+        return any(texts)
+    return False
+
+
 def _normalize_stop_sequences(raw):
     """Coerce an OpenAI/Anthropic ``stop`` value into the list-of-non-empty-strings
     shape llama-server expects, or ``None`` when absent. A bare string becomes a
@@ -10443,6 +10488,7 @@ async def openai_chat_completions(
                     enable_thinking = payload.enable_thinking,
                     reasoning_effort = payload.reasoning_effort,
                     preserve_thinking = payload.preserve_thinking,
+                    continue_final_message = _continue_final_message(payload),
                     auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
                     nudge_tool_calls = payload.nudge_tool_calls,
                     max_tool_iterations = payload.max_tool_calls_per_message
@@ -11099,6 +11145,7 @@ async def openai_chat_completions(
                 enable_thinking = payload.enable_thinking,
                 reasoning_effort = payload.reasoning_effort,
                 preserve_thinking = payload.preserve_thinking,
+                continue_final_message = _continue_final_message(payload),
                 seed = _seed,
             )
 
@@ -11867,6 +11914,7 @@ async def openai_chat_completions(
                 enable_thinking = payload.enable_thinking,
                 reasoning_effort = payload.reasoning_effort,
                 preserve_thinking = payload.preserve_thinking,
+                continue_final_message = _continue_final_message(payload),
                 auto_heal_tool_calls = _sf_auto_heal_tool_calls,
                 nudge_tool_calls = payload.nudge_tool_calls,
                 max_tool_iterations = _sf_tool_budget,
@@ -12187,6 +12235,8 @@ async def openai_chat_completions(
         gen_kwargs["reasoning_effort"] = payload.reasoning_effort
     if payload.preserve_thinking is not None:
         gen_kwargs["preserve_thinking"] = payload.preserve_thinking
+    if _continue_final_message(payload):
+        gen_kwargs["continue_final_message"] = True
 
     # ── Client-tool passthrough (safetensors + MLX) ──────────────
     # Client tools (or tool-result history) without server-side tools: render

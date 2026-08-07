@@ -13570,6 +13570,7 @@ class LlamaCppBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        continue_final_message: bool = False,
         seed: Optional[int] = None,
         promote_reasoning_only: bool = True,
         _allow_respawn_retry: bool = True,
@@ -13585,9 +13586,15 @@ class LlamaCppBackend:
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
 
-        from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
+        from core.inference.chat_template_helpers import (
+            neutralize_control_markup_in_messages,
+            trailing_assistant_text,
+        )
 
         openai_messages = self._build_openai_messages(messages, image_b64)
+        continue_final_message = continue_final_message and bool(
+            trailing_assistant_text(openai_messages)
+        )
 
         payload = {
             # llama-server applies the chat template itself (#7066).
@@ -13608,6 +13615,10 @@ class LlamaCppBackend:
         )
         if _reasoning_kw is not None:
             payload["chat_template_kwargs"] = _reasoning_kw
+        if continue_final_message:
+            # llama-server applies the template; it rejects both flags set true.
+            payload["continue_final_message"] = True
+            payload["add_generation_prompt"] = False
         # Default cap to the model context when known.
         payload["max_tokens"] = (
             max_tokens
@@ -13760,6 +13771,7 @@ class LlamaCppBackend:
                     enable_thinking = enable_thinking,
                     reasoning_effort = reasoning_effort,
                     preserve_thinking = preserve_thinking,
+                    continue_final_message = continue_final_message,
                     seed = seed,
                     promote_reasoning_only = promote_reasoning_only,
                     _allow_respawn_retry = False,
@@ -13791,6 +13803,7 @@ class LlamaCppBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        continue_final_message: bool = False,
         max_tool_iterations: int = 25,
         auto_heal_tool_calls: bool = True,
         nudge_tool_calls: Optional[bool] = None,
@@ -14077,6 +14090,7 @@ class LlamaCppBackend:
             # in the first 1-2 chunks without a non-streaming penalty.
             from core.inference.chat_template_helpers import (
                 neutralize_control_markup_in_messages,
+                trailing_assistant_text,
             )
 
             payload = {
@@ -14104,6 +14118,11 @@ class LlamaCppBackend:
             )
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
+            # Re-checked per iteration: once a tool result is appended the
+            # conversation no longer ends with the partial, so later turns are normal.
+            if continue_final_message and trailing_assistant_text(conversation):
+                payload["continue_final_message"] = True
+                payload["add_generation_prompt"] = False
             payload["max_tokens"] = (
                 max_tokens
                 if max_tokens is not None

@@ -2299,6 +2299,32 @@ def markup_for_tokenizer(
     return profile
 
 
+def trailing_assistant_text(messages: list) -> Optional[str]:
+    """Plain text of a trailing assistant turn, else None.
+
+    Only plain text can be resumed: tool calls and image parts have no resume point.
+    """
+    if not messages:
+        return None
+    last = messages[-1]
+    if not isinstance(last, dict) or last.get("role") != "assistant":
+        return None
+    if last.get("tool_calls"):
+        return None
+    content = last.get("content")
+    if isinstance(content, str):
+        return content
+    # Continuable only when every part is text.
+    if isinstance(content, list):
+        texts = []
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "text":
+                return None
+            texts.append(str(part.get("text") or ""))
+        return "".join(texts)
+    return None
+
+
 def apply_chat_template_for_generation(
     tokenizer,
     messages: list,
@@ -2307,10 +2333,14 @@ def apply_chat_template_for_generation(
     enable_thinking: Optional[bool] = None,
     reasoning_effort: Optional[str] = None,
     preserve_thinking: Optional[bool] = None,
+    continue_final_message: bool = False,
 ) -> str:
     """Render the chat prompt. Try richest kwargs first; drop one
     group at a time on TypeError. Jinja / missing-variable errors
-    propagate."""
+    propagate.
+
+    With *continue_final_message* the prompt ends inside the trailing assistant turn,
+    so the model resumes the partial response instead of restarting it."""
     # Shared choke point for the transformers and MLX backends (#7066). Gated on the
     # loaded model's own markers, so text naming another family's sentinel is left alone.
     _markup = markup_for_tokenizer(tokenizer, tools)
@@ -2357,14 +2387,26 @@ def apply_chat_template_for_generation(
             _fallback_markup = markup_for_tokenizer(tokenizer, None)
         return neutralize_control_markup_in_messages(msgs, None, _fallback_markup)
 
-    def _render(msgs: list) -> str:
+    # Anything not continuable renders as an ordinary new turn.
+    _continue_text = (
+        trailing_assistant_text(messages) if continue_final_message else None
+    )
+    _continuing = _continue_text is not None
+    _boundary_kwargs = (
+        {"add_generation_prompt": False, "continue_final_message": True}
+        if _continuing
+        else {"add_generation_prompt": True}
+    )
+
+    def _render(msgs: list, boundary: Optional[dict] = None) -> str:
+        boundary = _boundary_kwargs if boundary is None else boundary
         last_exc: Optional[Exception] = None
         for kwargs in attempts:
             try:
                 return tokenizer.apply_chat_template(
                     _swept_for(kwargs, msgs),
                     tokenize = False,
-                    add_generation_prompt = True,
+                    **boundary,
                     **kwargs,
                 )
             except TypeError as e:
@@ -2377,8 +2419,24 @@ def apply_chat_template_for_generation(
             raise last_exc
         raise RuntimeError("apply_chat_template_for_generation: no attempt produced a result")
 
+    def _render_continuation_manually(msgs: list) -> str:
+        """For tokenizers predating ``continue_final_message`` (TypeError above).
+
+        Renders the history before the partial turn, then appends the partial raw.
+        """
+        prefix = _render(list(msgs[:-1]), {"add_generation_prompt": True})
+        return f"{prefix}{_continue_text}"
+
+    def _render_with_fallback(msgs: list) -> str:
+        try:
+            return _render(msgs)
+        except TypeError:
+            if not _continuing:
+                raise
+            return _render_continuation_manually(msgs)
+
     try:
-        return _render(messages)
+        return _render_with_fallback(messages)
     except Exception:
         # Retry with repairs applied cumulatively. Originals render first, so
         # working templates stay byte-identical.
@@ -2391,7 +2449,7 @@ def apply_chat_template_for_generation(
             candidates.append(split)
         for candidate in candidates:
             try:
-                return _render(candidate)
+                return _render_with_fallback(candidate)
             except Exception:
                 continue
         raise
@@ -2445,6 +2503,7 @@ def render_native_template(
     enable_thinking: Optional[bool] = None,
     reasoning_effort: Optional[str] = None,
     preserve_thinking: Optional[bool] = None,
+    continue_final_message: bool = False,
     apply_fn = None,
     hf_token: Optional[str] = None,
     return_metadata: bool = False,
@@ -2505,6 +2564,7 @@ def render_native_template(
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
         )
         no_tools = apply_fn(
             render_tokenizer,
@@ -2513,6 +2573,7 @@ def render_native_template(
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
         )
     except Exception as exc:
         logger.warning(
@@ -2553,6 +2614,7 @@ def render_with_native_template_fallback(
     enable_thinking: Optional[bool] = None,
     reasoning_effort: Optional[str] = None,
     preserve_thinking: Optional[bool] = None,
+    continue_final_message: bool = False,
     apply_fn = None,
     hf_token: Optional[str] = None,
     return_metadata: bool = False,
@@ -2608,6 +2670,7 @@ def render_with_native_template_fallback(
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
         )
     except Exception as exc:
         logger.warning(
@@ -2626,6 +2689,7 @@ def render_with_native_template_fallback(
         enable_thinking = enable_thinking,
         reasoning_effort = reasoning_effort,
         preserve_thinking = preserve_thinking,
+        continue_final_message = continue_final_message,
         apply_fn = apply_fn,
         hf_token = hf_token,
         return_metadata = return_metadata,

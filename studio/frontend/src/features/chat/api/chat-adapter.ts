@@ -117,6 +117,11 @@ import {
 } from "../utils/reasoning-duration";
 import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import {
+  type IncompleteReason,
+  joinContinuation,
+  readContinuationRequest,
+} from "../utils/continuation";
+import {
   generateAudio,
   GenerationLengthError,
   fetchGgufStagedMetadata,
@@ -2762,6 +2767,7 @@ export function createOpenAIStreamAdapter(
   const adapter = {
     async *run({
       messages,
+      runConfig,
       abortSignal,
       unstable_threadId,
       unstable_assistantMessageId,
@@ -3444,6 +3450,16 @@ export function createOpenAIStreamAdapter(
         );
       }
 
+      // Continue: the run's messages stop at the user turn (this is a sibling
+      // branch), so the partial is appended here for the backend to resume.
+      const continuation = readContinuationRequest(runConfig);
+      if (continuation) {
+        outboundMessages.push({
+          role: "assistant",
+          content: continuation.partial,
+        });
+      }
+
       const combinedSystemPrompt = await resolveChatInstructions(
         resolvedThreadId,
         params.systemPrompt,
@@ -3749,7 +3765,22 @@ export function createOpenAIStreamAdapter(
         local: !isExternalRequest,
         owner: serverCancel,
       });
-      let cumulativeText = "";
+      // Seeded with the partial so the bubble reads as one response. The boundary
+      // lets the finalizers re-derive the new output and repair a repeat/restart.
+      let cumulativeText = continuation ? continuation.partial : "";
+      const continuationPartial = continuation?.partial ?? "";
+      const mergeContinuation = (text: string): string =>
+        continuationPartial
+          ? joinContinuation(
+              continuationPartial,
+              text.slice(continuationPartial.length),
+            )
+          : text;
+      // Why this turn stopped early. Drives the Continue affordance.
+      let incompleteReason: IncompleteReason | null = null;
+      // Safetensors/MLX report finish_reason "stop" even at the cap, so an
+      // exhausted budget is the only truncation signal on those routes.
+      let requestedMaxTokens: number | undefined;
       const reasoningDurationTracker = createReasoningDurationTracker();
       // True while wrapping a `delta.reasoning_content` stream in
       // <think>...</think> for parseAssistantContent. Lives outside the
@@ -4182,6 +4213,9 @@ export function createOpenAIStreamAdapter(
               model: externalSelection.modelId,
               messages: outboundMessages,
               stream: true,
+              // Never forwarded upstream (the proxy sends an explicit field list);
+              // the trailing assistant turn is what asks a provider to continue.
+              ...(continuation ? { continue_final_message: true } : {}),
               // Reasoning-class models (OpenAI gpt-5.x / o3) reject
               // temperature and top_p; forward only when supported.
               ...(externalCapabilities?.temperature !== false
@@ -4289,6 +4323,7 @@ export function createOpenAIStreamAdapter(
             model: params.checkpoint,
             messages: outboundMessages,
             stream: true,
+            ...(continuation ? { continue_final_message: true } : {}),
             // Opt into the trailing usage chunk so the context-usage bar
             // and tok/s readout populate (backend gates it on include_usage).
             stream_options: { include_usage: true },
@@ -4420,6 +4455,7 @@ export function createOpenAIStreamAdapter(
               throw error;
             }
             clearSelectedImageEditReference();
+            requestedMaxTokens = requestPayload.max_tokens;
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
             const stream = streamChatCompletions(requestPayload, runSignal);
 
@@ -4907,6 +4943,13 @@ export function createOpenAIStreamAdapter(
               }
 
               totalChunks += 1;
+              // Latched rather than read off the last chunk: a provider can send
+              // the terminal reason ahead of its usage chunk.
+              if (chunk.choices?.[0]?.finish_reason === "length") {
+                incompleteReason = "length";
+              } else if (chunk.choices?.[0]?.finish_reason) {
+                incompleteReason = null;
+              }
               // Latch the chunk's `model` field so the openrouter/free chip
               // shows the chosen underlying model.
               if (
@@ -5257,6 +5300,17 @@ export function createOpenAIStreamAdapter(
           }
         }
 
+        // Checked after the explicit finish_reason, which backends that report it
+        // honestly (llama.cpp, external providers) have already settled.
+        if (
+          incompleteReason === null &&
+          typeof requestedMaxTokens === "number" &&
+          typeof meta?.usage?.completion_tokens === "number" &&
+          meta.usage.completion_tokens >= requestedMaxTokens
+        ) {
+          incompleteReason = "length";
+        }
+
         const finishedAt = Date.now();
         const finalTiming = buildTiming(
           streamStartTime,
@@ -5272,7 +5326,7 @@ export function createOpenAIStreamAdapter(
         reasoningDurationTracker.finishGroup();
         yield {
           content: [
-            ...buildAssistantContent(cumulativeText),
+            ...buildAssistantContent(mergeContinuation(cumulativeText)),
             ...sourceParts,
             ...documentCitationParts,
           ],
@@ -5280,6 +5334,8 @@ export function createOpenAIStreamAdapter(
             timing: finalTiming,
             custom: {
               ...reasoningDurationTracker.metadata(),
+              // Persisted so Continue survives a reload; cleared on a normal end.
+              incomplete: incompleteReason ? { reason: incompleteReason } : undefined,
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
               serverTimings: meta?.timings ?? undefined,
@@ -5340,14 +5396,15 @@ export function createOpenAIStreamAdapter(
         }
         if (!abortSignal.aborted) {
           closeReasoningContent();
-          const partialContent = buildAssistantContent(cumulativeText);
+          const partialText = mergeContinuation(cumulativeText);
+          const partialContent = buildAssistantContent(partialText);
           if (partialContent.length > 0) {
             const partialTiming = buildTiming(
               streamStartTime,
               totalChunks,
               firstTokenTime,
               Date.now() - streamStartTime,
-              estimateTokenCount(cumulativeText),
+              estimateTokenCount(partialText),
               toolCallParts.length,
             );
             yield {
@@ -5356,6 +5413,13 @@ export function createOpenAIStreamAdapter(
                 timing: partialTiming,
                 custom: {
                   ...reasoningDurationTracker.metadata(),
+                  // This partial is unfinished too, so it also offers Continue.
+                  incomplete: {
+                    reason:
+                      err instanceof GenerationLengthError
+                        ? "length"
+                        : "interrupted",
+                  },
                   timing: partialTiming,
                 },
               },

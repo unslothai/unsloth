@@ -837,6 +837,7 @@ class MLXInferenceBackend:
         enable_thinking = None,
         reasoning_effort = None,
         preserve_thinking = None,
+        continue_final_message = False,
         presence_penalty = 0.0,
         _adapter_state = None,
     ) -> Generator[str, None, None]:
@@ -882,6 +883,7 @@ class MLXInferenceBackend:
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
+                continue_final_message = continue_final_message,
                 presence_penalty = presence_penalty,
                 _adapter_state = _adapter_state,
             )
@@ -899,6 +901,7 @@ class MLXInferenceBackend:
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
+                continue_final_message = continue_final_message,
                 presence_penalty = presence_penalty,
                 _adapter_state = _adapter_state,
             )
@@ -919,6 +922,7 @@ class MLXInferenceBackend:
         enable_thinking = None,
         reasoning_effort = None,
         preserve_thinking = None,
+        continue_final_message = False,
         presence_penalty = 0.0,
         _adapter_state = None,
     ):
@@ -938,6 +942,7 @@ class MLXInferenceBackend:
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
         )
         if prompt is None:
             raise RuntimeError("apply_chat_template returned None — tokenizer may be incompatible")
@@ -958,6 +963,7 @@ class MLXInferenceBackend:
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
             hf_token = model_info.get("hf_token"),
             return_metadata = True,
         )
@@ -1099,6 +1105,7 @@ class MLXInferenceBackend:
         enable_thinking = None,
         reasoning_effort = None,
         preserve_thinking = None,
+        continue_final_message = False,
         presence_penalty = 0.0,
         _adapter_state = None,
     ):
@@ -1139,6 +1146,7 @@ class MLXInferenceBackend:
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
+                continue_final_message = continue_final_message,
             )
         except Exception as exc:
             if images is None or has_tool_history:

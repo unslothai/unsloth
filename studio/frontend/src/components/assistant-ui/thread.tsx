@@ -92,6 +92,11 @@ import {
 } from "@/features/chat/stores/research-run-store";
 import { parseExternalModelId } from "@/features/chat/external-providers";
 import { toolStatusKind } from "@/features/chat/utils/tool-status";
+import {
+  CONTINUATION_RUN_CONFIG_KEY,
+  incompleteLabel,
+  readIncompleteInfo,
+} from "@/features/chat/utils/continuation";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
@@ -197,6 +202,7 @@ import {
   Columns2Icon,
   CornerDownRightIcon,
   GitBranchIcon,
+  FastForwardIcon,
   GlobeIcon,
   HeadphonesIcon,
   MoreHorizontalIcon,
@@ -4887,6 +4893,97 @@ const CancelledIndicator: FC = () => {
   );
 };
 
+/** Text of an assistant turn: what a continuation resumes from.
+ *
+ * Text parts only, matching replay: reasoning is not sent back, so it cannot resume. */
+function assistantMessageText(content: readonly unknown[] | undefined): string {
+  if (!content) {
+    return "";
+  }
+  return content
+    .filter(
+      (part): part is { type: "text"; text: string } =>
+        (part as { type?: string })?.type === "text" &&
+        typeof (part as { text?: unknown })?.text === "string",
+    )
+    .map((part) => part.text)
+    .join("\n");
+}
+
+/**
+ * Resume a response that stopped early instead of regenerating it.
+ *
+ * Shown under the last assistant turn when Max Tokens ran out, Stop was pressed, or
+ * the stream dropped. Retry keeps its old meaning: drop the partial and start over.
+ */
+const ContinueMessageBar: FC = () => {
+  const aui = useAui();
+  const messageId = useAuiState(({ message }) => message.id);
+  const isLast = useAuiState(({ message }) => message.isLast);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const researchRunId = useResearchMessageRunId();
+  const researchActive = useThreadResearchActive();
+  const status = useAuiState(({ message }) => message.status);
+  const metadata = useAuiState(({ message }) => message.metadata);
+  const partial = useAuiState(({ message }) =>
+    assistantMessageText(message.content),
+  );
+
+  // Cancelled comes through status (the adapter yields nothing after an abort);
+  // the other two are stamped on metadata so they survive a reload.
+  const stamped = readIncompleteInfo(metadata);
+  const cancelled =
+    status?.type === "incomplete" && status?.reason === "cancelled";
+  const reason = cancelled ? ("cancelled" as const) : stamped?.reason;
+
+  // Newest turn only: appending to an older one would strand the replies after it.
+  // A turn cut mid-thought has no text to resume from, so Retry stays the way out.
+  if (
+    !reason ||
+    !isLast ||
+    isRunning ||
+    researchRunId ||
+    researchActive ||
+    !partial.trim()
+  ) {
+    return null;
+  }
+
+  const handleContinue = () => {
+    const messages = aui.thread().getState().messages;
+    const index = messages.findIndex((message) => message.id === messageId);
+    if (index < 0) {
+      return;
+    }
+    // Sibling of the truncated turn, so the branch picker can still reach the partial.
+    const parentId = index > 0 ? messages[index - 1].id : null;
+    aui.thread().startRun({
+      parentId,
+      runConfig: {
+        custom: { [CONTINUATION_RUN_CONFIG_KEY]: { partial } },
+      },
+    });
+  };
+
+  return (
+    <div className="aui-continue-bar mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-border/70 bg-muted/50 p-2.5 text-sm">
+      <span className="min-w-0 flex-1 text-muted-foreground">
+        {incompleteLabel(reason)}.
+      </span>
+      <Button
+        type="button"
+        size="sm"
+        variant="secondary"
+        className="h-7 shrink-0 gap-1.5 text-xs"
+        onClick={handleContinue}
+      >
+        <FastForwardIcon strokeWidth={1.75} className="size-3.5" />
+        Continue
+      </Button>
+    </div>
+  );
+};
+
 const WebSearchToolUIConfirmable = withToolConfirmation(WebSearchToolUI);
 const KnowledgeBaseToolUIConfirmable =
   withToolConfirmation(KnowledgeBaseToolUI);
@@ -5084,6 +5181,7 @@ const AssistantMessage: FC = () => {
                 <SourcesGroup />
                 <RagSourcesGroup />
                 <MessageHtmlArtifacts />
+                <ContinueMessageBar />
               </>
             )}
             <MessageError />

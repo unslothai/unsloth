@@ -883,6 +883,7 @@ class InferenceBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        continue_final_message: bool = False,
         max_tool_iterations: int = 25,
         auto_heal_tool_calls: bool = True,
         nudge_tool_calls: Optional[bool] = None,
@@ -925,6 +926,9 @@ class InferenceBackend:
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
+                # Self-limiting: after a tool call the conversation ends with a
+                # tool result, so later turns render as ordinary new turns.
+                continue_final_message = continue_final_message,
                 presence_penalty = presence_penalty,
             )
 
@@ -986,6 +990,7 @@ class InferenceBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        continue_final_message: bool = False,
         presence_penalty: float = 0.0,
     ) -> Generator[str, None, None]:
         """Generate response for text or vision models (lock held by background thread).
@@ -1010,6 +1015,7 @@ class InferenceBackend:
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
             presence_penalty = presence_penalty,
         )
 
@@ -1030,6 +1036,7 @@ class InferenceBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        continue_final_message: bool = False,
         presence_penalty: float = 0.0,
     ) -> Generator[str, None, None]:
         """Inner generation logic, called by generate_chat_response and
@@ -1145,6 +1152,7 @@ class InferenceBackend:
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
+                continue_final_message = continue_final_message,
             )
 
             # If tools were requested but the (possibly overridden) template ignored
@@ -1163,6 +1171,7 @@ class InferenceBackend:
                 enable_thinking = enable_thinking,
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
+                continue_final_message = continue_final_message,
                 apply_fn = self._apply_chat_template_for_generation,
                 hf_token = model_info.get("hf_token"),
                 return_metadata = True,
@@ -2086,6 +2095,7 @@ class InferenceBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        continue_final_message: bool = False,
     ) -> str:
         """Render the chat prompt, peeling kwargs the template doesn't
         understand. Delegates to the dependency-light helper module so the
@@ -2102,6 +2112,7 @@ class InferenceBackend:
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
         )
 
     def format_chat_prompt(
