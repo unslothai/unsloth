@@ -1583,7 +1583,28 @@ def upsert_chat_thread(thread: dict) -> dict:
         conn.close()
 
 
-def update_chat_thread(id: str, patch: dict) -> Optional[dict]:
+class ChatThreadPreconditionFailed(Exception):
+    """The thread changed between the caller reading it and writing it."""
+
+
+# Same order the title migration picks its opening message in.
+_OPENING_USER_MESSAGE = """(
+    SELECT id FROM chat_messages
+    WHERE thread_id = ? AND role = 'user'
+    ORDER BY created_at ASC, id ASC LIMIT 1
+) IS ?"""
+
+
+def update_chat_thread(
+    id: str,
+    patch: dict,
+    expected_title: Optional[str] = None,
+    expected_opening_message_id: Optional[str] = None,
+) -> Optional[dict]:
+    """Patch a thread. With expected_title, the write only lands while the row
+    still holds that title, so a concurrent rename wins instead of being lost.
+    expected_opening_message_id guards a title derived from that message: if it
+    is gone, the write is rejected rather than expanding deleted text."""
     allowed = {
         "title": ("title", patch.get("title")),
         "modelType": ("model_type", patch.get("modelType")),
@@ -1621,13 +1642,28 @@ def update_chat_thread(id: str, patch: dict) -> Optional[dict]:
 
     conn = get_connection()
     try:
-        conn.execute(
-            f"UPDATE chat_threads SET {', '.join(assignments)} WHERE id = ?",
-            (*values, id),
+        # Guards ride in the WHERE clause, so check and write are one statement.
+        where = ["id = ?"]
+        guard: list = [id]
+        if expected_title is not None:
+            where.append("title = ?")
+            guard.append(expected_title)
+        if expected_opening_message_id is not None:
+            where.append(_OPENING_USER_MESSAGE)
+            guard += [id, expected_opening_message_id]
+        guarded = expected_title is not None or expected_opening_message_id is not None
+        cursor = conn.execute(
+            f"UPDATE chat_threads SET {', '.join(assignments)} WHERE {' AND '.join(where)}",
+            (*values, *guard),
         )
+        applied = cursor.rowcount
         conn.commit()
         row = conn.execute("SELECT * FROM chat_threads WHERE id = ?", (id,)).fetchone()
-        return _chat_thread_from_row(row) if row is not None else None
+        if row is None:
+            return None
+        if guarded and applied == 0:
+            raise ChatThreadPreconditionFailed(id)
+        return _chat_thread_from_row(row)
     finally:
         conn.close()
 

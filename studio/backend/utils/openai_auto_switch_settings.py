@@ -308,6 +308,10 @@ VALID_MLX_KV_BITS = frozenset({8, 6, 5, 4, 3, 2})
 PARALLEL_SLOTS_MIN = 1
 PARALLEL_SLOTS_MAX = 64
 
+# mirrors BATCH_MIN/MAX in llama_server_args.py, same reason as the slot bounds
+BATCH_SIZE_MIN = 1
+BATCH_SIZE_MAX = 65536
+
 MAX_SEQ_LENGTH_CEILING = 1048576
 MAX_CHAT_TEMPLATE_OVERRIDE_BYTES = 65_536
 # Highest device index a gpu_ids entry may name; also bounds how many ids one entry holds.
@@ -384,6 +388,12 @@ def normalize_model_override(payload: dict[str, Any]) -> dict[str, Any]:
     )
     if n_parallel:
         entry["n_parallel"] = n_parallel
+
+    # blank or out of range means "follow the llama.cpp defaults (2048 / 512)"
+    for key in ("n_batch", "n_ubatch"):
+        parsed = _bounded_int(payload.get(key), minimum = BATCH_SIZE_MIN, maximum = BATCH_SIZE_MAX)
+        if parsed:
+            entry[key] = parsed
 
     if _coerce_bool(payload.get("tensor_parallel")):
         entry["tensor_parallel"] = True
@@ -481,6 +491,11 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         # Slots are a llama-server flag, and the picker sends them for GGUF only.
         if override.get("n_parallel") is not None:
             kwargs["n_parallel"] = override["n_parallel"]
+        # batch sizes are llama-server flags too (--batch-size / --ubatch-size)
+        if override.get("n_batch") is not None:
+            kwargs["n_batch"] = override["n_batch"]
+        if override.get("n_ubatch") is not None:
+            kwargs["n_ubatch"] = override["n_ubatch"]
         if override.get("gpu_memory_mode") is not None:
             kwargs["gpu_memory_mode"] = override["gpu_memory_mode"]
         if override.get("gpu_layers") is not None:
@@ -514,6 +529,8 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             # Sent only when on, so it is always the Tensor Parallelism toggle overriding the
             # flag; an override that leaves the toggle off keeps a row/none/layer split mode.
             strip_split_mode = bool(kwargs.get("tensor_parallel")),
+            strip_batch = "n_batch" in kwargs,
+            strip_ubatch = "n_ubatch" in kwargs,
         )
     return kwargs
 

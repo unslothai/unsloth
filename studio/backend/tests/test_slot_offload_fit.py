@@ -157,3 +157,40 @@ class TestSlotsThatFitOnGpu:
         )
         assert calls
         assert all(call["swa_full"] is True for call in calls)
+
+    def test_micro_batch_is_re_derived_per_candidate(self):
+        """llama-server raises --batch-size to max(slots, 2) and llama.cpp caps the
+        micro-batch against it, so a batch below the requested slot count shrinks as the
+        candidates do: n_batch=1 launches the 3-slot candidate at -b 3, not the 64 the
+        4-slot request resolved to. At these dims that is 6.8 MiB of compute buffer
+        against 145.2, so pricing every candidate at the requested count's micro-batch
+        rejects a 3-slot fit that launches comfortably and cuts serving capacity for it."""
+        from core.inference.llama_cpp import _emitted_n_batch, _extra_args_n_ubatch
+
+        def ubatch_for_slots(slots: int):
+            return _extra_args_n_ubatch(
+                None, env = {}, n_ctx = CTX, n_batch = _emitted_n_batch(1, slots), n_ubatch = 64
+            )
+
+        def _fit(**kwargs):
+            calls = []
+            got = _backend(kv_calls = calls)._slots_that_fit_on_gpu(
+                4,
+                CTX,
+                [(0, 24576)],
+                {0: 24576},
+                23750 * MIB,
+                "q8_0",
+                FRAC,
+                0,
+                1,
+                n_ubatch = 64,
+                **kwargs,
+            )
+            return got, [call["n_ubatch"] for call in calls]
+
+        # priced at the batch each candidate LAUNCHES with: the first one fits, so the
+        # search stops there
+        assert _fit(ubatch_for_slots = ubatch_for_slots) == (([0], False, 3), [3])
+        # held at the requested count's micro-batch, the same card loses a slot
+        assert _fit() == (([0], False, 2), [64, 64])

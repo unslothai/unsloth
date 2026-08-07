@@ -413,6 +413,144 @@ def patch_vllm_for_notebooks():
     sys.stdout.fileno = lambda: 1
 
 
+# TypeError: non-default argument 'vision_config' follows default argument
+_UNSLOTH_DC_BACKFILL_FLAG = "__unsloth_dc_defaults_backfilled__"
+
+
+def _backfill_dataclass_defaults(cls):
+    """Give class-local bare annotations a ``None`` default.
+
+    transformers 5.x dataclass-ifies every ``PretrainedConfig`` subclass, so a
+    bare annotation after an inherited default trips "non-default argument
+    follows default argument". Skips names resolving anywhere in the MRO, and
+    ``ClassVar`` / ``InitVar``, matched textually as annotations may be strings.
+    """
+    if cls.__dict__.get(_UNSLOTH_DC_BACKFILL_FLAG):
+        return []
+    own_annotations = cls.__dict__.get("__annotations__") or {}
+    backfilled = []
+    for name, annotation in own_annotations.items():
+        text = (
+            annotation
+            if isinstance(annotation, str)
+            else (getattr(annotation, "__name__", "") or repr(annotation))
+        )
+        if "ClassVar" in text or "InitVar" in text:
+            continue
+        # dataclass reads defaults with getattr, so the MRO already counts.
+        if hasattr(cls, name):
+            continue
+        try:
+            setattr(cls, name, None)
+            backfilled.append(name)
+        except Exception:
+            pass
+    try:
+        setattr(cls, _UNSLOTH_DC_BACKFILL_FLAG, True)
+    except Exception:
+        pass
+    return backfilled
+
+
+def _transformers_configs_are_kw_only(PretrainedConfig):
+    """Does this transformers already build config dataclasses `kw_only`?
+
+    `kw_only=True` (5.5.1 on the 5.5 branch, 5.6.0 on main) removes the ordering
+    rule this fix exists for. Read the source, not the version, since it was
+    backported; where the source is unreadable (stripped or frozen installs),
+    probe instead, as a wrong False gives required fields a `None` default.
+    """
+    import inspect
+
+    hook = PretrainedConfig.__dict__.get("__init_subclass__")
+    hook = getattr(hook, "__func__", hook)
+    if hook is None:
+        return False
+    try:
+        return re.search(r"\bkw_only\s*=\s*True", inspect.getsource(hook)) is not None
+    except Exception:
+        pass
+    return not _transformers_needs_bare_annotation_fix()
+
+
+def _transformers_needs_bare_annotation_fix():
+    """Does defining a bare-annotation config subclass actually raise here?
+
+    Answered by trying it: the rule (5.4.0) and `kw_only=True` (5.5.1) were both
+    backported, so a version window mislabels distros carrying them early or
+    late. Absent positive evidence answer False: a loud `TypeError` beats a
+    config quietly accepting a missing required field.
+    """
+    try:
+        from transformers.configuration_utils import PretrainedConfig
+    except Exception:
+        return False
+    try:
+        # Exactly the shape vLLM defines: a default, then a bare annotation.
+        type(
+            "_UnslothProbeConfig",
+            (PretrainedConfig,),
+            {"__annotations__": {"a": int, "b": int}, "a": 0},
+        )
+    except TypeError:
+        return True
+    except Exception:
+        return False
+    return False
+
+
+def fix_transformers5_bare_annotation_configs():
+    """Stop transformers 5.x from breaking third-party config classes.
+
+    vLLM's ``configs/deepseek_vl2.py`` declares a bare ``vision_config``, which
+    raises ``TypeError`` while importing ``vllm.transformers_utils.configs`` and
+    takes ``import unsloth`` down with it. Patching
+    ``PretrainedConfig.__init_subclass__`` rather than vLLM's source covers every
+    affected class in any vLLM version. No-ops outside the 5.4.0 to 5.5.0
+    window: below it configs are not dataclasses, above ``kw_only=True`` leaves
+    no ordering rule to break.
+    """
+    try:
+        import transformers
+        if Version(transformers.__version__) < Version("5.0.0"):
+            return
+        from transformers.configuration_utils import PretrainedConfig
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping transformers-5 config fix ({e})")
+        return
+
+    if _transformers_configs_are_kw_only(PretrainedConfig):
+        return
+
+    if getattr(PretrainedConfig, "_unsloth_patched_init_subclass", False):
+        return
+
+    original = PretrainedConfig.__dict__.get("__init_subclass__")
+    if original is None:
+        return
+    # `__init_subclass__` is an implicit classmethod; unwrap to the function.
+    original_func = getattr(original, "__func__", original)
+
+    def __init_subclass__(cls, *args, **kwargs):
+        try:
+            _backfill_dataclass_defaults(cls)
+        except Exception as e:
+            logger.info(f"Unsloth: dataclass default backfill skipped ({e})")
+        return original_func(cls, *args, **kwargs)
+
+    # Keep the original reachable, so the patch can be tested and undone.
+    __init_subclass__.__wrapped__ = original_func
+    try:
+        PretrainedConfig.__init_subclass__ = classmethod(__init_subclass__)
+        PretrainedConfig._unsloth_patched_init_subclass = True
+        logger.info(
+            "Unsloth: Patching transformers `PretrainedConfig.__init_subclass__` "
+            "so vLLM config classes with bare annotations still import"
+        )
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching PretrainedConfig ({e})")
+
+
 # ValueError: 'aimv2' is already used by a Transformers config, pick another name.
 def fix_vllm_aimv2_issue():
     spec = importlib.util.find_spec("vllm")
@@ -1877,14 +2015,10 @@ def _make_peft_stub_module(fullname):
     return mod
 
 
-def _install_transformers_conversion_mapping_stub():
-    """Stub the 3 symbols peft 0.19.x imports from this module at top level."""
-    name = "transformers.conversion_mapping"
-    existing = sys.modules.get(name)
-    if existing is not None and getattr(existing, _UNSLOTH_STUB_SENTINEL, False):
-        return existing
-
-    mod = _make_peft_stub_module(name)
+def _build_transformers_conversion_mapping_stub():
+    """Build (not install) peft's 3 symbols, so the same objects can also
+    backfill a REAL module missing only some of them."""
+    mod = _make_peft_stub_module("transformers.conversion_mapping")
 
     # peft does ``.copy()`` + keyed assignment at module top; real dict suffices.
     mod._MODEL_TO_CONVERSION_PATTERN = {}
@@ -1899,7 +2033,17 @@ def _install_transformers_conversion_mapping_stub():
 
     mod.get_checkpoint_conversion_mapping = get_checkpoint_conversion_mapping
     mod.get_model_conversion_mapping = get_model_conversion_mapping
+    return mod
 
+
+def _install_transformers_conversion_mapping_stub():
+    """Stub the 3 symbols peft 0.19.x imports from this module at top level."""
+    name = "transformers.conversion_mapping"
+    existing = sys.modules.get(name)
+    if existing is not None and getattr(existing, _UNSLOTH_STUB_SENTINEL, False):
+        return existing
+
+    mod = _build_transformers_conversion_mapping_stub()
     sys.modules[name] = mod
     # Attach to parent so attribute-style access matches a real submodule.
     parent = sys.modules.get("transformers")
@@ -1912,18 +2056,14 @@ def _install_transformers_conversion_mapping_stub():
     return mod
 
 
-def _install_transformers_core_model_loading_stub():
-    """Stub the 8 symbols peft 0.19.x imports from this module at top level.
+def _build_transformers_core_model_loading_stub():
+    """Build (not install) peft's 8 symbols, so the same objects can also
+    backfill a REAL module missing only some of them.
 
-    ``Concatenate`` and ``ConversionOps`` MUST be real classes (peft
-    subclasses them at module top); the rest only appear in runtime
-    ``isinstance`` / construction calls gated behind ``is_transformers_ge_v5``."""
-    name = "transformers.core_model_loading"
-    existing = sys.modules.get(name)
-    if existing is not None and getattr(existing, _UNSLOTH_STUB_SENTINEL, False):
-        return existing
-
-    mod = _make_peft_stub_module(name)
+    ``Concatenate`` and ``ConversionOps`` MUST be real classes (peft subclasses
+    them at module top); the rest only appear in runtime calls gated behind
+    ``is_transformers_ge_v5``."""
+    mod = _make_peft_stub_module("transformers.core_model_loading")
 
     class ConversionOps:
         def convert(self, *args, **kwargs):  # pragma: no cover - inert stub
@@ -1992,7 +2132,17 @@ def _install_transformers_core_model_loading_stub():
     mod.WeightRenaming = WeightRenaming
     mod.dot_natural_key = dot_natural_key
     mod.rename_source_key = rename_source_key
+    return mod
 
+
+def _install_transformers_core_model_loading_stub():
+    """Install the core_model_loading stub, unless a real module is present."""
+    name = "transformers.core_model_loading"
+    existing = sys.modules.get(name)
+    if existing is not None and getattr(existing, _UNSLOTH_STUB_SENTINEL, False):
+        return existing
+
+    mod = _build_transformers_core_model_loading_stub()
     sys.modules[name] = mod
     parent = sys.modules.get("transformers")
     if parent is not None and not hasattr(parent, "core_model_loading"):
@@ -2001,6 +2151,84 @@ def _install_transformers_core_model_loading_stub():
         except Exception:
             pass
     return mod
+
+
+# Names peft's transformers_weight_conversion imports at module top level; a
+# real module missing ANY of them breaks that import as hard as an absent one.
+_PEFT_REQUIRED_SYMBOLS = {
+    "transformers.conversion_mapping": (
+        "_MODEL_TO_CONVERSION_PATTERN",
+        "get_checkpoint_conversion_mapping",
+        "get_model_conversion_mapping",
+    ),
+    "transformers.core_model_loading": (
+        "Concatenate",
+        "ConversionOps",
+        "MergeModulelist",
+        "Transpose",
+        "WeightConverter",
+        "WeightRenaming",
+        "dot_natural_key",
+        "rename_source_key",
+    ),
+}
+_PEFT_STUB_BUILDERS = {
+    "transformers.conversion_mapping": _build_transformers_conversion_mapping_stub,
+    "transformers.core_model_loading": _build_transformers_core_model_loading_stub,
+}
+
+
+def _backfill_missing_peft_symbols(name):
+    """Add to a REAL transformers submodule only the peft symbols it lacks.
+
+    transformers 5.0.0.dev0 ships ``conversion_mapping`` without
+    ``_MODEL_TO_CONVERSION_PATTERN``, so peft's top-level import raises
+    ImportError even though the module imports fine; stubbing it wholesale would
+    replace working transformers code. The donors are inert, which is right
+    where the symbol never existed but wrong for a transformers 5 that HAS
+    conversions and merely renamed one, hence the warning.
+
+    Strictly additive and idempotent. Returns the names added."""
+    try:
+        mod = importlib.import_module(name)
+    except Exception:
+        return ()
+    if getattr(mod, _UNSLOTH_STUB_SENTINEL, False):
+        return ()  # our own stub already provides the full set
+    missing = [s for s in _PEFT_REQUIRED_SYMBOLS[name] if not hasattr(mod, s)]
+    if not missing:
+        return ()
+    donor = _PEFT_STUB_BUILDERS[name]()
+    added = []
+    for symbol in missing:
+        try:
+            setattr(mod, symbol, getattr(donor, symbol))
+            added.append(symbol)
+        except Exception:
+            pass  # frozen or slotted module object
+    if added:
+        _warn_peft_symbols_backfilled(name, added)
+    return tuple(added)
+
+
+# An empty pattern is peft's own starting point; the rest stand in for real
+# upstream behaviour, so those are worth warning about.
+_PEFT_INERT_BACKFILL_IS_FINE = frozenset(("_MODEL_TO_CONVERSION_PATTERN",))
+
+
+def _warn_peft_symbols_backfilled(name, added):
+    """Say when an inert stand-in went into a module that is otherwise real."""
+    substantive = [s for s in added if s not in _PEFT_INERT_BACKFILL_IS_FINE]
+    if not substantive:
+        return
+    warnings.warn(
+        f"Unsloth: {name} is missing {', '.join(substantive)}, so peft could "
+        f"not be imported. Added inert stand-ins to get the import through; "
+        f"weight conversions that rely on them will be skipped. Upgrading "
+        f"transformers is the real fix.",
+        RuntimeWarning,
+        stacklevel = 2,
+    )
 
 
 def fix_peft_transformers_weight_conversion_import():
@@ -2058,6 +2286,20 @@ def fix_peft_transformers_weight_conversion_import():
     if not _peft_stub_module_importable("transformers.core_model_loading"):
         _install_transformers_core_model_loading_stub()
         patched_any = True
+
+    # An importable submodule can still lack individual symbols; backfill just
+    # those names rather than replacing a real module wholesale.
+    backfilled = {}
+    for _submodule in _PEFT_REQUIRED_SYMBOLS:
+        added = _backfill_missing_peft_symbols(_submodule)
+        if added:
+            backfilled[_submodule] = added
+            patched_any = True
+    if backfilled:
+        logger.info(
+            "Unsloth: backfilled peft symbols missing from transformers: "
+            + "; ".join(f"{m}: {', '.join(s)}" for m, s in backfilled.items())
+        )
 
     if not patched_any:
         # Real submodules present; failure was for some other reason.

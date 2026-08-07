@@ -165,6 +165,9 @@ class GgufLoadIntent:
     gpu_ids_are_vulkan_ordinals: Optional[bool] = None
     n_threads: Optional[int] = None
     n_parallel: int = 1
+    # none follows the llama.cpp defaults (2048 / 512)
+    n_batch: Optional[int] = None
+    n_ubatch: Optional[int] = None
     extra_args: Optional[tuple[str, ...]] = None
     # The route materialises inherited extras from the live server, so the list alone
     # cannot say whether the caller named it. Duplicate-load checks need the difference:
@@ -2727,12 +2730,54 @@ def _extra_args_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optiona
     return last_dev
 
 
+def _emitted_n_batch(n_batch: Optional[int], n_parallel: int) -> Optional[int]:
+    """--batch-size the launch actually emits for a requested ``n_batch``.
+
+    llama-server aborts below 2 and below the slot count, so the loader raises the
+    flag to ``max(slots, 2)``. llama.cpp then derives the micro-batch from the
+    raised value (``cparams.n_ubatch = min(cparams.n_batch, n_ubatch or n_batch)``),
+    so every VRAM budget must be sized from it, not from the requested number, or a
+    small batch with many slots is budgeted at a micro-batch the launch never uses.
+    None (llama.cpp defaults) stays None: nothing is emitted, so nothing is raised.
+    """
+    if n_batch is None:
+        return None
+    return max(int(n_batch), max(2, int(n_parallel or 1)))
+
+
+def _repatch_parallel_slots(argv: list[str], n_parallel: int, n_batch: Optional[int]) -> bool:
+    """Point ``--parallel`` at ``n_parallel``, re-raising ``--batch-size`` to match.
+
+    The batch flag is emitted from the slot count as it stood then, so a later
+    restore that hands slots back would leave the batch under the new floor and
+    abort the very fallback the restore exists to make work. Returns whether
+    ``--parallel`` was found (callers rebind their own n_parallel on that).
+    """
+    try:
+        _at = argv.index("--parallel")
+    except ValueError:
+        return False
+    argv[_at + 1] = str(n_parallel)
+    _batch = _emitted_n_batch(n_batch, n_parallel)
+    if _batch is not None and "--batch-size" in argv:
+        argv[argv.index("--batch-size") + 1] = str(_batch)
+    return True
+
+
 def _extra_args_n_ubatch(
     extra_args: Optional[Iterable[str]],
     env: Optional[Mapping[str, str]] = None,
     n_ctx: Optional[int] = None,
+    *,
+    n_batch: Optional[int] = None,
+    n_ubatch: Optional[int] = None,
 ) -> Optional[int]:
-    """Effective ubatch after llama.cpp normalizes it, or None at defaults."""
+    """Effective ubatch after llama.cpp normalizes it, or None at defaults.
+
+    Precedence mirrors the launched command line: env, then the first-class
+    n_batch / n_ubatch fields (emitted as flags, so they beat env), then user
+    extra_args (appended last, so they last-wins-override the emitted flags).
+    """
     values = {
         "batch": _DEFAULT_LLAMA_N_BATCH,
         "ubatch": _DEFAULT_LLAMA_N_UBATCH,
@@ -2750,6 +2795,13 @@ def _extra_args_n_ubatch(
                 overridden = True
             except (TypeError, ValueError):
                 pass
+
+    if n_batch is not None:
+        values["batch"] = int(n_batch)
+        overridden = True
+    if n_ubatch is not None:
+        values["ubatch"] = int(n_ubatch)
+        overridden = True
 
     args = [str(a) for a in extra_args] if extra_args else []
     flags = {
@@ -3051,6 +3103,9 @@ class LlamaCppBackend:
         self._effective_parallel_slots: int = 1
         # --parallel the last load asked for, before any fit-time reduction.
         self._requested_n_parallel: int = 1
+        # --batch-size / --ubatch-size the last load asked for; none = defaults or extras / env
+        self._requested_n_batch: Optional[int] = None
+        self._requested_n_ubatch: Optional[int] = None
         self._chat_template: Optional[str] = None
         self._markup_tokens: list = []
         self._markup_profile = None
@@ -3339,6 +3394,16 @@ class LlamaCppBackend:
         return max(1, slots)
 
     @property
+    def requested_n_batch(self) -> Optional[int]:
+        """--batch-size the last load asked for; None means llama.cpp default."""
+        return self._requested_n_batch
+
+    @property
+    def requested_n_ubatch(self) -> Optional[int]:
+        """--ubatch-size the last load asked for; None means llama.cpp default."""
+        return self._requested_n_ubatch
+
+    @property
     def max_context_length(self) -> Optional[int]:
         """Return the largest context that fits on this hardware at load time.
 
@@ -3365,6 +3430,8 @@ class LlamaCppBackend:
         self._effective_parallel_slots = 1
         # Cleared with the effective count so a stale value can't skew the dedupe.
         self._requested_n_parallel = 1
+        self._requested_n_batch = None
+        self._requested_n_ubatch = None
 
     @staticmethod
     def _read_rss_bytes(pid: int) -> Optional[int]:
@@ -3719,6 +3786,10 @@ class LlamaCppBackend:
         if self._requested_n_ctx != int(intent.n_ctx):
             return False
         if not self._is_diffusion and self._requested_n_parallel != max(1, int(intent.n_parallel)):
+            return False
+        if not self._is_diffusion and (
+            self._requested_n_batch != intent.n_batch or self._requested_n_ubatch != intent.n_ubatch
+        ):
             return False
 
         def _norm(value):
@@ -6236,6 +6307,7 @@ class LlamaCppBackend:
         kv_unified: bool = True,
         flash_attn: bool = True,
         split_extra_bytes: int = 0,
+        ubatch_for_slots: Optional[Callable[[int], Optional[int]]] = None,
     ) -> tuple[Optional[list[int]], bool, int]:
         """Largest serving-slot count in [1, n_parallel) whose fully-on-GPU footprint fits,
         so Unsloth keeps the model on GPU (-ngl -1) instead of --fit on, which offloads layers
@@ -6245,10 +6317,16 @@ class LlamaCppBackend:
         and KV, then re-selects GPUs like the explicit-context path -- ``split_extra_bytes``
         included, so a multi-GPU candidate is re-checked at the split rate. Returns
         (gpu_indices, use_fit=False, slots) for the largest fitting count, else (None, True,
-        n_parallel). Only ever reduces; unit-testable with synthetic VRAM maps."""
+        n_parallel). Only ever reduces; unit-testable with synthetic VRAM maps.
+        ``ubatch_for_slots`` re-derives the micro-batch per candidate: the emitted
+        --batch-size is raised to max(slots, 2), and llama.cpp caps the micro-batch
+        against it, so a batch below the requested slot count shrinks as the candidates
+        do. Holding it at the requested count made a fitting candidate look too big and
+        dropped the load to --fit offload."""
         for slots in range(n_parallel - 1, 0, -1):
+            _ub = ubatch_for_slots(slots) if ubatch_for_slots else n_ubatch
             cb = self._estimate_compute_buffer_bytes(
-                n_ubatch = n_ubatch, n_parallel = slots, per_device_tensor = False
+                n_ubatch = _ub, n_parallel = slots, per_device_tensor = False
             )
             if cb <= 0:
                 cb = self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024
@@ -6261,7 +6339,7 @@ class LlamaCppBackend:
                     n_parallel = slots,
                     swa_full = swa_full,
                     kv_unified = kv_unified,
-                    n_ubatch = n_ubatch,
+                    n_ubatch = _ub,
                     flash_attn = flash_attn,
                 )
             )
@@ -7096,6 +7174,8 @@ class LlamaCppBackend:
         self._memory_mlock_applicable = True
         self._memory_launch_pending = False
         self._n_ubatch = self._DEFAULT_N_UBATCH
+        self._requested_n_batch = None
+        self._requested_n_ubatch = None
         self._flash_attn_enabled = True
         self._effective_cache_types = ("f16", "f16")
         self._kv_cache_context_total = None
@@ -8652,6 +8732,8 @@ class LlamaCppBackend:
         gpu_ids_are_vulkan_ordinals = intent.gpu_ids_are_vulkan_ordinals
         n_threads = intent.n_threads
         n_parallel = intent.n_parallel
+        n_batch = intent.n_batch
+        n_ubatch = intent.n_ubatch
         extra_args = list(intent.extra_args) if intent.extra_args is not None else None
         preserve_multi_gpu_on_layer = intent.preserve_multi_gpu_on_layer
         # Serialise the whole load so concurrent /load calls never leave two
@@ -9070,10 +9152,21 @@ class LlamaCppBackend:
                 ctx_override = parse_ctx_override(extra_args)
                 requested_ctx = resolve_requested_ctx(extra_args, n_ctx)
                 swa_full = _swa_full_from_args_or_env(extra_args)
-                _effective_ubatch = _extra_args_n_ubatch(
-                    extra_args,
-                    n_ctx = (requested_ctx if requested_ctx > 0 else self._context_length),
-                )
+
+                # The emitted batch, not the requested one: the floor raise below is what
+                # llama.cpp caps the micro-batch against, so the fit, the slot search and
+                # every compute-buffer reserve must be sized from the value that launches.
+                # Slot-dependent, since the floor is max(slots, 2): the slot search below
+                # reduces the count, and each candidate launches at its own batch.
+                def _ubatch_for_slots(slots: int) -> Optional[int]:
+                    return _extra_args_n_ubatch(
+                        extra_args,
+                        n_ctx = (requested_ctx if requested_ctx > 0 else self._context_length),
+                        n_batch = _emitted_n_batch(n_batch, slots),
+                        n_ubatch = n_ubatch,
+                    )
+
+                _effective_ubatch = _ubatch_for_slots(n_parallel)
                 planned_kv_unified = _kv_unified_from_args(
                     extra_args,
                     default = n_parallel > 1 and server_caps.get("supports_kv_unified", False),
@@ -10179,6 +10272,7 @@ class LlamaCppBackend:
                             kv_unified = planned_kv_unified,
                             flash_attn = planned_flash_attn,
                             split_extra_bytes = _cc_split_extra(effective_ctx),
+                            ubatch_for_slots = _ubatch_for_slots,
                         )
                         if not _uf_slots:
                             logger.info(
@@ -10189,6 +10283,10 @@ class LlamaCppBackend:
                                 effective_ctx,
                             )
                             gpu_indices, use_fit, n_parallel = _gi_slots, False, _slots
+                            # Fewer slots means a lower batch floor, so the launch runs a
+                            # smaller micro-batch than the one this was sized at. Re-derive
+                            # it, or the recorded _n_ubatch describes a graph never built.
+                            _effective_ubatch = _ubatch_for_slots(n_parallel)
 
                     # MTP reserve at the final context, for the logs below.
                     _mtp_reserve_bytes = _mtp_bytes(effective_ctx) if _mtp_will_engage else 0
@@ -10325,6 +10423,29 @@ class LlamaCppBackend:
                     cmd.extend(["-c", str(effective_ctx)])
                 elif not auto_fit:
                     cmd.extend(["-c", "0"])
+
+                # emitted before user extras so a pass-through -b / -ub still last-wins-overrides
+                if n_batch is not None:
+                    # Two separate aborts, both reachable from the picker since the input
+                    # clamps into BATCH_MIN = 1 rather than rejecting:
+                    #   -b < --parallel  -> GGML_ASSERT(n_outputs_max <= cparams.n_outputs_max)
+                    #   -b 1 (any slots) -> GGML_ASSERT(n_tokens_all <= cparams.n_batch)
+                    # Measured: b1/p1 and b1/p2 abort, b2/p1 and b2/p2 load, b4/p8 aborts,
+                    # b8/p8 loads. So the floor is max(slots, 2), not slots alone. The
+                    # bounds are per-field and cannot express it, so raise here instead of
+                    # failing the load.
+                    _emit_batch = _emitted_n_batch(n_batch, n_parallel)
+                    if _emit_batch != n_batch:
+                        logger.warning(
+                            "Raising --batch-size from %s to %s: llama-server aborts below "
+                            "2 and below the %s parallel slot(s) it serves.",
+                            n_batch,
+                            _emit_batch,
+                            n_parallel,
+                        )
+                    cmd.extend(["--batch-size", str(_emit_batch)])
+                if n_ubatch is not None:
+                    cmd.extend(["--ubatch-size", str(n_ubatch)])
 
                 server_caps = self.probe_server_capabilities(binary)
 
@@ -10607,8 +10728,7 @@ class LlamaCppBackend:
                             extra_args, env = _child_spec_env(extra_args)
                         ):
                             n_parallel = _pv_extras_clamped_slots
-                            if "--parallel" in cmd:
-                                cmd[cmd.index("--parallel") + 1] = str(n_parallel)
+                            _repatch_parallel_slots(cmd, n_parallel, n_batch)
                             logger.info(
                                 "Restoring %d parallel slots: the drafter drop left a "
                                 "non-MTP server.",
@@ -10706,18 +10826,19 @@ class LlamaCppBackend:
                     and not _extra_args_set_spec_type(extra_args)
                     and _extra_args_requests_mtp(spec_flags, env = _child_spec_env(extra_args))
                 ):
-                    try:
-                        _np_at = cmd.index("--parallel")
-                    except ValueError:
-                        _np_at = -1
-                    if _np_at >= 0:
+                    if "--parallel" in cmd:
                         logger.warning(
                             "%s resolved to MTP speculative decoding, which does not "
                             "support %d parallel slots; using 1.",
                             model_identifier,
                             n_parallel,
                         )
-                        cmd[_np_at + 1] = "1"
+                        # Through the same helper as the restores: the floor is meant to
+                        # be the smallest legal batch, so dropping to one slot must undo
+                        # a raise the old count forced. Leaving it launched -b 64 for a
+                        # requested -b 1 and made the recorded micro-batch, derived from
+                        # the clamped count, describe a graph 32x smaller than the child's.
+                        _repatch_parallel_slots(cmd, 1, n_batch)
                         # _commit_effective_parallel_slots reports what launched, so
                         # rebind rather than only patching cmd.
                         _mtp_clamped_slots = n_parallel
@@ -11592,8 +11713,9 @@ class LlamaCppBackend:
                     # silently serves one chat at a time (and the requested-vs-requested
                     # dedupe makes that stick). Later retries derive from this argv, so
                     # rebind n_parallel now.
-                    if _mtp_clamped_slots > 1 and "--parallel" in fallback_cmd:
-                        fallback_cmd[fallback_cmd.index("--parallel") + 1] = str(_mtp_clamped_slots)
+                    if _mtp_clamped_slots > 1 and _repatch_parallel_slots(
+                        fallback_cmd, _mtp_clamped_slots, n_batch
+                    ):
                         n_parallel = _mtp_clamped_slots
                     healthy = _spawn_and_wait(fallback_cmd, label = "-retry")
                     if healthy:
@@ -11699,9 +11821,16 @@ class LlamaCppBackend:
                 self._commit_effective_parallel_slots(n_parallel)
                 self._swa_full = swa_full
                 self._kv_cache_unified = kv_cache_unified
+                # Re-derived from the slot count that LAUNCHED, not the one the sizing
+                # pass saw. The drafter drop and the non-MTP retry both hand slots back
+                # after the batch flag is emitted, and this is recorded next to
+                # _commit_effective_parallel_slots: pairing those slots with a micro-batch
+                # derived at the clamped count under-states the cache the slot save
+                # re-estimates from it.
+                _launched_ubatch = _ubatch_for_slots(n_parallel)
                 self._n_ubatch = max(
                     0,
-                    int(self._DEFAULT_N_UBATCH if _effective_ubatch is None else _effective_ubatch),
+                    int(self._DEFAULT_N_UBATCH if _launched_ubatch is None else _launched_ubatch),
                 )
                 self._flash_attn_enabled = (
                     _flash_attn_enabled_from_args(_last_spawn_cmd, env = env)
@@ -11753,6 +11882,8 @@ class LlamaCppBackend:
                 self._requested_n_ctx = int(n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
                 self._requested_n_parallel = max(1, int(intent.n_parallel))
+                self._requested_n_batch = intent.n_batch
+                self._requested_n_ubatch = intent.n_ubatch
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
                 # watch this load for a mid-generation crash.
                 self._last_load_intent = intent
@@ -13979,6 +14110,7 @@ class LlamaCppBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        continue_final_message: bool = False,
         seed: Optional[int] = None,
         promote_reasoning_only: bool = True,
         _allow_respawn_retry: bool = True,
@@ -13994,9 +14126,15 @@ class LlamaCppBackend:
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
 
-        from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
+        from core.inference.chat_template_helpers import (
+            neutralize_control_markup_in_messages,
+            trailing_assistant_text,
+        )
 
         openai_messages = self._build_openai_messages(messages, image_b64)
+        continue_final_message = continue_final_message and bool(
+            trailing_assistant_text(openai_messages)
+        )
 
         payload = {
             # llama-server applies the chat template itself (#7066).
@@ -14017,6 +14155,10 @@ class LlamaCppBackend:
         )
         if _reasoning_kw is not None:
             payload["chat_template_kwargs"] = _reasoning_kw
+        if continue_final_message:
+            # llama-server applies the template; it rejects both flags set true.
+            payload["continue_final_message"] = True
+            payload["add_generation_prompt"] = False
         # Default cap to the model context when known.
         payload["max_tokens"] = (
             max_tokens
@@ -14169,6 +14311,7 @@ class LlamaCppBackend:
                     enable_thinking = enable_thinking,
                     reasoning_effort = reasoning_effort,
                     preserve_thinking = preserve_thinking,
+                    continue_final_message = continue_final_message,
                     seed = seed,
                     promote_reasoning_only = promote_reasoning_only,
                     _allow_respawn_retry = False,
@@ -14200,6 +14343,7 @@ class LlamaCppBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        continue_final_message: bool = False,
         max_tool_iterations: int = 25,
         auto_heal_tool_calls: bool = True,
         nudge_tool_calls: Optional[bool] = None,
@@ -14260,9 +14404,13 @@ class LlamaCppBackend:
         # retrieval call would actually prompt (ask mode); auto never gates the
         # safe search_knowledge_base tool, so retrieval must still run there.
         # off never prompts either, so it also keeps first-pass retrieval.
+        from core.inference.chat_template_helpers import trailing_assistant_text
+
+        # A resumed turn must keep the partial trailing: autoinject appends a tool call
+        # plus its result, moving the boundary so the model opens a fresh answer.
         _skip_autoinject = (
             confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
-        )
+        ) or bool(continue_final_message and trailing_assistant_text(conversation))
         _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
         if _auto:
             for _ev in _auto["events"]:
@@ -14485,6 +14633,7 @@ class LlamaCppBackend:
             # Build payload -- stream: True so we detect tool signals
             # in the first 1-2 chunks without a non-streaming penalty.
             from core.inference.chat_template_helpers import (
+                append_assistant_turn,
                 neutralize_control_markup_in_messages,
             )
 
@@ -14513,6 +14662,11 @@ class LlamaCppBackend:
             )
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
+            # Re-checked per iteration: once a tool result is appended the partial is
+            # no longer trailing, so later turns are normal.
+            if continue_final_message and trailing_assistant_text(conversation):
+                payload["continue_final_message"] = True
+                payload["add_generation_prompt"] = False
             payload["max_tokens"] = (
                 max_tokens
                 if max_tokens is not None
@@ -15161,11 +15315,12 @@ class LlamaCppBackend:
                                 f"model responded without calling tools "
                                 f"({len(_stripped)} chars)"
                             )
-                            conversation.append(
-                                {
-                                    "role": "assistant",
-                                    "content": _stripped,
-                                }
+                            # Merges into a resumed partial: the nudge that follows is a
+                            # user turn, so a second assistant turn breaks alternation.
+                            append_assistant_turn(
+                                conversation,
+                                {"role": "assistant", "content": _stripped},
+                                continue_final_message = continue_final_message,
                             )
                             available_tool_names = [
                                 (tool.get("function") or {}).get("name")
@@ -15383,7 +15538,11 @@ class LlamaCppBackend:
 
                     if not decision.should_execute:
                         if content_text and not assistant_appended:
-                            conversation.append(assistant_msg)
+                            append_assistant_turn(
+                                conversation,
+                                assistant_msg,
+                                continue_final_message = continue_final_message,
+                            )
                             assistant_appended = True
                         if provisional_match:
                             # A provisional tool card is already on screen for this
@@ -15410,7 +15569,13 @@ class LlamaCppBackend:
 
                     if not assistant_appended:
                         assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
-                        conversation.append(assistant_msg)
+                        # Merges into a resumed partial, so a continued turn that calls
+                        # a tool stays one assistant message.
+                        append_assistant_turn(
+                            conversation,
+                            assistant_msg,
+                            continue_final_message = continue_final_message,
+                        )
                         assistant_appended = True
                     else:
                         assistant_msg.setdefault("tool_calls", []).append(

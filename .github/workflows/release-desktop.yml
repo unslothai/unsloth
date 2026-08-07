@@ -103,7 +103,7 @@ jobs:
       pypi_version: ${{ steps.prepare.outputs.pypi_version }}
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
@@ -419,16 +419,16 @@ jobs:
     steps:
       # harden-runner in audit mode: surfaces every egress destination in
       # the runner log so the allowlist for a future `egress-policy: block`
-      # promotion can be derived from observed traffic. Audit mode is
-      # cross-platform (Linux / macOS / Windows runners); blocking mode is
-      # currently Linux-only, so we deliberately stay in audit until the
-      # macOS + Windows codesign paths have been observed.
+      # promotion can be derived from observed traffic. Blocking mode is
+      # supported on GitHub-hosted Linux / macOS / Windows runners as of
+      # harden-runner v2.20.0; stay in audit until the macOS + Windows
+      # codesign paths have been observed.
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
@@ -441,7 +441,7 @@ jobs:
 
       # ── Node.js ──
       - name: Setup Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: 24
 
@@ -713,7 +713,7 @@ jobs:
       - name: Restore trusted-signing-cli
         id: cache_trusted_signing_cli
         if: matrix.platform == 'windows-latest'
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.cargo/bin/trusted-signing-cli.exe
           # The version is in the key, so a bump invalidates the cache instead
@@ -733,12 +733,48 @@ jobs:
           echo "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # ── Windows: verify signing CLI is accessible ──
+      # Fails closed. This used to print a message and exit 0 on both branches,
+      # so a missing or broken binary reported success and the failure only
+      # surfaced later, inside the Tauri bundling step, as a signing error with
+      # no obvious cause. It matters more now that the binary comes from a
+      # cache: a truncated or corrupt cache entry restores, skips the install
+      # above, and would otherwise sail through this check.
       - name: Verify trusted-signing-cli
         if: matrix.platform == 'windows-latest'
         run: |
+          $ErrorActionPreference = "Stop"
           Write-Output "PATH: $env:PATH"
-          Get-Command trusted-signing-cli -ErrorAction SilentlyContinue || Write-Output "trusted-signing-cli NOT in PATH"
-          trusted-signing-cli --version || Write-Output "trusted-signing-cli failed to run"
+
+          $cli = Get-Command trusted-signing-cli -ErrorAction SilentlyContinue
+          if (-not $cli) {
+            Write-Output "::error::trusted-signing-cli is not on PATH. If the cache restored a bad entry, bump the key in 'Restore trusted-signing-cli' to force a rebuild."
+            exit 1
+          }
+          Write-Output "resolved: $($cli.Source)"
+
+          # Two different failure modes, and neither one covers the other:
+          #   * the binary cannot be started at all (a truncated cache entry
+          #     gives "Exec format error"). That raises a terminating error
+          #     under $ErrorActionPreference = "Stop", so it has to be caught
+          #     or the step dies here, before the recovery message below.
+          #   * the binary starts and exits non-zero. That does NOT raise, so
+          #     $LASTEXITCODE has to be read explicitly.
+          try {
+            & $cli.Source --version
+          }
+          catch {
+            # The PowerShell error spans several lines (message, offending line,
+            # caret). An annotation is truncated at the first newline, so flatten
+            # it, and put the recovery ahead of the detail so it survives even if
+            # the annotation is clipped for length.
+            $detail = ($_.Exception.Message -replace '\s+', ' ').Trim()
+            Write-Output "::error::trusted-signing-cli could not be started. If the cache restored a bad entry, bump the key in 'Restore trusted-signing-cli' to force a rebuild. Underlying error: $detail"
+            exit 1
+          }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error::trusted-signing-cli is on PATH but exited $LASTEXITCODE. If the cache restored a bad entry, bump the key in 'Restore trusted-signing-cli' to force a rebuild."
+            exit 1
+          }
 
       # ── Linux: pin AppImage packaging toolchain ──
       - name: Pin thin AppImage toolchain
@@ -1401,7 +1437,7 @@ jobs:
 
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
           egress-policy: audit
 
