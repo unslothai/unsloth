@@ -1899,7 +1899,14 @@ def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
 # set keeps detection and stripping from drifting.
 _GPU_OFFLOAD_OVERRIDE_FLAGS = _LAYER_OFFLOAD_FLAGS
 # Extras that keep weights on the CPU regardless of the layer count, so a
-# full offload cannot be inferred from -ngl alone.
+# full offload cannot be inferred from -ngl alone. -ncmoe carries a COUNT, and
+# zero places nothing, so it is parsed rather than merely spotted; the rest are
+# presence-only (-cmoe takes no value, and an -ot pattern is not worth guessing
+# at, which matches how the env side reads LLAMA_ARG_OVERRIDE_TENSOR).
+_CPU_MOE_COUNT_FLAGS = frozenset({"-ncmoe", "--n-cpu-moe"})
+_CPU_PLACEMENT_PRESENCE_FLAGS = (_MOE_OFFLOAD_FLAGS - _CPU_MOE_COUNT_FLAGS) | frozenset(
+    {"-ot", "--override-tensor"}
+)
 _CPU_PLACEMENT_FLAGS = _MOE_OFFLOAD_FLAGS | frozenset({"-ot", "--override-tensor"})
 _THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
 # common_params defaults in the bundled llama.cpp runtime.
@@ -2035,6 +2042,26 @@ def _is_positive_int(value: Optional[str]) -> bool:
         return False
 
 
+def _args_place_tensors_on_cpu(extra_args: Optional[Iterable[str]] = None) -> bool:
+    """True when extras keep weights on the CPU, whatever the layer count says.
+
+    The arg-side twin of ``_env_places_tensors_on_cpu``, including its rule that
+    a CPU-MoE count only counts when positive: ``--n-cpu-moe 0`` places nothing.
+    """
+    values = [str(raw) for raw in extra_args or ()]
+    for i, raw in enumerate(values):
+        flag = _flag_name(raw)
+        # Any -ot counts even if it matches nothing: the list need only be
+        # non-empty, and guessing at the pattern is not worth it.
+        if flag in _CPU_PLACEMENT_PRESENCE_FLAGS:
+            return True
+        if flag in _CPU_MOE_COUNT_FLAGS:
+            _, eq, inline = raw.partition("=")
+            if _is_positive_int(inline if eq else (values[i + 1] if i + 1 < len(values) else "")):
+                return True
+    return False
+
+
 def _env_places_tensors_on_cpu(env: Optional[Mapping[str, str]] = None) -> bool:
     """True when inherited env keeps weights on the CPU, whatever the argv says.
 
@@ -2090,18 +2117,9 @@ def _pipeline_parallel_disabled_by_args(
             gpu_layers = None  # malformed: unknown, so keep the step
         if gpu_layers is not None and 0 <= gpu_layers <= n_layers:
             return True
-    values = [str(raw) for raw in extra_args or ()]
-    for i, raw in enumerate(values):
-        flag = _flag_name(raw)
-        # Any -ot counts even if it matches nothing: the list need only be non-empty.
-        if flag in {"-ot", "--override-tensor", "-cmoe", "--cpu-moe"}:
-            return True
-        if flag in {"-ncmoe", "--n-cpu-moe"}:
-            # -ncmoe 0 pushes no override, so it leaves pipelining on.
-            _, eq, inline = raw.partition("=")
-            if _is_positive_int(inline if eq else (values[i + 1] if i + 1 < len(values) else "")):
-                return True
-    return False
+    # Same predicate the Model Memory host-residency gate uses; -ncmoe 0 pushes
+    # no override, so it leaves pipelining on.
+    return _args_place_tensors_on_cpu(extra_args)
 
 
 def _kv_unified_from_args(
@@ -4537,7 +4555,7 @@ class LlamaCppBackend:
         # A CPU placement extra keeps weights in RAM whatever the layer count,
         # so it applies to the auto path too and cannot be short-circuited past.
         # Inherited env does the same and outlives any token stripping.
-        if _extra_args_set_any_flag(extra_args, _CPU_PLACEMENT_FLAGS):
+        if _args_place_tensors_on_cpu(extra_args):
             return True
         if _env_places_tensors_on_cpu(env):
             return True
@@ -10813,15 +10831,24 @@ class LlamaCppBackend:
                 # Only asked when page-locking is on the table: the Vulkan probe
                 # inside spawns a subprocess, and the default (both toggles off)
                 # must stay free.
-                _mem_host_resident = not should_mlock() or self._weights_in_host_memory(
-                    fully_gpu_offloaded = fully_gpu_offloaded,
-                    gpu_memory_mode = gpu_memory_mode,
-                    gpu_layers = gpu_layers,
-                    extra_args = extra_args,
-                    gpu_indices = gpu_indices,
-                    is_vulkan_backend = is_vulkan_backend,
-                    binary = binary,
-                )
+                _mem_host_resident = True
+                if should_mlock():
+                    # The same view of the environment the child will get: manual
+                    # mode drops the placement vars below, so reading os.environ
+                    # would pin for a CPU-MoE setting the child never sees.
+                    _mem_env = dict(os.environ)
+                    if gpu_memory_mode == "manual":
+                        self._clear_manual_placement_env(_mem_env)
+                    _mem_host_resident = self._weights_in_host_memory(
+                        fully_gpu_offloaded = fully_gpu_offloaded,
+                        gpu_memory_mode = gpu_memory_mode,
+                        gpu_layers = gpu_layers,
+                        extra_args = extra_args,
+                        gpu_indices = gpu_indices,
+                        is_vulkan_backend = is_vulkan_backend,
+                        binary = binary,
+                        env = _mem_env,
+                    )
                 _mem_managed, _mem_extras = apply_model_memory_policy(
                     extra_args,
                     supports_load_mode = bool(server_caps.get("supports_load_mode")),

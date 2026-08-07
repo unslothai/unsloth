@@ -715,15 +715,46 @@ def model_memory_owns_placement() -> bool:
     return get_keep_resident() or get_no_ram_reserve()
 
 
-def scrub_memory_env(env: dict) -> list[str]:
-    """Drop inherited memory env vars when the settings own placement.
+def _env_var_locks_or_reserves(name: str, value: str) -> bool:
+    """Whether this inherited var, as set, locks or reserves host RAM.
 
-    Returns the names removed, for logging. A no-op with both toggles off, so
-    an existing LLAMA_ARG_MLOCK deployment keeps working untouched.
+    Mirrors the argv rule: the settings own the RESERVATION, not the loader, so
+    a DirectIO or mmap choice made through the environment survives the same way
+    ``--load-mode dio`` does. An unrecognised value is left alone.
+    """
+    normalized = value.strip().lower()
+    if name == "LLAMA_ARG_MLOCK":
+        return normalized in _ENV_TRUE_VALUES
+    if name in {"LLAMA_ARG_NO_MMAP", "LLAMA_ARG_NO_DIO"}:
+        # Presence alone selects mode "none", which is a full host buffer.
+        return True
+    if name in {"LLAMA_ARG_MMAP", "LLAMA_ARG_DIO"}:
+        # Falsy selects "none"; truthy selects mmap / dio, neither of which
+        # holds a full copy.
+        return normalized in _ENV_FALSE_VALUES
+    if name == "LLAMA_ARG_LOAD_MODE":
+        return normalized in _LOAD_MODE_MLOCK_VALUES or normalized in _LOAD_MODE_RESERVING_VALUES
+    return False
+
+
+def scrub_memory_env(env: dict) -> list[str]:
+    """Drop inherited memory placement the settings override.
+
+    Returns the names removed, for logging. A no-op with both toggles off, so an
+    existing LLAMA_ARG_MLOCK deployment keeps working untouched. Only the values
+    that actually lock or reserve go: an inherited ``LLAMA_ARG_DIO=1`` is a
+    loader choice, not a reservation, and no-reserve has no quarrel with it.
     """
     if not model_memory_owns_placement():
         return []
-    return [name for name in MEMORY_ENV_VARS if env.pop(name, None) is not None]
+    removed = [
+        name
+        for name in MEMORY_ENV_VARS
+        if name in env and _env_var_locks_or_reserves(name, env[name])
+    ]
+    for name in removed:
+        env.pop(name, None)
+    return removed
 
 
 # Mirrors llama_cpp's _LLAMA_ARG_TRUE/FALSE_VALUES; duplicated so this module
