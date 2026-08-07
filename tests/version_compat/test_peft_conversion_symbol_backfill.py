@@ -1280,3 +1280,29 @@ def test_the_two_base_patterns_are_in_the_snapshot():
     stand_in = F._UnavailableConversionPatternMap()
     assert stand_in._is_moe("mixtral"), "the hint alone never saw this one"
     assert stand_in._is_moe("qwen2_moe")
+
+
+@pytest.mark.parametrize("model_type", sorted(F._PEFT_MOE_NAMED_NOT_CONVERTED))
+def test_a_moe_named_type_outside_the_map_is_not_refused(model_type):
+    """peft answers `None` for a type the map does not hold and skips the target
+    rewrite, so refusing breaks an ordinary adapter load. `qwen3_vl_moe` and
+    `lfm2_moe` are both supported models the substring hint was catching."""
+    stand_in = F._UnavailableConversionPatternMap()
+    assert stand_in.get(model_type) is None
+    assert stand_in.get(model_type, "fallback") == "fallback"
+
+
+def test_the_unconverted_list_is_still_outside_the_upstream_map():
+    """The canary for the other half. A name that gains a conversion pattern
+    upstream becomes fused, and answering `None` for it is the silent
+    mis-conversion the refusal exists to prevent."""
+    src = _fetch_conversion_mapping_source()
+    if src is None:
+        pytest.skip("upstream conversion map unavailable")
+    import re
+
+    keys = set(re.findall(r'"([\w.]+)":\s*"[\w.]+"', src))
+    if not keys:
+        pytest.skip("upstream map shape changed")
+    gained = keys & set(F._PEFT_MOE_NAMED_NOT_CONVERTED)
+    assert not gained, f"now in the upstream map, so no longer safe to skip: {sorted(gained)}"

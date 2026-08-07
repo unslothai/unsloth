@@ -2488,6 +2488,31 @@ _PEFT_MOE_NAMED_NOT_FUSED = frozenset(
     )
 )
 
+# The other half of the same carve-out: MoE-named model types that are not in the
+# conversion map AT ALL. peft's `.get()` answers None for them and skips the target
+# rewrite, so a refusal here breaks an ordinary adapter load -- `qwen3_vl_moe` and
+# `lfm2_moe` are both supported models that the substring hint caught. Kept apart
+# from the set above so its upstream canary keeps comparing like with like: that
+# one is "in the map, mapped elsewhere", this one is "not in the map".
+#
+# Every `*moe*` / `*mixtral*` model type absent from `_MODEL_TO_CONVERSION_PATTERN`
+# in BOTH 5.3.0 and 5.5.0. A name absent from one only (`afmoe`, `qwen3_5_moe`)
+# stays fused: refusing a type that was fused costs an error message, answering
+# None for one is the silent mis-conversion this exists to prevent.
+_PEFT_MOE_NAMED_NOT_CONVERTED = frozenset(
+    (
+        "ernie4_5_vl_moe",
+        "glm4v_moe_text",
+        "glm4v_moe_vision",
+        "granitemoe",
+        "jetmoe",
+        "lfm2_moe",
+        "phimoe",
+        "qwen3_vl_moe",
+        "qwen3_vl_moe_text",
+    )
+)
+
 # How many of those pairs a candidate map has to agree with before we believe it
 # is the conversion map under a new name. Three, so a coincidence does not pass
 # and a version that has renamed or dropped a handful of model types still does.
@@ -2569,7 +2594,8 @@ class _UnavailableConversionPatternMap(dict):
         name = str(key).lower()
         if name in _PEFT_MOE_CONVERSION_PATTERNS:
             return True
-        if name in _PEFT_MOE_NAMED_NOT_FUSED:
+        if name in _PEFT_MOE_NAMED_NOT_FUSED or \
+            name in _PEFT_MOE_NAMED_NOT_CONVERTED:
             return False
         return any(hint in name for hint in self._MOE_HINTS)
 
