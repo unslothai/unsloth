@@ -612,3 +612,23 @@ def test_local_dir_answer_ignores_the_hub_cache_of_the_same_name(in_tmp_cwd, mon
 
     assert detect_gguf_model("unsloth/foo") is None
     assert _variants("unsloth/foo").variants == []
+
+
+def test_wsl_drive_path_is_normalized_like_the_load(in_tmp_cwd, monkeypatch):
+    # from_identifier normalizes before resolving, so under WSL "C:\models\qwen" is served
+    # from /mnt/c/models/qwen. Probing the raw spelling would answer loadable=false for a
+    # model the load opens fine, and the Codex gate would reject it.
+    from hub.utils import paths as hub_paths
+
+    monkeypatch.setattr(hub_paths, "_IS_WSL", True)
+    monkeypatch.setattr(hub_paths, "_WSL_AUTOMOUNT_ROOT", f"{in_tmp_cwd}/mnt/")
+    gguf_dir = in_tmp_cwd / "mnt" / "c" / "models" / "qwen"
+    gguf_dir.mkdir(parents = True)
+    (gguf_dir / "qwen-Q4_K_M.gguf").write_bytes(b"GGUF")
+
+    response = _variants(r"C:\models\qwen")
+
+    assert response.resolved_locally is True
+    assert [v.quant for v in response.variants] == ["Q4_K_M"]
+    assert "Q4_K_M" in (response.loadable_variants or [])
+    assert response.loadable is True

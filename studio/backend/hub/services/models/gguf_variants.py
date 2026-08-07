@@ -42,6 +42,7 @@ from hub.utils.gguf import (
 from hub.utils.paths import (
     is_local_path,
     is_valid_repo_id as _is_valid_repo_id,
+    normalize_path,
 )
 from hub.services.models.common import (
     _is_mmproj_filename,
@@ -961,18 +962,23 @@ async def get_gguf_variants_answer(
         # from_identifier resolves existence-first, so a marker-less relative name that
         # exists here is a local model, not a Hub id, and a direct .gguf file is loadable
         # without the metadata siblings the directory scan requires.
+        # from_identifier normalizes before resolving, so every filesystem question below
+        # must ask about the same path: under WSL a supported "C:\\models\\qwen" maps to
+        # /mnt/c/models/qwen, and probing the raw spelling would report nothing loadable
+        # for a model the load serves fine.
+        local_id = normalize_path(repo_id) if is_local_path(repo_id) else repo_id
         local_target = None
         try:
-            probe = Path(repo_id).expanduser()
+            probe = Path(local_id).expanduser()
             if is_local_path(repo_id) or probe.exists():
                 local_target = probe
         except OSError:
             local_target = None
         if local_target is not None:
-            variants, has_vision = list_local_gguf_variants(repo_id)
+            variants, has_vision = list_local_gguf_variants(local_id)
             # The load id is this path, so a quant offered here must resolve here too --
             # a scan-torn quant is still ready if the resolver's bound file opens fine.
-            complete = _complete_with_servable(repo_id, _complete_quants_under(repo_id), variants)
+            complete = _complete_with_servable(local_id, _complete_quants_under(local_id), variants)
             if (
                 not variants
                 and local_target.is_file()
@@ -1014,8 +1020,8 @@ async def get_gguf_variants_answer(
             return _local_response(repo_id, variants, has_vision, complete).model_copy(
                 update = {
                     "resolved_locally": True,
-                    "loadable_variants": _loadable_variants(repo_id, variants),
-                    "loadable": _loads_without_variant(repo_id),
+                    "loadable_variants": _loadable_variants(local_id, variants),
+                    "loadable": _loads_without_variant(local_id),
                 }
             )
 
