@@ -269,6 +269,53 @@ def _clamp_finish_reason(value) -> str:
     )
 
 
+def _continue_final_message(payload) -> bool:
+    """Whether this request resumes the trailing assistant turn.
+
+    Nothing resumable (no assistant turn, or one holding tool calls) degrades to an
+    ordinary new turn rather than erroring.
+    """
+    if not getattr(payload, "continue_final_message", None):
+        return False
+    messages = getattr(payload, "messages", None) or []
+    if not messages:
+        return False
+    last = messages[-1]
+    role = last.get("role") if isinstance(last, dict) else getattr(last, "role", None)
+    if role != "assistant":
+        return False
+    tool_calls = (
+        last.get("tool_calls") if isinstance(last, dict) else getattr(last, "tool_calls", None)
+    )
+    if tool_calls:
+        return False
+    content = last.get("content") if isinstance(last, dict) else getattr(last, "content", None)
+    if isinstance(content, str):
+        return bool(content)
+    if isinstance(content, list):
+        # No resume point inside an image or tool-result part.
+        texts = []
+        for part in content:
+            part_type = part.get("type") if isinstance(part, dict) else getattr(part, "type", None)
+            if part_type != "text":
+                return False
+            texts.append(
+                part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
+            )
+        return any(texts)
+    return False
+
+
+def _reject_audio_output_continuation(payload) -> None:
+    """Audio output re-speaks the newest user text, so there is no partial to resume
+    from; refuse rather than return a fresh clip labelled as a continuation."""
+    if _continue_final_message(payload):
+        raise HTTPException(
+            status_code = 400,
+            detail = "continue_final_message is not supported with audio output.",
+        )
+
+
 def _normalize_stop_sequences(raw):
     """Coerce an OpenAI/Anthropic ``stop`` value into the list-of-non-empty-strings
     shape llama-server expects, or ``None`` when absent. A bare string becomes a
@@ -865,6 +912,18 @@ def _chat_final_chunk(completion_id, created, model_name, finish_reason) -> str:
     )
 
 
+def _stats_finish_reason(stats, default: str = "stop") -> str:
+    """``"length"`` when the backend reports the turn ran out of token budget.
+
+    Only the in-process backends fill ``truncated``. llama-server and MLX report their
+    own finish reason and never set it, so they keep ``default``, as does a backend
+    shipping no stats at all.
+    """
+    if isinstance(stats, dict) and stats.get("truncated"):
+        return "length"
+    return default
+
+
 def _chat_tool_calls_chunk(completion_id, created, model_name, tool_calls) -> str:
     """Delta chunk carrying OpenAI tool-call deltas (sibling of ``_chat_content_chunk``)."""
     return _chat_chunk_sse(
@@ -1129,6 +1188,10 @@ _STREAM_DISCONNECT_POLL_TIMEOUT_S = 0.25
 _OPENAI_PASSTHROUGH_PREHEADER_STATUS_WINDOW_S = 0.1
 _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S = 5.0
 _OPENAI_PASSTHROUGH_SSE_KEEPALIVE = ": keep-alive\n\n"
+# Lets a client tell "queued" from "backend silent"; SSE comments, so readers ignore both.
+_OPENAI_ADMISSION_SSE_WAIT = ": admission-wait\n\n"
+# Paired with the above: the slot is ours, so a suspended client clock starts now.
+_OPENAI_ADMISSION_SSE_DONE = ": admission-done\n\n"
 _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
 # Cap on waiting for a cancelled teardown task. Request.is_disconnected() can swallow
 # cancel() (#7617), so teardown abandons the task rather than hold the response, and
@@ -1365,6 +1428,8 @@ async def _openai_admission_wait_stream_chunks(
     )
     deadline = None if config.queue_timeout_s is None else time.monotonic() + config.queue_timeout_s
     keepalive_interval_s = max(0.001, config.keepalive_interval_s)
+    # At once, not after a full interval: a caller must not wait one out to learn it queued.
+    yield _OPENAI_ADMISSION_SSE_WAIT
     next_keepalive_at = time.monotonic() + keepalive_interval_s
     try:
         while True:
@@ -1375,6 +1440,7 @@ async def _openai_admission_wait_stream_chunks(
             )
             lease = reservation.lease_nowait()
             if lease is not None:
+                yield _OPENAI_ADMISSION_SSE_DONE
                 yield lease
                 return
 
@@ -1391,6 +1457,7 @@ async def _openai_admission_wait_stream_chunks(
             except asyncio.TimeoutError:
                 lease = None
             if lease is not None:
+                yield _OPENAI_ADMISSION_SSE_DONE
                 yield lease
                 return
             await _raise_if_openai_admission_cancelled(
@@ -1401,7 +1468,7 @@ async def _openai_admission_wait_stream_chunks(
             now = time.monotonic()
             if now >= next_keepalive_at:
                 next_keepalive_at = now + keepalive_interval_s
-                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                yield _OPENAI_ADMISSION_SSE_WAIT
     except asyncio.CancelledError:
         reservation.cancel()
         raise
@@ -2007,7 +2074,7 @@ def _request_used_api_key(request: Any) -> bool:
 from state.tool_approvals import resolve_tool_decision
 
 from core.inference.key_exchange import decrypt_api_key
-from core.inference.model_ids import model_id_matches, public_model_id
+from core.inference.model_ids import display_model_name, model_id_matches, public_model_id
 from core.inference.api_monitor import api_monitor
 from core.inference.llama_http import nonstreaming_client
 from core.inference.tool_call_parser import (
@@ -3658,6 +3725,14 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         if hasattr(llama_backend, name) or hasattr(llama_backend, f"_{name}")
     }
     fields.update(
+        # Not MLX, so the MLX runtime fields report as absent.
+        is_mlx = False,
+        mlx_kv_bits = None,
+        mlx_kv_bits_requested = None,
+        mlx_kv_quant_eligibility = None,
+        mlx_kv_quant_reason = None,
+        mlx_kv_quant_note = None,
+        chat_template_override_reason = None,
         speculative_type = llama_backend.requested_spec_mode,
         requested_parallel_slots = (
             None if llama_backend.is_diffusion else llama_backend.requested_parallel_slots
@@ -3688,7 +3763,9 @@ def _gguf_load_response(
     return LoadResponse(
         status = status,
         model = model,
-        display_name = display_name or model,
+        # Not the bare identifier: the already-resident path leaves display_name unset,
+        # and a cached repo loads from its snapshot dir, so clients label it by path.
+        display_name = display_name or display_model_name(model) or model,
         is_lora = False,
         is_gguf = True,
         is_local_model = is_local_model,
@@ -6098,6 +6175,24 @@ async def get_active_generations(
     }
 
 
+def _mlx_runtime_settings_match(backend, request) -> bool:
+    """Whether a loaded model already runs the request's MLX runtime settings.
+
+    Only the MLX backend records these, so a backend that never stored them
+    (GGUF, CUDA safetensors) always matches and reuse is unaffected. Both sides
+    are normalized, otherwise an out-of-domain value would differ from the
+    stored None on every request and reload forever.
+    """
+    entry = backend.models.get(backend.active_model_name, {}) or {}
+    if "mlx_kv_bits_requested" not in entry:
+        return True
+    from core.inference.mlx_inference import _normalize_mlx_kv_bits
+
+    return entry["mlx_kv_bits_requested"] == _normalize_mlx_kv_bits(request.mlx_kv_bits) and (
+        entry.get("chat_template_override_requested") or None
+    ) == (request.chat_template_override or None)
+
+
 @router.post("/load", response_model = LoadResponse)
 async def load_model(
     request: LoadRequest,
@@ -6303,6 +6398,7 @@ async def _load_model_impl(
             if (
                 backend.active_model_name
                 and backend.active_model_name.lower() == model_identifier.lower()
+                and _mlx_runtime_settings_match(backend, request)
             ):
                 api_monitor.discard(_load_event)  # nothing loaded, no monitor row
                 logger.info(f"Model already loaded (Unsloth): {model_log_label}, skipping reload")
@@ -6335,6 +6431,16 @@ async def _load_model_impl(
                     is_audio = _model_info.get("is_audio", False),
                     audio_type = _model_info.get("audio_type"),
                     has_audio_input = _model_info.get("has_audio_input", False),
+                    is_mlx = bool(_model_info.get("is_mlx", False)),
+                    mlx_kv_bits = _model_info.get("mlx_kv_bits"),
+                    mlx_kv_bits_requested = _model_info.get("mlx_kv_bits_requested"),
+                    mlx_kv_quant_eligibility = _model_info.get("mlx_kv_quant_eligibility"),
+                    mlx_kv_quant_reason = _model_info.get("mlx_kv_quant_reason"),
+                    mlx_kv_quant_note = _model_info.get("mlx_kv_quant_note"),
+                    # Requested, as /status reports it: a null override would read
+                    # as "using the default".
+                    chat_template_override = _model_info.get("chat_template_override_requested"),
+                    chat_template_override_reason = _model_info.get("chat_template_override_reason"),
                     inference = inference_config,
                     requires_trust_remote_code = _resolve_loaded_trust_remote_code(
                         backend.active_model_name, _model_info, inference_config
@@ -6726,6 +6832,8 @@ async def _load_model_impl(
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
             gpu_ids = placement.requested_gpu_ids,
             subject = current_subject,
+            mlx_kv_bits = request.mlx_kv_bits,
+            chat_template_override = request.chat_template_override,
         )
 
         if not success:
@@ -6817,6 +6925,16 @@ async def _load_model_impl(
             is_audio = _model_info.get("is_audio", config.is_audio),
             audio_type = _model_info.get("audio_type", config.audio_type),
             has_audio_input = _model_info.get("has_audio_input", config.has_audio_input),
+            is_mlx = bool(_model_info.get("is_mlx", False)),
+            mlx_kv_bits = _model_info.get("mlx_kv_bits"),
+            mlx_kv_bits_requested = _model_info.get("mlx_kv_bits_requested"),
+            mlx_kv_quant_eligibility = _model_info.get("mlx_kv_quant_eligibility"),
+            mlx_kv_quant_reason = _model_info.get("mlx_kv_quant_reason"),
+            mlx_kv_quant_note = _model_info.get("mlx_kv_quant_note"),
+            # Requested, as /status reports it: a null override would read as
+            # "using the default".
+            chat_template_override = _model_info.get("chat_template_override_requested"),
+            chat_template_override_reason = _model_info.get("chat_template_override_reason"),
             inference = inference_config,
             requires_trust_remote_code = _requires_rc,
             supports_reasoning = _sf_flags["supports_reasoning"],
@@ -7980,6 +8098,12 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 and _reported_chat_template_override == _auto_chat_template_override
             ):
                 _reported_chat_template_override = None
+            # chat_template_override is one of the runtime fields, so it arrives in the
+            # dict below as the raw backend value. Overwrite it rather than passing it
+            # as a second keyword: two values for one keyword is a TypeError, whatever
+            # the values are.
+            _runtime_fields = _llama_runtime_fields(llama_backend)
+            _runtime_fields["chat_template_override"] = _reported_chat_template_override
             return InferenceStatusResponse(
                 active_model = _display_model_id,
                 model_identifier = _reported_model_identifier,
@@ -7991,8 +8115,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 loading = [],
                 loaded = [_display_model_id] if _display_model_id else [],
                 inference = _inference_cfg,
-                **_llama_runtime_fields(llama_backend),
-                chat_template_override = _reported_chat_template_override,
+                **_runtime_fields,
                 requested_context_length = llama_backend.requested_n_ctx,
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
@@ -8046,6 +8169,14 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             is_audio = is_audio,
             audio_type = audio_type,
             has_audio_input = has_audio_input,
+            is_mlx = bool(model_info.get("is_mlx", False)),
+            mlx_kv_bits = model_info.get("mlx_kv_bits"),
+            mlx_kv_bits_requested = model_info.get("mlx_kv_bits_requested"),
+            mlx_kv_quant_eligibility = model_info.get("mlx_kv_quant_eligibility"),
+            mlx_kv_quant_reason = model_info.get("mlx_kv_quant_reason"),
+            mlx_kv_quant_note = model_info.get("mlx_kv_quant_note"),
+            chat_template_override = model_info.get("chat_template_override_requested"),
+            chat_template_override_reason = model_info.get("chat_template_override_reason"),
             loading = list(getattr(backend, "loading_models", set())),
             loaded = list(backend.models.keys()),
             inference = inference_config,
@@ -9367,6 +9498,7 @@ async def _proxy_to_external_provider(
             tools = payload.tools,
             tool_choice = payload.tool_choice,
             fast_mode = payload.fast_mode,
+            continue_final_message = _continue_final_message(payload),
             stream = payload.stream,
         )
         try:
@@ -9922,6 +10054,7 @@ async def openai_chat_completions(
         if getattr(llama_backend, "_is_audio", False):
             if _wants_multiple_choices(payload):
                 _raise_unsupported_n("GGUF audio chat completions")
+            _reject_audio_output_continuation(payload)
             return await _monitored_generate_audio(
                 model_name,
                 context_length = llama_backend.context_length,
@@ -9946,6 +10079,7 @@ async def openai_chat_completions(
         # (Whisper is ASR not TTS -- handled below in audio input path)
         model_info = backend.models.get(backend.active_model_name, {})
         if model_info.get("is_audio") and model_info.get("audio_type") != "whisper":
+            _reject_audio_output_continuation(payload)
             return await _monitored_generate_audio(model_name)
 
         # ── Whisper without audio: return clear error ──
@@ -9968,6 +10102,13 @@ async def openai_chat_completions(
 
         # ── Audio INPUT path: decode WAV and route to audio input generation ──
         if payload.audio_base64 and model_info.get("has_audio_input"):
+            # This route re-listens to the recording and answers afresh, so there is
+            # no boundary to resume from; the Studio UI already hides Continue here.
+            if _continue_final_message(payload):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "continue_final_message is not supported with audio input.",
+                )
             try:
                 audio_array = _decode_audio_base64(payload.audio_base64)
                 system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)
@@ -9985,11 +10126,15 @@ async def openai_chat_completions(
                 payload, getattr(backend, "active_model_name", None) or model_name
             )
 
+            # Request-scoped usage/budget receptacle (filled at gen_done).
+            _audio_stats_holder: dict = {}
+
             def audio_input_generate():
                 if model_info.get("audio_type") == "whisper":
                     return backend.generate_whisper_response(
                         audio_array = audio_array,
                         cancel_event = cancel_event,
+                        stats_holder = _audio_stats_holder,
                     )
                 return backend.generate_audio_input_response(
                     messages = chat_messages,
@@ -10004,6 +10149,7 @@ async def openai_chat_completions(
                     # Compare sends audio_base64 and use_adapter in one body.
                     use_adapter = payload.use_adapter,
                     cancel_event = cancel_event,
+                    stats_holder = _audio_stats_holder,
                 )
 
             if payload.stream:
@@ -10046,7 +10192,14 @@ async def openai_chat_completions(
                                 )
 
                         api_monitor.finish(monitor_id, "cancelled" if cancelled else "completed")
-                        yield _chat_final_chunk(completion_id, created, model_name, "stop")
+                        yield _chat_final_chunk(
+                            completion_id,
+                            created,
+                            model_name,
+                            "stop"
+                            if cancelled
+                            else _stats_finish_reason(_audio_stats_holder.get("stats")),
+                        )
                         yield "data: [DONE]\n\n"
                     except asyncio.CancelledError:
                         cancel_event.set()
@@ -10105,7 +10258,11 @@ async def openai_chat_completions(
                     choices = [
                         CompletionChoice(
                             message = CompletionMessage(content = full_text),
-                            finish_reason = "stop",
+                            finish_reason = (
+                                "stop"
+                                if cancel_event.is_set()
+                                else _stats_finish_reason(_audio_stats_holder.get("stats"))
+                            ),
                         )
                     ],
                 )
@@ -10416,15 +10573,24 @@ async def openai_chat_completions(
             _gguf_display_tool_names = _display_tool_name_gate(tools_to_use)
 
             # ── Strip stale tool-call XML from conversation history ─
+            # The continuation target keeps its exact whitespace: the frontend appends
+            # the model's output to the partial it holds, so trimming the tail here would
+            # resume from a different boundary.
+            _gguf_continue_target = (
+                gguf_messages[-1] if _continue_final_message(payload) and gguf_messages else None
+            )
             for _msg in gguf_messages:
                 if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
                     # Gate on enabled tool names, like the live strip, so a documented inactive
                     # ``foo[ARGS]{...}`` survives in the replayed prompt context.
-                    _msg["content"] = _strip_tool_xml_for_display(
+                    _stripped = _strip_tool_xml_for_display(
                         _msg["content"],
                         auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
                         enabled_tool_names = _gguf_display_tool_names,
-                    ).strip()
+                    )
+                    _msg["content"] = (
+                        _stripped if _msg is _gguf_continue_target else _stripped.strip()
+                    )
 
             def gguf_generate_with_tools():
                 return llama_backend.generate_chat_completion_with_tools(
@@ -10443,6 +10609,7 @@ async def openai_chat_completions(
                     enable_thinking = payload.enable_thinking,
                     reasoning_effort = payload.reasoning_effort,
                     preserve_thinking = payload.preserve_thinking,
+                    continue_final_message = _continue_final_message(payload),
                     auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
                     nudge_tool_calls = payload.nudge_tool_calls,
                     max_tool_iterations = payload.max_tool_calls_per_message
@@ -11099,6 +11266,7 @@ async def openai_chat_completions(
                 enable_thinking = payload.enable_thinking,
                 reasoning_effort = payload.reasoning_effort,
                 preserve_thinking = payload.preserve_thinking,
+                continue_final_message = _continue_final_message(payload),
                 seed = _seed,
             )
 
@@ -11736,10 +11904,20 @@ async def openai_chat_completions(
         _sf_template_tools
     )
 
+    # A continued turn renders no generation prompt, so nothing is prefilled and the
+    # resumed text is the visible answer. Only the first turn continues; later tool-loop
+    # turns render a fresh generation prompt and prefill as usual.
+    _sf_continue = _continue_final_message(payload)
+    _sf_continued_turn = [_sf_continue]
+
     def _new_sf_reasoning_extractor():
+        prefilled = _sf_reasoning_prefilled
+        if _sf_continued_turn[0]:
+            _sf_continued_turn[0] = False
+            prefilled = False
         return _ResponsesReasoningExtractor(
             parse_think_markers = _sf_parse_think,
-            reasoning_prefilled = _sf_reasoning_prefilled,
+            reasoning_prefilled = prefilled,
         )
 
     cancel_event = threading.Event()
@@ -11831,18 +12009,25 @@ async def openai_chat_completions(
         # Active tool names gating the bare-rehearsal strip, matching the loop gate.
         _sf_display_tool_names = _display_tool_name_gate(_sf_tools_to_use)
 
-        # Strip stale tool-call XML from prior assistant turns.
+        # Strip stale tool-call XML from prior assistant turns. The continuation target
+        # keeps its exact whitespace (see the GGUF path).
+        _sf_continue_target = (
+            chat_messages[-1] if _continue_final_message(payload) and chat_messages else None
+        )
         _sf_chat_messages = []
         for _msg in chat_messages:
             if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
+                _sf_stripped = _strip_tool_xml_for_display(
+                    _msg["content"],
+                    auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                    enabled_tool_names = _sf_display_tool_names,
+                )
                 _sf_chat_messages.append(
                     {
                         **_msg,
-                        "content": _strip_tool_xml_for_display(
-                            _msg["content"],
-                            auto_heal_tool_calls = _sf_auto_heal_tool_calls,
-                            enabled_tool_names = _sf_display_tool_names,
-                        ).strip(),
+                        "content": (
+                            _sf_stripped if _msg is _sf_continue_target else _sf_stripped.strip()
+                        ),
                     }
                 )
             else:
@@ -11867,6 +12052,7 @@ async def openai_chat_completions(
                 enable_thinking = payload.enable_thinking,
                 reasoning_effort = payload.reasoning_effort,
                 preserve_thinking = payload.preserve_thinking,
+                continue_final_message = _continue_final_message(payload),
                 auto_heal_tool_calls = _sf_auto_heal_tool_calls,
                 nudge_tool_calls = payload.nudge_tool_calls,
                 max_tool_iterations = _sf_tool_budget,
@@ -12015,11 +12201,18 @@ async def openai_chat_completions(
 
                 for _c in _sf_flush_reasoning():
                     yield _c
-                yield _chat_final_chunk(completion_id, created, model_name, "stop")
                 # Usage chunk from the last turn, same shape as the
                 # GGUF tool loop's metadata. Request-scoped holder, so
                 # concurrent streams cannot read each other's stats.
                 _stats = _sf_stats_holder.get("stats")
+                # The last turn's own budget decides: an earlier turn stopping at the
+                # cap does not truncate the answer this one went on to write.
+                yield _chat_final_chunk(
+                    completion_id,
+                    created,
+                    model_name,
+                    "stop" if cancel_event.is_set() else _stats_finish_reason(_stats),
+                )
                 if _stats:
                     usage_line = _openai_stream_usage_chunk(
                         payload,
@@ -12092,6 +12285,12 @@ async def openai_chat_completions(
 
             def _drain_to_text():
                 full_text = ""
+                # Only the resumed turn renders no generation prompt; later tool-loop turns
+                # prefill <think> again. The kept text is the LAST turn's, so track the
+                # boundary and pin the mode of the turn that text came from (the same events
+                # reset the streaming path's extractor).
+                continued = _sf_continue
+                prefilled = _sf_reasoning_prefilled and not continued
                 gen = sf_generate_with_tools()
                 for event in gen:
                     if cancel_event.is_set():
@@ -12105,20 +12304,26 @@ async def openai_chat_completions(
                         raise RuntimeError(
                             f"Invalid safetensors tool event: {type(event).__name__}"
                         )
-                    if event.get("type") == "content":
+                    _event_type = event.get("type")
+                    if _event_type == "content":
                         full_text = _strip_tool_xml_for_display(
                             event.get("text", ""),
                             auto_heal_tool_calls = _sf_auto_heal_tool_calls,
                             enabled_tool_names = _sf_display_tool_names,
                         )
-                return full_text
+                        prefilled = _sf_reasoning_prefilled and not continued
+                    elif _event_type == "tool_start" or (
+                        _event_type == "status" and not event.get("text")
+                    ):
+                        continued = False
+                return full_text, prefilled
 
-            content_text = await asyncio.to_thread(_drain_to_text)
+            content_text, _sf_drain_prefilled = await asyncio.to_thread(_drain_to_text)
             # Split prefilled <think> out of the visible answer (GGUF parity); the monitor gets visible text only.
             _reasoning_text, _visible_text = _extract_responses_reasoning(
                 content_text,
                 parse_think_markers = _sf_parse_think,
-                reasoning_prefilled = _sf_reasoning_prefilled,
+                reasoning_prefilled = _sf_drain_prefilled,
             )
             api_monitor.set_reply(monitor_id, _visible_text)
             _stats = _sf_stats_holder.get("stats")
@@ -12135,7 +12340,9 @@ async def openai_chat_completions(
                 choices = [
                     CompletionChoice(
                         message = CompletionMessage(**_sf_msg_kwargs),
-                        finish_reason = "stop",
+                        finish_reason = (
+                            "stop" if cancel_event.is_set() else _stats_finish_reason(_stats)
+                        ),
                     )
                 ],
             )
@@ -12187,6 +12394,8 @@ async def openai_chat_completions(
         gen_kwargs["reasoning_effort"] = payload.reasoning_effort
     if payload.preserve_thinking is not None:
         gen_kwargs["preserve_thinking"] = payload.preserve_thinking
+    if _continue_final_message(payload):
+        gen_kwargs["continue_final_message"] = True
 
     # ── Client-tool passthrough (safetensors + MLX) ──────────────
     # Client tools (or tool-result history) without server-side tools: render
@@ -12449,17 +12658,19 @@ async def openai_chat_completions(
                     ):
                         yield line
 
-                _finish = (
-                    "tool_calls"
-                    if (healer is not None and not _cancelled and healer.healed)
-                    else "stop"
-                )
-                yield _chat_final_chunk(completion_id, created, model_name, _finish)
                 # Usage chunk (choices=[], usage set), same shape as the
                 # GGUF path so the speed popover works for MLX too.
                 # Request-scoped holder, so concurrent streams cannot
                 # read each other's stats.
                 _stats = stats_holder.get("stats")
+                # A healed tool call wins: the turn ended on a call, not at the cap. A
+                # cancelled one stopped on request, so it is never "length".
+                _finish = (
+                    "tool_calls"
+                    if (healer is not None and not _cancelled and healer.healed)
+                    else ("stop" if _cancelled else _stats_finish_reason(_stats))
+                )
+                yield _chat_final_chunk(completion_id, created, model_name, _finish)
                 if _stats:
                     usage_line = _openai_stream_usage_chunk(
                         payload,
@@ -12551,14 +12762,18 @@ async def openai_chat_completions(
             _reasoning_text, _visible_text = _extract_responses_reasoning(
                 full_text,
                 parse_think_markers = _sf_parse_think,
-                reasoning_prefilled = _sf_reasoning_prefilled,
+                reasoning_prefilled = _sf_reasoning_prefilled and not _sf_continue,
             )
             # Client-tool passthrough: promote text-form calls; opt-in single
             # nudge retry on unparseable tool markup.
             _msg = {"role": "assistant", "content": _visible_text}
             if _reasoning_text:
                 _msg["reasoning_content"] = _reasoning_text
-            _finish = "stop"
+            # Budget exhaustion unless a heal below promotes a tool call; a cancelled turn
+            # stopped on request, not at the cap, so it stays "stop".
+            _finish = (
+                "stop" if cancel_event.is_set() else _stats_finish_reason(stats_holder.get("stats"))
+            )
             if _sf_heal:
                 if heal_openai_message(_msg, _sf_heal, _sf_healing_tools):
                     _finish = "tool_calls"
@@ -12580,6 +12795,8 @@ async def openai_chat_completions(
                                 retry_text = token
                             # Re-split reasoning on the retry so its visible text is
                             # what heals into a call (and reaches the monitor).
+                            # The nudge retry appends messages, so it is not a
+                            # continuation and normal prefill detection applies.
                             _retry_reasoning, _retry_visible = _extract_responses_reasoning(
                                 retry_text,
                                 parse_think_markers = _sf_parse_think,
@@ -13948,6 +14165,10 @@ def _build_chat_request(
             chat_kwargs["auto_heal_tool_calls"] = _extra["auto_heal_tool_calls"]
         if isinstance(_extra.get("nudge_tool_calls"), bool):
             chat_kwargs["nudge_tool_calls"] = _extra["nudge_tool_calls"]
+        # Same for continuation, or a Responses request resuming a trailing assistant
+        # turn opens a fresh one and restarts the answer.
+        if isinstance(_extra.get("continue_final_message"), bool):
+            chat_kwargs["continue_final_message"] = _extra["continue_final_message"]
 
     if isinstance(payload.reasoning, dict):
         effort = payload.reasoning.get("effort")
@@ -17846,7 +18067,7 @@ def _build_openai_passthrough_body(
         if llama_backend is not None
         else None
     )
-    return _build_passthrough_payload(
+    body = _build_passthrough_payload(
         messages,
         tools,
         payload.temperature,
@@ -17867,6 +18088,11 @@ def _build_openai_passthrough_body(
         stream_options = payload.stream_options,
         markup = getattr(llama_backend, "markup_profile", None),
     )
+    if _continue_final_message(payload):
+        # llama-server rejects both flags set true.
+        body["continue_final_message"] = True
+        body["add_generation_prompt"] = False
+    return body
 
 
 async def _openai_passthrough_stream(

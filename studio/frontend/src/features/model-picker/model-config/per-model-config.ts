@@ -16,6 +16,8 @@ export interface PerModelConfig {
   customContextLength: number | null;
   maxSeqLength: number | null;
   kvCacheDtype: string | null;
+  /** MLX KV cache quantization width. Optional so older blobs still parse. */
+  mlxKvBits?: number | null;
   speculativeType: string | null;
   specDraftNMax: number | null;
   nParallel: number | null;
@@ -34,6 +36,7 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
+  mlxKvBits: null,
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
@@ -53,6 +56,43 @@ export const MAX_SEQ_LENGTH_STEP = 128;
 export const DEFAULT_MAX_SEQ_LENGTH = 4096;
 export const CONTEXT_LENGTH_MIN = 128;
 
+// Reasons a Mac still cannot serve with MLX.
+const NO_MLX_REASONS = new Set([
+  "mlx_unavailable",
+  "intel_mac",
+  "detection_failed",
+]);
+
+/** Whether MLX will serve this model, and so whether MLX-only settings apply.
+ *
+ *  Every non-GGUF model loads through MLX on a working Mac stack, including plain
+ *  safetensors repos, so `!isGguf` alone would show these controls to CUDA users.
+ */
+export function isServedByMlx(
+  isGguf: boolean,
+  deviceType: string | null | undefined,
+  chatOnlyReason?: string | null,
+): boolean {
+  return (
+    !isGguf &&
+    deviceType === "mac" &&
+    !NO_MLX_REASONS.has(chatOnlyReason ?? "")
+  );
+}
+
+export function presetLoadSettingNames(
+  isGguf: boolean,
+  deviceType: string | null | undefined,
+  chatOnlyReason?: string | null,
+): string {
+  if (isGguf) {
+    return "context length, KV cache dtype, speculative decoding, GPU layers";
+  }
+  return isServedByMlx(isGguf, deviceType, chatOnlyReason)
+    ? "max seq length, KV cache dtype"
+    : "max seq length";
+}
+
 // Matches studio/backend/core/inference/llama_cpp.py _valid_cache_types (f16 is the UI default).
 export const KV_CACHE_DTYPES = [
   "bf16",
@@ -64,6 +104,10 @@ export const KV_CACHE_DTYPES = [
   "iq4_nl",
   "f32",
 ] as const;
+
+// Every width mx.quantize supports. By bit width, not a dtype name, hence separate
+// from KV_CACHE_DTYPES.
+export const MLX_KV_BITS: readonly number[] = [8, 6, 5, 4, 3, 2];
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
 
 export {
@@ -90,6 +134,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "customContextLength",
   "maxSeqLength",
   "kvCacheDtype",
+  "mlxKvBits",
   "speculativeType",
   "specDraftNMax",
   "nParallel",
@@ -558,6 +603,11 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
         ? Math.max(CONTEXT_LENGTH_MIN, Math.floor(partial.customContextLength))
         : null,
     maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength),
+    mlxKvBits:
+      typeof partial.mlxKvBits === "number" &&
+      MLX_KV_BITS.includes(partial.mlxKvBits)
+        ? partial.mlxKvBits
+        : null,
     kvCacheDtype:
       typeof partial.kvCacheDtype === "string" &&
       VALID_KV_CACHE_DTYPES.has(partial.kvCacheDtype)
@@ -716,6 +766,7 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.customContextLength == null &&
     config.maxSeqLength == null &&
     (config.kvCacheDtype ?? null) === DEFAULT_PER_MODEL_CONFIG.kvCacheDtype &&
+    (config.mlxKvBits ?? null) === DEFAULT_PER_MODEL_CONFIG.mlxKvBits &&
     config.speculativeType === DEFAULT_PER_MODEL_CONFIG.speculativeType &&
     config.specDraftNMax == null &&
     config.nParallel == null &&

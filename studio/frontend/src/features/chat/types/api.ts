@@ -52,6 +52,7 @@ export interface LoadModelRequest {
   approved_remote_code_fingerprint?: string | null;
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
+  mlx_kv_bits?: number | null;
   /**
    * Speculative decoding mode for GGUF models. Canonical values: "auto"
    * (platform-aware: MTP on MTP GGUFs, ngram-mod fallback for sub-3B), "mtp"
@@ -163,6 +164,7 @@ export function isMultimodalResponse(
 }
 
 export interface LoadModelResponse {
+  is_mlx?: boolean;
   status: string;
   model: string;
   display_name: string;
@@ -200,6 +202,12 @@ export interface LoadModelResponse {
   supports_preserve_thinking?: boolean;
   supports_tools?: boolean;
   cache_type_kv?: string | null;
+  mlx_kv_bits?: number | null;
+  mlx_kv_bits_requested?: number | null;
+  mlx_kv_quant_eligibility?: string | null;
+  mlx_kv_quant_reason?: string | null;
+  chat_template_override_reason?: string | null;
+  mlx_kv_quant_note?: string | null;
   chat_template?: string | null;
   /** Canonical UI-facing mode the load request resolved to. See LoadModelRequest. */
   speculative_type?: string | null;
@@ -233,6 +241,7 @@ export interface UnloadModelRequest {
 }
 
 export interface InferenceStatusResponse {
+  is_mlx?: boolean;
   active_model: string | null;
   model_identifier?: string | null;
   is_vision: boolean;
@@ -272,6 +281,12 @@ export interface InferenceStatusResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   cache_type_kv?: string | null;
+  mlx_kv_bits?: number | null;
+  mlx_kv_bits_requested?: number | null;
+  mlx_kv_quant_eligibility?: string | null;
+  mlx_kv_quant_reason?: string | null;
+  chat_template_override_reason?: string | null;
+  mlx_kv_quant_note?: string | null;
   chat_template_override?: string | null;
   /** Canonical UI-facing mode currently active. See LoadModelRequest. */
   speculative_type?: string | null;
@@ -457,6 +472,12 @@ export interface OpenAIChatCompletionsRequest {
     | "xhigh"
     | null;
   preserve_thinking?: boolean | null;
+  /**
+   * Resume the trailing assistant turn rather than opening a new one: the rendered
+   * prompt ends inside the partial answer, so the model emits its next token. Local
+   * models only -- the external-provider proxy forwards an explicit field list.
+   */
+  continue_final_message?: boolean;
   thinking?: { type: "disabled" | "enabled" } | null;
   enable_tools?: boolean | null;
   enabled_tools?: string[];

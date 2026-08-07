@@ -1432,6 +1432,14 @@ def _loaded_models(base: str, key: str) -> list:
     return _http_json("GET", f"{base}/v1/models", key, error = "Couldn't list models").get("data", [])
 
 
+def _model_still_loaded(base: str, key: str, model_id: object) -> bool:
+    try:
+        models = _http_json("GET", f"{base}/v1/models", key, timeout = 5).get("data", [])
+    except Exception:
+        return False
+    return any(m.get("id") == model_id and m.get("loaded") is not False for m in models)
+
+
 _HF_REPO_ID_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
@@ -1521,6 +1529,7 @@ def _resolve_model(
     key: str,
     requested: Optional[str],
     load: LoadOptions = LoadOptions(),
+    preload_check = None,
 ) -> dict:
     models = _loaded_models(base, key)
     load_requested = False
@@ -1558,8 +1567,67 @@ def _resolve_model(
     )
     if requested and match is None:
         load_requested = True
+        # Only here is an evicting load certain: the gate must not reject a request the
+        # resident model already satisfies (a path-loaded GGUF shown as a bare basename
+        # can collide with a non-GGUF unsloth/<name>).
         active = next((m for m in models if m.get("loaded") is not False), None)
+        if preload_check is not None:
+            # An explicit knob forces match to None so the server's disk-free dedupe can
+            # answer already_loaded; gating it would reject a second session for the model
+            # already serving, whose file may have moved. Only the quant is checked below:
+            # any other run knob changes the runtime intent, a real reload nothing dedupes.
+            other_overrides = bool(
+                load.max_seq_length
+                or not load.load_in_4bit
+                or load.tensor_parallel
+                or load.gpu_memory_mode is not None
+            )
+            # /v1/models shows a path-loaded GGUF under its basename, so match that spelling
+            # too, or a second session reruns the gate.
+            wanted_ids = {requested, _public_model_id(requested)} - {None}
+            resident_serves_request = not other_overrides and any(
+                m.get("loaded") is not False
+                and any(
+                    _model_id_matches(m.get("id"), want, allow_casefold = allow_casefold)
+                    for want in wanted_ids
+                )
+                for m in models
+            )
+            # /v1/models shows only the basename, so confirm a path request against the
+            # identifier the server loaded -- else /new/foo.gguf reads as resident because
+            # /old/foo.gguf is.
+            if resident_serves_request and _is_model_path(requested):
+                try:
+                    status = _http_json("GET", f"{base}/api/inference/status", key)
+                except Exception:
+                    status = {}
+                loaded_paths = {
+                    str(status.get(field))
+                    for field in ("model_identifier", "gguf_path", "model_path")
+                    if status.get(field)
+                }
+                wanted_path = os.path.abspath(os.path.expanduser(requested))
+                resident_serves_request = any(
+                    os.path.abspath(os.path.expanduser(path)) == wanted_path
+                    for path in loaded_paths
+                )
+            if resident_serves_request and load.gguf_variant:
+                try:
+                    status = _http_json("GET", f"{base}/api/inference/status", key)
+                except Exception:
+                    status = {}
+                resident_variant = status.get("gguf_variant") if status.get("is_gguf") else None
+                # Casefold, not _normalized_variant (it strips separators): a mistyped Q4KM
+                # would skip the gate here yet still really reload on the server.
+                resident_serves_request = (
+                    bool(resident_variant)
+                    and str(resident_variant).strip().lower()
+                    == str(load.gguf_variant).strip().lower()
+                )
+            if not resident_serves_request:
+                preload_check(base, key, requested, load.gguf_variant)
         active_id = active.get("id") if active else None
+        announced_switch = False
         if active_id and not _model_id_matches(
             active_id,
             requested,
@@ -1567,6 +1635,7 @@ def _resolve_model(
         ):
             typer.echo(f"Switching the Unsloth server from {active_id} to {requested}.")
             typer.echo("This unloads the current model for every attached session.")
+            announced_switch = True
         elif active_id and load.gguf_variant:
             # Same repo id but an explicit quant still replaces the resident
             # weights; /v1/models has no variant, so ask the status endpoint.
@@ -1581,6 +1650,7 @@ def _resolve_model(
                     f"to {requested}:{load.gguf_variant}."
                 )
                 typer.echo("This unloads the current model for every attached session.")
+                announced_switch = True
         # Mirror `unsloth run`'s load knobs; keep the default payload as just
         # model_path so a bare `--model` load is unchanged.
         payload = {"model_path": requested}
@@ -1596,7 +1666,15 @@ def _resolve_model(
             payload["gpu_memory_mode"] = load.gpu_memory_mode
             if load.gpu_memory_mode == "manual":
                 payload["gpu_layers"] = -1
-        loaded = _load_model_with_progress(base, key, requested, load, payload)
+        try:
+            loaded = _load_model_with_progress(base, key, requested, load, payload)
+        except Exception:
+            # The warning above promised an unload; if the server refused the
+            # load before evicting anything, say so. Not BaseException: Ctrl+C
+            # must stay immediate, without a probe or a survivor claim.
+            if announced_switch and _model_still_loaded(base, key, active_id):
+                typer.echo(f"Nothing was unloaded; {active_id} is still serving.", err = True)
+            raise
         if loaded.get("status") == "already_loaded":
             typer.echo(f"Reusing loaded model: {_display_model_spec(requested, load.gguf_variant)}")
         # Unsloth registers the model under a canonical id (resolved identifier,
@@ -1643,6 +1721,594 @@ def _resolve_model(
     return resident
 
 
+_HF_OFFLINE_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def _hf_offline() -> bool:
+    return any(
+        os.environ.get(var, "").strip().lower() in _HF_OFFLINE_TRUE_VALUES
+        for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    )
+
+
+def _hub_gguf_files(repo: str) -> Optional[list]:
+    if _hf_offline():
+        return None
+    endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/")
+    try:
+        request = urllib.request.Request(
+            f"{endpoint}/api/models/{repo}",
+            headers = {"User-Agent": _USER_AGENT},
+        )
+        with urllib.request.urlopen(request, timeout = 10) as response:
+            info = json.loads(response.read().decode() or "{}")
+    except Exception:
+        return None
+    siblings = info.get("siblings")
+    if not isinstance(siblings, list) or not siblings:
+        return None
+    names = [s.get("rfilename") for s in siblings if isinstance(s, dict)]
+    ggufs = [n for n in names if isinstance(n, str) and n.lower().endswith(".gguf")]
+    return [n for n in ggufs if not _is_auxiliary_gguf(n)]
+
+
+# Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS: dspark and dflash are the same
+# DeepSeek V4 Flash drafter, but dflash/ is also a real family name, so only mtp/ and dspark/
+# count as a companion folder.
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+_DRAFTER_DIR_KINDS = ("mtp", "dspark")
+
+
+def _is_auxiliary_gguf(filename: str) -> bool:
+    # Mirrors detect_gguf_model_remote (hub.utils.gguf.is_mtp_drafter_path): projectors,
+    # separate-file drafters and big-endian builds are not loadable weights. Drafters match
+    # by basename prefix or exact parent dir, never substring -- the kind names double as
+    # family names, so Qwen3.6-...-DFlash-Q4_K_M.gguf IS the model. Only the root-level
+    # trailing -be form is filtered; the fuller quant-aware check would over-reject here.
+    p = filename.lower().replace("\\", "/")
+    parts = [segment for segment in p.split("/") if segment]
+    if not parts:
+        return False
+    name, parents = parts[-1], parts[:-1]
+    if "mmproj" in p:
+        return True
+    if any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS):
+        return True
+    if any(kind in parents for kind in _DRAFTER_DIR_KINDS):
+        return True
+    stem = name.rsplit(".", 1)[0]
+    return not parents and stem.endswith(("-be", "_be"))
+
+
+def _direct_gguf_is_companion(path: str) -> bool:
+    """Whether the server refuses this .gguf path as a model in its own right.
+
+    A strict subset of detect_gguf_model / gguf_variants._direct_gguf_loads: projector and
+    drafter prefixes read off the basename, companion-only folders off the immediate
+    parent -- the same context the server reads, so nothing loadable is refused here.
+    Big-endian is left out on purpose: that check needs quant context the CLI can't mirror.
+    """
+    parts = [segment for segment in path.replace("\\", "/").split("/") if segment]
+    if not parts:
+        return False
+    name = parts[-1].lower()
+    if not name.endswith(".gguf"):
+        return False
+    # Root-independent refusals only: name prefixes read the basename alone, so they mean
+    # the same under any model root. A drafter FOLDER does not.
+    if "mmproj" in name:
+        return True
+    return any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS)
+
+
+def _path_syntax_is_native(path: str) -> bool:
+    """Whether *path* is spelled the way this OS spells paths.
+
+    A Windows path read from WSL, or a POSIX one read from Windows, parses into
+    something this process cannot judge -- ``C:\\models\\m.gguf`` has parent
+    ``.`` here -- so its absence locally says nothing about the server's disk.
+    """
+    windows_drive = len(path) >= 2 and path[1] == ":" and path[0].isalpha()
+    if os.name == "nt":
+        return True
+    return not windows_drive and "\\" not in path
+
+
+def _direct_gguf_companion_is_uncertain(path: str) -> bool:
+    """Whether only the server can say if this path is a companion.
+
+    detect_gguf_model reads drafter folders relative to the registered model root, so
+    ``/models/MTP/foo-Q8_0.gguf`` is refused or loaded depending on where that root sits
+    -- a question only the server can answer, since this process doesn't know its roots.
+    """
+    parts = [segment for segment in path.replace("\\", "/").split("/") if segment]
+    return any(segment.lower() in _DRAFTER_DIR_KINDS for segment in parts[:-1])
+
+
+# Mirrors model_config._extract_quant_label's pattern; change in lockstep.
+_QUANT_LABEL_RE = re.compile(
+    r"(UD-)?"
+    r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
+    r"|TQ[0-9]+_[0-9]+"
+    r"|Q[0-9]+_K_[A-Z]+"
+    r"|Q[0-9]+_[0-9]+"
+    r"|Q[0-9]+_K"
+    r"|BF16|F16|F32)"
+    r"(-[0-9]+(?:\.[0-9]+)?bpw)?",
+    re.IGNORECASE,
+)
+
+
+def _direct_gguf_variant_labels(path: str) -> tuple:
+    """The labels the server's direct-file resolver accepts for *path*.
+
+    Mirrors _direct_gguf_for_variant: the quant label read from the basename
+    first, the immediate parent only when the basename carries none, plus the
+    shard-stripped stem itself. The basename wins the disagreement -- a
+    Q8_0/foo-Q4_K_M.gguf answers Q4_K_M, so its parent must not vouch for
+    Q8_0 here while the load resolves nothing and evicts.
+    """
+    norm = path.replace("\\", "/").rstrip("/")
+    name = norm.rsplit("/", 1)[-1]
+    stem = re.sub(r"-\d{3,}-of-\d{3,}$", "", name.rsplit(".", 1)[0])
+    match = _QUANT_LABEL_RE.search(stem)
+    if match is None and "/" in norm:
+        match = _QUANT_LABEL_RE.search(norm.rsplit("/", 2)[-2])
+    labels = [stem]
+    if match is not None:
+        label = f"{match.group(1) or ''}{match.group(2)}{match.group(3) or ''}"
+        labels.append(label)
+        # The resolver also accepts the hub-style bpw-stripped spelling.
+        stripped = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", label, flags = re.IGNORECASE)
+        if stripped != label:
+            labels.append(stripped)
+    else:
+        # The extractor's own fallback: the last hyphen-separated segment.
+        labels.append(stem.split("-")[-1])
+    return tuple(labels)
+
+
+# Mirrors hub.utils.gguf._BIG_ENDIAN_GGUF_FILENAME_RE; change in lockstep.
+_BIG_ENDIAN_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
+
+
+def _direct_gguf_is_big_endian(path: str) -> bool:
+    """Mirrors hub.utils.gguf.is_big_endian_gguf_path over the same one-parent
+    context detect_gguf_model reads; change in lockstep. A quant-named parent
+    exempts a bare -be basename (that file loads); a be marker at or after a
+    basename quant does not.
+    """
+    norm = path.replace("\\", "/").rstrip("/")
+    parts = [segment for segment in norm.split("/") if segment]
+    name = parts[-1]
+    stem = name.rsplit(".", 1)[0].lower()
+    quant_stem = re.sub(r"-\d{3,}-of-\d{3,}$", "", stem)
+    match = _QUANT_LABEL_RE.search(quant_stem)
+    parent = parts[-2].lower() if len(parts) > 1 else ""
+    if match is None and parent:
+        match = _QUANT_LABEL_RE.search(parent)
+    quant_key = (
+        f"{match.group(1) or ''}{match.group(2)}{match.group(3) or ''}".lower()
+        if match is not None
+        else quant_stem.split("-")[-1]
+    )
+    quant_index = stem.find(quant_key) if quant_key else -1
+    quant_in_parent_only = (
+        bool(parent)
+        and quant_index < 0
+        and (
+            (quant_key and quant_key in parent)
+            or (not quant_key and _QUANT_LABEL_RE.search(parent))
+        )
+    )
+    for be in _BIG_ENDIAN_FILENAME_RE.finditer(stem):
+        if quant_index >= 0 and quant_index < be.start():
+            return True
+        tail = stem[be.end() :].lstrip("._-")
+        if not tail or _QUANT_LABEL_RE.search(tail) is None:
+            return not quant_in_parent_only
+    return False
+
+
+# Mirrors gguf_variants._DIRECT_SPLIT_RE / the load path's _GGUF_SPLIT_FILE_RE; change in
+# lockstep. Five digits exactly: a shorter -001-of-002 name loads as an ordinary file.
+_DIRECT_SPLIT_FILE_RE = re.compile(
+    r"^(?P<stem>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})$", re.IGNORECASE
+)
+
+
+def _direct_gguf_file_is_ready(path: str) -> bool:
+    """Whether a CLI-visible direct .gguf file can actually serve a load.
+
+    Mirrors the backend's completeness rules: zero bytes is an interrupted copy, a split
+    needs every sibling index present and non-empty. Unknowable reports ready, so a path
+    this process can't judge never blocks the load.
+    """
+
+    def _split_set_complete(candidate: Path) -> Optional[bool]:
+        match = _DIRECT_SPLIT_FILE_RE.match(candidate.name.rsplit(".", 1)[0])
+        if match is None:
+            return None
+        total = int(match.group("total"))
+        if total < 2:
+            return None
+        sibling = re.compile(
+            re.escape(match.group("stem"))
+            + r"-(\d{"
+            + str(len(match.group("index")))
+            + r"})-of-"
+            + re.escape(match.group("total"))
+            + r"\.gguf$",
+            re.IGNORECASE,
+        )
+        found = {
+            int(m.group(1))
+            for q in candidate.parent.iterdir()
+            if (m := sibling.match(q.name)) and q.is_file() and q.stat().st_size > 0
+        }
+        return found >= set(range(1, total + 1))
+
+    try:
+        p = Path(os.path.expanduser(path))
+        # A broken symlink is visible here, and the .gguf suffix alone still makes it a
+        # load, which fails after teardown.
+        if p.is_symlink() and not p.exists():
+            return False
+        if not p.is_file():
+            return True
+        if p.stat().st_size == 0:
+            return False
+        whole = _split_set_complete(p)
+        if whole is not False:
+            return True
+        # Mirror _local_gguf_load_path: an incomplete nominal set still loads when the shard
+        # is a symlink whose target sits with the full set.
+        if p.is_symlink():
+            target = p.resolve()
+            return _split_set_complete(target) is not False
+        return False
+    except OSError:
+        return True
+
+
+def _answer_offers_variant(
+    variants: list,
+    variant: str,
+    strict: bool = False,
+) -> bool:
+    """Whether a live variants answer can resolve *variant* to a file.
+
+    Mirrors llama.cpp's resolution, case-insensitively: quant label first, then the
+    whole-token filename fallback (as loose as it gets -- a separator-differing label
+    resolves to nothing there either). A row missing both fields can't be disproven, so
+    it vouches. ``strict`` drops the filename-token tier: the LOCAL resolver takes only
+    exact labels, so a local answer must not vouch for a shorter token (Q4 inside
+    model-Q4_K_M.gguf) the load would never resolve.
+    """
+    wanted = str(variant).strip().lower()
+    if not wanted:
+        return True
+    token = re.compile(r"(?<![a-z0-9])" + re.escape(wanted) + r"(?![a-z0-9])")
+    for row in variants:
+        if not isinstance(row, dict):
+            return True
+        # A torn local row proves a load llama cannot serve, so its labels do not vouch in
+        # strict mode; hub partials stay resumable and count.
+        if strict and row.get("partial") is True:
+            continue
+        quant = row.get("quant")
+        filename = row.get("filename")
+        if not isinstance(quant, str) and not isinstance(filename, str):
+            return True
+        if isinstance(quant, str):
+            label = quant.strip().lower()
+            # The resolver also accepts the hub-style bpw-stripped spelling.
+            if wanted in (label, re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", label)):
+                return True
+        if isinstance(filename, str):
+            # The local resolver also takes the exact shard-stripped stem: full relative
+            # spelling only, never a nested file's bare basename.
+            stem = re.sub(r"-\d{3,}-of-\d{3,}$", "", filename.rsplit(".", 1)[0]).lower()
+            if wanted == stem:
+                return True
+            # Also any whole quant token of the BASENAME, which is how the listing's default
+            # can name the file by its other label (F16-checkpoint-Q4_K_M -> Q4_K_M).
+            if any(
+                wanted
+                in (
+                    f"{m.group(1) or ''}{m.group(2)}".lower(),
+                    # Keeps the bpw modifier the hub extractor drops, so both spellings match.
+                    f"{m.group(1) or ''}{m.group(2)}{m.group(3) or ''}".lower(),
+                )
+                for m in _QUANT_LABEL_RE.finditer(stem.rsplit("/", 1)[-1])
+            ):
+                return True
+        if strict:
+            if not isinstance(quant, str):
+                return True
+            continue
+        if isinstance(filename, str) and token.search(filename.lower()):
+            return True
+    return False
+
+
+def _fail_codex_variant_missing(model_id: str, variant: str, variants: list) -> NoReturn:
+    offered = [
+        row.get("quant")
+        for row in variants
+        if isinstance(row, dict) and isinstance(row.get("quant"), str) and row.get("quant")
+    ]
+    message = f"{model_id} has no GGUF variant {variant}."
+    if offered:
+        message += " Available: " + ", ".join(dict.fromkeys(offered))
+    _fail(message)
+
+
+def _fail_codex_needs_gguf(model_id: str) -> NoReturn:
+    message = f"Codex needs a GGUF model served by llama-server, but {model_id} is not one."
+    guess = f"{model_id}-GGUF"
+    if "gguf" not in model_id.lower() and _is_hub_model_id(guess) and _hub_gguf_files(guess):
+        message += f" Try: unsloth start codex --model {guess}"
+    _fail(message)
+
+
+def _preflight_codex_gguf(
+    model: Optional[str],
+    *,
+    serve: bool = True,
+    launch: bool = True,
+) -> None:
+    # Hub-listing preflight for the auto-start path only: with a server running, identifiers
+    # resolve against its cwd/cache/token, so _attach_gguf_check_for_codex asks the server
+    # instead. Only a complete listing with no .gguf files rejects; unknown defers to the
+    # post-connect check. Mirrors _require_studio's auto-start condition, so with no start
+    # possible its "no running server" error comes first, without a hub probe.
+    if not (serve and launch and model):
+        return
+    expected = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
+    if not is_loopback_url(expected) or urlparse(expected).scheme != "http":
+        return
+    if find_studio_server() is not None:
+        return
+    repo, _ = _split_repo_variant(model)
+    # A bare foo.gguf naming no local file is a shorthand, not a path: the load
+    # canonicalizes it like any other owner-less name.
+    if "/" not in repo and (not _is_model_path(repo) or repo.lower().endswith(".gguf")):
+        # The server canonicalizes owner-less shorthands to unsloth/<name>.
+        try:
+            if Path(os.path.expanduser(repo)).exists():
+                return
+        except OSError:
+            return
+        repo = f"unsloth/{repo}"
+    if not _is_hub_model_id(repo):
+        return
+    files = _hub_gguf_files(repo)
+    if files is not None and not files:
+        _fail_codex_needs_gguf(repo)
+
+
+def _attach_gguf_check_for_codex(
+    base: str,
+    key: str,
+    model: Optional[str],
+    variant: Optional[str] = None,
+) -> None:
+    # Attach path: the server resolves the identifier with its own cwd, cache and token, so
+    # ask it before the load evicts the resident model. A live empty list is definitive;
+    # any error (an older server included) defers.
+    if not model:
+        return
+    repo, inline_variant = _split_repo_variant(model)
+    # `--model repo:QUANT` is split before the gate runs, so the caller passes the quant on.
+    variant = variant or inline_variant
+    # A .gguf filesystem path is GGUF by definition; only the hub-id shape (owner/name.gguf)
+    # gets probed. A bare foo.gguf naming no local file takes the shorthand route, since the
+    # load canonicalizes it to unsloth/foo.gguf.
+    bare_missing_gguf = False
+    if repo.lower().endswith(".gguf") and not _is_model_path(repo.rsplit(".", 1)[0]):
+        try:
+            bare_missing_gguf = not Path(os.path.expanduser(repo)).exists()
+        except OSError:
+            bare_missing_gguf = False
+    if (
+        repo.lower().endswith(".gguf")
+        and not bare_missing_gguf
+        and not (
+            repo.count("/") == 1
+            and not repo.startswith(("/", ".", "~"))
+            and ":" not in repo
+            and "\\" not in repo
+        )
+    ):
+        # detect_gguf_model refuses a companion or big-endian build, so the load falls through
+        # to transformers and unloads llama-server before failing. Settled by name: the probe's
+        # empty answer defers whenever the path exists here, which on a loopback attach is
+        # exactly when it does. The quant never redirects a direct file (from_identifier
+        # consults it only for a DIRECTORY), though an explicit one still reaches the probe.
+        refused = _direct_gguf_is_companion(repo) or _direct_gguf_is_big_endian(repo)
+        if refused:
+            _fail_codex_needs_gguf(repo)
+        # A drafter folder further up is the server's call.
+        uncertain = _direct_gguf_companion_is_uncertain(repo)
+        # The variant does not exempt this: a direct file is loaded as itself, so a complete
+        # sibling matching the quant is never substituted for it.
+        if not refused and not uncertain:
+            # Only when this process really shares the server's filesystem: the .gguf suffix
+            # alone gets an incomplete file loaded, and llama-server finds the missing bytes
+            # only after teardown. Loopback does not prove that -- 127.0.0.1 may be an SSH or
+            # container forward where a server-valid path is simply absent here -- so confirm
+            # this machine's Unsloth and otherwise defer to the probe.
+            if is_loopback_url(base) and verify_studio_identity(base):
+                # A .gguf-NAMED DIRECTORY is scanned, not loaded, so the suffix proves nothing.
+                try:
+                    is_gguf_dir = Path(os.path.expanduser(repo)).is_dir()
+                except OSError:
+                    is_gguf_dir = False
+                if not is_gguf_dir:
+                    # On loopback this reads the server's filesystem, so a name absent from a
+                    # listable directory is absent for the load too, and the .gguf suffix
+                    # still makes it a load that fails after teardown. An unreadable parent
+                    # stays unknowable and defers.
+                    try:
+                        probe = Path(os.path.expanduser(repo))
+                        missing = (
+                            # Only a path this OS spells: a Windows path seen from WSL parses
+                            # to nonsense (C:\... has parent '.') and the server may hold the
+                            # real file, so it defers to the probe.
+                            _path_syntax_is_native(repo)
+                            and not probe.is_symlink()
+                            and probe.parent.is_dir()
+                            and not probe.exists()
+                        )
+                    except OSError:
+                        missing = False
+                    if missing:
+                        _fail(f"{repo} does not exist. Check the path before pointing Codex at it.")
+                    if not _direct_gguf_file_is_ready(repo):
+                        _fail(
+                            f"{repo} is incomplete (zero bytes or a split missing shards); "
+                            "re-download or re-copy it before pointing Codex at it."
+                        )
+                    # Only a spelling this OS can judge is settled here: a Windows path read
+                    # from WSL skipped the absence check above and reads as ready, so returning
+                    # would vouch for a file nobody looked at. An explicit variant also goes to
+                    # the probe, which judges the marked parent.
+                    if not variant and _path_syntax_is_native(repo):
+                        return
+            # A remote server's filesystem is not ours to read, and the load takes the .gguf
+            # suffix as authoritative, so ask the server instead. Its errors defer as always.
+    # Mirrors the load path's shorthand precedence: the raw name first (it may be a directory
+    # under the server's cwd), then the unsloth/<name> form the load falls back to only when
+    # the raw name resolves to nothing. A live answer settles that exact id, so the canonical
+    # form must not vouch for a raw name already answered, else a non-GGUF directory in the
+    # server's cwd passes the gate and evicts. Only an error falls through.
+    candidates = [repo]
+    if "/" not in repo and (not _is_model_path(repo) or bare_missing_gguf):
+        candidates.append(f"unsloth/{repo}")
+    for candidate in candidates:
+        try:
+            info = _http_json(
+                "GET", f"{base}/api/models/gguf-variants?{urlencode({'repo_id': candidate})}", key
+            )
+        except Exception:
+            continue
+        variants = info.get("variants") if isinstance(info, dict) else None
+        if isinstance(variants, list):
+            # A cleanable row is an empty leftover <quant>/ folder: it offers a delete, never
+            # weights, so it cannot stand in for the load finding something.
+            variants = [
+                row for row in variants if not (isinstance(row, dict) and row.get("cleanable"))
+            ]
+        # The load uses a bare name only when it resolves locally, else it canonicalizes to
+        # unsloth/<name>, so a raw answer the server calls non-local settles nothing. Without
+        # the flag (older server) the raw answer is still the best evidence there is.
+        if (
+            "/" not in candidate
+            and candidate != candidates[-1]
+            and isinstance(info, dict)
+            and "resolved_locally" in info
+            and not info["resolved_locally"]
+        ):
+            continue
+        # The server can answer the gate's real question with the load resolver itself, so it
+        # settles the round -- even an EMPTY listing, since a root-blind lister can miss a file
+        # detect_gguf_model still resolves. No filename grammar beats the code that loads.
+        if isinstance(variants, list) and isinstance(info, dict):
+            offered = info.get("loadable_variants")
+            # No allow-list means a direct file, which loads as itself whatever the quant, so
+            # the variantless verdict decides. Only a server omitting the field falls through.
+            if variant and offered is None and isinstance(info.get("loadable"), bool):
+                if not info["loadable"]:
+                    _fail_codex_needs_gguf(candidate)
+                return
+            if variant and isinstance(offered, list):
+                wanted_variant = str(variant).strip().lower()
+                if not any(
+                    isinstance(q, str) and q.strip().lower() == wanted_variant for q in offered
+                ):
+                    _fail_codex_variant_missing(candidate, variant, variants)
+                return
+            if not variant and isinstance(info.get("loadable"), bool):
+                if not info["loadable"]:
+                    _fail_codex_needs_gguf(candidate)
+                return
+        if isinstance(variants, list) and variants:
+            # llama.cpp kills the resident model before resolving the quant, so a quant this
+            # answer cannot serve is settled here. Local answers take exact labels only; the
+            # looser filename-token tier is for hub answers.
+            #
+            # "Local" means the server says so (resolved_locally) or, predating that field,
+            # path syntax / bare names, which resolve locally anyway. owner/name.gguf is
+            # exempted like the direct-file branch (_is_model_path sees only the suffix),
+            # since a remote answer wrongly judged local would face local-only rules.
+            hub_shaped = (
+                candidate.count("/") == 1
+                and not candidate.startswith(("/", ".", "~"))
+                and ":" not in candidate
+                and "\\" not in candidate
+            )
+            local_answer = bool(info.get("resolved_locally")) or (
+                not hub_shaped and (_is_model_path(candidate) or "/" not in candidate)
+            )
+            # A local answer of only torn rows has no resumable side: llama-server would get
+            # the incomplete split only after teardown.
+            if local_answer and all(
+                isinstance(row, dict) and row.get("partial") is True for row in variants
+            ):
+                _fail(
+                    f"{candidate} has only incomplete GGUF weights on the server; "
+                    "finish or re-copy the download before pointing Codex at it."
+                )
+            # A variantless local load picks from the directory's top level, so rows living
+            # only in quant subdirectories need the variant that resolves them -- else this
+            # answer evicts for a load that finds nothing.
+            if (
+                local_answer
+                and not variant
+                and variants
+                and all(
+                    isinstance(row, dict)
+                    and isinstance(row.get("filename"), str)
+                    and "/" in row["filename"]
+                    for row in variants
+                )
+            ):
+                offered = ", ".join(
+                    dict.fromkeys(
+                        row["quant"]
+                        for row in variants
+                        if isinstance(row.get("quant"), str) and row["quant"]
+                    )
+                )
+                _fail(
+                    f"{candidate} keeps its GGUF weights in quant subdirectories, which a "
+                    "variantless load cannot pick. Pass --gguf-variant"
+                    + (f" (available: {offered})." if offered else ".")
+                )
+            if variant and not _answer_offers_variant(variants, variant, strict = local_answer):
+                _fail_codex_variant_missing(candidate, variant, variants)
+            return
+        if isinstance(variants, list):
+            # Explicit local syntax resolves locally on every server version, so its live empty
+            # answer settles the load; deferring would let the same GGUF-less directory go down
+            # the transformers path and evict. Only marker-less names keep deferring: older
+            # servers read them as hub ids, and a local hit may be a server-side model from the
+            # server's cwd -- unless it reports resolved_locally, having already resolved them.
+            # A bare foo.gguf naming no local file is only the canonicalized spelling, so it
+            # settles nothing until the canonical form has answered too.
+            if bare_missing_gguf and candidate != candidates[-1]:
+                continue
+            if not _is_model_path(repo) and not info.get("resolved_locally"):
+                try:
+                    if Path(os.path.expanduser(repo)).exists():
+                        return
+                except OSError:
+                    return
+            _fail_codex_needs_gguf(candidate)
+
+
 def _require_gguf_for_codex(base: str, key: str, model_id: str) -> None:
     # Codex always streams, and Unsloth only streams /v1/responses from llama-server.
     try:
@@ -1653,11 +2319,7 @@ def _require_gguf_for_codex(base: str, key: str, model_id: str) -> None:
         raise
     if status.get("is_gguf"):
         return
-    hint = model_id if "gguf" in model_id.lower() else f"{model_id}-GGUF"
-    _fail(
-        f"Codex needs a GGUF model served by llama-server, but {model_id} is on "
-        f"the transformers backend. Try: unsloth start codex --model {hint}"
-    )
+    _fail_codex_needs_gguf(model_id)
 
 
 _DYNAMIC_SECTIONS_FLAG = "--exclude-dynamic-system-prompt-sections"
@@ -2927,6 +3589,7 @@ def _connect(
     serve: bool = False,
     launch: bool = True,
     server_options: ServerOptions = ServerOptions(),
+    preload_check = None,
 ) -> tuple:
     # `--model org/name:QUANT` is shorthand for `--model org/name --gguf-variant QUANT`.
     # Split it before we match/serve so the attach path resolves against the already-loaded
@@ -2945,7 +3608,15 @@ def _connect(
         key = _agent_api_key(base, api_key, auto_started = server is not None)
         # A server we just started has exactly the requested model loaded, so resolve to
         # whatever it is serving instead of re-matching the raw --model string.
-        entry = _resolve_model(base, key, None if server is not None else model, load)
+        # Only an attach can still trigger an evicting load, so _resolve_model gets the
+        # pre-load check and runs it only when that load is imminent.
+        entry = _resolve_model(
+            base,
+            key,
+            None if server is not None else model,
+            load,
+            preload_check = None if server is not None else preload_check,
+        )
     except BaseException:
         _shutdown_auto_served()
         raise
@@ -3725,12 +4396,14 @@ def codex(
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
     install_hint = _npm_install_hint("@openai/codex")
     _require_agent_for_launch("codex", install_hint, launch)
+    _preflight_codex_gguf(model, serve = serve, launch = launch)
     base, key, entry = _connect(
         api_key,
         model,
         LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
         serve = serve,
         launch = launch,
+        preload_check = _attach_gguf_check_for_codex,
         server_options = ServerOptions(
             enable_tools = enable_tools,
             tool_call_healing = tool_call_healing,

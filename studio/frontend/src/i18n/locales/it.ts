@@ -392,6 +392,15 @@ export const it = {
         showLlamaUpdatesDescription:
           "Avvisa quando è disponibile una build più recente di llama.cpp per eseguire nuovi modelli. Disattiva le notifiche se usi Unsloth solo per l'addestramento.",
       },
+      startup: {
+        sectionTitle: "Avvio",
+        launchAtLogin: "Avvia Unsloth all'accesso",
+        launchAtLoginDescription:
+          "Avvia Unsloth in background quando accedi. Rimane nella barra dei menu o nell'area di notifica finché non lo apri.",
+        loadError: "Impossibile caricare l'impostazione di avvio all'accesso.",
+        saveError:
+          "Impossibile aggiornare l'impostazione di avvio all'accesso.",
+      },
       gettingStarted: "Per iniziare",
       startOnboarding: "Avvia la configurazione guidata",
       startOnboardingDescription:

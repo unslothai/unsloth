@@ -118,15 +118,241 @@ def _runtime_for_format(model_format: ModelFormat) -> ModelRuntime:
     return "unknown"
 
 
+# Deliberately narrow: an unfamiliar class name must not read as non-chat.
+_GENERATIVE_ARCHITECTURE_SUFFIXES = (
+    "ForCausalLM",
+    "ForConditionalGeneration",
+    "ForSeq2SeqLM",
+    "LMHeadModel",
+)
+_NON_GENERATIVE_ARCHITECTURE_SUFFIXES = (
+    "ForAudioClassification",
+    "ForCTC",
+    "ForFeatureExtraction",
+    "ForImageClassification",
+    "ForImageTextRetrieval",
+    "ForMaskedLM",
+    "ForMultipleChoice",
+    "ForNextSentencePrediction",
+    "ForObjectDetection",
+    "ForPreTraining",
+    "ForQuestionAnswering",
+    "ForRetrieval",
+    "ForRewardModel",
+    "ForSemanticSegmentation",
+    "ForSequenceClassification",
+    "ForTextEncoding",
+    "ForTokenClassification",
+    "ForVideoClassification",
+    "ForZeroShotImageClassification",
+)
+# Generative, but not of a chat reply: they match a generative suffix below yet
+# cannot answer a text turn, and they are small enough to be tried first.
+_NON_CHAT_GENERATIVE_MODEL_TYPES = frozenset(
+    {
+        "blip",
+        "blip-2",
+        "blip_2",
+        "git",
+        "instructblip",
+        "musicgen",
+        "musicgen_melody",
+        "speech-encoder-decoder",
+        "speech_to_text",
+        "speech_to_text_2",
+        "trocr",
+        "vision-encoder-decoder",
+        "whisper",
+    }
+)
+_NON_CHAT_GENERATIVE_ARCHITECTURES = frozenset(
+    {
+        "Blip2ForConditionalGeneration",
+        "BlipForConditionalGeneration",
+        "GitForCausalLM",
+        "InstructBlipForConditionalGeneration",
+        "MusicgenForConditionalGeneration",
+        "SpeechEncoderDecoderModel",
+        "Speech2TextForConditionalGeneration",
+        "VisionEncoderDecoderModel",
+        "WhisperForConditionalGeneration",
+    }
+)
+_BARE_TEXT_BACKBONE_ARCHITECTURES = frozenset(
+    {
+        "BartModel",
+        "BloomModel",
+        "FalconModel",
+        "GPT2Model",
+        "GPTJModel",
+        "GPTNeoXModel",
+        "Gemma2Model",
+        "Gemma3Model",
+        "GemmaModel",
+        "LlamaModel",
+        "MistralModel",
+        "MixtralModel",
+        "MptModel",
+        "OPTModel",
+        "Phi3Model",
+        "PhiModel",
+        "Qwen2Model",
+        "Qwen3Model",
+        "T5Model",
+    }
+)
+_ENCODER_ONLY_MODEL_TYPES = frozenset(
+    {
+        "albert",
+        "bert",
+        "camembert",
+        "chinese_clip",
+        "clip",
+        "deberta",
+        "deberta-v2",
+        "distilbert",
+        "electra",
+        "funnel",
+        "ibert",
+        "layoutlm",
+        "layoutlmv2",
+        "layoutlmv3",
+        "longformer",
+        "megatron-bert",
+        "mobilebert",
+        "modernbert",
+        "mpnet",
+        "nystromformer",
+        "rembert",
+        "roberta",
+        "roformer",
+        "siglip",
+        "siglip2",
+        "squeezebert",
+        "vision-text-dual-encoder",
+        "xlm-roberta",
+        # Vision and audio backbones: their bare ``*Model`` names carry no task
+        # suffix, so only the model type identifies them.
+        "beit",
+        "convnext",
+        "convnextv2",
+        "data2vec-audio",
+        "data2vec-vision",
+        "deit",
+        "dinov2",
+        "dpt",
+        "efficientnet",
+        "hubert",
+        "mobilevit",
+        "regnet",
+        "resnet",
+        "segformer",
+        "swin",
+        "swinv2",
+        "videomae",
+        "vit",
+        "vit_mae",
+        "vit_msn",
+        "wav2vec2",
+        "wavlm",
+        "whisper",
+    }
+)
+
+
+# Real configs are a few KB; the cap keeps a huge or hostile file out of memory.
+_MAX_LOCAL_JSON_BYTES = 1 << 20
+
+
+def _read_local_json_object(path: Path) -> dict:
+    """Config metadata, or ``{}``. Never raises: one unreadable file must not
+    fail the whole scan."""
+    try:
+        # is_file() also skips a FIFO, whose read would block the scan forever.
+        if not path.is_file() or path.stat().st_size > _MAX_LOCAL_JSON_BYTES:
+            return {}
+        data = json.loads(path.read_text(encoding = "utf-8"))
+        return data if isinstance(data, dict) else {}
+    # ValueError covers JSONDecodeError and UnicodeDecodeError; deeply nested
+    # JSON raises RecursionError, which is neither.
+    except (ValueError, OSError, RecursionError):
+        return {}
+
+
+def _local_transformers_can_chat(path: Path) -> Optional[bool]:
+    """False for a locally identifiable non-generative Transformers row.
+
+    ``None`` means inconclusive and the format capability stands, so a custom
+    architecture is never hidden. Without this, an embedding export is
+    chat-capable on file format alone, and those are small enough that chat
+    auto-load spends its whole attempt budget on them.
+    """
+    if not _safe_is_dir(path):
+        return None
+
+    # SentenceTransformers exports carry this even when the config names a
+    # broadly reusable encoder class.
+    try:
+        if (path / "modules.json").is_file():
+            return False
+    except OSError:
+        return None
+
+    config = _read_local_json_object(path / "config.json")
+    if not config:
+        return None
+
+    auto_map = config.get("auto_map")
+    if isinstance(auto_map, dict) and any(
+        key in auto_map for key in ("AutoModelForCausalLM", "AutoModelForSeq2SeqLM")
+    ):
+        return True
+
+    architectures = config.get("architectures")
+    names = (
+        [name.strip() for name in architectures if isinstance(name, str) and name.strip()]
+        if isinstance(architectures, list)
+        else []
+    )
+    model_type_raw = config.get("model_type")
+    normalized_type = model_type_raw.strip().lower() if isinstance(model_type_raw, str) else ""
+    # Before the generative suffix: Whisper and friends end in
+    # ForConditionalGeneration but cannot answer a text turn.
+    if normalized_type in _NON_CHAT_GENERATIVE_MODEL_TYPES or any(
+        name in _NON_CHAT_GENERATIVE_ARCHITECTURES for name in names
+    ):
+        return False
+    if any(name.endswith(_GENERATIVE_ARCHITECTURE_SUFFIXES) for name in names):
+        return True
+    if names and all(name.endswith(_NON_GENERATIVE_ARCHITECTURE_SUFFIXES) for name in names):
+        return False
+    # AutoModel.save_pretrained on a chat family writes the backbone name, and a
+    # backbone has no LM head. Listed explicitly, not shape-matched, so an
+    # unfamiliar FooModel still fails open.
+    if names and all(name in _BARE_TEXT_BACKBONE_ARCHITECTURES for name in names):
+        return False
+
+    # The type alone decides: requiring the name shape too kept rows chat-capable
+    # when it did not fit, e.g. google/siglip2-* omits architectures entirely and
+    # CLIPTextModelWithProjection ends in neither Model nor a known suffix.
+    # Anything generative returned True above, so no chat row reaches here.
+    if normalized_type in _ENCODER_ONLY_MODEL_TYPES:
+        return False
+    return None
+
+
 def _capabilities_for_format(
     model_format: ModelFormat,
     source: str,
     *,
     partial: bool = False,
     requires_variant: bool = False,
+    can_chat_override: Optional[bool] = None,
 ) -> LocalModelCapabilities:
     is_complete = not partial
     can_chat = model_format in {"gguf", "safetensors", "adapter", "checkpoint"}
+    if can_chat_override is not None:
+        can_chat = can_chat and can_chat_override
     can_train = model_format in {"safetensors", "checkpoint"} and is_complete
     return LocalModelCapabilities(
         can_train = can_train,
@@ -466,6 +692,7 @@ def _local_model_info(
     adapter_type: Optional[str] = None,
     training_method: Optional[str] = None,
     active_cache: Optional[bool] = None,
+    can_chat_override: Optional[bool] = None,
 ) -> LocalModelInfo:
     load_id = (
         model_id
@@ -502,6 +729,7 @@ def _local_model_info(
             source,
             partial = partial,
             requires_variant = requires_variant,
+            can_chat_override = can_chat_override,
         ),
     )
 
@@ -616,6 +844,11 @@ def _classify_local_path(
                 adapter_type = adapter_type if model_format == "adapter" else None,
                 training_method = training_method if model_format == "adapter" else None,
                 active_cache = active_cache,
+                can_chat_override = (
+                    _local_transformers_can_chat(scan_path)
+                    if model_format in {"safetensors", "checkpoint"}
+                    else None
+                ),
             )
         )
     elif not rows:
