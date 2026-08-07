@@ -412,6 +412,43 @@ def _guard_legacy_source_loader():
         cls.exec_module = guarded_exec_module
 
 
+def _guard_zipimport_loader():
+    """Block blocked-root imports through zipimporter.
+
+    zipimport.zipimporter.load_module / exec_module run an archive entry
+    directly, without the patched __import__, the meta-path finder, or an
+    ``import`` audit event, so the module-name guard must be applied here too.
+    """
+    try:
+        import zipimport
+    except ImportError:
+        return
+    cls = getattr(zipimport, "zipimporter", None)
+    if cls is None:
+        return
+    for method_name in ("load_module", "exec_module"):
+        original = getattr(cls, method_name, None)
+        if not callable(original) or getattr(original, "_unsloth_network_guard", False):
+            continue
+
+        def make_guard(original, method_name):
+            def guarded(self, *args, **kwargs):
+                target = args[0] if args else kwargs.get("fullname") or kwargs.get("module")
+                fullname = getattr(target, "__name__", target)
+                root = _blocked_network_module(fullname)
+                if root is not None:
+                    _raise_blocked_network_module(root)
+                return original(self, *args, **kwargs)
+
+            guarded._unsloth_network_guard = True
+            guarded.__name__ = getattr(original, "__name__", method_name)
+            guarded.__qualname__ = getattr(original, "__qualname__", guarded.__name__)
+            guarded.__doc__ = getattr(original, "__doc__", None)
+            return guarded
+
+        setattr(cls, method_name, make_guard(original, method_name))
+
+
 _CHILD_PROCESS_AUDIT_EVENTS = frozenset(
     {"subprocess.Popen", "os.exec", "os.posix_spawn", "os.system"}
 )
@@ -527,6 +564,7 @@ def _make_child_process_guard():
         argv,
         env,
         shell_string = False,
+        executable = None,
     ):
         if shell_string:
             return shell_script_escapes_guard(argv)
@@ -538,7 +576,13 @@ def _make_child_process_guard():
             return False
         if not argv:
             return False
-        base = program_base(argv[0])
+        # The child runs ``executable`` when the caller sets it (subprocess
+        # executable=, os.exec* path); argv[0] is only a display name and can be
+        # spoofed. Decide interpreter identity from the real program, but read
+        # flags from argv[1:], which is what the interpreter itself parses.
+        base = program_base(executable) if executable else None
+        if base is None:
+            base = program_base(argv[0])
         if base is None:
             return False
         # ``shell = True`` arrives as ['/bin/sh', '-c', script]; scan that script.
@@ -684,15 +728,16 @@ def _make_network_guard_audit():
             except (IndexError, KeyError, TypeError):
                 return None
 
+        # argument 0 is the real executable/path; argv (argument 1) is spoofable.
         if event == "subprocess.Popen":  # (executable, args, cwd, env)
-            argv, env, shell_string = argument(1), argument(3), False
+            executable, argv, env, shell_string = argument(0), argument(1), argument(3), False
         elif event in ("os.exec", "os.posix_spawn"):  # (path, args, env)
-            argv, env, shell_string = argument(1), argument(2), False
+            executable, argv, env, shell_string = argument(0), argument(1), argument(2), False
         elif event == "os.system":  # (command,) -- a shell script string
-            argv, env, shell_string = argument(0), None, True
+            executable, argv, env, shell_string = None, argument(0), None, True
         else:
             return
-        if launch_escapes_guard(argv, env, shell_string):
+        if launch_escapes_guard(argv, env, shell_string, executable):
             raise PermissionError(
                 "Blocked: sandboxed code cannot start a Python child process "
                 "without the Studio runtime guard"
@@ -796,6 +841,7 @@ def _install_import_guard():
         builtins.__import__ = _guarded_import
         importlib.import_module = _guarded_import_module
         _guard_legacy_source_loader()
+        _guard_zipimport_loader()
         _import_guard_installed = True
     if any(getattr(finder, "_unsloth_blocked_network_guard", False) for finder in sys.meta_path):
         return

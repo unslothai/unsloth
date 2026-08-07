@@ -4134,6 +4134,11 @@ def _render_html_data_document_reaches_network(value: str, depth: int) -> bool:
     return _render_html_code_reaches_network(markup, depth + 1)
 
 
+# Browsers strip ASCII tab, newline, and CR from a URL before parsing, so
+# ``h\nttps://evil/x`` fetches ``https://evil/x``. Match that before classifying.
+_RENDER_HTML_URL_STRIP = {0x09: None, 0x0A: None, 0x0D: None}
+
+
 def _render_html_attribute_reaches_network(
     name: str,
     value: str | None,
@@ -4141,7 +4146,7 @@ def _render_html_attribute_reaches_network(
 ) -> bool:
     if value is None:
         return False
-    value = value.lstrip()
+    value = value.translate(_RENDER_HTML_URL_STRIP).lstrip()
     if value.lower().startswith("data:"):
         return _render_html_data_document_reaches_network(value, depth)
     if name in _RENDER_HTML_URL_LIST_ATTRIBUTES:

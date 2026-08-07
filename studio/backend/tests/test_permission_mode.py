@@ -1979,3 +1979,16 @@ def test_render_html_covers_remaining_url_loading_attributes():
     # Local-only values stay on the automatic path.
     assert rh("<link rel=preload as=image imagesrcset='a.png 1x, b.png 2x'>") is False
     assert rh("<body background='bg.png'>") is False
+
+
+def test_render_html_strips_url_whitespace_browsers_remove():
+    # Browsers drop ASCII tab / newline / CR from a URL before parsing, so a
+    # scheme split by one of them still loads and must prompt.
+    def rh(code):
+        return is_potentially_unsafe_tool_call("render_html", {"code": code})
+
+    assert rh('<img src="h\nttps://evil/x">') is True
+    assert rh('<img src="ht\ttps://evil/x">') is True
+    assert rh('<img src="https:\r//evil/x">') is True
+    # A local reference remains local after the same normalisation.
+    assert rh('<img src="./lo\ncal.png">') is False

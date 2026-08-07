@@ -635,3 +635,72 @@ def test_full_access_bypass_does_not_install_the_spawn_guard(tmp_path):
     )
     assert "child ran" in output, output
     assert "runtime guard" not in output, output
+
+
+def test_spoofed_argv0_with_real_python_executable_is_blocked(tmp_path):
+    # subprocess executable= runs the real interpreter; argv[0] is spoofable.
+    (tmp_path / "grand.py").write_text(_GRANDCHILD)
+    output = _run_sandboxed(
+        tmp_path,
+        "import subprocess, sys\n"
+        "subprocess.run(['alias', '-S', 'grand.py'], executable = sys.executable)\n",
+    )
+    assert "REACHED" not in output, output
+    assert "without the Studio runtime guard" in output, output
+
+
+def test_os_execv_path_over_spoofed_argv0_is_blocked(tmp_path):
+    # os.exec* runs the path argument, not argv[0].
+    (tmp_path / "grand.py").write_text(_GRANDCHILD)
+    output = _run_sandboxed(
+        tmp_path,
+        "import os, sys\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    os.execv(sys.executable, ['x', '-S', 'grand.py'])\n"
+        "os.waitpid(pid, 0)\n",
+    )
+    assert "REACHED" not in output, output
+    assert "without the Studio runtime guard" in output, output
+
+
+def test_non_python_executable_is_untouched(tmp_path):
+    # A real non-Python executable behind a spoofed argv[0] must still run.
+    output = _run_sandboxed(
+        tmp_path,
+        "import subprocess\n"
+        "print(subprocess.run(['py'], executable = '/bin/echo',"
+        " capture_output = True, text = True).returncode)\n",
+    )
+    assert "runtime guard" not in output, output
+
+
+def test_zipimport_blocked_module_is_denied(tmp_path):
+    # zipimporter.load_module runs an archive entry directly, skipping __import__.
+    import zipfile
+
+    archive = tmp_path / "pkg.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("boto3.py", "print('REACHED via zipimport')\n")
+    output = _run_sandboxed(
+        tmp_path,
+        f"import zipimport\nzipimport.zipimporter({str(archive)!r}).load_module('boto3')\n",
+    )
+    assert "REACHED" not in output, output
+    assert "Blocked: low-level network module" in output, output
+
+
+def test_zipimport_benign_module_still_loads(tmp_path):
+    import zipfile
+
+    archive = tmp_path / "ok.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("mymod.py", "print('benign zip ok')\n")
+    output = _run_sandboxed(
+        tmp_path,
+        f"import sys, zipimport\n"
+        f"sys.path.insert(0, {str(archive)!r})\n"
+        f"zipimport.zipimporter({str(archive)!r}).load_module('mymod')\n",
+    )
+    assert "benign zip ok" in output, output
+    assert "Blocked" not in output, output
