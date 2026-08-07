@@ -2518,3 +2518,23 @@ def test_the_primary_action_keeps_its_four_labels():
         for el in re.finditer(r"<Button\b.*?</Button>", page, re.S)
     )
     assert primary, "primaryActionLabel is no longer rendered inside the handleRun Button"
+
+
+def test_the_micro_batch_advisory_compares_against_the_emitted_batch():
+    """The loader raises --batch-size to max(slots, 2), so the micro-batch advisory has to
+    judge the RAISED value. Against the typed one, batch 4 / slots 8 / ubatch 8 rendered
+    two advisories that contradict each other: "will raise it to 8" beside "llama.cpp will
+    run at 4", when the launch runs at 8. Both the predicate and the number shown come
+    from the emitted batch now."""
+    src = _read("features/model-picker/components/model-config-page.tsx")
+    page = " ".join(src.split())
+    assert "const batchFloor = Math.max(2, config.nParallel ?? 2);" in page
+    assert (
+        "const effectiveBatch = config.nBatch != null "
+        "? Math.max(config.nBatch, batchFloor) : null;" in page
+    )
+    assert "config.nUbatch > effectiveBatch" in page
+    # the rendered number too, or the text still names a batch nothing runs at
+    assert "llama.cpp will run at{\" \"} {effectiveBatch}." in page
+    # and the floor must be declared before the comparison that uses it
+    assert page.index("const batchFloor =") < page.index("const effectiveBatch =")

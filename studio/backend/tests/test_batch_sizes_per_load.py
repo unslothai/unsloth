@@ -644,3 +644,48 @@ def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
     assert compact.index("_launched_ubatch=_ubatch_for_slots") > compact.index(
         "n_parallel=_mtp_clamped_slots"
     )
+
+
+def test_the_remote_guard_charges_the_flat_output_buffer():
+    """The KQ mask is only the context-linear half of the compute buffer. llama.cpp also
+    reserves n_vocab * ubatch * 4 per slot past the first, which is context-INdependent and
+    dwarfs the mask at large settings: n_batch = n_ubatch = 32768 on two slots is ~32 GiB
+    the mask never covers. Omitting it remotely let the coexistence guard admit an uncached
+    load that then OOMs the training job it exists to protect."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from routes import inference as route
+
+    config = SimpleNamespace(
+        gguf_file = None,
+        gguf_mmproj_file = None,
+        gguf_mtp_file = None,
+        gguf_hf_repo = "owner/repo",
+        gguf_variant = "Q4_K_M",
+    )
+    remote_variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 1024**3)
+    with (
+        patch(
+            "utils.models.model_config.list_gguf_variants",
+            return_value = ([remote_variant], False),
+        ),
+        patch.object(route, "_remote_gguf_companion_bytes", return_value = 0),
+    ):
+
+        def _gb(**kwargs):
+            return route._estimate_gguf_required_gb(config, max_seq_length = 32768, **kwargs)
+
+        blank_1 = _gb(n_parallel = 1)
+        blank_4 = _gb(n_parallel = 4)
+        big_1 = _gb(n_parallel = 1, n_batch = 32768, n_ubatch = 32768)
+        big_2 = _gb(n_parallel = 2, n_batch = 32768, n_ubatch = 32768)
+        typical_4 = _gb(n_parallel = 4, n_batch = 2048, n_ubatch = 512)
+
+    # The term is per slot PAST the first, so one slot is unchanged by it and the
+    # llama.cpp defaults (which emit no flag at all) stay exactly at the weights.
+    assert blank_1 == pytest.approx(1.0) and blank_4 == pytest.approx(1.0)
+    # 262144 * 32768 * 4 = 32 GiB for the second slot, which the mask alone missed
+    assert big_2 > big_1 + 30.0
+    # and it stays proportionate where the values are ordinary
+    assert typical_4 < 4.0

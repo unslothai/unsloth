@@ -639,13 +639,6 @@ function GgufAdvancedSettings({
 }) {
   const batchAdviceId = useId();
   const ubatchAdviceId = useId();
-  // llama.cpp runs at min(batch, ubatch) and the /status echo is the REQUESTED size, so
-  // the control would otherwise keep showing a value the server never used (batch 8 /
-  // ubatch 4096 measured 8.8x slower).
-  const ubatchExceedsBatch =
-    config.nBatch != null &&
-    config.nUbatch != null &&
-    config.nUbatch > config.nBatch;
   // llama-server aborts below 2 (GGML_ASSERT(n_tokens_all <= cparams.n_batch)) and below
   // the slot count (GGML_ASSERT(n_outputs_max <= cparams.n_outputs_max)), so the loader
   // raises the emitted value to max(slots, 2). Surfaced so the number typed here is not
@@ -653,6 +646,16 @@ function GgufAdvancedSettings({
   // default this page cannot see, so only the hard floor of 2 is asserted.
   const batchFloor = Math.max(2, config.nParallel ?? 2);
   const batchBelowFloor = config.nBatch != null && config.nBatch < batchFloor;
+  // llama.cpp runs at min(batch, ubatch) and the /status echo is the REQUESTED size, so
+  // the control would otherwise keep showing a value the server never used (batch 8 /
+  // ubatch 4096 measured 8.8x slower). Against the EMITTED batch, or the two advisories
+  // contradict: batch 4 / slots 8 launches at 8, so saying it runs at 4 is wrong.
+  const effectiveBatch =
+    config.nBatch != null ? Math.max(config.nBatch, batchFloor) : null;
+  const ubatchExceedsBatch =
+    effectiveBatch != null &&
+    config.nUbatch != null &&
+    config.nUbatch > effectiveBatch;
   return (
     <>
       <div className={ROW_CLASS}>
@@ -890,7 +893,7 @@ function GgufAdvancedSettings({
           {ubatchExceedsBatch && (
             <p id={ubatchAdviceId} className="text-ui-12 text-muted-foreground">
               Micro-batch is larger than the batch size, so llama.cpp will run at{" "}
-              {config.nBatch}. Raise the batch size to use {config.nUbatch}.
+              {effectiveBatch}. Raise the batch size to use {config.nUbatch}.
             </p>
           )}
         </div>

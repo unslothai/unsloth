@@ -10603,18 +10603,19 @@ class LlamaCppBackend:
                     and not _extra_args_set_spec_type(extra_args)
                     and _extra_args_requests_mtp(spec_flags, env = _child_spec_env(extra_args))
                 ):
-                    try:
-                        _np_at = cmd.index("--parallel")
-                    except ValueError:
-                        _np_at = -1
-                    if _np_at >= 0:
+                    if "--parallel" in cmd:
                         logger.warning(
                             "%s resolved to MTP speculative decoding, which does not "
                             "support %d parallel slots; using 1.",
                             model_identifier,
                             n_parallel,
                         )
-                        cmd[_np_at + 1] = "1"
+                        # Through the same helper as the restores: the floor is meant to
+                        # be the smallest legal batch, so dropping to one slot must undo
+                        # a raise the old count forced. Leaving it launched -b 64 for a
+                        # requested -b 1 and made the recorded micro-batch, derived from
+                        # the clamped count, describe a graph 32x smaller than the child's.
+                        _repatch_parallel_slots(cmd, 1, n_batch)
                         # _commit_effective_parallel_slots reports what launched, so
                         # rebind rather than only patching cmd.
                         _mtp_clamped_slots = n_parallel

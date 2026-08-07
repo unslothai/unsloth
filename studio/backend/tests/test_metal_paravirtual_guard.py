@@ -1336,6 +1336,26 @@ def test_the_fallback_raises_the_batch_flag_with_the_slots():
     assert clamped[clamped.index("--batch-size") + 1] == "2"
 
 
+def test_the_mtp_backstop_lowers_the_batch_with_the_slots():
+    """The floor is the SMALLEST legal batch, not merely a sufficient one. This clamp runs
+    after --batch-size is emitted, so dropping to one slot has to undo the raise the old
+    count forced: -b 1 with 64 slots emits 64, and leaving it there launched MTP at a
+    64-token micro-batch for a request of 1 (a much larger compute buffer), while the
+    recorded micro-batch, derived from the clamped count, said 2."""
+    spec = ["--spec-type", "draft-mtp"]
+    cmd = ["llama-server", "-m", "/m.gguf", "--parallel", "64", "--batch-size", "64", *spec]
+    clamped, _fallback, _slots = _run_clamp_then_fallback(
+        n_parallel = 64,
+        extra_args = ["--top-k", "40"],
+        spec_flags = spec,
+        cmd = cmd,
+        n_batch = 1,
+    )
+    assert clamped[clamped.index("--parallel") + 1] == "1"
+    # max(1, max(2, 1)) = 2, which is what _ubatch_for_slots(1) records
+    assert clamped[clamped.index("--batch-size") + 1] == "2"
+
+
 def test_the_startup_retry_drops_the_mtp_the_extras_and_the_env_carry():
     """A trailing --spec-default cannot override MTP or DSpark that extras or the env
     supplied: llama.cpp applies the env first and appends types rather than replacing

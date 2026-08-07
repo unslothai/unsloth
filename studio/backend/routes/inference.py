@@ -5337,7 +5337,24 @@ def _estimate_gguf_required_gb(
                     * devices
                     * split_mult
                 )
-                total_gb += mask_bytes / (1024**3)
+                # The mask is only the context-linear half. The flat half needs the dims,
+                # which are unreadable remotely, but its dominant term needs just a vocab
+                # ceiling: llama.cpp reserves n_vocab * ubatch * 4 per slot past the first
+                # (every slot under tensor mode), so n_batch = n_ubatch = 32768 on two
+                # slots is ~32 GiB the mask does not cover. Omitting it let the guard admit
+                # an uncached load that then OOMs the training job it exists to protect.
+                # The activation scratch needs embedding_length and stays uncharged: it is
+                # the small half, and over-reserving here denies the load outright.
+                _out_slots = n_parallel if tensor_parallel else max(0, n_parallel - 1)
+                out_buffer_bytes = (
+                    _ASSUMED_MAX_VOCAB
+                    * effective_ubatch
+                    * 4
+                    * _out_slots
+                    * devices
+                    * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
+                )
+                total_gb += (mask_bytes + out_buffer_bytes) / (1024**3)
             return total_gb
         return None
     except Exception as e:
