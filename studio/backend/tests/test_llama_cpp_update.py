@@ -462,13 +462,14 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize(
     "llama_backend,expect_forced",
-    [(None, True), ("vulkan", True), ("auto", False)],
+    [(None, False), ("vulkan", True), ("auto", False)],
 )
 def test_start_update_preserves_vulkan_selection(
     monkeypatch, tmp_path, llama_backend, expect_forced
 ):
-    # Legacy and explicit Vulkan installs stay forced. Automatic Windows AMD
-    # installs rerun hardware detection so the marker remains automatic.
+    # Only an explicit Vulkan install stays forced. Markerless Intel and
+    # automatic Windows AMD installs rerun hardware detection so they remain
+    # eligible for automatic CPU crash recovery after an update.
     monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
     install_dir = tmp_path / "llama.cpp"

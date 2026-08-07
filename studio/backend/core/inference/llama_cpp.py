@@ -8536,7 +8536,10 @@ class LlamaCppBackend:
         that this binary cannot pin to CPU.
         """
         original = [str(arg) for arg in cmd]
-        has_mmproj = _extra_args_set_any_flag(original, {"--mmproj", "-mm"})
+        has_mmproj = _extra_args_set_any_flag(original, {"--mmproj", "-mm"}) or any(
+            str(env.get(name) or "").strip()
+            for name in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL")
+        )
         if has_mmproj and not _paravirtual_mmproj_pinnable(server_caps):
             return None
         has_draft = _extra_args_mtp_draft_path(original, env = env) is not None
@@ -8572,7 +8575,11 @@ class LlamaCppBackend:
         loader_path = "PATH" if sys.platform == "win32" else "LD_LIBRARY_PATH"
         env[loader_path] = loader_env[loader_path]
         replay[0] = cpu_binary
-        return replay, str(Path(cpu_binary).parent)
+        # Relative paths in user-supplied extra arguments resolve from Studio's
+        # working directory on the original launch. The staged runtime is only
+        # for the executable and libraries, so keep that working directory for
+        # the replay as well.
+        return replay, None
 
     def _cpu_isolated_binary(self, binary: Optional[str]) -> Optional[str]:
         """Stage managed llama.cpp without GPU backend libraries.

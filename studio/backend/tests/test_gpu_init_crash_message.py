@@ -44,7 +44,7 @@ if not hasattr(sys.modules["structlog"], "get_logger"):
 
 from core.inference import llama_cpp  # noqa: E402
 from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E402
-from models.inference import InferenceStatusResponse, LoadResponse  # noqa: E402
+from models.inference import InferenceStatusResponse, LoadRequest, LoadResponse  # noqa: E402
 
 
 _RAW_MAIN_PLACEMENT_ARGS = (
@@ -305,7 +305,7 @@ class TestCpuIsolatedReplay:
 
         prepared = backend._prepare_cpu_fallback_launch("/original/server", ["original"], env, {})
 
-        assert prepared == (["/staged/server", "--device", "none"], "/staged")
+        assert prepared == (["/staged/server", "--device", "none"], None)
         assert env[loader_path] == "/staged/libs"
         assert env["KEEP"] == "1"
 
@@ -380,6 +380,19 @@ class TestCpuIsolatedReplay:
             {"found": True, "supports_no_mmproj_offload": False},
         )
         assert replay is None
+
+    @pytest.mark.parametrize("name", ["LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"])
+    def test_env_projector_gets_a_cpu_pin(self, name):
+        env = {name: "projector.gguf"}
+        replay = LlamaCppBackend._cpu_isolated_replay(
+            ["llama-server", "-m", "model.gguf"],
+            env,
+            {"found": True, "supports_no_mmproj_offload": True},
+        )
+
+        assert replay is not None
+        assert "--no-mmproj-offload" in replay
+        assert env[name] == "projector.gguf"
 
     def test_staged_runtime_excludes_the_gpu_backend(self, monkeypatch, tmp_path):
         binary = _managed_runtime(monkeypatch, tmp_path)
@@ -744,6 +757,30 @@ def test_duplicate_auto_request_matches_recovered_cpu_server(tmp_path):
         )
     )
     assert explicit_gpu.cpu_fallback is False
+
+
+def test_cpu_fallback_request_keeps_the_replay_intent():
+    route_path = Path(_BACKEND_DIR) / "routes" / "inference.py"
+    spec = importlib.util.spec_from_file_location(
+        "inference_route_for_cpu_fallback_rollback", route_path
+    )
+    route = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(route)
+    request = LoadRequest(
+        model_path = "owner/model",
+        gpu_memory_mode = "manual",
+        gpu_layers = 0,
+        cpu_fallback = True,
+    )
+    intent = route._gguf_request_intent(
+        GgufLoadIntent(model_identifier = "owner/model"),
+        request,
+        chat_template_override = None,
+        extra_args = None,
+        gpu_ids = None,
+        n_parallel = 1,
+    )
+    assert intent.cpu_fallback is True
 
 
 @pytest.mark.parametrize("model_cls", [LoadResponse, InferenceStatusResponse])

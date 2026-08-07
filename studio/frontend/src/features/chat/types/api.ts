@@ -85,6 +85,8 @@ export interface LoadModelRequest {
   gpu_memory_mode?: "auto" | "manual";
   /** Manual mode: layers to offload to GPU (--gpu-layers, --fit off); -1 = Auto (--fit). */
   gpu_layers?: number;
+  /** Restore a previous automatic Vulkan CPU recovery after a failed model switch. */
+  cpu_fallback?: boolean;
   /** Manual mode: MoE expert layers to keep on CPU (--n-cpu-moe); 0 = none. */
   n_cpu_moe?: number;
   /** Manual mode: relative model share per GPU (--tensor-split), in GPU order. */

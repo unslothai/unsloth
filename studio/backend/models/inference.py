@@ -172,6 +172,13 @@ class LoadRequest(BaseModel):
             "llama.cpp's --fit. Ignored unless gpu_memory_mode is 'manual'."
         ),
     )
+    cpu_fallback: bool = Field(
+        False,
+        description = (
+            "Replay a previously recovered automatic Vulkan load in its managed CPU-only "
+            "runtime. Used when restoring that model after a failed switch."
+        ),
+    )
     n_cpu_moe: int = Field(
         0,
         ge = 0,
