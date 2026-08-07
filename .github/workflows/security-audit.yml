@@ -540,7 +540,7 @@ jobs:
       # / tokens / cred files committed accidentally. --only-verified
       # filters out probabilistic findings, so we only flag tokens
       # that the source provider confirmed are live. On push to main
-      # / pip we scan the full repo; on PR we scan base..head.
+      # we scan the full repo; on PR we scan base..head.
       # SHA-pinned for the same reason as harden-runner above.
       # v3.95.2 commit:
       # ─────────────────────────────────────────────────────────────
