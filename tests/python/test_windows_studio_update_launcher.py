@@ -357,3 +357,46 @@ def test_a_backup_failure_does_not_abort_the_update(monkeypatch, studio, tmp_pat
 
     assert ran == [True]
     assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+
+
+def test_an_existing_backup_survives_an_unvalidated_launcher(monkeypatch, studio, tmp_path):
+    # A backup outlives __enter__ only when a previous run died before
+    # validating, so it holds the last launcher known to run while the canonical
+    # file has passed nothing but the two-byte header check. Overwriting it here
+    # destroyed the only recovery copy.
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = b"MZ-broken")
+    backup = scripts / "unsloth.exe.update-backup"
+    backup.write_bytes(ORIGINAL_LAUNCHER)
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+
+    def failing_version(_argv, **_kwargs):
+        return types.SimpleNamespace(returncode = 7)
+
+    monkeypatch.setattr(studio.subprocess, "run", failing_version)
+
+    with pytest.raises(studio.typer.Exit):
+        _update(studio)
+
+    assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+
+
+def test_the_launcher_is_resolved_from_the_managed_studio_venv(monkeypatch, studio, tmp_path):
+    # A pip-installed or checkout CLI drives an update of the separate managed
+    # environment, so sys.executable belongs to the caller while setup.ps1
+    # installs into STUDIO_HOME/unsloth_studio. Guarding the caller's launcher
+    # left the one actually being replaced unprotected.
+    scripts, caller_launcher = _configure_windows(monkeypatch, studio, tmp_path)
+    managed = tmp_path / "studio_home" / "unsloth_studio"
+    (managed / "Scripts").mkdir(parents = True)
+    (managed / "pyvenv.cfg").write_text("home = /usr\n")
+    managed_launcher = managed / "Scripts" / "unsloth.exe"
+    managed_launcher.write_bytes(b"MZ-managed-launcher")
+
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+    calls = []
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run(calls))
+
+    _update(studio)
+
+    assert calls[0][0] == [str(managed_launcher), "--version"]
+    assert managed_launcher.read_bytes() == b"MZ-managed-launcher"

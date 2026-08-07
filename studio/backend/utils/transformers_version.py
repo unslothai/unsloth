@@ -1996,6 +1996,7 @@ _SHARED_NON_RUNTIME_ROOTS = frozenset(
         "benchmarks",
         "sample",
         "samples",
+        "scripts",
     )
 )
 _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
@@ -2094,16 +2095,16 @@ def _sidecar_scan_impl(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
                 or (parts and parts[0] in ("bin", "Scripts"))
             ):
                 continue
-            # Shared non-runtime trees and installer-rewritten data files: neither is
-            # importable, so neither is the damage this looks for.
-            if (len(parts) > 1 and parts[0] in _SHARED_NON_RUNTIME_ROOTS) or (
-                parts and parts[-1] in _INSTALLER_REWRITTEN_NAMES
-            ):
+            # Top-level dirs several wheels write into, so one uninstall deletes
+            # another's files. None is importable, so a deletion here is not damage.
+            if len(parts) > 1 and parts[0] in _SHARED_NON_RUNTIME_ROOTS:
                 continue
             # The size field is optional and real wheels do leave it blank. Keep the row with an
             # unknown size: existence is still checkable, and dropping it hides a deletion.
             recorded: int | None = None
-            if len(row) >= 3 and row[2]:
+            # An installer rewrites these in place, so the recorded size drifts;
+            # the file disappearing is still damage.
+            if len(row) >= 3 and row[2] and parts[-1] not in _INSTALLER_REWRITTEN_NAMES:
                 try:
                     recorded = int(row[2])
                 except ValueError:

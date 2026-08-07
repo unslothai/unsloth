@@ -3326,11 +3326,29 @@ class _WindowsLauncherUpdateTransaction:
             return f"the updated launcher returned {result.returncode} for --version"
         return None
 
+    @staticmethod
+    def _managed_scripts_dir() -> Path:
+        """Scripts dir of the venv setup actually updates.
+
+        setup.ps1 installs into STUDIO_HOME/unsloth_studio, which is not this
+        interpreter when a pip-installed or checkout CLI drives the update. Same
+        distinction _studio_deps._managed_root draws for the damage scan.
+        """
+        managed = STUDIO_HOME / "unsloth_studio"
+        if (managed / "pyvenv.cfg").is_file():
+            try:
+                foreign = managed.resolve() != Path(sys.prefix).resolve()
+            except OSError:
+                foreign = True
+            if foreign:
+                return managed / "Scripts"
+        return Path(sys.executable).resolve().parent
+
     def __enter__(self):
         if not self.enabled:
             return self
         try:
-            scripts = Path(sys.executable).resolve().parent
+            scripts = self._managed_scripts_dir()
         except (OSError, RuntimeError) as exc:
             typer.echo(f"Error: could not resolve the managed Python environment: {exc}", err = True)
             raise typer.Exit(1)
@@ -3354,8 +3372,14 @@ class _WindowsLauncherUpdateTransaction:
                     err = True,
                 )
                 typer.echo("Continuing; setup may reinstall it.", err = True)
-                self.backup = None
-            else:
+                if self._retained_backup() is None:
+                    self.backup = None
+            elif self._retained_backup() is None:
+                # Only write a backup when there is no usable one already. A
+                # backup outlives __enter__ only when a previous run died before
+                # validating, so it holds the last launcher known to run, while
+                # the canonical file has passed nothing but the two-byte header
+                # check. Overwriting it here destroyed the only recovery copy.
                 try:
                     self._atomic_copy(self.launcher, self.backup)
                 except OSError as exc:

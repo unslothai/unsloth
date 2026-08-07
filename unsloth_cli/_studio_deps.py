@@ -233,6 +233,7 @@ _SHARED_NON_RUNTIME_ROOTS = frozenset(
         "benchmarks",
         "sample",
         "samples",
+        "scripts",
     )
 )
 
@@ -242,18 +243,25 @@ _SHARED_NON_RUNTIME_ROOTS = frozenset(
 _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
 
 
-def _runtime_irrelevant(rel: str) -> bool:
-    """True when a RECORD row cannot be the import-time damage this scan seeks.
+def _shared_non_runtime(rel: str) -> bool:
+    """A row under a top-level dir several wheels write into.
 
-    Applied while reading RECORD, not when reporting, so a filtered row also
-    stays out of the ownership tally and the `limit` budget.
+    None of them is importable, so a deletion here is not the damage this scan
+    seeks: the stdlib shadows `test`, and `tests`/`scripts` ship no
+    __init__.py. Applied while reading RECORD, not when reporting, so the row
+    also stays out of the ownership tally and the `limit` budget.
     """
     parts = tuple(p for p in rel.replace("\\", "/").split("/") if p and p != ".")
-    if not parts:
-        return False
-    if len(parts) > 1 and parts[0] in _SHARED_NON_RUNTIME_ROOTS:
-        return True
-    return parts[-1] in _INSTALLER_REWRITTEN_NAMES
+    return len(parts) > 1 and parts[0] in _SHARED_NON_RUNTIME_ROOTS
+
+
+def _installer_rewritten(rel: str) -> bool:
+    """A file our own setup rewrites in place, so its recorded size drifts.
+
+    Only the size is unreliable. The file disappearing is still damage, so the
+    row is kept and only its size dropped.
+    """
+    return rel.replace("\\", "/").rsplit("/", 1)[-1] in _INSTALLER_REWRITTEN_NAMES
 
 
 def damaged_installed_files(limit: int = 8) -> List[str]:
@@ -275,9 +283,10 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
     in EITHER direction. Sizes are therefore compared after the whole scan, once
     multiply-owned paths are known, rather than during it.
 
-    Rows that cannot be import-time damage are dropped up front; the answer to
-    a finding is "reinstall over the top", so a file no reinstall would change
-    must not produce one. See _runtime_irrelevant.
+    Rows that cannot be import-time damage are dropped up front, and a file our
+    own setup rewrites keeps its existence check but loses its size. The answer
+    to a finding is "reinstall over the top", so a file no reinstall would
+    change must not produce one. See _shared_non_runtime, _installer_rewritten.
 
     Scanned over the interpreter's own site-packages rather than all of
     sys.path. distributions() searches every sys.path entry, so a damaged
@@ -316,13 +325,13 @@ def damaged_installed_files(limit: int = 8) -> List[str]:
             # size recorded inside itself; .pyc is regenerated from source.
             if ".dist-info/" in rel or ".egg-info/" in rel or rel.endswith(".pyc"):
                 continue
-            if _runtime_irrelevant(rel):
+            if _shared_non_runtime(rel):
                 continue
             # The size field is optional and real wheels do leave it blank. Keep
             # the row anyway with an unknown size: existence is still checkable,
             # and dropping the row meant a deletion went unreported.
             recorded: Optional[int] = None
-            if len(row) >= 3 and row[2]:
+            if len(row) >= 3 and row[2] and not _installer_rewritten(rel):
                 try:
                     recorded = int(row[2])
                 except ValueError:

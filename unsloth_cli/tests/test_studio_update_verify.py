@@ -626,6 +626,26 @@ def test_an_installer_rewritten_lockfile_is_not_damage(site):
     assert _deps().damaged_installed_files() == []
 
 
+def test_a_deleted_installer_rewritten_file_is_still_damage(site):
+    # Only the SIZE of these drifts, because npm rewrites the lockfile in place.
+    # It never deletes it, so a missing one is real damage and must be reported.
+    lock = "studio/backend/core/data_recipe/oxc-validator/package-lock.json"
+    _make_dist(site, "unsloth", {"unsloth/__init__.py": b"u\n", lock: b"L" * 100})
+    (site / lock).unlink()
+    found = _deps().damaged_installed_files()
+    assert len(found) == 1 and "package-lock.json is missing" in found[0]
+
+
+def test_a_shared_top_level_scripts_tree_is_not_damage(site):
+    # unsloth_zoo ships a top-level scripts/, the same squatted-namespace shape
+    # as einx's test/. It has no __init__.py, so nothing imports it.
+    _make_dist(site, "upsilon", {"upsilon/__init__.py": b"u\n"})
+    (site / "upsilon-1.0.dist-info" / "RECORD").write_text(
+        "upsilon/__init__.py,sha256=x,2\nscripts/helper.py,sha256=x,99\n"
+    )
+    assert _deps().damaged_installed_files() == []
+
+
 def test_a_package_owned_tests_subdirectory_is_still_checked(site):
     # Only the shared top-level namespace is exempt; a tests/ tree inside a
     # package is that package's alone, so a deletion there is real.
