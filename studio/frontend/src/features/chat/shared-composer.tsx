@@ -1,6 +1,7 @@
 
 
 
+import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   thinkEffortAriaLabel,
@@ -23,6 +24,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
+import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
 import {
   StudioDictationAdapter,
   isStudioDictationAvailable,
@@ -104,6 +106,7 @@ import {
   providerTypeSupportsVision,
 } from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
+import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
   PLUS_MENU_ORDER,
@@ -474,7 +477,7 @@ function resolveCompareSpecDraftNMax(
   speculativeType: string | null,
   value: number | null,
 ): number | null {
-  return speculativeType === "mtp" || speculativeType === "mtp+ngram"
+  return speculativeType != null && DRAFT_N_MAX_SPEC_TYPES.has(speculativeType)
     ? value
     : null;
 }
@@ -791,7 +794,12 @@ export function SharedComposer({
     (showWebFetchPill ? 1 : 0) +
     (artifactsEnabled ? 1 : 0) +
     (mcpEnabledForChat ? 1 : 0);
-  const pillsCompact = isMobile || pillCount > 4;
+  // Under the count threshold the row still overflows on long labels, wrapping
+  // onto a second line inside the action bar. Measuring collapses just enough
+  // to keep it beside the dictate/send controls.
+  const { pillRowRef, pillCompact } = useComposerPillFit(
+    isMobile || pillCount > 4,
+  );
   // Backwards-compatible alias for call sites still referencing
   // `toolsDisabled` (rare; both pills used it before).
   const toolsDisabled = codeDisabled;
@@ -1343,6 +1351,13 @@ export function SharedComposer({
                 gpu_layers: effectiveGpuLayers,
                 // Slots scale the KV estimate; keep validate sized like the load.
                 n_parallel: ownConfig.nParallel ?? null,
+                // omitted when blank: a null counts as set and strips inherited -b / -ub
+                ...(ownConfig.nBatch != null
+                  ? { n_batch: ownConfig.nBatch }
+                  : {}),
+                ...(ownConfig.nUbatch != null
+                  ? { n_ubatch: ownConfig.nUbatch }
+                  : {}),
               }
             : {}),
         });
@@ -1404,6 +1419,7 @@ export function SharedComposer({
           approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
           chat_template_override: effectiveChatTemplateOverride,
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
+          mlx_kv_bits: ownConfig.mlxKvBits ?? null,
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
           tensor_parallel: effectiveTensorParallel,
@@ -1417,6 +1433,12 @@ export function SharedComposer({
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
                 n_parallel: ownConfig.nParallel ?? null,
+                ...(ownConfig.nBatch != null
+                  ? { n_batch: ownConfig.nBatch }
+                  : {}),
+                ...(ownConfig.nUbatch != null
+                  ? { n_ubatch: ownConfig.nUbatch }
+                  : {}),
               }
             : {}),
         });
@@ -1454,6 +1476,15 @@ export function SharedComposer({
           targetIsGguf && !(resp.is_diffusion ?? false)
             ? (ownConfig.nParallel ?? null)
             : null;
+        // same rule for the batch sizes
+        const committedNBatch =
+          targetIsGguf && !(resp.is_diffusion ?? false)
+            ? (ownConfig.nBatch ?? null)
+            : null;
+        const committedNUbatch =
+          targetIsGguf && !(resp.is_diffusion ?? false)
+            ? (ownConfig.nUbatch ?? null)
+            : null;
         useChatRuntimeStore.setState({
           supportsReasoning: resp.supports_reasoning ?? false,
           reasoningAlwaysOn: resp.reasoning_always_on ?? false,
@@ -1462,9 +1493,14 @@ export function SharedComposer({
           supportsTools: resp.supports_tools ?? false,
           kvCacheDtype: resp.cache_type_kv ?? null,
           loadedKvCacheDtype: resp.cache_type_kv ?? null,
+          ...mlxRuntimeStateFrom(resp),
           // Click-time value, not the resolved echo (see the single-model load).
           nParallel: committedSlots,
           loadedNParallel: committedSlots,
+          nBatch: committedNBatch,
+          loadedNBatch: committedNBatch,
+          nUbatch: committedNUbatch,
+          loadedNUbatch: committedNUbatch,
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
           defaultChatTemplate: resp.chat_template ?? null,
@@ -1973,8 +2009,9 @@ export function SharedComposer({
       />
       <div className="composer-action-wrapper">
         <div
+          ref={pillRowRef}
           className="flex min-w-0 flex-wrap items-center gap-0.5"
-          data-pill-compact={pillsCompact ? "true" : undefined}
+          data-pill-compact={pillCompact}
         >
           <input
             ref={fileInputRef}

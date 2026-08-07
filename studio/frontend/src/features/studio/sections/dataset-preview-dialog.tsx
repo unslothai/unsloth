@@ -558,7 +558,7 @@ export function DatasetPreviewDialog({
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
-        className="sm:max-w-5xl w-[90vw] max-h-[88vh] flex flex-col gap-0 p-0 overflow-hidden rounded-3xl corner-squircle"
+        className="sm:max-w-5xl w-[90vw] max-h-[88dvh] flex flex-col gap-0 p-0 overflow-hidden rounded-3xl corner-squircle"
         showCloseButton={true}
       >
         {/* Header */}

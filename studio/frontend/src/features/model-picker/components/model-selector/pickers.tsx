@@ -3540,6 +3540,7 @@ export function HubModelPicker({
       isLora: false,
       loadId: c.load_id,
       ggufVariant: variant.quant,
+      ggufFilename: variant.filename,
       isDownloaded: true,
       expectedBytes,
       isGguf: true,

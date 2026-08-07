@@ -175,7 +175,7 @@ export function LiveTrainingView(): ReactElement {
     (isWaitingForFirstStep && runtime.currentStep <= 0);
 
   return (
-    <div className={cn("relative", showOverlay && "min-h-[72vh]")}>
+    <div className={cn("relative", showOverlay && "min-h-[72dvh]")}>
       <div
         className={cn(
           "relative z-10 flex flex-col gap-6 transition-[filter]",

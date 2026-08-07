@@ -1,11 +1,11 @@
 
 
 
+import { Spinner } from "@/components/ui/spinner";
 import type { UpdateStatus } from "@/hooks/use-tauri-update";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 import { AnimatePresence, motion } from "motion/react";
-import { Spinner } from "@/components/ui/spinner";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 
 interface UpdateScreenProps {
   status: UpdateStatus;
@@ -68,28 +68,21 @@ function statusSubtext(status: UpdateStatus, progress: number): string {
   }
 }
 
-function LogViewer({ logs }: { logs: string[] }) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [logs]);
-
-  if (logs.length === 0) return null;
+function UpdateDetails({ logs }: { logs: string[] }) {
+  if (logs.length === 0) {
+    return null;
+  }
 
   return (
-    <div
-      ref={scrollRef}
-      className="mt-4 h-[180px] w-full max-w-xl overflow-y-auto rounded-lg border border-border/40 bg-muted/30 p-3 font-mono text-ui-11 leading-relaxed text-muted-foreground"
-    >
-      {logs.map((line, i) => (
-        <div key={i} className="whitespace-pre-wrap break-all">
-          {line}
-        </div>
-      ))}
-    </div>
+    <details className="group mt-2 w-full max-w-sm text-left">
+      <summary className="mx-auto w-fit cursor-pointer select-none rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <span className="group-open:hidden">Show update details</span>
+        <span className="hidden group-open:inline">Hide update details</span>
+      </summary>
+      <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border/50 bg-muted/30 p-3 font-mono text-ui-10 leading-relaxed text-muted-foreground">
+        {logs.join("\n")}
+      </pre>
+    </details>
   );
 }
 
@@ -116,7 +109,10 @@ export function UpdateScreen({
         setManualMessage(null);
       } else {
         setManualReport(result.report);
-        setManualMessage(result.error ?? "Clipboard copy failed. Select and copy the diagnostics below.");
+        setManualMessage(
+          result.error ??
+            "Clipboard copy failed. Select and copy the diagnostics below.",
+        );
       }
     } catch (copyError) {
       setManualReport(null);
@@ -127,93 +123,101 @@ export function UpdateScreen({
   }
 
   return (
-    <div className="box-border flex h-full w-full overflow-y-auto bg-background">
-      <motion.div
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4, ease: EASE_OUT_QUART }}
-        className="mx-auto flex min-h-full w-full max-w-xl flex-col items-center justify-center px-6 pb-6 pt-[var(--studio-startup-top-inset,0px)]"
-      >
-        <Logo />
-
-        <div className="mt-8 flex flex-col items-center gap-2">
-          {!isError && <Spinner className="size-6 text-primary" />}
-          <p className="text-sm font-semibold text-foreground">
-            {statusLabel(status)}
-          </p>
-          <p className="text-xs text-muted-foreground">
-            {statusSubtext(status, progress)}
-          </p>
-        </div>
-
-        {/* Download progress bar */}
-        {status === "downloading" && (
-          <div className="mt-4 h-1.5 w-full max-w-xs overflow-hidden rounded-full bg-muted">
-            <motion.div
-              className="h-full rounded-full bg-primary"
-              initial={{ width: 0 }}
-              animate={{ width: `${progress}%` }}
-              transition={{ duration: 0.3 }}
-            />
+    <div className="box-border flex h-full w-full flex-col items-center overflow-y-auto bg-background pb-6 pt-[var(--studio-startup-top-inset,0px)]">
+      <div className="flex min-h-0 w-full max-w-md flex-1 items-center justify-center px-6">
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.2, ease: EASE_OUT_QUART }}
+          className="flex h-full w-full flex-col items-center text-center"
+        >
+          <div className="flex flex-1 items-center">
+            <Logo />
           </div>
-        )}
 
-        {/* Error display */}
-        <AnimatePresence>
-          {isError && error && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              exit={{ opacity: 0, height: 0 }}
-              className="mt-4 w-full max-w-xl rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3"
+          <div className="mb-10 flex w-full flex-col items-center gap-2">
+            {!isError && <Spinner className="size-6 text-primary" />}
+            <p
+              className={
+                isError
+                  ? "text-sm font-medium text-destructive"
+                  : "text-sm font-bold text-foreground"
+              }
             >
-              <p className="text-xs text-destructive">{error}</p>
-            </motion.div>
-          )}
-        </AnimatePresence>
+              {statusLabel(status)}
+            </p>
+            <p className="text-sm text-muted-foreground">
+              {statusSubtext(status, progress)}
+            </p>
 
-        {/* Error actions */}
-        {isError && (
-          <div className="mt-4 flex items-center gap-2">
-            <button
-              type="button"
-              className="rounded-lg bg-muted px-5 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/80"
-              onClick={() => void handleCopyDiagnostics()}
-            >
-              {copying ? "Copying..." : "Copy Diagnostics"}
-            </button>
-            <button
-              type="button"
-              className="rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/80"
-              onClick={onRetry}
-            >
-              Retry
-            </button>
-            <button
-              type="button"
-              className="rounded-lg bg-muted px-5 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/80"
-              onClick={onSkipRestart}
-            >
-              Skip & Restart
-            </button>
+            {status === "downloading" && (
+              <div className="mt-2 h-1.5 w-full max-w-xs overflow-hidden rounded-full bg-muted">
+                <motion.div
+                  className="h-full rounded-full bg-primary"
+                  initial={{ width: 0 }}
+                  animate={{ width: `${progress}%` }}
+                  transition={{ duration: 0.3 }}
+                />
+              </div>
+            )}
+
+            <AnimatePresence>
+              {isError && error && (
+                <motion.p
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="max-w-md text-xs text-muted-foreground"
+                >
+                  {error}
+                </motion.p>
+              )}
+            </AnimatePresence>
+
+            {isError && (
+              <div className="mt-2 flex flex-wrap items-center justify-center gap-2">
+                <button
+                  type="button"
+                  className="rounded-lg bg-muted px-5 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/80"
+                  onClick={() => void handleCopyDiagnostics()}
+                >
+                  {copying ? "Copying..." : "Copy Diagnostics"}
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/80"
+                  onClick={onRetry}
+                >
+                  Retry
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg bg-muted px-5 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-muted/80"
+                  onClick={onSkipRestart}
+                >
+                  Skip & Restart
+                </button>
+              </div>
+            )}
+
+            {manualMessage && (
+              <p className="mt-1 max-w-md text-xs text-destructive">
+                {manualMessage}
+              </p>
+            )}
+            {manualReport && (
+              <textarea
+                readOnly
+                value={manualReport}
+                onFocus={(event) => event.currentTarget.select()}
+                className="mt-1 h-32 w-full max-w-md resize-none rounded-lg border border-border/50 bg-muted/30 p-2 text-left font-mono text-ui-10 text-muted-foreground"
+              />
+            )}
+
+            <UpdateDetails logs={logs} />
           </div>
-        )}
-
-        {manualMessage && (
-          <p className="mt-3 max-w-xl text-center text-xs text-destructive">{manualMessage}</p>
-        )}
-        {manualReport && (
-          <textarea
-            readOnly
-            value={manualReport}
-            onFocus={(event) => event.currentTarget.select()}
-            className="mt-2 h-32 w-full max-w-xl resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-ui-10 text-muted-foreground"
-          />
-        )}
-
-        {/* Log viewer */}
-        <LogViewer logs={logs} />
-      </motion.div>
+        </motion.div>
+      </div>
     </div>
   );
 }

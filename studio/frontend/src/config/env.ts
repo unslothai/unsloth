@@ -37,6 +37,11 @@ interface PlatformState {
   // until a first-use operation detects, so the sidebar polls on this.
   detectionDeferred: boolean;
   isChatOnly: () => boolean;
+  // True until /api/health has answered with a server-measured verdict. Before that `chatOnly`
+  // is the browser-platform seed below, not an answer, so anything that would gray a
+  // capability out has to treat it as unknown: rendering the guess blacks out Train and Video
+  // on every Mac from first paint, visually identical to a measured "unsupported".
+  capabilitiesUnknown: () => boolean;
 }
 
 // Client-side fallback when backend isn't ready yet.
@@ -53,6 +58,9 @@ const localDeviceType = detectLocalPlatform();
 
 export const usePlatformStore = create<PlatformState>()((_, get) => ({
   deviceType: localDeviceType,
+  // A guess from the user agent, kept only as the pre-measurement fallback for the redirects
+  // that must decide something before /api/health answers. Capability gating must read
+  // capabilitiesUnknown() first and hold, not gray a tab out on this.
   chatOnly: localDeviceType === "mac",
   chatOnlyReason: null,
   cloudflareUrl: null,
@@ -61,6 +69,14 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   fetched: false,
   detectionDeferred: false,
   isChatOnly: () => get().chatOnly,
+  // `fetched` already means "a server-reported verdict is stored" (see fetchDeviceType), so it
+  // is the unknown/known line; no second flag to keep in step with it. A deferred reply counts
+  // as settled even though it carries no device_type: under the torch-warm kill switch nothing
+  // else is coming this session, so treating it as unknown would spin the tabs forever.
+  capabilitiesUnknown: () => {
+    const state = get();
+    return !state.fetched && !state.detectionDeferred;
+  },
 }));
 
 // Once an authoritative (server-reported) platform has been fetched, a

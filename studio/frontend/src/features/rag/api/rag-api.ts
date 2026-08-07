@@ -13,6 +13,7 @@ import type {
   RagDocument,
   UploadedDocument,
 } from "../types/rag";
+import { noteRagAvailability, noteRagResponse } from "./rag-availability";
 
 const RAG_BASE = "/api/rag";
 
@@ -35,8 +36,14 @@ async function ragRequest<T>(
     headers: init?.body ? { "Content-Type": "application/json" } : undefined,
     body: init?.body ? JSON.stringify(init.body) : undefined,
   });
-  if (response.status === 204) return undefined as T;
+  if (response.status === 204) {
+    noteRagResponse(204, null);
+    return undefined as T;
+  }
   const json = await response.json().catch(() => null);
+  // Every RAG endpoint but the list gates on the extension loading, so its status is
+  // also an availability answer. See api/rag-availability.
+  noteRagResponse(response.status, json);
   if (!response.ok) throw new Error(parseErrorText(response.status, json));
   return json as T;
 }
@@ -66,14 +73,21 @@ async function ragUpload(
     body: form,
   });
   const json = await response.json().catch(() => null);
+  // Uploads bypass ragRequest, so they have to report availability themselves.
+  noteRagResponse(response.status, json);
   if (!response.ok) throw new Error(parseErrorText(response.status, json));
   return json as DocumentUploadResult;
 }
 
 export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
-  const data = await ragRequest<{ knowledgeBases: KnowledgeBase[] }>(
-    "/knowledge-bases",
-  );
+  const data = await ragRequest<{
+    knowledgeBases: KnowledgeBase[];
+    ragAvailable?: boolean;
+    ragUnavailableReason?: string | null;
+  }>("/knowledge-bases");
+  // The one endpoint that degrades to 200 instead of 503, so an empty list here means
+  // either an empty store or a host where RAG cannot run. The marker tells them apart.
+  noteRagAvailability(data);
   return data.knowledgeBases ?? [];
 }
 
@@ -240,6 +254,8 @@ export async function* streamJobEvents(
   );
   if (!response.ok) {
     const body = await response.json().catch(() => null);
+    // Also gated on the extension, and also not routed through ragRequest.
+    noteRagResponse(response.status, body);
     throw new Error(parseErrorText(response.status, body));
   }
   if (!response.body) throw new Error("Stream response missing body");

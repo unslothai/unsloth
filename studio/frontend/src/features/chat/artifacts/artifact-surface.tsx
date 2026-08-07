@@ -196,7 +196,7 @@ export function ArtifactSurface({
         "relative flex min-h-0 flex-col bg-background",
         variant === "panel"
           ? "artifact-panel-shell mx-2 mt-[90px] mb-8 h-[calc(100%_-_122px)] overflow-visible rounded-[28px] border-t border-border/70 bg-card/95"
-          : "h-[min(92vh,900px)] w-[min(96vw,1200px)] overflow-hidden rounded-2xl border border-border shadow-xl",
+          : "h-[min(92dvh,900px)] w-[min(96vw,1200px)] overflow-hidden rounded-2xl border border-border shadow-xl",
       )}
       aria-label={`${artifact.title} canvas`}
     >
@@ -331,8 +331,6 @@ export function ArtifactSurface({
             code={artifact.code}
             title={artifact.title}
             fill={true}
-            // Network mode only for tool-rendered canvases, never fences.
-            allowNetworkAccess={artifact.source === "tool"}
             className="h-full"
           />
         ) : (

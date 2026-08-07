@@ -246,7 +246,7 @@ export function DiffusionTrainDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[85vh] max-w-lg flex-col">
+      <DialogContent className="flex max-h-[85dvh] max-w-lg flex-col">
         <DialogHeader>
           <DialogTitle>Train an SDXL LoRA</DialogTitle>
           <DialogDescription>
@@ -422,7 +422,7 @@ export function DiffusionTrainDialog({
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="grid gap-1.5">
                   <Label className="text-xs">Learning rate</Label>
                   <Input

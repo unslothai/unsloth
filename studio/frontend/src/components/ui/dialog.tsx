@@ -89,8 +89,19 @@ function DialogContent({
         <DialogPrimitive.Content
           data-slot="dialog-content"
           className={cn(
-            "bg-background data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 ring-foreground/5 grid max-w-[calc(100%-2rem)] gap-6 rounded-4xl px-7 pt-8 pb-7 text-sm ring-1 duration-100 sm:max-w-md top-1/2 left-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2",
-            position === "fixed" ? "fixed" : "absolute",
+            // max-h + scroll keeps tall dialogs reachable on short viewports; a call site
+            // managing its own height overrides both (twMerge drops the base classes).
+            "bg-background data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 ring-foreground/5 grid max-h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] max-w-[calc(100%-2rem)] gap-6 overflow-y-auto rounded-4xl px-7 pt-8 pb-7 text-sm ring-1 duration-100 sm:max-w-md top-1/2 left-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2",
+            // Viewport-fixed dialogs center below the desktop titlebar, which paints over them at
+            // z-70, and fill the screen at phone width instead of floating on a sliver of backdrop.
+            // Both are viewport-sized, so neither applies to a dialog portaled into a container.
+            position === "fixed"
+              // translate-none, not translate-x-0: a zero translate is still not `none`, so it
+              // keeps making this a containing block and the close button below stops being fixed.
+              // The phone branch starts below the chrome too, since a desktop window can reach
+              // this breakpoint in CSS px under Windows text scaling. On web the var is 0px.
+              ? "fixed top-[calc(50%+var(--studio-window-chrome-top,0px)/2)] max-sm:top-[var(--studio-window-chrome-top,0px)] max-sm:left-0 max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:max-h-none max-sm:max-w-none max-sm:translate-none max-sm:rounded-none max-sm:ring-0"
+              : "absolute",
             className,
           )}
           {...props}
@@ -100,7 +111,16 @@ function DialogContent({
             <DialogPrimitive.Close data-slot="dialog-close" asChild>
               <Button
                 variant="ghost"
-                className="absolute top-5 right-5"
+                // fixed on phones so the close stays put while a full-screen dialog scrolls; a
+                // container-portaled dialog is not full screen, so it keeps the absolute corner.
+                // Once fixed it is viewport-relative, so it needs the same chrome offset the
+                // dialog above takes: at top-5 alone it lands under the z-70 desktop titlebar,
+                // and its top-right corner sits on the window's own close button. 0px on web.
+                className={cn(
+                  "absolute top-5 right-5 z-10",
+                  position === "fixed" &&
+                    "max-sm:fixed max-sm:top-[calc(1.25rem+var(--studio-window-chrome-top,0px))]",
+                )}
                 size="icon-sm"
               >
                 <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} />

@@ -15,6 +15,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { Ref } from "react";
+import type { HubFailure } from "@/features/hub/lib/network";
 import { useLayoutEffect, useMemo, useState } from "react";
 import {
   inventoryRowMatches,
@@ -96,6 +97,7 @@ export function DiscoverList({
   suppressEmptyState = false,
   sentinelRef,
   searchError,
+  searchFailure,
   online,
   isDataset,
   deviceType,
@@ -120,6 +122,7 @@ export function DiscoverList({
   suppressEmptyState?: boolean;
   sentinelRef: Ref<HTMLDivElement>;
   searchError: string | null;
+  searchFailure?: HubFailure | null;
   online: boolean;
   isDataset: boolean;
   deviceType: string | null;
@@ -150,7 +153,8 @@ export function DiscoverList({
 
   return (
     <>
-      {online ? (
+      {/* Keep fetched results on screen when the Hub becomes unreachable. */}
+      {online || discoverRows.length > 0 ? (
         discoverRows.length > 0 ? (
           <>
             <VirtualRows
@@ -187,11 +191,22 @@ export function DiscoverList({
                 )
               }
             />
-            {hasMore && (
+            {/* searchFailure, not `online`: that is the backoff TTL, which
+                lapses on a timer, so the notice and its Retry vanished before
+                anything had proved recovery. The cause clears on success. It
+                covers the avatar and card case too, which marks the same origin
+                without the listing ever failing. */}
+            {(hasMore || searchError || searchFailure) && (
               <DiscoverFetchMoreFooter
                 hasActiveFilters={hasActiveFilters}
                 isLoadingMore={isLoadingMore}
                 onFetchMore={onFetchMore}
+                // searchFailure too: the footer is retained over an outage the
+                // listing never saw, and useHubInfiniteScroll is gated on
+                // reachability, so the button was visible and inert meanwhile.
+                failed={Boolean(searchError || searchFailure)}
+                failureText={searchFailure?.message ?? searchError ?? ""}
+                onRetry={onRetry}
               />
             )}
           </>
@@ -199,6 +214,7 @@ export function DiscoverList({
           <NetworkErrorState
             online={online}
             message={searchError}
+            failure={searchFailure}
             onRetry={onRetry}
             resourceLabel={isDataset ? "datasets" : "models"}
           />
@@ -230,7 +246,10 @@ export function DiscoverList({
       ) : suppressEmptyState ? null : (
         <NetworkErrorState
           online={online}
-          message="Discovery is unavailable while offline."
+          // The classified failure supplies the wording; the raw SDK error
+          // appends the request URL, which carries the query.
+          message={searchFailure ? "" : (searchError ?? "")}
+          failure={searchFailure}
           onRetry={onRetry}
           onSwitchDevice={onSwitchDevice}
           resourceLabel={isDataset ? "datasets" : "models"}

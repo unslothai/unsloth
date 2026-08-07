@@ -8,6 +8,7 @@ import "./index.css";
 import { App } from "./app/app";
 import { fetchDeviceType } from "./config/env";
 import { initializeLocale } from "./i18n";
+import { isTauri } from "./lib/api-base";
 
 const globalCrypto = globalThis.crypto as Crypto | undefined;
 
@@ -35,6 +36,10 @@ if (!rootElement) {
 }
 
 initializeLocale();
+
+if (isTauri) {
+  document.documentElement.classList.add("tauri");
+}
 
 // Rasterization follows the browser OS, not the potentially remote server.
 // This adjustment is calibrated for desktop Linux, so exclude Android.

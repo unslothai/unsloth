@@ -165,7 +165,12 @@ export function createSettingsSearchIndex(
   }
   return {
     ...SETTINGS_SEARCH_INDEX,
-    general: [...SETTINGS_SEARCH_INDEX.general, "settings.about.updates"],
+    general: [
+      ...SETTINGS_SEARCH_INDEX.general,
+      "settings.about.updates",
+      "settings.general.startup.sectionTitle",
+      "settings.general.startup.launchAtLogin",
+    ],
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",
     ),

@@ -249,7 +249,7 @@ export function DownloadManagerPanel({
               />
             </button>
           </div>
-          <ul className="max-h-[60vh] divide-y divide-foreground/[0.06] overflow-y-auto [scrollbar-width:thin]">
+          <ul className="max-h-[60dvh] divide-y divide-foreground/[0.06] overflow-y-auto [scrollbar-width:thin]">
             {jobKeys.map((jobKey) => (
               <DownloadRow key={jobKey} jobKey={jobKey} />
             ))}
