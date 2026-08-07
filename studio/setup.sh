@@ -302,14 +302,37 @@ _llama_jobs_for() {
     printf '%s' "$_jobs"
 }
 
-# Total physical RAM in MiB; empty when it cannot be read.
+# Echo the cgroup memory limit in MiB, or nothing. Args: the v2 then v1 limit
+# files, first readable numeric one wins. v2 writes "max" and v1 an enormous
+# sentinel when unlimited; neither parses as a limit worth applying.
+_cgroup_limit_mb() {
+    local _f _raw
+    for _f in "$@"; do
+        [ -r "$_f" ] || continue
+        _raw=$(cat "$_f" 2>/dev/null || true)
+        [[ "$_raw" =~ ^[0-9]+$ ]] || continue
+        printf '%d' "$(( _raw / 1048576 ))"
+        return 0
+    done
+    return 0
+}
+
+# Total RAM in MiB; empty when it cannot be read. /proc/meminfo is not namespaced,
+# so it reports the host inside a container and a memory-limited Docker or
+# Kubernetes build would budget from the host and get OOM-killed. A lower cgroup
+# limit wins; v1's unlimited sentinel never is one.
 _total_ram_mb() {
-    local _bytes
+    local _bytes _mb="" _limit
     if [ -r /proc/meminfo ]; then
-        awk '/^MemTotal:/ { printf "%d", $2 / 1024; exit }' /proc/meminfo
+        _mb=$(awk '/^MemTotal:/ { printf "%d", $2 / 1024; exit }' /proc/meminfo)
     elif _bytes=$(sysctl -n hw.memsize 2>/dev/null); then
-        [[ "$_bytes" =~ ^[0-9]+$ ]] && printf '%d' "$(( _bytes / 1048576 ))"
+        [[ "$_bytes" =~ ^[0-9]+$ ]] && _mb=$(( _bytes / 1048576 ))
     fi
+    _limit=$(_cgroup_limit_mb /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory/memory.limit_in_bytes)
+    if [[ "$_limit" =~ ^[0-9]+$ ]] && [ "$_limit" -ge 1 ]; then
+        if [ -z "$_mb" ] || [ "$_limit" -lt "$_mb" ]; then _mb=$_limit; fi
+    fi
+    printf '%s' "$_mb"
     return 0
 }
 

@@ -67,6 +67,68 @@ assert_eq "override wins over cores" "64" "$(run_jobs 4 4096 64)"
 assert_eq "zero override ignored" "7" "$(run_jobs 20 16384 0)"
 assert_eq "junk override ignored" "7" "$(run_jobs 20 16384 "lots")"
 
+# ── Container limits ──
+# /proc/meminfo is not namespaced, so it reports the host's RAM inside a
+# container. Without this a 4 GB container on a big host budgets from the host
+# and the build gets OOM-killed.
+_CG_FILE=$(mktemp)
+sed -n '/^_cgroup_limit_mb()/,/^}/p' "$SETUP_SH" > "$_CG_FILE"
+if [ ! -s "$_CG_FILE" ]; then
+    echo "FAIL: could not extract _cgroup_limit_mb from setup.sh"
+    exit 1
+fi
+
+_TMPD=$(mktemp -d)
+run_cgroup() {
+    bash -c ". '$_CG_FILE'; _cgroup_limit_mb \"\$@\"" _ "$@"
+}
+
+echo "=== cgroup limit ==="
+
+# 1) cgroup v2 in a 4 GB container.
+printf '4294967296' > "$_TMPD/v2"
+assert_eq "v2 limit read as MiB" "4096" "$(run_cgroup "$_TMPD/v2")"
+
+# 2) v2 on an unconstrained host writes the literal "max".
+printf 'max' > "$_TMPD/v2max"
+assert_eq "v2 'max' is not a limit" "" "$(run_cgroup "$_TMPD/v2max")"
+
+# 3) v1 in a 2 GB container, reached only when v2 is absent.
+printf '2147483648' > "$_TMPD/v1"
+assert_eq "v1 limit read as MiB" "2048" "$(run_cgroup "$_TMPD/missing" "$_TMPD/v1")"
+
+# 4) v1's unlimited sentinel is enormous, so it loses the min() below.
+printf '9223372036854771712' > "$_TMPD/v1max"
+assert_eq "v1 sentinel is astronomically large" "8796093022207" "$(run_cgroup "$_TMPD/v1max")"
+
+# 5) No cgroup files at all: nothing to report.
+assert_eq "absent files report nothing" "" "$(run_cgroup "$_TMPD/missing" "$_TMPD/also-missing")"
+
+# 6) v2 wins when both exist, since it is passed first.
+assert_eq "v2 wins over v1" "4096" "$(run_cgroup "$_TMPD/v2" "$_TMPD/v1")"
+
+# The min() that ties it together. _total_ram_mb hardcodes the real cgroup paths,
+# so stub the reader to prove the wiring rather than just the parts.
+_RAM_FILE=$(mktemp)
+sed -n '/^_total_ram_mb()/,/^}/p' "$SETUP_SH" > "$_RAM_FILE"
+# The stub ignores the real paths _total_ram_mb passes it and echoes $FAKE_LIMIT.
+run_total_ram() {
+    FAKE_LIMIT="$1" bash -c \
+        '. "$1"; _cgroup_limit_mb() { printf "%s" "$FAKE_LIMIT"; }; _total_ram_mb' _ "$_RAM_FILE"
+}
+_HOST_MB=$(run_total_ram "")
+
+# A limit below host RAM wins; one above it, including v1's sentinel, does not.
+assert_eq "a lower cgroup limit wins" "512" "$(run_total_ram 512)"
+assert_eq "a higher limit is ignored" "$_HOST_MB" "$(run_total_ram 8796093022207)"
+assert_eq "no limit leaves host RAM" "$_HOST_MB" "$(run_total_ram "")"
+assert_eq "a zero limit is ignored" "$_HOST_MB" "$(run_total_ram 0)"
+
+# End to end: a 4 GB container on this host builds at -j1, not -j(cores).
+assert_eq "4 GB container floors at 1 job" "1" "$(run_jobs 20 "$(run_total_ram 4096)" "")"
+
+rm -rf "$_TMPD" "$_CG_FILE" "$_RAM_FILE"
+
 # ── Windows parity (static check) ──
 # setup.ps1 carries its own copy because it cannot source setup.sh. The user who
 # reported this was on Windows, so a cap that only lands on Unix fixes nothing.
