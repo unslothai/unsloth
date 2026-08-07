@@ -94,7 +94,7 @@ _POSIX_READ = re.compile(
 _BARE_READ = re.compile(
     r"(?:^|[;&(]|\b(?:if|elif|then|else)\b)\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
     # No variable name at all is valid: the answer lands in $REPLY.
-    r"read(?:\s+(?:-[a-zA-Z0-9]+|\d+))*(?:\s+[A-Za-z_][A-Za-z0-9_]*)*"
+    r"read(?:\s+(?:-[a-zA-Z0-9]+|[\d.]+|\"\"|''))*(?:\s+[A-Za-z_][A-Za-z0-9_]*)*"
     r"(?:\s*(?:;|\|\||&&).*)?\s*$"
 )
 _LOOP = re.compile(r"\b(?:while|until|for)\b")
@@ -111,7 +111,7 @@ _PWSH_READ = re.compile(
 # The Python helpers setup runs, and the batch launcher.
 _PY_READ = re.compile(
     r"(?<![.\w])(?:input|getpass)\s*\(|getpass\.getpass\s*\("
-    r"|click\.confirm\s*\(|sys\.stdin\.read(?:line)?\s*\("
+    r"|click\.confirm\s*\(|sys\.stdin(?:\.buffer)?\.read(?:line)?\s*\("
 )
 # In command position: starting the line or a `&`-joined command, after `do`, or
 # as the body of a single-line `if`. Echoing the word `choice` is not a prompt.
@@ -128,8 +128,8 @@ _HELPER_REF = re.compile(r"(?<![$\w])((?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.
 
 _QUOTED = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"' r"|'([^']*)'")
 
-# Quoted text that still runs: a shell or PowerShell subexpression, an f-string field.
-_EXECUTES = re.compile(r"\$\(|\{[^}]*\(")
+# An f-string field that calls something.
+_FIELD = re.compile(r"\{[^}]*\(")
 
 # `<# ... #>` opened and closed on one line.
 _INLINE_BLOCK = re.compile(r"<#.*?#>", re.DOTALL)
@@ -151,11 +151,22 @@ def _is_comment(line: str) -> bool:
     return line.lstrip().startswith("#")
 
 
-def _blank_strings(line: str) -> str:
-    """Blank quoted text so a message naming an input API is not one. A `$(...)`
-    subexpression or an f-string field is kept: those execute, and both PowerShell
-    and Python really do prompt from inside a string."""
-    return _QUOTED.sub(lambda m: m.group(0) if _EXECUTES.search(m.group(0)) else '""', line)
+def _blank_strings(line: str, script: str = "") -> str:
+    """Blank quoted text so a message naming an input API is not one. A string that
+    still executes is kept: a `$(...)` in a double-quoted shell or PowerShell string,
+    a field in an f-string. Single quotes and a missing f prefix are literal."""
+
+    def keep(match: re.Match) -> str:
+        text = match.group(0)
+        if script.endswith(".py"):
+            # Past the quotes, so a triple-quoted f-string keeps its prefix.
+            prefix = line[: match.start()].rstrip("\"'")[-2:].lower()
+            expands = "f" in prefix and _FIELD.search(text)
+        else:
+            expands = text.startswith('"') and "$(" in text
+        return text if expands else '""'
+
+    return _QUOTED.sub(keep, line)
 
 
 def _is_interactive_read(line: str, script: str) -> bool:
@@ -163,18 +174,23 @@ def _is_interactive_read(line: str, script: str) -> bool:
     `set /p`, or plain inherited stdin. Redirected and loop reads consume a file, not
     a person. Quoted text is blanked first, so a message naming `Read-Host` is not
     one."""
-    code = _blank_strings(line)
+    code = _blank_strings(line, script)
     if script.endswith(".ps1"):
         return bool(_PWSH_READ.search(code))
     if script.endswith(".py"):
         return bool(_PY_READ.search(code))
     if script.endswith(".bat"):
-        return bool(_BAT_READ.search(code))
+        # `set /p version=<VERSION.txt` reads the file, not the user.
+        return "<" not in code and bool(_BAT_READ.search(code))
     if _POSIX_READ.search(code) or _SELECT.search(code):
         return True
-    # `||` is a fallback, not a pipeline: `read -r reply || reply=n` still blocks.
-    piped = "|" in code.replace("||", "")
-    return "<" not in code and not piped and bool(_BARE_READ.search(code))
+    # Per command: in `read -r reply; echo done | tee log` the pipe is the echo's.
+    # `||` is a fallback, not a pipeline, and leaves the read on the terminal.
+    for command in code.split(";"):
+        piped = "|" in command.replace("||", "")
+        if "<" not in command and not piped and _BARE_READ.search(command):
+            return True
+    return False
 
 
 # `<<EOF`, not the `<<<` here-string, and not inside a quoted string: install.sh
@@ -185,18 +201,21 @@ _HEREDOC = re.compile(r"<<(?!<)-?\s*[\"']?([A-Za-z_][A-Za-z0-9_]*)[\"']?")
 def _blank_heredocs(lines: list[str]) -> list[str]:
     """Blank heredoc bodies, keeping the line count. A `read -r reply` shown in a
     help text is documentation: scripts/uninstall.sh already prints one."""
-    out = []
+    out = list(lines)
     terminator = ""
-    for line in lines:
+    start = 0
+    for index, line in enumerate(lines):
         if terminator:
-            out.append("")
             if line.strip() == terminator:
+                out[start:index] = [""] * (index - start)
                 terminator = ""
             continue
-        out.append(line)
-        match = _HEREDOC.search(_blank_strings(line))
+        # Openers come from code: not from a string, not from an inline comment.
+        match = _HEREDOC.search(_blank_strings(line).split("#")[0])
         if match:
-            terminator = match.group(1)
+            terminator, start = match.group(1), index + 1
+    # An unterminated opener was not one. Blanking to EOF would silently blind the
+    # scan for the rest of the file, prompts included.
     return out
 
 
@@ -212,8 +231,9 @@ def _redirected_loop_bodies(lines: list[str]) -> set[int]:
             if not opened:
                 continue
             start = opened.pop()
-            # Only an input redirection feeds them: `done | tee` pipes the output.
-            if "<" in line:
+            # Only stdin feeds them: `done | tee` pipes the output away, and
+            # `done 3<config` opens a spare descriptor.
+            if re.search(r"(?<![1-9])<", line):
                 inside.update(range(start, index))
     return inside
 
@@ -279,7 +299,7 @@ def _quoted_strings(line: str) -> list[str]:
             if not group:
                 continue
             found.append(group)
-            if _EXECUTES.search(group):
+            if "$(" in group or _FIELD.search(group):
                 found.extend(_quoted_strings(group))
     return found
 
@@ -430,6 +450,7 @@ def test_every_installer_script_is_scanned():
         "studio/setup*.ps1",
         "studio/setup*.bat",
         "install*.bat",
+        "install*.py",
         "studio/install_*.py",
         "scripts/install*.sh",
         "scripts/install*.ps1",
@@ -607,6 +628,46 @@ def test_detects_an_assignment_prefixed_read():
     assert [question for _, _, question in find_prompts("install.sh", source)] == [
         "continue with installation?",
     ]
+
+
+def test_an_inline_comment_does_not_open_a_heredoc():
+    source = ': # example uses <<EOF\nprintf "  Enable telemetry? "\nread -r _reply\n'
+    questions = [question for _, _, question in find_prompts("install.sh", source)]
+    assert "enable telemetry?" in questions
+
+
+def test_an_unterminated_heredoc_opener_blanks_nothing():
+    """Blanking to end of file would silently blind the scan for the rest of it."""
+    source = 'cat <<EOF\nstuff\nprintf "  Enable telemetry? "\nread -r _reply\n'
+    questions = [question for _, _, question in find_prompts("install.sh", source)]
+    assert "enable telemetry?" in questions
+
+
+def test_a_pipe_on_a_later_command_does_not_feed_the_read():
+    source = 'printf "  Enable telemetry? "\nread -r _reply; echo done | tee install.log\n'
+    questions = [question for _, _, question in find_prompts("install.sh", source)]
+    assert "enable telemetry?" in questions
+
+
+def test_a_spare_descriptor_on_the_done_is_not_stdin():
+    source = (
+        'while true; do\n    printf "  Enable telemetry? "\n    read -r _reply\ndone 3<config\n'
+    )
+    questions = [question for _, _, question in find_prompts("install.sh", source)]
+    assert "enable telemetry?" in questions
+
+
+def test_ignores_code_shaped_text_in_a_literal_string():
+    """Single quotes do not expand in PowerShell, and a plain Python string has no
+    fields. Keeping those would fail CI on a diagnostic message."""
+    assert find_prompts("install.ps1", "Write-Host 'Example: $(Read-Host \"Q?\")'\n") == []
+    assert (
+        find_prompts("studio/install_python_stack.py", "print(\"Example: {input('Q?')}\")\n") == []
+    )
+
+
+def test_ignores_a_batch_read_from_a_file():
+    assert find_prompts("studio/setup.bat", "set /p version=<VERSION.txt\n") == []
 
 
 def test_detects_a_read_followed_by_another_command():
