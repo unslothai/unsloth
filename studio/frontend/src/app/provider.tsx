@@ -404,6 +404,9 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const usesCustomTitlebar = shouldUseCustomWindowTitlebar();
   const usesNativeMacTitlebar = shouldUseNativeMacWindowTitlebar();
   const hidesTitlebarSidebar = HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
+  const contentOverflowClass = hidesTitlebarSidebar
+    ? "overflow-x-hidden overflow-y-auto"
+    : "overflow-hidden";
 
   useEffect(() => {
     if (!isTauri) return;
@@ -530,12 +533,6 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const showApp = status === "running" && desktopAuthReady;
   const startupStatus = status === "running" ? "starting" : status;
   const startupProgressDetail = progressDetail;
-  const usesCustomTitlebar = shouldUseCustomWindowTitlebar();
-  const usesNativeMacTitlebar = shouldUseNativeMacWindowTitlebar();
-  const hidesTitlebarSidebar = HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
-  const contentOverflowClass = hidesTitlebarSidebar
-    ? "overflow-x-hidden overflow-y-auto"
-    : "overflow-hidden";
 
   const content = showApp ? (
     <TauriUpdateLayer
