@@ -17,6 +17,7 @@ import { fetchDeviceType } from "@/config/env";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { DeepLinkHandler } from "@/features/deep-links";
 import { DownloadManagerPanel } from "@/features/hub/download-manager";
+import { LoadedModelsIndicator } from "@/features/loaded-models";
 import { NativeIntentDrain } from "@/features/native-intents/native-intent-drain";
 import {
   applyCustomizationToDocument,
@@ -513,6 +514,9 @@ function TauriWrapper({ children }: { children: ReactNode }) {
             enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)}
           />
           <DownloadManagerPanel positioned={false} />
+          {/* Last in the stack, so the persistent card sits at the corner and the
+              transient banners above it never cover it. */}
+          <LoadedModelsIndicator positioned={false} />
         </div>
       </>
     );
@@ -537,6 +541,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         enabled={!hidesTitlebarSidebar}
       />
       <DownloadManagerPanel positioned={false} />
+      <LoadedModelsIndicator positioned={false} />
     </TauriUpdateLayer>
   ) : (
     <StartupScreen

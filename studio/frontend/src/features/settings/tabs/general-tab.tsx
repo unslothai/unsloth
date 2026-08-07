@@ -16,6 +16,10 @@ import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
 import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
 import {
+  setShowLoadedModels,
+  useShowLoadedModels,
+} from "@/features/loaded-models";
+import {
   emitTrainingRunsChanged,
   TRAINING_UI_PREFERENCE_KEYS,
 } from "@/features/training";
@@ -162,6 +166,7 @@ export function GeneralTab() {
   const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
   const chatOnly = usePlatformStore((s) => s.chatOnly);
   const showLlamaUpdates = useShowLlamaUpdateBanner();
+  const showLoadedModels = useShowLoadedModels();
   const redirectTo = `${pathname}${search}`;
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
@@ -590,6 +595,17 @@ export function GeneralTab() {
           <Switch
             checked={showLlamaUpdates}
             onCheckedChange={setShowLlamaUpdateBanner}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.general.notifications.showLoadedModels")}
+          description={t(
+            "settings.general.notifications.showLoadedModelsDescription",
+          )}
+        >
+          <Switch
+            checked={showLoadedModels}
+            onCheckedChange={setShowLoadedModels}
           />
         </SettingsRow>
       </SettingsSection>
