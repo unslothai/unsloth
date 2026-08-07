@@ -1301,13 +1301,15 @@ def test_streamed_stop_reason_is_withheld_until_the_request_finishes(monkeypatch
     assert row()["stop_reason"] == "stop"
 
 
+@pytest.mark.parametrize("writer", ["note_stop_reason", "set_perf"])
 @pytest.mark.parametrize(
     "status, expected",
-    [("completed", "stop"), ("cancelled", None), ("failed", None)],
+    [("completed", "stop"), ("cancelled", None), ("failed", None), ("error", None)],
 )
-def test_accumulated_stop_reasons_resolve_only_for_completed_requests(status, expected):
-    # A cancelled n > 1 stream stopped its remaining choices rather than hearing from them,
-    # so the reasons in hand describe part of the request, not the request.
+def test_stop_reason_is_kept_only_by_completed_requests(writer, status, expected):
+    # A cancelled n > 1 stream stopped its remaining choices rather than hearing from
+    # them, and several local streams record "stop" through set_perf on the way out of a
+    # cancelled loop, before the cancellation is stamped. Neither describes how it ended.
     monitor = ApiMonitor(max_entries = 3)
     entry_id = monitor.start(
         endpoint = "/v1/completions",
@@ -1315,9 +1317,17 @@ def test_accumulated_stop_reasons_resolve_only_for_completed_requests(status, ex
         model = "m",
         prompt = "hi",
     )
-    monitor.note_stop_reason(entry_id, "stop")
-    monitor.finish(entry_id, status)
-    assert next(r for r in monitor.snapshot() if r["id"] == entry_id)["stop_reason"] == expected
+    if writer == "set_perf":
+        monitor.set_perf(entry_id, stop_reason = "stop")
+    else:
+        monitor.note_stop_reason(entry_id, "stop")
+    if status == "error":
+        monitor.fail(entry_id, "boom")
+    else:
+        monitor.finish(entry_id, status)
+    row = next(r for r in monitor.snapshot() if r["id"] == entry_id)
+    assert row["status"] == status
+    assert row["stop_reason"] == expected
 
 
 def test_non_streaming_stop_reason_survives_the_finish(monkeypatch):

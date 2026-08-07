@@ -404,8 +404,17 @@ class ApiMonitor:
             entry.updated_at = time.time()
 
     @staticmethod
-    def _resolve_stop_reason_locked(entry: ApiRequestEntry) -> None:
-        """Publish the accumulated finish reasons, if they agree."""
+    def _settle_stop_reason_locked(entry: ApiMonitorEntry, completed: bool) -> None:
+        """Fix the row's stop reason as it becomes terminal.
+
+        Only a completed request has one: a cancelled or failed stream stopped for that
+        reason, so any natural reason recorded on the way describes what it was doing
+        rather than how it ended. Clearing here catches the direct ``set_perf`` writers
+        too, which several streams reach before the cancellation is stamped.
+        """
+        if not completed:
+            entry.stop_reason = None
+            return
         seen = entry.stop_reasons_seen
         if seen:
             entry.stop_reason = next(iter(seen)) if len(seen) == 1 else None
@@ -462,10 +471,7 @@ class ApiMonitor:
             # already ran) must not move finished_*.
             if entry.finished_at is not None:
                 return
-            # Completed only: a cancelled stream stopped its remaining choices rather than
-            # hearing from them, so the reasons in hand describe part of the request.
-            if status == "completed":
-                self._resolve_stop_reason_locked(entry)
+            self._settle_stop_reason_locked(entry, status == "completed")
             now = time.time()
             entry.status = status
             entry.updated_at = now
@@ -502,6 +508,7 @@ class ApiMonitor:
             self._fail_locked(entry, error)
 
     def _fail_locked(self, entry: ApiMonitorEntry, error: str) -> None:
+        self._settle_stop_reason_locked(entry, False)
         now = time.time()
         entry.status = "error"
         entry.error = _trim(error, 1000)
