@@ -10,7 +10,6 @@ import {
   shouldUseCustomWindowTitlebar,
   shouldUseNativeMacWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
-import { SheetViewportInsetProvider } from "@/components/ui/sheet";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { WebUpdateBanner } from "@/components/web/update-banner";
@@ -54,7 +53,6 @@ const MIN_WINDOW_WIDTH = 900;
 const MIN_WINDOW_HEIGHT = 600;
 const SETUP_WINDOW_WIDTH = 760;
 const SETUP_WINDOW_HEIGHT = 560;
-const CUSTOM_TITLEBAR_HEIGHT = "34px";
 const MINIMUM_APP_WINDOW_SIZE: LogicalWindowSize = {
   width: MIN_WINDOW_WIDTH,
   height: MIN_WINDOW_HEIGHT,
@@ -320,7 +318,7 @@ const MAC_NATIVE_CHROME_STYLE = {
 
 const CUSTOM_CHROME_STYLE = {
   "--studio-titlebar-height": "0px",
-  "--studio-custom-titlebar-height": CUSTOM_TITLEBAR_HEIGHT,
+  "--studio-custom-titlebar-height": "34px",
   "--studio-desktop-titlebar-height": "34px",
   "--studio-sidebar-expanded-width": "17.5rem",
   "--studio-sidebar-collapsed-width": "3rem",
@@ -609,16 +607,14 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const showSidebarSurface = showApp && !hidesTitlebarSidebar;
 
   return (
-    <SheetViewportInsetProvider top={CUSTOM_TITLEBAR_HEIGHT}>
-      <div
-        className="relative h-dvh min-h-0 overflow-hidden bg-background"
-        style={CUSTOM_CHROME_STYLE}
-      >
-        {chromeVars}
-        <WindowTitlebar showSidebarSurface={showSidebarSurface} />
-        <div className="h-full min-h-0 overflow-hidden">{content}</div>
-      </div>
-    </SheetViewportInsetProvider>
+    <div
+      className="relative h-dvh min-h-0 overflow-hidden bg-background"
+      style={CUSTOM_CHROME_STYLE}
+    >
+      {chromeVars}
+      <WindowTitlebar showSidebarSurface={showSidebarSurface} />
+      <div className="h-full min-h-0 overflow-hidden">{content}</div>
+    </div>
   );
 }
 
