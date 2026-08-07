@@ -1642,10 +1642,12 @@ def test_hydration_clears_the_batch_baselines_for_a_batchless_model():
     behavior-tested in resolve-batch-size-seed.test.ts; here only the wiring is pinned."""
     seed = " ".join(_read("features/chat/lib/resolve-batch-size-seed.ts").split())
     # a non-gguf clears; an absent field on a gguf is an older backend saying nothing,
-    # though a swap still has to drop a control staged against the model that left
+    # though a swap still has to drop the pair staged against the model that left.
+    # The baseline goes with the control, or a later failed swap rolls back with a
+    # batch the backend that reported nothing never ran.
     assert "const effective = isGguf ? incoming : null;" in seed
     assert "if (effective === undefined) {" in seed
-    assert "return modelChanged ? { value: null } : {};" in seed
+    assert "return modelChanged ? { value: null, loaded: null } : {};" in seed
     # a blank control is clean too, or an external load to an explicit size reads as dirty
     assert "const controlIsClean = modelChanged || previous.value === previous.loaded;" in seed
     assert "...(controlIsClean ? { value: effective } : {})," in seed

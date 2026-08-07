@@ -2671,6 +2671,27 @@ def _emitted_n_batch(n_batch: Optional[int], n_parallel: int) -> Optional[int]:
     return max(int(n_batch), max(2, int(n_parallel or 1)))
 
 
+def _repatch_parallel_slots(
+    argv: list[str], n_parallel: int, n_batch: Optional[int]
+) -> bool:
+    """Point ``--parallel`` at ``n_parallel``, re-raising ``--batch-size`` to match.
+
+    The batch flag is emitted from the slot count as it stood then, so a later
+    restore that hands slots back would leave the batch under the new floor and
+    abort the very fallback the restore exists to make work. Returns whether
+    ``--parallel`` was found (callers rebind their own n_parallel on that).
+    """
+    try:
+        _at = argv.index("--parallel")
+    except ValueError:
+        return False
+    argv[_at + 1] = str(n_parallel)
+    _batch = _emitted_n_batch(n_batch, n_parallel)
+    if _batch is not None and "--batch-size" in argv:
+        argv[argv.index("--batch-size") + 1] = str(_batch)
+    return True
+
+
 def _extra_args_n_ubatch(
     extra_args: Optional[Iterable[str]],
     env: Optional[Mapping[str, str]] = None,
@@ -10468,8 +10489,7 @@ class LlamaCppBackend:
                             extra_args, env = _child_spec_env(extra_args)
                         ):
                             n_parallel = _pv_extras_clamped_slots
-                            if "--parallel" in cmd:
-                                cmd[cmd.index("--parallel") + 1] = str(n_parallel)
+                            _repatch_parallel_slots(cmd, n_parallel, n_batch)
                             logger.info(
                                 "Restoring %d parallel slots: the drafter drop left a "
                                 "non-MTP server.",
@@ -11292,8 +11312,9 @@ class LlamaCppBackend:
                     # silently serves one chat at a time (and the requested-vs-requested
                     # dedupe makes that stick). Later retries derive from this argv, so
                     # rebind n_parallel now.
-                    if _mtp_clamped_slots > 1 and "--parallel" in fallback_cmd:
-                        fallback_cmd[fallback_cmd.index("--parallel") + 1] = str(_mtp_clamped_slots)
+                    if _mtp_clamped_slots > 1 and _repatch_parallel_slots(
+                        fallback_cmd, _mtp_clamped_slots, n_batch
+                    ):
                         n_parallel = _mtp_clamped_slots
                     healthy = _spawn_and_wait(fallback_cmd, label = "-retry")
                     if healthy:

@@ -110,9 +110,12 @@ test("a swap to a non-gguf or an older backend still drops the stale control", (
       value: null,
     },
   );
-  // an older backend says nothing, so there is no baseline to adopt -- but the
-  // control staged against the departed model must not follow onto the new one
+  // an older backend says nothing, so there is no baseline to adopt -- and the pair
+  // staged against the departed model must not follow onto the new one. Leaving the
+  // baseline behind would have a later failed swap roll back with the old model's
+  // -b, which the backend that reported nothing never ran.
   assert.deepEqual(seed(undefined, 8192, 2048, { modelChanged: true }), {
+    loaded: null,
     value: null,
   });
 });

@@ -1265,6 +1265,7 @@ def _run_clamp_then_fallback(
     spec_flags,
     cmd,
     asked_for = None,
+    n_batch = None,
 ):
     """Run the real clamp block, rebuild fallback_cmd the way the MTP retry does, then run
     the real restore block. Returns the two argvs and the slot count
@@ -1277,9 +1278,11 @@ def _run_clamp_then_fallback(
         "_mtp_clamped_slots": 0,
         "model_identifier": "owner/repo",
         "logger": llama_cpp.logger,
+        "n_batch": n_batch,
         "_extra_args_set_spec_type": llama_cpp._extra_args_set_spec_type,
         "_extra_args_requests_mtp": llama_cpp._extra_args_requests_mtp,
         "_child_spec_env": llama_cpp._child_spec_env,
+        "_repatch_parallel_slots": llama_cpp._repatch_parallel_slots,
         # The pre-fit ask, which the restore must NOT reach for.
         "_pending_load_kwargs": {"n_parallel": n_parallel if asked_for is None else asked_for},
     }
@@ -1311,6 +1314,26 @@ def test_the_mtp_fallback_gets_the_requested_slots_back():
     assert fallback[fallback.index("--parallel") + 1] == "4"
     # _commit_effective_parallel_slots reads this, and /status echoes it.
     assert slots == 4
+
+
+def test_the_fallback_raises_the_batch_flag_with_the_slots():
+    """--batch-size is emitted from the slot count as it stands then, and llama-server
+    aborts below it, so handing 4 slots back to an argv carrying an explicit -b 2 would
+    abort the very retry the restore exists to make work."""
+    spec = ["--spec-type", "draft-mtp"]
+    cmd = ["llama-server", "-m", "/m.gguf", "--parallel", "4", "--batch-size", "2", *spec]
+    clamped, fallback, slots = _run_clamp_then_fallback(
+        n_parallel = 4,
+        extra_args = ["--top-k", "40"],
+        spec_flags = spec,
+        cmd = cmd,
+        n_batch = 2,
+    )
+    assert fallback[fallback.index("--parallel") + 1] == "4"
+    assert fallback[fallback.index("--batch-size") + 1] == "4"
+    assert slots == 4
+    # the clamped argv keeps what it launched with: one slot needs no raise
+    assert clamped[clamped.index("--batch-size") + 1] == "2"
 
 
 def test_the_startup_retry_drops_the_mtp_the_extras_and_the_env_carry():
@@ -1404,7 +1427,9 @@ def test_the_extras_own_clamp_comes_back_from_the_startup_retry_too():
         "_pv_extras_clamped_slots": 4,
         "_mtp_clamped_slots": 0,
         "_detected_gpus": [],  # CPU launch: nothing had to budget the slots
+        "n_batch": None,
         "_extra_args_requests_mtp": llama_cpp._extra_args_requests_mtp,
+        "_repatch_parallel_slots": llama_cpp._repatch_parallel_slots,
         "strip_shadowing_flags": llama_cpp.strip_shadowing_flags,
         "_SPEC_ENV_VARS": llama_cpp._SPEC_ENV_VARS,
         "logger": llama_cpp.logger,

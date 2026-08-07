@@ -35,6 +35,7 @@ from core.inference.llama_cpp import (
     LlamaCppBackend,
     _emitted_n_batch,
     _extra_args_n_ubatch,
+    _repatch_parallel_slots,
 )
 from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, strip_shadowing_flags
 from models.inference import LoadRequest, ValidateModelRequest
@@ -400,6 +401,36 @@ def test_emitted_batch_clears_both_llama_server_floors(n_batch, n_parallel, expe
     assert _emitted_n_batch(n_batch, n_parallel) == expected
     # llama.cpp defaults emit no flag, so there is nothing to raise
     assert _emitted_n_batch(None, n_parallel) is None
+
+
+def test_restoring_slots_re_raises_the_batch_flag():
+    """Two paths hand slots back after --batch-size was emitted: the paravirtual
+    drafter drop, which restores the slots the extras-MTP clamp took, and the
+    non-MTP fallback retry, which restores them in its own argv. Both patched only
+    --parallel, so an explicit small batch emitted at one slot met a restored eight
+    and aborted the very fallback the restore exists to make work."""
+    # emitted at 1 slot, restored to 8: the floor moves with it
+    argv = ["llama-server", "--parallel", "1", "--batch-size", "2", "--ubatch-size", "64"]
+    assert _repatch_parallel_slots(argv, 8, 2) is True
+    assert argv[argv.index("--parallel") + 1] == "8"
+    assert argv[argv.index("--batch-size") + 1] == "8"
+    # the micro-batch is not raised: llama.cpp caps it against the batch itself
+    assert argv[argv.index("--ubatch-size") + 1] == "64"
+
+    # a batch already above the restored floor is left alone
+    argv = ["llama-server", "--parallel", "1", "--batch-size", "4096"]
+    assert _repatch_parallel_slots(argv, 8, 4096) is True
+    assert argv[argv.index("--batch-size") + 1] == "4096"
+
+    # llama.cpp defaults emit no flag, and the restore must not invent one
+    argv = ["llama-server", "--parallel", "1"]
+    assert _repatch_parallel_slots(argv, 8, None) is True
+    assert "--batch-size" not in argv
+
+    # no --parallel to patch: report it so the caller does not rebind n_parallel
+    argv = ["llama-server", "--batch-size", "2"]
+    assert _repatch_parallel_slots(argv, 8, 2) is False
+    assert argv[argv.index("--batch-size") + 1] == "2"
 
 
 def test_budgets_use_the_raised_batch_not_the_requested_one():

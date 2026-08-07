@@ -41,9 +41,10 @@ export function resolveBatchSizeSeed(options: {
   // a non-gguf has no batch flags; an absent field is an older backend saying nothing
   const effective = isGguf ? incoming : null;
   if (effective === undefined) {
-    // Nothing to adopt, but a control staged against the model that just left must
-    // still go, or the old model's edit follows onto the new one.
-    return modelChanged ? { value: null } : {};
+    // Nothing to adopt, and nothing staged or recorded against the model that just
+    // left may survive it: the baseline goes with the control, or a later rollback
+    // resends the departed model's batch as if the new server were running it.
+    return modelChanged ? { value: null, loaded: null } : {};
   }
   // steady echo: an ordinary poll must not touch anything
   if (previous.loaded === effective && !modelChanged) {
