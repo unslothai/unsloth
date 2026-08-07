@@ -289,8 +289,16 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
     # waits, so the launcher chain is unsloth.exe -> python.exe -> us. Carry one
     # such redirector as pending and exempt it only once a shim is found directly
     # above it, so a managed backend that spawns an update still blocks.
+    #
+    # Only a base interpreter can sit under a redirector. If we are the managed
+    # image ourselves there is no redirector above us, and a managed parent is a
+    # real consumer, so the hop stays closed.
     excluded_pids = {os.getpid()}
     descendant_pid = os.getpid()
+    self_executable = (process_by_pid.get(os.getpid()) or {}).get("ExecutablePath")
+    redirector_hop_allowed = not self_executable or not _windows_path_is_within(
+        _canonical_windows_path(Path(str(self_executable))), protected_root
+    )
     pending_redirector_pid = -1
     for _ in range(16):
         descendant = process_by_pid.get(descendant_pid)
@@ -313,7 +321,11 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
                 excluded_pids.add(pending_redirector_pid)
                 pending_redirector_pid = -1
             excluded_pids.add(parent_pid)
-        elif pending_redirector_pid < 0 and _windows_paths_equal(parent_image, managed_python):
+        elif (
+            redirector_hop_allowed
+            and pending_redirector_pid < 0
+            and _windows_paths_equal(parent_image, managed_python)
+        ):
             pending_redirector_pid = parent_pid
         else:
             break

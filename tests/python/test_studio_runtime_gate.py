@@ -239,6 +239,21 @@ def test_idle_scan_excludes_the_venv_python_redirector_under_a_shim(tmp_path, mo
     with pytest.raises(RuntimeError, match = rf"PID {redirector_pid}"):
         gate.ensure_managed_environment_is_idle(studio_home)
 
+    # Only a base interpreter runs under a redirector. If we are the managed
+    # image, a managed parent is a real consumer and must keep blocking.
+    payload[0]["ExecutablePath"] = str(managed_python)
+    payload[1]["ParentProcessId"] = launcher_pid
+    payload.append(
+        {
+            "ProcessId": launcher_pid,
+            "ParentProcessId": 0,
+            "Name": "unsloth.exe",
+            "ExecutablePath": str(managed_launcher),
+        }
+    )
+    with pytest.raises(RuntimeError, match = rf"PID {redirector_pid}"):
+        gate.ensure_managed_environment_is_idle(studio_home)
+
 
 @pytest.mark.skipif(os.name != "nt", reason = "Windows process inspection is required")
 def test_idle_scan_does_not_exclude_managed_parent_of_updater(tmp_path, monkeypatch):
