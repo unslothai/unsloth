@@ -1,19 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useT } from "@/i18n";
+import { useLocale, useT } from "@/i18n";
 import type { ProfileStats } from "../../api/profile-stats";
 import {
   formatCompactNumber,
   formatDuration,
   formatFullNumber,
   formatMilliseconds,
+  formatProfileCount,
 } from "../../utils/stats-format";
 import { StatMeter, StatRow, StatsCard } from "./stat-primitives";
 
 /** Left column: the "how you use Unsloth" numbers. */
 export function ActivityInsightsCard({ stats }: { stats: ProfileStats }) {
   const t = useT();
+  const locale = useLocale();
   const { totals, speed } = stats;
   const averageTokensPerChat =
     totals.threads > 0 ? totals.totalTokens / totals.threads : 0;
@@ -25,34 +27,34 @@ export function ActivityInsightsCard({ stats }: { stats: ProfileStats }) {
       <div className="flex flex-col divide-y divide-border/60">
         <StatRow
           label={t("settings.profile.stats.totalChats")}
-          value={formatFullNumber(totals.threads)}
+          value={formatFullNumber(totals.threads, locale)}
         />
         <StatRow
           label={t("settings.profile.stats.totalMessages")}
-          value={formatFullNumber(totals.messages)}
+          value={formatFullNumber(totals.messages, locale)}
         />
         <StatRow
           label={t("settings.profile.stats.tokensIn")}
-          value={formatCompactNumber(totals.promptTokens)}
+          value={formatCompactNumber(totals.promptTokens, locale)}
         />
         <StatRow
           label={t("settings.profile.stats.tokensOut")}
-          value={formatCompactNumber(totals.completionTokens)}
+          value={formatCompactNumber(totals.completionTokens, locale)}
         />
         <StatRow
           label={t("settings.profile.stats.cachedTokens")}
           value={
             cacheShare > 0
               ? t("settings.profile.stats.cachedValue", {
-                  tokens: formatCompactNumber(totals.cachedTokens),
+                  tokens: formatCompactNumber(totals.cachedTokens, locale),
                   percent: Math.round(cacheShare * 100),
                 })
-              : formatCompactNumber(totals.cachedTokens)
+              : formatCompactNumber(totals.cachedTokens, locale)
           }
         />
         <StatRow
           label={t("settings.profile.stats.avgTokensPerChat")}
-          value={formatCompactNumber(averageTokensPerChat)}
+          value={formatCompactNumber(averageTokensPerChat, locale)}
         />
         <StatRow
           label={t("settings.profile.stats.timeInChat")}
@@ -60,15 +62,15 @@ export function ActivityInsightsCard({ stats }: { stats: ProfileStats }) {
         />
         <StatRow
           label={t("settings.profile.stats.activeDays")}
-          value={formatFullNumber(totals.activeDays)}
+          value={formatFullNumber(totals.activeDays, locale)}
         />
         <StatRow
           label={t("settings.profile.stats.toolCalls")}
-          value={formatFullNumber(totals.toolCalls)}
+          value={formatFullNumber(totals.toolCalls, locale)}
         />
         <StatRow
           label={t("settings.profile.stats.attachments")}
-          value={formatFullNumber(totals.attachments)}
+          value={formatFullNumber(totals.attachments, locale)}
         />
         <StatRow
           label={t("settings.profile.stats.avgSpeed")}
@@ -106,6 +108,7 @@ export function ActivityInsightsCard({ stats }: { stats: ProfileStats }) {
 /** Right column: model leaderboard, ranked by tokens exchanged. */
 export function TopModelsCard({ stats }: { stats: ProfileStats }) {
   const t = useT();
+  const locale = useLocale();
   const models = stats.models;
   const peak = models.reduce((max, model) => Math.max(max, model.tokens), 0);
 
@@ -136,8 +139,17 @@ export function TopModelsCard({ stats }: { stats: ProfileStats }) {
                 </span>
                 <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
                   {t("settings.profile.stats.modelSummary", {
-                    tokens: formatCompactNumber(model.tokens),
-                    messages: formatFullNumber(model.messages),
+                    tokens: formatProfileCount(
+                      model.tokens,
+                      "token",
+                      locale,
+                      formatCompactNumber(model.tokens, locale),
+                    ),
+                    messages: formatProfileCount(
+                      model.messages,
+                      "message",
+                      locale,
+                    ),
                   })}
                 </span>
               </div>

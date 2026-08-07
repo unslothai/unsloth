@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import logging
 import os
 import psutil
@@ -86,12 +87,12 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
         if formatting_func is None:
             return super().__call__(examples)
 
-        # why: base __call__ would reapply formatting_func; applied above.
-        self.formatting_func = None
-        try:
-            return super().__call__(examples)
-        finally:
-            self.formatting_func = formatting_func
+        # why: base __call__ would reapply formatting_func; applied above. A
+        # per-call shallow view shares every other attribute by reference, so a
+        # concurrent caller can never observe formatting_func blanked on self.
+        view = copy.copy(self)
+        view.formatting_func = None
+        return super(UnslothVisionDataCollator, view).__call__(examples)
 
 
 _AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
@@ -599,6 +600,50 @@ def _resolve_trainer_params(trainer_class, init_fn):
     return set(params.keys())
 
 
+def _ensure_warnings_issued(model):
+    """Restore the `warnings_issued` dict that trl trainers write into.
+
+    transformers set `self.warnings_issued = {}` in `PreTrainedModel.__init__` up
+    to 5.0.0 and dropped it in 5.1.0. trl did not follow: grpo, dpo, online_dpo,
+    kto, orpo, cpo, rloo and experimental bco still open `__init__` with
+    `model.warnings_issued["estimate_tokens"] = True`, so the trainer cannot be
+    built at all:
+
+        AttributeError: 'Qwen2ForCausalLM' object has no attribute 'warnings_issued'
+
+    models/rl.py already guards this, but only in the source it GENERATES, so the
+    guard exists exactly when that generation succeeds. When it does not, unsloth
+    falls back to trl's own class and the write is unguarded again. Measured, so
+    the weaker claim is the right one: UNSLOTH_COMPILE_DISABLE=1 does NOT remove
+    the generated module, which is still written with the guard in it, so that is
+    not the gap this closes. The fallback is.
+
+    Best-effort, and no stricter than the generated guard: a non-module (trl also
+    accepts a repo id string) is left alone.
+    """
+    import torch
+
+    if not isinstance(model, torch.nn.Module):
+        return
+    try:
+        existing = getattr(model, "warnings_issued", None)
+        if isinstance(existing, dict):
+            return
+        if existing is None:
+            model.warnings_issued = {}
+        else:
+            # Preserve a non-dict value rather than discard it; trl only ever
+            # writes one boolean key.
+            try:
+                model.warnings_issued = dict(existing)
+            except Exception:
+                model.warnings_issued = {}
+    except Exception:
+        # A model refusing the assignment is trl's to report, not ours to turn
+        # into a different traceback.
+        pass
+
+
 def _backwards_compatible_trainer(trainer_class, config_class):
     original_init = trainer_class.__init__
 
@@ -659,6 +704,7 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             # Reconstruct kwargs for Trainer
             kwargs = trainer_kwargs
             kwargs["args"] = config
+        _ensure_warnings_issued(args[0] if args else kwargs.get("model"))
         original_init(self, *args, **kwargs)
 
     return new_init

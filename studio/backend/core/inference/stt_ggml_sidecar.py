@@ -172,7 +172,12 @@ def _is_runnable(p: Path) -> bool:
     """A real whisper-server is an executable file. On Windows os.access(X_OK) is
     effectively an existence check; on Unix it rejects a non-executable stub so a
     half-written or wrong-mode file isn't mistaken for the server."""
-    return p.is_file() and (sys.platform == "win32" or os.access(p, os.X_OK))
+    try:
+        return p.is_file() and (sys.platform == "win32" or os.access(p, os.X_OK))
+    except OSError:
+        # is_file() propagates EACCES: an unreadable install dir must read as
+        # engine-unavailable, like a missing one, never a 500 out of stt/status.
+        return False
 
 
 def _whisper_install_marker(binary: str) -> Optional[dict]:
@@ -345,11 +350,17 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
 def _cached_model_path(model_id: str) -> Optional[str]:
     """Path of a fully downloaded GGML file in the shared HF cache, else None."""
     from huggingface_hub import hf_hub_download
+
+    from core.inference.stt_sidecar import _active_hf_hub_cache
+
     try:
         return hf_hub_download(
             repo_id = GGML_STT_REPOS[model_id],
             filename = GGML_STT_MODELS[model_id],
             local_files_only = True,
+            # The worker spawns with get_hf_cache_paths(), so a cache relocated
+            # in Studio settings is written there and has to be read there too.
+            cache_dir = str(_active_hf_hub_cache()),
         )
     except Exception:
         return None
@@ -361,10 +372,12 @@ class _GgmlDownloadState:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
+        self._process: Optional[subprocess.Popen] = None
         self._model_id: Optional[str] = None
         self._error: Optional[str] = None
         self._total_bytes: Optional[int] = None
         self._etag: Optional[str] = None
+        self._cancelled = False
 
     def status(self) -> dict:
         with self._lock:
@@ -373,9 +386,24 @@ class _GgmlDownloadState:
                 "downloading": downloading,
                 "model": self._model_id if downloading else None,
                 "error": self._error,
+                "cancelled": self._cancelled,
                 "bytes_total": self._total_bytes if downloading else None,
                 "bytes_done": self._incomplete_bytes() if downloading else None,
             }
+
+    def cancel(self) -> bool:
+        """Stop an in-flight download. False when none was running.
+
+        The partial blob stays cached, so a restart resumes from it.
+        """
+        with self._lock:
+            if self._thread is None or not self._thread.is_alive():
+                return False
+            self._cancelled = True
+            process = self._process
+        if process is not None and process.poll() is None:
+            process.terminate()
+        return True
 
     def _incomplete_bytes(self) -> Optional[int]:
         """Best-effort progress: size of the in-flight blob in the HF cache.
@@ -384,17 +412,15 @@ class _GgmlDownloadState:
         etag, else the largest in-flight blob.
         """
         try:
-            from huggingface_hub.constants import HF_HUB_CACHE
+            from core.inference.stt_sidecar import _repo_cache_dir
 
             # Caller may hold the non-reentrant self._lock; bare reads are safe.
             model_id = self._model_id
             if not model_id:
                 return None
-            repo_dir = (
-                Path(HF_HUB_CACHE)
-                / f"models--{GGML_STT_REPOS[model_id].replace('/', '--')}"
-                / "blobs"
-            )
+            # The active cache, not the import-time constant: the worker writes
+            # to whichever one Studio settings point at.
+            repo_dir = _repo_cache_dir(GGML_STT_REPOS[model_id]) / "blobs"
             if not repo_dir.is_dir():
                 return None
             etag = self._etag
@@ -425,6 +451,8 @@ class _GgmlDownloadState:
             self._error = None
             self._total_bytes = None
             self._etag = None
+            self._cancelled = False
+            self._process = None
             thread = threading.Thread(target = self._run, args = (model_id, hf_token), daemon = True)
             self._thread = thread
             thread.start()
@@ -433,11 +461,8 @@ class _GgmlDownloadState:
         repo_id = GGML_STT_REPOS[model_id]
         filename = GGML_STT_MODELS[model_id]
         try:
-            from huggingface_hub import (
-                get_hf_file_metadata,
-                hf_hub_download,
-                hf_hub_url,
-            )
+            from huggingface_hub import get_hf_file_metadata, hf_hub_url
+
             try:
                 # One HEAD request for the total and etag.
                 meta = get_hf_file_metadata(hf_hub_url(repo_id, filename), token = hf_token or None)
@@ -446,11 +471,30 @@ class _GgmlDownloadState:
                     self._etag = meta.etag
             except Exception:
                 pass
-            hf_hub_download(
-                repo_id = repo_id,
-                filename = filename,
-                token = hf_token or None,
+            # Out of process so cancel() can terminate it; a thread blocked in
+            # hf_hub_download could not be interrupted.
+            from core.inference.stt_download_worker import spawn_download
+
+            process = spawn_download(
+                ["--repo-id", repo_id, "--filename", filename],
+                hf_token = hf_token or None,
             )
+            with self._lock:
+                if self._cancelled:
+                    # cancel() landed between start() and the spawn.
+                    process.terminate()
+                self._process = process
+            _, stderr = process.communicate()
+            if process.returncode == 0:
+                return
+            with self._lock:
+                if self._cancelled or process.returncode < 0:
+                    self._cancelled = True
+                    return
+            detail = (stderr or b"").decode("utf-8", "replace").strip()
+            logger.warning("GGUF STT download failed for %s: %s", model_id, detail)
+            with self._lock:
+                self._error = f"Download failed for '{model_id}'."
         except Exception as exc:
             logger.warning("GGUF STT download failed for %s: %s", model_id, exc)
             with self._lock:
@@ -466,6 +510,10 @@ def start_model_download(model: Optional[str], hf_token: Optional[str] = None) -
 
 def download_status() -> dict:
     return _download_state.status()
+
+
+def cancel_model_download() -> bool:
+    return _download_state.cancel()
 
 
 # ---------------------------------------------------------------------------

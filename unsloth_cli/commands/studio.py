@@ -9,6 +9,7 @@ import os
 import platform
 import re
 import secrets
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -23,6 +24,7 @@ from typing import List, Literal, Optional, Sequence
 import typer
 
 from unsloth_cli import _studio_deps
+from unsloth_cli._inference import SpeculativeType
 from unsloth_cli.commands import _password_prompt
 
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
@@ -108,11 +110,25 @@ DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"
 DESKTOP_SECRET_CREATED_AT_KEY = "desktop_secret_created_at"
 PBKDF2_ITERATIONS = 100_000
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
+_CLOUDFLARE_INTENT_ENV = "_UNSLOTH_CLOUDFLARE_INTENT"
 
 
 def _consume_start_api_key_marker_env() -> bool:
     """Consume the one-shot readiness marker passed across a Studio re-exec."""
     return os.environ.pop(_START_API_KEY_MARKER_ENV, None) == "1"
+
+
+def _preserve_cloudflare_intent(cloudflare: Optional[bool], secure: bool) -> None:
+    """Carry the user's tri-state choice across compatibility re-execs."""
+    if _CLOUDFLARE_INTENT_ENV in os.environ:
+        return
+    if secure or cloudflare is True:
+        intent = "enabled"
+    elif cloudflare is False:
+        intent = "disabled"
+    else:
+        intent = "unset"
+    os.environ[_CLOUDFLARE_INTENT_ENV] = intent
 
 
 # __file__ is unsloth_cli/commands/studio.py -- two parents up is the package root
@@ -280,12 +296,25 @@ def _load_run_module():
     return _RUN_MODULE
 
 
-def _find_setup_script() -> Optional[Path]:
+def _find_setup_script(repo_root: Optional[Path] = None) -> Optional[Path]:
     """Find studio/setup.sh or studio/setup.ps1.
 
     No CWD dependency — works from any directory.
+
+    `repo_root` is the explicit --local checkout, when there is one. Its setup
+    script has to win: the scripts build the frontend under their own
+    $SCRIPT_DIR, and the editable install of `repo_root` removes the installed
+    tree that the installed copy's script would have built into. studio/frontend
+    /dist is gitignored, so a fresh checkout would then have no frontend at all.
     """
     name = "setup.ps1" if platform.system() == "Windows" else "setup.sh"
+    # 0. The checkout the caller actually asked to install from. No fallback:
+    #    dropping back to the installed copy's script is the exact behaviour
+    #    this branch exists to stop, so a checkout without one is unusable
+    #    rather than a reason to use somebody else's.
+    if repo_root is not None:
+        s = repo_root / "studio" / name
+        return s if s.is_file() else None
     # 1. Relative to __file__ (site-packages or editable repo root)
     s = _PACKAGE_ROOT / "studio" / name
     if s.is_file():
@@ -1214,6 +1243,8 @@ def _load_model_via_http(
     load_in_4bit: bool,
     gpu_memory_mode: Literal["auto", "manual"] = "auto",
     tensor_parallel: bool = False,
+    speculative_type: Optional[SpeculativeType] = None,
+    spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
     timeout: int = 600,
 ) -> dict:
@@ -1236,6 +1267,10 @@ def _load_model_via_http(
         payload["gpu_layers"] = -1
     if tensor_parallel:
         payload["tensor_parallel"] = True
+    if speculative_type is not None:
+        payload["speculative_type"] = speculative_type
+    if spec_draft_n_max is not None:
+        payload["spec_draft_n_max"] = spec_draft_n_max
     if llama_extra_args:
         payload["llama_extra_args"] = list(llama_extra_args)
 
@@ -1337,7 +1372,9 @@ def studio_default(
         None,
         "--enable-tools/--disable-tools",
         help = "Force server-side tools (web search, code execution) on or off for "
-        "every request. Default: on for every bind, with the per-chat UI toggle honored.",
+        "every request. Default: on for every bind, with the per-chat UI toggle honored. "
+        "/v1/messages takes the on direction per request (enable_tools) because it has no "
+        "confirmation channel; the off direction still applies everywhere.",
     ),
     disable_dns_pinning: bool = typer.Option(
         False,
@@ -1444,6 +1481,8 @@ def studio_default(
             )
             raise typer.Exit(2)
         return
+
+    _preserve_cloudflare_intent(cloudflare, secure)
 
     # --secure requires the tunnel; force a loopback bind.
     if secure:
@@ -1582,7 +1621,17 @@ def studio_default(
             if sys.platform == "win32":
                 import subprocess as _sp
 
-                proc = _sp.Popen(args, **_windows_hidden_subprocess_kwargs())
+                # Hand our std handles to the child: without them CREATE_NO_WINDOW
+                # gives the backend its own hidden console and `unsloth studio > log`
+                # captures nothing -- the same trap noted at the setup.ps1 call below.
+                # Omitting stdin does not withhold it (subprocess still fills it from
+                # GetStdHandle); that would need stdin = DEVNULL.
+                proc = _sp.Popen(
+                    args,
+                    stdout = _stream_for_subprocess(sys.stdout),
+                    stderr = _stream_for_subprocess(sys.stderr),
+                    **_windows_hidden_subprocess_kwargs(),
+                )
                 try:
                     rc = proc.wait()
                 except KeyboardInterrupt:
@@ -1793,6 +1842,23 @@ def run(
             "delegates placement and sizing to llama.cpp --fit."
         ),
     ),
+    speculative_type: Optional[SpeculativeType] = typer.Option(
+        None,
+        "--speculative-type",
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = (
+            "Speculative decoding mode for GGUF models. DSpark automatically uses a "
+            "matching dspark-*.gguf sidecar when available. Default: unset (Studio auto)."
+        ),
+    ),
+    spec_draft_n_max: Optional[int] = typer.Option(
+        None,
+        "--spec-draft-n-max",
+        min = 1,
+        max = 16,
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = "Maximum draft tokens per step for MTP or DSpark (1..16).",
+    ),
     load_in_4bit: bool = typer.Option(
         True, "--load-in-4bit/--no-load-in-4bit", rich_help_panel = _RUN_PANEL_MODEL
     ),
@@ -1820,7 +1886,9 @@ def run(
         rich_help_panel = _RUN_PANEL_TOOLS,
         help = (
             "Force server-side tools (web search, code execution) on or off for "
-            "every request. Default: on for every bind."
+            "every request. Default: on for every bind. /v1/messages takes the on "
+            "direction per request (enable_tools) because it has no confirmation "
+            "channel; the off direction still applies everywhere."
         ),
     ),
     disable_dns_pinning: bool = typer.Option(
@@ -1996,6 +2064,7 @@ def run(
 
     # Back-compat: --not-secure is a deprecated alias for --no-secure.
     secure = _resolve_secure(secure, not_secure)
+    _preserve_cloudflare_intent(cloudflare, secure)
     extra_llama_args: List[str] = list(ctx.args) if ctx.args else []
 
     # Tool-call healing/nudging are read from the env at backend import. Resolve here
@@ -2123,8 +2192,12 @@ def run(
         if not studio_python:
             typer.echo("Unsloth Studio not set up. Run install.sh first.")
             raise typer.Exit(1)
-        # Re-exec via the studio venv's `unsloth` console-script.
-        studio_bin = studio_python.parent / "unsloth"
+        # Re-exec via the studio venv's `unsloth` console-script. Windows ships it as
+        # unsloth.exe, so the bare name is never a file there and `unsloth run` aborted
+        # with "venv missing 'unsloth' entry point" on a perfectly good install.
+        studio_bin = studio_python.parent / (
+            "unsloth.exe" if platform.system() == "Windows" else "unsloth"
+        )
         if not studio_bin.is_file():
             typer.echo("Unsloth venv missing 'unsloth' entry point. Re-run: unsloth studio setup")
             raise typer.Exit(1)
@@ -2197,6 +2270,10 @@ def run(
             args.extend(["--gpu-memory-mode", gpu_memory_mode])
         if gguf_variant:
             args.extend(["--gguf-variant", gguf_variant])
+        if speculative_type is not None:
+            args.extend(["--speculative-type", speculative_type])
+        if spec_draft_n_max is not None:
+            args.extend(["--spec-draft-n-max", str(spec_draft_n_max)])
         # Forward the explicit polarity; a future default flip on one
         # layer must not silently invert behaviour for the other.
         args.append("--load-in-4bit" if load_in_4bit else "--no-load-in-4bit")
@@ -2318,6 +2395,8 @@ def run(
                 load_in_4bit = load_in_4bit,
                 gpu_memory_mode = gpu_memory_mode,
                 tensor_parallel = tensor_parallel,
+                speculative_type = speculative_type,
+                spec_draft_n_max = spec_draft_n_max,
                 llama_extra_args = extra_llama_args,
             )
         except RuntimeError as exc:
@@ -2676,11 +2755,17 @@ def stop():
 # ── unsloth studio setup / update ─────────────────────────────────────
 
 
-def _run_setup_script(*, verbose: bool = False) -> None:
+def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None) -> None:
     """Find and run the studio setup/update script."""
-    script = _find_setup_script()
+    script = _find_setup_script(repo_root)
     if not script:
-        typer.echo("Error: Could not find setup script (setup.sh / setup.ps1).")
+        if repo_root is not None:
+            name = "setup.ps1" if platform.system() == "Windows" else "setup.sh"
+            typer.echo(f"Error: {repo_root} has no studio/{name}.", err = True)
+            typer.echo("  --local needs a complete checkout: the setup script builds", err = True)
+            typer.echo("  the frontend into the tree that is installed editable.", err = True)
+        else:
+            typer.echo("Error: Could not find setup script (setup.sh / setup.ps1).")
         raise typer.Exit(1)
 
     env = {**os.environ, "UNSLOTH_VERBOSE": "1"} if verbose else None
@@ -2889,6 +2974,97 @@ def setup(
     _run_setup_script(verbose = verbose)
 
 
+def _fail_if_install_damaged() -> None:
+    """Refuse to call an update successful when the tree it produced is damaged.
+
+    pip considers a distribution with intact metadata already satisfied, so an
+    update reinstalls nothing when a package's FILES are damaged: it prints
+    "Unsloth Studio Installed", exits 0, and the backend then dies at boot. That
+    is the shape behind "just re-run the installer", and it is only actionable
+    if the update says so.
+    """
+    if _studio_deps.running_outside_managed_venv((STUDIO_HOME / "unsloth_studio",)):
+        # This CLI does not live in the venv the update just wrote, so its own
+        # file list describes the wrong tree. Silence beats a wrong answer.
+        return
+    damaged = _studio_deps.damaged_installed_files()
+    if not damaged:
+        return
+    typer.echo("", err = True)
+    typer.echo("Update finished, but some installed files are damaged:", err = True)
+    for entry in damaged:
+        typer.echo(f"  {entry}", err = True)
+    typer.echo("", err = True)
+    typer.echo("An update cannot repair these. pip sees intact package metadata and", err = True)
+    typer.echo("reinstalls nothing, so Studio will keep failing to start. Reinstall", err = True)
+    typer.echo("over the top:", err = True)
+    # Carry a custom root into the command. The shim is a bare symlink and
+    # _ensure_studio_env_exported only sets os.environ for this process, so the
+    # shell that runs this line has no UNSLOTH_STUDIO_HOME: an unqualified
+    # reinstall would build a fresh ~/.unsloth/studio and leave the damaged
+    # install exactly as broken as it was.
+    # And carry the recorded install mode. install.sh derives SKIP_TORCH only
+    # from its own flag or UNSLOTH_NO_TORCH and passes that value into setup, so
+    # a plain reinstall over a GGUF-only install downloads the whole PyTorch
+    # stack. Only added when the record says True: recorded_no_torch() returns
+    # None when nothing recorded the mode, and None must never be read as False.
+    #
+    # No root argument: the manifest and marker live in the VENV, not the
+    # install root, and recorded_no_torch defaults to Path(sys.prefix). Passing
+    # STUDIO_HOME would look one directory too high, find nothing, and silently
+    # never fire. The early return above guarantees sys.prefix is that venv.
+    no_torch = False
+    try:
+        _manifest = _studio_deps.load_install_manifest_module()
+        no_torch = _manifest is not None and _manifest.recorded_no_torch() is True
+    except Exception:
+        no_torch = False
+    if platform.system() == "Windows":
+        prefix = ""
+        if _STUDIO_HOME_IS_CUSTOM:
+            prefix = "$env:UNSLOTH_STUDIO_HOME = '{}'; ".format(str(STUDIO_HOME).replace("'", "''"))
+        if no_torch:
+            prefix += "$env:UNSLOTH_NO_TORCH = '1'; "
+        typer.echo(f"  {prefix}irm https://unsloth.ai/install.ps1 | iex", err = True)
+    else:
+        # The assignments go before `sh`, not before `curl`: that is the form
+        # install.sh documents, and it is sh that reads them.
+        env = ""
+        if _STUDIO_HOME_IS_CUSTOM:
+            env = f"UNSLOTH_STUDIO_HOME={shlex.quote(str(STUDIO_HOME))} "
+        if no_torch:
+            env += "UNSLOTH_NO_TORCH=1 "
+        typer.echo(f"  curl -fsSL https://unsloth.ai/install.sh | {env}sh", err = True)
+    typer.echo("", err = True)
+    # The installer installs the current requirement sets; it does not prune or
+    # reinstall anything outside them. So a package left over from an older
+    # release, or added by hand, is not repaired by the command above and would
+    # otherwise report the same damage forever. Say what to do in that case
+    # rather than scoping the scan, which would risk passing over real damage.
+    typer.echo("If a package above is still listed after that, the installer does not", err = True)
+    typer.echo("manage it. Repair it directly, or remove it if nothing needs it:", err = True)
+    # --no-deps: without it pip resolves the damaged package's dependency graph
+    # and --force-reinstall would replace pinned runtime packages too, which can
+    # swap the installed CUDA/ROCm torch build for a default one while repairing
+    # an unrelated orphan. The installer's own targeted repairs pair the two for
+    # the same reason. The interpreter path is quoted because a custom root may
+    # contain spaces, and on Windows a quoted command needs the call operator.
+    # <package>==<version> rather than a bare name: --force-reinstall reinstalls
+    # even when the package is already up to date, so an unpinned name fetches
+    # the newest release and silently upgrades an orphan whose consumers may
+    # depend on the older one. --no-deps does not protect against that.
+    _spec = "<package>==<installed version>"
+    if platform.system() == "Windows":
+        _py = str(Path(sys.executable)).replace("'", "''")
+        typer.echo(f"  & '{_py}' -m pip install --force-reinstall --no-deps {_spec}", err = True)
+    else:
+        _py = shlex.quote(str(Path(sys.executable)))
+        typer.echo(f"  {_py} -m pip install --force-reinstall --no-deps {_spec}", err = True)
+    typer.echo("", err = True)
+    typer.echo("To update anyway without this check: unsloth studio update --no-verify", err = True)
+    raise typer.Exit(code = 1)
+
+
 @studio_app.command()
 def update(
     local: bool = typer.Option(False, "--local", help = "Install from local repo instead of PyPI"),
@@ -2901,6 +3077,11 @@ def update(
         "-v",
         help = "Full pip/build output during update for troubleshooting.",
     ),
+    verify: bool = typer.Option(
+        True,
+        "--verify/--no-verify",
+        help = "After updating, scan installed files for damage an update cannot repair.",
+    ),
 ):
     """Update Unsloth Studio dependencies and rebuild."""
     # Re-export UNSLOTH_STUDIO_HOME for env-mode installs so the refresh
@@ -2909,18 +3090,59 @@ def update(
     # Ensure SKIP_STUDIO_BASE is not inherited from a parent install.ps1 session
     os.environ.pop("SKIP_STUDIO_BASE", None)
     os.environ["STUDIO_PACKAGE_NAME"] = package
+    repo_root: Optional[Path] = None
     if local:
         os.environ["STUDIO_LOCAL_INSTALL"] = "1"
         # Pass the repo root explicitly so install_python_stack.py doesn't
         # have to guess from SCRIPT_DIR (which may be inside site-packages).
-        repo_root = Path(__file__).resolve().parents[2]
+        # Deriving it from __file__ only holds while this CLI runs from a
+        # checkout. Once an update has installed unsloth into the venv
+        # non-editably, parents[2] IS site-packages, and uv rejects it with
+        # "does not appear to be a Python project: neither 'setup.py' nor
+        # 'pyproject.toml' found" -- which is what a second `update --local`
+        # hit on Windows, where the first update replaces the editable install.
+        # Absolutise the override: setup.sh does `cd "$SCRIPT_DIR"` before it
+        # runs install_python_stack.py, so a relative STUDIO_LOCAL_REPO would
+        # be re-resolved against studio/ (no pyproject.toml) and hand uv back
+        # the very error this guard exists to replace. .strip()/.expanduser()
+        # match the handling in _refresh_desktop_shortcuts.
+        _explicit = (os.environ.get("STUDIO_LOCAL_REPO") or "").strip()
+        repo_root = (
+            Path(_explicit).expanduser().resolve()
+            if _explicit
+            else Path(__file__).resolve().parents[2]
+        )
+        if not (repo_root / "pyproject.toml").is_file():
+            typer.echo("Error: --local needs an Unsloth checkout to install from.", err = True)
+            typer.echo(f"  no pyproject.toml under: {repo_root}", err = True)
+            typer.echo("  This CLI is running from an installed copy, not a source tree.", err = True)
+            typer.echo("", err = True)
+            typer.echo("  Point at a checkout:", err = True)
+            if platform.system() == "Windows":
+                # PowerShell has no `VAR=value command` prefix form: it parses
+                # the assignment as a command name and fails to find it. This
+                # guard fires on the Windows update path, so the POSIX spelling
+                # would be unusable for most of the people who see it.
+                typer.echo(
+                    "    $env:STUDIO_LOCAL_REPO='C:\\path\\to\\unsloth'; "
+                    "unsloth studio update --local",
+                    err = True,
+                )
+            else:
+                typer.echo(
+                    "    STUDIO_LOCAL_REPO=/path/to/unsloth unsloth studio update --local",
+                    err = True,
+                )
+            typer.echo("  Or update from PyPI:", err = True)
+            typer.echo("    unsloth studio update", err = True)
+            raise typer.Exit(2)
         os.environ["STUDIO_LOCAL_REPO"] = str(repo_root)
     else:
         os.environ["STUDIO_LOCAL_INSTALL"] = "0"
         os.environ.pop("STUDIO_LOCAL_REPO", None)
     _release_self_exe_lock_windows()
     try:
-        _run_setup_script(verbose = verbose)
+        _run_setup_script(verbose = verbose, repo_root = repo_root)
     except BaseException:
         # Restore unsloth.exe from .deleteme if setup failed before pip
         # produced a replacement; otherwise the user has no CLI for recovery.
@@ -2931,6 +3153,8 @@ def update(
     # but leaving a stale binary around invites cross-version restore
     # confusion from _restore_self_exe_lock_windows.
     _cleanup_self_exe_lock_windows()
+    if verify:
+        _fail_if_install_damaged()
     # Tauri desktop owns its own bundle entries; skip CLI launcher refresh
     # so a Tauri-initiated update doesn't create duplicate shortcuts.
     if os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":

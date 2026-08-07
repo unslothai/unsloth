@@ -10,11 +10,15 @@ import {
   reconcilePersistedGpuSelection,
   useChatRuntimeStore,
 } from "@/features/chat";
+// Its own module so hosts needing only the signature skip the chat runtime store.
+import { gpuFieldsSignature } from "./config-signature";
 import {
   DEFAULT_PER_MODEL_CONFIG,
   type PerModelConfig,
   normalizeMaxSeqLength,
 } from "./per-model-config";
+
+export { gpuFieldsSignature };
 
 function cleanTemplate(value: string | null | undefined): string | null {
   return value?.trim() ? value : null;
@@ -45,6 +49,7 @@ export function applyPerModelConfigToRuntime(
       : { ids: null, indexKind: null };
   useChatRuntimeStore.setState({
     customContextLength: config.customContextLength ?? null,
+    mlxKvBits: config.mlxKvBits ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
     speculativeType:
       normalizeSpeculativeType(config.speculativeType) ??
@@ -96,6 +101,7 @@ export function currentRuntimePerModelConfig(
       ? normalizeMaxSeqLength(s.params.maxSeqLength)
       : null,
     kvCacheDtype: s.kvCacheDtype ?? null,
+    mlxKvBits: s.mlxKvBits ?? null,
     speculativeType: normalizeSpeculativeType(s.speculativeType),
     specDraftNMax: s.specDraftNMax ?? null,
     nParallel: s.nParallel ?? null,
@@ -121,6 +127,7 @@ export function perModelConfigsEqual(
     normalizeMaxSeqLength(a.maxSeqLength) ===
       normalizeMaxSeqLength(b.maxSeqLength) &&
     (a.kvCacheDtype ?? null) === (b.kvCacheDtype ?? null) &&
+    (a.mlxKvBits ?? null) === (b.mlxKvBits ?? null) &&
     normalizeSpeculativeType(a.speculativeType) ===
       normalizeSpeculativeType(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
@@ -130,27 +137,6 @@ export function perModelConfigsEqual(
       cleanTemplate(b.chatTemplateOverride) &&
     gpuFieldsEqual(a, b)
   );
-}
-
-// Serialize the per-model GPU knobs with the same "absent == default"
-// coalescing the store applies: mode auto/absent, gpuLayers Auto (< 0) /
-// absent, nCpuMoe 0 / absent, and null / absent GPU picks as automatic.
-export function gpuFieldsSignature(config: PerModelConfig): string {
-  const gpuSelection =
-    config.selectedGpuIds == null
-      ? "automatic"
-      : [
-          [...config.selectedGpuIds].sort((a, b) => a - b).join(","),
-          config.selectedGpuIndexKind === undefined
-            ? "physical"
-            : (config.selectedGpuIndexKind ?? "deferred"),
-        ].join("@");
-  return [
-    config.gpuMemoryMode ?? "auto",
-    config.gpuLayers == null || config.gpuLayers < 0 ? -1 : config.gpuLayers,
-    config.nCpuMoe ?? 0,
-    gpuSelection,
-  ].join("|");
 }
 
 function gpuFieldsEqual(a: PerModelConfig, b: PerModelConfig): boolean {

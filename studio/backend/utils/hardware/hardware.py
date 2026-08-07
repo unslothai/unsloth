@@ -24,7 +24,9 @@ import platform
 import re
 import subprocess
 import sys
+import threading
 import types
+from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version as pkg_version
 import structlog
 from loggers import get_logger
@@ -78,6 +80,103 @@ CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
 CHAT_ONLY_REASON: Optional[str] = None
 IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- routes GPU monitoring to amd.py
 
+# Detection has concurrent callers (the warm thread plus any early get_device()).
+# Unlocked, two runs interleave on the globals above and a reader between the reset and
+# the CUDA branch sees "chat only" on a GPU host. Re-entrant: get_device() nests.
+_DETECT_LOCK = threading.RLock()
+
+# Bumped by shutdown so a detection still inside the torch import cannot publish over
+# the reset, leaving the next lifespan a non-None DEVICE that makes it skip detection.
+# An epoch, not _DETECT_LOCK: taking that lock would park teardown behind the import.
+_EPOCH_LOCK = threading.Lock()
+DETECTION_EPOCH = 0
+
+
+def invalidate_detection() -> int:
+    """Retire any detection in flight. Returns the new epoch."""
+    global DETECTION_EPOCH
+    with _EPOCH_LOCK:
+        DETECTION_EPOCH += 1
+        return DETECTION_EPOCH
+
+
+def current_detection_epoch() -> int:
+    with _EPOCH_LOCK:
+        return DETECTION_EPOCH
+
+
+# The epoch nested detections on this thread belong to. get_device() takes no epoch and
+# the warm builds the orchestrator, whose constructor reaches it; without this a shutdown
+# mid-stage lets the nested pass republish DEVICE over the teardown, so the next lifespan
+# skips detection. Thread-local, so only the warm's own call stack is bound.
+_OWNING_EPOCH = threading.local()
+
+
+@contextmanager
+def owning_detection_epoch(epoch: Optional[int]):
+    """Bind epoch-less detections on this thread to ``epoch`` for the block. Nested, not
+    assigned: restoring the previous value keeps concurrent scopes on other threads apart."""
+    previous = getattr(_OWNING_EPOCH, "value", None)
+    _OWNING_EPOCH.value = epoch
+    try:
+        yield
+    finally:
+        _OWNING_EPOCH.value = previous
+
+
+def _discard_detection_locked() -> None:
+    """Drop a verdict produced for an epoch that has been retired."""
+    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM
+    DEVICE = None
+    CHAT_ONLY = True
+    CHAT_ONLY_REASON = None
+    IS_ROCM = False
+    DETECTION_COMPLETE.clear()
+
+
+# Set once detection has a settled answer, including its CPU/chat-only fallback. Poll
+# this, not DEVICE: DEVICE is assigned mid-detection and can be revised.
+DETECTION_COMPLETE = threading.Event()
+# Bumped every time detection settles. Detection is not once-per-process (the MLX
+# self-heal re-detects and flips CHAT_ONLY), so snapshot holders can spot staleness.
+DETECTION_GENERATION = 0
+
+# Drives start_background_detection(). Separate from _DETECT_LOCK: never held across the import.
+_DETECT_KICK_LOCK = threading.Lock()
+_DETECT_THREAD: Optional[threading.Thread] = None
+
+
+def start_background_detection() -> None:
+    """Run detection on a daemon thread if nothing is running it yet.
+
+    For callers on a deadline that cannot await ensure_hardware_detected(), such as
+    /api/health under the launcher's 2s timeout. They poll DEVICE against their own budget;
+    this guarantees someone is filling it in even when the warm is past its hardware stage
+    or a shutdown cleared the verdict. Callers skip it under
+    UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1, which means no background import at all.
+
+    At most one thread, and none once DEVICE is set, so a route polling "still detecting"
+    cannot pile them up. Not the asyncio executor: a to_thread outliving its awaiter holds
+    a slot, and a polled endpoint would exhaust the pool during a slow import.
+    """
+    global _DETECT_THREAD
+    if DEVICE is not None:
+        return
+    with _DETECT_KICK_LOCK:
+        if DEVICE is not None:
+            return
+        if _DETECT_THREAD is not None and _DETECT_THREAD.is_alive():
+            return
+        # Epoch read before start(): the thread can be scheduled after a shutdown
+        # retires this epoch, and it must lose to that, not adopt it.
+        _DETECT_THREAD = threading.Thread(
+            target = ensure_hardware_detected,
+            args = (current_detection_epoch(),),
+            daemon = True,
+            name = "hardware-detect",
+        )
+        _DETECT_THREAD.start()
+
 
 def _backend_label(device: DeviceType) -> str:
     """Return the user-facing backend name for API responses.
@@ -98,12 +197,41 @@ def is_apple_silicon() -> bool:
     return platform.system() == "Darwin" and platform.machine() == "arm64"
 
 
+# Set by _has_torch() when torch is installed but its import blew up (unresolved CUDA
+# libs). The CPU fallback reports that as a detection failure, not as "no GPU".
+TORCH_IMPORT_ERROR: Optional[str] = None
+
+
 def _has_torch() -> bool:
-    """True if PyTorch is importable."""
+    """True if PyTorch is importable.
+
+    Any failure counts as "no torch", not just ImportError: ensure_hardware_detected()
+    re-runs while DEVICE is None, so an escaping OSError would make every request retry the
+    import. Take the CPU path, but record the error, or the host is told to install the
+    torch it already has.
+    """
+    global TORCH_IMPORT_ERROR
     try:
         import torch
+        TORCH_IMPORT_ERROR = None
         return True
-    except ImportError:
+    except Exception as exc:
+        # ImportError does NOT mean "not installed": a wheel with unresolved native libs
+        # raises it from torch's own __init__ (OSError on Windows). Only ModuleNotFoundError
+        # naming torch itself is absent; a failed submodule is a broken install. Both purge.
+        absent = isinstance(exc, ModuleNotFoundError) and exc.name == "torch"
+        TORCH_IMPORT_ERROR = None if absent else repr(exc)
+        if TORCH_IMPORT_ERROR is not None:
+            logger.error("torch is installed but failed to import: %r", exc)
+        # A part-way failure leaves submodules cached under an evicted parent, so the next
+        # importer gets a torch missing pieces. purge_partial_import() clears that.
+        try:
+            from utils.torch_warmup import purge_partial_import
+        except Exception:
+            # Also exec'd standalone (tests/python/test_e2e_no_torch_sandbox.py); nothing to purge.
+            pass
+        else:
+            purge_partial_import("torch")
         return False
 
 
@@ -185,13 +313,123 @@ def detect_hardware() -> DeviceType:
       4. MLX   (Apple Silicon via MLX framework)
       5. CPU   (fallback)
     """
+    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM, DETECTION_GENERATION
+    with _DETECT_LOCK:
+        # A forced pass mutates the globals partway through; leaving the event set lets
+        # /api/health serve that as settled, so the sidebar MLX poll caches reason=None,
+        # stops, and leaves Train hidden on a repaired host. Republished once it settles.
+        was_complete = DETECTION_COMPLETE.is_set()
+        # Snapshot the whole verdict, not just the event: a raise mid-pass leaves a
+        # half-written answer the autorepair path swallows, and losing "mlx_unavailable"
+        # stops the sidebar poll for good.
+        published = (DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM)
+        # Owning epoch first, current only as a fallback. The MLX self-heal calls this
+        # after a pip install that can outlast the lifespan; reading current would adopt
+        # the epoch shutdown moved to, so the next lifespan finds DEVICE set and skips
+        # its own detection.
+        epoch = getattr(_OWNING_EPOCH, "value", None)
+        if epoch is None:
+            epoch = current_detection_epoch()
+        elif current_detection_epoch() != epoch:
+            # Retired before this pass began, so leave the running lifespan alone. Going on
+            # would clear DETECTION_COMPLETE over a settled verdict, probe, then discard: a
+            # late repair would erase the restart's verdict, not merely fail to add its own.
+            return DEVICE
+        DETECTION_COMPLETE.clear()
+        try:
+            device = _detect_hardware_locked()
+        except BaseException:
+            if current_detection_epoch() != epoch:
+                # Shutdown ran mid-pass. Restoring would put back the verdict it just
+                # cleared, and the next lifespan would treat that as measured.
+                _discard_detection_locked()
+                raise
+            DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM = published
+            # Restore rather than leave it clear: start_background_detection() declines
+            # once DEVICE is set, so an unset event keeps health provisional forever.
+            if was_complete:
+                DETECTION_COMPLETE.set()
+            raise
+        if current_detection_epoch() != epoch:
+            # Shutdown ran mid-pass; this verdict belongs to a lifespan that ended.
+            _discard_detection_locked()
+            return device
+        DETECTION_GENERATION += 1
+        DETECTION_COMPLETE.set()
+        return device
+
+
+def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
+    """Detect once, from any thread. Prefer this to detect_hardware() unless you want a
+    forced re-detect: it collapses the warm thread and an early request into one pass, and
+    a caller arriving mid-detection waits rather than starts a second.
+
+    Never raises. A raise on the warm thread is swallowed and leaves DEVICE None, so every
+    later request retries the failing import and /api/health, which waits on this, would
+    500. Record CPU + chat-only with a reason instead.
+
+    ``epoch`` is the epoch this pass belongs to; a spawner passes the one it read before
+    Thread.start(), since the thread can be scheduled after a shutdown retired it and
+    reading it here would bind the pass to the retirement it must lose to. Direct callers
+    pass nothing and own the current epoch."""
+    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, DETECTION_GENERATION
+    with _DETECT_LOCK:
+        if epoch is None:
+            # A nested read inside an owning scope belongs to that pass, not to whatever
+            # is current by the time it reaches here. See owning_detection_epoch().
+            epoch = getattr(_OWNING_EPOCH, "value", None)
+        if epoch is None:
+            epoch = current_detection_epoch()
+        elif DEVICE is None and current_detection_epoch() != epoch:
+            # Retired before this worker reached the lock. Probing would import torch for a
+            # stopped lifespan and the next warm would queue behind it only to re-detect.
+            # Mid-probe shutdown: below.
+            return DEVICE
+        produced_here = DEVICE is None
+        if produced_here:
+            # Same reason detect_hardware() clears it: the pass below assigns DEVICE and
+            # CHAT_ONLY before probes that can still fall back to CPU. A stale set event
+            # (shutdown cleared DEVICE while a cached waiter went on to set it) would
+            # publish the XPU candidate as settled. Republished below once final.
+            DETECTION_COMPLETE.clear()
+            try:
+                _detect_hardware_locked()
+            except BaseException as exc:  # noqa: BLE001 - degrade, never 500 the health check
+                logger.error("Hardware detection failed; falling back to CPU: %r", exc)
+                DEVICE = DeviceType.CPU
+                CHAT_ONLY = True
+                CHAT_ONLY_REASON = "detection_failed"
+            # Inside the branch: the orchestrator rebuilds its curated defaults whenever this
+            # counter moves, so bumping on the cached path caused needless rebuilds. Forced
+            # detect_hardware() bumps it too.
+            DETECTION_GENERATION += 1
+        if produced_here and current_detection_epoch() != epoch:
+            # See detect_hardware(): a retired pass must not publish -- but only what this
+            # call produced. A retired worker that waited out the lock and found DEVICE set
+            # is looking at the new lifespan's verdict; discarding it would leave the
+            # restart provisional.
+            _discard_detection_locked()
+            return DEVICE
+        # Set only here, where a final value is guaranteed: a non-None DEVICE means only that
+        # a candidate was picked (the XPU branch assigns before a probe that can raise), so a
+        # waiter trusting it could publish training-enabled for a CPU/chat-only host.
+        # Unconditional, unlike the counter: re-setting is a no-op and a late waiter needs it.
+        DETECTION_COMPLETE.set()
+        return DEVICE
+
+
+def _detect_hardware_locked() -> DeviceType:
+    """detect_hardware() body. Call only with _DETECT_LOCK held."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM
     CHAT_ONLY = True  # reset -- only CUDA/ROCm/XPU/MLX sets it to False
     CHAT_ONLY_REASON = None
     IS_ROCM = False
 
+    # Probe torch once per pass: a failed probe is expensive and a second can disagree.
+    torch_ok = _has_torch()
+
     # --- CUDA / ROCm / XPU: try PyTorch ---
-    if _has_torch():
+    if torch_ok:
         import torch
 
         # --- Explicit-XPU hint ---
@@ -255,7 +493,7 @@ def detect_hardware() -> DeviceType:
             return DEVICE
 
     # --- XPU: Intel GPU ---
-    if _has_torch():
+    if torch_ok:
         import torch
         if hasattr(torch, "xpu") and torch.xpu.is_available():
             DEVICE = DeviceType.XPU
@@ -292,6 +530,9 @@ def detect_hardware() -> DeviceType:
             "Train/Export disabled (chat-only). Run `unsloth studio update` to "
             "restore MLX training."
         )
+    elif TORCH_IMPORT_ERROR is not None:
+        # torch installed but broken, so this host was never measured. "no_gpu" would lie.
+        CHAT_ONLY_REASON = "detection_failed"
     elif platform.system() == "Darwin":
         CHAT_ONLY_REASON = "intel_mac"  # Intel Mac: no PyTorch/MLX -> GGUF-only by design.
     else:
@@ -308,10 +549,7 @@ def get_device() -> DeviceType:
     Return the detected device, auto-detecting if detect_hardware() hasn't run.
     Prefer calling detect_hardware() explicitly at startup.
     """
-    global DEVICE
-    if DEVICE is None:
-        detect_hardware()
-    return DEVICE
+    return ensure_hardware_detected()
 
 
 def export_capability() -> dict:
@@ -329,9 +567,15 @@ def export_capability() -> dict:
             "export_unsupported_reason": None,
             "export_unsupported_message": None,
         }
-    # No accelerator: name the blocker. Apple Silicon first -- its path is MLX, so "install PyTorch"
-    # would be wrong advice on a Mac even when torch is also absent.
-    if is_apple_silicon():
+    # No accelerator: name the blocker. Detection failure first -- the branches below all
+    # describe a measured host, so a broken probe would tell a GPU box to install PyTorch.
+    if CHAT_ONLY_REASON == "detection_failed":
+        reason = "detection_failed"
+        message = (
+            "Hardware detection failed on this host, so export is disabled. The server log records "
+            "the underlying error; restart Unsloth Studio to retry detection."
+        )
+    elif is_apple_silicon():
         reason = "mlx_unavailable"
         message = (
             "Export on Apple Silicon requires the MLX stack, which is unavailable or too old. Run "
@@ -3011,6 +3255,12 @@ def get_torch_device_str() -> str:
     return "cpu"
 
 
+# Mirrors AUTO_NUM_PROC_CAP in unsloth_zoo.dataset_num_proc; copied rather than
+# imported to keep hardware detection free of the training package. A canary in
+# tests/utils/test_dataset_num_proc.py fails if the two drift.
+_STUDIO_NUM_PROC_CAP = 8
+
+
 def safe_num_proc(desired: Optional[int] = None) -> int:
     """
     Return a safe ``num_proc`` for ``dataset.map()`` calls.
@@ -3038,6 +3288,22 @@ def safe_num_proc(desired: Optional[int] = None) -> int:
 
     if desired is None or not isinstance(desired, int):
         desired = max(1, (os.cpu_count() or 1) // 3)
+
+    # Every number reaching here is a backend heuristic (cpu_count // 3 above,
+    # cpu_count // 4 from trainer.py), but downstream it looks like user intent
+    # and is only clamped by free memory, so a 64-core host sends 16 workers to
+    # Dataset.map -- the shape of issue #2693, and slower besides (32 workers
+    # measured 14.2s against 6.3s in-process, ~1GB each).
+    if desired > _STUDIO_NUM_PROC_CAP:
+        # No mention of UNSLOTH_DATASET_NUM_PROC here: this function returns an
+        # int >= 1 and cannot express the in-process the hatch promises. The
+        # hatch is read in dataset_map_num_proc, which is the path whose value
+        # reaches Dataset.map.
+        logger.info(
+            f"num_proc {desired} -> {_STUDIO_NUM_PROC_CAP}: tokenization stops "
+            f"scaling well before this and each worker holds its own tokenizer copy."
+        )
+        desired = _STUDIO_NUM_PROC_CAP
 
     visible = get_visible_gpu_count()
     if visible > 1:
@@ -3071,20 +3337,51 @@ def safe_thread_num_proc(desired: Optional[int] = None) -> int:
     return max(1, desired)
 
 
-def dataset_map_num_proc(desired: Optional[int] = None) -> Optional[int]:
+def dataset_map_num_proc(
+    desired: Optional[int] = None, *, serial_as_none: bool = True
+) -> Optional[int]:
     """
     Return a safe ``num_proc`` for ``Dataset.map()`` and ``Dataset.filter()``.
 
-    Returns ``None`` on spawn platforms (Windows, macOS) because ``datasets``
-    treats ``num_proc=1`` as multiprocessing (creates ``Pool(1)``); only
-    ``num_proc=None`` guarantees in-process execution.
+    Returns ``None`` on spawn platforms (Windows, macOS). ``None`` -- not ``1``
+    -- is the disable sentinel: ``datasets`` >= 4.1 (Studio pins 4.3.0) takes
+    the pool branch for any ``num_proc >= 1``, so ``1`` still builds a
+    ``Pool(1)``.
 
     Also returns ``None`` on XPU once its runtime is initialized in this
     process: ``os.fork()`` corrupts the Level-Zero context, making Triton
     kernels fail with "Pointer argument doesn't reference XPU device memory".
     Pre-init XPU hosts can still parallelize CPU-side preprocessing.
+
+    There is deliberately no CUDA equivalent: the child only runs the tokenizer,
+    and 300 forced-fork map() runs on an initialized CUDA context produced no
+    failures. Since ``detect_hardware()`` always initializes CUDA, such a guard
+    would serialize every CUDA run for nothing. The worker-count bound in
+    ``unsloth_zoo.dataset_num_proc`` is what addresses issue #2693.
+
+    ``serial_as_none`` says how to spell "run in-process" for the layer that
+    reads the value back, exactly as in ``unsloth_zoo.dataset_num_proc``. Leave
+    it True at a ``map()`` call site, where ``None`` is the only value that
+    builds no pool. Pass **False when the result is written into a config**
+    (``SFTConfig.dataset_num_proc``): a config ``None`` means "auto-size me" to
+    every downstream reader, so a serial request stored as ``None`` comes back
+    out as a full worker set. Only ``1`` survives that round trip, and the SFT
+    map site turns it back into ``None``.
     """
     if sys.platform in ("win32", "darwin"):
+        # ``UNSLOTH_DATASET_NUM_PROC`` is an unvetoed escape hatch in the shared
+        # policy, so a user who has read the dead-worker message and accepted
+        # spawn workers must not be overruled here without a word. Only the
+        # hatch can produce a count on this platform; everything else falls
+        # through to the veto below.
+        if _num_proc_override_is_set():
+            return _bounded_by_the_shared_policy(desired, serial_as_none)
+        # ``None`` is safe at either layer here: workers are unusable on a spawn
+        # platform, so every auto-sizer that reads a config ``None`` vetoes too
+        # and nothing can inflate it. A ``1`` would be worse -- only the SFT map
+        # site is rewritten, so DPO/KTO/CPO/ORPO/Reward/PRM would hand that 1
+        # straight to Dataset.map and get a Pool(1) whose child re-imports the
+        # user's __main__ (#3211 / #3397).
         return None
 
     if get_device() == DeviceType.XPU:
@@ -3092,18 +3389,144 @@ def dataset_map_num_proc(desired: Optional[int] = None) -> Optional[int]:
             import torch
         except Exception:
             # No torch means no active XPU runtime, so CPU-side dataset
-            # parallelism is still safe.
-            return safe_num_proc(desired)
+            # parallelism is still safe -- but it is still bounded, or a
+            # torch-less container would be the one path that ignores the
+            # memory ceiling and the escape hatch.
+            return _bounded_by_the_shared_policy(desired, serial_as_none)
 
         xpu = getattr(torch, "xpu", None)
         is_initialized = getattr(xpu, "is_initialized", None)
         if callable(is_initialized):
             try:
                 if is_initialized():
-                    return None
+                    # Same reading as the spawn branch above: the hatch is
+                    # unvetoed by contract, so someone who has accepted the
+                    # risk on XPU is not overruled here without a word.
+                    if _num_proc_override_is_set():
+                        return _bounded_by_the_shared_policy(desired, serial_as_none)
+                    # Unlike the spawn platforms above, forking is still
+                    # available here, so a config ``None`` WOULD be auto-sized
+                    # back up and fork the corrupted Level-Zero context this
+                    # guard exists to protect. Encode serial for the layer.
+                    return None if serial_as_none else 1
             except Exception as e:
                 # Treat a failing probe as "runtime not touched yet" so
                 # pre-init CPU preprocessing can still parallelize.
                 logger.debug("torch.xpu.is_initialized() probe failed: %s", e)
 
-    return safe_num_proc(desired)
+    return _bounded_by_the_shared_policy(desired, serial_as_none)
+
+
+# sys.modules key for the copy loaded off disk below. Not "unsloth.dataset_num_proc":
+# that name belongs to the package, and claiming it would make a later real import
+# of unsloth return this module instead.
+_LOCAL_POLICY_MODULE = "unsloth_studio_local_dataset_num_proc"
+
+
+def _shared_policy():
+    """The shared num_proc policy module, or None on an installation without it.
+
+    The Zoo owns it. ``unsloth.dataset_num_proc`` is a byte-identical fallback
+    for a Zoo that predates the module. ``import unsloth.dataset_num_proc``
+    would run the package __init__, which patches torch and loads the model
+    stack -- unacceptable from inside hardware detection -- so that form is used
+    only when the package is already imported. Otherwise the file is loaded
+    straight off disk, which is safe because the module is stdlib-only by
+    design: the API process reaches format conversion without importing unsloth
+    at all, and leaving it with no policy there is what the 2GB container with
+    eight cores used to hit.
+    """
+    try:
+        import unsloth_zoo.dataset_num_proc as policy
+        return policy
+    except Exception:
+        pass
+    if "unsloth" in sys.modules:
+        try:
+            import unsloth.dataset_num_proc as policy
+            return policy
+        except Exception as e:
+            logger.debug("local dataset_num_proc fallback unavailable: %s", e)
+            return None
+    # Memoised through sys.modules: the policy warns once per process about a
+    # vetoed count, and re-executing the file on every map() call would reset
+    # that and re-read the cgroup tree each time.
+    cached = sys.modules.get(_LOCAL_POLICY_MODULE)
+    if cached is not None:
+        return cached
+    try:
+        import importlib.util
+
+        # find_spec does not execute a top-level package, so this locates
+        # unsloth/ without importing it.
+        package = importlib.util.find_spec("unsloth")
+        if package is None or not package.submodule_search_locations:
+            return None
+        path = Path(list(package.submodule_search_locations)[0]) / "dataset_num_proc.py"
+        if not path.is_file():
+            return None
+        spec = importlib.util.spec_from_file_location(_LOCAL_POLICY_MODULE, path)
+        policy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(policy)
+        sys.modules[_LOCAL_POLICY_MODULE] = policy
+        return policy
+    except Exception as e:
+        logger.debug("local dataset_num_proc fallback unavailable: %s", e)
+    return None
+
+
+def _num_proc_override_is_set() -> bool:
+    """Whether the escape hatch decided the count, not merely whether it is set.
+
+    The policy ignores an unparseable or negative value with a warning, so
+    reading the variable directly would let ``UNSLOTH_DATASET_NUM_PROC=-1``
+    skip the multi-GPU cap while contributing nothing.
+    """
+    policy = _shared_policy()
+    if policy is None:
+        return False
+    parsed = getattr(policy, "environment_override", None)
+    if parsed is None:
+        # A policy that predates the public reader: presence is the best
+        # available answer, and it errs toward honouring the hatch.
+        return bool(os.environ.get(policy.NUM_PROC_ENV_VAR, "").strip())
+    try:
+        was_set, _value = parsed()
+    except Exception as e:
+        logger.debug("dataset_num_proc override unreadable: %s", e)
+        return False
+    return bool(was_set)
+
+
+def _bounded_by_the_shared_policy(
+    desired: Optional[int], serial_as_none: bool = True
+) -> Optional[int]:
+    """Apply the training-side num_proc policy to a Studio request.
+
+    ``format_conversion.py`` and ``chat_templates.py`` hand this straight to
+    ``Dataset.map``, so without it a container with 2GB and eight cores still got
+    eight tokenizer workers -- the OOM this policy exists to stop -- and
+    ``UNSLOTH_DATASET_NUM_PROC`` did nothing on those paths.
+
+    ``desired`` is passed through as the caller wrote it. Materializing an auto
+    request with ``safe_num_proc`` first would hide it from the policy, whose
+    auto path reads this process's CPU affinity and cgroup quota while
+    ``safe_num_proc`` reads the host's ``os.cpu_count()``: a 2-core container on
+    a 64-core box asked for 21 workers and got them bounded only by memory.
+    Studio's own caps are then applied to whatever the policy chose, since the
+    multi-GPU fork-deadlock cap is knowledge the policy does not have -- except
+    over the escape hatch, which is uncapped by contract.
+    """
+    policy = _shared_policy()
+    if policy is None:
+        return safe_num_proc(desired)  # the behaviour before the shared policy
+
+    try:
+        bounded = policy.get_dataset_num_proc(desired, serial_as_none = serial_as_none)
+    except Exception as e:
+        logger.debug("dataset_num_proc policy unavailable: %s", e)
+        return safe_num_proc(desired)
+
+    if isinstance(bounded, int) and bounded > 1 and not _num_proc_override_is_set():
+        bounded = safe_num_proc(bounded)
+    return bounded

@@ -41,14 +41,22 @@ async function ragRequest<T>(
   return json as T;
 }
 
+/** A desktop drop the webview can only name through a Rust-signed grant. */
+export interface NativeUploadRef {
+  nativePathLease: string;
+}
+
+export type UploadSource = File | NativeUploadRef;
+
 async function ragUpload(
   path: string,
-  file: File,
+  source: UploadSource,
   ocr?: boolean,
   caption?: boolean,
 ): Promise<DocumentUploadResult> {
   const form = new FormData();
-  form.append("file", file);
+  if (source instanceof File) form.append("file", source);
+  else form.append("nativePathLease", source.nativePathLease);
   // Per-upload overrides for the vision passes; omitted -> backend config default.
   if (ocr !== undefined) form.append("ocr", String(ocr));
   if (caption !== undefined) form.append("caption", String(caption));
@@ -112,7 +120,7 @@ export async function listKnowledgeBaseDocuments(
 
 export function uploadKnowledgeBaseDocument(
   kbId: string,
-  file: File,
+  file: UploadSource,
   ocr?: boolean,
   caption?: boolean,
 ): Promise<DocumentUploadResult> {
@@ -135,7 +143,7 @@ export async function listThreadDocuments(
 
 export function uploadThreadDocument(
   threadId: string,
-  file: File,
+  file: UploadSource,
   ocr?: boolean,
   caption?: boolean,
 ): Promise<DocumentUploadResult> {
@@ -158,7 +166,7 @@ export async function listProjectDocuments(
 
 export function uploadProjectDocument(
   projectId: string,
-  file: File,
+  file: UploadSource,
   ocr?: boolean,
   caption?: boolean,
 ): Promise<DocumentUploadResult> {

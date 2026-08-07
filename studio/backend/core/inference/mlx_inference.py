@@ -14,8 +14,11 @@ from core.inference.message_content import content_to_text
 from core.inference.runtime_context import runtime_context_length
 from core.inference.chat_template_helpers import (
     ReasoningChannelNormalizer,
+    markup_for_tokenizer,
+    neutralize_control_markup_in_messages,
     normalize_reasoning_snapshots,
 )
+from utils.models.model_config import is_audio_input_type
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -97,7 +100,13 @@ def _mlx_vlm_model_config(model):
     return (configs[0] if configs else None), None
 
 
-def _render_registered_vlm_prompt(processor, model, messages, num_images):
+def _render_registered_vlm_prompt(
+    processor,
+    model,
+    messages,
+    num_images,
+    num_audios = 0,
+):
     """Render through mlx-vlm when it declares a formatter for this model."""
     from mlx_vlm import prompt_utils
 
@@ -107,16 +116,107 @@ def _render_registered_vlm_prompt(processor, model, messages, num_images):
     if model_type not in getattr(prompt_utils, "MODEL_CONFIG", {}):
         return None
 
+    # Recovery path: renders the caller's original list, not the neutralized copy (#7066).
     rendered = prompt_utils.apply_chat_template(
         processor,
         config,
-        messages,
+        neutralize_control_markup_in_messages(messages, None, markup_for_tokenizer(processor)),
         add_generation_prompt = True,
         num_images = num_images,
+        num_audios = num_audios,
     )
     if isinstance(rendered, str) and rendered.strip():
         return rendered
     raise RuntimeError("mlx-vlm's registered renderer returned an empty prompt.")
+
+
+# Rate the chat route decodes uploads to; mlx-vlm does not resample arrays.
+_AUDIO_INPUT_SAMPLE_RATE = 16000
+_AUDIO_PROBE_MESSAGES = [{"role": "user", "content": "audio"}]
+# Same turn with and without an image part, so a diff isolates the image marker.
+_IMAGE_PROBE_MESSAGES = [
+    {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "hi"}]}
+]
+_TEXT_PROBE_MESSAGES = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+
+
+def _classify_mlx_audio_type(
+    model,
+    processor,
+    is_vision,
+    config_audio_type = None,
+):
+    """audio_type for the model entry: "audio_vlm" (omni audio input; is_audio
+    stays False — it means TTS and redirects in the chat route) or None.
+
+    The checkpoint's own capability comes from unsloth_zoo, which answers it by
+    observing whether audio content changes what the processor returns. Two
+    things stay here because they are this backend's, not the checkpoint's: the
+    waveform arrives at the rate the chat route decodes to, and the prompt is
+    rendered through mlx-vlm's registry, where some families accept an audio
+    count and silently drop it. The rendered prompt is what the capability call
+    probes with, so a family whose marker only its own template emits is judged
+    on the real thing.
+
+    This probe speaks for "audio_vlm" and nothing else, so `config_audio_type`
+    (the pre-load answer from detect_audio_type) is carried through untouched
+    whenever the probe has no standing:
+
+      * a non-vision checkpoint is never asked, so a TTS codec ("snac", "dac",
+        "bicodec", "csm") or Whisper keeps the classification it arrived with —
+        the worker mirrors this entry over the pre-load config, so returning a
+        bare None here would silently strip the chat route's TTS redirect;
+      * a probe that could not run (absent or older unsloth_zoo, a raising or
+        unrecognised capability result) leaves the pre-load answer standing
+        rather than downgrading a model on the strength of a missing
+        dependency.
+
+    Only a probe that actually ran and answered may retract "audio_vlm".
+    """
+
+    def _probe_says_no():
+        # Authoritative for audio_vlm only; anything else passes through.
+        return None if config_audio_type == "audio_vlm" else config_audio_type
+
+    if not is_vision or processor is None:
+        return config_audio_type
+    # All of it inside the guard: a model load must never fail on a probe.
+    # BaseException because any escape here aborts the load.
+    try:
+        from unsloth_zoo.mlx.utils import (
+            audio_extractor_sampling_rate,
+            audio_input_capability,
+        )
+
+        if audio_extractor_sampling_rate(processor) != _AUDIO_INPUT_SAMPLE_RATE:
+            logger.info(
+                "MLX audio input unavailable: feature extractor is not %d Hz, and "
+                "the chat route decodes uploads to that rate.",
+                _AUDIO_INPUT_SAMPLE_RATE,
+            )
+            return _probe_says_no()
+        args = (processor, model, _AUDIO_PROBE_MESSAGES, 0)
+        marked = _render_registered_vlm_prompt(*args, num_audios = 1)
+        if not marked or marked == _render_registered_vlm_prompt(*args, num_audios = 0):
+            logger.info(
+                "MLX audio input unavailable: mlx-vlm's renderer for this family "
+                "places no audio marker."
+            )
+            return _probe_says_no()
+        capability = audio_input_capability(model, processor, texts = marked)
+        if capability.capable:
+            return "audio_vlm"
+        logger.info("MLX audio input unavailable for this model: %s", capability.reason)
+        return _probe_says_no()
+    except BaseException as exc:
+        logger.info(
+            "MLX audio capability check did not run (%s); keeping the pre-load "
+            "classification %r. Audio input needs an unsloth_zoo release providing "
+            "audio_input_capability.",
+            type(exc).__name__,
+            config_audio_type,
+        )
+    return config_audio_type
 
 
 def _count_vlm_images(content):
@@ -218,6 +318,441 @@ def _build_generation_stats(
 
 
 PROMPT_CACHE_ENTRIES = 6
+
+# Every bit width mx.quantize supports; unrelated to llama.cpp's cache_type_kv names.
+MLX_KV_BITS_CHOICES = (8, 6, 5, 4, 3, 2)
+# Quantization group size; a head dim that is not a multiple makes mx.quantize raise.
+MLX_KV_GROUP_SIZE = 64
+# Surfaced with the resolved setting so an API client sees the reuse cost too.
+MLX_KV_QUANT_NO_REUSE = (
+    "The installed mlx-lm cannot measure a quantized cache entry, so prompt-cache "
+    "reuse across turns is disabled while this is on."
+)
+MLX_KV_QUANT_VLM_CACHE_NOTE = (
+    "On vision models, quantization starts once the cache reaches {start} tokens."
+)
+
+
+def _kv_entry_nbytes(entry):
+    """Bytes held by one cache entry, or None when it cannot be measured.
+
+    Read straight off the property, because that is what decides admission:
+    upstream's LRUPromptCache.insert_cache sums ``c.nbytes`` itself, so an
+    entry whose property raises (mlx-lm 0.31.2's QuantizedKVCache, a missing
+    tree_reduce import) cannot enter the cache however else it could be sized.
+    Measuring it another way here would only promise reuse that never happens.
+    """
+    try:
+        return int(entry.nbytes)
+    except Exception:
+        return None
+
+
+def _normalize_mlx_kv_bits(value):
+    """Supported bit width, or None when unset or out of domain."""
+    if value is None:
+        return None
+    try:
+        bits = int(value)
+    except (TypeError, ValueError):
+        logger.warning("MLX kv_bits=%r is not an integer; ignoring", value)
+        return None
+    if bits not in MLX_KV_BITS_CHOICES:
+        logger.warning(
+            "MLX kv_bits=%s unsupported (choose %s); ignoring",
+            bits,
+            " or ".join(str(b) for b in MLX_KV_BITS_CHOICES),
+        )
+        return None
+    return bits
+
+
+def _kv_quant_probe(language_model, entries, bits):
+    """Attempt the conversion the runtime will perform, on a real cache.
+
+    Static proxies proved wrong in both directions: a model can declare a
+    head_dim it does not use for the cache, and a window can be spelled
+    differently from entry to entry. So populate one token and try the
+    conversion that generation would do.
+
+    Returns ``(converted, skipped, failure, retainable)``. ``retainable`` is
+    False when a converted entry's size cannot be read, because the prompt
+    cache budgets by size and upstream recomputes it internally.
+    """
+    import mlx.core as mx
+
+    convertible = [entry for entry in entries if getattr(entry, "to_quantized", None) is not None]
+    if not convertible:
+        # Verdict already known, so skip the cost of a full model call.
+        return 0, len(entries), None, True
+    if any(
+        getattr(entry, name, None) is not None
+        for entry in convertible
+        for name in ("max_size", "window_size")
+    ):
+        # A bounded ring cannot be probed unwrapped, and wrapped its conversion
+        # keeps an absolute offset past its storage. Refuse before the forward pass.
+        return 0, 0, "it uses a bounded sliding window", True
+
+    # The forward pass below draws random numbers, so keep sampled output stable.
+    # mx.random.state is mutated in place, so restore element-wise, not by rebinding.
+    rng_state = list(mx.random.state)
+    try:
+        try:
+            language_model(mx.array([[0]]), cache = entries)
+            mx.eval([getattr(entry, "state", None) for entry in entries])
+        except Exception as exc:
+            return 0, 0, f"its cache could not be exercised ({type(exc).__name__})", True
+
+        converted = skipped = 0
+        retainable = True
+        for entry in entries:
+            convert = getattr(entry, "to_quantized", None)
+            if convert is None:
+                skipped += 1
+                continue
+            try:
+                quantized = convert(group_size = MLX_KV_GROUP_SIZE, bits = bits)
+                mx.eval(quantized.state)
+                converted += 1
+            except Exception as exc:
+                return converted, skipped, f"MLX cannot quantize it ({type(exc).__name__})", True
+            # Same helper insertion uses, so the caveat matches what insertion sees.
+            if retainable and _kv_entry_nbytes(quantized) is None:
+                retainable = False
+        return converted, skipped, None, retainable
+    finally:
+        mx.random.state[:] = rng_state
+
+
+def _kv_quant_eligibility(
+    model,
+    is_vlm,
+    bits = MLX_KV_BITS_CHOICES[0],
+):
+    """Whether KV quantization can apply to this model, before generating.
+
+    Returns ``(verdict, reason, retainable)``, verdict in
+    full/partial/none/refused. Eligibility only: what the runtime converts stays
+    its own decision. Refusing here is what stops an ineligible model raising
+    mid-generation, once the leading entries are already converted.
+    """
+    language_model = getattr(model, "language_model", model) if is_vlm else model
+    try:
+        if is_vlm:
+            from mlx_vlm.models import cache as vlm_cache
+            entries = vlm_cache.make_prompt_cache(language_model)
+        else:
+            from mlx_lm.models import cache as lm_cache
+            entries = lm_cache.make_prompt_cache(language_model)
+    except Exception as exc:
+        logger.warning("MLX KV quantization eligibility probe failed: %s", exc)
+        return "none", "this model's KV cache layout could not be inspected", True
+
+    if not entries:
+        return "none", "this model builds no KV cache to quantize", True
+
+    converted, skipped, failure, retainable = _kv_quant_probe(language_model, entries, bits)
+    # Released only here, once the probe's own locals are gone, or the pages stay
+    # in the allocator.
+    import mlx.core as mx
+
+    entries.clear()
+    del entries
+    mx.clear_cache()
+    if failure is not None:
+        return "refused", f"this model's KV cache cannot be quantized: {failure}", True
+    if not converted:
+        return "none", "this model's KV cache layout cannot be quantized", True
+    verdict = "partial" if skipped else "full"
+    reason = "only some of this model's layers use a quantizable KV cache" if skipped else ""
+    return verdict, reason, retainable
+
+
+def _vlm_quantized_kv_start():
+    """Token offset at which mlx-vlm begins quantizing, per its own default."""
+    try:
+        from mlx_vlm.generate.common import DEFAULT_QUANTIZED_KV_START
+        return int(DEFAULT_QUANTIZED_KV_START)
+    except Exception:
+        return 5000
+
+
+# An override replaces an existing template, never creates one: both render
+# selectors pick their target by whether a template is present, so creating one
+# would silently move the render to a different object.
+_TEMPLATE_NOT_CAPTURED = object()
+MLX_TEMPLATE_NO_TARGET = (
+    "this model builds its prompt without a chat template, and supplying one "
+    "would drop the markers that place its images and audio"
+)
+MLX_TEMPLATE_CALLABLE = (
+    "the installed mlx-lm supplies this model's template as code rather than text, "
+    "and prefers it over any override"
+)
+MLX_TEMPLATE_NAMED_SET = (
+    "this model ships a set of named templates rather than one, and replacing the "
+    "set with a single template would lose its tool-calling variant"
+)
+MLX_TEMPLATE_RENDER_FAILED = "it could not render a conversation: {error}"
+MLX_TEMPLATE_NOT_SETTABLE = "this model's template cannot be replaced: {error}"
+MLX_TEMPLATE_DROPS_IMAGE = (
+    "it does not mark where images go, so this model could not accept image input with it"
+)
+MLX_TEMPLATE_DROPS_AUDIO = (
+    "it does not mark where audio goes, so this model could not accept audio input with it"
+)
+
+
+def _template_install_targets(tokenizer, processor):
+    """Objects whose chat_template would be read at render time.
+
+    The processor and the tokenizer can be the same object when a processor
+    exposes no nested tokenizer, so the result is de-duplicated by identity.
+    """
+    seen, targets = [], []
+    for candidate in (processor, tokenizer):
+        if candidate is None:
+            continue
+        if any(candidate is other for other in seen):
+            continue
+        seen.append(candidate)
+        targets.append(candidate)
+    return targets
+
+
+def _template_render_targets(tokenizer, processor):
+    """Objects a render selector would actually read the template from.
+
+    Deferred to chat_render_target rather than restated (#7066): it also
+    requires the processor to be able to render, and mlx-vlm's
+    get_chat_template applies the same rule for audio.
+    """
+    from core.inference.chat_template_helpers import chat_render_target
+
+    target = chat_render_target(processor, tokenizer)
+    return [target] if target is not None else []
+
+
+def _usable_template(value):
+    """Whether a chat_template value is one this override can replace."""
+    return isinstance(value, str) and value.strip() != ""
+
+
+def _native_template_source(tokenizer, processor):
+    """The object whose chat_template is this model's default.
+
+    The render target, so the editor's "model default" is the text generation
+    really uses. Falls back to the tokenizer when that target holds no usable
+    string, keeping the nested template reported for a processor carrying a
+    named set rather than reporting none at all.
+    """
+    for target in _template_render_targets(tokenizer, processor):
+        if _usable_template(getattr(target, "chat_template", None)):
+            return target
+    return tokenizer
+
+
+def _template_override_status(override, tokenizer, processor):
+    """Resolve a requested override against this model, without applying it.
+
+    Returns the targets to install onto and a status dict; an empty target list
+    with a reason means the override cannot be honored.
+    """
+    status = {
+        "requested": override,
+        "applied": None,
+        "reason": None,
+        # Kept so a later check (the audio marker) can put the model back.
+        "restore": [],
+    }
+    if not override or not override.strip():
+        return [], status
+    try:
+        candidates = _template_install_targets(tokenizer, processor)
+        existing = [(c, getattr(c, "chat_template", None)) for c in candidates]
+        rendering = _template_render_targets(tokenizer, processor)
+    except Exception as exc:
+        status["reason"] = MLX_TEMPLATE_NOT_SETTABLE.format(error = exc)
+        return [], status
+    # Judge only the objects that render: an unreplaceable template on an object
+    # nothing reads would reject a working override.
+    blocked = [(c, getattr(c, "chat_template", None)) for c in rendering]
+    if any(getattr(c, "_chat_template", None) is not None for c in rendering):
+        # apply_chat_template prefers a callable template over the attribute, so
+        # an assignment would be inert.
+        status["reason"] = MLX_TEMPLATE_CALLABLE
+        return [], status
+    if any(isinstance(value, (dict, list)) for _, value in blocked):
+        status["reason"] = MLX_TEMPLATE_NAMED_SET
+        return [], status
+    if not any(_usable_template(value) for _, value in blocked):
+        # Nothing to replace. Honorable on a text model, which cannot chat without
+        # one. Not with a processor: creating one takes the render away from
+        # mlx-vlm's fallback, which is what places the markers.
+        if processor is not None or not blocked:
+            status["reason"] = MLX_TEMPLATE_NO_TARGET
+            return [], status
+        return [c for c, _ in blocked], status
+    # Install on every object holding a replaceable string, so both selectors keep
+    # choosing what they chose before.
+    return [c for c, value in existing if _usable_template(value)], status
+
+
+def _audio_marker_survives(processor, model):
+    """Whether the installed template still marks where audio goes."""
+    if processor is None:
+        return True
+    args = (processor, model, _AUDIO_PROBE_MESSAGES, 0)
+    try:
+        marked = _render_registered_vlm_prompt(*args, num_audios = 1)
+        return bool(marked) and marked != _render_registered_vlm_prompt(*args, num_audios = 0)
+    except BaseException:
+        # A load must never fail on a probe, matching _classify_mlx_audio_type.
+        return False
+
+
+def _image_placeholder(tokenizer, processor):
+    """The model's own image placeholder, when it names one."""
+    for source in (processor, tokenizer):
+        token = getattr(source, "image_token", None)
+        if isinstance(token, str) and token:
+            return token
+    return None
+
+
+def _image_marker_survives(
+    tokenizer,
+    processor,
+    placeholder = None,
+):
+    """Whether the installed template still marks where an image goes.
+
+    Rendered through the target generation uses, so this sees what a real image
+    request would. Three ways to fail: rendering an image the same as no image,
+    emitting the structured content object instead of a marker, and dropping
+    the placeholder the model names. A bare difference is not enough on its
+    own, since a template can render the image as ordinary prose.
+    """
+    from core.inference.chat_template_helpers import apply_chat_template_for_generation
+
+    targets = _template_render_targets(tokenizer, processor)
+    if not targets:
+        return True
+    target = targets[0]
+    try:
+        marked = apply_chat_template_for_generation(target, _IMAGE_PROBE_MESSAGES)
+        if not marked or marked == apply_chat_template_for_generation(target, _TEXT_PROBE_MESSAGES):
+            return False
+        if _vlm_prompt_issue(marked, _IMAGE_PROBE_MESSAGES):
+            return False
+        return placeholder is None or placeholder in marked
+    except BaseException:
+        # A load must never fail on a probe, matching _audio_marker_survives.
+        return False
+
+
+def _revoke_override_dropping(status, survives, reason):
+    """Undo an installed override that stopped marking where media goes.
+
+    Capability was classified against the native template, so an override that
+    no longer renders the marker would leave the model advertising an input it
+    can no longer place.
+    """
+    if not status["applied"] or survives():
+        return status
+    _restore_templates(status["restore"])
+    status["applied"] = None
+    status["restore"] = []
+    status["reason"] = reason
+    return status
+
+
+def _revoke_override_that_drops_audio(status, processor, model):
+    return _revoke_override_dropping(
+        status,
+        lambda: _audio_marker_survives(processor, model),
+        MLX_TEMPLATE_DROPS_AUDIO,
+    )
+
+
+def _revoke_override_that_drops_image(
+    status,
+    tokenizer,
+    processor,
+    placeholder = None,
+):
+    return _revoke_override_dropping(
+        status,
+        lambda: _image_marker_survives(tokenizer, processor, placeholder),
+        MLX_TEMPLATE_DROPS_IMAGE,
+    )
+
+
+def _restore_templates(installed):
+    """Put back the templates an install replaced, newest first."""
+    for target, value in reversed(installed):
+        target.chat_template = value
+
+
+def _install_template_override(override, tokenizer, processor, probe):
+    """Install a chat template override, or report why it was not honored.
+
+    ``probe`` renders a short conversation with whatever is installed; a
+    template that cannot render would otherwise raise on every generation
+    instead of once here, which is how a hand-edited template usually fails.
+    """
+    targets, status = _template_override_status(override, tokenizer, processor)
+    if not targets:
+        return status
+    # Restore only what was actually assigned: a target that refused the assignment
+    # would refuse the restore too, masking the real error.
+    installed = []
+    template = MLX_TEMPLATE_RENDER_FAILED
+    try:
+        for target in targets:
+            original = target.chat_template
+            template = MLX_TEMPLATE_NOT_SETTABLE
+            target.chat_template = override
+            template = MLX_TEMPLATE_RENDER_FAILED
+            installed.append((target, original))
+        probe()
+    except Exception as exc:
+        _restore_templates(installed)
+        status["reason"] = template.format(error = exc)
+        return status
+    status["applied"] = override
+    status["restore"] = installed
+    return status
+
+
+def _kv_quant_status(requested_bits, model, is_vlm):
+    """Resolve a requested bit width against this model into a status dict."""
+    status = {
+        "requested_kv_bits": requested_bits,
+        "kv_bits": None,
+        "eligibility": None,
+        "reason": "",
+        "note": "",
+    }
+    if requested_bits is None:
+        return status
+    verdict, reason, retainable = _kv_quant_eligibility(model, is_vlm, requested_bits)
+    status["eligibility"] = verdict
+    status["reason"] = reason
+    if verdict in ("full", "partial"):
+        status["kv_bits"] = requested_bits
+        notes = []
+        if is_vlm:
+            notes.append(MLX_KV_QUANT_VLM_CACHE_NOTE.format(start = _vlm_quantized_kv_start()))
+        if not retainable:
+            notes.append(MLX_KV_QUANT_NO_REUSE)
+        status["note"] = " ".join(notes)
+    else:
+        logger.info("MLX KV quantization not applied: %s", reason)
+    return status
+
+
 PROMPT_CACHE_MEMORY_FRACTION = 0.15
 PROMPT_CACHE_FALLBACK_BYTES = 2 * 1024**3
 
@@ -303,7 +838,11 @@ class _MLXPromptCacheHistory:
 
     def insert(self, key, tokens, cache):
         # An over-budget entry evicts itself and every other conversation.
-        nbytes = sum(getattr(entry, "nbytes", 0) for entry in cache)
+        sizes = [_kv_entry_nbytes(entry) for entry in cache]
+        if any(size is None for size in sizes):
+            logger.debug("MLX prompt cache: skipping state whose size is unmeasurable")
+            return
+        nbytes = sum(sizes)
         if nbytes > self._max_bytes:
             logger.debug(
                 "MLX prompt cache: skipping %.2f GB entry over the %.2f GB budget",
@@ -433,6 +972,12 @@ class MLXInferenceBackend:
         # Recorded for unload to release pinned memory back to the OS.
         self._memory_limits_applied = {}
 
+        # Load-time runtime knobs; every generation path reads them from here rather
+        # than from per-request kwargs. Bound now so a load that fails before
+        # installing leaves readers a dict rather than raising.
+        self._kv_quant = _kv_quant_status(None, None, False)
+        self._template_override = _template_override_status(None, None, None)[1]
+
         self._prompt_cache_history = None
         self._prompt_cache_unavailable = False
 
@@ -482,6 +1027,15 @@ class MLXInferenceBackend:
             return prompt, None, None, None, 0
         return rest, cache, key, tokens, len(tokens) - len(rest)
 
+    def _kv_quant_generate_kwargs(self):
+        """Load-time runtime knobs for a generate call, empty when unset.
+
+        quantized_kv_start is deliberately not passed: mlx-lm and mlx-vlm ship
+        different defaults (0 and 5000) and each runtime keeps its own.
+        """
+        kv_bits = (getattr(self, "_kv_quant", None) or {}).get("kv_bits")
+        return {} if kv_bits is None else {"kv_bits": kv_bits}
+
     def _configure_memory_limits(self):
         """Apply Metal memory caps before loading a model.
 
@@ -524,6 +1078,8 @@ class MLXInferenceBackend:
         dtype = None,
         parallel_mode = None,
         distributed_group = None,
+        kv_bits = None,
+        chat_template_override = None,
     ) -> bool:
         import mlx.core as mx
 
@@ -621,6 +1177,60 @@ class MLXInferenceBackend:
             self._processor = None
             self._is_vlm = False
 
+        _audio_type = _classify_mlx_audio_type(
+            model,
+            self._processor,
+            is_vision,
+            config_audio_type = getattr(config, "audio_type", None),
+        )
+        # Classify before the first generation: an ineligible cache would otherwise
+        # raise inside maybe_quantize_kv_cache mid-stream, after converting the
+        # leading entries.
+        self._kv_quant = _kv_quant_status(_normalize_mlx_kv_bits(kv_bits), self._model, is_vision)
+        if self._kv_quant["kv_bits"] is not None:
+            logger.info(
+                "MLX KV cache quantization: %s-bit (%s eligibility)",
+                self._kv_quant["kv_bits"],
+                self._kv_quant["eligibility"],
+            )
+
+        # Captured before installing, so chat_template_info keeps reporting what the
+        # model shipped with. From the render target, not the nested tokenizer: on a
+        # processor owning its own template those differ, and saving the wrong
+        # default back would install the tokenizer's template over the processor.
+        native_source = _native_template_source(self._tokenizer, self._processor)
+        native_template = getattr(native_source, "chat_template", None)
+        native_marks_audio = bool(
+            chat_template_override
+            and is_audio_input_type(_audio_type)
+            and _audio_marker_survives(self._processor, self._model)
+        )
+        image_placeholder = _image_placeholder(self._tokenizer, self._processor)
+        self._template_override = _install_template_override(
+            chat_template_override,
+            self._tokenizer,
+            self._processor,
+            lambda: self._render_template_probe(is_vision),
+        )
+        if native_marks_audio:
+            _revoke_override_that_drops_audio(self._template_override, self._processor, self._model)
+        # Unconditional for vision, unlike audio: a native template that marks
+        # nothing still renders images through _generate_vlm's recovery, but an
+        # override rendering plain text drops the image in silence, so gating on
+        # the native template would skip exactly the models needing the check.
+        if is_vision:
+            _revoke_override_that_drops_image(
+                self._template_override, self._tokenizer, self._processor, image_placeholder
+            )
+        # Released once the media checks are done: the pairs reference the tokenizer
+        # and processor, so keeping them would outlive the unload that nulls both.
+        self._template_override["restore"] = []
+        if self._template_override["reason"]:
+            logger.info(
+                "MLX chat template override not applied: %s",
+                self._template_override["reason"],
+            )
+
         self.active_model_name = model_name
         self.models[model_name] = {
             # Per-model token for the native-template fallback (matches transformers).
@@ -636,22 +1246,60 @@ class MLXInferenceBackend:
             "base_model": getattr(config, "base_model", None)
             if getattr(config, "is_lora", False)
             else None,
-            "is_audio": False,
-            "audio_type": None,
-            "has_audio_input": False,
+            # Mirrors utils.models.model_config semantics (is_audio == TTS).
+            "is_audio": _audio_type is not None and _audio_type != "audio_vlm",
+            "audio_type": _audio_type,
+            "has_audio_input": is_audio_input_type(_audio_type),
             "context_length": runtime_context_length(self._model, max_seq_length),
+            "mlx_kv_bits": self._kv_quant["kv_bits"],
+            "mlx_kv_bits_requested": self._kv_quant["requested_kv_bits"],
+            "mlx_kv_quant_eligibility": self._kv_quant["eligibility"],
+            "mlx_kv_quant_reason": self._kv_quant["reason"],
+            "mlx_kv_quant_note": self._kv_quant["note"],
+            "chat_template_override_requested": self._template_override["requested"],
+            "chat_template_override_reason": self._template_override["reason"],
         }
         # Capture chat_template_info for the worker IPC reply and route capability classification.
-        self._populate_chat_template_info(model_name)
+        self._populate_chat_template_info(model_name, native_template)
 
         logger.info("Model %s loaded successfully", model_name)
         return True
 
-    def _populate_chat_template_info(self, model_name: str) -> None:
+    def _render_template_probe(self, is_vision: bool) -> str:
+        """Render a short conversation through the path generation will use.
+
+        Must use the same target the real request does. The recovery renderer
+        returns None instead of raising for a model outside mlx-vlm's family
+        list, so probing it would pass a template that cannot render at all.
+        """
+        from core.inference.chat_template_helpers import (
+            apply_chat_template_for_generation,
+            chat_render_target,
+        )
+
+        messages = [{"role": "user", "content": "hi"}]
+        target = (
+            chat_render_target(self._processor)
+            if is_vision and self._processor is not None
+            else self._tokenizer
+        )
+        rendered = apply_chat_template_for_generation(target, messages)
+        if not rendered or not rendered.strip():
+            raise ValueError("the template produced an empty prompt")
+        return rendered
+
+    def _populate_chat_template_info(
+        self,
+        model_name: str,
+        native_template = _TEMPLATE_NOT_CAPTURED,
+    ) -> None:
         """Mirror InferenceBackend._load_chat_template_info for MLX.
 
-        Stores ``chat_template_info`` on ``self.models[model_name]`` with the
-        resolved ``tokenizer.chat_template``."""
+        Stores ``chat_template_info`` on ``self.models[model_name]``. The
+        template recorded is the one the model shipped with, not an override:
+        the capability classification and the editor's notion of "default"
+        both read it, so an override installed on the tokenizer must not
+        show up here."""
         entry = self.models.get(model_name)
         if not entry:
             return
@@ -667,7 +1315,11 @@ class MLXInferenceBackend:
             "template_name": None,
         }
         try:
-            tpl = getattr(tok, "chat_template", None)
+            tpl = (
+                getattr(tok, "chat_template", None)
+                if native_template is _TEMPLATE_NOT_CAPTURED
+                else native_template
+            )
             if tpl:
                 info["has_template"] = True
                 info["template"] = tpl
@@ -927,6 +1579,7 @@ class MLXInferenceBackend:
                     max_tokens = max_new_tokens,
                     sampler = sampler,
                 )
+                gen_kwargs.update(self._kv_quant_generate_kwargs())
                 if prompt_cache is not None:
                     gen_kwargs["prompt_cache"] = prompt_cache
                 if logits_processors is not None:
@@ -1004,17 +1657,14 @@ class MLXInferenceBackend:
 
         from core.inference.chat_template_helpers import (
             apply_chat_template_for_generation,
+            chat_render_target,
         )
 
         # Pick the chat-template-aware caller: processors with their own
         # apply_chat_template + chat_template (e.g. Qwen2.5-VL), else the nested tokenizer.
-        chat_target = self._processor
-        if (
-            getattr(self._processor, "apply_chat_template", None) is None
-            or not hasattr(self._processor, "chat_template")
-            or self._processor.chat_template is None
-        ):
-            chat_target = getattr(self._processor, "tokenizer", self._processor)
+        # Shared with the healing catalog the route builds ahead of this render, which has
+        # to authorize against the same template this line selects (#7066).
+        chat_target = chat_render_target(self._processor)
 
         # mlx_vlm's stream_generate handles pixel_values (None for text-only)
         images = [image] if image is not None else None
@@ -1117,6 +1767,7 @@ class MLXInferenceBackend:
             top_k = int(top_k or 0),
             min_p = float(min_p or 0.0),
         )
+        vlm_kwargs.update(self._kv_quant_generate_kwargs())
         _rep_active = repetition_penalty is not None and float(repetition_penalty) not in (
             0.0,
             1.0,
@@ -1176,6 +1827,87 @@ class MLXInferenceBackend:
         yield from normalize_reasoning_snapshots(
             _stream_vlm_snapshots(), chat_target, cancel_event, tools = tools
         )
+
+    def generate_audio_input_response(
+        self,
+        messages,
+        system_prompt,
+        audio_array,
+        max_new_tokens = 512,
+        use_adapter = None,
+        cancel_event = None,
+        **_sampler,
+    ):
+        """Audio-input chat (omni models): waveform in, incremental text deltas
+        out (the audio route forwards deltas, unlike the snapshot-diffing
+        text/vision paths). Greedy, so the worker's sampler kwargs go unused."""
+        entry = self.models.get(self.active_model_name) or {}
+        if entry.get("audio_type") != "audio_vlm":
+            raise RuntimeError(
+                "Audio input is not supported for this model on the MLX backend: "
+                "no verified audio-capable tower/processor was detected at load."
+            )
+
+        from mlx_vlm import stream_generate as vlm_stream
+
+        # Only the CURRENT user turn may caption the audio; never older history.
+        user_text = ""
+        for msg in reversed(messages or []):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                user_text = content_to_text(msg.get("content") or "").strip()
+                break
+        if not user_text:
+            user_text = "Please transcribe this audio."
+        if not system_prompt:
+            system_prompt = "You are an assistant that transcribes speech accurately."
+
+        audio_messages = [
+            {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
+            {"role": "user", "content": [{"type": "audio"}, {"type": "text", "text": user_text}]},
+        ]
+        prompt = _render_registered_vlm_prompt(
+            self._processor,
+            self._model,
+            audio_messages,
+            num_images = 0,
+            num_audios = 1,
+        )
+        if prompt is None:
+            raise RuntimeError(
+                "mlx-vlm has no registered prompt renderer for this model family; "
+                "cannot build an audio prompt."
+            )
+
+        logger.info("MLX audio-input generating: prompt_len=%d", len(prompt))
+        # Hold the adapter state for the whole stream, as text and vision do,
+        # so Base-vs-LoRA compare doesn't run the adapter on both sides.
+        with self._generation_lock, _temporary_mlx_adapter_state(self._model, use_adapter):
+            final_response = None
+            try:
+                for response in vlm_stream(
+                    self._model,
+                    self._processor,
+                    prompt,
+                    audio = [audio_array],
+                    max_tokens = max_new_tokens,
+                    # Greedy; the knobs below are load-time state, not caller kwargs.
+                    temperature = 0.0,
+                    **self._kv_quant_generate_kwargs(),
+                ):
+                    final_response = response
+                    token_text = response.text if hasattr(response, "text") else str(response)
+                    if token_text:
+                        yield token_text
+                    if cancel_event and cancel_event.is_set():
+                        break
+            finally:
+                if final_response is not None:
+                    self.last_generation_stats = _build_generation_stats(
+                        getattr(final_response, "prompt_tokens", 0),
+                        getattr(final_response, "prompt_tps", 0.0),
+                        getattr(final_response, "generation_tokens", 0),
+                        getattr(final_response, "generation_tps", 0.0),
+                    )
 
     def generate_with_adapter_control(
         self,

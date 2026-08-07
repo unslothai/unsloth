@@ -280,7 +280,11 @@ function ModelStatusChips({
   unslothSupport: UnslothSupport;
   vramInfo: VramInfo;
 }) {
-  const showUnsupported = !isDataset && unslothSupport.status === "unsupported";
+  // The Images/Video pages run these, so they are not "unsupported" to a user even though chat cannot load them.
+  const showUnsupported =
+    !isDataset &&
+    unslothSupport.status === "unsupported" &&
+    !unslothSupport.supportedIn;
   // The format-unsupported chip already explains itself; this one covers the
   // supported-format model a chat-only host still can't run.
   const showChatOnly = !isDataset && !isGguf && chatOnly && !showUnsupported;
@@ -403,6 +407,8 @@ export type ModelInspectorActions = {
   onTrain?: () => void;
   onInventoryChange?: () => void;
   onSearchHub?: (query: string) => void;
+  /** Open settings with the quant the card resolved. */
+  onOpenSettings?: (ggufVariant: string | null) => void;
 };
 
 export const ModelInspector = memo(function ModelInspector({
@@ -444,6 +450,7 @@ export const ModelInspector = memo(function ModelInspector({
     onTrain,
     onInventoryChange,
     onSearchHub,
+    onOpenSettings,
   } = actions;
   const deviceType = usePlatformStore((s) => s.deviceType);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
@@ -503,7 +510,7 @@ export const ModelInspector = memo(function ModelInspector({
 
   if (!model) {
     return (
-      <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3 py-16 text-center">
+      <div className="flex min-h-[60dvh] flex-col items-center justify-center gap-3 py-16 text-center">
         <div className="inline-flex size-12 items-center justify-center rounded-[14px] bg-muted text-muted-foreground">
           <HugeiconsIcon icon={CubeIcon} strokeWidth={1.5} className="size-5" />
         </div>
@@ -703,7 +710,7 @@ export const ModelInspector = memo(function ModelInspector({
               preferredFile={preferredGgufFile}
               preferredFileIntent={preferredGgufFileIntent}
               unsupportedReason={
-                unslothSupport.status === "unsupported"
+                unslothSupport.status === "unsupported" && !unslothSupport.supportedIn
                   ? (unslothSupport.reason ?? "Unsupported format")
                   : null
               }
@@ -714,6 +721,7 @@ export const ModelInspector = memo(function ModelInspector({
                 model.isDownloaded && canTrainModel ? onTrain : undefined
               }
               onChange={onInventoryChange}
+              onOpenSettings={onOpenSettings}
             />
           ) : (
             <DownloadSection
@@ -842,7 +850,7 @@ export const ModelInspector = memo(function ModelInspector({
         />
       </div>
 
-      <div className="max-w-[860px] space-y-4 pt-4">
+      <div className="max-w-[var(--hub-readme-measure)] space-y-4 pt-4">
         {readmeReady && readmeRepoId && (
           <ModelReadme
             repoId={readmeRepoId}
