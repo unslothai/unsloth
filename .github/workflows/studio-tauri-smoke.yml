@@ -149,18 +149,42 @@ jobs:
           set -u
           BIN="$PWD/studio/src-tauri/target/debug/unsloth-studio"
           [ -x "$BIN" ] || { echo "::error::no debug binary at $BIN"; exit 1; }
+
+          # How sharp this job is depends on the runner's libX11. From 1.8
+          # (April 2022) libX11 calls XInitThreads() from its own constructor, so
+          # the #8062 race cannot happen there and these launches would pass with
+          # the fix reverted. ubuntu-22.04 ships 1.7.5, which does not.
+          x11ver="$(dpkg-query -W -f='${Version}' libx11-6 2>/dev/null || true)"
+          echo "libx11-6: ${x11ver:-not installed}"
+          if [ -z "$x11ver" ] || dpkg --compare-versions "$x11ver" ge 2:1.8; then
+            echo "::warning::libX11 ${x11ver:-unknown} initialises threading itself, so these launches no longer cover the #8062 race, only that the app starts. Keep this job on a runner with libX11 < 1.8 to keep that coverage."
+          fi
+
+          # Read the minimum the app enforces rather than restating it: a bump to
+          # MIN_DESKTOP_BACKEND_VERSION would otherwise leave the stub Stale,
+          # park the app on the repair screen and quietly stop testing the
+          # startup transition this job exists to test.
+          STUB_VERSION="$(sed -n 's/.*MIN_DESKTOP_BACKEND_VERSION: &str = "\([^"]*\)".*/\1/p' \
+            studio/src-tauri/src/preflight/version.rs)"
+          [ -n "$STUB_VERSION" ] || {
+            echo "::error::could not read MIN_DESKTOP_BACKEND_VERSION from preflight/version.rs"
+            exit 1
+          }
+          echo "stub backend version: $STUB_VERSION"
+
           mkdir -p "$RUNNER_TEMP/stub" launch-logs
           cat > "$RUNNER_TEMP/stub/unsloth" <<'STUB'
           #!/bin/sh
           case "$*" in
             "-h") exit 0 ;;
             *desktop-capabilities*)
-              printf '%s\n' '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":true,"version":"2026.8.4"}'
+              printf '%s\n' '{"desktop_protocol_version":1,"desktop_manageability_version":2,"supports_api_only":true,"supports_provision_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_install_ok":true,"version":"__STUB_VERSION__"}'
               exit 0 ;;
             *studio*--api-only*) exec sleep 60 ;;
           esac
           exit 1
           STUB
+          sed -i "s/__STUB_VERSION__/$STUB_VERSION/" "$RUNNER_TEMP/stub/unsloth"
           chmod +x "$RUNNER_TEMP/stub/unsloth"
 
           fails=0
@@ -184,8 +208,17 @@ jobs:
             APP=$!
             for _ in $(seq 1 20); do kill -0 "$APP" 2>/dev/null || break; sleep 1; done
             if kill -0 "$APP" 2>/dev/null; then
-              echo "launch $i: still up"
               kill -TERM "$APP" 2>/dev/null || true
+              # Surviving only counts if the launch got as far as the transition
+              # that used to kill it. An app parked on the install or repair
+              # screen also survives 20s while testing none of this.
+              if grep -q "start_managed_server spawned" "launch-logs/app-$i.log"; then
+                echo "launch $i: reached the backend spawn and stayed up"
+              else
+                fails=$((fails + 1))
+                echo "::error::launch $i never reached the backend spawn, so it never exercised the startup transition"
+                tail -25 "launch-logs/app-$i.log" || true
+              fi
             else
               rc=0; wait "$APP" 2>/dev/null || rc=$?
               fails=$((fails + 1))
@@ -199,10 +232,10 @@ jobs:
           # Every launch must reach the app shell and stay there. Anything else is
           # a user watching the window vanish on startup.
           if [ "$fails" -ne 0 ]; then
-            echo "::error::$fails of 10 launches died early"
+            echo "::error::$fails of 10 launches did not reach the app shell and stay there"
             exit 1
           fi
-          echo "10 of 10 launches stayed up"
+          echo "10 of 10 launches reached the backend spawn and stayed up"
 
       - name: Upload launch logs
         if: failure()
