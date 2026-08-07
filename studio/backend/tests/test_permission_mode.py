@@ -1992,3 +1992,15 @@ def test_render_html_strips_url_whitespace_browsers_remove():
     assert rh('<img src="https:\r//evil/x">') is True
     # A local reference remains local after the same normalisation.
     assert rh('<img src="./lo\ncal.png">') is False
+
+
+def test_render_html_gates_url_loading_constructors():
+    # new Audio(url) preloads remote media; new EventSource(url) opens a stream.
+    def rh(code):
+        return is_potentially_unsafe_tool_call("render_html", {"code": code})
+
+    assert rh("<script>new Audio('https://evil/x.mp3')</script>") is True
+    assert rh("<script>new EventSource('https://evil/stream')</script>") is True
+    assert rh("<script>new Audio('/x.mp3')</script>") is True
+    # A local media path stays on the automatic path.
+    assert rh("<script>new Audio('./local.mp3')</script>") is False

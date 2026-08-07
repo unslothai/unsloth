@@ -3782,6 +3782,10 @@ _RENDER_HTML_NETWORK_RE = re.compile(
     # constructor like importScripts/serviceWorker; a var merely named myWorker
     # (no "new") stays static.
     r"\bnew\s+(?:Shared)?Worker\s*\(|"
+    # Constructors that fetch their URL argument: new Audio(url) preloads media,
+    # new EventSource(url) opens a stream. new Image() takes no URL (its src is a
+    # property assignment, covered separately), so it is not listed here.
+    r"\bnew\s+(?:Audio|EventSource)\s*\(\s*[\"'`]?\s*(?:https?:|/)|"
     r"@import|"
     r"url\(\s*[\"']?\s*(?:https?:|/)|"
     # ES module loads of a remote/root URL: dynamic import('https://...') and

@@ -465,16 +465,23 @@ def _make_child_process_guard():
     # Carries the guard into a child; clearing it drops ``sitecustomize``.
     guard_env_vars = ("PYTHONPATH",)
     shell_interpreters = frozenset({"bash", "cmd", "dash", "fish", "ksh", "sh", "zsh"})
+    # Exec wrappers that run their trailing command; ``env`` is handled apart
+    # because it can also clear or unset the child environment.
+    plain_wrappers = frozenset({"nice", "nohup", "setsid", "stdbuf", "ionice", "timeout"})
     site_dir = os.path.realpath(os.path.dirname(os.path.abspath(__file__)))
     # ``t`` suffix: free-threaded CPython ships as python3.13t / python3.14t.
     python_program_re = re.compile(
         r"(?:python(?:w)?(?:\d+(?:\.\d+)*)?t?|pypy(?:\d+(?:\.\d+)*)?|py)"
     )
     site_flag_cluster_re = re.compile(r"-[^-]*[SEI][^-]*")
+    assignment_re = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
     environ = os.environ
     pathsep = os.pathsep
     basename = os.path.basename
     realpath = os.path.realpath
+    join = os.path.join
+    isabs = os.path.isabs
+    getcwd = os.getcwd
     filesystem_encoding = sys.getfilesystemencoding()
 
     def decode(value):
@@ -491,10 +498,6 @@ def _make_child_process_guard():
             return None
         base = basename(token.replace("\\", "/")).lower()
         return base[:-4] if base.endswith(".exe") else base
-
-    def is_python_program(token):
-        base = program_base(token)
-        return base is not None and bool(python_program_re.fullmatch(base))
 
     def flags_suppress_sitecustomize(arguments):
         """-S / -E / -I (and clusters) skip sitecustomize."""
@@ -516,58 +519,193 @@ def _make_child_process_guard():
                 skip_next = True
         return False
 
-    def pythonpath_keeps_guard(value):
+    def pythonpath_keeps_guard(value, cwd):
+        # Resolve relative entries against the CHILD cwd, not the parent's, so a
+        # relative ``PYTHONPATH`` cannot point at the site dir from the parent
+        # while missing from where the child actually starts.
         value = decode(value)
         if not value:
             return False
+        base = cwd if cwd is not None else getcwd()
         for entry in value.split(pathsep):
             if not entry:
                 continue
             try:
-                if realpath(entry) == site_dir:
+                resolved = realpath(entry if isabs(entry) else join(base, entry))
+                if resolved == site_dir:
                     return True
             except OSError:
                 continue
         return False
 
-    def child_env_keeps_guard(env):
+    def env_get(env, name):
         if env is None:
-            source = environ
-        else:
+            return environ.get(name)
+        try:
+            for key, value in dict(env).items():
+                if decode(key) == name:
+                    return value
+        except (AttributeError, TypeError, ValueError):
+            return None
+        return None
+
+    def child_env_keeps_guard(env, cwd):
+        if env is not None:
             try:
-                source = {decode(key): value for key, value in dict(env).items()}
+                dict(env)
             except (AttributeError, TypeError, ValueError):
                 return False
-        return all(pythonpath_keeps_guard(source.get(name)) for name in guard_env_vars)
+        return all(pythonpath_keeps_guard(env_get(env, name), cwd) for name in guard_env_vars)
 
-    def shell_script_escapes_guard(script):
-        """Token scan of a shell script for an unguarded launch."""
+    def is_assignment(token):
+        return bool(assignment_re.match(token)) and not token.startswith("-")
+
+    def env_escapes_guard(args, env, cwd):
+        """``env`` runs its trailing command and can clear/unset the child env."""
+        cleared = False
+        assignments = {}
+        unset = set()
+        index = 0
+        while index < len(args):
+            token = args[index]
+            if token is None:
+                return True
+            if token in ("-i", "--ignore-environment", "-"):
+                cleared = True
+                index += 1
+            elif token == "-u" and index + 1 < len(args):
+                unset.add(args[index + 1])
+                index += 2
+            elif token.startswith("--unset="):
+                unset.add(token.split("=", 1)[1])
+                index += 1
+            elif token.startswith("-u") and len(token) > 2 and not token.startswith("--"):
+                unset.add(token[2:])
+                index += 1
+            elif token in ("-S", "--split-string") and index + 1 < len(args):
+                return script_escapes_guard(args[index + 1], cwd)
+            elif token.startswith("--split-string="):
+                return script_escapes_guard(token.split("=", 1)[1], cwd)
+            elif is_assignment(token):
+                name, _, value = token.partition("=")
+                assignments[name] = value
+                index += 1
+            elif token.startswith("-"):
+                index += 1
+            else:
+                break
+        inner = args[index:]
+        if not inner:
+            return False
+        # PYTHONPATH the inner child sees: an explicit assignment wins; else it
+        # is inherited unless env cleared or unset it.
+        if "PYTHONPATH" in assignments:
+            keeps = pythonpath_keeps_guard(assignments["PYTHONPATH"], cwd)
+        elif cleared or "PYTHONPATH" in unset:
+            keeps = False
+        else:
+            keeps = pythonpath_keeps_guard(env_get(env, "PYTHONPATH"), cwd)
+        return command_escapes_guard(inner, env, cwd, guard_kept = keeps)
+
+    def command_escapes_guard(
+        tokens,
+        env,
+        cwd,
+        guard_kept = None,
+        executable = None,
+    ):
+        """Decide whether one simple command starts Python without the guard.
+
+        ``guard_kept`` overrides the env check when a wrapper (``env``) has
+        already determined what PYTHONPATH the child sees.
+        """
+        index = 0
+        env_tainted = False
+        # Leading ``NAME=VALUE`` assignments apply only when the program comes
+        # from the tokens (shell context), not when ``executable`` is explicit.
+        if executable is None:
+            while index < len(tokens):
+                token = tokens[index]
+                if token is None or not is_assignment(token):
+                    break
+                name, _, value = token.partition("=")
+                if name.upper() in guard_env_vars and not pythonpath_keeps_guard(value, cwd):
+                    env_tainted = True
+                index += 1
+        if index >= len(tokens):
+            return False
+        program = executable if executable is not None else tokens[index]
+        base = program_base(program)
+        if base is None:
+            return False
+        args = tokens[index + 1 :]
+        if base in shell_interpreters:
+            for position, token in enumerate(args):
+                token = decode(token)
+                if token and (token == "/c" or (token.startswith("-") and token.endswith("c"))):
+                    return position + 1 < len(args) and script_escapes_guard(
+                        args[position + 1], cwd, env
+                    )
+            return False
+        if base == "env":
+            return env_escapes_guard(args, env, cwd)
+        if base in plain_wrappers:
+            # A plain wrapper execs its trailing command with the same env; scan
+            # from the first token that is itself a program.
+            for position, token in enumerate(args):
+                inner_base = program_base(token)
+                if inner_base and (
+                    inner_base in shell_interpreters
+                    or inner_base == "env"
+                    or inner_base in plain_wrappers
+                    or python_program_re.fullmatch(inner_base)
+                ):
+                    return command_escapes_guard(args[position:], env, cwd, guard_kept)
+            return False
+        if python_program_re.fullmatch(base):
+            if env_tainted or flags_suppress_sitecustomize(args):
+                return True
+            if guard_kept is not None:
+                return not guard_kept
+            return not child_env_keeps_guard(env, cwd)
+        return False
+
+    def script_escapes_guard(
+        script,
+        cwd,
+        env = None,
+    ):
+        """Segment a shell script and check each command position for a launch."""
         script = decode(script)
         if not script:
             return False
         import shlex
 
         try:
-            tokens = shlex.split(script, comments = False)
+            lexer = shlex.shlex(script, posix = True, punctuation_chars = ";&|()")
+            lexer.whitespace_split = True
+            tokens = list(lexer)
         except ValueError:
             tokens = script.split()
-        for index, token in enumerate(tokens):
-            if "=" in token and not token.startswith("-"):
-                name, _, value = token.partition("=")
-                if name.upper() in guard_env_vars and not pythonpath_keeps_guard(value):
+        segment = []
+        for token in tokens:
+            if token and all(char in ";&|()" for char in token):
+                if segment and command_escapes_guard(segment, env, cwd):
                     return True
-            if is_python_program(token) and flags_suppress_sitecustomize(tokens[index + 1 :]):
-                return True
-        return False
+                segment = []
+                continue
+            segment.append(token)
+        return bool(segment) and command_escapes_guard(segment, env, cwd)
 
     def launch_escapes_guard(
         argv,
         env,
+        cwd = None,
         shell_string = False,
         executable = None,
     ):
         if shell_string:
-            return shell_script_escapes_guard(argv)
+            return script_escapes_guard(argv, cwd, env)
         if isinstance(argv, (str, bytes)):
             argv = [argv]
         try:
@@ -578,25 +716,9 @@ def _make_child_process_guard():
             return False
         # The child runs ``executable`` when the caller sets it (subprocess
         # executable=, os.exec* path); argv[0] is only a display name and can be
-        # spoofed. Decide interpreter identity from the real program, but read
-        # flags from argv[1:], which is what the interpreter itself parses.
-        base = program_base(executable) if executable else None
-        if base is None:
-            base = program_base(argv[0])
-        if base is None:
-            return False
-        # ``shell = True`` arrives as ['/bin/sh', '-c', script]; scan that script.
-        if base in shell_interpreters:
-            for index in range(1, len(argv)):
-                token = decode(argv[index])
-                if token and (token == "/c" or (token.startswith("-") and token.endswith("c"))):
-                    return index + 1 < len(argv) and shell_script_escapes_guard(argv[index + 1])
-            return False
-        if not python_program_re.fullmatch(base):
-            return False
-        if flags_suppress_sitecustomize(argv[1:]):
-            return True
-        return not child_env_keeps_guard(env)
+        # spoofed, so identity comes from the real program while flags come from
+        # argv[1:]. A single command, so leading-assignment parsing is off.
+        return command_escapes_guard(argv, env, cwd, executable = executable)
 
     return launch_escapes_guard
 
@@ -728,16 +850,43 @@ def _make_network_guard_audit():
             except (IndexError, KeyError, TypeError):
                 return None
 
+        def decode_cwd(value):
+            if value is None:
+                return None
+            try:
+                value = os.fspath(value)
+            except TypeError:
+                return None
+            if isinstance(value, bytes):
+                try:
+                    return value.decode(sys.getfilesystemencoding(), "surrogateescape")
+                except (LookupError, UnicodeDecodeError):
+                    return None
+            return value if isinstance(value, str) else None
+
         # argument 0 is the real executable/path; argv (argument 1) is spoofable.
+        # cwd matters because the child resolves a relative PYTHONPATH against it.
         if event == "subprocess.Popen":  # (executable, args, cwd, env)
-            executable, argv, env, shell_string = argument(0), argument(1), argument(3), False
+            executable, argv, cwd, env, shell_string = (
+                argument(0),
+                argument(1),
+                decode_cwd(argument(2)),
+                argument(3),
+                False,
+            )
         elif event in ("os.exec", "os.posix_spawn"):  # (path, args, env)
-            executable, argv, env, shell_string = argument(0), argument(1), argument(2), False
+            executable, argv, cwd, env, shell_string = (
+                argument(0),
+                argument(1),
+                None,
+                argument(2),
+                False,
+            )
         elif event == "os.system":  # (command,) -- a shell script string
-            executable, argv, env, shell_string = None, argument(0), None, True
+            executable, argv, cwd, env, shell_string = None, argument(0), None, None, True
         else:
             return
-        if launch_escapes_guard(argv, env, shell_string, executable):
+        if launch_escapes_guard(argv, env, cwd, shell_string, executable):
             raise PermissionError(
                 "Blocked: sandboxed code cannot start a Python child process "
                 "without the Studio runtime guard"

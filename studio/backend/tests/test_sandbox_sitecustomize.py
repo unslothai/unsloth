@@ -704,3 +704,73 @@ def test_zipimport_benign_module_still_loads(tmp_path):
     )
     assert "benign zip ok" in output, output
     assert "Blocked" not in output, output
+
+
+def test_env_wrapper_launching_python_is_blocked(tmp_path):
+    # env -i drops PYTHONPATH, so the wrapped interpreter starts guard-free.
+    (tmp_path / "grand.py").write_text(_GRANDCHILD)
+    output = _run_sandboxed(
+        tmp_path,
+        "import subprocess, sys\n"
+        "subprocess.run(['/usr/bin/env', '-i', sys.executable, 'grand.py'])\n",
+    )
+    assert "REACHED" not in output, output
+    assert "without the Studio runtime guard" in output, output
+
+
+@pytest.mark.parametrize(
+    "wrapper",
+    ["['nice', {py}, '-S', 'grand.py']", "['timeout', '5', {py}, '-S', 'grand.py']"],
+)
+def test_plain_wrappers_are_unwrapped(tmp_path, wrapper):
+    (tmp_path / "grand.py").write_text(_GRANDCHILD)
+    output = _run_sandboxed(
+        tmp_path,
+        f"import subprocess, sys\nsubprocess.run({wrapper.format(py = 'sys.executable')})\n",
+    )
+    assert "REACHED" not in output, output
+    assert "without the Studio runtime guard" in output, output
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo python -S",
+        "echo 'run python -S to skip site'",
+        "ls -la | grep python",
+    ],
+)
+def test_benign_shell_mentioning_python_is_allowed(tmp_path, command):
+    # A python token that is an argument to echo/grep is not a launch.
+    output = _run_sandboxed(tmp_path, f"import os\nos.system({command!r})\nprint('DONE')\n")
+    assert "DONE" in output, output
+    assert "runtime guard" not in output, output
+
+
+def test_shell_actually_launching_unguarded_python_is_blocked(tmp_path):
+    (tmp_path / "grand.py").write_text(_GRANDCHILD)
+    output = _run_sandboxed(tmp_path, "import os\nos.system('python3 -S grand.py')\n")
+    assert "REACHED" not in output, output
+    assert "without the Studio runtime guard" in output, output
+
+
+def test_relative_pythonpath_is_resolved_against_child_cwd(tmp_path):
+    # A relative PYTHONPATH that resolves to the site dir from the PARENT cwd but
+    # not the child's must not be trusted: the child starts without the guard.
+    site_dir = str(_SHIM.parent)
+    work = tmp_path / "work"
+    other = tmp_path / "other"
+    work.mkdir()
+    other.mkdir()
+    os.symlink(site_dir, work / "guard")
+    (work / "grand.py").write_text(_GRANDCHILD)
+    output = _run_child(
+        work,
+        "import subprocess, sys, os\n"
+        "subprocess.run([sys.executable, os.path.join(os.getcwd(), 'grand.py')],\n"
+        "  env = {'PYTHONPATH': 'guard', 'UNSLOTH_STUDIO_SANDBOXED': '1'},\n"
+        f"  cwd = {str(other)!r})\n",
+        site_dir,
+    )
+    assert "REACHED" not in output, output
+    assert "without the Studio runtime guard" in output, output
