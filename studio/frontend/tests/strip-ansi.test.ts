@@ -4,11 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  stripAnsi,
-  stripAnsiDeep,
-  stringifyToolResult,
-} from "../src/lib/strip-ansi.ts";
+import { stripAnsi, stringifyToolResult } from "../src/lib/strip-ansi.ts";
 
 const ESC = String.fromCharCode(27);
 const BEL = String.fromCharCode(7);
@@ -75,14 +71,30 @@ test("strips DEC save, restore, and full reset controls", () => {
   assert.equal(stripAnsi(`${ESC}chello`), "hello");
 });
 
-test("stripAnsiDeep cleans nested tool object fields before JSON display", () => {
-  const payload = {
+test("an aborted CSI does not swallow the sequence that follows it", () => {
+  assert.equal(stripAnsi(`${ESC}[${ESC}[32mhi`), "hi");
+  assert.equal(stripAnsi(`${ESC}[32\nplain`), "\nplain");
+});
+
+test("stringifyToolResult cleans nested tool object fields before JSON display", () => {
+  const rendered = stringifyToolResult({
     stdout: `${ESC}[32mfile.txt${ESC}[0m`,
     nested: [{ line: `${ESC}[31merror${ESC}[0m` }],
-  };
-  const cleaned = stripAnsiDeep(payload);
-  assert.equal(cleaned.stdout, "file.txt");
-  assert.equal(cleaned.nested[0]?.line, "error");
+  });
+  const parsed = JSON.parse(rendered);
+  assert.equal(parsed.stdout, "file.txt");
+  assert.equal(parsed.nested[0]?.line, "error");
+});
+
+test("stringifyToolResult strips ANSI out of object keys too", () => {
+  const rendered = stringifyToolResult({ [`${ESC}[32mstdout`]: "ok" });
+  assert.equal(rendered.includes("\\u001b"), false);
+  assert.match(rendered, /"stdout": "ok"/);
+});
+
+test("stringifyToolResult keeps toJSON serialization (Date stays an ISO string)", () => {
+  const rendered = stringifyToolResult({ at: new Date("2020-01-02T03:04:05Z") });
+  assert.match(rendered, /"at": "2020-01-02T03:04:05\.000Z"/);
 });
 
 test("stringifyToolResult avoids \\u001b litter for structured tool output", () => {

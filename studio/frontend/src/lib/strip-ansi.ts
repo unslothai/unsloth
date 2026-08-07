@@ -3,9 +3,15 @@
 
 const ESC = 27;
 const BEL = 7;
+const ESCAPE_CHAR = String.fromCharCode(ESC);
 
 function isCsiFinal(code: number): boolean {
   return code >= 0x40 && code <= 0x7e;
+}
+
+/** CSI parameter (0x30-0x3f) and intermediate (0x20-0x2f) bytes. */
+function isCsiParameter(code: number): boolean {
+  return code >= 0x20 && code <= 0x3f;
 }
 
 function isScsFinal(code: number): boolean {
@@ -68,10 +74,12 @@ export function stripAnsi(text: string): string {
     const next = text.charCodeAt(index + 1);
     if (next === 0x5b) {
       index += 2;
-      while (index < text.length && !isCsiFinal(text.charCodeAt(index))) {
+      while (index < text.length && isCsiParameter(text.charCodeAt(index))) {
         index += 1;
       }
-      if (index < text.length) {
+      // An aborted CSI (ESC or a newline before the final byte) leaves index on
+      // the offending byte so the next sequence is not swallowed with it.
+      if (index < text.length && isCsiFinal(text.charCodeAt(index))) {
         index += 1;
       }
       continue;
@@ -103,25 +111,31 @@ export function stripAnsi(text: string): string {
   return out;
 }
 
-/** Recursively strip ANSI from string leaves (objects / arrays from tool JSON). */
-export function stripAnsiDeep<T>(value: T): T {
+/**
+ * JSON.stringify replacer stripping ANSI from string values and object keys.
+ * A replacer sees values after toJSON, so Date and friends keep serializing
+ * normally; pre-walking the object would have flattened them to {}.
+ */
+function stripAnsiReplacer(_key: string, value: unknown): unknown {
   if (typeof value === "string") {
-    return stripAnsi(value) as T;
+    return stripAnsi(value);
   }
-  if (Array.isArray(value)) {
-    return value.map((item) => stripAnsiDeep(item)) as T;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return value;
   }
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [key, stripAnsiDeep(entry)]),
-    ) as T;
+  const entries = Object.entries(value);
+  // Rebuild only for escaped keys; anything else keeps its native serialization.
+  if (!entries.some(([key]) => key.includes(ESCAPE_CHAR))) {
+    return value;
   }
-  return value;
+  return Object.fromEntries(
+    entries.map(([key, entry]) => [stripAnsi(key), entry]),
+  );
 }
 
-/** Plain-text tool result for a <pre>: strings directly, objects after deep strip. */
+/** Plain-text tool result for a <pre>: strings directly, objects as stripped JSON. */
 export function stringifyToolResult(result: unknown): string {
   return typeof result === "string"
     ? stripAnsi(result)
-    : JSON.stringify(stripAnsiDeep(result), null, 2);
+    : JSON.stringify(result, stripAnsiReplacer, 2);
 }
