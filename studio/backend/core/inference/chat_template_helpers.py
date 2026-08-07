@@ -2338,9 +2338,7 @@ def last_user_text(messages: list) -> str:
     for message in reversed(messages or []):
         if not isinstance(message, dict) or message.get("role") != "user":
             continue
-        return re.sub(
-            r"<img[^>]*>", "", content_to_text(message.get("content"))
-        ).strip()
+        return re.sub(r"<img[^>]*>", "", content_to_text(message.get("content"))).strip()
     return ""
 
 
@@ -2351,9 +2349,7 @@ def render_vision_prompt(processor, messages: list, continue_partial: Optional[s
     the model resumes it. Processors predating the kwarg get a manual splice.
     """
     if not continue_partial:
-        return processor.apply_chat_template(
-            messages, add_generation_prompt = True, tokenize = False
-        )
+        return processor.apply_chat_template(messages, add_generation_prompt = True, tokenize = False)
     try:
         return processor.apply_chat_template(
             messages,

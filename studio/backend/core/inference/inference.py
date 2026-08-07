@@ -1237,9 +1237,7 @@ class InferenceBackend:
         )
 
         user_message = last_user_text(messages)
-        continue_partial = (
-            trailing_assistant_text(messages) if continue_final_message else None
-        )
+        continue_partial = trailing_assistant_text(messages) if continue_final_message else None
 
         if not user_message:
             user_message = "Describe this image." if image else "Hello"
@@ -1281,9 +1279,7 @@ class InferenceBackend:
             vision_messages = neutralize_control_markup_in_messages(
                 vision_messages, None, markup_for_tokenizer(processor)
             )
-            user_msg = next(
-                m for m in reversed(vision_messages) if m.get("role") == "user"
-            )
+            user_msg = next(m for m in reversed(vision_messages) if m.get("role") == "user")
 
             def _render_vision(msgs):
                 return render_vision_prompt(processor, msgs, continue_partial)
@@ -1296,9 +1292,7 @@ class InferenceBackend:
                         f"Vision processor for '{self.active_model_name}' may not support "
                         f"system messages; retrying without. Original error: {e}"
                     )
-                    vision_messages = [
-                        m for m in vision_messages if m.get("role") != "system"
-                    ]
+                    vision_messages = [m for m in vision_messages if m.get("role") != "system"]
                     input_text = _render_vision(vision_messages)
                 else:
                     raise
