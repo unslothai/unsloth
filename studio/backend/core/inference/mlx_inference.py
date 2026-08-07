@@ -417,6 +417,13 @@ MLX_KV_QUANT_NO_REUSE = (
 MLX_KV_QUANT_VLM_CACHE_NOTE = (
     "On vision models, quantization starts once the cache reaches {start} tokens."
 )
+# A bounded window rotates through a RotatingKVCache, whose to_quantized raises, and
+# mlx-lm attempts the conversion from the first token. Resolved here so the pinned
+# window is what applies, rather than letting generation fail on its first step.
+MLX_KV_QUANT_PINNED_CONTEXT = (
+    "A pinned context length bounds the KV cache, and the installed mlx-lm cannot "
+    "quantize a bounded cache. Clear the pin to quantize instead."
+)
 
 
 def _kv_entry_nbytes(entry):
@@ -812,7 +819,48 @@ def _install_template_override(override, tokenizer, processor, probe):
     return status
 
 
-def _kv_quant_status(requested_bits, model, is_vlm):
+def _kv_entry_is_bounded(entry, window):
+    """Whether this cache entry declares a cap that holds it at or below *window*.
+
+    Only a declared cap counts, and only up to the requested size: mlx-vlm's Florence2
+    hands back a class that concatenates forever and declares nothing, while Recurrent
+    Gemma declares its own attention_window_size whatever the load asked for.
+    """
+    cap = getattr(entry, "max_size", None) or getattr(entry, "chunk_size", None)
+    if not cap or cap > window:
+        return False
+    # A rotating cache that retains at least as much as it holds never rotates: the write
+    # index resets past the end of the buffer and the updates stop landing.
+    return cap > getattr(entry, "keep", 0)
+
+
+def _kv_window_enforced(model, is_vlm, window):
+    """Whether a cache built for this model at *window* is bounded in every layer.
+
+    Both runtimes defer to a model's own make_cache when it has one and ignore
+    max_kv_size there. Returns None when no cache could be built to judge.
+    """
+    language_model = getattr(model, "language_model", model) if is_vlm else model
+    try:
+        if is_vlm:
+            from mlx_vlm.models import cache as vlm_cache
+            entries = vlm_cache.make_prompt_cache(language_model, max_kv_size = window)
+        else:
+            from mlx_lm.models import cache as lm_cache
+            entries = lm_cache.make_prompt_cache(language_model, max_kv_size = window)
+    except Exception as exc:
+        logger.debug("MLX context bound probe failed: %s", exc)
+        return None
+    flattened = list(_flatten_kv_entries(entries))
+    return bool(flattened) and all(_kv_entry_is_bounded(entry, window) for entry in flattened)
+
+
+def _kv_quant_status(
+    requested_bits,
+    model,
+    is_vlm,
+    context_pinned = False,
+):
     """Resolve a requested bit width against this model into a status dict."""
     status = {
         "requested_kv_bits": requested_bits,
@@ -822,6 +870,11 @@ def _kv_quant_status(requested_bits, model, is_vlm):
         "note": "",
     }
     if requested_bits is None:
+        return status
+    if context_pinned:
+        status["eligibility"] = "refused"
+        status["reason"] = MLX_KV_QUANT_PINNED_CONTEXT
+        logger.info("MLX KV quantization not applied: %s", MLX_KV_QUANT_PINNED_CONTEXT)
         return status
     verdict, reason, retainable = _kv_quant_eligibility(model, is_vlm, requested_bits)
     status["eligibility"] = verdict
@@ -896,11 +949,17 @@ def _kv_prefix_coverage(cache):
 
 
 class _MLXPromptCacheHistory:
-    def __init__(self, max_entries, max_bytes):
+    def __init__(
+        self,
+        max_entries,
+        max_bytes,
+        max_kv_size = None,
+    ):
         api = _mlx_prompt_cache_api()
         if api is None:
             raise RuntimeError("mlx-lm is too old for LRUPromptCache")
         lru_cls, make, can_trim, trim = api
+        self._max_kv_size = max_kv_size
         self._make_prompt_cache = make
         self._can_trim = can_trim
         self._trim = trim
@@ -920,7 +979,9 @@ class _MLXPromptCacheHistory:
             if cache is not None:
                 covered = len(head) - len(rest)
                 return cache, list(tokens[covered:])
-        return self._make_prompt_cache(model), list(tokens)
+        if self._max_kv_size is None:
+            return self._make_prompt_cache(model), list(tokens)
+        return self._make_prompt_cache(model, max_kv_size = self._max_kv_size), list(tokens)
 
     def insert(self, key, tokens, cache):
         # An over-budget entry evicts itself and every other conversation.
@@ -1062,6 +1123,7 @@ class MLXInferenceBackend:
         # than from per-request kwargs. Bound now so a load that fails before
         # installing leaves readers a dict rather than raising.
         self._kv_quant = _kv_quant_status(None, None, False)
+        self._kv_cache_window = None
         self._template_override = _template_override_status(None, None, None)[1]
 
         self._prompt_cache_history = None
@@ -1079,6 +1141,7 @@ class MLXInferenceBackend:
             self._prompt_cache_history = _MLXPromptCacheHistory(
                 PROMPT_CACHE_ENTRIES,
                 max_bytes,
+                self._kv_cache_window,
             )
         except Exception as exc:
             self._prompt_cache_unavailable = True
@@ -1118,6 +1181,15 @@ class MLXInferenceBackend:
         """
         kv_bits = (getattr(self, "_kv_quant", None) or {}).get("kv_bits")
         return {} if kv_bits is None else {"kv_bits": kv_bits}
+
+    def _kv_window_generate_kwargs(self):
+        """The cache bound for a generation that builds its own cache, empty when unset.
+
+        Both runtimes read it only when no prompt_cache is passed, so this covers the
+        request that reaches generation without one rather than duplicating the bound.
+        """
+        window = getattr(self, "_kv_cache_window", None)
+        return {} if window is None else {"max_kv_size": window}
 
     def _encode_prompt(self, prompt):
         """The tokens a generation sends for this prompt.
@@ -1167,14 +1239,62 @@ class MLXInferenceBackend:
         """Resolve (served, native, ceiling) for a freshly loaded model.
 
         Mirrors the GGUF resolution order: whatever the load attached or was asked for is
-        honored verbatim, while asking for nothing takes the trained window. Nothing here
-        bounds the KV cache, which mlx-lm grows to whatever a request needs.
+        honored verbatim, while asking for nothing takes the trained window. The served
+        length is what bounds the KV cache, where the architecture allows it.
         """
         native = mlx_native_context_length(model)
         served = runtime_context_length(model, max_seq_length) or native
         if served:
             logger.info("MLX context: served=%s native=%s", served, native)
         return served, native, native
+
+    def _kv_cache_window_enforceable(self, served):
+        """Whether a cache built for this model would really cap at *served*.
+
+        A probe that could not run counts as not enforceable: claiming a bound nobody
+        confirmed is what makes the setting look like it works.
+        """
+        if not served or served <= 0:
+            return False
+        enforced = _kv_window_enforced(self._model, self._is_vlm, int(served))
+        if enforced is False:
+            logger.warning(
+                "MLX context bound of %d tokens does not apply: at least one cache layer "
+                "declares no cap at that length.",
+                int(served),
+            )
+        elif enforced is None:
+            logger.warning(
+                "MLX context bound of %d tokens not applied: no cache could be built to "
+                "confirm it.",
+                int(served),
+            )
+        return enforced is True
+
+    def _resolve_kv_policy(self, is_vlm, kv_bits, max_seq_length, served):
+        """The quantization status and cache window this load will run with.
+
+        Rotation is what keeps a long conversation inside the window, so nothing here can
+        refuse a request; the model simply stops attending to the oldest tokens.
+
+        Quantization cannot coexist with a bound -- a rotating cache has no conversion,
+        and mlx-lm converts from the first token -- so an enforceable pin, an explicit
+        instruction about memory, outranks it. A window the backend chose for itself
+        yields to an explicitly requested quantization, and so does a pin that cannot be
+        enforced, which would otherwise spend the quantization and bound nothing.
+        """
+        pinned = _positive_int(max_seq_length) is not None
+        enforceable = self._kv_cache_window_enforceable(served)
+        quant = _kv_quant_status(
+            _normalize_mlx_kv_bits(kv_bits),
+            self._model,
+            is_vlm,
+            pinned and enforceable,
+        )
+        if not enforceable or (quant["kv_bits"] is not None and not pinned):
+            return quant, None
+        logger.info("MLX KV cache bounded at %d tokens", int(served))
+        return quant, int(served)
 
     def load_model(
         self,
@@ -1292,10 +1412,15 @@ class MLXInferenceBackend:
             is_vision,
             config_audio_type = getattr(config, "audio_type", None),
         )
+        _served_ctx, _native_ctx, _max_ctx = self._resolve_context_lengths(
+            self._model, max_seq_length
+        )
         # Classify before the first generation: an ineligible cache would otherwise
         # raise inside maybe_quantize_kv_cache mid-stream, after converting the
         # leading entries.
-        self._kv_quant = _kv_quant_status(_normalize_mlx_kv_bits(kv_bits), self._model, is_vision)
+        self._kv_quant, self._kv_cache_window = self._resolve_kv_policy(
+            is_vision, kv_bits, max_seq_length, _served_ctx
+        )
         if self._kv_quant["kv_bits"] is not None:
             logger.info(
                 "MLX KV cache quantization: %s-bit (%s eligibility)",
@@ -1340,9 +1465,6 @@ class MLXInferenceBackend:
                 self._template_override["reason"],
             )
 
-        _served_ctx, _native_ctx, _max_ctx = self._resolve_context_lengths(
-            self._model, max_seq_length
-        )
         self.active_model_name = model_name
         self.models[model_name] = {
             # Per-model token for the native-template fallback (matches transformers).
@@ -1772,6 +1894,7 @@ class MLXInferenceBackend:
                     sampler = sampler,
                 )
                 gen_kwargs.update(self._kv_quant_generate_kwargs())
+                gen_kwargs.update(self._kv_window_generate_kwargs())
                 if prompt_cache is not None:
                     gen_kwargs["prompt_cache"] = prompt_cache
                 if logits_processors is not None:
@@ -1963,6 +2086,7 @@ class MLXInferenceBackend:
             min_p = float(min_p or 0.0),
         )
         vlm_kwargs.update(self._kv_quant_generate_kwargs())
+        vlm_kwargs.update(self._kv_window_generate_kwargs())
         _rep_active = repetition_penalty is not None and float(repetition_penalty) not in (
             0.0,
             1.0,
@@ -2088,6 +2212,7 @@ class MLXInferenceBackend:
                     # Greedy; the knobs below are load-time state, not caller kwargs.
                     temperature = 0.0,
                     **self._kv_quant_generate_kwargs(),
+                    **self._kv_window_generate_kwargs(),
                 ):
                     final_response = response
                     token_text = response.text if hasattr(response, "text") else str(response)
