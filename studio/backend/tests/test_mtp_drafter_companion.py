@@ -1322,8 +1322,8 @@ def test_companion_search_root_keeps_non_quant_directories(tmp_path):
 def test_custom_scan_folder_variant_finds_nested_mtp_drafter(tmp_path, monkeypatch):
     """Custom-folder scan roots are passed with a nested gguf_variant (#8077).
 
-    Companions sit beside the model directory, not at the scan root. Using the
-  selected scan folder as the companion search root would miss them.
+      Companions sit beside the model directory, not at the scan root. Using the
+    selected scan folder as the companion search root would miss them.
     """
     scan_root = tmp_path / "custom"
     model_dir = scan_root / "unsloth" / "gemma-4-31b-it"
