@@ -394,8 +394,8 @@ function Install-UnslothStudio {
 
     # ── How this run was launched ──
     # "true", "false", or "unknown" when the token cannot be read. An elevated
-    # run writes %USERPROFILE%\.unsloth as Administrators, so the same account
-    # cannot read it back from a normal shell. Keep in step with studio/setup.ps1.
+    # run writes the install root as Administrators, so the same account cannot
+    # read it back afterwards. Keep in step with studio/setup.ps1.
     function Get-ElevationState {
         try {
             $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
@@ -412,23 +412,36 @@ function Install-UnslothStudio {
     # Record it either way, and warn only when it will cause the problem. The
     # marker reaches the desktop support report via install.rs record_diag_marker.
     function Write-ElevationNotice {
-        param([Parameter(Mandatory = $true)][string]$State)
+        param(
+            [Parameter(Mandatory = $true)][string]$State,
+            [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Root,
+            # $env:UNSLOTH_TAURI_MODE is not set until setup.ps1 is invoked far
+            # below, so the desktop's own --tauri flag is what is readable here.
+            [switch]$Tauri
+        )
 
-        if (@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) {
+        if ($Tauri) {
             [Console]::Out.WriteLine("[TAURI:DIAG] elevated=$State")
             [Console]::Out.Flush()
         }
         if ($State -ne "true") { return }
         Write-Host "  [WARNING] Running as administrator. Unsloth does not need this." -ForegroundColor Yellow
-        Write-Host "            Everything written to $env:USERPROFILE\.unsloth will be owned by" -ForegroundColor Yellow
-        Write-Host "            Administrators, and your normal account will not be able to read it." -ForegroundColor Yellow
+        Write-Host "            Anything written to $Root will be owned by Administrators," -ForegroundColor Yellow
+        Write-Host "            and your normal account will not be able to read it afterwards." -ForegroundColor Yellow
         Write-Host "            That folder outlives an uninstall, so a later install, setup or" -ForegroundColor Yellow
-        Write-Host "            update from a normal shell fails on it." -ForegroundColor Yellow
-        Write-Host "            Close this window and re-run from a normal PowerShell instead." -ForegroundColor Yellow
+        Write-Host "            update run normally fails on it." -ForegroundColor Yellow
+        Write-Host "            Stop and start again without 'Run as administrator'." -ForegroundColor Yellow
         Write-Host ""
     }
 
-    Write-ElevationNotice -State (Get-ElevationState)
+    # llama.cpp is a sibling of studio under ~/.unsloth on a default install, so
+    # name the parent; a custom root holds every artefact itself.
+    $ElevationRoot = if ($StudioRedirectMode -eq 'env') {
+        $StudioHome
+    } else {
+        Join-Path $env:USERPROFILE ".unsloth"
+    }
+    Write-ElevationNotice -State (Get-ElevationState) -Root $ElevationRoot -Tauri:$TauriMode
 
     # ── Helper: refresh PATH from registry (deduplicating entries) ──
     # Merge order: venv Scripts (if active) > Machine > User > current $env:Path.

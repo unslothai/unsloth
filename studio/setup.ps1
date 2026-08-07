@@ -1641,13 +1641,23 @@ if ($env:SKIP_STUDIO_BASE -ne "1") {
         [Console]::Out.Flush()
     }
     if ($ElevationState -eq "true") {
+        # $StudioHome is resolved much later, so mirror its override precedence
+        # here for the message only. llama.cpp is a sibling of studio under
+        # ~/.unsloth on a default install, so name the parent.
+        $_elevRoot = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
+            $env:UNSLOTH_STUDIO_HOME.Trim()
+        } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
+            $env:STUDIO_HOME.Trim()
+        } else {
+            Join-Path $env:USERPROFILE ".unsloth"
+        }
         Write-Host ""
         Write-Host "  [WARNING] Running as administrator. Unsloth does not need this." -ForegroundColor Yellow
-        Write-Host "            Everything written to $env:USERPROFILE\.unsloth will be owned by" -ForegroundColor Yellow
-        Write-Host "            Administrators, and your normal account will not be able to read it." -ForegroundColor Yellow
+        Write-Host "            Anything written to $_elevRoot will be owned by Administrators," -ForegroundColor Yellow
+        Write-Host "            and your normal account will not be able to read it afterwards." -ForegroundColor Yellow
         Write-Host "            That folder outlives an uninstall, so a later install, setup or" -ForegroundColor Yellow
-        Write-Host "            update from a normal shell fails on it." -ForegroundColor Yellow
-        Write-Host "            Close this window and re-run from a normal PowerShell instead." -ForegroundColor Yellow
+        Write-Host "            update run normally fails on it." -ForegroundColor Yellow
+        Write-Host "            Stop and start again without 'Run as administrator'." -ForegroundColor Yellow
     }
 }
 
@@ -6055,4 +6065,13 @@ if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -eq "1") {
     } else {
         Exit-SetupFailure "llama.cpp setup did not produce a usable server"
     }
+}
+
+# A desktop repair runs update.rs, which sets UNSLOTH_TAURI_UPDATE alone, so the
+# block above is skipped and a degraded repair recorded nothing. update.rs parses
+# [TAURI:DIAG] the same way. Marker only: the update contract stays successful.
+if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -ne "1" -and
+    (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) {
+    [Console]::Out.WriteLine("[TAURI:DIAG] llama_cpp=unavailable")
+    [Console]::Out.Flush()
 }

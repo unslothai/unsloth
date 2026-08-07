@@ -70,6 +70,52 @@ case "$_step_out" in
         echo "  PASS: notice does not consume an install step"; PASS=$((PASS + 1)) ;;
 esac
 
+# ── Desktop repair: update.rs sets UNSLOTH_TAURI_UPDATE alone ──
+# Neither SKIP_STUDIO_BASE nor UNSLOTH_TAURI_MODE is set on a repair, so the block
+# above never runs and a degraded repair recorded nothing. Marker only: the update
+# path stays silent and successful for everyone else.
+_REPAIR=$(mktemp)
+sed -n '/^# A desktop repair runs update\.rs/,/^fi$/p' "$SETUP_SH" > "$_REPAIR"
+if [ ! -s "$_REPAIR" ]; then
+    echo "  FAIL: could not find the repair block in setup.sh"; FAIL=$((FAIL + 1))
+fi
+
+# degraded, skip_base, tauri_update -> expected rc, expected substring ("" = none)
+run_repair() {
+    _label="$1"; _degraded="$2"; _skip="$3"; _upd="$4"; _rc_want="$5"; _want="$6"
+    set +e
+    _out=$(
+        _LLAMA_CPP_DEGRADED="$_degraded" \
+        SKIP_STUDIO_BASE="$_skip" \
+        UNSLOTH_TAURI_UPDATE="$_upd" \
+        bash -c 'setup_fail() { printf "SETUP_FAIL: %s\n" "$*"; exit "$1"; }; . "$1"' _ "$_REPAIR" 2>&1
+    )
+    _rc=$?
+    set -e
+    if [ "$_rc" != "$_rc_want" ]; then
+        echo "  FAIL: $_label (expected rc $_rc_want, got $_rc; output: $_out)"; FAIL=$((FAIL + 1)); return
+    fi
+    case "$_want" in
+        "") [ -z "$_out" ] || { echo "  FAIL: $_label (expected no output, got: $_out)"; FAIL=$((FAIL + 1)); return; } ;;
+        *)  case "$_out" in *"$_want"*) ;; *) echo "  FAIL: $_label (expected '$_want' in: $_out)"; FAIL=$((FAIL + 1)); return ;; esac ;;
+    esac
+    echo "  PASS: $_label"; PASS=$((PASS + 1))
+}
+
+echo "=== desktop repair verdict ==="
+run_repair "tauri repair records the verdict"    true  0 1    0 "[TAURI:DIAG] llama_cpp=unavailable"
+run_repair "true spelling also records"          true  0 true 0 "[TAURI:DIAG] llama_cpp=unavailable"
+# Must not leak into the paths the existing contract keeps silent.
+run_repair "plain 'studio update' stays silent"  true  0 0    0 ""
+run_repair "a healthy repair says nothing"       false 0 1    0 ""
+run_repair "the install path is left to the block above" true 1 1 0 ""
+# Marker only: a repair must not start failing where it used to succeed.
+if grep -qE 'setup_fail|exit ' "$_REPAIR"; then
+    echo "  FAIL: the repair block must not change the exit contract"; FAIL=$((FAIL + 1))
+else
+    echo "  PASS: the repair block is marker-only"; PASS=$((PASS + 1))
+fi
+
 # ── Windows parity: setup.ps1 must degrade the same way (static check) ──
 # install.ps1 turns any non-zero setup.ps1 status into Exit-InstallFailure, which
 # install.rs reports as "Installation failed", so an unconditional
@@ -94,7 +140,15 @@ else
     esac
 fi
 
-rm -f "$_BLOCK"
+_PS_REPAIR=$(sed -n '/^# A desktop repair runs update\.rs/,/^}$/p' "$SETUP_PS1")
+case "$_PS_REPAIR" in
+    *'UNSLOTH_TAURI_UPDATE'*'[TAURI:DIAG] llama_cpp=unavailable'*)
+        echo "  PASS: setup.ps1 mirrors the repair marker"; PASS=$((PASS + 1)) ;;
+    *)
+        echo "  FAIL: setup.ps1 does not record a degraded desktop repair"; FAIL=$((FAIL + 1)) ;;
+esac
+
+rm -f "$_BLOCK" "$_REPAIR"
 echo ""
 echo "Passed: $PASS  Failed: $FAIL"
 [ "$FAIL" -eq 0 ]

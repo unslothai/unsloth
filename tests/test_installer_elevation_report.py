@@ -31,11 +31,25 @@ INSTALL_PS1 = REPO_ROOT / "install.ps1"
 SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 SETUP_SH = REPO_ROOT / "studio" / "setup.sh"
 INSTALL_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "install.rs"
+UPDATE_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "update.rs"
 REPORT_RS = REPO_ROOT / "studio" / "src-tauri" / "src" / "diagnostics" / "report.rs"
 
 
 def _read(path: Path) -> str:
     return path.read_text(encoding = "utf-8")
+
+
+def _code_only(text: str) -> str:
+    """Drop whole-line comments so an assertion about what the code reads is not
+    satisfied, or defeated, by prose explaining it."""
+    return "\n".join(line for line in text.splitlines() if not line.strip().startswith("#"))
+
+
+def _repair_block(path: Path) -> str:
+    """The marker-only block that covers a desktop repair, which runs without
+    SKIP_STUDIO_BASE and so never reaches the install-side block."""
+    src = _read(path)
+    return src[src.index("# A desktop repair runs update.rs") :]
 
 
 # ── The marker channel these rely on ──
@@ -46,9 +60,9 @@ def test_diag_marker_prefix_is_still_parsed_and_reported():
     markers become invisible without either file changing."""
     assert '"[TAURI:DIAG] "' in _read(INSTALL_RS), "install.rs no longer parses [TAURI:DIAG]"
     assert "record_diag_marker" in _read(INSTALL_RS), "the marker is parsed but not recorded"
-    assert "installer_diag_markers" in _read(
-        REPORT_RS
-    ), "the support report no longer prints markers"
+    assert "installer_diag_markers" in _read(REPORT_RS), (
+        "the support report no longer prints markers"
+    )
 
 
 # ── Elevation ──
@@ -78,7 +92,7 @@ def test_install_ps1_elevation_state_covers_unreadable_tokens():
 
 
 def test_install_ps1_warns_before_any_install_work():
-    """The warning is only useful while the user can still close the window."""
+    """The warning is only useful while the user can still stop."""
     src = _read(INSTALL_PS1)
     notice_idx = src.index("Write-ElevationNotice -State (Get-ElevationState)")
     for marker in (
@@ -86,18 +100,54 @@ def test_install_ps1_warns_before_any_install_work():
         "uv venv $VenvDir --python",
         'step "setup" "running unsloth studio setup..."',
     ):
-        assert notice_idx < src.index(
-            marker
-        ), f"the elevation notice must be printed before {marker!r}"
+        assert notice_idx < src.index(marker), (
+            f"the elevation notice must be printed before {marker!r}"
+        )
 
 
-def test_install_ps1_warning_names_the_folder_that_outlives_uninstall():
-    """A bare "you are admin" note does not explain why it matters later."""
+def test_install_ps1_marker_uses_the_parsed_tauri_flag():
+    """install.rs launches this with --tauri and never sets UNSLOTH_TAURI_MODE;
+    install.ps1 assigns that variable itself, far below, right before invoking
+    setup.ps1. Gating on the env var here would emit nothing for the desktop
+    install, and setup.ps1 then skips its own marker under SKIP_STUDIO_BASE=1,
+    so the flow this exists for would produce no elevated= line at all."""
     src = _read(INSTALL_PS1)
-    notice = src[src.index("function Write-ElevationNotice") :]
-    notice = notice[: notice.index("Write-ElevationNotice -State")]
-    assert "\\.unsloth" in notice, "the warning must name the folder that becomes unreadable"
+    notice = _code_only(
+        src[src.index("function Write-ElevationNotice") : src.index("$ElevationRoot = if")]
+    )
+    assert "[TAURI:DIAG] elevated=$State" in notice
+    assert "$env:UNSLOTH_TAURI_MODE" not in notice, (
+        "the env var is unset at this point; gate on the --tauri flag instead"
+    )
+    assert "-Tauri:$TauriMode" in src, "the parsed --tauri flag must be what drives the marker"
+    # The flag has to be parsed before the call, or it is always false.
+    assert src.index('"--tauri"    { $TauriMode = $true }') < src.index("-Tauri:$TauriMode")
+    # And the env var must still be unassigned there, or this test proves nothing.
+    assert src.index("-Tauri:$TauriMode") < src.index("$env:UNSLOTH_TAURI_MODE = if ($TauriMode)")
+
+
+def test_install_ps1_warning_names_the_root_actually_written():
+    """A custom UNSLOTH_STUDIO_HOME holds every artefact, so naming
+    %USERPROFILE%\\.unsloth there points the user at the wrong directory."""
+    src = _read(INSTALL_PS1)
+    notice = src[src.index("function Write-ElevationNotice") : src.index("-Tauri:$TauriMode")]
+    assert "$Root" in notice, "the warning must name the resolved root, not a fixed path"
     assert "outlives an uninstall" in notice, "the warning must say reinstalling does not clear it"
+    root = src[src.index("$ElevationRoot = if") : src.index("-Tauri:$TauriMode")]
+    assert "$StudioRedirectMode -eq 'env'" in root, "a custom root must be named instead"
+    assert '".unsloth"' in root, "a default install must name the parent that also holds llama.cpp"
+    # $StudioHome and $StudioRedirectMode are set by the resolver above; if the
+    # notice moved above it, $Root would silently be empty.
+    assert src.index("$StudioRedirectMode = 'default'") < src.index("$ElevationRoot = if")
+
+
+def test_install_ps1_warning_does_not_assume_a_powershell_window():
+    """install.rs spawns this from the desktop app, where there is no console to
+    close and no PowerShell prompt to re-run from."""
+    src = _read(INSTALL_PS1)
+    notice = src[src.index("function Write-ElevationNotice") : src.index("$ElevationRoot = if")]
+    for phrase in ("Close this window", "normal PowerShell"):
+        assert phrase not in notice, f"{phrase!r} is wrong for the desktop flow"
 
 
 def test_setup_ps1_reports_elevation_without_duplicating_the_installer():
@@ -105,11 +155,32 @@ def test_setup_ps1_reports_elevation_without_duplicating_the_installer():
     reported; this covers direct setup, update and desktop repair."""
     src = _read(SETUP_PS1)
     idx = src.index('if ($env:SKIP_STUDIO_BASE -ne "1") {')
-    block = src[idx : idx + 1800]
+    block = src[idx : src.index("# Back up User PATH")]
     assert "WindowsBuiltInRole]::Administrator" in block
     assert "[TAURI:DIAG] elevated=$ElevationState" in block
     # Desktop repair runs with UNSLOTH_TAURI_UPDATE rather than UNSLOTH_TAURI_MODE.
     assert "UNSLOTH_TAURI_UPDATE" in block, "repair updates must emit the marker too"
+
+
+def test_setup_ps1_warning_names_the_root_actually_written():
+    """$StudioHome is not resolved until much later in setup.ps1, so the message
+    mirrors the documented override precedence rather than a fixed path."""
+    src = _read(SETUP_PS1)
+    idx = src.index('if ($env:SKIP_STUDIO_BASE -ne "1") {')
+    block = src[idx : src.index("# Back up User PATH")]
+    assert "$_elevRoot" in block, "the warning must name a resolved root"
+    assert "UNSLOTH_STUDIO_HOME" in block and "STUDIO_HOME" in block, (
+        "both override names must be honoured, in that order"
+    )
+    assert block.index("UNSLOTH_STUDIO_HOME") < block.index("$env:STUDIO_HOME"), (
+        "UNSLOTH_STUDIO_HOME wins when both are set"
+    )
+    for phrase in ("Close this window", "normal PowerShell"):
+        assert phrase not in block, f"{phrase!r} is wrong for the desktop repair flow"
+    # Naming $StudioHome directly here would render empty.
+    assert idx < src.index("$StudioHome = Join-Path $env:USERPROFILE"), (
+        "this test is only meaningful while the notice precedes the resolver"
+    )
 
 
 # ── Degraded llama.cpp ──
@@ -122,9 +193,9 @@ def test_degraded_llama_cpp_is_recorded_not_only_flashed():
         assert "llama_cpp=unavailable" in src, f"{path.name} does not record the degraded verdict"
         progress_idx = src.index("llama.cpp unavailable; GGUF inference is disabled")
         marker_idx = src.index("llama_cpp=unavailable")
-        assert (
-            marker_idx > progress_idx
-        ), f"{path.name} must keep the user-facing progress line and add the marker beside it"
+        assert marker_idx > progress_idx, (
+            f"{path.name} must keep the user-facing progress line and add the marker beside it"
+        )
 
 
 def test_degraded_llama_cpp_still_fails_outside_tauri_mode():
@@ -132,3 +203,30 @@ def test_degraded_llama_cpp_still_fails_outside_tauri_mode():
     install.ps1 still need the non-zero exit."""
     assert 'setup_fail 1 "llama.cpp setup did not produce a usable server"' in _read(SETUP_SH)
     assert 'Exit-SetupFailure "llama.cpp setup did not produce a usable server"' in _read(SETUP_PS1)
+
+
+def test_degraded_llama_cpp_is_recorded_on_a_desktop_repair():
+    """update.rs sets UNSLOTH_TAURI_UPDATE alone, neither SKIP_STUDIO_BASE nor
+    UNSLOTH_TAURI_MODE, so the install-side block never runs on a repair. It
+    parses [TAURI:DIAG] the same way install.rs does."""
+    assert 'strip_prefix("[TAURI:DIAG] ")' in _read(UPDATE_RS), "update.rs must parse the marker"
+    assert "record_diag_marker" in _read(UPDATE_RS), "the marker is parsed but not recorded"
+    for path, guard in (
+        (SETUP_SH, '[ "${SKIP_STUDIO_BASE:-0}" != "1" ]'),
+        (SETUP_PS1, '$env:SKIP_STUDIO_BASE -ne "1"'),
+    ):
+        block = _repair_block(path)
+        assert guard in block, f"{path.name} must record the repair path the install block skips"
+        assert "llama_cpp=unavailable" in block, f"{path.name} repair block emits no marker"
+        assert "UNSLOTH_TAURI_UPDATE" in block, f"{path.name} must gate the repair marker on it"
+
+
+def test_desktop_repair_marker_does_not_change_the_update_contract():
+    """A plain 'unsloth studio update' stays silent and successful; only a Tauri
+    repair emits, and neither path gains an exit-code change."""
+    for path in (SETUP_SH, SETUP_PS1):
+        block = _code_only(_repair_block(path))
+        for forbidden in ("setup_fail", "Exit-SetupFailure", "TAURI:PROGRESS", "exit "):
+            assert forbidden not in block, (
+                f"{path.name}: the repair block must be marker-only, found {forbidden!r}"
+            )

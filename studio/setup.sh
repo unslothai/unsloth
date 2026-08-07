@@ -2561,3 +2561,12 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" = "1" ]; then
             ;;
     esac
 fi
+
+# A desktop repair runs update.rs, which sets UNSLOTH_TAURI_UPDATE alone, so the
+# block above is skipped and a degraded repair recorded nothing. update.rs parses
+# [TAURI:DIAG] the same way. Marker only: the update contract stays successful.
+if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ]; then
+    case "${UNSLOTH_TAURI_UPDATE:-0}" in
+        1|true) printf '[TAURI:DIAG] %s\n' "llama_cpp=unavailable" ;;
+    esac
+fi
