@@ -535,7 +535,7 @@ _vm_stat_avail_mb() {
         /^Pages (free|inactive|speculative|purgeable)/ {
             gsub(/\./, "", $NF); pages += $NF
         }
-        END { if (ps > 0 && pages > 0) printf "%d", pages * ps / 1048576 }'
+        END { if (ps > 0 && pages > 0) printf "%d", pages * ps / 1048576 }' || true
     return 0
 }
 
