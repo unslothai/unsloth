@@ -337,6 +337,13 @@ jobs:
           set -uo pipefail
           DRY=1; [ "${ENABLED:-}" = "true" ] && DRY=0
           [ "$DRY" = 1 ] && echo "::notice::CI_PREEMPT_ENABLED is not 'true'; reporting what would happen and changing nothing"
+          PAUSED=0
+          PAUSE_FAILED=0
+          # The class list tolerates spaces a few lines down; this is the same
+          # tolerance for the event list, which otherwise reads `schedule, push`
+          # as one event named ` push` that matches nothing and silently sweeps
+          # only half of what was asked for.
+          EVENTS="${EVENTS// /}"
 
           # Resolve the allowlist for the requested runner classes. Anything not
           # named in .github/ci-preempt.json is out of reach, and the never list
@@ -347,9 +354,40 @@ jobs:
             # classes and a resume that named one would leave half the
             # allowlist disabled, and re-enabling something that was never
             # disabled is free.
+            #
+            # It ignores whether another pause is still live too, and that is a
+            # trade rather than an oversight: two overlapping releases, or a
+            # slow ci-resume arriving after a newer ci-pause, and the first
+            # resume switches CI back on underneath the release still running.
+            # Holding that off needs a lease, a record of the open pauses that
+            # outlives this run, and nothing here can keep one. With
+            # actions:write and contents:read the only stores in reach are
+            # artifacts and caches; repository variables need the Variables
+            # permission, which has no `permissions:` key and cannot be granted
+            # to GITHUB_TOKEN at all, a committed file needs contents:write and
+            # an issue needs issues:write. Both reachable stores are written
+            # partway through the run, which is the hole the guard note above
+            # already rejects: kill the pause job between the disable call and
+            # the lease write and the lease reads "nothing paused" while the
+            # workflows are off.
+            #
+            # The two failure directions also differ, which is what decides it.
+            # Resuming early refills the pool and the surviving release queues
+            # longer, and one more ci-pause dispatch repairs it. A lease that
+            # leaks blocks every later resume and holds CI off until the guard's
+            # MAX_DISABLED_MINUTES, on a guard queueing for the same pool. So
+            # overlapping pauses are handled by not overlapping them: pause from
+            # one release at a time.
             FILES="$(jq -r '[.heavy[][]] - .never | unique[]' .github/ci-preempt.json)"
           else
-            WANT="$(tr ',' '\n' <<<"$CLASSES" | sed 's/ //g' | grep -v '^$' | jq -Rsc 'split("\n") - [""]')"
+            # No `grep -v '^$'` here. `- [""]` below already drops the empty
+            # entries, and grep exits 1 when nothing matches, which pipefail and
+            # the inherited -e turn into a dead step with no annotation and no
+            # summary on a classes of ',' or ' '. A field that resolves to no
+            # classes has to reach the warning below, the same way an unknown
+            # class does, rather than hand a dispatch sender a way to red-X this
+            # repository's Actions tab.
+            WANT="$(tr ',' '\n' <<<"$CLASSES" | sed 's/ //g' | jq -Rsc 'split("\n") - [""]')"
             FILES="$(jq -r --argjson want "$WANT" \
                        '[.heavy[$want[]][]?] - .never | unique[]' .github/ci-preempt.json)"
           fi
@@ -422,10 +460,21 @@ jobs:
             #
             # Hence: not the default, gated behind the enable flag, and floored
             # by the guard above.
+            #
+            # Counted, but deliberately not fatal the way a failed enable is. A
+            # disable that fails leaves the workflow running, so the pause just
+            # frees less than it hoped; nothing is left in a state that needs
+            # recovering. The summary says how many, so "the allowlist is down"
+            # is never claimed on the strength of a call that 403'd.
             while read -r ID; do
-              [ "$DRY" = 1 ] && { echo "would disable workflow ${ID}"; continue; }
-              gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${ID}/disable" \
-                && echo "disabled ${ID}" || echo "::error::could not disable ${ID}"
+              [ "$DRY" = 1 ] && { echo "would disable workflow ${ID}"; PAUSED=$(( PAUSED + 1 )); continue; }
+              if gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${ID}/disable"; then
+                echo "disabled ${ID}"
+                PAUSED=$(( PAUSED + 1 ))
+              else
+                echo "::error::could not disable ${ID}"
+                PAUSE_FAILED=$(( PAUSE_FAILED + 1 ))
+              fi
             done < "${RUNNER_TEMP}/ids.txt"
           fi
 
@@ -534,6 +583,18 @@ jobs:
             HOLD=0
           fi
 
+          # A dry run cancels nothing, so nothing leaves status=queued between
+          # passes and every extra pass re-reports and re-counts the same runs:
+          # at the 240m ceiling, three queued runs become "720 run(s) would have
+          # been cancelled" in the one artifact this ships to produce. It would
+          # also pin an ubuntu slot for four hours out of the pool this file
+          # exists to relieve, to reprint one list. One pass is the whole of
+          # what a dry run can tell you.
+          if [ "$DRY" = 1 ] && [ "$HOLD" -gt 0 ]; then
+            echo "::warning::hold_minutes ${HOLD} ignored while CI_PREEMPT_ENABLED is not 'true'; a dry run cancels nothing, so every further pass would re-count the same runs. Sweeping once"
+            HOLD=0
+          fi
+
           TOTAL=0
           DEADLINE=$(( $(date -u +%s) + HOLD * 60 ))
           while :; do
@@ -553,7 +614,20 @@ jobs:
             echo "- reason: ${REASON}"
             echo "- ${TOTAL} run(s) $( [ "$DRY" = 1 ] && echo 'would have been cancelled (dry run)' || echo cancelled )"
             if [ "$MODE" = "pause" ]; then
-              echo "- allowlist disabled; the guard re-enables it ${MAX_DISABLED_MINUTES}m from now, as soon as the guard itself gets a runner"
+              # Only stated as fact when it happened. A dry run printed "would
+              # disable" and called nothing, and a real run can still lose ids
+              # to a rate limit, so an unconditional "allowlist disabled" would
+              # tell an operator the allowlist was down and that a 120m restore
+              # clock was running when neither was true. In the dry state the
+              # guard is gated off as well, so there is no clock at all.
+              if [ "$DRY" = 1 ]; then
+                echo "- ${PAUSED} workflow(s) would have been disabled (dry run); none were, so there is nothing for the guard to restore"
+              else
+                echo "- ${PAUSED} workflow(s) disabled; the guard re-enables them ${MAX_DISABLED_MINUTES}m from now, as soon as the guard itself gets a runner"
+                if [ "$PAUSE_FAILED" -gt 0 ]; then
+                  echo "- ${PAUSE_FAILED} workflow(s) could NOT be disabled and are still refilling the pool; this pause is partial"
+                fi
+              fi
             fi
           } >> "$GITHUB_STEP_SUMMARY"
           # The block above ends in a conditional, so say what the step's status
