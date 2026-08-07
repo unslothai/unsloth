@@ -59,6 +59,7 @@ import {
   MAX_SEQ_LENGTH_MIN,
   MAX_SEQ_LENGTH_STEP,
   MLX_KV_BITS,
+  N_BATCH_LLAMA_DEFAULT,
   N_BATCH_MAX,
   N_BATCH_MIN,
   N_PARALLEL_MAX,
@@ -649,13 +650,16 @@ function GgufAdvancedSettings({
   // llama.cpp runs at min(batch, ubatch) and the /status echo is the REQUESTED size, so
   // the control would otherwise keep showing a value the server never used (batch 8 /
   // ubatch 4096 measured 8.8x slower). Against the EMITTED batch, or the two advisories
-  // contradict: batch 4 / slots 8 launches at 8, so saying it runs at 4 is wrong.
+  // contradict: batch 4 / slots 8 launches at 8, so saying it runs at 4 is wrong. A blank
+  // batch emits no flag and runs llama.cpp's own 2048, which caps the micro-batch just the
+  // same, so it is the default and not "unbounded". Extras or LLAMA_ARG_BATCH can move
+  // that, but this page cannot see them, the same limit the slot floor above carries.
   const effectiveBatch =
-    config.nBatch != null ? Math.max(config.nBatch, batchFloor) : null;
+    config.nBatch != null
+      ? Math.max(config.nBatch, batchFloor)
+      : N_BATCH_LLAMA_DEFAULT;
   const ubatchExceedsBatch =
-    effectiveBatch != null &&
-    config.nUbatch != null &&
-    config.nUbatch > effectiveBatch;
+    config.nUbatch != null && config.nUbatch > effectiveBatch;
   return (
     <>
       <div className={ROW_CLASS}>

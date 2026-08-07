@@ -5345,13 +5345,16 @@ def _estimate_gguf_required_gb(
                 # an uncached load that then OOMs the training job it exists to protect.
                 # The activation scratch needs embedding_length and stays uncharged: it is
                 # the small half, and over-reserving here denies the load outright.
+                # Scaled per device only in tensor mode, mirroring the local branch: a
+                # layer split folds the flat buffer in once (_flat_buffer(False)), and
+                # only tensor mode replicates it on every card.
                 _out_slots = n_parallel if tensor_parallel else max(0, n_parallel - 1)
                 out_buffer_bytes = (
                     _ASSUMED_MAX_VOCAB
                     * effective_ubatch
                     * 4
                     * _out_slots
-                    * devices
+                    * (devices if tensor_parallel else 1)
                     * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
                 )
                 total_gb += (mask_bytes + out_buffer_bytes) / (1024**3)

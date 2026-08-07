@@ -689,3 +689,32 @@ def test_the_remote_guard_charges_the_flat_output_buffer():
     assert big_2 > big_1 + 30.0
     # and it stays proportionate where the values are ordinary
     assert typical_4 < 4.0
+
+    # Scaled per device only in tensor mode. The layer path folds the flat buffer in once
+    # (_flat_buffer(False) is not multiplied), so charging it per device would 409 a
+    # 2-GPU layer split for ~32 GiB it never allocates.
+    with (
+        patch(
+            "utils.models.model_config.list_gguf_variants",
+            return_value = ([remote_variant], False),
+        ),
+        patch.object(route, "_remote_gguf_companion_bytes", return_value = 0),
+    ):
+
+        def _split(tensor, devices):
+            return route._estimate_gguf_required_gb(
+                config,
+                max_seq_length = 32768,
+                n_parallel = 2,
+                n_batch = 32768,
+                n_ubatch = 32768,
+                n_devices = devices,
+                tensor_parallel = tensor,
+            )
+
+        layer_1, layer_2 = _split(False, 1), _split(False, 2)
+        tensor_1, tensor_2 = _split(True, 1), _split(True, 2)
+    # the second device adds only the ctx-linear mask, not another 32 GiB of logits
+    assert layer_2 - layer_1 < 30.0
+    # tensor mode replicates the whole buffer on every card, so it does roughly double
+    assert tensor_2 > tensor_1 * 1.8

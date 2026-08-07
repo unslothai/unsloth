@@ -2529,12 +2529,25 @@ def test_the_micro_batch_advisory_compares_against_the_emitted_batch():
     src = _read("features/model-picker/components/model-config-page.tsx")
     page = " ".join(src.split())
     assert "const batchFloor = Math.max(2, config.nParallel ?? 2);" in page
-    assert (
-        "const effectiveBatch = config.nBatch != null "
-        "? Math.max(config.nBatch, batchFloor) : null;" in page
-    )
+    assert "Math.max(config.nBatch, batchFloor)" in page
     assert "config.nUbatch > effectiveBatch" in page
     # the rendered number too, or the text still names a batch nothing runs at
     assert "llama.cpp will run at{\" \"} {effectiveBatch}." in page
     # and the floor must be declared before the comparison that uses it
     assert page.index("const batchFloor =") < page.index("const effectiveBatch =")
+
+
+def test_a_blank_batch_still_caps_the_micro_batch_at_the_llama_default():
+    """Blank does not mean unbounded: no flag is emitted, so llama.cpp runs its own 2048
+    and caps the micro-batch against THAT. Treating blank as null suppressed the advisory
+    entirely, so a micro-batch of 4096 with the batch left blank looked usable while the
+    server ran 2048. Shared constant rather than a literal, since the backend already
+    names the same number."""
+    src = _read("features/model-picker/components/model-config-page.tsx")
+    page = " ".join(src.split())
+    assert "N_BATCH_LLAMA_DEFAULT," in page  # imported, not inlined
+    assert ": N_BATCH_LLAMA_DEFAULT;" in page
+    # effectiveBatch is now never null, so the predicate must not re-check it for null
+    assert "config.nUbatch != null && config.nUbatch > effectiveBatch" in page
+    cfg = _read("features/model-picker/model-config/per-model-config.ts")
+    assert "export const N_BATCH_LLAMA_DEFAULT = 2048;" in cfg

@@ -55,6 +55,9 @@ export const N_PARALLEL_MAX = 64;
 // mirrors llama_server_args.py BATCH_MIN/MAX; null = follow the llama.cpp defaults (2048 / 512)
 export const N_BATCH_MIN = 1;
 export const N_BATCH_MAX = 65536;
+// llama.cpp's own --batch-size default (_DEFAULT_LLAMA_N_BATCH), which a blank control
+// runs at: it still caps the micro-batch, so advisories have to reckon with it.
+export const N_BATCH_LLAMA_DEFAULT = 2048;
 
 export const MAX_SEQ_LENGTH_MIN = 128;
 export const MAX_SEQ_LENGTH_MAX = 1048576;
