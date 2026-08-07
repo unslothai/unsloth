@@ -182,13 +182,32 @@ test("web build reaches execCommand in the same tick when clipboard is absent", 
   assert.equal(recorder.removed, recorder.appended, "textarea must be cleaned up");
 });
 
-test("Tauri build copies natively and never touches navigator.clipboard", async () => {
+test("Tauri build lets the native write decide the result", async () => {
   const { copyToClipboard, recorder } = await load({ tauri: true });
 
   assert.equal(await copyToClipboard("model/path.gguf"), true);
   assert.deepEqual(recorder.nativeWrites, ["model/path.gguf"]);
-  assert.deepEqual(recorder.webWrites, []);
-  assert.deepEqual(recorder.execCommands, []);
+  assert.deepEqual(recorder.execCommands, [], "no need for the deprecated fallback");
+});
+
+test("Tauri build arms the web write inside the gesture", async () => {
+  const { copyToClipboard, recorder } = await load({
+    tauri: true,
+    stub: "write-fails",
+  });
+
+  // The native attempt yields before it fails, so the only way its fallback can still
+  // hold the click's activation is if writeText was already called by this point.
+  const pending = copyToClipboard("model/path.gguf");
+  const armedInGesture = [...recorder.webWrites];
+  const result = await pending;
+
+  assert.deepEqual(
+    armedInGesture,
+    ["model/path.gguf"],
+    "the web write must be issued before the first await, not after the native failure",
+  );
+  assert.equal(result, true);
 });
 
 test("Tauri build does not resolve the native writer before the first await", async () => {
