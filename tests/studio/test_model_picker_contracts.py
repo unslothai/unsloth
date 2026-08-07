@@ -95,7 +95,10 @@ def test_chat_autoload_toast_is_persistent_and_dismissible():
     # cascade updates it directly, and the default-model download keeps it live
     # via the same updater handed to ensureDefaultModelDownloaded.
     assert auto_load.count("updateAutoLoadToast(") >= 2
-    assert "ensureDefaultModelDownloaded(\n        options?.abortSignal,\n        updateAutoLoadToast,\n      )" in auto_load
+    assert (
+        "ensureDefaultModelDownloaded(\n        options?.abortSignal,\n        updateAutoLoadToast,\n      )"
+        in auto_load
+    )
     download_helper = src.split("async function ensureDefaultModelDownloaded", 1)[1]
     download_helper = download_helper.split("async function autoLoadSmallestModel", 1)[0]
     assert download_helper.count("setToast(") >= 2

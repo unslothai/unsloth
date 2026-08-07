@@ -803,9 +803,7 @@ def test_cancelling_the_first_download_loads_nothing_and_says_what_to_do():
     assert _loaded_paths(out) == []
     assert out["result"]["loaded"] is False
     [notice] = [
-        event
-        for event in _toasts(out, "toast.message")
-        if "download stopped" in event["msg"]
+        event for event in _toasts(out, "toast.message") if "download stopped" in event["msg"]
     ]
     assert "Pick one from the top bar" in notice["description"]
 
@@ -824,9 +822,7 @@ def test_the_first_download_toast_explains_rather_than_alarms():
     out = _run("scenario({})")
 
     messages = [event["msg"] for event in _toasts(out, "toast.message")]
-    descriptions = [
-        event["description"] or "" for event in _toasts(out, "toast.message")
-    ]
+    descriptions = [event["description"] or "" for event in _toasts(out, "toast.message")]
     assert any("Getting Gemma 4 E2B ready" in msg for msg in messages)
     assert any(
         "Unsloth couldn\u2019t find an existing model. Unsloth is now getting "
@@ -858,7 +854,5 @@ def test_a_mac_chat_only_install_still_auto_loads_a_local_mlx_model():
         "{ ...LOCAL_GGUF, id: 'org/Qwen3-4B-mlx-4bit', load_id: '/models/mlx',"
         " path: '/models/mlx', model_format: 'safetensors' }"
     )
-    out = _run(
-        f"scenario({{ chatOnly: true, deviceType: 'mac', localModels: [{mlx}] }})"
-    )
+    out = _run(f"scenario({{ chatOnly: true, deviceType: 'mac', localModels: [{mlx}] }})")
     assert _loaded_paths(out) == ["/models/mlx"]
