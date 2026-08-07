@@ -800,51 +800,25 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// Root shared by the WebView profile and the version stamp below.
+// Root shared by the WebView profile and the version stamp below. Tauri points the
+// WebView at BaseDirectory::LocalData/<bid> (PathResolver uses dirs::data_local_dir)
+// and wry keys the WebKitGTK base-cache dir to it, so resolve it through the same
+// call: dirs drops a relative XDG_DATA_HOME as the spec requires, and falls back to
+// the passwd database and the Windows known folder when the environment is stripped,
+// which a direct HOME/LOCALAPPDATA read cannot.
 fn webview_profile_root(bundle_id: &str) -> Option<std::path::PathBuf> {
-    use std::path::PathBuf;
-    let from_env = |key: &str| {
-        std::env::var(key)
-            .ok()
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-    };
-    #[cfg(target_os = "windows")]
-    {
-        from_env("LOCALAPPDATA").map(|d| d.join(bundle_id))
-    }
-    #[cfg(target_os = "macos")]
-    {
-        from_env("HOME").map(|h| h.join("Library/Application Support").join(bundle_id))
-    }
-    #[cfg(target_os = "linux")]
-    {
-        // Tauri points the WebView at LocalData/<bid> and wry keys the WebKitGTK
-        // base-cache dir to it. dirs, which resolves LocalData, drops a relative
-        // XDG_DATA_HOME as the XDG spec requires; following one would miss the
-        // real cache and delete under $PWD.
-        from_env("XDG_DATA_HOME")
-            .filter(|d| d.is_absolute())
-            .or_else(|| from_env("HOME").map(|h| h.join(".local/share")))
-            .map(|d| d.join(bundle_id))
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-    {
-        let _ = (bundle_id, from_env);
-        None
-    }
+    dirs::data_local_dir().map(|d| d.join(bundle_id))
 }
 
 // Clear WebView caches after an update, before the webview initializes: the
 // in-app update runs setup.sh/setup.ps1 while the old WebView still holds these
 // files, so its clear fails and a relaunch can serve the previous frontend.
-// Version-stamped, because this runs before the single-instance plugin: ungated,
-// a duplicate launch would delete a live instance's profile and every ordinary
-// launch would discard the Windows compiled-JS cache for nothing.
-// Cache-only; LocalStorage, IndexedDB, cookies and app data are kept. Mirrors
-// setup.sh _clear_webview_caches / setup.ps1. The returned lock must be held for
-// the rest of the process: it is what stops a duplicate launch from clearing the
-// profile this instance is already using.
+// Version-stamped so an ordinary launch does not discard the Windows compiled-JS
+// cache for nothing. Cache-only; LocalStorage, IndexedDB, cookies and app data are
+// kept. Mirrors setup.sh _clear_webview_caches / setup.ps1. Runs from a plugin
+// registered after single-instance, so a duplicate launch has already exited; the
+// returned lock, held for the rest of the process, covers the case where that
+// arbitration is unavailable (no session bus) and a second launch reaches here.
 #[must_use]
 fn clear_webview_caches(bundle_id: &str, version: &str) -> Option<fs::File> {
     let root = webview_profile_root(bundle_id)?;
@@ -869,10 +843,10 @@ fn clear_webview_caches(bundle_id: &str, version: &str) -> Option<fs::File> {
         }
     }
     #[cfg(target_os = "macos")]
-    if let Ok(home) = std::env::var("HOME") {
+    if let Some(caches) = dirs::cache_dir() {
         // WKWebView keeps every cache-typed store under Library/Caches/<bid>;
         // Library/WebKit/<bid> is user storage and is left alone.
-        paths.push(std::path::PathBuf::from(home).join("Library/Caches").join(bundle_id));
+        paths.push(caches.join(bundle_id));
     }
     #[cfg(target_os = "linux")]
     for sub in ["WebKitCache", "CacheStorage", "serviceworkers"] {
@@ -898,6 +872,25 @@ fn clear_webview_caches(bundle_id: &str, version: &str) -> Option<fs::File> {
     Some(lock)
 }
 
+// Never dropped: the profile lock has to outlive the clear (see the function).
+static WEBVIEW_PROFILE_LOCK: std::sync::OnceLock<Option<fs::File>> = std::sync::OnceLock::new();
+
+// Register this directly after tauri_plugin_single_instance. Plugin setup hooks run
+// inside Builder::build(), in registration order, and the config-defined window (with
+// the WebView that locks these files) is only created later, from App::run(). So this
+// is the one point that is both after a duplicate launch has exited and before the
+// WebView exists.
+fn webview_cache_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("unsloth-webview-cache")
+        .setup(|app, _api| {
+            let version = app.package_info().version.to_string();
+            let _ = WEBVIEW_PROFILE_LOCK
+                .set(clear_webview_caches(&app.config().identifier, &version));
+            Ok(())
+        })
+        .build()
+}
+
 fn main() {
     // Must precede any Xlib call: GTK3 never calls XInitThreads and this
     // process drives X from several threads. See x11_threads for the crash.
@@ -912,19 +905,13 @@ fn main() {
     info!("Unsloth desktop app starting");
     windows_job::initialize();
 
-    // Must run before the Builder: the config-defined window (and its
-    // WebView, which locks these files) exists by the time setup hooks run.
     let context = tauri::generate_context!();
-    // Bound, not dropped: the lock has to outlive the clear (see the function).
-    let _webview_profile_lock = clear_webview_caches(
-        &context.config().identifier,
-        context.package_info().version.to_string().as_str(),
-    );
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
+        .plugin(webview_cache_plugin())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -1181,8 +1168,8 @@ mod tests {
         assert!(live.is_some(), "the clearing instance must get the lock");
         assert!(!root.join("WebKitCache").exists(), "the first launch did not clear");
 
-        // Single-instance arbitration is still several steps away, so a second
-        // launch must leave the first one's live profile alone.
+        // A second launch that got past single-instance (no session bus) must
+        // leave the first one's live profile alone.
         fs::create_dir_all(root.join("WebKitCache")).unwrap();
         let second = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.1"));
         assert!(second.is_none(), "a duplicate launch took the lock");

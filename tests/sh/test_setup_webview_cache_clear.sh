@@ -204,10 +204,20 @@ _novenv_root="$_TMP_ROOT/exists-but-empty.$$"
 mkdir -p "$_novenv_root"
 mkdir -p "$_novenv_home/.local/share/$BID/WebKitCache"
 : > "$_novenv_home/.local/share/$BID/WebKitCache/asset.js"
+# Between the clear and the venv check, setup.sh provisions Node and builds the
+# frontend. Report no system node/npm and opt out of the isolated install so
+# decide_node_source returns "skip": no download, no npm, no writes to dist/.
+_novenv_bin="$_TMP_ROOT/no-node.$$"
+mkdir -p "$_novenv_bin"
+for _stub in node npm; do
+    printf '#!/bin/sh\nexit 1\n' > "$_novenv_bin/$_stub"
+    chmod +x "$_novenv_bin/$_stub"
+done
 _novenv_out=$(
     cd "$(dirname "$SETUP_SH")" &&
     env -u XDG_DATA_HOME -u STUDIO_HOME \
         HOME="$_novenv_home" UNSLOTH_STUDIO_HOME="$_novenv_root" \
+        PATH="$_novenv_bin:$PATH" UNSLOTH_SKIP_NODE_INSTALL=1 SKIP_STUDIO_FRONTEND=1 \
         UNSLOTH_TAURI_MODE=0 bash "$SETUP_SH" 2>&1
 ) && _novenv_rc=0 || _novenv_rc=$?
 if [ "$_novenv_rc" = 0 ]; then
@@ -215,6 +225,15 @@ if [ "$_novenv_rc" = 0 ]; then
 else
     echo "  PASS: override without a venv aborts (rc=$_novenv_rc)"; PASS=$((PASS+1))
 fi
+# The abort has to be the venv check, or the cache survived for an unrelated reason.
+case "$_novenv_out" in
+    *"venv not found at"*) echo "  PASS: the abort is the venv check"; PASS=$((PASS+1)) ;;
+    *) echo "  FAIL: aborted before the venv check"; FAIL=$((FAIL+1)) ;;
+esac
+case "$_novenv_out" in
+    *"no suitable Node"*) echo "  PASS: reached it without provisioning Node"; PASS=$((PASS+1)) ;;
+    *) echo "  FAIL: the fixture is not hermetic (Node/npm ran)"; FAIL=$((FAIL+1)) ;;
+esac
 assert_present "existing-but-empty override leaves the cache alone" \
     "$_novenv_home/.local/share/$BID/WebKitCache/asset.js"
 
