@@ -14,6 +14,8 @@
 #
 # The interactive-prompt guard rides along for the same reason: a text scan over
 # the same scripts, refusing new yes/no questions (see #7016, reverted in #8040).
+# Its paths are globbed, since a newly named installer has to trigger the very
+# check that refuses to let it land unregistered.
 
 name: Cross-platform parity
 
@@ -26,12 +28,13 @@ on:
       - 'tests/test_installer_skip_autostart.py'
       - 'tests/test_installer_system32_guard.py'
       - 'tests/test_installer_interactive_prompts.py'
-      - 'scripts/uninstall.sh'
-      - 'scripts/uninstall.ps1'
+      - 'install*.sh'
+      - 'install*.ps1'
+      - 'scripts/install*.sh'
+      - 'scripts/install*.ps1'
+      - 'scripts/uninstall*.sh'
+      - 'scripts/uninstall*.ps1'
       - 'scripts/build_whisper_cpp.sh'
-      - 'scripts/install_gemma4_mlx.sh'
-      - 'scripts/install_qwen3_6_mlx.sh'
-      - 'scripts/install_rocm_wsl_strixhalo.sh'
       - 'tests/python/test_cross_platform_parity.py'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'
@@ -54,12 +57,13 @@ on:
       - 'tests/test_installer_skip_autostart.py'
       - 'tests/test_installer_system32_guard.py'
       - 'tests/test_installer_interactive_prompts.py'
-      - 'scripts/uninstall.sh'
-      - 'scripts/uninstall.ps1'
+      - 'install*.sh'
+      - 'install*.ps1'
+      - 'scripts/install*.sh'
+      - 'scripts/install*.ps1'
+      - 'scripts/uninstall*.sh'
+      - 'scripts/uninstall*.ps1'
       - 'scripts/build_whisper_cpp.sh'
-      - 'scripts/install_gemma4_mlx.sh'
-      - 'scripts/install_qwen3_6_mlx.sh'
-      - 'scripts/install_rocm_wsl_strixhalo.sh'
       - 'tests/python/test_cross_platform_parity.py'
       - 'tests/python/test_windows_python_venv_hardening.py'
       - 'tests/sh/test_install_rollback_lifecycle.sh'

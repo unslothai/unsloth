@@ -77,7 +77,7 @@ _POSIX_READ = re.compile(
 # Options then variable names to end of line, in command position, so the word
 # `read` in a heredoc of prose is not a prompt.
 _BARE_READ = re.compile(
-    r"(?:^|[;&(])\s*read(?:\s+-[a-zA-Z]+)*(?:\s+[A-Za-z_][A-Za-z0-9_]*)+"
+    r"(?:^|[;&(])\s*read(?:\s+(?:-[a-zA-Z0-9]+|\d+))*(?:\s+[A-Za-z_][A-Za-z0-9_]*)+"
     r"(?:\s*(?:\|\||&&).*)?\s*$"
 )
 _LOOP = re.compile(r"\b(?:while|until|for)\b")
@@ -87,14 +87,14 @@ _LOOP = re.compile(r"\b(?:while|until|for)\b")
 _SELECT = re.compile(r"(?:^|[;&(])\s*select\s+[A-Za-z_][A-Za-z0-9_]*\s+in\s")
 
 _PWSH_READ = re.compile(
-    r"Read-Host|PromptForChoice|Console\]::(?:In\.)?Read(?:Line|Key)?\b|ReadKey\s*\(",
+    r"Read-Host|PromptForChoice|(?:Console\]::(?:In\.)?|UI\.)Read(?:Line|Key)?\b|ReadKey\s*\(",
     re.IGNORECASE,
 )
 
 # A helper filename, with or without its `scripts/` prefix: sibling invocations
 # such as "$SCRIPT_DIR/build_deps.sh" carry no prefix. Resolved against the repo
 # before it counts, so a name that is not a real script is ignored.
-_HELPER_REF = re.compile(r"([A-Za-z0-9_.-]+\.(?:sh|ps1))")
+_HELPER_REF = re.compile(r"(?<![$\w])((?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:sh|ps1))")
 
 _QUOTED = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"' r"|'([^']*)'")
 
@@ -327,11 +327,18 @@ def test_helpers_the_installers_invoke_are_scanned():
         path = REPO_ROOT / script
         source = blank_comments(path.read_text(encoding = "utf-8"), script.endswith(".ps1"))
         for match in _HELPER_REF.finditer(source):
-            # Sibling of the script that names it, or in scripts/. Anything that
-            # resolves nowhere is a filename in a message, not an invocation.
-            for candidate in (path.parent / match.group(1), REPO_ROOT / "scripts" / match.group(1)):
+            # Below the script that names it, below the repo, or in scripts/, by
+            # full path and by name so a URL still resolves to the local copy.
+            # What resolves nowhere is a filename in a message, not an invocation.
+            reference, name = match.group(1), match.group(1).rsplit("/", 1)[-1]
+            for candidate in (
+                path.parent / reference,
+                REPO_ROOT / reference,
+                path.parent / name,
+                REPO_ROOT / "scripts" / name,
+            ):
                 if candidate.is_file():
-                    referenced.add(candidate.relative_to(REPO_ROOT).as_posix())
+                    referenced.add(candidate.resolve().relative_to(REPO_ROOT).as_posix())
 
     unscanned = sorted(referenced - set(SCANNED_SCRIPTS))
     assert not unscanned, (
@@ -447,6 +454,29 @@ def test_detects_a_bare_read_with_a_fallback():
     source = 'printf "  Continue with installation? "\nread -r _reply || _reply=n\n'
     assert [question for _, _, question in find_prompts("install.sh", source)] == [
         "continue with installation?",
+    ]
+
+
+@pytest.mark.parametrize(
+    "read_line", ("read -r -n 1 _reply", "read -r -t 10 _reply", "read -rn1 _reply")
+)
+def test_detects_a_bare_read_with_option_arguments(read_line: str):
+    """A one-character or timed confirmation is still a confirmation."""
+    source = f'printf "  Continue with installation? "\n{read_line}\n'
+    assert [question for _, _, question in find_prompts("install.sh", source)] == [
+        "continue with installation?",
+    ]
+
+
+def test_detects_powershell_host_ui_readline():
+    source = 'Write-Host "  Continue? " -NoNewline\n$reply = $Host.UI.ReadLine()\n'
+    assert [question for _, _, question in find_prompts("install.ps1", source)] == ["continue?"]
+
+
+def test_helper_reference_keeps_its_subdirectory():
+    """A nested helper resolves by its path, a URL by its name."""
+    assert _HELPER_REF.findall('sh "$SCRIPT_DIR/helpers/build_deps.sh"') == [
+        "helpers/build_deps.sh",
     ]
 
 
