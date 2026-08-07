@@ -2077,3 +2077,64 @@ class TestResidencyDoesNotBlockReload:
         source = inspect.getsource(llama_keepwarm)
         assert "get_auto_unload_idle_seconds" in source
         assert "idle_unload_is_configured" not in source
+
+
+class TestACpuDevicePinIsHostResident:
+    """--device cpu/none leaves llama.cpp nowhere to offload to, so the model
+    stays in host RAM whatever the layer count predicted. Unlike a silent
+    fallback this is knowable before launch, so the gate can just read it."""
+
+    @pytest.mark.parametrize(
+        "extras",
+        [
+            ["--device", "cpu"],
+            ["--device", "none"],
+            ["-dev", "cpu"],
+            ["--device=none"],
+            ["--device", "cpu,none"],
+        ],
+    )
+    def test_a_cpu_pin_beats_the_offload_prediction(self, monkeypatch, extras):
+        assert (
+            TestHostMemoryGate._gate(monkeypatch, fully_gpu_offloaded = True, extra_args = extras)
+            is True
+        )
+
+    @pytest.mark.parametrize("extras", [["--device", "CUDA0"], ["--device", "CUDA0,cpu"]])
+    def test_a_pin_naming_a_gpu_still_skips_the_lock(self, monkeypatch, extras):
+        assert (
+            TestHostMemoryGate._gate(monkeypatch, fully_gpu_offloaded = True, extra_args = extras)
+            is False
+        )
+
+    def test_an_unreadable_pin_answers_conservatively(self, monkeypatch):
+        assert (
+            TestHostMemoryGate._gate(
+                monkeypatch, fully_gpu_offloaded = True, extra_args = ["--device", ""]
+            )
+            is True
+        )
+
+    @pytest.mark.parametrize(
+        ("value", "expected"), [("none", True), ("cpu", True), ("CUDA0", False)]
+    )
+    def test_the_inherited_env_pin_counts_too(self, monkeypatch, value, expected):
+        assert (
+            TestHostMemoryGate._gate(
+                monkeypatch, fully_gpu_offloaded = True, env = {"LLAMA_ARG_DEVICE": value}
+            )
+            is expected
+        )
+
+    def test_argv_wins_over_the_env_pin(self, monkeypatch):
+        """llama.cpp applies the env first and argv after, so a GPU pin in the
+        extras overrides an inherited LLAMA_ARG_DEVICE=none."""
+        assert (
+            TestHostMemoryGate._gate(
+                monkeypatch,
+                fully_gpu_offloaded = True,
+                extra_args = ["--device", "CUDA0"],
+                env = {"LLAMA_ARG_DEVICE": "none"},
+            )
+            is False
+        )

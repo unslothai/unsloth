@@ -2676,6 +2676,27 @@ def _extra_args_main_device(extra_args: Optional[Iterable[str]]) -> Optional[str
     return _extra_args_device(extra_args, {"--device", "-dev"})
 
 
+_CPU_DEVICE_VALUES = frozenset({"cpu", "none"})
+
+
+def _device_selection_is_cpu(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """True when the effective ``--device`` selection names no GPU.
+
+    llama.cpp then runs the model on the CPU whatever the layer count says, so
+    the weights are in pageable host RAM. argv wins over the env twin, and an
+    unreadable value answers True like every other unknown in the gate.
+    """
+    value = _extra_args_main_device(extra_args)
+    if value is None and env:
+        value = env.get("LLAMA_ARG_DEVICE")
+    if value is None:
+        return False
+    devices = [d.strip().lower() for d in str(value).split(",") if d.strip()]
+    return not devices or all(d in _CPU_DEVICE_VALUES for d in devices)
+
+
 def _extra_args_draft_device(extra_args: Optional[Iterable[str]]) -> Optional[str]:
     """Return the last explicit draft-device value, if any."""
     return _extra_args_device(extra_args, {"--spec-draft-device", "-devd", "--device-draft"})
@@ -4566,6 +4587,10 @@ class LlamaCppBackend:
         if _args_place_tensors_on_cpu(extra_args):
             return True
         if _env_places_tensors_on_cpu(env):
+            return True
+        # A --device that names no GPU beats any layer count: llama.cpp has
+        # nowhere to offload to, so the whole model stays in host RAM.
+        if _device_selection_is_cpu(extra_args, env):
             return True
         # fully_gpu_offloaded predicts OUR "-ngl -1 --fit off", but auto keeps the
         # user's extras and appends them after, and llama.cpp is last-wins, so an
