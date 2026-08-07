@@ -13174,8 +13174,8 @@ async def serve_sandbox_file(
     """
     Serve image files created by Python tool execution.
 
-    Accepts auth via Authorization header OR ?token= query param (needed
-    because <img src> cannot send custom headers).
+    Accepts auth via an Authorization header or a query token. Studio uses an
+    authenticated fetch and object URL; query auth remains for older clients.
     """
     from fastapi.responses import FileResponse
 
