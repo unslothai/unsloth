@@ -11,16 +11,13 @@ import { cn } from "@/lib/utils";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
-// The Windows and Linux custom titlebar paints over the viewport at z-70, so a
-// viewport-fixed sheet anchored to the top opens underneath it. Start below it
-// instead. DesktopChromeVarsEffect mirrors the height onto <html> so sheets
-// portalled to document.body can read it; it is unset in the browser and on
-// macOS, where the 0px fallback applies.
+// Windows/Linux custom titlebar paints over the viewport at z-70, so a fixed
+// sheet must start below it. DesktopChromeVarsEffect mirrors the height onto
+// <html> since sheets portal to document.body; unset in browser/macOS (0px).
 const VIEWPORT_TOP_EDGE =
   "data-[side=left]:top-[var(--studio-custom-titlebar-height,0px)] data-[side=right]:top-[var(--studio-custom-titlebar-height,0px)] data-[side=top]:top-[var(--studio-custom-titlebar-height,0px)]";
 
-// A sheet positioned inside a container follows that container's top edge; no
-// window chrome sits over it.
+// A contained sheet follows its container's top edge; no chrome sits over it.
 const CONTAINED_TOP_EDGE =
   "data-[side=left]:top-0 data-[side=right]:top-0 data-[side=top]:top-0";
 

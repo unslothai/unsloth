@@ -498,20 +498,20 @@ def test_fixed_sheets_start_below_the_custom_titlebar():
     # Portalled sheets read the height off <html>, so the mirror has to stay.
     assert 'set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null)' in provider
 
-    # Only viewport-fixed sheets clear the titlebar. The recipe block sheet is
-    # position="absolute" inside its own container and keeps a plain top edge.
+    # Only viewport-fixed sheets clear the titlebar; the absolute recipe block
+    # sheet sits in its own container and keeps a plain top edge.
     assert 'position === "fixed" ? VIEWPORT_TOP_EDGE : CONTAINED_TOP_EDGE' in sheet
     for side in ("left", "right", "top"):
         assert f"data-[side={side}]:top-[var(--studio-custom-titlebar-height,0px)]" in sheet
         assert f"data-[side={side}]:top-0" in sheet
 
-    # Anchor both edges so the inset shrinks the sheet rather than pushing its
-    # bottom past the viewport, which a leftover h-full would also do.
+    # Anchor both edges so the inset shrinks the sheet; h-full would instead
+    # push its bottom past the viewport.
     for side in ("left", "right"):
         assert f"data-[side={side}]:bottom-0" in sheet
         assert f"data-[side={side}]:h-full" not in sheet
 
-    # The shared class is the only sheet offset; a local one too would double up.
+    # The shared class is the only sheet offset; a local one would double up.
     # Dialogs still read --studio-window-chrome-top (DesktopChromeVarsEffect).
     for portalled in (
         RESEARCH_ACTIVITY_PANEL,
