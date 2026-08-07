@@ -186,7 +186,7 @@ def test_dropped_over_budget_call_unlinks_openai_response_and_keeps_gemini_parts
                 _chunk(
                     delta = {
                         "tool_calls": calls,
-                        "content": "signed",
+                        "content": "",
                         "extra_content": {"google": {"thought_signature": "sig"}},
                         "reasoning_details": reasoning,
                         "reasoning_content": "think",
@@ -213,7 +213,7 @@ def test_dropped_over_budget_call_unlinks_openai_response_and_keeps_gemini_parts
     }
     assert assistant["content"] == [
         {"type": "compaction", "content": "summary"},
-        {"type": "text", "text": "signed"},
+        {"type": "text", "text": ""},
     ]
     assert assistant["reasoning_details"] == reasoning
     assert assistant["reasoning_content"] == "think"

@@ -1694,6 +1694,21 @@ class ExternalProviderClient:
         # Extract system prompt; translate image_url parts to Anthropic format
         system: Optional[str] = None
         filtered: list[dict[str, Any]] = []
+
+        def _append_tool_result(tool_use_id: str, content: str) -> None:
+            block = {"type": "tool_result", "tool_use_id": tool_use_id, "content": content}
+            previous_content = filtered[-1].get("content") if filtered else None
+            if (
+                filtered
+                and filtered[-1].get("role") == "user"
+                and isinstance(previous_content, list)
+                and previous_content
+                and all(part.get("type") == "tool_result" for part in previous_content)
+            ):
+                previous_content.append(block)
+            else:
+                filtered.append({"role": "user", "content": [block]})
+
         for msg in messages:
             if msg.get("role") == "system":
                 content = msg.get("content", "")
@@ -1728,18 +1743,7 @@ class ExternalProviderClient:
                     _flat_result = content
                 else:
                     _flat_result = _json.dumps(content)
-                filtered.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": _tr_id,
-                                "content": _flat_result,
-                            }
-                        ],
-                    }
-                )
+                _append_tool_result(_tr_id, _flat_result)
                 continue
             if isinstance(content, list):
                 # Translate OpenAI multimodal parts -> Anthropic native shapes.
@@ -1871,31 +1875,6 @@ class ExternalProviderClient:
                 if anthropic_parts:
                     filtered.append({"role": msg["role"], "content": anthropic_parts})
             else:
-                # role="tool" follow-up -> Anthropic native tool_result block
-                # on a `user` message. The OpenAI shape (role=tool,
-                # content=string, tool_call_id) is not a valid Anthropic role.
-                if msg.get("role") == "tool":
-                    _tr_id = msg.get("tool_call_id") or ""
-                    _tr_content = msg.get("content")
-                    if _tr_content is None:
-                        _tr_content = ""
-                    filtered.append(
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "tool_result",
-                                    "tool_use_id": _tr_id,
-                                    "content": (
-                                        _tr_content
-                                        if isinstance(_tr_content, str)
-                                        else _json.dumps(_tr_content)
-                                    ),
-                                }
-                            ],
-                        }
-                    )
-                    continue
                 # Assistant turn whose content is a plain string but also
                 # carries OpenAI `tool_calls`: convert into a content-array
                 # message with a text block + tool_use blocks. Without this,
@@ -3413,20 +3392,24 @@ class ExternalProviderClient:
             # thoughtSignatures to be replayed on history; the frontend stows
             # the latest one as extra_content.google.thought_signature on the
             # assistant message and we pin it onto the last text part here.
-            if role == "assistant" and parts:
+            if role == "assistant":
                 _msg_extra = msg.get("extra_content") if isinstance(msg, dict) else None
                 if isinstance(_msg_extra, dict):
                     _msg_g = _msg_extra.get("google") or {}
                     if isinstance(_msg_g, dict):
                         _msg_sig = _msg_g.get("thought_signature") or _msg_g.get("thoughtSignature")
                         if isinstance(_msg_sig, str) and _msg_sig:
+                            signature_attached = False
                             for _idx in range(len(parts) - 1, -1, -1):
                                 if "text" in parts[_idx]:
                                     parts[_idx] = {
                                         **parts[_idx],
                                         "thoughtSignature": _msg_sig,
                                     }
+                                    signature_attached = True
                                     break
+                            if not signature_attached:
+                                parts.append({"text": "", "thoughtSignature": _msg_sig})
             if role == "assistant":
                 _msg_extra = msg.get("extra_content") if isinstance(msg, dict) else None
                 _msg_google = _msg_extra.get("google") if isinstance(_msg_extra, dict) else None
