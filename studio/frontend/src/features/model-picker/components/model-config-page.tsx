@@ -712,39 +712,64 @@ function GgufAdvancedSettings({
       )}
 
       {!isDiffusion && (
-        <div className={ROW_CLASS}>
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className={LABEL_CLASS}>Micro-batch Size</span>
-            <InfoHint>
-              Physical prompt micro-batch size (--ubatch-size). Leave blank for
-              the llama.cpp default (512). Larger values speed up prompt
-              processing but use more VRAM for the compute buffer; capped at the
-              batch size.
-            </InfoHint>
+        <div className="space-y-1">
+          <div className={ROW_CLASS}>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className={LABEL_CLASS}>Micro-batch Size</span>
+              <InfoHint>
+                Physical prompt micro-batch size (--ubatch-size). Leave blank for
+                the llama.cpp default (512). Larger values speed up prompt
+                processing but use more VRAM for the compute buffer; capped at the
+                batch size.
+              </InfoHint>
+            </div>
+            <input
+              type="number"
+              min={N_BATCH_MIN}
+              max={N_BATCH_MAX}
+              step={1}
+              value={config.nUbatch ?? ""}
+              placeholder="auto"
+              onChange={(event) => {
+                const raw = event.target.value;
+                if (raw === "") {
+                  update({ nUbatch: null });
+                  return;
+                }
+                const parsed = Number.parseInt(raw, 10);
+                if (Number.isFinite(parsed)) {
+                  update({
+                    nUbatch: Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, parsed)),
+                  });
+                }
+              }}
+              aria-label="Prompt micro-batch size"
+              className={NUMBER_INPUT_CLASS}
+            />
           </div>
-          <input
-            type="number"
-            min={N_BATCH_MIN}
-            max={N_BATCH_MAX}
-            step={1}
-            value={config.nUbatch ?? ""}
-            placeholder="auto"
-            onChange={(event) => {
-              const raw = event.target.value;
-              if (raw === "") {
-                update({ nUbatch: null });
-                return;
-              }
-              const parsed = Number.parseInt(raw, 10);
-              if (Number.isFinite(parsed)) {
-                update({
-                  nUbatch: Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, parsed)),
-                });
-              }
-            }}
-            aria-label="Prompt micro-batch size"
-            className={NUMBER_INPUT_CLASS}
-          />
+          {/* llama.cpp clamps ubatch to batch silently and the echo is the REQUESTED size,
+              so the control would keep showing a value the server never used (batch 8 /
+              ubatch 4096 measured 8.8x slower). Advisory: the pair is still a legal load. */}
+          {config.nBatch != null &&
+            config.nUbatch != null &&
+            config.nUbatch > config.nBatch && (
+              <p className="text-ui-12 text-muted-foreground">
+                Micro-batch is larger than the batch size, so llama.cpp will run at{" "}
+                {config.nBatch}. Raise the batch size to use {config.nUbatch}.
+              </p>
+            )}
+          {/* A batch below the slot count aborts llama-server outright (-b 4 --parallel 8),
+              and the per-field bounds cannot express the pair. Only asserted when both are
+              pinned; with Slots blank the count is the server default this page cannot see,
+              so the loader carries the floor. */}
+          {config.nBatch != null &&
+            config.nParallel != null &&
+            config.nBatch < config.nParallel && (
+              <p className="text-ui-12 text-destructive">
+                Batch size must be at least the parallel slot count ({config.nParallel}), or
+                llama-server will fail to start.
+              </p>
+            )}
         </div>
       )}
 

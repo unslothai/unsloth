@@ -4927,30 +4927,49 @@ def _estimate_gguf_kv_gb(
         if is_diffusion:
             return kv / (1024**3)
         devices = max(1, int(n_devices))
+
+        def _flat_buffer(per_device_tensor: bool) -> int:
+            """Flat compute buffer, with the loader's missing-dims fallback.
+
+            _estimate_compute_buffer_bytes returns 0 when the header lacks vocab_size or
+            embedding_length, and both loader branches substitute
+            _TENSOR_PARALLEL_BUFFER_RESERVE_MIB there. Reachable on an MLA GGUF, which
+            passes _can_estimate_kv() on _n_layers + _kv_lora_rank alone.
+            """
+            flat = probe._estimate_compute_buffer_bytes(
+                n_ubatch = effective_ubatch,
+                n_parallel = slots,
+                per_device_tensor = per_device_tensor,
+            )
+            if flat <= 0:
+                # getattr: a bare backend double carries no constants.
+                flat = int(getattr(probe, "_TENSOR_PARALLEL_BUFFER_RESERVE_MIB", 0)) * 1024**2
+            return flat
+
         if tensor_parallel:
             # mirrors _plan_tensor_parallel: per-device buffer and ctx growth on every device
             compute = devices * (
-                probe._estimate_compute_buffer_bytes(
-                    n_ubatch = effective_ubatch,
-                    n_parallel = slots,
-                    per_device_tensor = True,
-                )
+                _flat_buffer(True)
                 + probe._compute_buffer_ctx_bytes(ctx, effective_ubatch, cache_type_for_budget)
             )
         else:
-            # mirrors the layer fit: flat buffer once, then per extra device, ctx growth per device
+            # mirrors the layer fit: flat buffer once, then per extra device, ctx growth per
+            # device. layer_split follows the loader's own condition: extras that disable
+            # pipeline parallelism (-ot, -ncmoe, --no-kv-offload) leave one KQ-mask copy.
+            from core.inference.llama_cpp import _pipeline_parallel_disabled_by_args
+
+            pipeline_parallel_off = _pipeline_parallel_disabled_by_args(
+                llama_extra_args, n_layers = getattr(probe, "_n_layers", None)
+            )
             compute = (
-                probe._estimate_compute_buffer_bytes(
-                    n_ubatch = effective_ubatch,
-                    n_parallel = slots,
-                )
+                _flat_buffer(False)
                 + (devices - 1) * probe._PIPELINE_PER_DEVICE_OVERHEAD_MIB * 1024 * 1024
                 + devices
                 * probe._compute_buffer_ctx_bytes(
                     ctx,
                     effective_ubatch,
                     cache_type_for_budget,
-                    layer_split = devices > 1,
+                    layer_split = devices > 1 and not pipeline_parallel_off,
                 )
             )
         return (kv + compute) / (1024**3)
@@ -5034,12 +5053,23 @@ def _estimate_gguf_required_gb(
             if effective_ubatch:
                 # auto context: assume the native one fits at least a full micro-batch
                 budget_ctx = ctx if ctx > 0 else effective_ubatch
+                devices = max(1, int(n_devices))
+                # A multi-device layer split materialises the KQ mask _CTX_COMPUTE_SPLIT_MULT
+                # times, the same step _compute_buffer_ctx_bytes applies locally; charging
+                # the single-copy rate under-reserved 4x. Tensor mode is already correct
+                # (measured at the single-device rate, replicated per device).
+                split_mult = (
+                    LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT
+                    if devices > 1 and not tensor_parallel
+                    else 1
+                )
                 mask_bytes = (
                     budget_ctx
                     * effective_ubatch
                     * 2
                     * LlamaCppBackend._CTX_COMPUTE_F16_MASK_SAFETY
-                    * max(1, int(n_devices))
+                    * devices
+                    * split_mult
                 )
                 total_gb += mask_bytes / (1024**3)
             return total_gb
@@ -5319,6 +5349,39 @@ async def _prepare_load_placement(
     return _LoadPlacement(requested, resolved, is_vulkan, diffusion_kind)
 
 
+def _inherited_batch_flags_stripped(request) -> bool:
+    """Whether inheriting the resident extras drops a -b / -ub a set field supersedes.
+
+    _active_gguf_intent computes this inline (``batch_overrides_inherit``). Without it here
+    ``extra_args_inherited`` stays True, so _runtime_matches_intent compares the launched
+    extras (still carrying the stale flag) instead of the stripped override, and an Apply
+    that only raises the batch size reports ``already_loaded``.
+    """
+    if getattr(request, "llama_extra_args", None) is not None:
+        return False
+    fields_set = getattr(request, "model_fields_set", set())
+    strip_batch = "n_batch" in fields_set
+    strip_ubatch = "n_ubatch" in fields_set
+    if not (strip_batch or strip_ubatch):
+        return False
+    stored = list(getattr(get_llama_cpp_backend(), "extra_args", None) or ())
+    if not stored:
+        return False
+    return (
+        strip_shadowing_flags(
+            stored,
+            strip_context = False,
+            strip_cache = False,
+            strip_spec = False,
+            strip_template = False,
+            strip_split_mode = False,
+            strip_batch = strip_batch,
+            strip_ubatch = strip_ubatch,
+        )
+        != stored
+    )
+
+
 def _resolve_gguf_load_intent(
     config: ModelConfig,
     request: LoadRequest,
@@ -5366,7 +5429,11 @@ def _resolve_gguf_load_intent(
         n_parallel = n_parallel,
         is_vision = config.is_vision,
         gpu_ids_are_vulkan_ordinals = placement.gpu_ids_are_vulkan_ordinals,
-        extra_args_inherited = getattr(request, "llama_extra_args", None) is None,
+        extra_args_inherited = (
+            getattr(request, "llama_extra_args", None) is None
+            # a strip that changed the list is an override, so the dedupe compares it
+            and not _inherited_batch_flags_stripped(request)
+        ),
     )
 
 

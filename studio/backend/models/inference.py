@@ -11,6 +11,7 @@ from typing import Annotated, Any, Dict, Literal, Optional, List, Union
 
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     Discriminator,
     Field,
     Tag,
@@ -20,6 +21,21 @@ from pydantic import (
 
 from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, PARALLEL_MAX, PARALLEL_MIN
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
+
+
+def _reject_bool(value):
+    """Refuse a JSON boolean where an int is expected.
+
+    bool is an int subclass, so lax mode turns ``true`` into 1 and the load launches
+    ``--batch-size 1``, which llama-server aborts on: a 500 instead of a 422.
+    normalize_model_override already drops booleans, so /load now agrees with /settings.
+    """
+    if isinstance(value, bool):
+        raise ValueError("must be an integer, not a boolean")
+    return value
+
+
+BatchSizeInt = Annotated[int, BeforeValidator(_reject_bool)]
 
 
 class LoadRequest(BaseModel):
@@ -127,7 +143,7 @@ class LoadRequest(BaseModel):
             "for non-GGUF models."
         ),
     )
-    n_batch: Optional[int] = Field(
+    n_batch: Optional[BatchSizeInt] = Field(
         None,
         ge = BATCH_MIN,
         le = BATCH_MAX,
@@ -137,7 +153,7 @@ class LoadRequest(BaseModel):
             "default (2048). Ignored for non-GGUF models."
         ),
     )
-    n_ubatch: Optional[int] = Field(
+    n_ubatch: Optional[BatchSizeInt] = Field(
         None,
         ge = BATCH_MIN,
         le = BATCH_MAX,
@@ -321,7 +337,7 @@ class ValidateModelRequest(BaseModel):
             "server-wide --parallel default."
         ),
     )
-    n_batch: Optional[int] = Field(
+    n_batch: Optional[BatchSizeInt] = Field(
         None,
         ge = BATCH_MIN,
         le = BATCH_MAX,
@@ -330,7 +346,7 @@ class ValidateModelRequest(BaseModel):
             "coexistence estimate sizes the compute buffer like /load."
         ),
     )
-    n_ubatch: Optional[int] = Field(
+    n_ubatch: Optional[BatchSizeInt] = Field(
         None,
         ge = BATCH_MIN,
         le = BATCH_MAX,

@@ -53,6 +53,19 @@ def test_load_request_bounds(field):
     assert getattr(ValidateModelRequest(model_path = "owner/repo", **{field: 256}), field) == 256
 
 
+@pytest.mark.parametrize("field", ["n_batch", "n_ubatch"])
+@pytest.mark.parametrize("model", [LoadRequest, ValidateModelRequest])
+def test_batch_fields_reject_json_booleans(model, field):
+    # bool is an int subclass, so lax pydantic turns `true` into 1 -> --batch-size 1, which
+    # llama-server refuses to start on: the caller saw a 500 instead of a 422. The override
+    # store already drops booleans, so this keeps /load and /settings in agreement.
+    with pytest.raises(ValueError):
+        model(model_path = "owner/repo", **{field: True})
+    # numeric strings and plain ints still coerce as before
+    assert getattr(model(model_path = "owner/repo", **{field: "4096"}), field) == 4096
+    assert getattr(model(model_path = "owner/repo", **{field: 4096}), field) == 4096
+
+
 def test_effective_ubatch_prefers_first_class_over_env():
     env = {"LLAMA_ARG_BATCH": "128", "LLAMA_ARG_UBATCH": "128"}
     assert _extra_args_n_ubatch(None, env = env, n_batch = 4096, n_ubatch = 1024) == 1024
@@ -152,6 +165,69 @@ def test_fast_path_intent_strips_inherited_batch_flags_when_field_set():
     inheriting = _active_gguf_intent(LoadRequest(model_path = "owner/repo"), backend, **kwargs)
     assert inheriting.extra_args == ("-b", "512", "--top-k", "20")
     assert inheriting.extra_args_inherited is True
+
+
+def test_slow_path_intent_strips_inherited_batch_flags_when_field_set(monkeypatch):
+    # Sibling of the fast-path case above. A bare repo id with no gguf_variant skips
+    # _active_gguf_intent entirely, so without the same bookkeeping here the dedupe
+    # compares the LAUNCHED extras (still carrying -b 512) against themselves and reports
+    # already_loaded -- leaving the server at effective batch 512 for an Apply that asked
+    # for 4096.
+    from types import SimpleNamespace
+
+    from routes import inference as route
+
+    backend = _loaded_backend()
+    backend._extra_args = ["-b", "512", "--top-k", "20"]
+    backend._requested_extra_args = ["-b", "512", "--top-k", "20"]
+    backend._extra_args_source = ("owner/repo", "Q4_K_M")
+    monkeypatch.setattr(route, "get_llama_cpp_backend", lambda: backend)
+
+    config = SimpleNamespace(
+        identifier = "owner/repo",
+        is_gguf = True,
+        gguf_hf_repo = "owner/repo",
+        gguf_variant = "Q4_K_M",
+        gguf_file = None,
+        gguf_mmproj_file = None,
+        gguf_mtp_file = None,
+        is_vision = False,
+    )
+    # n_ctx must match the resident one, or the dedupe short-circuits before the extras.
+    request = LoadRequest(model_path = "owner/repo", n_batch = 4096, max_seq_length = 8192)
+    resolved = route._resolve_inherited_extra_args(request, config, config.identifier, None)
+    assert resolved == ["--top-k", "20"]
+
+    intent = route._resolve_gguf_load_intent(
+        config,
+        request,
+        native_grant_backed = False,
+        chat_template_override = None,
+        extra_args = resolved,
+        placement = SimpleNamespace(
+            resolved_gpu_ids = None, gpu_ids_are_vulkan_ordinals = None, requested_gpu_ids = None
+        ),
+        n_parallel = 1,
+    )
+    assert intent.extra_args_inherited is False
+    assert backend._runtime_matches_intent(intent, ["--top-k", "20"]) is False
+
+    # An Apply that does not name the field still inherits the flag untouched.
+    plain = LoadRequest(model_path = "owner/repo", max_seq_length = 8192)
+    plain_args = route._resolve_inherited_extra_args(plain, config, config.identifier, None)
+    plain_intent = route._resolve_gguf_load_intent(
+        config,
+        plain,
+        native_grant_backed = False,
+        chat_template_override = None,
+        extra_args = plain_args,
+        placement = SimpleNamespace(
+            resolved_gpu_ids = None, gpu_ids_are_vulkan_ordinals = None, requested_gpu_ids = None
+        ),
+        n_parallel = 1,
+    )
+    assert plain_args == ["-b", "512", "--top-k", "20"]
+    assert plain_intent.extra_args_inherited is True
 
 
 def test_remote_gguf_guard_counts_explicit_micro_batch():

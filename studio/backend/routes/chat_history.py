@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from auth.authentication import get_current_subject
-from core.inference.llama_server_args import PARALLEL_MAX, PARALLEL_MIN
+from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, PARALLEL_MAX, PARALLEL_MIN
 from loggers import get_logger
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
@@ -171,6 +171,11 @@ class ChatPresetLoadConfig(BaseModel):
     speculativeType: Optional[str] = None
     specDraftNMax: Optional[int] = Field(default = None, ge = 1, le = 16)
     nParallel: Optional[int] = Field(default = None, ge = PARALLEL_MIN, le = PARALLEL_MAX)
+    # The normalizer emits both keys on every preset (null included) and this model is
+    # extra="forbid", so without them PUT /api/chat/settings 400s the whole save for any
+    # preset carrying a loadConfig, including one that only pinned nParallel.
+    nBatch: Optional[int] = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
+    nUbatch: Optional[int] = Field(default = None, ge = BATCH_MIN, le = BATCH_MAX)
     tensorParallel: Optional[bool] = None
     gpuMemoryMode: Optional[Literal["manual"]] = None
     gpuLayers: Optional[int] = None

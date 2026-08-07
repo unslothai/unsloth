@@ -9888,7 +9888,20 @@ class LlamaCppBackend:
 
                 # emitted before user extras so a pass-through -b / -ub still last-wins-overrides
                 if n_batch is not None:
-                    cmd.extend(["--batch-size", str(n_batch)])
+                    # A batch too small to hold one output per slot trips
+                    # GGML_ASSERT(n_outputs_max <= cparams.n_outputs_max) and aborts the
+                    # server (-b 4 --parallel 8, or -b 1 at the default slots). The 1..65536
+                    # bounds are per-field, so raise it here rather than fail the load.
+                    _emit_batch = max(int(n_batch), max(1, int(n_parallel)))
+                    if _emit_batch != n_batch:
+                        logger.warning(
+                            "Raising --batch-size from %s to %s: llama-server aborts when the "
+                            "batch is smaller than the %s parallel slot(s) it serves.",
+                            n_batch,
+                            _emit_batch,
+                            n_parallel,
+                        )
+                    cmd.extend(["--batch-size", str(_emit_batch)])
                 if n_ubatch is not None:
                     cmd.extend(["--ubatch-size", str(n_ubatch)])
 
