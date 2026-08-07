@@ -20,7 +20,6 @@ from typing import Any, AsyncIterator, Callable
 import httpx
 
 from auth import storage as auth_storage
-from core.inference.llama_admission import llama_admission_config_from_env
 from core.inference.message_content import content_to_text
 from core.inference.tool_loop_controller import is_tool_error, strip_result_for_model
 from core.inference.tools import RAG_SOURCES_SENTINEL, execute_tool
@@ -154,22 +153,9 @@ _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS = 120.0
 # Cancellation is cooperative, so bound the wait for a cancelled iterator to unwind;
 # otherwise a stuck one holds a timed-out call open for the rest of the wall clock.
 _STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
-
-
-def _first_output_budget() -> float:
-    """How long to wait for a first frame, never less than two admission heartbeats.
-
-    UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL has no upper bound and the queue sends
-    nothing until one full interval has passed, so a fixed budget below it would fail a
-    perfectly healthy queued run before it could ever speak. The wall clock still caps
-    the total either way.
-    """
-    config = llama_admission_config_from_env()
-    if not config.enabled:
-        # reserve() hands back a lease outright, so no heartbeat is ever sent and
-        # raising the budget would only delay catching a genuinely stalled request.
-        return _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
-    return max(_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS, 2.0 * config.keepalive_interval_s)
+# routes/inference.py marks an admission wait with this SSE comment, distinct from the
+# plain keepalive it sends whenever the backend itself is silent.
+_ADMISSION_WAIT_COMMENT = ": admission-wait"
 
 
 def _auto_scrape_default() -> int:
@@ -1800,7 +1786,6 @@ class ResearchSupervisor:
         last_progress_flush = asyncio.get_running_loop().time()
         finish_reason: str | None = None
         semantic_output_at: float | None = None
-        saw_data_frame = False
         first_output_deadline: float | None = None
 
         async def flush_progress() -> None:
@@ -1862,6 +1847,16 @@ class ResearchSupervisor:
 
         try:
             model_timeout = float(config["budgets"]["modelTimeoutSeconds"])
+            # Configurable, and never longer than the run's own budget. Legacy runs predate
+            # the key and fall back to the default.
+            first_output_budget = min(
+                float(
+                    config["budgets"].get(
+                        "firstOutputTimeoutSeconds", _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
+                    )
+                ),
+                model_timeout,
+            )
             timeout = httpx.Timeout(model_timeout)
             loop = asyncio.get_running_loop()
 
@@ -1906,7 +1901,7 @@ class ResearchSupervisor:
                                     await self._check_active(run["id"])
                             response = await send_task
                             response.raise_for_status()
-                            first_output_deadline = loop.time() + _first_output_budget()
+                            first_output_deadline = loop.time() + first_output_budget
                             break
                         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
                             # Only reachable before a body byte is touched (the stream is consumed
@@ -1945,15 +1940,13 @@ class ResearchSupervisor:
                         if self._cancel_event(run["id"]).is_set():
                             await self._check_active(run["id"])
                         if not line.startswith("data:"):
-                            # Before any frame, ": keep-alive" means Studio is queued for a
-                            # slot or waiting on the backend's headers, so re-arm. After one,
-                            # generation has started and the same comment is only stall filler
-                            # (routes/inference.py sends it every 15 s), which must not renew
-                            # the budget or a wedged model would never time out.
-                            if line.startswith(":") and not saw_data_frame:
-                                first_output_deadline = loop.time() + _first_output_budget()
+                            # Only the admission marker defers the budget: queueing for a slot
+                            # is not the model's fault and has no timeout of its own. A plain
+                            # ": keep-alive" means the backend itself is silent, whether that
+                            # is prefill or a wedged model, and that is what the budget bounds.
+                            if line.startswith(_ADMISSION_WAIT_COMMENT):
+                                first_output_deadline = loop.time() + first_output_budget
                             continue
-                        saw_data_frame = True
                         data = line[5:].strip()
                         if data == "[DONE]":
                             break

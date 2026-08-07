@@ -2323,7 +2323,7 @@ class TestGgufVisionToolRouting:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 snapshot = queue.snapshot()
                 assert snapshot.active == 1
                 assert snapshot.queued == 1
@@ -2512,7 +2512,7 @@ class TestGgufVisionToolRouting:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 snapshot = queue.snapshot()
                 assert snapshot.active == 1
                 assert snapshot.queued == 1
@@ -5168,7 +5168,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 assert cancel_id in inf_mod._CANCEL_REGISTRY
 
                 blocker.release()
@@ -5275,7 +5275,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
 
                 blocker.release()
                 first = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
@@ -5454,7 +5454,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 snapshot = queue.snapshot()
                 assert snapshot.active == 1
                 assert snapshot.queued == 1
@@ -6997,7 +6997,7 @@ class TestResponsesChatTemplateKwargs:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 snapshot = queue.snapshot()
                 assert snapshot.active == 1
                 assert snapshot.queued == 1

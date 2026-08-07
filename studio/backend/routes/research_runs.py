@@ -245,6 +245,7 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         "maxSources": 40,
         "modelTimeoutSeconds": 900,
         "toolTimeoutSeconds": 120,
+        "firstOutputTimeoutSeconds": 120,
     }
     for key, value in (payload.budgets or {}).items():
         if key not in budgets:
@@ -255,6 +256,9 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         "maxSources": (1, 100),
         "modelTimeoutSeconds": (10, 3600),
         "toolTimeoutSeconds": (5, 600),
+        # Same range as its parent: a slow CPU or offloaded model can legitimately spend
+        # minutes before its first token, and the run's own wall clock still caps it.
+        "firstOutputTimeoutSeconds": (10, 3600),
     }
     for key, (minimum, maximum) in limits.items():
         if not minimum <= budgets[key] <= maximum:

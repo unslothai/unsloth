@@ -27,17 +27,6 @@ from core.research_runs import (
 from routes.research_runs import CreateResearchRun, _is_sensitive_key, _sanitize_config
 
 
-@pytest.fixture(autouse = True)
-def _fast_admission_heartbeat(monkeypatch):
-    """Keep the admission heartbeat below the budgets these tests patch.
-
-    The first-output budget is floored at two admission heartbeats, so the shipped 5 s
-    interval would otherwise dominate every sub-second deadline asserted here. The floor
-    itself is covered by test_first_output_budget_never_undercuts_the_admission_heartbeat.
-    """
-    monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL", "0.001")
-
-
 def test_sanitize_query_redacts_payment_card():
     cleaned = _sanitize_public_query("verify card 4111111111111111 statement")
     assert "4111111111111111" not in cleaned
@@ -923,9 +912,9 @@ def test_stream_completion_times_out_when_output_never_starts(monkeypatch):
 def test_admission_keepalives_do_not_spend_the_first_output_budget(monkeypatch):
     """A run queued behind another generation must still be served, not failed.
 
-    Studio's admission queue has no default timeout and emits ": keep-alive" while a
-    caller waits for a llama.cpp slot, so a queued Deep Research run outlives any fixed
-    first-output budget through no fault of the model.
+    The admission queue has no default timeout and marks the wait with its own SSE
+    comment, so a queued Deep Research run outlives any fixed first-output budget
+    through no fault of the model.
     """
     monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.05)
 
@@ -943,7 +932,7 @@ def test_admission_keepalives_do_not_spend_the_first_output_budget(monkeypatch):
             # it in total: the wait is live, so none of them may end the run.
             for _ in range(10):
                 await asyncio.sleep(0.02)
-                yield ": keep-alive"
+                yield ": admission-wait"
             yield 'data: {"choices":[{"delta":{"content":"report"}}]}'
             yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
             yield "data: [DONE]"
@@ -954,11 +943,8 @@ def test_admission_keepalives_do_not_spend_the_first_output_budget(monkeypatch):
     assert _run_stream(supervisor, timeout_seconds = 5.0) == ("report", "", "stop")
 
 
-def test_endless_keepalives_still_end_at_the_wall_clock(monkeypatch):
-    """Re-arming on keepalives must not make a stream unbounded."""
-    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.05)
-
-    class _KeepaliveOnlyStream:
+def _comment_only_stream(comment: str):
+    class _CommentOnly:
         status_code = 200
 
         def raise_for_status(self):
@@ -970,9 +956,31 @@ def test_endless_keepalives_still_end_at_the_wall_clock(monkeypatch):
         async def aiter_lines(self):
             while True:
                 await asyncio.sleep(0.01)
-                yield ": keep-alive"
+                yield comment
 
-    _install_fake_client(monkeypatch, [_KeepaliveOnlyStream()])
+    return _CommentOnly()
+
+
+def test_plain_keepalives_mean_a_silent_backend_and_spend_the_budget(monkeypatch):
+    """A backend that only ever sends keepalives is stalled, whatever the phase.
+
+    routes/inference.py sends the plain comment while llama-server is silent, both
+    before its headers and mid-generation, so it must not defer the budget.
+    """
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.05)
+    _install_fake_client(monkeypatch, [_comment_only_stream(": keep-alive")])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    started = time.monotonic()
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        _run_stream(supervisor, timeout_seconds = 30.0)
+    assert time.monotonic() - started < 5.0, "must end on the budget, not the wall clock"
+
+
+def test_endless_admission_waits_still_end_at_the_wall_clock(monkeypatch):
+    """Deferring on the admission marker must not make a stream unbounded."""
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.05)
+    _install_fake_client(monkeypatch, [_comment_only_stream(": admission-wait")])
     supervisor = _make_supervisor(_noop_check_active)
 
     with pytest.raises(research_runs.ModelWallClockTimeout):
@@ -1019,30 +1027,43 @@ def test_a_task_outliving_cleanup_has_its_outcome_absorbed(monkeypatch):
     asyncio.run(_drive())
 
 
-def test_first_output_budget_never_undercuts_the_admission_heartbeat(monkeypatch):
-    """A slow admission heartbeat must not fail a healthy queued run.
+def test_first_output_budget_is_configurable_and_clamped(monkeypatch):
+    """The budget is a run budget, not a constant, and never outlives its own wall clock."""
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.05)
 
-    UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL has no upper bound and the queue stays
-    silent for a full interval, so a budget below it would expire before the queue could
-    prove it is alive.
-    """
-    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 120.0)
+    def _budget(budgets):
+        model_timeout = float(budgets["modelTimeoutSeconds"])
+        return min(
+            float(
+                budgets.get(
+                    "firstOutputTimeoutSeconds",
+                    research_runs._MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS,
+                )
+            ),
+            model_timeout,
+        )
 
-    monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL", "5")
-    assert research_runs._first_output_budget() == 120.0, "the default must be unchanged"
+    # A run created before this budget existed keeps the shipped default.
+    assert _budget({"modelTimeoutSeconds": 900}) == 0.05
+    # An explicit budget is honoured.
+    assert _budget({"modelTimeoutSeconds": 900, "firstOutputTimeoutSeconds": 600}) == 600.0
+    # And can never exceed the run's own wall clock.
+    assert _budget({"modelTimeoutSeconds": 30, "firstOutputTimeoutSeconds": 600}) == 30.0
 
-    monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL", "300")
-    assert research_runs._first_output_budget() == 600.0, "must clear two 300 s heartbeats"
 
-    # The legacy spelling feeds the same config, so it must lift the floor too.
-    monkeypatch.delenv("UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL")
-    monkeypatch.setenv("UNSLOTH_OPENAI_COMPAT_ADMISSION_KEEPALIVE_INTERVAL", "200")
-    assert research_runs._first_output_budget() == 400.0
+def test_a_configured_first_output_budget_reaches_the_stream(monkeypatch):
+    """The value in the run config, not the module constant, is what bounds the wait."""
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 30.0)
+    _install_fake_client(monkeypatch, [_comment_only_stream(": keep-alive")])
+    supervisor = _make_supervisor(_noop_check_active)
 
-    # With the queue switched off, reserve() leases outright and never sends a heartbeat,
-    # so the floor would only postpone catching a genuinely stalled request.
-    monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_CONTROL", "0")
-    assert research_runs._first_output_budget() == 120.0
+    run = _waiting_run(30.0)
+    run["config"]["budgets"]["firstOutputTimeoutSeconds"] = 0.05
+
+    started = time.monotonic()
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        asyncio.run(supervisor._stream_completion(run, [{"role": "user"}], report_progress = False))
+    assert time.monotonic() - started < 5.0, "the configured budget must win over the constant"
 
 
 def test_stall_keepalives_after_the_first_frame_do_not_renew_the_budget(monkeypatch):
