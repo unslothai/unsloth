@@ -969,6 +969,47 @@ def test_completion_marking_reports_a_symlinked_ancestor_as_unsafe(tmp_path, swa
         dataset_processed_cache.mark_app_processed_dataset_cache_complete(entry)
 
 
+@pytest.mark.parametrize("swap", ["snapshot_loads", "hf_datasets"])
+def test_completion_marking_reports_a_symlinked_root_ancestor_as_unsafe(tmp_path, swap):
+    """A redirected root is not a missing root.
+
+    ``exists()`` on the leaf follows a dangling parent and reports False, so testing only
+    the leaf makes a redirected cache root look like a plain purge -- which the caller
+    swallows.
+    """
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    entry = dataset_processed_cache.prepare_app_processed_dataset_cache(repo_id, snapshot)
+    root = dataset_processed_cache.app_processed_dataset_cache_root()
+    target = root if swap == "snapshot_loads" else root.parent
+    external = tmp_path / "external"
+    external.mkdir()
+    shutil.rmtree(target)
+    target.symlink_to(external, target_is_directory = True)
+    external.rmdir()
+
+    with pytest.raises(dataset_processed_cache.UnsafeDatasetCachePathError):
+        dataset_processed_cache.mark_app_processed_dataset_cache_complete(entry)
+
+
+def test_completion_marking_treats_a_real_purge_as_benign(tmp_path):
+    """The counterpart: a root that is genuinely gone must stay a benign failure.
+
+    Tightening the symlink classification must not turn an ordinary cache purge into a
+    hard failure, which would defeat the point of the best-effort handler.
+    """
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    entry = dataset_processed_cache.prepare_app_processed_dataset_cache(repo_id, snapshot)
+    shutil.rmtree(dataset_processed_cache.app_processed_dataset_cache_root().parent)
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        dataset_processed_cache.mark_app_processed_dataset_cache_complete(entry)
+    assert not isinstance(excinfo.value, dataset_processed_cache.UnsafeDatasetCachePathError)
+
+
 def test_cached_load_still_fails_on_an_unsafe_cache_path(monkeypatch, tmp_path):
     """Best effort covers a failed write, never a path that left the trusted cache root."""
     repo_id = "Org/Data"

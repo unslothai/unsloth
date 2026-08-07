@@ -140,8 +140,24 @@ def _symlinked_component(path: Path, root: Path) -> Optional[Path]:
 
 
 def _cache_root_is_present() -> bool:
+    """Whether the root is present-but-unresolvable rather than simply gone.
+
+    A dangling symlink anywhere between ``cache_root()`` and ``snapshot-loads`` leaves
+    ``exists()`` False on the leaf -- it follows the broken parent -- while the tree has
+    in fact been redirected. Testing only the leaf therefore reports a redirected root as
+    a plain missing directory, which the caller treats as a benign purge. Walk the
+    components so any link in the chain counts as present.
+    """
+    from utils.paths.storage_roots import cache_root
+
     try:
+        configured_root = Path(cache_root()).expanduser()
         root_path = app_processed_dataset_cache_root().expanduser()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+    if _symlinked_component(root_path, configured_root) is not None:
+        return True
+    try:
         return root_path.is_symlink() or root_path.exists()
     except (OSError, RuntimeError, TypeError, ValueError):
         return False
