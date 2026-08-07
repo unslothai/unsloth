@@ -3117,7 +3117,8 @@ def test_a_single_quoted_normalized_seed_is_recognised():
     kwargs = dict(
         fallback_pattern = R._ZOO_MAX_LENGTH_SEED,
         fallback_new = r'\g<indent>max_seq_length = getattr(args, "max_length", 0) or 0',
-        where = "test", required = True,
+        where = "test",
+        required = True,
     )
     single = "def f():\n    max_seq_length = getattr(args, 'max_length', 0) or 0\n"
     assert R._replace_or_fallback(single, old, new, **kwargs) == single
