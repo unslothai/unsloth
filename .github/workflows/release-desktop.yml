@@ -55,6 +55,8 @@ jobs:
   prepare-version:
     name: Prepare release versions
     runs-on: ubuntu-latest
+    # Version resolution only; observed 8-16s.
+    timeout-minutes: 15
     outputs:
       studio_version: ${{ steps.prepare.outputs.studio_version }}
       app_version: ${{ steps.prepare.outputs.app_version }}
@@ -363,6 +365,8 @@ jobs:
     name: Build ${{ matrix.label }}
     needs: prepare-version
     runs-on: ${{ matrix.platform }}
+    # 6.9-20.9 min observed across platforms and cache states.
+    timeout-minutes: 60
 
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -663,10 +667,32 @@ jobs:
           rm -f certificate.p12
 
       # ── Windows: install Azure Trusted Signing CLI ──
-      - name: Install trusted-signing-cli
+      # `cargo install` builds this from source: 241s and 248s on the last two
+      # cache-miss runs. It was only ever fast when the ~550 MB rust-cache
+      # happened to restore `~/.cargo/bin` too, and that entry is the first
+      # thing evicted under repo cache pressure, which is why Windows swung
+      # between 8.8 min and 20.9 min. A dedicated single-binary cache keeps the
+      # compile off the critical path independently of the big Rust cache.
+      - name: Restore trusted-signing-cli
+        id: cache_trusted_signing_cli
         if: matrix.platform == 'windows-latest'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: ~/.cargo/bin/trusted-signing-cli.exe
+          # The version is in the key, so a bump invalidates the cache instead
+          # of silently reusing the old binary.
+          key: trusted-signing-cli-0.10.0-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Install trusted-signing-cli
+        if: matrix.platform == 'windows-latest' && steps.cache_trusted_signing_cli.outputs.cache-hit != 'true'
         run: |
           cargo install trusted-signing-cli --version 0.10.0 --locked
+
+      # Unconditional: on a cache hit the install step above is skipped, and the
+      # cargo bin dir still has to reach PATH or signing fails.
+      - name: Add cargo bin to PATH
+        if: matrix.platform == 'windows-latest'
+        run: |
           echo "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # ── Windows: verify signing CLI is accessible ──
@@ -798,9 +824,9 @@ jobs:
         if: matrix.platform == 'macos-latest'
         shell: bash
         # `--timeout` below caps the polling, but not the upload that precedes
-        # it. This job sets no timeout of its own, so without a backstop a stuck
-        # Notary service would hold `max-parallel: 1` for GitHub's 6h default
-        # and discard the Linux and Windows builds with it.
+        # it. Without a step-level backstop a stuck Notary service would hold
+        # `max-parallel: 1` for the whole job budget and discard the Linux and
+        # Windows builds with it, so cap it tighter than the job here.
         timeout-minutes: 45
         env:
           ARTIFACT_PATHS: ${{ steps.build_macos.outputs.artifactPaths }}
@@ -1302,6 +1328,8 @@ jobs:
     name: Publish desktop release
     needs: [prepare-version, build]
     runs-on: ubuntu-latest
+    # Artifact download plus release upload; observed 17-40s.
+    timeout-minutes: 20
     permissions:
       contents: write  # create the versioned Release and replace updater-channel metadata
     env:
