@@ -130,36 +130,29 @@ missing=$(
     sed -n 's/^[[:space:]]*\([^[:space:]]*\)[[:space:]]*=>[[:space:]]*not found.*$/\1/p'
 )
 
-# The tray crate loads AppIndicator with dlopen, so it does not appear in the
-# executable's ldd output. Search the same host locations the loader normally
-# uses, including an inherited LD_LIBRARY_PATH.
-#
-# libappindicator-sys prefers the versioned sonames and falls back to the
-# unversioned ones, so a host that only exposes those still starts fine. This
-# guard has to accept every name that loader accepts, or it refuses to launch
-# on a host the tray would have worked on. The order matches the loader's.
+# The tray crate dlopens AppIndicator, so it never appears in the binary's ldd
+# output. libappindicator-sys tries the versioned sonames then the unversioned
+# ones, so accept all four in that order or we reject hosts whose tray works.
 appindicator_names="libayatana-appindicator3.so.1 libappindicator3.so.1"
 appindicator_names="$appindicator_names libayatana-appindicator3.so libappindicator3.so"
 
 appindicator_is_usable() {
   [ -r "$1" ] || return 1
-  # The regular dependency guard above already treats an unavailable ldd as an
-  # inconclusive check. Do the same for this dynamically loaded dependency:
-  # the loader, not ldd, determines whether a readable candidate can load.
+  # An absent ldd is inconclusive, as in the guard above: the loader, not ldd,
+  # decides whether a readable candidate can load.
   command -v ldd >/dev/null 2>&1 || return 0
   appindicator_ldd=$(ldd "$1" 2>&1) || return 1
   ! printf '%s\n' "$appindicator_ldd" | grep -q 'not found'
 }
 
-# Every path the loader would try for one dlopen name, in its order:
-# LD_LIBRARY_PATH, then the ldconfig cache, then the default directories.
+# Every path the loader tries for a dlopen name, in order: LD_LIBRARY_PATH,
+# the ldconfig cache, then the default directories.
 appindicator_candidates() {
   library_name="$1"
 
   if [ "${LD_LIBRARY_PATH+x}" = x ]; then
-    # The loader accepts ':' and ';' separators. An empty component is the
-    # current directory. Appending a separator keeps a trailing empty
-    # component visible while extracting each directory.
+    # The loader accepts ':' and ';', and an empty component means the current
+    # directory. The appended separator keeps a trailing empty one visible.
     library_path="${LD_LIBRARY_PATH}:"
     while [ -n "$library_path" ]; do
       library_dir=${library_path%%[:;]*}
@@ -185,9 +178,8 @@ appindicator_candidates() {
 
 find_appindicator() {
   for library_name in $appindicator_names; do
-    # The loader commits to the first file it finds for a name: if that copy
-    # cannot load, the dlopen fails there instead of trying a later directory.
-    # Skipping ahead would pass a host whose tray still crashes.
+    # The loader commits to the first file it finds for a name, so stop there:
+    # skipping ahead would pass a host whose dlopen still fails.
     first_candidate=$(
       appindicator_candidates "$library_name" |
         while IFS= read -r candidate; do

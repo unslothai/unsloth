@@ -12,9 +12,9 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const MAX_LOG_LINES: usize = 1000;
 
-// AppImages can be launched from an activated Python environment. Keep the
-// host library path used by the thin bundle, but do not let Python search-path
-// overrides corrupt or shadow the managed Studio environment.
+// An AppImage can be launched from an activated Python environment. Keep the
+// host library path the thin bundle needs, but do not let PYTHONHOME/PYTHONPATH
+// shadow the managed Studio environment.
 #[cfg(target_os = "linux")]
 pub(crate) fn scrub_appimage_python_env(cmd: &mut Command) {
     if std::env::var_os("APPIMAGE").is_some() {

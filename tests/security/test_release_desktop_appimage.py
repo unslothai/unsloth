@@ -295,9 +295,8 @@ def test_thin_appimage_reports_a_missing_dynamic_tray_library(tmp_path):
     assert "sudo apt install libayatana-appindicator3-1" in result.stderr
 
 
-# libappindicator-sys tries the versioned sonames and then falls back to the
-# unversioned ones, so the preflight has to accept all four. Rejecting the
-# unversioned pair would refuse to launch on a host whose tray works.
+# libappindicator-sys falls back from the versioned sonames to the unversioned
+# ones, so rejecting those two would refuse a host whose tray works.
 def test_thin_appimage_accepts_every_tray_library_name_the_loader_tries(tmp_path):
     _, app_dir, _ = _build_fake_appimage(tmp_path)
     fake_bin = _fake_library_host(tmp_path)
@@ -354,8 +353,7 @@ def test_thin_appimage_matches_loader_library_path_separators_and_empty_componen
 
 
 # The loader commits to the first file it finds for a name, so a broken copy
-# ahead of a working one fails the dlopen. Skipping to the working copy would
-# pass a host whose tray still crashes during setup.
+# ahead of a working one must fail rather than skip ahead.
 def test_thin_appimage_stops_at_a_broken_library_path_candidate(tmp_path):
     _, app_dir, _ = _build_fake_appimage(tmp_path)
     fake_bin = _fake_library_host(tmp_path)
@@ -402,8 +400,8 @@ def test_thin_appimage_accepts_a_readable_tray_library_when_ldd_is_unavailable(t
     assert result.returncode == 0, result.stderr
 
 
-# The cache is how a library outside LD_LIBRARY_PATH and the standard
-# directories gets found, so keep the ldconfig -p parsing covered.
+# The cache is how a library outside LD_LIBRARY_PATH and the default directories
+# gets found, so keep the ldconfig -p parsing covered.
 def test_thin_appimage_finds_a_tray_library_through_the_ldconfig_cache(tmp_path):
     _, app_dir, _ = _build_fake_appimage(tmp_path)
     cached_dir = tmp_path / "cached-libraries"
