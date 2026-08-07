@@ -48,7 +48,7 @@ def read_install_marker(
         if candidate.is_file():
             try:
                 marker = json.loads(candidate.read_text(encoding = "utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 logger.debug(log_message, path = str(candidate), error = str(exc))
                 marker = None
             break
