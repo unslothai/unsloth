@@ -2127,10 +2127,13 @@ def _attach_gguf_check_for_codex(
         # the path is a DIRECTORY, so a direct file is loaded as itself and a complete
         # sibling matching the quant never gets substituted for it.
         if not refused and not uncertain:
-            # On loopback this process sees the server's filesystem, so an incomplete file
-            # fails here: the .gguf extension alone gets it loaded, and llama-server only
-            # finds the missing bytes/shards after the resident model is torn down.
-            if is_loopback_url(base):
+            # Only when this process really shares the server's filesystem: an incomplete
+            # file fails here, since the .gguf extension alone gets it loaded and
+            # llama-server only finds the missing bytes after the resident model is torn
+            # down. A loopback URL alone does not prove that -- 127.0.0.1 may be an SSH or
+            # container forward, where a server-valid path is simply absent here -- so
+            # confirm it is this machine's Unsloth and otherwise defer to the probe.
+            if is_loopback_url(base) and verify_studio_identity(base):
                 # A .gguf-NAMED DIRECTORY isn't a direct file: the detector scans it instead,
                 # so the suffix proves nothing and the server's answer decides.
                 try:

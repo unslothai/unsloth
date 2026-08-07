@@ -3331,6 +3331,14 @@ def test_connect_no_studio_errors(fake_studio, monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _studio_is_this_machine(monkeypatch):
+    # The attach gate only judges the local filesystem once it has confirmed the server is
+    # this machine's Unsloth, since 127.0.0.1 can be a tunnel. Default to the local case so
+    # the filesystem tests keep their meaning; the tunneled case overrides this.
+    monkeypatch.setattr(start, "verify_studio_identity", lambda base, **_kw: True)
+
+
+@pytest.fixture(autouse = True)
 def _reset_auto_served():
     # Never let a test leave a fake server in the module slot (an atexit backstop would
     # otherwise try to signal it at interpreter shutdown).
@@ -7006,6 +7014,27 @@ def test_codex_attach_check_defers_foreign_path_syntax(monkeypatch, tmp_path):
         start._attach_gguf_check_for_codex(
             BASE, "sk-test", os.fspath(tmp_path / "gone-Q4_K_M.gguf")
         )
+
+
+def test_codex_attach_check_defers_when_loopback_is_not_this_machine(monkeypatch, tmp_path):
+    # 127.0.0.1 can be an SSH or container forward, where a path that is valid on the
+    # server is simply absent here. Without a confirmed identity the local filesystem
+    # says nothing, so the probe decides rather than the gate rejecting outright.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(start, "verify_studio_identity", lambda base, **_kw: False)
+    probes = []
+
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+        probes.append(url)
+        return {"variants": [{"quant": "Q4_K_M"}]}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    # Absent locally, and an incomplete local shard: neither may settle it now.
+    start._attach_gguf_check_for_codex(BASE, "sk-test", os.fspath(tmp_path / "gone-Q4_K_M.gguf"))
+    torn = tmp_path / "torn-Q4_K_M-00001-of-00002.gguf"
+    torn.write_bytes(b"GGUF")
+    start._attach_gguf_check_for_codex(BASE, "sk-test", os.fspath(torn))
+    assert probes, "the server must be asked when its filesystem is not ours"
 
 
 def test_codex_attach_check_treats_both_spellings_as_native_on_windows(monkeypatch, tmp_path):
