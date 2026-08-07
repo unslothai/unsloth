@@ -9155,7 +9155,11 @@ async def _proxy_to_external_provider(
                 auto_heal_tool_calls = payload.auto_heal_tool_calls
                 if payload.auto_heal_tool_calls is not None
                 else True,
-                parallel_tool_calls = payload.parallel_tool_calls,
+                parallel_tool_calls = (
+                    None
+                    if _is_native_gemini_base(provider_type, base_url)
+                    else payload.parallel_tool_calls
+                ),
             )
             _external_tracker = _TrackedCancel.for_payload(
                 cancel_event,
