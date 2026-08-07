@@ -37,19 +37,16 @@ sys.modules.setdefault("loggers", _loggers_stub)
 
 # structlog
 _structlog_stub = _types.ModuleType("structlog")
+_structlog_stub.get_logger = lambda *a, **kw: __import__("logging").getLogger(
+    a[0] if a else __name__
+)
 sys.modules.setdefault("structlog", _structlog_stub)
 
-# httpx -- stub only names referenced at import / class-definition time
+# httpx -- this stub stays in sys.modules for the whole session, so any module
+# imported later reads httpx through it too. Names are minted on demand rather
+# than enumerated: a missing one is an AttributeError at another module's def
+# time, which surfaces as unrelated failures in whichever file imports it next.
 _httpx_stub = _types.ModuleType("httpx")
-for _exc_name in (
-    "ConnectError",
-    "TimeoutException",
-    "ReadTimeout",
-    "ReadError",
-    "RemoteProtocolError",
-    "CloseError",
-):
-    setattr(_httpx_stub, _exc_name, type(_exc_name, (Exception,), {}))
 
 
 class _FakeTimeout:
@@ -67,6 +64,19 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
+
+
+def _httpx_placeholder(name: str):
+    if name.startswith("__"):
+        raise AttributeError(name)
+    # Exception so `except httpx.X` works; permissive __init__ so the config
+    # objects httpx also exposes (Limits, Timeout) construct.
+    minted = type(name, (Exception,), {"__init__": lambda self, *a, **kw: None})
+    setattr(_httpx_stub, name, minted)
+    return minted
+
+
+_httpx_stub.__getattr__ = _httpx_placeholder
 sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import LlamaCppBackend

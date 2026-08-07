@@ -1611,6 +1611,67 @@ class InferenceOrchestrator:
             if self._drain_event is not None:
                 self._drain_event.clear()
 
+    def count_chat_tokens(
+        self,
+        messages: list,
+        system_prompt: str = "",
+        *,
+        tools: Optional[list] = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
+        timeout: float = 30.0,
+    ) -> tuple[int, Optional[str]]:
+        """Prompt tokens the loaded model would receive, and whose tokenizer counted them.
+
+        Reads through an addressed mailbox, as generations do: compare mode bypasses the
+        generation lock and leaves a dispatcher owning the response queue, which would
+        route this reply nowhere.
+        """
+        if not self._gen_lock.acquire(blocking = False):
+            raise RuntimeError("Cannot count tokens while a generation is in progress")
+        request_id = str(uuid.uuid4())
+        read_one, _drain, release_mailbox = self._direct_reader(request_id)
+        try:
+            self._send_cmd(
+                {
+                    "type": "count_tokens",
+                    "request_id": request_id,
+                    "messages": messages,
+                    "system_prompt": system_prompt,
+                    "tools": tools,
+                    "enable_thinking": enable_thinking,
+                    "reasoning_effort": reasoning_effort,
+                    "preserve_thinking": preserve_thinking,
+                }
+            )
+            deadline = time.monotonic() + timeout
+            resp = None
+            while time.monotonic() < deadline:
+                candidate = read_one(timeout = min(1.0, deadline - time.monotonic()))
+                if candidate is None:
+                    if not self._ensure_subprocess_alive():
+                        raise RuntimeError(self._subprocess_crash_message("count"))
+                    continue
+                # A reply whose own mailbox is gone -- an earlier count that timed out
+                # while the worker still held its command -- is handed back to whoever is
+                # reading, and the type alone cannot tell it from this one's.
+                if (
+                    candidate.get("type") == "count_tokens_response"
+                    and candidate.get("request_id") == request_id
+                ):
+                    resp = candidate
+                    break
+            if resp is None:
+                raise RuntimeError("Timed out counting tokens")
+        finally:
+            release_mailbox()
+            self._gen_lock.release()
+        error = resp.get("error")
+        if error:
+            raise RuntimeError(error)
+        return int(resp["input_tokens"]), resp.get("model")
+
     def generate_chat_response(
         self,
         messages: list,

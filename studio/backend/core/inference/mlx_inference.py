@@ -1100,10 +1100,7 @@ class MLXInferenceBackend:
         if history is None:
             return prompt, None, None, None, 0
         try:
-            tokenizer = self._tokenizer
-            bos = getattr(tokenizer, "bos_token", None)
-            add_special_tokens = bos is None or not prompt.startswith(bos)
-            tokens = list(tokenizer.encode(prompt, add_special_tokens = add_special_tokens))
+            tokens = self._encode_prompt(prompt)
             if not tokens:
                 return prompt, None, None, None, 0
             key = f"{self.active_model_name}|{adapter_state!r}"
@@ -1121,6 +1118,19 @@ class MLXInferenceBackend:
         """
         kv_bits = (getattr(self, "_kv_quant", None) or {}).get("kv_bits")
         return {} if kv_bits is None else {"kv_bits": kv_bits}
+
+    def _encode_prompt(self, prompt):
+        """The tokens a generation sends for this prompt.
+
+        A template that already emitted the BOS would otherwise get a second one, shifting
+        every cached-prefix comparison and overstating a counted prompt by one.
+        """
+        bos = getattr(self._tokenizer, "bos_token", None)
+        return list(
+            self._tokenizer.encode(
+                prompt, add_special_tokens = bos is None or not prompt.startswith(bos)
+            )
+        )
 
     def _configure_memory_limits(self):
         """Apply Metal memory caps before loading a model.
@@ -1476,6 +1486,102 @@ class MLXInferenceBackend:
         logger.info("Model %s unloaded", model_name)
         return True
 
+    def _render_text_prompt(
+        self,
+        messages,
+        *,
+        tools = None,
+        enable_thinking = None,
+        reasoning_effort = None,
+        preserve_thinking = None,
+        continue_final_message = False,
+    ):
+        """Render the prompt a text generation sends, with its template metadata.
+
+        Shared with counting, so a count cannot price a prompt the model never sees.
+        """
+        from core.inference.chat_template_helpers import (
+            apply_chat_template_for_generation,
+            render_with_native_template_fallback,
+        )
+
+        prompt = apply_chat_template_for_generation(
+            self._tokenizer,
+            messages,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
+        )
+        if prompt is None:
+            raise RuntimeError("apply_chat_template returned None — tokenizer may be incompatible")
+
+        # Parity with the transformers backend: if the template dropped the requested
+        # tools, fall back to the native template so MLX text models keep advertising
+        # them. self._tokenizer is this entry's tokenizer, so probe and native render
+        # share a renderer. (VLM renders via the processor for image tokens.)
+        model_info = self.models.get(self.active_model_name, {})
+        return render_with_native_template_fallback(
+            formatted_prompt = prompt,
+            tokenizer = self._tokenizer,
+            model_info = model_info,
+            active_model_name = self.active_model_name,
+            messages = messages,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+            continue_final_message = continue_final_message,
+            hf_token = model_info.get("hf_token"),
+            return_metadata = True,
+        )
+
+    @staticmethod
+    def _with_system_prompt(messages, system_prompt):
+        """The conversation a request carrying this system prompt turns into.
+
+        Shared with generation, which takes the system prompt beside the messages rather
+        than inside them.
+        """
+        full_messages = []
+        if system_prompt:
+            full_messages.append({"role": "system", "content": system_prompt})
+        full_messages.extend(messages)
+        return full_messages
+
+    def count_chat_tokens(
+        self,
+        messages,
+        system_prompt = "",
+        *,
+        tools = None,
+        enable_thinking = None,
+        reasoning_effort = None,
+        preserve_thinking = None,
+    ) -> int:
+        """Prompt tokens this model would receive for these messages.
+
+        Renders and tokenizes exactly as generation does.
+        """
+        if self._model is None:
+            raise RuntimeError("No model loaded")
+        if self._is_vlm:
+            # A vision model renders through its processor, which recovers from template
+            # failures by rewriting the conversation; the text renderer would not.
+            raise RuntimeError("Counting is not supported for vision models")
+
+        full_messages = self._with_system_prompt(messages, system_prompt)
+
+        render_result = self._render_text_prompt(
+            full_messages,
+            tools = tools,
+            enable_thinking = enable_thinking,
+            reasoning_effort = reasoning_effort,
+            preserve_thinking = preserve_thinking,
+        )
+        return len(self._encode_prompt(render_result.prompt))
+
     def generate_chat_response(
         self,
         messages,
@@ -1503,10 +1609,7 @@ class MLXInferenceBackend:
         # Reset so a failed run cannot surface stale stats.
         self.last_generation_stats = None
 
-        full_messages = []
-        if system_prompt:
-            full_messages.append({"role": "system", "content": system_prompt})
-        full_messages.extend(messages)
+        full_messages = self._with_system_prompt(messages, system_prompt)
 
         # Inject image into the last user message for VLM
         if self._is_vlm and image is not None:
@@ -1585,43 +1688,15 @@ class MLXInferenceBackend:
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler, make_logits_processors
 
-        from core.inference.chat_template_helpers import (
-            apply_chat_template_for_generation,
-            detect_think_prefill,
-            render_with_native_template_fallback,
-        )
+        from core.inference.chat_template_helpers import detect_think_prefill
 
-        prompt = apply_chat_template_for_generation(
-            self._tokenizer,
+        render_result = self._render_text_prompt(
             messages,
             tools = tools,
             enable_thinking = enable_thinking,
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
             continue_final_message = continue_final_message,
-        )
-        if prompt is None:
-            raise RuntimeError("apply_chat_template returned None — tokenizer may be incompatible")
-
-        # Parity with the transformers backend: if the template dropped the
-        # requested tools, fall back to the native template so MLX text models
-        # keep advertising them. self._tokenizer is this entry's tokenizer, so
-        # probe and native render share a renderer. (VLM renders via the
-        # processor for image tokens and is not wired here.)
-        model_info = self.models.get(self.active_model_name, {})
-        render_result = render_with_native_template_fallback(
-            formatted_prompt = prompt,
-            tokenizer = self._tokenizer,
-            model_info = model_info,
-            active_model_name = self.active_model_name,
-            messages = messages,
-            tools = tools,
-            enable_thinking = enable_thinking,
-            reasoning_effort = reasoning_effort,
-            preserve_thinking = preserve_thinking,
-            continue_final_message = continue_final_message,
-            hf_token = model_info.get("hf_token"),
-            return_metadata = True,
         )
         prompt = render_result.prompt
         reasoning_channel_markers = render_result.reasoning_channel_markers

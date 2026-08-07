@@ -627,6 +627,52 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
         )
 
 
+def _handle_count_tokens(backend, cmd: dict, resp_queue: Any) -> None:
+    """Count prompt tokens for the loaded model and reply with the total."""
+    try:
+        count = backend.count_chat_tokens(
+            cmd.get("messages") or [],
+            cmd.get("system_prompt") or "",
+            tools = cmd.get("tools"),
+            enable_thinking = cmd.get("enable_thinking"),
+            reasoning_effort = cmd.get("reasoning_effort"),
+            preserve_thinking = cmd.get("preserve_thinking"),
+        )
+    except Exception as exc:
+        _send_response(
+            resp_queue,
+            {
+                "type": "count_tokens_response",
+                "request_id": cmd.get("request_id"),
+                "error": str(exc),
+            },
+        )
+        return
+    _send_response(
+        resp_queue,
+        {
+            "type": "count_tokens_response",
+            # Echoed so the dispatcher can address the caller's mailbox; an unaddressed
+            # reply is dropped and the caller waits out its timeout.
+            "request_id": cmd.get("request_id"),
+            "input_tokens": int(count),
+            "model": backend.active_model_name,
+        },
+    )
+
+
+def _decline_count_tokens(cmd: dict, resp_queue: Any) -> None:
+    """Answer a count this backend cannot serve; dropping it costs the caller its timeout."""
+    _send_response(
+        resp_queue,
+        {
+            "type": "count_tokens_response",
+            "request_id": cmd.get("request_id"),
+            "error": "Counting is not supported on the transformers backend.",
+        },
+    )
+
+
 def _handle_share_object(backend, cmd: dict, resp_queue: Any) -> None:
     """Share a small Python object across MLX distributed ranks."""
     request_id = cmd.get("request_id", "")
@@ -1022,6 +1068,8 @@ def run_inference_process(
                             "error": "Text-to-speech is not supported on the MLX backend yet.",
                         },
                     )
+                elif cmd_type == "count_tokens":
+                    _handle_count_tokens(backend, cmd, resp_queue)
                 elif cmd_type == "share_object":
                     _handle_share_object(backend, cmd, resp_queue)
                 elif cmd_type == "load":
@@ -1263,6 +1311,9 @@ def run_inference_process(
                 if _drain_skip_generate(cmd, resp_queue, drain_event):
                     continue
                 _handle_generate(backend, cmd, resp_queue, cancel_event)
+
+            elif cmd_type == "count_tokens":
+                _decline_count_tokens(cmd, resp_queue)
 
             elif cmd_type == "share_object":
                 _handle_share_object(backend, cmd, resp_queue)

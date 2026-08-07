@@ -423,6 +423,22 @@ def _has_openai_tool_history(messages) -> bool:
     return False
 
 
+def _extra_body_enable_thinking(payload) -> Optional[bool]:
+    """``enable_thinking`` sent through the OpenAI SDK's ``extra_body``, or None.
+
+    The SDK spreads ``chat_template_kwargs`` into the request body, where ``extra="allow"``
+    stashes it in ``model_extra``; every render consumes the typed field instead, so each
+    entry point lifts it first.
+    """
+    extra = getattr(payload, "model_extra", None)
+    if not isinstance(extra, dict):
+        return None
+    template_kwargs = extra.get("chat_template_kwargs")
+    if isinstance(template_kwargs, dict) and "enable_thinking" in template_kwargs:
+        return bool(template_kwargs["enable_thinking"])
+    return None
+
+
 def _raise_unsupported_openai_parameter(param: str, message: str) -> None:
     raise HTTPException(
         status_code = 400,
@@ -10276,19 +10292,12 @@ async def openai_chat_completions(
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
 
-    # OpenAI-SDK clients send ``chat_template_kwargs`` via ``extra_body``, which
-    # the SDK spreads into the request body at the top level. Unsloth's
-    # ChatCompletionRequest has ``extra="allow"`` so pydantic stashes them in
-    # ``model_extra``, but downstream generators consume the typed
-    # ``payload.enable_thinking``. Lift ``enable_thinking`` from the extra-body
-    # chat_template_kwargs onto the typed field so clients that only know the
-    # OpenAI shape (data_designer recipe runs, etc.) can still control the
-    # reasoning preamble.
-    _extra = getattr(payload, "model_extra", None)
-    if payload.enable_thinking is None and isinstance(_extra, dict):
-        _tpl_kw = _extra.get("chat_template_kwargs")
-        if isinstance(_tpl_kw, dict) and "enable_thinking" in _tpl_kw:
-            payload.enable_thinking = bool(_tpl_kw["enable_thinking"])
+    # Clients that only know the OpenAI shape (data_designer recipe runs, etc.) control
+    # the reasoning preamble this way, so lift it onto the typed field the generators read.
+    if payload.enable_thinking is None:
+        _lifted_enable_thinking = _extra_body_enable_thinking(payload)
+        if _lifted_enable_thinking is not None:
+            payload.enable_thinking = _lifted_enable_thinking
 
     # ── Determine which backend is active ─────────────────────
     # Single-model server: any model name serves the loaded model (drop-in
@@ -14428,21 +14437,15 @@ def _build_chat_request(
     if payload.parallel_tool_calls is not None:
         chat_kwargs["parallel_tool_calls"] = payload.parallel_tool_calls
 
-    # ``chat_template_kwargs`` (e.g. ``{"enable_thinking": true}``) arrives via
-    # the Responses extra-body: ResponsesRequest has ``extra="allow"``, so the
-    # OpenAI SDK's ``extra_body`` spread lands the dict in ``model_extra``. The
-    # downstream Chat Completions paths consume the typed ``enable_thinking``
-    # field -- the non-streaming path lifts it in ``openai_chat_completions``
-    # only when it is still ``None``, and the streaming pass-through reads
-    # ``payload.enable_thinking`` directly -- so lift it here, mirroring that
-    # handler, to cover both Responses paths.
+    # Both Responses paths reach a Chat Completions render, and the streaming
+    # pass-through reads the typed field directly rather than re-lifting, so lift here.
     explicit_enable_thinking = False
+    _lifted_enable_thinking = _extra_body_enable_thinking(payload)
+    if _lifted_enable_thinking is not None:
+        chat_kwargs["enable_thinking"] = _lifted_enable_thinking
+        explicit_enable_thinking = True
     _extra = getattr(payload, "model_extra", None)
     if isinstance(_extra, dict):
-        _tpl_kw = _extra.get("chat_template_kwargs")
-        if isinstance(_tpl_kw, dict) and "enable_thinking" in _tpl_kw:
-            chat_kwargs["enable_thinking"] = bool(_tpl_kw["enable_thinking"])
-            explicit_enable_thinking = True
         # auto_heal_tool_calls / nudge_tool_calls are not typed on
         # ResponsesRequest; lift them from the extra-body so passthrough
         # healing (and the opt-in nudge) honor them on both paths.
@@ -15925,6 +15928,63 @@ def _append_to_system_message(messages: list[dict], addition: str) -> list[dict]
     return [{"role": "system", "content": addition}, *copied]
 
 
+async def _mlx_count_chat_tokens(payload) -> Optional[JSONResponse]:
+    """Count with the resident MLX model's tokenizer, or None if MLX is not serving one."""
+    backend = get_inference_backend()
+    active = getattr(backend, "active_model_name", None)
+    if not active:
+        return None
+    entry = getattr(backend, "models", {}).get(active) or {}
+    # A completion for either is routed away from the text chat path entirely, so a text
+    # render prices nothing that is ever sent.
+    if not entry.get("is_mlx") or entry.get("is_vision") or entry.get("is_audio"):
+        return None
+
+    # Only the plain relay is counted: a request carrying tools takes the completion's
+    # tool branch, which rebuilds the conversation and renders schemas besides. Broader
+    # than that branch's own admission, since refusing a few extra leaves the usage bar
+    # empty, as it is today.
+    if (
+        payload.tools
+        or _has_openai_tool_history(payload.messages)
+        or _effective_enable_tools(payload)
+        or getattr(payload, "mcp_enabled", False)
+    ):
+        raise HTTPException(
+            status_code = 503,
+            detail = "Cannot count tokens for this model for a request that carries tools.",
+        )
+
+    # The same helper the completion path derives these with; rebuilding either here is
+    # how a count comes to price a prompt nobody sends.
+    system_prompt, messages, _image = _extract_content_parts(payload.messages)
+    # The same lift the completion applies before it renders.
+    enable_thinking = payload.enable_thinking
+    if enable_thinking is None:
+        enable_thinking = _extra_body_enable_thinking(payload)
+    try:
+        count, model = await asyncio.to_thread(
+            backend.count_chat_tokens,
+            messages,
+            system_prompt or "",
+            enable_thinking = enable_thinking,
+            reasoning_effort = payload.reasoning_effort,
+            preserve_thinking = payload.preserve_thinking,
+        )
+    except Exception:
+        raise HTTPException(
+            status_code = 503,
+            detail = "Unable to count tokens with the loaded model tokenizer.",
+        )
+    # A load landing mid-count leaves the total attributable to neither model.
+    if getattr(backend, "active_model_name", None) != active:
+        raise HTTPException(
+            status_code = 503,
+            detail = "The loaded model changed while counting tokens.",
+        )
+    return JSONResponse(content = {"input_tokens": int(count), "model": model or active})
+
+
 @router.post("/chat/count_tokens")
 async def chat_count_tokens(
     payload: ChatCountTokensRequest, current_subject: str = Depends(get_current_subject)
@@ -15962,6 +16022,11 @@ async def chat_count_tokens(
 
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
+        # The refusals above are about the request and so are shared; the ones below are
+        # llama.cpp's own render concerns, so this returns rather than falling through.
+        _mlx_count = await _mlx_count_chat_tokens(payload)
+        if _mlx_count is not None:
+            return _mlx_count
         raise HTTPException(
             status_code = 503,
             detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),

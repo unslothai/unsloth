@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import asyncio
 import contextlib
 import copy
 import json
@@ -2580,6 +2581,37 @@ def test_mlx_native_context_length_reads_every_spelling_and_every_config(name):
     cfg = SimpleNamespace(model_type = "x", text_config = text, **{name: 131072})
     vlm = SimpleNamespace(language_model = stub, config = cfg)
     assert mlx_native_context_length(vlm) == 131072
+
+
+class _CountTokensBackend:
+    active_model_name = "mlx/model"
+    models = {"mlx/model": {"is_mlx": True, "is_vision": False, "is_audio": False}}
+
+    def count_chat_tokens(
+        self,
+        messages,
+        system_prompt = "",
+        **kwargs,
+    ):
+        return 11, "mlx/model"
+
+
+def test_count_tokens_serves_an_mlx_count_with_llama_cpp_unloaded(monkeypatch):
+    """llama.cpp not being loaded used to be the whole answer, leaving the usage bar empty
+    until a completion reported its own usage."""
+    backend_dir = str(Path(__file__).resolve().parent.parent)
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    from routes import inference as route
+
+    monkeypatch.setattr(route, "get_inference_backend", _CountTokensBackend)
+    monkeypatch.setattr(route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False))
+    monkeypatch.setattr(route.active_generations, "count", lambda: 0)
+    payload = route.ChatCountTokensRequest(messages = [{"role": "user", "content": "hello"}])
+
+    response = asyncio.run(route.chat_count_tokens(payload, current_subject = "tester"))
+
+    assert json.loads(response.body) == {"input_tokens": 11, "model": "mlx/model"}
 
 
 def test_a_load_serves_the_request_or_the_window_the_model_was_trained_for():
