@@ -2359,11 +2359,13 @@ def test_the_pretokenized_probe_does_not_eat_a_one_shot_row():
     # Sliced to the next def, not a fixed window: a comment added inside the probe
     # used to push the line under test out of the window and pass the test blind.
     start = block.index("def _unsloth_pretokenized")
-    body = block[start:block.index("def _unsloth_cap_split", start)]
-    assert "_probe is _ds or _probe is iter(_ds)" in body, \
-        "the pretokenized probe still reads a row off a one-shot stream"
-    assert body.index("column_names") < body.index("iter(_ds)"), \
-        "the schema is not consulted before a row is taken"
+    body = block[start : block.index("def _unsloth_cap_split", start)]
+    assert (
+        "_probe is _ds or _probe is iter(_ds)" in body
+    ), "the pretokenized probe still reads a row off a one-shot stream"
+    assert body.index("column_names") < body.index(
+        "iter(_ds)"
+    ), "the schema is not consulted before a row is taken"
 
 
 # ── round fourteen: capping once, and not cutting what we cannot honour ──────
@@ -2383,11 +2385,19 @@ def test_capping_a_one_shot_stream_twice_does_not_eat_its_rows():
     seen = {}
 
     class Stub:
-        def evaluate(self, eval_dataset = None, **kw):
+        def evaluate(
+            self,
+            eval_dataset = None,
+            **kw,
+        ):
             # What Trainer.evaluate does: hand the stored split to the builder.
             return self.get_eval_dataloader(eval_dataset)
 
-        def get_eval_dataloader(self, eval_dataset = None, **kw):
+        def get_eval_dataloader(
+            self,
+            eval_dataset = None,
+            **kw,
+        ):
             split = self.eval_dataset if eval_dataset is None else eval_dataset
             seen["rows"] = list(split)
             return split
@@ -2415,8 +2425,10 @@ def test_a_capped_split_is_handed_straight_back_to_the_second_pass():
 
     assert rl._cap_signature(inner) == (16, True)
     assert rl._cap_signature(outer) is None, "the outer wrapper read the inner one's mark"
-    assert getattr(outer, rl._CAP_SIGNATURE_ATTR) == (16, True), \
-        "premise: a plain getattr does forward, which is why __dict__ is read"
+    assert getattr(outer, rl._CAP_SIGNATURE_ATTR) == (
+        16,
+        True,
+    ), "premise: a plain getattr does forward, which is why __dict__ is read"
 
 
 def test_an_unknown_truncation_mode_leaves_the_split_alone():
@@ -2441,12 +2453,14 @@ def test_the_transform_rule_is_read_by_both_schema_probes():
     did not, so a `with_transform` split storing `text` and yielding overlength
     `input_ids` was reported raw, marked safe, and had its cap cleared."""
     block = _padding_free_codegen_block()
-    assert block.count("_unsloth_is_transformed(") >= 3, \
-        "the rule is not defined once and read by both probes"
+    assert (
+        block.count("_unsloth_is_transformed(") >= 3
+    ), "the rule is not defined once and read by both probes"
     start = block.index("def _unsloth_pretokenized")
-    body = block[start:block.index("def _unsloth_cap_split", start)]
-    assert body.index("_unsloth_is_transformed(_ds)") < body.index("column_names"), \
-        "the late probe still trusts the backing columns of a transformed split"
+    body = block[start : block.index("def _unsloth_cap_split", start)]
+    assert body.index("_unsloth_is_transformed(_ds)") < body.index(
+        "column_names"
+    ), "the late probe still trusts the backing columns of a transformed split"
 
 
 def test_a_transformed_eval_split_keeps_its_cap(tmp_path, trl_has_guard):

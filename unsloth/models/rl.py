@@ -940,11 +940,11 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             ):
                 if _is_stream(dataset):
                     return _mark_capped(
-                        _capped_stream(dataset, cut, supervision, per_token),
-                        cap, drop_unsupervised)
+                        _capped_stream(dataset, cut, supervision, per_token), cap, drop_unsupervised
+                    )
                 return _mark_capped(
-                    _CappedRows(dataset, cut, supervision, per_token),
-                    cap, drop_unsupervised)
+                    _CappedRows(dataset, cut, supervision, per_token), cap, drop_unsupervised
+                )
             new = (
                 dataset
                 if not overlength
