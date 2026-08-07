@@ -348,7 +348,12 @@ class ApiMonitor:
             entry.reply = _trim(entry.reply + text, _MAX_REPLY_CHARS)
             entry.updated_at = time.time()
 
-    def mark_first_token(self, entry_id: Optional[str], *, decoded: bool = True) -> None:
+    def mark_first_token(
+        self,
+        entry_id: Optional[str],
+        *,
+        decoded: bool = True,
+    ) -> None:
         """Stamp TTFT for deltas with no reply text, e.g. reasoning tokens.
 
         ``decoded = False`` for output the model did not generate (a tool card), which

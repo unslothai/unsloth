@@ -10606,9 +10606,7 @@ async def openai_chat_completions(
                         # later write would escape the clearing a cancelled row gets.
                         api_monitor.set_perf(monitor_id, stop_reason = _audio_finish)
                         api_monitor.finish(monitor_id, "cancelled" if cancelled else "completed")
-                        yield _chat_final_chunk(
-                            completion_id, created, model_name, _audio_finish
-                        )
+                        yield _chat_final_chunk(completion_id, created, model_name, _audio_finish)
                         yield "data: [DONE]\n\n"
                     except asyncio.CancelledError:
                         cancel_event.set()

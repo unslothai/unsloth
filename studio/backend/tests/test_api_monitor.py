@@ -1405,9 +1405,9 @@ def test_tool_card_starts_ttft_but_not_the_token_rate_clock(monkeypatch):
     )
 
     monitor.mark_first_token(entry_id, decoded = False)
-    clock[0] = 160.0                      # a minute of tool run / human confirmation
+    clock[0] = 160.0  # a minute of tool run / human confirmation
     monitor.append_reply(entry_id, "first real token")
-    clock[0] = 162.0                      # two seconds of decoding
+    clock[0] = 162.0  # two seconds of decoding
     monitor.set_usage(entry_id, completion_tokens = 21)
     monitor.finish(entry_id)
 
