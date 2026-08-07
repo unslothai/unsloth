@@ -773,7 +773,22 @@ class VideoBackend:
             "balanced": "group",
             "low_vram": "model",
         }[requested_mode]
-        native_offload = tuple(offload_flags(policy, vae_tiling = False, diffusion_fa = True))
+        # NOT --vae-on-cpu. H3 ships an audio VAE, and its 1-D convolutions abort on the CPU
+        # path: ggml_conv_1d hardcodes an F16 im2col destination (ggml/src/ggml.c) and
+        # ggml_compute_forward_im2col_f16 then asserts the KERNEL is F16, while sd.cpp's
+        # audio_conv_weight_type maps only BF16 to F16 and lets F32 through. The result is
+        # GGML_ASSERT(src0->type == GGML_TYPE_F16) failed, SIGABRT, exit 134, deterministically.
+        # Bisected on the flags: --vae-on-cpu with --audio-vae aborts, without --audio-vae it
+        # renders in 95.87s, and converting the audio VAE checkpoint to fp16 does NOT help, so
+        # the type is imposed inside sd.cpp rather than by the file and cannot be fixed by
+        # shipping a different checkpoint. low_vram is the one mode a small-card user reaches
+        # for, so drop the flag rather than the mode; --offload-to-cpu and --clip-on-cpu, which
+        # are where the savings actually are, still apply.
+        native_offload = tuple(
+            offload_flags(
+                policy, vae_tiling = False, diffusion_fa = True, vae_on_cpu = False
+            )
+        )
         from .video_minimax_h3 import MiniMaxH3NativeRuntime
 
         runtime = MiniMaxH3NativeRuntime(

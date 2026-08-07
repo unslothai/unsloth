@@ -152,6 +152,30 @@ def test_offload_model_pushes_everything_to_cpu_and_tiles():
     assert offload_flags(OFFLOAD_SEQUENTIAL) == flags
 
 
+def test_offload_can_keep_the_vae_off_the_cpu_path():
+    """H3's audio VAE aborts on the CPU path, so `low_vram` has to drop just that flag.
+
+    `ggml_conv_1d` hardcodes an F16 im2col destination and
+    `ggml_compute_forward_im2col_f16` then asserts the kernel is F16, while sd.cpp's
+    `audio_conv_weight_type` maps only BF16 to F16 and lets F32 through:
+    `GGML_ASSERT(src0->type == GGML_TYPE_F16) failed`, SIGABRT, exit 134. Converting the
+    checkpoint to fp16 does not help, since the type is imposed inside sd.cpp.
+
+    Everything else the policy asks for still applies. The denoiser dominates, so
+    `--offload-to-cpu` is where the saving is; dropping the mode entirely would cost far
+    more than dropping this one flag.
+    """
+    for policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL):
+        flags = offload_flags(policy, vae_on_cpu = False)
+        assert "--vae-on-cpu" not in flags
+        for expected in ("--offload-to-cpu", "--clip-on-cpu", "--vae-tiling", "--diffusion-fa"):
+            assert expected in flags, f"{policy}: {expected} should survive"
+    # The default is unchanged for every other family.
+    assert "--vae-on-cpu" in offload_flags(OFFLOAD_MODEL)
+    # And it is a no-op where the policy never emitted it.
+    assert offload_flags(OFFLOAD_GROUP, vae_on_cpu = False) == offload_flags(OFFLOAD_GROUP)
+
+
 def test_offload_forced_flags_dedup():
     # vae_tiling/diffusion_fa forced on with a policy that already sets them
     flags = offload_flags(OFFLOAD_MODEL, vae_tiling = True, diffusion_fa = True)

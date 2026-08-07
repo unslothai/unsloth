@@ -2487,3 +2487,42 @@ def test_a_raising_teardown_still_drains_the_fence(fake_runtime, tmp_path, monke
     monkeypatch.setattr(video_mod, "clear_gpu_cache", lambda: None)
     _load_gguf(backend, tmp_path)
     assert backend.generate(prompt = "after", steps = 2)["mp4_bytes"] == b"MP4"
+
+
+# ── the H3 native path and the audio VAE ─────────────────────────────────────
+def test_the_h3_native_load_never_puts_the_vae_on_the_cpu():
+    """`low_vram` maps to the `model` policy, which emits `--vae-on-cpu` for everyone else.
+
+    On H3 that aborts: the audio VAE's 1-D convolutions reach a CPU path that asserts the
+    kernel is F16 while sd.cpp lets the F32 one through, so the process dies with
+    `GGML_ASSERT(src0->type == GGML_TYPE_F16) failed`, SIGABRT, exit 134. Converting the
+    checkpoint to fp16 does not avoid it, so the flag has to not be emitted.
+
+    Source-level, because reproducing it needs a built sd-cli and the H3 weights. The point
+    is that the H3 call site passes the opt-out, and that the flag is what is opted out of.
+    """
+    import ast
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parent.parent / "core" / "inference" / "video.py").read_text(
+        encoding = "utf-8"
+    )
+    tree = ast.parse(source)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "offload_flags"
+    ]
+    assert calls, "video.py no longer builds native offload flags"
+    for call in calls:
+        opt_out = [kw for kw in call.keywords if kw.arg == "vae_on_cpu"]
+        assert opt_out, "the H3 native path must ask for the VAE to stay off the CPU"
+        assert isinstance(opt_out[0].value, ast.Constant) and opt_out[0].value.value is False
+
+    # And the flag the opt-out removes is still the one this is about.
+    from core.inference.sd_cpp_args import OFFLOAD_MODEL, offload_flags
+
+    assert "--vae-on-cpu" in offload_flags(OFFLOAD_MODEL)
+    assert "--vae-on-cpu" not in offload_flags(OFFLOAD_MODEL, vae_on_cpu = False)

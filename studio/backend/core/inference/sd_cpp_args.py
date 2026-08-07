@@ -181,12 +181,17 @@ def offload_flags(
     *,
     vae_tiling: bool = False,
     diffusion_fa: bool = False,
+    vae_on_cpu: bool = True,
 ) -> list[str]:
     """Translate a diffusers memory policy into sd-cli offload flags.
 
     ``none``: resident, no flags. ``group``: stream the model (``--offload-to-cpu``) + flash
     attention. ``model`` / ``sequential``: offload everything, also CLIP/VAE to CPU + VAE tiling.
     ``vae_tiling`` / ``diffusion_fa`` force those flags on regardless of policy.
+
+    ``vae_on_cpu = False`` drops only ``--vae-on-cpu`` from the offload policies. A family whose
+    VAE cannot run on the CPU path still wants everything else the policy asks for, and that flag
+    is the smallest of the three savings: the denoiser is what dominates.
     """
     flags: list[str] = []
     fa = diffusion_fa
@@ -196,7 +201,8 @@ def offload_flags(
         fa = True
     if policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL):
         flags.append("--clip-on-cpu")
-        flags.append("--vae-on-cpu")
+        if vae_on_cpu:
+            flags.append("--vae-on-cpu")
         tile = True
     if fa:
         flags.append("--diffusion-fa")
