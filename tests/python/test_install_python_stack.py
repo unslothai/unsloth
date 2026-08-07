@@ -536,9 +536,7 @@ class TestBuildPipCmdUpgradeIntent:
         assert cmd[cmd.index("--upgrade-strategy") + 1] == "only-if-needed"
 
     def test_names_already_present_are_not_duplicated(self):
-        cmd = ips._build_pip_cmd(
-            ("--no-deps", "--upgrade-package", "unsloth", "unsloth")
-        )
+        cmd = ips._build_pip_cmd(("--no-deps", "--upgrade-package", "unsloth", "unsloth"))
         assert cmd.count("unsloth") == 1
 
     def test_commands_without_the_flag_are_untouched(self):
