@@ -14,12 +14,10 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """A broken TensorFlow / Flax install must not break importing Unsloth.
 
-Transformers 4.x imports either backend merely because it is installed:
-`image_transforms.py` does `if is_tf_available(): import tensorflow`, and that
-module is reached from `processing_utils`, which is on Unsloth's own import
-path. On Colab, where TF ships preinstalled, an install cell that moves protobuf
-leaves TF raising `cannot import name 'runtime_version' from 'google.protobuf'`
-at the first `from unsloth import ...` -- for a library that never uses it.
+Transformers 4.x imports either backend merely because it is installed, through
+`image_transforms.py`, which `processing_utils` reaches and Unsloth imports. On
+Colab an install cell that moves protobuf then leaves TF raising `cannot import
+name 'runtime_version'` at the first `from unsloth import ...`.
 """
 
 import ast
