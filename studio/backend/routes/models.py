@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 import structlog
 from loggers import get_logger
+
 # Dependency-light leaf (PEP 562 package init): no llama.cpp / torch import chain.
 from core.inference.model_ids import display_model_name
 from utils.utils import canonical_model_repo_id, log_and_http_error

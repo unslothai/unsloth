@@ -84,7 +84,11 @@ def _is_hub_repo_id(identifier: str) -> bool:
     carries a repo id plus a filename, so two or more slashes."""
     if identifier.count("/") != 1:
         return False
-    stem = identifier[: -len(_GGUF_SUFFIX)] if identifier.lower().endswith(_GGUF_SUFFIX) else identifier
+    stem = (
+        identifier[: -len(_GGUF_SUFFIX)]
+        if identifier.lower().endswith(_GGUF_SUFFIX)
+        else identifier
+    )
     return not _looks_like_path(stem)
 
 

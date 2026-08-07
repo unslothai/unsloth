@@ -102,9 +102,7 @@ def test_display_model_name_leaves_ordinary_ids_alone():
 
     assert display_model_name("unsloth/Qwen3-30B-A3B-GGUF") == "Qwen3-30B-A3B-GGUF"
     assert display_model_name("Qwen3-30B-A3B") == "Qwen3-30B-A3B"
-    assert display_model_name("/srv/models/Qwen3-30B-A3B-Q4_K_M.gguf") == (
-        "Qwen3-30B-A3B-Q4_K_M"
-    )
+    assert display_model_name("/srv/models/Qwen3-30B-A3B-Q4_K_M.gguf") == ("Qwen3-30B-A3B-Q4_K_M")
     assert display_model_name(None) is None
     assert display_model_name("") == ""
 

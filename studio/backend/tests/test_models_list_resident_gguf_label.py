@@ -33,7 +33,13 @@ _WINDOWS_SNAPSHOT = (
 class _FakeLlama:
     is_vision = False
 
-    def __init__(self, identifier, *, native_grant_backed = False, display_label = None):
+    def __init__(
+        self,
+        identifier,
+        *,
+        native_grant_backed = False,
+        display_label = None,
+    ):
         self.is_loaded = True
         self.model_identifier = identifier
         self._native_grant_backed = native_grant_backed
@@ -65,9 +71,7 @@ def test_hf_cache_snapshot_is_labelled_by_its_repo_leaf(monkeypatch):
 
 
 def test_standalone_gguf_is_labelled_by_its_file_stem(monkeypatch):
-    entries = _list_models(
-        monkeypatch, _FakeLlama("/srv/models/Qwen3-30B-A3B-Q4_K_M.gguf")
-    )
+    entries = _list_models(monkeypatch, _FakeLlama("/srv/models/Qwen3-30B-A3B-Q4_K_M.gguf"))
 
     assert entries[0].name == "Qwen3-30B-A3B-Q4_K_M"
 
@@ -109,9 +113,7 @@ def test_already_resident_load_response_never_echoes_the_snapshot_path(monkeypat
     # to the identifier the GGUF loaded from, and the client labelled the model with it.
     import routes.inference as inf_route
 
-    monkeypatch.setattr(
-        inf_route, "_llama_runtime_fields", lambda backend: {}
-    )
+    monkeypatch.setattr(inf_route, "_llama_runtime_fields", lambda backend: {})
     monkeypatch.setattr(inf_route, "load_inference_config", lambda identifier: {})
 
     resp = inf_route._gguf_load_response(
