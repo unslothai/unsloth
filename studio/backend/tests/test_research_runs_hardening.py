@@ -928,8 +928,7 @@ def test_admission_keepalives_do_not_spend_the_first_output_budget(monkeypatch):
             return None
 
         async def aiter_lines(self):
-            # Ten keepalive periods, each shorter than the budget but far longer than
-            # it in total: the wait is live, so none of them may end the run.
+            # Ten periods, each under the budget but far over it in total; none may end the run.
             for _ in range(10):
                 await asyncio.sleep(0.02)
                 yield ": admission-wait"
@@ -1291,8 +1290,7 @@ def test_a_cancelled_stream_iterator_is_only_discarded_once(monkeypatch):
             return None
 
         async def aiter_lines(self):
-            # Cancel only once the stream loop owns the task, so the send phase (which
-            # has its own cleanup) is not what gets exercised here.
+            # Cancel once the stream loop owns the task, not the send phase.
             supervisor._cancel_event(run["id"]).set()
             while True:
                 try:
@@ -1431,8 +1429,7 @@ def test_stream_completion_semantic_output_resets_the_idle_timeout(monkeypatch):
 
 
 def test_stream_completion_allows_output_before_first_output_timeout(monkeypatch):
-    # Deadline well clear of the 0.10 s prefill: Windows rounds each sleep up to a
-    # 15.625 ms tick, which makes it 0.15625 s, and Backend CI is ubuntu-only.
+    # Clear of the 0.10 s prefill: a 15.625 ms tick would stretch it to 0.15625 s.
     monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 1.0)
     monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.03)
 

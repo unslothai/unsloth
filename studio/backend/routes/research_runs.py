@@ -256,8 +256,7 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         "maxSources": (1, 100),
         "modelTimeoutSeconds": (10, 3600),
         "toolTimeoutSeconds": (5, 600),
-        # Same range as its parent: a slow CPU or offloaded model can legitimately spend
-        # minutes before its first token, and the run's own wall clock still caps it.
+        # Same range as its parent: slow CPU and offloaded models need minutes to first token.
         "firstOutputTimeoutSeconds": (10, 3600),
     }
     for key, (minimum, maximum) in limits.items():

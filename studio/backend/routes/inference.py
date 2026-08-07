@@ -1127,11 +1127,9 @@ _STREAM_DISCONNECT_POLL_TIMEOUT_S = 0.25
 _OPENAI_PASSTHROUGH_PREHEADER_STATUS_WINDOW_S = 0.1
 _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S = 5.0
 _OPENAI_PASSTHROUGH_SSE_KEEPALIVE = ": keep-alive\n\n"
-# Distinct from the keepalive above so a client can tell "queued for a slot" from
-# "the backend is silent". Both are SSE comments, so any conforming reader ignores them.
+# Lets a client tell "queued" from "backend silent"; SSE comments, so readers ignore both.
 _OPENAI_ADMISSION_SSE_WAIT = ": admission-wait\n\n"
-# Paired with the above: the slot is ours, so any clock a client suspended for the
-# queue starts now. Sent only when the caller actually waited.
+# Paired with the above: the slot is ours, so a suspended client clock starts now.
 _OPENAI_ADMISSION_SSE_DONE = ": admission-done\n\n"
 _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
 # Idle window before a local tool-loop stream emits an SSE keepalive comment
@@ -1365,8 +1363,7 @@ async def _openai_admission_wait_stream_chunks(
     )
     deadline = None if config.queue_timeout_s is None else time.monotonic() + config.queue_timeout_s
     keepalive_interval_s = max(0.001, config.keepalive_interval_s)
-    # Announce the wait at once rather than after a full interval: a caller that must not
-    # mistake queueing for a stalled backend cannot wait out an operator-set interval first.
+    # At once, not after a full interval: a caller must not wait one out to learn it queued.
     yield _OPENAI_ADMISSION_SSE_WAIT
     next_keepalive_at = time.monotonic() + keepalive_interval_s
     try:

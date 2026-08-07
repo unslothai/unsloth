@@ -153,8 +153,7 @@ _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS = 120.0
 # Cancellation is cooperative, so bound the wait for a cancelled iterator to unwind;
 # otherwise a stuck one holds a timed-out call open for the rest of the wall clock.
 _STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
-# routes/inference.py marks an admission wait with this SSE comment, distinct from the
-# plain keepalive it sends whenever the backend itself is silent.
+# The SSE comment routes/inference.py sends while queued, not while the backend is silent.
 _ADMISSION_WAIT_COMMENT = ": admission-wait"
 _ADMISSION_DONE_COMMENT = ": admission-done"
 
@@ -1667,14 +1666,12 @@ class ResearchSupervisor:
         try:
             await asyncio.wait({task}, timeout = _STREAM_CLEANUP_TIMEOUT_SECONDS)
         except asyncio.CancelledError:
-            # An outer cancellation (wall clock, shutdown) must keep propagating, but the
-            # child outlives this frame either way, so hand its outcome over before leaving.
+            # Must keep propagating, but the child outlives this frame, so hand it over first.
             self._absorb_when_done(run_id, task, what)
             raise
         if not task.done():
             logger.warning("research.%s_cleanup_timed_out run_id=%s", what, run_id)
-            # The bound expired but the task lives on, so keep the promise above by
-            # absorbing its outcome whenever it finally cooperates.
+            # Bound expired but the task lives on: absorb its outcome when it cooperates.
             self._absorb_when_done(run_id, task, what)
             return
         try:
@@ -1715,8 +1712,7 @@ class ResearchSupervisor:
                 while not line_task.done():
                     await asyncio.wait({line_task}, timeout = timeout)
                     if self._cancel_event(run_id).is_set():
-                        # Set first: an iterator that outlasts the bound leaves the task
-                        # pending, and the finally must not spend the bound on it again.
+                        # Set first: the finally must not spend the bound on it again.
                         discarded = True
                         await self._discard_task(run_id, line_task, "stream_iterator")
                         await self._check_active(run_id)
@@ -1848,8 +1844,7 @@ class ResearchSupervisor:
 
         try:
             model_timeout = float(config["budgets"]["modelTimeoutSeconds"])
-            # Configurable, and never longer than the run's own budget. Legacy runs predate
-            # the key and fall back to the default.
+            # Configurable, capped by the run's wall clock; legacy runs use the default.
             first_output_budget = min(
                 float(
                     config["budgets"].get(
@@ -1895,8 +1890,7 @@ class ResearchSupervisor:
                             while not send_task.done():
                                 await asyncio.wait({send_task}, timeout = 0.2)
                                 if self._cancel_event(run["id"]).is_set():
-                                    # Set first, for the same reason as the iterator path:
-                                    # a send that outlasts the bound must not be waited on twice.
+                                    # Set first: a send outlasting the bound is not waited on twice.
                                     send_discarded = True
                                     await self._discard_task(run["id"], send_task, "send")
                                     await self._check_active(run["id"])
@@ -1941,11 +1935,9 @@ class ResearchSupervisor:
                         if self._cancel_event(run["id"]).is_set():
                             await self._check_active(run["id"])
                         if not line.startswith("data:"):
-                            # Queueing for a slot has no timeout by design, so it is not
-                            # charged at all: suspend while it lasts and start the model's
-                            # budget the moment the queue says the slot is ours. A plain
-                            # ": keep-alive" means the backend itself is silent, whether in
-                            # prefill or wedged, and that is what the budget bounds.
+                            # Queueing has no timeout by design, so it is not charged: suspend
+                            # for it, and start the budget when the slot is granted. A plain
+                            # ": keep-alive" means a silent backend, which is what we bound.
                             if line.startswith(_ADMISSION_WAIT_COMMENT):
                                 first_output_deadline = None
                             elif line.startswith(_ADMISSION_DONE_COMMENT):

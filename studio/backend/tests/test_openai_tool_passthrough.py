@@ -5172,8 +5172,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 assert cancel_id in inf_mod._CANCEL_REGISTRY
 
                 blocker.release()
-                # The lease is announced before it is handed over, so drain that marker
-                # first; the request only reaches upstream on the chunk after it.
+                # The lease is announced before handover, so drain that marker first.
                 assert (
                     await asyncio.wait_for(iterator.__anext__(), timeout = 1.0)
                     == ": admission-done\n\n"
@@ -5284,8 +5283,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 assert chunk == ": admission-wait\n\n"
 
                 blocker.release()
-                # The lease is announced before it is handed over, so the payload is the
-                # chunk after that marker.
+                # The lease is announced before handover, so the payload is the next chunk.
                 assert (
                     await asyncio.wait_for(iterator.__anext__(), timeout = 1.0)
                     == ": admission-done\n\n"
