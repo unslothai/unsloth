@@ -6,6 +6,7 @@ import test from "node:test";
 
 // The indicator .tsx pulls in the router, motion and hugeicons, so it cannot be
 // imported here. The status to row mapping lives in a plain module, driven directly.
+import { modelIdsMatch } from "../src/features/hub/lib/model-identity.ts";
 import {
   type LoadedModelEntry,
   describeDiffusionStatus,
@@ -14,6 +15,7 @@ import {
   describeVideoStatus,
   mergeLoadedModels,
   shortModelLabel,
+  verifyResident,
 } from "../src/features/loaded-models/loaded-models-sources.ts";
 
 // Only the fields the mapping reads; the real responses carry dozens more.
@@ -179,6 +181,47 @@ test("one runtime naming the same model twice is still one row", () => {
     },
   ];
   assert.equal(mergeLoadedModels([duplicated, duplicated]).length, 1);
+});
+
+// /images/unload, /video/unload and the STT unload carry no model id, so a row
+// up to one poll old must be checked against the runtime before either fires.
+test("a runtime holding the row's model is safe to unload", () => {
+  assert.equal(
+    verifyResident("unsloth/FLUX.1-dev", "unsloth/FLUX.1-dev", modelIdsMatch),
+    "match",
+  );
+});
+
+test("a runtime holding something else must not be unloaded", () => {
+  assert.equal(
+    verifyResident("unsloth/FLUX.1-dev", "unsloth/Qwen-Image", modelIdsMatch),
+    "replaced",
+  );
+});
+
+test("an idle runtime is already free, so there is nothing to unload", () => {
+  assert.equal(
+    verifyResident("unsloth/FLUX.1-dev", null, modelIdsMatch),
+    "gone",
+  );
+  assert.equal(
+    verifyResident("unsloth/FLUX.1-dev", undefined, modelIdsMatch),
+    "gone",
+  );
+});
+
+// These runtimes report repo_id / loaded_model, the same fields the rows were
+// built from, so matching is exact bar the tolerance modelIdsMatch already has.
+// A spurious "replaced" would refuse a legitimate eject, so pin that too.
+test("a trailing separator or casing difference is not a replacement", () => {
+  assert.equal(
+    verifyResident("/models/flux", "/models/flux/", modelIdsMatch),
+    "match",
+  );
+  assert.equal(
+    verifyResident("unsloth/FLUX.1-dev", "unsloth/flux.1-dev", modelIdsMatch),
+    "match",
+  );
 });
 
 test("a local load shows its model folder rather than leading directories", () => {

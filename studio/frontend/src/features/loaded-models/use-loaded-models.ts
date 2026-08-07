@@ -82,10 +82,16 @@ export function useLoadedModels(enabled: boolean): UseLoadedModels {
       setEjecting((prev) => new Set(prev).add(entry.id));
       const label = shortModelLabel(entry.name);
       try {
-        const stillResident = await ejectLoadedModel(entry);
-        if (stillResident) {
+        const outcome = await ejectLoadedModel(entry);
+        if (outcome.status === "stillResident") {
           toast.warning(
-            `"${shortModelLabel(stillResident)}" was loaded while ejecting, so it is still using memory. Eject again to release it.`,
+            `"${shortModelLabel(outcome.model)}" was loaded while ejecting, so it is still using memory. Eject again to release it.`,
+          );
+        } else if (outcome.status === "replaced") {
+          // Nothing was unloaded: this runtime holds something else now, and
+          // releasing that is not what the click asked for.
+          toast.info(
+            `${label} is no longer loaded. "${shortModelLabel(outcome.resident)}" took its place and was left alone.`,
           );
         } else {
           toast.success(`Ejected ${label}`);

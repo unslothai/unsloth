@@ -31,6 +31,8 @@ import {
   describeSttStatus,
   describeVideoStatus,
   mergeLoadedModels,
+  sttEngineStatus,
+  verifyResident,
 } from "./loaded-models-sources";
 
 async function readSttStatus(
@@ -112,36 +114,104 @@ function clearChatSelectionFor(aliases: string[]): void {
   }
 }
 
-/** Release one row. Resolves to a model still resident, or null once freed. */
+/**
+ * How an eject ended. `replaced` means the row named a model the runtime no
+ * longer holds, so nothing was unloaded: these endpoints carry no model id and
+ * would have released whatever took its place.
+ */
+export type EjectOutcome =
+  | { status: "ejected" }
+  | { status: "replaced"; resident: string }
+  | { status: "stillResident"; model: string };
+
+/**
+ * The three identity-less unloads, guarded by a fresh read of their runtime.
+ * `unload` resolves to a model still resident afterwards, or null once free.
+ *
+ * This narrows the window to the round trip rather than closing it, since only
+ * a backend that took the model id could do that, but the row itself is up to a
+ * whole poll old and that is the part worth not trusting.
+ */
+async function ejectRuntimeRow(
+  entry: LoadedModelEntry,
+  resident: string | null,
+  unload: () => Promise<string | null>,
+): Promise<EjectOutcome> {
+  const verdict = verifyResident(entry.name, resident, modelIdsMatch);
+  if (verdict === "replaced" && resident) {
+    return { status: "replaced", resident };
+  }
+  // Nothing resident: the row is stale and its memory is already free.
+  if (verdict !== "match") return { status: "ejected" };
+  const stillResident = await unload();
+  return stillResident
+    ? { status: "stillResident", model: stillResident }
+    : { status: "ejected" };
+}
+
+/** Release one row, after checking the runtime still holds what the row names. */
 export async function ejectLoadedModel(
   entry: LoadedModelEntry,
-): Promise<string | null> {
+): Promise<EjectOutcome> {
   switch (entry.source) {
-    case "chat":
-      return ejectChatRow(entry);
+    case "chat": {
+      // /unload matches on the model id, so this one needs no pre-check.
+      const stillResident = await ejectChatRow(entry);
+      return stillResident
+        ? { status: "stillResident", model: stillResident }
+        : { status: "ejected" };
+    }
     case "image": {
-      const status = await unloadDiffusionModel();
-      // The page owning this runtime keeps its own copy of the status.
-      notifyModelEjected("image");
-      return status.loaded ? (status.repo_id ?? entry.name) : null;
+      const before = await getDiffusionStatus();
+      return ejectRuntimeRow(
+        entry,
+        before.loaded ? before.repo_id : null,
+        async () => {
+          const after = await unloadDiffusionModel();
+          // The page owning this runtime keeps its own copy of the status.
+          notifyModelEjected("image");
+          return after.loaded ? (after.repo_id ?? entry.name) : null;
+        },
+      );
     }
     case "video": {
-      const status = await unloadVideoModel();
-      notifyModelEjected("video");
-      return status.loaded ? (status.repo_id ?? entry.name) : null;
+      const before = await getVideoStatus();
+      return ejectRuntimeRow(
+        entry,
+        before.loaded ? before.repo_id : null,
+        async () => {
+          const after = await unloadVideoModel();
+          notifyModelEjected("video");
+          return after.loaded ? (after.repo_id ?? entry.name) : null;
+        },
+      );
     }
     case "stt": {
-      const query = entry.sttEngine
-        ? `?${new URLSearchParams({ engine: entry.sttEngine }).toString()}`
-        : "";
-      const response = await authFetch(
-        `/api/inference/audio/stt/unload${query}`,
-        { method: "POST" },
-      );
-      if (!response.ok) {
-        throw new Error(await readErrorDetail(response));
+      const engine = entry.sttEngine;
+      if (!engine) throw new Error("This row names no dictation engine.");
+      // Dictation loads on demand and releases when idle, so the engine's
+      // resident model can change with no user action at all.
+      const before = await readSttStatus();
+      // Unreadable status: say so rather than unload blind or claim success.
+      if (!before) {
+        throw new Error(
+          "Could not read dictation status, so nothing was ejected.",
+        );
       }
-      return null;
+      const resident = sttEngineStatus(before, engine);
+      return ejectRuntimeRow(
+        entry,
+        resident?.loaded_model ?? null,
+        async () => {
+          const query = new URLSearchParams({ engine }).toString();
+          const response = await authFetch(
+            `/api/inference/audio/stt/unload?${query}`,
+            { method: "POST" },
+          );
+          if (!response.ok) throw new Error(await readErrorDetail(response));
+          return null;
+        },
+      );
     }
   }
 }

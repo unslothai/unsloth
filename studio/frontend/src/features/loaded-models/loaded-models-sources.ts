@@ -159,7 +159,7 @@ export function describeVideoStatus(
 
 /** A server predating the engine split reports the resident Transformers model
  *  only at the top level, so fall back to it rather than showing no row. */
-function sttEngineStatus(
+export function sttEngineStatus(
   status: SttStatusResponse,
   engine: SttEngine,
 ): SttEngineStatus | null {
@@ -189,6 +189,23 @@ export function describeSttStatus(
     });
   }
   return entries;
+}
+
+/**
+ * What a row's model turned out to be when the eject re-read its runtime.
+ * "replaced" is the one that matters: /images/unload, /video/unload and the STT
+ * unload carry no model id and release whatever the runtime holds, so a row up
+ * to one poll old must not be trusted to name it.
+ */
+export type ResidentVerdict = "match" | "gone" | "replaced";
+
+export function verifyResident(
+  entryName: string,
+  resident: string | null | undefined,
+  matches: (left: string, right: string) => boolean,
+): ResidentVerdict {
+  if (!resident) return "gone";
+  return matches(entryName, resident) ? "match" : "replaced";
 }
 
 /** One list in a fixed group order, so rows never jump between polls. Ids are
