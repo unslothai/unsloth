@@ -2871,9 +2871,13 @@ const Composer: FC<{
   );
 
   // Fire the parked send once indexing clears, unless the user emptied the
-  // composer while waiting (then drop it quietly).
+  // composer while waiting (then drop it quietly). An image dropped after the
+  // send was parked has to land first, or indexing finishing early sends the
+  // text without it and the image attaches to the next draft.
   useEffect(() => {
-    if (!pendingSend || indexingActive) return;
+    if (!pendingSend || indexingActive || hasMaterializingImageAttachments) {
+      return;
+    }
     const { text, attachments } = aui.composer().getState();
     pendingSendRef.current = false;
     setPendingSend(false);
@@ -2885,6 +2889,7 @@ const Composer: FC<{
   }, [
     pendingSend,
     indexingActive,
+    hasMaterializingImageAttachments,
     aui,
     clearStoredDraft,
     dismissWaitToast,
