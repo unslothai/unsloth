@@ -188,13 +188,25 @@ jobs:
           set -euo pipefail
           # Deleting without --cleanup-tag leaves a tag this guard rejects.
           retry_hint="To retry a failed publish of this version, remove the release and its tag together: gh release delete ${DESKTOP_RELEASE_TAG} --cleanup-tag"
-          if gh api "repos/${GH_REPO}/git/ref/tags/${DESKTOP_RELEASE_TAG}" >/dev/null 2>&1; then
+          resource_exists() {
+            local response
+            if response="$(gh api --include "$1" 2>&1)"; then
+              return 0
+            fi
+            if [[ "$response" =~ ^HTTP/[0-9.]+\ 404\  ]]; then
+              return 1
+            fi
+            echo "Could not verify that ${2} is absent; refusing to publish." >&2
+            printf '%s\n' "$response" >&2
+            exit 1
+          }
+          if resource_exists "repos/${GH_REPO}/git/ref/tags/${DESKTOP_RELEASE_TAG}" "tag ${DESKTOP_RELEASE_TAG}"; then
             echo "Tag ${DESKTOP_RELEASE_TAG} already exists. Release a new studio_version instead of rebuilding a shipped one." >&2
             echo "$retry_hint" >&2
             exit 1
           fi
           # A read token cannot see drafts, so publish-release repeats this check.
-          if gh release view "$DESKTOP_RELEASE_TAG" >/dev/null 2>&1; then
+          if resource_exists "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}" "release ${DESKTOP_RELEASE_TAG}"; then
             echo "Release ${DESKTOP_RELEASE_TAG} already exists. Release a new studio_version instead of rebuilding a shipped one." >&2
             echo "$retry_hint" >&2
             exit 1
@@ -1390,8 +1402,20 @@ jobs:
         run: |
           set -euo pipefail
           # Repeat with write access so drafts are visible before creation.
-          if gh api "repos/${GH_REPO}/git/ref/tags/${DESKTOP_RELEASE_TAG}" >/dev/null 2>&1 \
-            || gh release view "$DESKTOP_RELEASE_TAG" >/dev/null 2>&1; then
+          resource_exists() {
+            local response
+            if response="$(gh api --include "$1" 2>&1)"; then
+              return 0
+            fi
+            if [[ "$response" =~ ^HTTP/[0-9.]+\ 404\  ]]; then
+              return 1
+            fi
+            echo "Could not verify that ${2} is absent; refusing to publish." >&2
+            printf '%s\n' "$response" >&2
+            exit 1
+          }
+          if resource_exists "repos/${GH_REPO}/git/ref/tags/${DESKTOP_RELEASE_TAG}" "tag ${DESKTOP_RELEASE_TAG}" \
+            || resource_exists "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}" "release ${DESKTOP_RELEASE_TAG}"; then
             echo "Refusing to republish ${DESKTOP_RELEASE_TAG}: a release or tag for this version already exists." >&2
             echo "Release a new studio_version, or, to retry this one, remove the release and its tag together:" >&2
             echo "  gh release delete ${DESKTOP_RELEASE_TAG} --cleanup-tag" >&2
@@ -1403,55 +1427,6 @@ jobs:
           notes_file="$RUNNER_TEMP/desktop-release-notes.md"
           printf '%s\n' "$DESKTOP_RELEASE_NOTES" > "$notes_file"
 
-          # Record the source and asset digests in the GitHub release body.
-          body_file="$RUNNER_TEMP/desktop-release-body.md"
-          {
-            cat "$notes_file"
-            printf '\n### Build provenance\n\n'
-            printf 'Source commit: %s\n\n' "$GITHUB_SHA"
-            printf 'Asset SHA-256:\n\n```\n'
-            (
-              cd "$RUNNER_TEMP/desktop-release-assets"
-              for asset in *; do
-                [[ "$asset" == *.sig ]] || sha256sum -- "$asset"
-              done
-            )
-            printf '```\n'
-          } > "$body_file"
-          cat "$body_file"
-
-          release_flags=(
-            --title "Unsloth ${STUDIO_VERSION}"
-            --notes-file "$body_file"
-            --target "$GITHUB_SHA"
-          )
-          if [ "$RELEASE_DRAFT" = "true" ]; then
-            release_flags+=(--draft)
-          fi
-          if [ "$DESKTOP_PRERELEASE" = "true" ]; then
-            release_flags+=(--prerelease)
-          fi
-          gh release create "$DESKTOP_RELEASE_TAG" "${release_flags[@]}"
-
-      - name: Publish versioned release assets
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          release_assets=()
-          for asset in "$RUNNER_TEMP/desktop-release-assets"/*; do
-            [[ "$asset" == *.sig ]] || release_assets+=("$asset")
-          done
-          # Preserve the published digests by refusing existing asset names.
-          gh release upload "$DESKTOP_RELEASE_TAG" "${release_assets[@]}"
-
-      - name: Generate and publish versioned updater metadata
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
           python3 <<'PY'
           import datetime
           import json
@@ -1507,6 +1482,65 @@ jobs:
           output = pathlib.Path(os.environ['RUNNER_TEMP'], 'latest.json')
           output.write_text(json.dumps(metadata, indent=2) + '\n')
           PY
+
+          # Record the source and asset digests in the GitHub release body.
+          body_file="$RUNNER_TEMP/desktop-release-body.md"
+          {
+            cat "$notes_file"
+            printf '\n### Build provenance\n\n'
+            printf 'Source commit: %s\n\n' "$GITHUB_SHA"
+            printf 'Asset SHA-256:\n\n```\n'
+            (
+              cd "$RUNNER_TEMP/desktop-release-assets"
+              for asset in *; do
+                [[ "$asset" == *.sig ]] || sha256sum -- "$asset"
+              done
+            )
+            (
+              cd "$RUNNER_TEMP"
+              sha256sum -- latest.json
+            )
+            printf '```\n'
+          } > "$body_file"
+          cat "$body_file"
+
+          # Atomically reserve the tag at this source commit. A release create
+          # would otherwise reuse a tag inserted after the absence check.
+          gh api --method POST "repos/${GH_REPO}/git/refs" \
+            -f "ref=refs/tags/${DESKTOP_RELEASE_TAG}" \
+            -f "sha=${GITHUB_SHA}"
+
+          release_flags=(
+            --title "Unsloth ${STUDIO_VERSION}"
+            --notes-file "$body_file"
+          )
+          if [ "$RELEASE_DRAFT" = "true" ]; then
+            release_flags+=(--draft)
+          fi
+          if [ "$DESKTOP_PRERELEASE" = "true" ]; then
+            release_flags+=(--prerelease)
+          fi
+          gh release create "$DESKTOP_RELEASE_TAG" "${release_flags[@]}"
+
+      - name: Publish versioned release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_assets=()
+          for asset in "$RUNNER_TEMP/desktop-release-assets"/*; do
+            [[ "$asset" == *.sig ]] || release_assets+=("$asset")
+          done
+          # Preserve the published digests by refusing existing asset names.
+          gh release upload "$DESKTOP_RELEASE_TAG" "${release_assets[@]}"
+
+      - name: Generate and publish versioned updater metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
           gh release upload "$DESKTOP_RELEASE_TAG" "$RUNNER_TEMP/latest.json"
 
       - name: Download versioned updater metadata

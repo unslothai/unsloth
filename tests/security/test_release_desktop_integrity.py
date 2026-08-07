@@ -43,13 +43,16 @@ def _write_fake_gh(path: Path):
 set -eu
 printf 'gh %s\\n' "$*" >> "$COMMAND_LOG"
 if [ "$1" = "api" ]; then
-  case "$2" in
-    */git/ref/tags/*) exit "$TAG_EXISTS_STATUS" ;;
+  endpoint="$2"
+  if [ "$endpoint" = "--include" ]; then endpoint="$3"; fi
+  case "$endpoint" in
+    */git/ref/tags/*) status="$TAG_HTTP_STATUS" ;;
+    */releases/tags/*) status="$RELEASE_HTTP_STATUS" ;;
+    *) exit 0 ;;
   esac
-  exit 0
-fi
-if [ "$1 $2" = "release view" ]; then
-  exit "$RELEASE_EXISTS_STATUS"
+  printf 'HTTP/2.0 %s Test Response\n' "$status"
+  if [ "$status" = "200" ]; then exit 0; fi
+  exit 1
 fi
 exit 0
 """,
@@ -64,8 +67,8 @@ def _run_step(
     name: str,
     tmp_path: Path,
     *,
-    tag_exists: bool = False,
-    release_exists: bool = False,
+    tag_http_status: int = 404,
+    release_http_status: int = 404,
     extra_env: dict[str, str] | None = None,
 ):
     fake_bin = tmp_path / "bin"
@@ -82,9 +85,9 @@ def _run_step(
             "GH_REPO": "unslothai/unsloth",
             "GH_TOKEN": "masked-token",
             "PATH": f"{fake_bin}:{env['PATH']}",
-            "RELEASE_EXISTS_STATUS": "0" if release_exists else "1",
+            "RELEASE_HTTP_STATUS": str(release_http_status),
             "RUNNER_TEMP": str(tmp_path),
-            "TAG_EXISTS_STATUS": "0" if tag_exists else "1",
+            "TAG_HTTP_STATUS": str(tag_http_status),
         }
     )
     env.update(extra_env or {})
@@ -106,9 +109,13 @@ def _stage_assets(tmp_path: Path) -> dict[str, str]:
     digests = {}
     for name, payload in (
         ("Unsloth-Desktop-0_1_50_beta-MacOS.dmg", b"disk image"),
-        ("Unsloth-Desktop-0_1_50_beta-Windows.exe", b"installer"),
         ("Unsloth-Desktop-0_1_50_beta-Linux.deb", b"package"),
-        ("Unsloth-Desktop-0_1_50_beta-MacOS.dmg.sig", b"signature"),
+        ("Unsloth-Desktop-0_1_50_beta-ARM64.app.tar.gz", b"mac updater"),
+        ("Unsloth-Desktop-0_1_50_beta-ARM64.app.tar.gz.sig", b"mac signature"),
+        ("Unsloth-Desktop-0_1_50_beta-Linux.AppImage", b"linux updater"),
+        ("Unsloth-Desktop-0_1_50_beta-Linux.AppImage.sig", b"linux signature"),
+        ("Unsloth-Desktop-0_1_50_beta-Windows.exe", b"installer"),
+        ("Unsloth-Desktop-0_1_50_beta-Windows.exe.sig", b"windows signature"),
     ):
         (asset_dir / name).write_bytes(payload)
         if not name.endswith(".sig"):
@@ -121,7 +128,10 @@ def _run_create_release(workflow, tmp_path: Path, **kwargs):
     env = {
         "DESKTOP_PRERELEASE": "true",
         "DESKTOP_RELEASE_NOTES": workflow["env"]["DESKTOP_RELEASE_NOTES"],
+        "APP_VERSION": "0.1.50",
         "GITHUB_SHA": SOURCE_SHA,
+        "GITHUB_REPOSITORY": "unslothai/unsloth",
+        "PYPI_VERSION": "2026.8.7",
         "RELEASE_DRAFT": "true",
         "STUDIO_VERSION": "v0.1.50-beta",
     }
@@ -150,7 +160,11 @@ def test_a_used_version_fails_the_guard_before_any_build_work(tmp_path):
     ) < _step_index(workflow, "prepare-version", "Verify PyPI package and Unsloth stamp")
     assert workflow["jobs"]["build"]["needs"] == "prepare-version"
 
-    for case, expected in (({"tag_exists": True}, 1), ({"release_exists": True}, 1), ({}, 0)):
+    for case, expected in (
+        ({"tag_http_status": 200}, 1),
+        ({"release_http_status": 200}, 1),
+        ({}, 0),
+    ):
         case_dir = tmp_path / ("-".join(case) or "unused-version")
         case_dir.mkdir()
         result, _ = _run_step(
@@ -167,10 +181,23 @@ def test_a_used_version_fails_the_guard_before_any_build_work(tmp_path):
             assert f"gh release delete {RELEASE_TAG} --cleanup-tag" in result.stderr
 
 
+def test_a_failed_guard_probe_fails_closed_before_any_build_work(tmp_path):
+    workflow = _workflow()
+    result, _ = _run_step(
+        workflow,
+        "prepare-version",
+        "Guard against republishing an existing version",
+        tmp_path,
+        tag_http_status = 500,
+    )
+    assert result.returncode == 1
+    assert "Could not verify that tag" in result.stderr
+
+
 def test_publish_refuses_to_reuse_an_existing_release(tmp_path):
     workflow = _workflow()
     # The write-scoped publish job can see drafts that prepare-version cannot.
-    for case in ({"tag_exists": True}, {"release_exists": True}):
+    for case in ({"tag_http_status": 200}, {"release_http_status": 200}):
         case_dir = tmp_path / "-".join(case)
         case_dir.mkdir()
         result, commands = _run_create_release(workflow, case_dir, **case)
@@ -178,6 +205,14 @@ def test_publish_refuses_to_reuse_an_existing_release(tmp_path):
         assert "Refusing to republish" in result.stderr
         assert f"gh release delete {RELEASE_TAG} --cleanup-tag" in result.stderr
         assert not [line for line in commands if line.startswith("gh release create")]
+
+
+def test_publish_fails_closed_when_a_guard_probe_errors(tmp_path):
+    workflow = _workflow()
+    result, commands = _run_create_release(workflow, tmp_path, tag_http_status = 500)
+    assert result.returncode == 1
+    assert "Could not verify that tag" in result.stderr
+    assert not [line for line in commands if line.startswith("gh release create")]
 
 
 def test_release_body_records_provenance_the_updater_notes_do_not_carry(tmp_path):
@@ -188,7 +223,8 @@ def test_release_body_records_provenance_the_updater_notes_do_not_carry(tmp_path
 
     create = next(line for line in commands if line.startswith("gh release create"))
     assert RELEASE_TAG in create
-    assert f"--target {SOURCE_SHA}" in create
+    assert "--target" not in create
+    assert any("git/refs" in line and f"sha={SOURCE_SHA}" in line for line in commands)
 
     body_file = tmp_path / "desktop-release-body.md"
     assert f"--notes-file {body_file}" in create
@@ -196,16 +232,18 @@ def test_release_body_records_provenance_the_updater_notes_do_not_carry(tmp_path
     assert SOURCE_SHA in body
     for name, digest in digests.items():
         assert f"{digest}  {name}" in body
+    latest = tmp_path / "latest.json"
+    assert latest.is_file()
+    assert f"{hashlib.sha256(latest.read_bytes()).hexdigest()}  latest.json" in body
     assert ".sig" not in body
 
     # Keep digests out of updater notes.
     notes = (tmp_path / "desktop-release-notes.md").read_text(encoding = "utf-8")
     assert "Build provenance" not in notes
     assert "Desktop app for Unsloth." in notes
-    metadata_step = _step(
-        workflow, "publish-release", "Generate and publish versioned updater metadata"
-    )
-    assert "'desktop-release-notes.md'" in metadata_step["run"]
+    create_step = _step(workflow, "publish-release", "Create versioned release")
+    assert "'desktop-release-notes.md'" in create_step["run"]
+    assert "latest.json" in create_step["run"]
 
 
 def test_versioned_uploads_never_clobber_but_the_channel_pointer_does():
