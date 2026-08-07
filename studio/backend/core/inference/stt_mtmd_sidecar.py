@@ -212,8 +212,40 @@ def _cached_model_paths(model_id: str) -> Optional[tuple[str, str]]:
     return model, mmproj
 
 
+# The panel polls every model every 750ms, and each answer is two hf_hub_download()
+# calls that stat the snapshot even local-only, so memoise the boolean briefly.
+_DOWNLOADED_PROBE_TTL_SECONDS = 2.0
+_downloaded_probe_lock = threading.Lock()
+_downloaded_probe: dict[str, tuple[float, bool]] = {}
+# Bumped on every invalidation so an in-flight probe cannot overwrite a cleared entry.
+_downloaded_probe_generation = 0
+
+
+def _forget_downloaded_probe(model_id: Optional[str] = None) -> None:
+    """Drop memoised answers, for one model or all of them."""
+    global _downloaded_probe_generation
+    with _downloaded_probe_lock:
+        _downloaded_probe_generation += 1
+        if model_id is None:
+            _downloaded_probe.clear()
+        else:
+            _downloaded_probe.pop(model_id, None)
+
+
 def is_model_downloaded(model_id: str) -> bool:
-    return model_id in MTMD_STT_MODELS and _cached_model_paths(model_id) is not None
+    if model_id not in MTMD_STT_MODELS:
+        return False
+    with _downloaded_probe_lock:
+        cached = _downloaded_probe.get(model_id)
+        if cached is not None and time.monotonic() - cached[0] < _DOWNLOADED_PROBE_TTL_SECONDS:
+            return cached[1]
+        generation = _downloaded_probe_generation
+    downloaded = _cached_model_paths(model_id) is not None
+    with _downloaded_probe_lock:
+        # Timestamp now, not before the probe: a slow cache would store a near-expired entry.
+        if generation == _downloaded_probe_generation:
+            _downloaded_probe[model_id] = (time.monotonic(), downloaded)
+    return downloaded
 
 
 class _MtmdDownloadState:
@@ -231,14 +263,17 @@ class _MtmdDownloadState:
     def status(self) -> dict:
         with self._lock:
             downloading = self._thread is not None and self._thread.is_alive()
-            return {
+            model_id = self._model_id
+            snapshot = {
                 "downloading": downloading,
-                "model": self._model_id if downloading else None,
+                "model": model_id if downloading else None,
                 "error": self._error,
                 "cancelled": self._cancelled,
                 "bytes_total": self._total_bytes if downloading else None,
-                "bytes_done": self._cache_bytes() if downloading else None,
             }
+        # Outside the lock: _cache_bytes() walks the cache blobs, and a cancel must not queue.
+        snapshot["bytes_done"] = self._cache_bytes(model_id) if downloading else None
+        return snapshot
 
     def cancel(self) -> bool:
         """Stop an in-flight download. False when none was running."""
@@ -251,12 +286,12 @@ class _MtmdDownloadState:
             process.terminate()
         return True
 
-    def _cache_bytes(self) -> Optional[int]:
-        """Best-effort progress: bytes in this repo's cache blobs."""
+    def _cache_bytes(self, model_id: Optional[str] = None) -> Optional[int]:
+        """Best-effort progress: cache blob bytes. model_id lets status() call it unlocked."""
         try:
             from core.inference.stt_sidecar import _repo_cache_dir
 
-            model_id = self._model_id
+            model_id = model_id or self._model_id
             if not model_id:
                 return None
             blobs = _repo_cache_dir(MTMD_STT_MODELS[model_id].repo) / "blobs"
@@ -342,6 +377,9 @@ class _MtmdDownloadState:
             logger.warning("mtmd STT download failed for %s: %s", model_id, exc)
             with self._lock:
                 self._error = f"Download failed for '{model_id}'."
+        finally:
+            # The memo is stale however this ended; dropping it now lets the next poll settle.
+            _forget_downloaded_probe(model_id)
 
 
 _download_state = _MtmdDownloadState()
@@ -387,16 +425,20 @@ class MtmdSttSidecar:
 
     @property
     def loaded_model(self) -> Optional[str]:
-        with self._lock:
-            return self._model_id if self._process_alive() else None
+        # Lock-free: _lock is held across reaps and llama.cpp installs, but the status
+        # route reads this on the event loop. _process_alive() snapshots _process before
+        # poll(), so a concurrent unload is safe.
+        return self._model_id if self._process_alive() else None
 
     @property
     def device(self) -> Optional[str]:
+        # Derived, not a second probe: two probes can straddle the publish and
+        # report a device with no model.
         return "llama.cpp" if self.loaded_model else None
 
     def is_loading(self) -> bool:
-        with self._lock:
-            return self._loading
+        # Bare bool read, for the same reason as loaded_model.
+        return self._loading
 
     @property
     def keep_alive_seconds(self) -> float:
@@ -431,10 +473,14 @@ class MtmdSttSidecar:
         self._cancel_idle_unload_locked()
         self._generation += 1
         process = self._process
-        self._process = None
-        self._port = None
-        self._model_id = None
-        _reap(process)
+        try:
+            # Reap before clearing: a lock-free reader mid-reap must still see the
+            # model, or training starts while the dying server still holds its VRAM.
+            _reap(process)
+        finally:
+            self._process = None
+            self._port = None
+            self._model_id = None
 
     def unload(self) -> None:
         # A startup has not assigned _process yet, so releasing alone would let
@@ -540,20 +586,31 @@ class MtmdSttSidecar:
                 if self._gpu_disabled == training or self._active_requests:
                     self._schedule_idle_unload_locked()
                     return
-            # Before the release: a 409 for a model that is not downloaded
-            # must not cost the user the server they were already using.
-            model_path, mmproj_path = self._ensure_model_downloaded(model_id)
-            # Only when there is a live server to protect: a request against a
-            # server that already died must not block recovery.
-            if self._active_requests and self._process_alive():
-                raise SttModelBusyError(
-                    "A transcription is still running on the current dictation model. "
-                    "Try again in a moment."
-                )
-            self._release_locked()
+            # Announced before the slow probe and reap: is_loading() is read lock-free,
+            # so a training start would otherwise see False and wait out the startup in
+            # unload() instead of cancelling this load.
             cancel_event = threading.Event()
             self._load_cancel_event = cancel_event
             self._loading = True
+            released = False
+            try:
+                # Before the release: a 409 for a model that is not downloaded
+                # must not cost the user the server they were already using.
+                model_path, mmproj_path = self._ensure_model_downloaded(model_id)
+                # Only when there is a live server to protect: a request against
+                # a server that already died must not block recovery.
+                if self._active_requests and self._process_alive():
+                    raise SttModelBusyError(
+                        "A transcription is still running on the current dictation model. "
+                        "Try again in a moment."
+                    )
+                self._release_locked()
+                released = True
+            finally:
+                # Nothing started, so take the announcement back; past here the startup owns it.
+                if not released:
+                    self._loading = False
+                    self._load_cancel_event = None
             # Re-read last: _release_locked() reaps the old server, which can
             # take seconds, and training admission that already passed its own
             # check cannot come back to cancel this load. Publishing _loading
@@ -648,7 +705,9 @@ class MtmdSttSidecar:
                     if response.status == 200:
                         return True
             except Exception:
-                time.sleep(0.25)
+                pass
+            # Outside the except: a non-200 2xx would otherwise spin this loop with no delay.
+            time.sleep(0.25)
         return False
 
     def transcribe(

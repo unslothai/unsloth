@@ -322,6 +322,13 @@ export const hi = {
         title: "पासवर्ड बदलें",
         description:
           "अपना वर्तमान पासवर्ड दर्ज करें और एक नया चुनें (कम से कम {minLength} अक्षर)।",
+        setTrigger: "रिमोट पासवर्ड सेट करें",
+        setTitle: "रिमोट पासवर्ड सेट करें",
+        setDescription:
+          "वह पासवर्ड चुनें जिससे रिमोट ब्राउज़र unsloth के रूप में साइन इन करते हैं (कम से कम {minLength} अक्षर)। Unsloth डेस्कटॉप ऐप स्वतः साइन इन करता रहेगा।",
+        setSubmit: "पासवर्ड सेट करें",
+        setting: "सेट हो रहा है...",
+        setDone: "पासवर्ड सेट हो गया।",
         currentPassword: "वर्तमान पासवर्ड",
         newPassword: "नया पासवर्ड",
         confirmPassword: "नए पासवर्ड की पुष्टि करें",
@@ -397,6 +404,14 @@ export const hi = {
         showLlamaUpdates: "llama.cpp अपडेट सूचनाएं",
         showLlamaUpdatesDescription:
           "नए मॉडल चलाने के लिए जब कोई नया llama.cpp बिल्ड उपलब्ध हो तो सूचित करें। यदि आप केवल ट्रेन करते हैं तो बंद कर दें।",
+      },
+      startup: {
+        sectionTitle: "स्टार्टअप",
+        launchAtLogin: "लॉगिन पर Unsloth चलाएं",
+        launchAtLoginDescription:
+          "लॉगिन करने पर Unsloth को बैकग्राउंड में शुरू करता है। इसे खोलने तक यह मेनू बार या सिस्टम ट्रे में रहता है।",
+        loadError: "लॉगिन पर चलाने की सेटिंग लोड नहीं हो सकी।",
+        saveError: "लॉगिन पर चलाने की सेटिंग अपडेट नहीं हो सकी।",
       },
       gettingStarted: "शुरुआत करें",
       startOnboarding: "ऑनबोर्डिंग शुरू करें",

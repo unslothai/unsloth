@@ -3,6 +3,7 @@
 
 """Static contracts for focused packaged-desktop reliability behavior."""
 
+import re
 from pathlib import Path
 
 
@@ -21,6 +22,10 @@ THREAD = FRONTEND / "components/assistant-ui/thread.tsx"
 THREAD_SIDEBAR = FRONTEND / "features/chat/thread-sidebar.tsx"
 SHARED_COMPOSER = FRONTEND / "features/chat/shared-composer.tsx"
 TITLEBAR = FRONTEND / "components/tauri/window-titlebar.tsx"
+SHEET = FRONTEND / "components/ui/sheet.tsx"
+RESEARCH_ACTIVITY_PANEL = FRONTEND / "features/chat/components/research-activity-panel.tsx"
+RESPONSE_DETAILS_SHEET = FRONTEND / "components/assistant-ui/message-response-details-sheet.tsx"
+DOCUMENT_PREVIEW_SHEET = FRONTEND / "features/rag/components/document-preview-sheet.tsx"
 NATIVE_DIALOGS = REPO / "studio/src-tauri/src/native_file_dialogs.rs"
 NATIVE_CLIPBOARD = REPO / "studio/src-tauri/src/native_clipboard.rs"
 TAURI_MAIN = REPO / "studio/src-tauri/src/main.rs"
@@ -37,6 +42,10 @@ APP_PROVIDER = FRONTEND / "app/provider.tsx"
 ROOT_ROUTE = FRONTEND / "app/routes/__root.tsx"
 IMAGES_PAGE = FRONTEND / "features/images/images-page.tsx"
 VIDEO_PAGE = FRONTEND / "features/video/video-page.tsx"
+
+REMOTE_ACCESS_SECTION = FRONTEND / "features/settings/components/remote-access-section.tsx"
+PASSWORD_DIALOG = FRONTEND / "features/settings/components/change-password-dialog.tsx"
+GENERAL_TAB = FRONTEND / "features/settings/tabs/general-tab.tsx"
 
 CLIPBOARD_FILES = FRONTEND / "features/chat/utils/clipboard-files.ts"
 TAURI_CAPABILITIES = REPO / "studio/src-tauri/capabilities/default.json"
@@ -311,6 +320,37 @@ def test_mac_dock_reopens_hidden_main_window():
     assert "show_main_window(app)" in reopen_handler
 
 
+def test_desktop_manages_the_remote_password_through_the_account_dialog():
+    section = REMOTE_ACCESS_SECTION.read_text(encoding = "utf-8")
+    dialog = PASSWORD_DIALOG.read_text(encoding = "utf-8")
+
+    row = section.split("function RemotePasswordRow", 1)[1].split(
+        "export function RemoteAccessSection", 1
+    )[0]
+    assert "if (!(isTauri && status)) {" in row
+    assert "initial={status.passwordPending}" in row
+    assert "<RemotePasswordRow status={status} onDone={refreshStatus} />" in section
+    assert "{isTauri ? null : (" in GENERAL_TAB.read_text(encoding = "utf-8")
+    # A password change rotates credentials outside the polling requests.
+    refresh = section.split("const refreshStatus = useCallback(", 1)[1].split("}, []);", 1)[0]
+    assert "mutationEpoch.current += 1;" in refresh
+    assert "setPollRevision(" in refresh
+    # Initial mode sends no current password; the web flow it serves keeps it.
+    body = dialog.split("function changePasswordBody", 1)[1].split("function dialogCopy", 1)[0]
+    assert '? [["new_password", nextPassword]]' in body
+    assert '["current_password", currentPassword],' in body
+    post = dialog.split("function postChangePassword", 1)[1].split(
+        "async function requestPasswordChange", 1
+    )[0]
+    assert '? "/api/auth/desktop-initial-password"' in post
+    assert ': "/api/auth/change-password",' in post
+    assert "{initial ? null : (" in dialog
+    assert "if (!initial && currentPassword.length < MIN_PASSWORD_LENGTH)" in dialog
+    submitted = dialog.split("async function submit", 1)[1].split("\n  }", 1)[0]
+    assert "storeAuthTokens(accessToken, refreshToken)" in submitted
+    assert "onDone?.()" in submitted
+
+
 def test_desktop_startup_waits_for_auth_without_intermediate_handoff():
     source = APP_PROVIDER.read_text(encoding = "utf-8")
 
@@ -328,28 +368,40 @@ def test_full_app_layout_uses_its_own_initialized_marker():
 
     assert 'invoke<boolean>("has_initialized_app_window_layout")' in source
     setup_layout = source.split("async function showSetupWindow", 1)[1].split(
-        "async function enforceMinimumWindowSize", 1
+        "async function enforceWindowSizeBounds", 1
     )[0]
     reset_call = 'invoke("reset_app_window_layout_initialized")'
     assert reset_call in setup_layout
-    assert setup_layout.index(reset_call) < setup_layout.index("win.setSize")
+    assert setup_layout.index(reset_call) < setup_layout.index("placeWindow(")
     assert 'invoke("mark_app_window_layout_initialized")' in source
     assert "hasInitializedAppLayout && hasSavedState" in source
 
 
 def test_first_app_layout_survives_a_stale_setup_window_size():
     source = APP_PROVIDER.read_text(encoding = "utf-8")
-    minimum_helper = source.split("async function enforceMinimumWindowSize", 1)[1].split(
+    bounds_helper = source.split("async function enforceWindowSizeBounds", 1)[1].split(
         "async function applyAppWindowLayout", 1
     )[0]
     app_layout = source.split("async function applyAppWindowLayout", 1)[1].split(
         "async function showWindowFallback", 1
     )[0]
 
-    assert "requestedSize.width" in minimum_helper
-    assert "requestedSize.height" in minimum_helper
-    assert "requestedSize = { width: finalW, height: finalH };" in app_layout
-    assert "enforceMinimumWindowSize(win, LogicalSize, isCurrent, requestedSize)" in app_layout
+    assert "requestedSize: LogicalWindowSize = bounds.minimum" in bounds_helper
+    assert "constrainWindowSize(currentSize, requestedSize, bounds)" in bounds_helper
+    assert "const cssSafeLogicalWidth = measured.monitor" in app_layout
+    first_size_call = app_layout.split("requestedSize = calculateFirstAppWindowSize(", 1)[1].split(
+        ");", 1
+    )[0]
+    assert "measured.bounds," in first_size_call
+    assert "cssSafeLogicalWidth," in first_size_call
+    assert "finalizeAppWindowLayout({" in app_layout
+    assert "enforceWindowSizeBounds(" in app_layout
+    finalize_call = app_layout.split("finalizeAppWindowLayout({", 1)[1].split("});", 1)[0]
+    assert "measured," in finalize_call
+    # Limit the check to this call's arguments.
+    bounds_call = app_layout.split("enforceWindowSizeBounds(", 1)[1].split(");", 1)[0]
+    assert "bounds," in bounds_call
+    assert "requestedSize," in bounds_call
 
 
 def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
@@ -378,7 +430,12 @@ def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
     sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
     header = sidebar.split("<SidebarHeader", 1)[1].split("</SidebarHeader>", 1)[0]
 
-    assert 'import { ArrowLeft, ArrowRight } from "lucide-react";' in titlebar
+    # The names, not the whole import list: #8025 added Minus/Square/X to the
+    # same line for the window controls and this went red on every open PR.
+    lucide = re.search(r"import \{([^}]*)\} from \"lucide-react\";", titlebar)
+    assert lucide is not None, "titlebar no longer imports from lucide-react"
+    icons = {name.strip() for name in lucide.group(1).split(",")}
+    assert {"ArrowLeft", "ArrowRight"} <= icons, icons
     assert "<ArrowLeft" in titlebar
     assert "<ArrowRight" in titlebar
     assert "window.history.back()" in titlebar
@@ -444,6 +501,36 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
     )
     assert "aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
     assert "inert={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
+
+
+def test_fixed_sheets_start_below_the_custom_titlebar():
+    provider = APP_PROVIDER.read_text(encoding = "utf-8")
+    sheet = SHEET.read_text(encoding = "utf-8")
+
+    # Portalled sheets read the height off <html>, so the mirror has to stay.
+    assert 'set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null)' in provider
+
+    # Only viewport-fixed sheets clear the titlebar; the absolute recipe block
+    # sheet sits in its own container and keeps a plain top edge.
+    assert 'position === "fixed" ? VIEWPORT_TOP_EDGE : CONTAINED_TOP_EDGE' in sheet
+    for side in ("left", "right", "top"):
+        assert f"data-[side={side}]:top-[var(--studio-custom-titlebar-height,0px)]" in sheet
+        assert f"data-[side={side}]:top-0" in sheet
+
+    # Anchor both edges so the inset shrinks the sheet; h-full would instead
+    # push its bottom past the viewport.
+    for side in ("left", "right"):
+        assert f"data-[side={side}]:bottom-0" in sheet
+        assert f"data-[side={side}]:h-full" not in sheet
+
+    # The shared class is the only sheet offset; a local one would double up.
+    # Dialogs still read --studio-window-chrome-top (DesktopChromeVarsEffect).
+    for portalled in (
+        RESEARCH_ACTIVITY_PANEL,
+        RESPONSE_DETAILS_SHEET,
+        DOCUMENT_PREVIEW_SHEET,
+    ):
+        assert "studio-custom-titlebar-height" not in portalled.read_text(encoding = "utf-8")
 
 
 def test_visible_mac_sidebar_header_is_a_drag_region():
@@ -521,6 +608,30 @@ def test_media_pages_clear_the_custom_titlebar():
     for page in (IMAGES_PAGE, VIDEO_PAGE):
         shell = page.read_text(encoding = "utf-8").split('"diffusion-surface', 1)[1].split(">", 1)[0]
         assert "pt-[var(--studio-content-top-inset,0px)]" in shell, page.name
+
+
+def test_media_page_headers_out_stack_the_mac_drag_region():
+    """macOS insets the media pages 0px, so their 48px header overlaps the navbar's 34px drag
+    strip: the band must out-stack it yet stay click-through (controls click, gaps drag)."""
+    navbar = NAVBAR.read_text(encoding = "utf-8")
+
+    # The strip to beat: same z-40, but earlier in DOM order.
+    assert "pointer-events-none absolute inset-x-0 top-0 z-40 h-[48px]" in navbar
+    assert "data-tauri-drag-region" in navbar
+
+    for page in (IMAGES_PAGE, VIDEO_PAGE):
+        source = page.read_text(encoding = "utf-8")
+        before, marker, band = source.partition("h-[48px] shrink-0 items-start justify-between")
+        assert marker, page.name
+        opening = before.rsplit('<div className="', 1)[1]
+        for token in ("pointer-events-none", "relative", "z-40"):
+            assert token in opening, (page.name, token)
+
+        band = band.split("MediaPageLink", 1)[0]
+        groups = re.findall(r'<div className="([^"]*flex items-center gap-[^"]*)"', band)
+        assert len(groups) >= 2, (page.name, groups)
+        for group in groups:
+            assert "pointer-events-auto" in group, (page.name, group)
 
 
 def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():

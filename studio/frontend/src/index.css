@@ -967,6 +967,16 @@ html[data-chat-font] .aui-root {
 		@apply h-full;
 	}
 
+	html.tauri {
+		overflow: hidden;
+		overscroll-behavior: none;
+	}
+
+	html.tauri body,
+	html.tauri #root {
+		overflow: hidden;
+	}
+
 	body[data-scroll-locked] {
 		margin-right: 0 !important;
 	}
@@ -1653,11 +1663,53 @@ html[data-chat-font] .aui-root {
 		@apply pr-1.5;
 	}
 
-	/* Icon-only (compact) pills drop their label, so make the button a square
-	   and center the glyph; the rounded-full hover highlight then reads as a
-	   circle around the icon rather than a wide rounded rectangle. */
-	[data-pill-compact="true"] .composer-pill-btn:not([data-keep-label]) {
+	/* Collapsed (icon-only) pills. "true" collapses the whole row; "first"
+	   collapses only the leading permission pill, whose label is the widest and
+	   usually the only one that has to go for the row to share a line with the
+	   dictate/send controls. Compare keeps its label either way. */
+	[data-pill-compact="true"] .composer-pill-btn:not([data-keep-label]),
+	[data-pill-compact="first"]
+		.composer-pill-btn.composer-pill-permissions:not([data-keep-label]) {
+		/* Square button with a centered glyph, so the rounded-full hover
+		   highlight reads as a circle rather than a wide rectangle. */
 		@apply size-8 justify-center px-0;
+		/* Anchor for the tooltip standing in for the hidden label. */
+		position: relative;
+
+		& > span:not(.composer-pill-glyph) {
+			display: none;
+		}
+
+		/* Drop the dropdown caret so the icon is not squished. */
+		& .composer-pill-caret {
+			display: none;
+		}
+
+		/* Too small for the circle, so show a bare x. */
+		& .composer-pill-x {
+			@apply size-[min(calc(15px*var(--ui-font-scale,1)),calc(7.5px+7.5px*var(--ui-font-scale,1)))] bg-transparent p-0 dark:bg-transparent;
+		}
+
+		/* Hidden name comes back as a hover tooltip, like .tooltip-compact. */
+		&[data-pill-label]:hover::after {
+			content: attr(data-pill-label);
+			/* Always one nowrap line, so always a full pill. */
+			@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-black px-2.5 py-1.5 text-ui-11 font-medium leading-snug whitespace-nowrap text-white shadow-md;
+		}
+
+		/* Caret pills (permissions, RAG, MCP) open a menu on click instead of
+		   toggling off, so keep the icon and skip the X swap. No data-active
+		   requirement: the off-switch glyph rules below hide the icon on hover
+		   even for inactive pills, leaving a blank slot when collapsed. */
+		&:has(.composer-pill-caret):hover
+			.composer-pill-glyph
+			> :not(.composer-pill-x) {
+			opacity: 1;
+		}
+
+		&:has(.composer-pill-caret) .composer-pill-x {
+			display: none;
+		}
 	}
 
 	.composer-pill-btn[data-active="true"] {
@@ -1686,23 +1738,6 @@ html[data-chat-font] .aui-root {
 		background-color: color-mix(in oklab, var(--bypass) 13%, transparent);
 	}
 
-	/* With more than 4 tools on, drop pill labels to icons only to cut clutter.
-	   Compare and the bypass-permissions pill keep their labels via
-	   data-keep-label; the permission pill sits before the collapsed icons, so
-	   they line up to its right. */
-	[data-pill-compact="true"]
-		.composer-pill-btn:not([data-keep-label])
-		> span:not(.composer-pill-glyph) {
-		display: none;
-	}
-
-	/* Drop the MCP dropdown caret when collapsed so the icon is not squished. */
-	[data-pill-compact="true"]
-		.composer-pill-btn:not([data-keep-label])
-		.composer-pill-caret {
-		display: none;
-	}
-
 	/* Fixed-width icon slot so every pill's icon occupies the same space and
 	   the labels line up on an even rhythm, regardless of icon size. */
 	.composer-pill-glyph {
@@ -1713,42 +1748,6 @@ html[data-chat-font] .aui-root {
 	   filling the icon slot so every pill's X is identical and centered. */
 	.composer-pill-x {
 		@apply pointer-events-none absolute inset-0 m-auto size-[var(--ui-icon-size)] rounded-full bg-primary/15 p-[3px] opacity-0 transition-opacity dark:bg-white/[0.14];
-	}
-
-	/* Icon-only (compact) pills are too small for the circle, so show a bare x. */
-	[data-pill-compact="true"]
-		.composer-pill-btn:not([data-keep-label])
-		.composer-pill-x {
-		@apply size-[min(calc(15px*var(--ui-font-scale,1)),calc(7.5px+7.5px*var(--ui-font-scale,1)))] bg-transparent p-0 dark:bg-transparent;
-	}
-
-	/* Compact pills hide their labels, so surface the name as a hover
-	   tooltip styled like .tooltip-compact. */
-	[data-pill-compact="true"]
-		.composer-pill-btn:not([data-keep-label])[data-pill-label] {
-		position: relative;
-	}
-	[data-pill-compact="true"]
-		.composer-pill-btn:not([data-keep-label])[data-pill-label]:hover::after {
-		content: attr(data-pill-label);
-		/* Always one nowrap line, so always a full pill. */
-		@apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-50 -translate-x-1/2 rounded-full bg-black px-2.5 py-1.5 text-ui-11 font-medium leading-snug whitespace-nowrap text-white shadow-md;
-	}
-
-	/* Compact caret pills (RAG, MCP) open their menu on click instead of
-	   toggling off, so keep the icon and skip the X swap. No data-active
-	   requirement: the off-switch glyph rules below hide the icon on hover
-	   even for inactive pills, which left a blank slot in compact mode. */
-	[data-pill-compact="true"]
-		.composer-pill-btn:not([data-keep-label]):has(.composer-pill-caret):hover
-		.composer-pill-glyph
-		> :not(.composer-pill-x) {
-		opacity: 1;
-	}
-	[data-pill-compact="true"]
-		.composer-pill-btn:not([data-keep-label]):has(.composer-pill-caret)
-		.composer-pill-x {
-		display: none;
 	}
 
 	/* Hovering an active pill swaps the icon for an X (click to turn off). */
@@ -2666,42 +2665,49 @@ html[data-chat-font] .aui-root {
 	background: oklch(0.72 0 0 / 0.5);
 }
 
-/* Sidebars, settings and search: hide the scroll thumb at rest and reveal it
-   only while the area is hovered, so the rail never sits visible over content. */
-.sidebar-scroll-fade,
+/* Settings and search: hide the scroll thumb at rest and reveal it only while
+   the area is hovered, so the rail never sits visible over content. */
 .run-settings-scroll,
 .hover-scrollbar {
 	scrollbar-color: transparent transparent;
 }
 
-.sidebar-scroll-fade::-webkit-scrollbar-thumb,
 .run-settings-scroll::-webkit-scrollbar-thumb,
 .hover-scrollbar::-webkit-scrollbar-thumb {
 	background: transparent;
 }
 
-.sidebar-scroll-fade:hover,
 .run-settings-scroll:hover,
 .hover-scrollbar:hover {
 	scrollbar-color: oklch(0.5 0 0 / 0.4) transparent;
 }
 
-.sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,
 .run-settings-scroll:hover::-webkit-scrollbar-thumb,
 .hover-scrollbar:hover::-webkit-scrollbar-thumb {
 	background: oklch(0.5 0 0 / 0.4);
 }
 
-.dark .sidebar-scroll-fade:hover,
 .dark .run-settings-scroll:hover,
 .dark .hover-scrollbar:hover {
 	scrollbar-color: oklch(0.72 0 0 / 0.4) transparent;
 }
 
-.dark .sidebar-scroll-fade:hover::-webkit-scrollbar-thumb,
 .dark .run-settings-scroll:hover::-webkit-scrollbar-thumb,
 .dark .hover-scrollbar:hover::-webkit-scrollbar-thumb {
 	background: oklch(0.72 0 0 / 0.4);
+}
+
+/* Sidebar list: no scroll rail. A rail narrows the rows inside the scroller,
+   so their pills came out short of New Chat above it, by 8px on WebKit, a thin
+   rail on Chromium, nothing under macOS overlay scrollbars. The thumb was
+   already transparent at rest, and the fades still show there is more list. */
+.sidebar-scroll-fade {
+	scrollbar-width: none;
+}
+
+.sidebar-scroll-fade::-webkit-scrollbar {
+	width: 0;
+	height: 0;
 }
 
 /* Run settings: always reserve the scrollbar gutter so the header close

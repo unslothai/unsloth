@@ -14,7 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { usePlatformStore } from "@/config/env";
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { getInferenceStatus, unloadModel } from "@/features/chat/api/chat-api";
 import { resolveInferenceCheckpointId } from "@/features/chat/lib/apply-inference-status-to-store";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
@@ -22,6 +22,7 @@ import type { ApiMonitorEntry } from "@/features/chat/types/api";
 import { isExternalModelId } from "@/features/chat/external-providers";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { useSettingsDialogStore } from "@/features/settings";
+import { remoteApiOrigin } from "@/features/settings/api/remote-access-state";
 import { getApiBase, isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -520,8 +521,18 @@ export function ApiMonitorPage(): ReactElement {
     requestDetail,
   } = useApiMonitor();
   const serverUrl = usePlatformStore((s) => s.serverUrl);
+  const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const [unloading, setUnloading] = useState(false);
   const [unloadError, setUnloadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const refreshRemoteBase = () => {
+      void fetchDeviceType({ force: true });
+    };
+    refreshRemoteBase();
+    window.addEventListener("focus", refreshRemoteBase);
+    return () => window.removeEventListener("focus", refreshRemoteBase);
+  }, []);
 
   // Manual release so VRAM frees without the idle timer. /unload matches on the
   // internal id, which the monitor does not carry, so read status. unloadResident owns
@@ -642,7 +653,8 @@ export function ApiMonitorPage(): ReactElement {
   // The desktop webview's origin is tauri://, and the packaged app picks its port
   // dynamically. Same source as the Agents tab.
   const origin = typeof window === "undefined" ? "" : window.location.origin;
-  const baseUrl = `${isTauri ? (serverUrl ?? getApiBase()) : origin}/v1`;
+  const localOrigin = isTauri ? (serverUrl ?? getApiBase()) : origin;
+  const baseUrl = `${remoteApiOrigin(cloudflareUrl, localOrigin)}/v1`;
   const serverStatus = data?.status ?? "idle";
   // Older backends omit the field; only an explicit `false` means recording is off.
   const loggingDisabled = data?.logging_enabled === false;
