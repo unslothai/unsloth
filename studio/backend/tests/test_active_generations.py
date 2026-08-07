@@ -1657,9 +1657,9 @@ def test_colab_launcher_inherits_the_parallel_default():
             if kw.arg != "llama_parallel_slots":
                 continue
             value = kw.value.value if isinstance(kw.value, ast.Constant) else None
-            assert value is None or value > 1, (
-                "colab.py pins llama_parallel_slots to 1; Colab chats would serialise"
-            )
+            assert (
+                value is None or value > 1
+            ), "colab.py pins llama_parallel_slots to 1; Colab chats would serialise"
     # Whether pinned or inherited, Colab must end up with more than one slot.
     assert consts["_PARALLEL_DEFAULT_PLAIN"] > 1
 
