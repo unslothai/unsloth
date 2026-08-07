@@ -496,8 +496,7 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
     assert "translate-y-[var(--studio-titlebar-navigation-offset-y,0px)]" in TITLEBAR.read_text(
         encoding = "utf-8"
     )
-    # A small positive nudge: zero puts the row on the traffic lights, and a
-    # large one drops it out of the 48px titlebar.
+    # Zero puts the row on the traffic lights; large drops it out of the 48px bar.
     assert 0 < _provider_css_px("--studio-titlebar-navigation-offset-y") <= 8
     assert "aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
     assert "inert={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
@@ -545,10 +544,9 @@ def test_visible_mac_sidebar_header_is_a_drag_region():
 def _provider_css_px(name):
     """The px value the provider sets for a CSS custom property.
 
-    Read rather than pinned as a literal: #8102 nudged the mac titlebar by 2px
-    and reddened the whole repo, because these assertions spelled out the
-    number. What the layout actually depends on is that the row keeps its
-    shape, so that is what is asserted below.
+    Read rather than pinned: #8102 nudged the mac titlebar 2px and reddened the
+    repo because these assertions spelled the number out. The layout depends on
+    the row keeping its shape, so that is what is asserted below.
     """
     import re
 
@@ -565,8 +563,8 @@ def test_mac_chat_header_controls_share_the_titlebar_row():
     assert "shouldUseNativeMacWindowTitlebar" not in source
     assert "[--studio-content-top-inset:var(--studio-mac-titlebar-height" not in source
     assert source.count("var(--studio-mac-traffic-light-inset") == 2
-    # The chat header sits one row below the titlebar navigation, and the two
-    # move together: this gap is what keeps them on the same visual line.
+    # The header and the titlebar navigation move together; this gap is what
+    # keeps them on the same visual line.
     assert (
         _provider_css_px("--studio-chat-header-padding-top")
         - _provider_css_px("--studio-titlebar-navigation-offset-y")
