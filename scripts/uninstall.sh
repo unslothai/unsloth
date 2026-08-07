@@ -104,7 +104,8 @@ _stop_owned_sd_cpp_processes() {
 # Numeric owner of $HOME, empty if it cannot be resolved. Not always the caller: macOS
 # ships `env_keep += "HOME MAIL"`, so sudo keeps the invoking user's home while euid is 0.
 _home_uid() {
-    _hu=$(stat -c %u "$HOME" 2>/dev/null || stat -f %u "$HOME" 2>/dev/null || true)
+    # -L: both stats lstat by default, so a root-owned link to a user-owned home reads as 0.
+    _hu=$(stat -L -c %u "$HOME" 2>/dev/null || stat -L -f %u "$HOME" 2>/dev/null || true)
     case "$_hu" in ''|*[!0-9]*) _hu=$(id -u 2>/dev/null || true) ;; esac
     case "$_hu" in *[!0-9]*) _hu= ;; esac
     printf '%s\n' "$_hu"
@@ -190,7 +191,13 @@ $_roots_from_conf"
 _remove_path() {
     _p="$1"
     if [ -e "$_p" ] || [ -L "$_p" ]; then
-        rm -rf "$_p" 2>/dev/null && echo "  removed: $_p" || echo "  could not remove: $_p" >&2
+        if rm -rf "$_p" 2>/dev/null; then
+            echo "  removed: $_p"
+        else
+            echo "  could not remove: $_p" >&2
+            # Read by the closing summary, which must not promise the data is gone.
+            _remove_failed=1
+        fi
     fi
 }
 
@@ -609,8 +616,14 @@ _unsloth_uninstall_main() {
 
     echo ""
     echo "Unsloth Studio uninstalled."
-    echo "Note: this also removed the app's WebView data, so the signed-in session,"
-    echo "      saved provider API keys and local chat history are gone."
+    if [ "${_remove_failed:-0}" = "1" ]; then
+        echo "Note: some paths could not be removed (see 'could not remove:' above), so the"
+        echo "      signed-in session, saved provider API keys and local chat history may"
+        echo "      still be on disk. Remove those paths by hand to clear them."
+    else
+        echo "Note: this also removed the app's WebView data, so the signed-in session,"
+        echo "      saved provider API keys and local chat history are gone."
+    fi
     echo "Note: Hugging Face model cache at ~/.cache/huggingface was left in place."
     echo "Remove it manually with 'rm -rf ~/.cache/huggingface/hub' if desired."
     # Env-mode installs leave no breadcrumb in $HOME, so a custom root can

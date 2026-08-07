@@ -75,6 +75,15 @@ run_uninstall() {
         HOME="$1" PATH="$STUB_BIN:$PATH" sh "$UNINSTALL_SH" >/dev/null 2>&1
 }
 
+# Same, but capture stdout so the closing summary can be asserted.
+run_uninstall_out() {
+    printf '#!/bin/sh\necho %s\n' "$2" > "$STUB_BIN/uname"
+    chmod +x "$STUB_BIN/uname"
+    env -u UNSLOTH_STUDIO_HOME -u STUDIO_HOME \
+        -u XDG_CACHE_HOME -u XDG_DATA_HOME -u XDG_CONFIG_HOME -u XDG_STATE_HOME \
+        HOME="$1" PATH="$STUB_BIN:$PATH" sh "$UNINSTALL_SH" 2>/dev/null
+}
+
 # ── 1. macOS: every bundle-id-keyed ~/Library path is removed ──
 H=$(new_home)
 mkdir -p "$H/Library/Caches/$BID/WebKit/NetworkCache" \
@@ -158,6 +167,40 @@ assert_gone    "linux: relative XDG_CONFIG_HOME falls back to HOME" "$H/.config/
 assert_gone    "linux: relative XDG_STATE_HOME falls back to HOME"  "$H/.local/state/$BID"
 assert_present "linux: relative XDG left cwd/reldata alone"         "$CWD/reldata/$BID"
 assert_present "linux: relative XDG left cwd/relcache alone"        "$CWD/relcache/$BID"
+
+# ── 3d. A symlinked $HOME still resolves an owner and still clears the target. stat lstats by
+# default, so without -L a root-owned link to a user-owned home would resolve to uid 0. Owner
+# and target owner match here, so this guards the symlink path, not the differing-owner case. ──
+H=$(new_home)
+_HL="$_TMP_ROOT/homelink.$$"
+ln -s "$H" "$_HL"
+mkdir -p "$H/.cache/$BID" "$H/.local/share/$BID"
+: > "$PKILL_LOG"
+run_uninstall "$_HL" Linux
+_want_uid=$(stat -L -c %u "$_HL" 2>/dev/null || stat -L -f %u "$_HL")
+if grep -q -- "-x -u $_want_uid unsloth-studio" "$PKILL_LOG" 2>/dev/null; then
+    echo "  PASS: linux: symlinked HOME still scopes the kill"; PASS=$((PASS+1))
+else
+    echo "  FAIL: linux: symlinked HOME lost the kill scope"; FAIL=$((FAIL+1))
+fi
+assert_gone "linux: symlinked HOME cleared through the link" "$H/.cache/$BID"
+rm -f "$_HL"
+
+# ── 3c. A path that cannot be removed must not be reported as gone. The summary names the
+# session, API keys and chat history, so claiming that after a failed rm is a false all-clear. ──
+H=$(new_home)
+mkdir -p "$H/.cache/$BID/locked"
+chmod 500 "$H/.cache/$BID"          # unlink inside it is refused, so rm -rf fails
+_out=$(run_uninstall_out "$H" Linux)
+chmod 700 "$H/.cache/$BID"          # let the fixture be cleaned up
+case "$_out" in
+    *"may"*"still be on disk"*) echo "  PASS: linux: failed removal is not reported as gone"; PASS=$((PASS+1)) ;;
+    *) echo "  FAIL: linux: failed removal still claimed the data is gone"; FAIL=$((FAIL+1)) ;;
+esac
+case "$_out" in
+    *"are gone."*) echo "  FAIL: linux: summary still asserts the data is gone"; FAIL=$((FAIL+1)) ;;
+    *) echo "  PASS: linux: summary drops the 'are gone' claim"; PASS=$((PASS+1)) ;;
+esac
 
 # ── 4. Nothing to remove is a clean no-op (fresh HOME, exit 0) ──
 H=$(new_home)
