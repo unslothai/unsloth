@@ -331,9 +331,15 @@ _cg_read() {
 }
 
 # Echo $1 when it is a real limit. v2 writes "max"; v1 a near-2^63 sentinel.
+# Zero is a limit, not the absence of one: memory.high throttles rather than
+# killing (cgroup-v2.rst, "Going over the high limit never invokes the OOM
+# killer"), so a process runs happily under MemoryHigh=0 and must not then be
+# handed its full core count. Rejecting zero here budgeted from host memory
+# instead, which is the oversubscription this cap exists to remove, and it is
+# the same reading the Windows and macOS sides already keep.
 _cg_limit() {
     [[ "$1" =~ ^[0-9]+$ ]] || return 0
-    [ "$1" -gt 0 ] && [ "$1" -lt 4611686018427387904 ] && printf '%s' "$1"
+    [ "$1" -lt 4611686018427387904 ] && printf '%s' "$1"
     return 0
 }
 

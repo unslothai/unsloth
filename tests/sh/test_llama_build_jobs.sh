@@ -125,6 +125,18 @@ printf '2147483648\n' > "$_TMPD/anc/a/memory.high"
 assert_eq "memory.high counts, smallest wins" "2048" "$(run_cgroup "$_TMPD/anc" "$_TMPD/anc.proc")"
 rm -f "$_TMPD/anc/a/memory.high"
 
+# 5b) A zero limit is a limit. memory.high throttles rather than killing, so a
+#     process really does run under systemd's MemoryHigh=0, and treating that as
+#     "no limit" budgeted from host memory and took the full core count. Only
+#     memory.high is exercised: memory.max of 0 OOM-kills, so nothing is left
+#     running to read it.
+printf '0\n' > "$_TMPD/anc/a/memory.high"
+assert_eq "a zero memory.high is a limit, not the absence of one" "0" \
+    "$(run_cgroup "$_TMPD/anc" "$_TMPD/anc.proc")"
+assert_eq "and a zero allowance builds at 1 job, not \$(nproc)" "1" \
+    "$(run_jobs 20 "$(run_cgroup "$_TMPD/anc" "$_TMPD/anc.proc")" "")"
+rm -f "$_TMPD/anc/a/memory.high"
+
 # 6) v2 "max" everywhere is not a limit.
 mkdir -p "$_TMPD/unl"
 printf 'max\n'   > "$_TMPD/unl/memory.max"
