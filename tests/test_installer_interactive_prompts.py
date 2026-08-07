@@ -11,9 +11,10 @@ setup may ask about is whether to start Studio when it finishes.
 Allowlist, not a ban: every prompt in the tree is listed in
 `APPROVED_PROMPTS` with its reason, so a new one fails with instructions
 instead of landing quietly. Two passes catch it: literal `[Y/n]` markers,
-and interactive read sites (`read` off /dev/tty or `-p`, `Read-Host`) for
-a marker built from a variable, as #7016's was. Text only, so it runs on
-every platform in the parity matrix.
+and interactive read sites (shell `read` and `select`, `Read-Host` and
+the console reads, `input()`, `set /p`) for a marker built from a
+variable, as #7016's was. Text only, so it runs on every platform in the
+parity matrix.
 """
 
 from __future__ import annotations
@@ -29,7 +30,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 # in turn is scanned too (`unsloth studio update` runs setup.sh, which builds
 # whisper.cpp; install.sh fetches and runs the WSL bootstrap), since a question
 # down there stalls the same install.
-ENTRY_POINTS = ("install.sh", "install.ps1", "studio/setup.sh", "studio/setup.ps1")
+ENTRY_POINTS = (
+    "install.sh",
+    "install.ps1",
+    "studio/setup.sh",
+    "studio/setup.ps1",
+    "studio/setup.bat",
+)
 
 SCANNED_SCRIPTS = ENTRY_POINTS + (
     "scripts/build_whisper_cpp.sh",
@@ -38,6 +45,10 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "scripts/install_rocm_wsl_strixhalo.sh",
     "scripts/uninstall.sh",
     "scripts/uninstall.ps1",
+    "studio/install_llama_prebuilt.py",
+    "studio/install_node_prebuilt.py",
+    "studio/install_python_stack.py",
+    "studio/install_whisper_prebuilt.py",
 )
 
 # Every question these scripts may ask, keyed by (script, normalised
@@ -77,7 +88,8 @@ _POSIX_READ = re.compile(
 # Options then variable names to end of line, in command position, so the word
 # `read` in a heredoc of prose is not a prompt.
 _BARE_READ = re.compile(
-    r"(?:^|[;&(])\s*read(?:\s+(?:-[a-zA-Z0-9]+|\d+))*(?:\s+[A-Za-z_][A-Za-z0-9_]*)+"
+    r"(?:^|[;&(])\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
+    r"read(?:\s+(?:-[a-zA-Z0-9]+|\d+))*(?:\s+[A-Za-z_][A-Za-z0-9_]*)+"
     r"(?:\s*(?:\|\||&&).*)?\s*$"
 )
 _LOOP = re.compile(r"\b(?:while|until|for)\b")
@@ -91,10 +103,14 @@ _PWSH_READ = re.compile(
     re.IGNORECASE,
 )
 
+# The Python helpers setup runs, and the batch launcher.
+_PY_READ = re.compile(r"(?<![.\w])input\s*\(|getpass\.getpass\s*\(|confirm\s*\(")
+_BAT_READ = re.compile(r"\bset\s+/p\b|\bchoice\b", re.IGNORECASE)
+
 # A helper filename, with or without its `scripts/` prefix: sibling invocations
 # such as "$SCRIPT_DIR/build_deps.sh" carry no prefix. Resolved against the repo
 # before it counts, so a name that is not a real script is ignored.
-_HELPER_REF = re.compile(r"(?<![$\w])((?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:sh|ps1))")
+_HELPER_REF = re.compile(r"(?<![$\w])((?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:sh|ps1|py|bat))")
 
 _QUOTED = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"' r"|'([^']*)'")
 
@@ -118,13 +134,18 @@ def _is_comment(line: str) -> bool:
     return line.lstrip().startswith("#")
 
 
-def _is_interactive_read(line: str, powershell: bool) -> bool:
-    """A read that waits on a person: a prompt option, /dev/tty, `select`, or plain
-    inherited stdin. Redirected and loop reads consume a file, not a person. Quoted
-    text is blanked first, so a message naming `Read-Host` is not one."""
+def _is_interactive_read(line: str, script: str) -> bool:
+    """A read that waits on a person: a prompt option, /dev/tty, `select`, `input()`,
+    `set /p`, or plain inherited stdin. Redirected and loop reads consume a file, not
+    a person. Quoted text is blanked first, so a message naming `Read-Host` is not
+    one."""
     code = _QUOTED.sub('""', line)
-    if powershell:
+    if script.endswith(".ps1"):
         return bool(_PWSH_READ.search(code))
+    if script.endswith(".py"):
+        return bool(_PY_READ.search(code))
+    if script.endswith(".bat"):
+        return bool(_BAT_READ.search(code))
     if _POSIX_READ.search(code) or _SELECT.search(code):
         return True
     # `||` is a fallback, not a pipeline: `read -r reply || reply=n` still blocks.
@@ -132,16 +153,22 @@ def _is_interactive_read(line: str, powershell: bool) -> bool:
     return "<" not in code and not piped and bool(_BARE_READ.search(code))
 
 
-def blank_comments(source: str, powershell: bool) -> str:
-    """Blank comment lines, keeping the line count so numbers still line up. `.ps1`
-    files carry `<# ... #>` blocks, where a documented Read-Host example would
-    otherwise fail CI over a prompt that cannot run."""
+def blank_comments(source: str, script: str) -> str:
+    """Blank comments, keeping the line count so numbers still line up. `.ps1` files
+    carry `<# ... #>` blocks, where a documented Read-Host example would otherwise
+    fail CI over a prompt that cannot run. `.bat` comments are REM or `::`."""
     lines = []
     in_block = False
+    powershell = script.endswith(".ps1")
+    batch = script.endswith(".bat")
     for line in source.splitlines():
         if powershell and in_block:
-            lines.append("")
+            # Code can follow the terminator on the same line.
+            lines.append(line.split("#>", 1)[1] if "#>" in line else "")
             in_block = "#>" not in line
+            continue
+        if batch and re.match(r"\s*(?:REM\b|::)", line, re.IGNORECASE):
+            lines.append("")
             continue
         if powershell:
             line = _INLINE_BLOCK.sub("", line)
@@ -210,8 +237,7 @@ def _questions_for_read(lines: list[str], index: int) -> list[str]:
 
 def find_prompts(script: str, source: str) -> list[tuple[str, int, str]]:
     """Return (script, line_number, normalised question) for every prompt site."""
-    powershell = script.endswith(".ps1")
-    lines = blank_comments(source, powershell).splitlines()
+    lines = blank_comments(source, script).splitlines()
     found: dict[tuple[str, str], tuple[str, int, str]] = {}
 
     for index, line in enumerate(lines):
@@ -229,7 +255,7 @@ def find_prompts(script: str, source: str) -> list[tuple[str, int, str]]:
             )
             found.setdefault((script, question), (script, line_number, question))
 
-        if _is_interactive_read(line, powershell):
+        if _is_interactive_read(line, script):
             for question in _questions_for_read(lines, index):
                 found.setdefault((script, question), (script, line_number, question))
 
@@ -299,6 +325,7 @@ def test_every_installer_script_is_scanned():
         "install*.ps1",
         "studio/setup*.sh",
         "studio/setup*.ps1",
+        "studio/setup*.bat",
         "scripts/install*.sh",
         "scripts/install*.ps1",
         "scripts/uninstall*.sh",
@@ -321,11 +348,15 @@ def test_helpers_the_installers_invoke_are_scanned():
     """Naming the helpers by hand only ever covers the ones we thought of, so read
     them back out instead: whatever the installers reach, the guard scans. Every
     scanned script is a source, not just the entry points, so a helper that grows
-    a helper of its own is caught as soon as the first one is listed here."""
+    a helper of its own is caught as soon as the first one is listed here. Python
+    helpers are scanned but not read back: a shell script naming a file runs it, a
+    Python file naming one imports it, and library code is not an installer."""
     referenced = set()
     for script in SCANNED_SCRIPTS:
+        if script.endswith(".py"):
+            continue
         path = REPO_ROOT / script
-        source = blank_comments(path.read_text(encoding = "utf-8"), script.endswith(".ps1"))
+        source = blank_comments(path.read_text(encoding = "utf-8"), script)
         for match in _HELPER_REF.finditer(source):
             # Below the script that names it, below the repo, or in scripts/, by
             # full path and by name so a URL still resolves to the local copy.
@@ -465,6 +496,36 @@ def test_detects_a_bare_read_with_option_arguments(read_line: str):
     source = f'printf "  Continue with installation? "\n{read_line}\n'
     assert [question for _, _, question in find_prompts("install.sh", source)] == [
         "continue with installation?",
+    ]
+
+
+def test_detects_an_assignment_prefixed_read():
+    """`IFS= read -r reply` is one command, not an assignment."""
+    source = 'printf "  Continue with installation? "\nIFS= read -r _reply\n'
+    assert [question for _, _, question in find_prompts("install.sh", source)] == [
+        "continue with installation?",
+    ]
+
+
+def test_detects_a_python_helper_prompt():
+    """setup.sh runs these with `python <helper>.py`, so `input()` blocks the update."""
+    source = 'reply = input("Enable telemetry? [Y/n] ")\n'
+    assert [question for _, _, question in find_prompts("studio/install_python_stack.py", source)][
+        0
+    ] == "enable telemetry?"
+
+
+def test_detects_a_batch_prompt():
+    source = 'set /p _reply="Enable telemetry? [Y/n] "\n'
+    assert [question for _, _, question in find_prompts("studio/setup.bat", source)] == [
+        "enable telemetry?",
+    ]
+
+
+def test_keeps_code_after_a_block_comment_terminator():
+    source = '<#\n.SYNOPSIS\n#> $reply = Read-Host "Enable telemetry? [Y/n]"\n'
+    assert [question for _, _, question in find_prompts("install.ps1", source)] == [
+        "enable telemetry?",
     ]
 
 
