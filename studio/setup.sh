@@ -302,10 +302,18 @@ _llama_jobs_for() {
     printf '%s' "$_jobs"
 }
 
-# Echo the first line of $1 with whitespace stripped, or nothing.
+# Echo the first line of $1 with whitespace stripped, or nothing. setup.sh runs
+# under `set -euo pipefail`, and this is a best-effort read on the install's
+# critical path, so it must not fail: `head | tr` took the whole install down
+# whenever the pipeline returned non-zero, which -r alone does not rule out (a
+# directory passes it, and a cgroup can be torn down between the test and the
+# open). The read is a builtin and the strip is an expansion, so there is no
+# pipeline and no subprocess left to fail.
 _cg_read() {
-    [ -r "$1" ] || return 0
-    head -n 1 "$1" 2>/dev/null | tr -d '[:space:]'
+    local _v=""
+    [ -f "$1" ] && [ -r "$1" ] || return 0
+    IFS= read -r _v < "$1" 2>/dev/null || true
+    printf '%s' "${_v//[[:space:]]/}"
     return 0
 }
 
@@ -365,7 +373,7 @@ _CG_AWK_UNESC
 # single path is in hand.
 _cg_unesc() {
     [ -n "$1" ] || return 0
-    printf '%s\n' "$1" | awk "$(_cg_unesc_prog)"'{ printf "%s", unesc($0); exit }'
+    printf '%s\n' "$1" | awk "$(_cg_unesc_prog)"'{ printf "%s", unesc($0); exit }' || true
     return 0
 }
 
@@ -388,7 +396,7 @@ _cg_mounts() {
             if ($(i + 1) != "cgroup") next
             n = split($(i + 3), opts, ",")
             for (j = 1; j <= n; j++) if (opts[j] == want) { print $4 "\t" $5; next }
-        }' "$1" 2>/dev/null
+        }' "$1" 2>/dev/null || true
     return 0
 }
 

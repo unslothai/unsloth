@@ -317,6 +317,63 @@ printf '%s\n' "74 30 0:64 /slice $_TMPD/esc/trail\\012 rw - cgroup2 cgroup2 rw" 
 assert_eq "a trailing newline is not eaten" "1024" \
     "$(run_cgroup "$_TMPD/esc" "$_TMPD/esctrail.proc" "$_TMPD/esctrail.mnt")"
 
+# ── The shell options the real script runs under ──
+# Everything above sources into a plain `bash -c`, but studio/setup.sh:5 is
+# `set -euo pipefail`, and NCPU=$(_llama_build_jobs) sits on the install's
+# critical path. A helper returning non-zero there does not degrade the job
+# count, it aborts the install at the build step. `head | tr` inside _cg_read
+# did exactly that for any input where the pipeline failed, which -r alone does
+# not rule out: a directory passes it, and a cgroup can be torn down between the
+# test and the open. These drive the helpers with the real options on.
+_STRICT_FILE=$(mktemp)
+for _fn in _cg_read _cg_limit _cg_dirs _cg_unesc_prog _cg_unesc _cg_mounts \
+           _cg_rel _cg_pick_mount _cgroup_free_mb _usable_ram_mb; do
+    sed -n "/^${_fn}()/,/^}/p" "$SETUP_SH" >> "$_STRICT_FILE"
+done
+sed -n '/^_LLAMA_BUILD_RESERVE_MB=/,/^_LLAMA_BUILD_MB_PER_JOB=/p' "$SETUP_SH" >> "$_STRICT_FILE"
+sed -n '/^_llama_jobs_for()/,/^}/p' "$SETUP_SH" >> "$_STRICT_FILE"
+
+# Echoes the exit status of running $1 under the real options.
+run_strict_rc() {
+    bash -c 'set -euo pipefail; . "$1"; shift; eval "$@" >/dev/null 2>&1' \
+        _ "$_STRICT_FILE" "$1" >/dev/null 2>&1
+    printf '%s' "$?"
+}
+
+mkdir -p "$_TMPD/strict/leaf"
+printf '4294967296\n' > "$_TMPD/strict/leaf/memory.max"
+printf '0::/leaf\n'   > "$_TMPD/strict.proc"
+printf '%s\n' "1 2 0:1 / $_TMPD/strict rw - cgroup2 cgroup2 rw" > "$_TMPD/strict.mnt"
+
+# A directory passes `[ -r ]`, so this is the shape that took the install down.
+assert_eq "strict: _cg_read on a directory does not abort" "0" \
+    "$(run_strict_rc '_cg_read "'"$_TMPD"'/strict"')"
+assert_eq "strict: _cg_read on a missing file does not abort" "0" \
+    "$(run_strict_rc '_cg_read "'"$_TMPD"'/strict/nope"')"
+assert_eq "strict: _cg_mounts on an unreadable file does not abort" "0" \
+    "$(run_strict_rc '_cg_mounts "'"$_TMPD"'/strict" cgroup2')"
+assert_eq "strict: _cg_unesc does not abort" "0" \
+    "$(run_strict_rc '_cg_unesc /a/b')"
+assert_eq "strict: _cgroup_free_mb on a real tree does not abort" "0" \
+    "$(run_strict_rc '_cgroup_free_mb "'"$_TMPD"'/strict" "'"$_TMPD"'/strict.proc" "'"$_TMPD"'/strict.mnt"')"
+assert_eq "strict: _cgroup_free_mb on nothing does not abort" "0" \
+    "$(run_strict_rc '_cgroup_free_mb /nx /nx /nx')"
+assert_eq "strict: _usable_ram_mb does not abort" "0" \
+    "$(run_strict_rc '_usable_ram_mb')"
+# The two AND-lists in _llama_jobs_for are the classic `set -e` footgun; cover
+# the branch where each of them is false.
+assert_eq "strict: _llama_jobs_for with the cap binding does not abort" "0" \
+    "$(run_strict_rc '_llama_jobs_for 20 16384')"
+assert_eq "strict: _llama_jobs_for with cores binding does not abort" "0" \
+    "$(run_strict_rc '_llama_jobs_for 4 65536')"
+assert_eq "strict: _llama_jobs_for with the floor binding does not abort" "0" \
+    "$(run_strict_rc '_llama_jobs_for 8 0')"
+# And the value still arrives, rather than the function exiting early with none.
+assert_eq "strict: the job count still comes out" "7" \
+    "$(bash -c 'set -euo pipefail; . "$1"; _llama_jobs_for 20 16384' _ "$_STRICT_FILE")"
+
+rm -f "$_STRICT_FILE"
+
 # The min() that ties it together. Drive _usable_ram_mb from a pinned meminfo
 # rather than the live one: MemAvailable moves between two reads, so comparing
 # a cached host figure against a second read is a race on any Linux runner.
