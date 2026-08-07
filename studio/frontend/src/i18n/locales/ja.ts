@@ -100,6 +100,15 @@ export const ja = {
       logOut: "ログアウト",
       shutdown: "シャットダウン",
     },
+    commandPalette: {
+      placeholder: "コマンドを入力または検索...",
+      noResults: "結果が見つかりません。",
+      navigation: "ナビゲーション",
+      actions: "アクション",
+      chat: "チャット",
+      projects: "プロジェクト",
+      searchChats: "チャットを検索...",
+    },
     notFound: {
       title: "ページが見つかりません",
       description: "{path} は存在しません。",

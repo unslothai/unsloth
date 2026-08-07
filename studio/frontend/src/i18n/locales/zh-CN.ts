@@ -96,6 +96,15 @@ export const zhCN = {
       logOut: "退出登录",
       shutdown: "关闭服务",
     },
+    commandPalette: {
+      placeholder: "输入命令或搜索...",
+      noResults: "未找到结果。",
+      navigation: "导航",
+      actions: "操作",
+      chat: "聊天",
+      projects: "项目",
+      searchChats: "搜索聊天...",
+    },
     notFound: {
       title: "页面未找到",
       description: "{path} 不存在。",

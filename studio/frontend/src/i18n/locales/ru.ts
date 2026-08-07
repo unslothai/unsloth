@@ -100,6 +100,15 @@ export const ru = {
       logOut: "Выйти",
       shutdown: "Выключить",
     },
+    commandPalette: {
+      placeholder: "Введите команду или запрос...",
+      noResults: "Ничего не найдено.",
+      navigation: "Навигация",
+      actions: "Действия",
+      chat: "Чат",
+      projects: "Проекты",
+      searchChats: "Поиск по чатам...",
+    },
     notFound: {
       title: "Страница не найдена",
       description: "{path} не существует.",

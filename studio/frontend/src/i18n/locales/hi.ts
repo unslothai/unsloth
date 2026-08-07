@@ -101,6 +101,15 @@ export const hi = {
       logOut: "लॉग आउट",
       shutdown: "शटडाउन",
     },
+    commandPalette: {
+      placeholder: "कमांड टाइप करें या खोजें...",
+      noResults: "कोई परिणाम नहीं मिला।",
+      navigation: "नेविगेशन",
+      actions: "क्रियाएँ",
+      chat: "चैट",
+      projects: "प्रोजेक्ट",
+      searchChats: "चैट खोजें...",
+    },
     notFound: {
       title: "पेज नहीं मिला",
       description: "{path} मौजूद नहीं है।",

@@ -98,6 +98,15 @@ export const ko = {
       logOut: "로그아웃",
       shutdown: "종료",
     },
+    commandPalette: {
+      placeholder: "명령어를 입력하거나 검색하세요...",
+      noResults: "결과를 찾을 수 없습니다.",
+      navigation: "탐색",
+      actions: "작업",
+      chat: "채팅",
+      projects: "프로젝트",
+      searchChats: "채팅 검색...",
+    },
     notFound: {
       title: "페이지를 찾을 수 없습니다",
       description: "{path} 경로가 존재하지 않습니다.",
