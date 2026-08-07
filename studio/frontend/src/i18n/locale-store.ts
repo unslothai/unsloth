@@ -91,14 +91,14 @@ function writeStoredPreference(preference: LocalePreference): void {
   try {
     globalThis.localStorage?.setItem(LOCALE_STORAGE_KEY, preference);
   } catch {
-    // localStorage 可能被禁用；失败只影响持久化，不影响当前会话语言。
+    // localStorage can be disabled; a failure only costs persistence, not
+    // the language of the current session.
   }
 }
 
 function syncDocumentLang(locale: Locale): void {
   if (typeof document === "undefined") return;
   document.documentElement.lang = locale;
-  document.documentElement.dir = LOCALES[locale].dir;
 }
 
 function notifySubscribers(): void {

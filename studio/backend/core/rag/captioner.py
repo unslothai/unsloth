@@ -6,7 +6,7 @@
 Both turn pixels into indexable text and are a no-op (never raise) without a loaded
 vision model. They reuse the chat model's vision endpoint, so it must be served with
 ``--ubatch-size`` >= one image's tokens (some encoders, e.g. Gemma, attend
-non-causally and abort otherwise); Studio's vision chat already requires this."""
+non-causally and abort otherwise); Unsloth's vision chat already requires this."""
 
 from __future__ import annotations
 

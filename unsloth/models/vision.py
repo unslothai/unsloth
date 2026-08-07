@@ -36,6 +36,8 @@ from ._utils import (
     resolve_attention_implementation,
     _get_text_only_config,
     _is_family_text_decoder,
+    _config_get,
+    _is_flash_attention_requested,
     _apply_text_only_key_mapping,
     _select_moe_detection_targets,
     set_task_config_attr,
@@ -94,6 +96,8 @@ except:
     # Old HF Hub versions <= 0.0.25
     from huggingface_hub.utils._token import get_token
 from ..device_type import (
+    get_device_stats,
+    clean_gpu_cache,
     is_hip,
     get_device_type,
     DEVICE_TYPE,
@@ -226,8 +230,7 @@ def _attach_bnb_multidevice_hooks(
                 param.__dict__[key] = val
 
         logger.info(
-            f"Unsloth: Attached accelerate AlignDevicesHook ({desc}) "
-            f"for bnb multi-GPU inference."
+            f"Unsloth: Attached accelerate AlignDevicesHook ({desc}) for bnb multi-GPU inference."
         )
     except Exception as exc:
         warnings.warn(
@@ -308,6 +311,46 @@ def _embeddings_are_tied(input_embeddings, output_embeddings):
     return w_in is w_out or w_in.data_ptr() == w_out.data_ptr()
 
 
+def _offload_embedding_unsupported_platform():
+    # Offloaded embeddings do not work on Windows or WSL.
+    if bool(os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP")):
+        return "WSL"
+    if os.name == "nt":
+        return "Windows"
+    return None
+
+
+def _resolve_offload_embedding(model, offload_embedding):
+    """Report `offload_embedding` as True only when the offload will really run.
+
+    It is a VRAM optimisation, not a correctness switch, so turn it off where it
+    cannot help instead of failing the load. It also gates
+    `_attach_bnb_multidevice_hooks`, which must still run whenever no offload
+    happens, so every "no offload" case has to answer False.
+    """
+    if not offload_embedding:
+        return False
+    platform_name = _offload_embedding_unsupported_platform()
+    if platform_name is not None:
+        print(f"Unsloth: Not offloading embeddings; offloading is unsupported on {platform_name}.")
+        return False
+    try:
+        in_embed = model.get_input_embeddings()
+        out_embed = (
+            model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
+        )
+    except Exception:
+        # Cannot inspect it, so leave the caller's request alone.
+        return offload_embedding
+    if _embeddings_are_tied(in_embed, out_embed):
+        print(
+            "Unsloth: Not offloading embeddings; this model ties embed_tokens "
+            "to lm_head, so offloading saves no VRAM."
+        )
+        return False
+    return True
+
+
 VLLM_SUPPORTED_VLM = [
     "qwen2_5_vl",
     "gemma3",
@@ -343,6 +386,117 @@ try:
     torch_compiler_set_stance = torch.compiler.set_stance
 except:
     torch_compiler_set_stance = None
+
+
+def _uses_flash_attention_for_generation(config):
+    language_config_names = (
+        "text_config",
+        "llm_config",
+        "decoder_config",
+        "language_config",
+        "thinker_config",
+        "talker_config",
+        "decoder",
+        "generator",
+    )
+    non_language_config_names = (
+        "vision_config",
+        "audio_config",
+        "vision_encoder_config",
+        "audio_encoder_config",
+        "encoder_config",
+        "text_encoder",
+    )
+
+    def _mapping_uses_flash_attention(attn_implementation):
+        if not isinstance(attn_implementation, dict):
+            return _is_flash_attention_requested(attn_implementation)
+        language_implementations = [
+            implementation
+            for config_name, implementation in attn_implementation.items()
+            if config_name not in ("", *non_language_config_names) and implementation is not None
+        ]
+        if language_implementations:
+            return any(map(_is_flash_attention_requested, language_implementations))
+        return _is_flash_attention_requested(attn_implementation.get(""))
+
+    def _get_text_config(current_config):
+        get_text_config = _config_get(current_config, "get_text_config", None)
+        if not callable(get_text_config):
+            return None
+        try:
+            return get_text_config()
+        except Exception:
+            return None
+
+    language_configs = []
+    pending_configs = [config]
+    visited_config_ids = set()
+    while pending_configs:
+        current_config = pending_configs.pop()
+        if id(current_config) in visited_config_ids:
+            continue
+        visited_config_ids.add(id(current_config))
+
+        text_config = _get_text_config(current_config)
+        if (
+            text_config is not None
+            and text_config is not current_config
+            and all(text_config is not item for item in language_configs)
+        ):
+            language_configs.append(text_config)
+
+        nested_config_names = list(language_config_names)
+        declared_sub_configs = _config_get(current_config, "sub_configs", None)
+        if isinstance(declared_sub_configs, dict):
+            nested_config_names.extend(
+                config_name
+                for config_name in declared_sub_configs
+                if config_name not in nested_config_names
+            )
+        for config_name in nested_config_names:
+            nested_config = _config_get(current_config, config_name, None)
+            if nested_config is None or nested_config is current_config:
+                continue
+            pending_configs.append(nested_config)
+            nested_text_config = _get_text_config(nested_config)
+            if (
+                config_name in language_config_names
+                and (nested_text_config is None or nested_text_config is nested_config)
+                and all(nested_config is not item for item in language_configs)
+            ):
+                language_configs.append(nested_config)
+
+    language_implementations = [
+        _config_get(language_config, config_field, None)
+        for language_config in language_configs
+        for config_field in ("_attn_implementation", "attn_implementation")
+    ]
+    language_implementations = [
+        implementation for implementation in language_implementations if implementation is not None
+    ]
+    if language_implementations:
+        return any(map(_mapping_uses_flash_attention, language_implementations))
+
+    return any(
+        _mapping_uses_flash_attention(_config_get(config, config_field, None))
+        for config_field in ("_attn_implementation", "attn_implementation")
+    )
+
+
+def _clear_generation_caches(model):
+    for name, module in model.named_modules():
+        if hasattr(module, "_flex_attention_cache"):
+            try:
+                del module._flex_attention_cache
+            except:
+                pass
+        # Solves AttributeError: 'SlidingWindowLayer' object has no attribute 'max_batch_size'
+        if hasattr(module, "_cache") and "cache_utils" in str(module._cache.__class__):
+            try:
+                del module._cache
+            except:
+                pass
 
 
 def unsloth_base_fast_generate(self, *args, **kwargs):
@@ -440,9 +594,32 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = torch.float16)
         dtype = torch.float16
     else:
-        autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype)
+        # CUDA autocast does not validate its dtype the way the CPU/XPU/MPS paths do,
+        # so autocast(dtype = torch.float32) enters ENABLED rather than turning into a
+        # no-op, and the compiled graph then returns inf/NaN logits. A float32 model has
+        # nothing to autocast to; disable instead of asking for a dtype that is not one.
+        autocaster = torch.autocast(
+            device_type = DEVICE_TYPE_TORCH,
+            dtype = dtype,
+            enabled = dtype in (torch.float16, torch.bfloat16),
+        )
     # Prepare LoRA
     # state_dict = convert_lora_modules(self, dtype = dtype)
+
+    # FlashAttention breaks on the forced static cache below (unfilled slots stay
+    # unmasked while decoding), so delegate after normalization but before it.
+    _clear_generation_caches(self)
+    if _uses_flash_attention_for_generation(self.config):
+        # Pin the literal "dynamic": None is merged back to the model default, and a
+        # static cache still arrives via kwargs / the caller's generation_config (TRL).
+        # The kwarg wins (update runs last); skip it when the caller passed a cache.
+        if kwargs.get("past_key_values") is None:
+            kwargs["cache_implementation"] = "dynamic"
+        try:
+            with torch.inference_mode(), autocaster:
+                return self._old_generate(*args, **kwargs)
+        finally:
+            _clear_generation_caches(self)
 
     # Set compile dynamic shapes
     torch._dynamo.mark_static(input_ids, 0)
@@ -491,36 +668,11 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         if cache_implementation is not None:
             kwargs["compile_config"] = _compile_config
 
-    # Delete cached Flex Attention masks to reset inference
-    for name, module in self.named_modules():
-        if hasattr(module, "_flex_attention_cache"):
-            try:
-                del module._flex_attention_cache
-            except:
-                pass
-        # Solves AttributeError: 'SlidingWindowLayer' object has no attribute 'max_batch_size'
-        if hasattr(module, "_cache") and "cache_utils" in str(module._cache.__class__):
-            try:
-                del module._cache
-            except:
-                pass
-
-    with torch.inference_mode(), autocaster:
-        output = self._old_generate(*args, **kwargs)
-
-    # Delete cached Flex Attention masks to reset inference
-    for name, module in self.named_modules():
-        if hasattr(module, "_flex_attention_cache"):
-            try:
-                del module._flex_attention_cache
-            except:
-                pass
-        # Solves AttributeError: 'SlidingWindowLayer' object has no attribute 'max_batch_size'
-        if hasattr(module, "_cache") and "cache_utils" in str(module._cache.__class__):
-            try:
-                del module._cache
-            except:
-                pass
+    try:
+        with torch.inference_mode(), autocaster:
+            output = self._old_generate(*args, **kwargs)
+    finally:
+        _clear_generation_caches(self)
 
     # FastBaseModel.for_training(self)
     return output
@@ -529,7 +681,10 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
 # Offline helpers live in loader_utils.py (shared canonical source).
 from .loader_utils import (
     _get_effective_local_files_only,
+    _hub_repo_or_local_path,
     _is_offline_related_error,
+    _load_pretrained_tokenizer_fast,
+    _mark_loaded_revision,
     _offline_aware_load,
 )
 
@@ -558,6 +713,7 @@ def _construct_vlm_processor_fallback(
     trust_remote_code,
     cache_dir = None,
     local_files_only = False,
+    revision = None,
 ):
     """Build a VLM processor manually when AutoProcessor.from_pretrained fails (some VLMs
     have unresolvable tokenizer_class entries): load the image processor + tokenizer
@@ -565,26 +721,36 @@ def _construct_vlm_processor_fallback(
     tell an offline failure (retry from cache) from a genuine one."""
     _fb_err = None
     try:
-        from transformers import AutoImageProcessor, PreTrainedTokenizerFast, AutoConfig
+        from transformers import AutoImageProcessor, AutoConfig
         from transformers.models.auto.processing_auto import PROCESSOR_MAPPING_NAMES
         import json
 
+        load_path = _hub_repo_or_local_path(
+            tokenizer_name,
+            token = token,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+            revision = revision,
+        )
         # Load image processor
         image_processor = AutoImageProcessor.from_pretrained(
-            tokenizer_name,
+            load_path,
             token = token,
             trust_remote_code = trust_remote_code,
             cache_dir = cache_dir,
             local_files_only = local_files_only,
+            revision = revision,
         )
-        # Load tokenizer via PreTrainedTokenizerFast (bypasses tokenizer_class check)
-        tok = PreTrainedTokenizerFast.from_pretrained(
+        # Load tokenizer via PreTrainedTokenizerFast (bypasses tokenizer_class check).
+        # Resolve the cached snapshot first so transformers does not call model_info (#7481).
+        tok = _load_pretrained_tokenizer_fast(
             tokenizer_name,
             padding_side = "left",
             token = token,
             trust_remote_code = trust_remote_code,
             cache_dir = cache_dir,
             local_files_only = local_files_only,
+            revision = revision,
         )
         # Read tokenizer_config.json for special tokens: prefer the local file (offline
         # / local checkpoint dir), else hf_hub_download with local_files_only forwarded.
@@ -610,6 +776,7 @@ def _construct_vlm_processor_fallback(
                     "tokenizer_config.json",
                     token = token,
                     cache_dir = cache_dir,
+                    revision = revision,
                     local_files_only = local_files_only,
                 )
                 with open(config_path, "r", encoding = "utf-8") as f:
@@ -638,11 +805,12 @@ def _construct_vlm_processor_fallback(
             # Try the top-level config.model_type which often has the processor mapping.
             try:
                 config = AutoConfig.from_pretrained(
-                    tokenizer_name,
+                    load_path,
                     token = token,
                     trust_remote_code = trust_remote_code,
                     cache_dir = cache_dir,
                     local_files_only = local_files_only,
+                    revision = revision,
                 )
                 proc_class_name = PROCESSOR_MAPPING_NAMES.get(config.model_type)
             except Exception as _e:
@@ -749,6 +917,22 @@ class FastBaseModel:
         if os.environ.get("UNSLOTH_MODEL_NAME", "") == "":
             os.environ["UNSLOTH_MODEL_NAME"] = model_name.lower()
 
+        # Read from kwargs, not the signature: the weight load below forwards **kwargs, so
+        # binding it would drop it there.
+        _revision = kwargs.get("revision")
+        _tokenizer_revision_arg = kwargs.pop("tokenizer_revision", None)
+        if _revision is not None and fast_inference and is_vLLM_available():
+            # vLLM fetches the default branch, so pinning only the config and tokenizer
+            # would mix two refs in one model.
+            logger.warning_once(
+                f"Unsloth: Ignoring revision = `{_revision}` since vLLM loads weights from "
+                "the default branch. Use `fast_inference = False` to load a pinned revision."
+            )
+            _revision = None
+            _tokenizer_revision_arg = None
+            kwargs.pop("revision", None)
+        _revision_repo = model_name  # The repo the pin names, captured before any remap.
+
         # Resolve text-only before the is_vlm / vLLM checks so is_vlm stays consistent;
         # skip the vision tower only for families with their own text decoder (Gemma 3). #5816
         if text_only and auto_config is None:
@@ -757,6 +941,7 @@ class FastBaseModel:
                 token = token,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
+                revision = _revision,
             )
         if text_only and hasattr(auto_config, "vision_config"):
             parent_config = auto_config
@@ -817,39 +1002,14 @@ class FastBaseModel:
         token = hf_login(token)
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
 
-        if DEVICE_TYPE == "cuda":
-            gpu_stats = torch.cuda.get_device_properties(0)
-            gpu_stats_name = (
-                gpu_stats.name + ". " if gpu_stats.name != "" else "NVIDIA GPU Device. "
-            )
-            gpu_version = torch.version.cuda
-            gpu_stats_snippet = (
-                f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {gpu_version}."
-            )
-            try:
-                vllm_version = f" vLLM: {importlib_version('vllm')}."
-            except:
-                vllm_version = ""
-        elif DEVICE_TYPE == "hip":
-            gpu_stats = torch.cuda.get_device_properties(0)
-            gpu_stats_name = resolve_hip_gpu_stats_name(gpu_stats)
-            gpu_version = torch.version.hip
-            gpu_stats_snippet = f"ROCm Toolkit: {gpu_version}."
-            try:
-                vllm_version = f" vLLM: {importlib_version('vllm')}."
-            except:
-                vllm_version = ""
-        elif DEVICE_TYPE == "xpu":
-            gpu_stats = torch.xpu.get_device_properties(0)
-            gpu_stats_name = gpu_stats.name + ". " if gpu_stats.name != "" else "Intel XPU Device. "
-            gpu_version = torch.version.xpu
-            gpu_stats_snippet = f"Intel Toolkit: {gpu_version}."
-            # [TODO] After adding vLLM support for XPU, change this
+        gpu_stats_name, gpu_stats_snippet, max_memory = get_device_stats()
+        if DEVICE_TYPE == "xpu":
             vllm_version = ""
         else:
-            raise ValueError(f"Unsloth: Unsupported device type: {DEVICE_TYPE}")
-
-        max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
+            try:
+                vllm_version = f" vLLM: {importlib_version('vllm')}."
+            except:
+                vllm_version = ""
 
         arch_name = model_type_arch.title()
         arch_name = arch_name.replace("_Vl_", "_VL_").replace("_Moe", "_MoE")
@@ -939,6 +1099,7 @@ class FastBaseModel:
                 token = token,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
+                revision = _revision,
             )
         model_class = resolve_model_class(auto_model, auto_config)
         attn_impl = resolve_attention_implementation(
@@ -1020,6 +1181,7 @@ class FastBaseModel:
             and _tokenizer_repo != model_name
         )
         if _warm_tokenizer_repo:
+            # No revision: this only runs when the repo differs from the pinned one.
             maybe_prefetch_hf_snapshot(
                 _tokenizer_repo,
                 token = token,
@@ -1094,6 +1256,7 @@ class FastBaseModel:
                     token = token,
                     trust_remote_code = trust_remote_code,
                     local_files_only = local_files_only,
+                    revision = _revision,
                 )
             if hasattr(auto_config, "quantization_config"):
                 from transformers.quantizers.auto import (
@@ -1148,6 +1311,7 @@ class FastBaseModel:
                 token = token,
                 trust_remote_code = trust_remote_code,
                 local_files_only = local_files_only,
+                revision = _revision,
             )
         _set_attn_impl(auto_config, config_attn_impl)
         model_config = auto_config
@@ -1188,6 +1352,13 @@ class FastBaseModel:
                     # attn_implementation   = attn_implementation,
                     **kwargs,
                 )
+                # Must precede _attach_bnb_multidevice_hooks: it returns early
+                # while offload_embedding is True.
+                offload_embedding = _resolve_offload_embedding(
+                    model,
+                    offload_embedding,
+                )
+
                 # Attach dispatch hooks for bnb multi-device loads.
                 _attach_bnb_multidevice_hooks(
                     model,
@@ -1211,37 +1382,24 @@ class FastBaseModel:
                     model.fast_generate = make_fast_generate_wrapper(model.generate)
                     model.fast_generate_batches = error_out_no_vllm
                 if offload_embedding:
-                    if bool(os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP")):
-                        # WSL doesn't work with offloaded embeddings
-                        pass
-                    elif os.name == "nt":
-                        # Windows doesn't work with offloaded embeddings
-                        pass
-                    else:
-                        embed_tokens = model.get_input_embeddings()
-                        out_embed = (
-                            model.get_output_embeddings()
-                            if hasattr(model, "get_output_embeddings")
-                            else None
-                        )
-                        if _embeddings_are_tied(embed_tokens, out_embed):
-                            raise NotImplementedError(
-                                "offload_embedding = True is not supported for models with tied word "
-                                "embeddings (embed_tokens shares its weight with lm_head). Offloading "
-                                "would strand the output projection on CPU and saves no VRAM. Set "
-                                "offload_embedding = False for this model."
-                            )
-                        nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
-                        ngb = round(nbytes / 1024 / 1024 / 1024, 2)
-                        print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
-                        _embed_device = embed_tokens.weight.device  # decoder device, before offload
-                        embed_tokens.to("cpu")
+                    # Unsupported platforms and tied embeddings were screened out above.
+                    embed_tokens = model.get_input_embeddings()
+                    out_embed = (
+                        model.get_output_embeddings()
+                        if hasattr(model, "get_output_embeddings")
+                        else None
+                    )
+                    nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
+                    ngb = round(nbytes / 1024 / 1024 / 1024, 2)
+                    print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
+                    _embed_device = embed_tokens.weight.device  # decoder device, before offload
+                    embed_tokens.to("cpu")
 
-                        # Device-safe embedding offload.
-                        _install_offload_embedding_hooks(embed_tokens, out_embed, _embed_device)
-                        # Must free GPU memory otherwise will not free!
-                        torch.cuda.empty_cache()
-                        gc.collect()
+                    # Device-safe embedding offload.
+                    _install_offload_embedding_hooks(embed_tokens, out_embed, _embed_device)
+                    # Must free GPU memory otherwise will not free!
+                    clean_gpu_cache()
+                    gc.collect()
             else:
                 from unsloth_zoo.vllm_utils import (
                     load_vllm,
@@ -1341,13 +1499,15 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE in ("cuda", "hip"):
-                torch.cuda.empty_cache()
-            elif DEVICE_TYPE == "xpu":
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
 
         # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
+        # The loader resolves this (caller's adapter repo vs resolved base model); the
+        # fallback below covers a direct call.
+        _tokenizer_revision = _tokenizer_revision_arg
+        if _tokenizer_revision is None and tokenizer_name == _revision_repo:
+            _tokenizer_revision = _revision
 
         # On the vLLM path the tokenizer warm was deferred (fast_inference_setup may remap model_name).
         # Warm the now-final tokenizer repo so the load below hits the cache (a cached/local repo is a no-op).
@@ -1355,7 +1515,8 @@ class FastBaseModel:
             maybe_prefetch_hf_snapshot(
                 tokenizer_name,
                 token = token,
-                revision = kwargs.get("revision"),
+                # Match the tokenizer load below, which only pins its own repo.
+                revision = _tokenizer_revision,
                 cache_dir = kwargs.get("cache_dir"),
                 local_files_only = kwargs.get("local_files_only", False),
                 tokenizer_only = True,
@@ -1400,6 +1561,7 @@ class FastBaseModel:
                         trust_remote_code = trust_remote_code,
                         cache_dir = kwargs.get("cache_dir"),
                         local_files_only = lfo,
+                        revision = _tokenizer_revision,
                     )
                 except Exception as _e:
                     _tok = None
@@ -1413,6 +1575,7 @@ class FastBaseModel:
                         trust_remote_code = trust_remote_code,
                         cache_dir = kwargs.get("cache_dir"),
                         local_files_only = lfo,
+                        revision = _tokenizer_revision,
                     )
                 except Exception as _e:
                     _err = _e
@@ -1424,6 +1587,7 @@ class FastBaseModel:
                             trust_remote_code = trust_remote_code,
                             cache_dir = kwargs.get("cache_dir"),
                             local_files_only = lfo,
+                            revision = _tokenizer_revision,
                         )
                     except Exception:
                         # Swallow so the manual fallback / entry-point retry can run.
@@ -1443,6 +1607,7 @@ class FastBaseModel:
                         trust_remote_code,
                         cache_dir = kwargs.get("cache_dir"),
                         local_files_only = lfo,
+                        revision = _tokenizer_revision,
                     )
                 except Exception as _fe:
                     _fallback, _fb_err = None, _fe
@@ -1529,6 +1694,7 @@ class FastBaseModel:
                     trust_remote_code = trust_remote_code,
                     cache_dir = kwargs.get("cache_dir"),
                     local_files_only = local_files_only,
+                    revision = _tokenizer_revision,
                 )
                 model, _fallback_tok = patch_tokenizer(model, _fallback_tok)
                 # Re-attach as processor wrapper if original was a processor
@@ -1551,24 +1717,32 @@ class FastBaseModel:
             # Last resort: AutoTokenizer, then PreTrainedTokenizerFast (raise on network failure to retry).
             def _last_resort_tokenizer(lfo):
                 from transformers import AutoTokenizer as _AutoTokenizer
+                load_path = _hub_repo_or_local_path(
+                    tokenizer_name,
+                    token = token,
+                    cache_dir = kwargs.get("cache_dir"),
+                    local_files_only = lfo,
+                    revision = _tokenizer_revision,
+                )
                 try:
                     return _AutoTokenizer.from_pretrained(
-                        tokenizer_name,
+                        load_path,
                         padding_side = "left",
                         token = token,
                         trust_remote_code = trust_remote_code,
                         cache_dir = kwargs.get("cache_dir"),
                         local_files_only = lfo,
+                        revision = _tokenizer_revision,
                     )
                 except Exception:
-                    from transformers import PreTrainedTokenizerFast
-                    return PreTrainedTokenizerFast.from_pretrained(
+                    return _load_pretrained_tokenizer_fast(
                         tokenizer_name,
                         padding_side = "left",
                         token = token,
                         trust_remote_code = trust_remote_code,
                         cache_dir = kwargs.get("cache_dir"),
                         local_files_only = lfo,
+                        revision = _tokenizer_revision,
                     )
 
             _last_resort_err = None
@@ -1643,10 +1817,10 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE in ("cuda", "hip"):
-                torch.cuda.empty_cache()
-            elif DEVICE_TYPE == "xpu":
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
+        # Saving restores sentencepiece assets from the repo name alone, which carries no
+        # branch. Stamped here, not per processor branch, so a fallback cannot lose it.
+        _mark_loaded_revision(tokenizer, _tokenizer_revision)
         return model, tokenizer
 
     @staticmethod
@@ -1796,10 +1970,7 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE in ("cuda", "hip"):
-                torch.cuda.empty_cache()
-            elif DEVICE_TYPE == "xpu":
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         max_seq_length = model.max_seq_length
         # If we pass loftq_config = None we will get an error
         loftq_config = validate_loftq_config(
@@ -1945,10 +2116,7 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE in ("cuda", "hip"):
-                torch.cuda.empty_cache()
-            elif DEVICE_TYPE == "xpu":
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         patch_saving_functions(model, vision = True)
         patch_peft_fast_inference(model)
 
@@ -2063,10 +2231,7 @@ class FastBaseModel:
         # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE in ("cuda", "hip"):
-                torch.cuda.empty_cache()
-            elif DEVICE_TYPE == "xpu":
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         # Add for_inference and for_training
         model.for_training = functools.partial(FastBaseModel.for_training, model)
         model.for_inference = functools.partial(FastBaseModel.for_inference, model)

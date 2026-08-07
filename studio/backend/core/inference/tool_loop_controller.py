@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared controller state for Studio local agentic tool loops.
+"""Shared controller state for Unsloth local agentic tool loops.
 
 This module is intentionally dependency-light: it owns only per-response
 ledger state and value objects used by the GGUF and safetensors loops.
@@ -212,7 +212,16 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
     if tool_name == "web_search":
         url = str(arguments.get("url") or "").strip()
         if url:
-            parsed = urlparse(url)
+            # Bare hosts are fetched as https, so normalize first or the badge
+            # stays generic for exactly the URLs the fetch layer accepts.
+            from core.inference.tools import _normalize_url_scheme
+
+            try:
+                parsed = urlparse(_normalize_url_scheme(url))
+            except ValueError:
+                # Runs in prepare_call, outside the fetch's exception handler:
+                # raising here kills the turn instead of returning "Blocked:".
+                return "Reading page..."
             if parsed.scheme in ("http", "https") and parsed.hostname:
                 host = parsed.hostname
                 if host.startswith("www."):
@@ -227,6 +236,19 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
         preview = str(arguments.get("command") or "")[:60]
         return f"Running: {preview}" if preview else "Running command..."
     return f"Calling: {tool_name}"
+
+
+def awaiting_approval_status(tool_name: str) -> str:
+    """Status text for a call parked on the approval prompt.
+
+    It has not started, so reporting "Running ..." with a climbing timer reads
+    as a hang.
+    """
+    if tool_name == "python":
+        return "Waiting for approval: Python"
+    if tool_name == "terminal":
+        return "Waiting for approval: command"
+    return f"Waiting for approval: {tool_name}"
 
 
 def is_tool_error(result: str) -> bool:
@@ -266,6 +288,17 @@ def strip_result_for_model(result: str) -> str:
     return result
 
 
+def append_deferred_nudges(conversation: list, msgs: Sequence[dict]) -> None:
+    """Append a batch's no-op nudges as one deduped ``role=user`` message.
+
+    Deferred to after the batch's tool results so a no-op never splits an
+    assistant's ``tool_calls`` from their ``role=tool`` results.
+    """
+    contents = list(dict.fromkeys(msg["content"] for msg in msgs))
+    if contents:
+        conversation.append({"role": "user", "content": "\n\n".join(contents)})
+
+
 def _tool_name_from_schema(tool: Mapping[str, Any]) -> str:
     function = tool.get("function")
     if not isinstance(function, Mapping):
@@ -277,8 +310,9 @@ def _tool_name_from_schema(tool: Mapping[str, Any]) -> str:
 def _noop_result(reason: NoopReason, tool_name: str) -> str:
     if reason == "duplicate":
         return (
-            "The previous tool request was not executed because this exact "
-            "tool call already completed successfully. Do not repeat the same "
+            f"One earlier request to call tool '{tool_name}' in this batch was "
+            "not executed because an identical call had already completed "
+            "successfully. Do not repeat the same "
             "tool call. Continue with a different enabled tool if that would "
             "materially help, or provide the final answer if you have enough "
             "information."
@@ -291,8 +325,8 @@ def _noop_result(reason: NoopReason, tool_name: str) -> str:
             "the requested final note or answer."
         )
     return (
-        f"The previous tool request was not executed because tool "
-        f"'{tool_name}' is not enabled for this request. Provide the "
+        f"One earlier request to call tool '{tool_name}' in this batch was "
+        "not executed because that tool is not enabled for this request. Provide the "
         "final answer now without calling more tools."
     )
 

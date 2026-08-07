@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio extra-UI Playwright test: Compare tab, Recipes editor, /export, /studio, Settings tabs."""
+"""Unsloth extra-UI Playwright test: Compare tab, Recipes editor, /export, /studio, Settings tabs."""
 
 import json
 import os
@@ -36,6 +36,9 @@ ART_DIR = os.environ.get("PW_ART_DIR", "logs/playwright_extra")
 ART = Path(ART_DIR)
 ART.mkdir(parents = True, exist_ok = True)
 STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
+# The Voice-picker media-access crash is specific to headless Chromium on macos-14; only there
+# is a renderer crash downgraded to a warning. Linux/Windows keep hard crash coverage.
+MACOS_RUNNER = os.environ.get("RUNNER_OS", "").lower() == "macos" or sys.platform == "darwin"
 # Longer turn timeout: gemma-3-270m CPU inference is 3-5x slower on macos-14 runners.
 TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
@@ -71,6 +74,18 @@ def runtime_warn(m: str) -> None:
     info(f"WARN (runtime): {m}")
 
 
+def page_crashed(pg, exc: Exception) -> bool:
+    """True when the browser/page/context died (a macos-14 renderer crash) rather than a live-page
+    assertion failing -- so the caller can downgrade CI-environment flakiness to a runtime warning."""
+    try:
+        if pg.is_closed():
+            return True
+    except Exception:
+        return True
+    msg = str(exc).lower()
+    return "has been closed" in msg or "target closed" in msg or "crash" in msg
+
+
 with sync_playwright() as p:
     _watchdog = install_wall_clock_watchdog(
         WALL_TIMEOUT_S,
@@ -90,12 +105,11 @@ with sync_playwright() as p:
     )
     install_view_transition_killer(ctx)
     page = ctx.new_page()
-    # 60s default for slow macos-14 --single-process Chromium (second Studio boot of the job).
+    # 60s default for slow macos-14 --single-process Chromium (second Unsloth boot of the job).
     page.set_default_timeout(60_000)
     page_errors = []
 
-    # Filter out known-benign React errors (timing artefacts on slow CI runners, not Studio bugs);
-    # shared base list lives in _playwright_robust.BENIGN_PAGE_ERROR_PATTERNS.
+    # Filter known-benign React errors (slow-CI timing artefacts); base list in _playwright_robust.
     def _on_pageerror(e):
         msg = str(e)
         if is_benign_page_error(msg):
@@ -118,12 +132,9 @@ with sync_playwright() as p:
         except Exception as _shoot_err:
             info(f"WARN: screenshot {name} failed: {_shoot_err}")
 
-    # ─────────────────────────────────────────────────────
     # Setup: change-password through the UI + model load.
-    # ─────────────────────────────────────────────────────
     step("setup: change-password + model load")
-    # 3-attempt retry: form re-renders mid-fill on macos-14 can detach the password
-    # fields between locator and fill; each retry re-navigates with a fresh page if needed.
+    # 3-attempt retry: form re-renders mid-fill on macos-14 can detach the password fields.
     form_err: Exception | None = None
     for _form_attempt in range(3):
         try:
@@ -140,8 +151,7 @@ with sync_playwright() as p:
                 cur_pw.fill(OLD, timeout = 60_000)
             pw_field.fill(NEW, timeout = 60_000)
             page.fill("#confirm-password", NEW, timeout = 60_000)
-            # Click submit AND wait for the POST response together so a server-side reject
-            # surfaces immediately rather than 60s later via a downstream composer.wait_for.
+            # Click submit AND wait for the POST response together so a server-side reject surfaces now.
             status, _ = click_and_wait_for_response(
                 page,
                 url_substr = "/api/auth/change-password",
@@ -186,8 +196,7 @@ with sync_playwright() as p:
                 )
     if form_err is not None:
         raise form_err
-    # Settle network, then wait_for with one recovery cycle: the post-submit React
-    # re-render can leave the composer suspending or crash the renderer on macos-14.
+    # Settle network, then wait_for with one recovery cycle: the post-submit re-render can crash macos-14.
     try:
         page.wait_for_load_state("networkidle", timeout = 30_000)
     except Exception:
@@ -273,9 +282,7 @@ with sync_playwright() as p:
     chat_only = bool(health.get("chat_only"))
     info(f"chat_only mode: {chat_only}")
 
-    # ─────────────────────────────────────────────────────
     # 1. Compare tab.
-    # ─────────────────────────────────────────────────────
     step("Compare tab: send to two panes")
     # Compare lives in the composer "Tools and attachments" menu.
     compare_opened = False
@@ -324,12 +331,10 @@ with sync_playwright() as p:
             else:
                 cmp_composer.click()
                 cmp_composer.fill("Reply with: A")
-                # Prefer Enter: onKeyDown maps plain Enter to send(); the Send button's
-                # aria-label was added late so older builds don't match it in compare mode.
+                # Prefer Enter: onKeyDown maps plain Enter to send(); the Send button's aria-label came late.
                 cmp_composer.press("Enter")
-                # Expect 2 new assistant bubbles (one per pane). Panes have no explicit model
-                # in this CI flow so the backend may reject; downgrade to runtime_warn while
-                # keeping the structural assertions (view/composer present, text round-trips).
+                # Expect 2 new assistant bubbles (one per pane). Panes have no explicit model in this CI flow
+                # so the backend may reject; downgrade to runtime_warn but keep the structural assertions.
                 try:
                     page.wait_for_function(
                         """(want) => {
@@ -374,9 +379,7 @@ with sync_playwright() as p:
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
 
-    # ─────────────────────────────────────────────────────
     # 2. Recipes editor.
-    # ─────────────────────────────────────────────────────
     step("Recipes editor: click first template + Preview dialog")
     page.goto(f"{BASE}/data-recipes")
     page.wait_for_timeout(1500)
@@ -405,9 +408,7 @@ with sync_playwright() as p:
         except Exception as exc:
             soft_fail(f"recipe template click failed: {exc!r}")
 
-    # ─────────────────────────────────────────────────────
     # 3. Export route.
-    # ─────────────────────────────────────────────────────
     step(f"Export route ({'chat-only self-gated' if chat_only else 'form fields'})")
     page.goto(f"{BASE}/export")
     page.wait_for_timeout(1500)
@@ -428,8 +429,7 @@ with sync_playwright() as p:
             soft_fail("[data-tour='export-cta'] not found in /export")
         else:
             info("OK [data-tour='export-cta'] visible")
-        # HF-token field is lazy-loaded behind a disclosure; poll multiple selectors for ~8s.
-        # Logged as info (not soft_fail) since it doesn't block the export workflow.
+        # HF-token field is lazy-loaded behind a disclosure; poll for ~8s and log at info (non-blocking).
         hf_token = None
         for _try in range(8):
             page.wait_for_timeout(1000)
@@ -454,10 +454,8 @@ with sync_playwright() as p:
                 "non-blocking for upload flow)"
             )
 
-    # ─────────────────────────────────────────────────────
-    # 4. Studio training route.
-    # ─────────────────────────────────────────────────────
-    step(f"Studio route ({'chat-only redirect' if chat_only else 'tabs + sections'})")
+    # 4. Unsloth training route.
+    step(f"Unsloth route ({'chat-only redirect' if chat_only else 'tabs + sections'})")
     page.goto(f"{BASE}/studio")
     page.wait_for_timeout(1500)
     shoot("08-studio")
@@ -473,19 +471,25 @@ with sync_playwright() as p:
                 soft_fail(f"tab '{tab_name}' not found in /studio")
             else:
                 info(f"OK tab '{tab_name}' visible")
-        for anchor in ("studio-model", "studio-dataset", "studio-params"):
+        for anchor in ("studio-model-picker", "studio-dataset", "studio-params"):
             el = page.locator(f'[data-tour="{anchor}"]').first
             if el.count() == 0:
                 soft_fail(f"[data-tour='{anchor}'] not found")
             else:
                 info(f"OK [data-tour='{anchor}'] visible")
 
-    # ─────────────────────────────────────────────────────
     # 5. Settings dialog tabs.
-    # ─────────────────────────────────────────────────────
     step("Settings dialog: cycle through tabs")
     page.goto(f"{BASE}/chat")
     composer.wait_for(state = "visible", timeout = 60_000)
+    dictate = page.get_by_role("button", name = "Dictate").first
+    if dictate.count() == 0:
+        fail("Chat Dictate button not found")
+    elif dictate.get_attribute("type") != "button":
+        fail("Chat Dictate control must use type=button, not submit the composer")
+    else:
+        info("OK Chat Dictate control is type=button")
+
     page.keyboard.press("Control+,")
     page.wait_for_timeout(800)
     settings = page.get_by_role("dialog").first
@@ -505,6 +509,7 @@ with sync_playwright() as p:
             "Appearance",
             "Chat",
             "Developer",
+            "Voice",
             "About",
         )
         seen_tabs = []
@@ -532,16 +537,62 @@ with sync_playwright() as p:
                     soft_fail(f"Settings tab '{tab_name}' body suspiciously short: {body_text}")
             except Exception as exc:
                 soft_fail(f"Settings tab '{tab_name}' click failed: {exc!r}")
-        shoot("10-settings-tabs-visited")
-        page.keyboard.press("Escape")
-        page.wait_for_timeout(300)
+        step("Voice model picker: real mouse-wheel scrolling")
+        # By test id: the tab label is translated.
+        voice_tab = page.get_by_test_id("settings-tab-voice").first
+        if voice_tab.count() == 0:
+            fail("Voice settings tab not found")
+        else:
+            # The dictation-engine dropdown touches a media-access path that can crash headless Chromium
+            # on macos-14 (CheckMediaAccessPermission), so there a crash is a runtime warning + page
+            # recovery; on Linux/Windows a crash and any live-page failure stay a hard fail.
+            try:
+                voice_tab.click()
+                # By test id: these were bound to translated copy, which caused #7835.
+                page.get_by_test_id("dictation-engine-trigger").click()
+                page.get_by_test_id("dictation-engine-model").click()
+                page.get_by_test_id("stt-model-trigger").click()
+                page.get_by_test_id("stt-model-search").fill("whisper")
+                results = page.get_by_test_id("stt-model-results")
+                page.wait_for_function(
+                    """() => {
+                        const node = document.querySelector('[data-testid="stt-model-results"]');
+                        return !!node && node.scrollHeight > node.clientHeight;
+                    }""",
+                    timeout = 30_000,
+                )
+                results.hover()
+                page.mouse.wheel(0, 700)
+                page.wait_for_function(
+                    """() => {
+                        const node = document.querySelector('[data-testid="stt-model-results"]');
+                        return !!node && node.scrollTop > 0;
+                    }""",
+                    timeout = 5_000,
+                )
+                info("OK Voice model picker mouse wheel changed scrollTop")
+            except Exception as exc:
+                if page_crashed(page, exc) and MACOS_RUNNER:
+                    runtime_warn(f"Voice model picker aborted (browser/page unstable): {exc!r}")
+                    page = recover_or_replace_page(
+                        page,
+                        ctx,
+                        default_timeout_ms = 60_000,
+                        info = lambda m: info(f"recovery: {m}"),
+                    )
+                else:
+                    fail(f"Voice model picker did not wheel-scroll: {exc!r}")
+        # When the crash closed the context/browser, recover_or_replace_page hands back the closed page;
+        # skip the cosmetic teardown rather than re-raise TargetClosedError on it.
+        if not page.is_closed():
+            shoot("10-settings-tabs-visited")
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(300)
         info(f"visited Settings tabs: {seen_tabs}")
         if not seen_tabs:
             soft_fail("no Settings tabs were visitable")
 
-    # ─────────────────────────────────────────────────────
     # Done.
-    # ─────────────────────────────────────────────────────
     if page_errors:
         info(f"WARN {len(page_errors)} pageerror events; first: {page_errors[0]!r}")
         fail(f"{len(page_errors)} pageerror events")
@@ -553,4 +604,7 @@ with sync_playwright() as p:
         sys.exit(1)
     info("PASS extra UI flow")
     _watchdog.cancel()
-    browser.close()
+    try:
+        browser.close()
+    except Exception:
+        pass  # a crashed browser may already be gone; never fail teardown after PASS

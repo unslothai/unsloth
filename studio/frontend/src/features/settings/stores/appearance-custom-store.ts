@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
+import {
+  type StateStorage,
+  createJSONStorage,
+  persist,
+} from "zustand/middleware";
 import type { ResolvedTheme } from "./theme-store";
 
 // Best-effort persistence: localStorage can be blocked (private browsing) and
@@ -82,6 +86,74 @@ export const SIDEBAR_MENU_DEFAULT_VISIBLE: Record<SidebarMenuItemId, boolean> =
     connections: false,
   };
 
+/** Sidebar NAVIGATION rows the user can pin and reorder, distinct from the profile-menu entries above. Array order is render order. Unpinned rows go to the "More" flyout, except a lone one, which is hidden. */
+export const SIDEBAR_NAV_ITEM_IDS = [
+  // Model hub leads: picking a model comes before the work that uses one.
+  "hub",
+  "projects",
+  "images",
+  // Video sits directly under Images: the two media tabs read as one pair.
+  "video",
+  "train",
+  "recipes",
+  "export",
+  "api",
+] as const;
+
+export type SidebarNavItemId = (typeof SIDEBAR_NAV_ITEM_IDS)[number];
+
+export type SidebarNavItemPref = {
+  id: SidebarNavItemId;
+  /** true = top-level row; false = under "More". */
+  pinned: boolean;
+};
+
+// Matches the shipped layout, so an untouched install looks unchanged.
+export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
+  hub: true,
+  projects: true,
+  images: true,
+  // Under "More" until a user pins it.
+  video: false,
+  train: true,
+  recipes: false,
+  export: false,
+  api: false,
+};
+
+/** Every previously shipped layout, so a migration can tell an untouched install from one the
+ *  user arranged themselves. v3 pinned Video under Images; v4 moved Model hub above Projects;
+ *  v5 put Video back under "More". */
+const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
+  [
+    { id: "projects", pinned: true },
+    { id: "hub", pinned: true },
+    { id: "images", pinned: true },
+    { id: "train", pinned: true },
+    { id: "video", pinned: false },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+  ],
+  [
+    { id: "projects", pinned: true },
+    { id: "hub", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: true },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+  ],
+  [
+    { id: "hub", pinned: true },
+    { id: "projects", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: true },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+  ],
+];
+
 export const MAX_IMPORTED_FONTS = 3;
 /** Imported-font family name cap; must match the backend name max_length (100). */
 export const MAX_IMPORTED_FONT_NAME_LENGTH = 100;
@@ -101,7 +173,7 @@ export type AppearanceCustomization = {
   chatFont: string | null;
   codeFont: string | null;
   importedFonts: ImportedFont[];
-  /** Root font size in px (rem base). null = browser default (16). */
+  /** UI font size in px. null = app default (15). */
   uiFontSize: number | null;
   /** Code/pre font size in px. null = inherit each element's own size. */
   codeFontSize: number | null;
@@ -113,6 +185,8 @@ export type AppearanceCustomization = {
   fontSmoothing: boolean;
   /** Order and visibility of the optional sidebar profile menu items. */
   sidebarMenu: SidebarMenuItemPref[];
+  /** Order of the sidebar nav rows, and which are pinned vs. under "More". */
+  sidebarNav: SidebarNavItemPref[];
 };
 
 const EMPTY_MODE_COLORS: CustomModeColors = {
@@ -138,10 +212,15 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
     id,
     visible: SIDEBAR_MENU_DEFAULT_VISIBLE[id],
   })),
+  sidebarNav: SIDEBAR_NAV_ITEM_IDS.map((id) => ({
+    id,
+    pinned: SIDEBAR_NAV_DEFAULT_PINNED[id],
+  })),
 };
 
-export const UI_FONT_SIZE_RANGE = { min: 12, max: 20, default: 16 } as const;
+export const UI_FONT_SIZE_RANGE = { min: 12, max: 20, default: 15 } as const;
 export const CODE_FONT_SIZE_RANGE = { min: 10, max: 20, default: 13 } as const;
+const UI_FONT_SIZE_CSS_BASE = 16;
 
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 
@@ -200,7 +279,9 @@ function sanitizeImportedFonts(value: unknown): ImportedFont[] {
     const source = (entry ?? {}) as Partial<ImportedFont>;
     // Cap to the backend name length so an over-long name can't fail the PUT.
     const rawName = sanitizeFont(source.name);
-    const name = rawName ? rawName.slice(0, MAX_IMPORTED_FONT_NAME_LENGTH) : null;
+    const name = rawName
+      ? rawName.slice(0, MAX_IMPORTED_FONT_NAME_LENGTH)
+      : null;
     if (!name || seen.has(name)) continue;
     const dataUrl = source.dataUrl;
     if (
@@ -220,6 +301,26 @@ function sanitizeImportedFonts(value: unknown): ImportedFont[] {
 
 function isSidebarMenuItemId(value: unknown): value is SidebarMenuItemId {
   return SIDEBAR_MENU_ITEM_IDS.includes(value as SidebarMenuItemId);
+}
+
+function isSidebarNavItemId(value: unknown): value is SidebarNavItemId {
+  return SIDEBAR_NAV_ITEM_IDS.includes(value as SidebarNavItemId);
+}
+
+function sanitizeSidebarNav(value: unknown): SidebarNavItemPref[] {
+  const items: SidebarNavItemPref[] = [];
+  const seen = new Set<SidebarNavItemId>();
+  for (const entry of Array.isArray(value) ? value : []) {
+    const source = (entry ?? {}) as Partial<SidebarNavItemPref>;
+    if (!isSidebarNavItemId(source.id) || seen.has(source.id)) continue;
+    seen.add(source.id);
+    items.push({ id: source.id, pinned: source.pinned !== false });
+  }
+  // Ids added after the payload was written land at the end with their default.
+  for (const id of SIDEBAR_NAV_ITEM_IDS) {
+    if (!seen.has(id)) items.push({ id, pinned: SIDEBAR_NAV_DEFAULT_PINNED[id] });
+  }
+  return items;
 }
 
 function sanitizeSidebarMenu(value: unknown): SidebarMenuItemPref[] {
@@ -273,7 +374,31 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
         : "system",
     fontSmoothing: source.fontSmoothing !== false,
     sidebarMenu: sanitizeSidebarMenu(source.sidebarMenu),
+    sidebarNav: sanitizeSidebarNav(source.sidebarNav),
   };
+}
+
+/** Adopt the latest default only when the sidebar still matches one we shipped. */
+export function migrateShippedSidebarNavDefault(
+  customization: AppearanceCustomization,
+  storedVersion: number,
+  migrationVersion: number,
+): AppearanceCustomization {
+  // Once this migration version has been persisted, the same layout may be a
+  // deliberate user choice and must never be adopted again.
+  if (storedVersion >= migrationVersion) return customization;
+  const stored = JSON.stringify(customization.sidebarNav);
+  // Sanitize each layout too: the stored one has since gained any ids added
+  // after it was written, so a raw compare would never match.
+  const untouched = SHIPPED_SIDEBAR_NAV_DEFAULTS.some(
+    (layout) => JSON.stringify(sanitizeSidebarNav(layout)) === stored,
+  );
+  return untouched
+    ? {
+        ...customization,
+        sidebarNav: [...DEFAULT_CUSTOMIZATION.sidebarNav],
+      }
+    : customization;
 }
 
 export function isDefaultCustomization(c: AppearanceCustomization): boolean {
@@ -350,13 +475,16 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
     }),
     {
       name: "unsloth_appearance_customization",
-      version: 2,
+      version: 5,
       storage: createJSONStorage(() => guardedLocalStorage),
-      migrate: (persisted) => {
+      migrate: (persisted, version) => {
         const state = (persisted ?? {}) as Partial<AppearanceCustomState>;
-        return {
-          customization: sanitizeCustomization(state.customization),
-        } as AppearanceCustomState;
+        const customization = migrateShippedSidebarNavDefault(
+          sanitizeCustomization(state.customization),
+          version,
+          5,
+        );
+        return { customization } as AppearanceCustomState;
       },
       // Sanitize on EVERY rehydrate, not just version bumps: a same-version
       // payload written by an older bundle (e.g. before importedFonts existed)
@@ -389,15 +517,160 @@ function hexLuminance(hex: string): number {
   return 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
 }
 
+const FOREGROUND_DARK = "#111417";
+const FOREGROUND_LIGHT = "#ffffff";
+const FOREGROUND_DARK_FALLBACK = "#000000";
+const FOREGROUND_CONTRAST_FLOOR = 4.5;
+const ACCENT_TEXT_FLOOR = 2.5;
+const ACCENT_TEXT_WASH_OPACITY = 0.2;
+// Cover the full 8-bit channel range so a narrow valid contrast band is not
+// skipped when the custom and elevated surfaces sit far apart.
+const MIX_STEPS = 255;
+
+/** WCAG contrast ratio between two relative luminances. */
+function contrastRatio(a: number, b: number): number {
+  const [high, low] = a >= b ? [a, b] : [b, a];
+  return (high + 0.05) / (low + 0.05);
+}
+
+function mixColors(hex: string, target: string, amount: number): string {
+  const channel = (index: number) => {
+    const value = Number.parseInt(hex.slice(index, index + 2), 16);
+    const targetValue = Number.parseInt(target.slice(index, index + 2), 16);
+    return Math.round(value + (targetValue - value) * amount)
+      .toString(16)
+      .padStart(2, "0");
+  };
+  return `#${channel(1)}${channel(3)}${channel(5)}`;
+}
+
+/**
+ * Whichever foreground actually contrasts more. A fixed luminance threshold
+ * put white on mid-tone accents: #22c55e scored 2.28:1 on white against
+ * 8.11:1 on the dark ink. The crossover for this pair is near 0.19, but
+ * comparing the ratios needs no constant at all.
+ */
 function readableForeground(hex: string): string {
-  return hexLuminance(hex) > 0.45 ? "#111417" : "#ffffff";
+  const accent = hexLuminance(hex);
+  const darkContrast = contrastRatio(accent, hexLuminance(FOREGROUND_DARK));
+  const lightContrast = contrastRatio(accent, hexLuminance(FOREGROUND_LIGHT));
+  const preferred =
+    darkContrast >= lightContrast ? FOREGROUND_DARK : FOREGROUND_LIGHT;
+  if (Math.max(darkContrast, lightContrast) >= FOREGROUND_CONTRAST_FLOOR) {
+    return preferred;
+  }
+  // The preferred inks have a narrow crossover where both fall below AA.
+  // True black closes it without changing the established dark ink elsewhere.
+  return FOREGROUND_DARK_FALLBACK;
+}
+
+/** Palette surfaces that custom colors do not replace. */
+const PALETTE_SURFACES: Record<
+  ResolvedTheme,
+  { background: string; elevated: string }
+> = {
+  light: { background: "#ffffff", elevated: "#ffffff" },
+  dark: { background: "#181818", elevated: "#212121" },
+};
+
+function minimumAccentTextContrast(
+  accent: string,
+  backgrounds: readonly string[],
+): number {
+  const accentLuminance = hexLuminance(accent);
+  const against = (background: string) => {
+    const wash = mixColors(background, accent, ACCENT_TEXT_WASH_OPACITY);
+    return Math.min(
+      contrastRatio(accentLuminance, hexLuminance(background)),
+      contrastRatio(accentLuminance, hexLuminance(wash)),
+    );
+  };
+  return Math.min(...backgrounds.map(against));
+}
+
+function minimumPlainTextContrast(
+  accent: string,
+  backgrounds: readonly string[],
+): number {
+  const accentLuminance = hexLuminance(accent);
+  return Math.min(
+    ...backgrounds.map((background) =>
+      contrastRatio(accentLuminance, hexLuminance(background)),
+    ),
+  );
+}
+
+function findAccentCorrection(
+  accent: string,
+  backgrounds: readonly string[],
+  score: (hex: string, surfaces: readonly string[]) => number,
+): string | null {
+  const clears = (hex: string) => score(hex, backgrounds) >= ACCENT_TEXT_FLOOR;
+  if (clears(accent)) {
+    return accent;
+  }
+
+  const targets = [FOREGROUND_DARK_FALLBACK, FOREGROUND_LIGHT].sort(
+    (a, b) => score(b, backgrounds) - score(a, backgrounds),
+  );
+  for (let step = 1; step <= MIX_STEPS; step += 1) {
+    for (const target of targets) {
+      const candidate = mixColors(accent, target, step / MIX_STEPS);
+      if (clears(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * The accent is not only a fill: text-primary and text-control-accent paint it
+ * straight onto page and elevated surfaces, including primary washes up to
+ * 20%. A pale pick in light mode, or a near-black one in dark, then disappears.
+ * Hold custom accents to the same 2.5:1 bar across both plain and tinted uses.
+ *
+ * Find the smallest correction in either direction. Endpoint order is based
+ * on actual worst-case contrast, so a mid-gray background cannot send a
+ * failing accent toward white when black is the readable endpoint. Arbitrary
+ * custom and elevated surfaces can make the stronger wash constraint
+ * impossible; in that case the plain-surface floor remains mandatory.
+ */
+function legibleAccent(accent: string, backgrounds: readonly string[]): string {
+  const washSafe = findAccentCorrection(
+    accent,
+    backgrounds,
+    minimumAccentTextContrast,
+  );
+  if (washSafe) {
+    return washSafe;
+  }
+
+  const plainSafe = findAccentCorrection(
+    accent,
+    backgrounds,
+    minimumPlainTextContrast,
+  );
+  if (plainSafe) {
+    return plainSafe;
+  }
+
+  const targets = [FOREGROUND_DARK_FALLBACK, FOREGROUND_LIGHT].sort(
+    (a, b) =>
+      minimumPlainTextContrast(b, backgrounds) -
+      minimumPlainTextContrast(a, backgrounds),
+  );
+  return targets[0] ?? FOREGROUND_DARK_FALLBACK;
 }
 
 /**
  * FontFaces registered for imported fonts, keyed by family name. The dataUrl is
  * tracked too so a re-import under the same name (new bytes) replaces the face.
  */
-const registeredFontFaces = new Map<string, { face: FontFace; dataUrl: string }>();
+const registeredFontFaces = new Map<
+  string,
+  { face: FontFace; dataUrl: string }
+>();
 
 function syncImportedFonts(fonts: ImportedFont[]): void {
   if (typeof document === "undefined" || !("fonts" in document)) return;
@@ -436,12 +709,20 @@ function syncImportedFonts(fonts: ImportedFont[]): void {
 }
 
 /**
- * The custom "Accent" recolors the accent family (toggles, badges, chart-1).
- * Focus/selection rings and button colors (--primary) are deliberately left
- * alone: highlight borders stay neutral and Classic's buttons stay neutral.
+ * The custom "Accent" recolors the whole accent family: toggles and badges
+ * (--control-accent), charts (--chart-1), and the brand color behind primary
+ * buttons, active pills and meter labels (--primary). Only set while the user
+ * has picked an accent, so every palette keeps its own colors by default.
+ *
+ * Focus rings are unaffected: --ring is its own neutral in every palette.
+ * --verified stays pinned to the brand green on purpose, since it signals
+ * status rather than theme.
  */
-const ACCENT_VARS = ["--control-accent", "--chart-1"] as const;
-const ACCENT_FG_VARS = ["--control-accent-foreground"] as const;
+const ACCENT_VARS = ["--control-accent", "--chart-1", "--primary"] as const;
+const ACCENT_FG_VARS = [
+  "--control-accent-foreground",
+  "--primary-foreground",
+] as const;
 
 /**
  * Push the customization onto <html> as inline CSS variables, attributes, and
@@ -463,10 +744,18 @@ export function applyCustomizationToDocument(
   };
 
   const colors = c.colors[resolved];
+  const paletteSurfaces = PALETTE_SURFACES[resolved];
 
-  for (const name of ACCENT_VARS) setVar(name, colors.accent);
+  const accent = colors.accent
+    ? legibleAccent(colors.accent, [
+        colors.background ?? paletteSurfaces.background,
+        paletteSurfaces.elevated,
+      ])
+    : null;
+  for (const name of ACCENT_VARS) setVar(name, accent);
   for (const name of ACCENT_FG_VARS) {
-    setVar(name, colors.accent ? readableForeground(colors.accent) : null);
+    // Keyed off the corrected accent, since that is the color labels sit on.
+    setVar(name, accent ? readableForeground(accent) : null);
   }
   setVar("--background", colors.background);
   setVar("--foreground", colors.foreground);
@@ -479,6 +768,8 @@ export function applyCustomizationToDocument(
     "--font-sans",
     c.uiFont ? `"${c.uiFont}", ${DEFAULT_SANS_STACK}` : null,
   );
+  // Custom interface fonts cascade into chat and opt out of its Inter tuning.
+  el.toggleAttribute("data-ui-font", Boolean(c.uiFont));
   setVar(
     "--font-heading",
     c.headingFont ? `"${c.headingFont}", ${DEFAULT_HEADING_STACK}` : null,
@@ -508,11 +799,24 @@ export function applyCustomizationToDocument(
     setVar("--custom-chat-font", null);
   }
 
-  if (c.uiFontSize !== null && c.uiFontSize !== UI_FONT_SIZE_RANGE.default) {
-    style.fontSize = `${c.uiFontSize}px`;
+  // The UI font size drives a typography scale factor, never the root font
+  // size: rem-based layout geometry must not move with the preference. The
+  // scale reaches text through the --text-* / --text-ui-* / --leading-*
+  // tokens in index.css.
+  const effectiveUiFontSize = c.uiFontSize ?? UI_FONT_SIZE_RANGE.default;
+  if (effectiveUiFontSize !== UI_FONT_SIZE_RANGE.default) {
+    setVar(
+      "--ui-font-scale",
+      String(effectiveUiFontSize / UI_FONT_SIZE_CSS_BASE),
+    );
+    el.setAttribute("data-ui-font-size", String(effectiveUiFontSize));
   } else {
-    style.removeProperty("font-size");
+    setVar("--ui-font-scale", null);
+    el.removeAttribute("data-ui-font-size");
   }
+  // Older builds scaled the root font size directly; clear any stale inline
+  // value so layout never scales with the preference again.
+  style.removeProperty("font-size");
 
   if (c.codeFontSize !== null) {
     el.setAttribute("data-code-font-size", "");
@@ -552,7 +856,8 @@ export function applyCustomizationToDocument(
  * (canvas-confetti, view transitions) that CSS/MotionConfig cannot reach.
  */
 export function prefersReducedMotion(): boolean {
-  const setting = useAppearanceCustomStore.getState().customization.reduceMotion;
+  const setting =
+    useAppearanceCustomStore.getState().customization.reduceMotion;
   if (setting === "on") return true;
   if (setting === "off") return false;
   return (

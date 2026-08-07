@@ -12,11 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import logging
 import os
 import psutil
 import warnings
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Optional, List
 from functools import wraps
 
@@ -32,6 +34,7 @@ from unsloth.utils import (
     enable_padding_free_metadata,
     enable_sample_packing,
 )
+from unsloth.utils.packing import patch_hybrid_linear_attention_varlen
 from unsloth_zoo.training_utils import (
     unsloth_train as _unsloth_train,
 )
@@ -84,12 +87,12 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
         if formatting_func is None:
             return super().__call__(examples)
 
-        # why: base __call__ would reapply formatting_func; applied above.
-        self.formatting_func = None
-        try:
-            return super().__call__(examples)
-        finally:
-            self.formatting_func = formatting_func
+        # why: base __call__ would reapply formatting_func; applied above. A
+        # per-call shallow view shares every other attribute by reference, so a
+        # concurrent caller can never observe formatting_func blanked on self.
+        view = copy.copy(self)
+        view.formatting_func = None
+        return super(UnslothVisionDataCollator, view).__call__(examples)
 
 
 _AUTO_PADDING_FREE_ENV_DISABLED = os.environ.get(
@@ -100,6 +103,10 @@ PADDING_FREE_BLOCKLIST = {
     "gemma2",  # - gemma2:  Uses slow_attention_softcapping which has torch.compile issues
     "gpt_oss",  # - gpt_oss: Uses Flex Attention which doesn't handle padding_free correctly
 }
+# Hybrid linear-attention / state-space models (Qwen3.5, Qwen3-Next, ...) carry a
+# recurrent gated-delta state plus a causal conv1d that leak across sequence
+# boundaries once packing flattens the batch. Detected structurally by
+# _is_hybrid_linear_attention_model, not by model name.
 
 
 def _should_pack(config) -> bool:
@@ -135,6 +142,183 @@ _AUTO_PACK_SKIP_MESSAGES = (
 def _should_skip_auto_packing_error(exc: Exception) -> bool:
     message = str(exc).lower()
     return any(msg in message for msg in _AUTO_PACK_SKIP_MESSAGES)
+
+
+_VISION_DATASET_KEYS = frozenset(
+    {
+        "image",
+        "images",
+        "image_grid_thw",
+        "image_position_ids",
+        "image_sizes",
+        "mm_token_type_ids",
+        "pixel_attention_mask",
+        "pixel_position_ids",
+        "pixel_values",
+        "pixel_values_videos",
+        "video",
+        "videos",
+        "video_grid_thw",
+    }
+)
+
+
+def _is_vlm_config(config, model_types = ()) -> bool:
+    if any(
+        hasattr(config, attr)
+        for attr in ("vision_config", "img_processor", "image_token_index", "projector_config")
+    ):
+        return True
+
+    architectures = getattr(config, "architectures", None) or ()
+    try:
+        from transformers.models.auto import modeling_auto
+
+        mappings = (
+            getattr(modeling_auto, "MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES", {}) or {},
+            getattr(modeling_auto, "MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES", {}) or {},
+        )
+        registry_types = set().union(*(mapping.keys() for mapping in mappings))
+        registry_classes = set().union(*(mapping.values() for mapping in mappings))
+        config_types = set(model_types or ())
+        model_type = getattr(config, "model_type", None)
+        if model_type is not None:
+            config_types.add(model_type)
+        if not config_types.isdisjoint(registry_types) or any(
+            architecture in registry_classes for architecture in architectures
+        ):
+            return True
+    except Exception:
+        pass
+    return any(
+        isinstance(architecture, str) and architecture.endswith("ForVisionText2Text")
+        for architecture in architectures
+    )
+
+
+def _is_vision_dataset(dataset, *, unknown_is_vision = False) -> bool:
+    if dataset is None:
+        return False
+    column_names = getattr(dataset, "column_names", None)
+    if column_names is not None:
+        return not _VISION_DATASET_KEYS.isdisjoint(column_names)
+    # Unknown-schema streams cannot be safely probed without potentially dropping a sample.
+    return unknown_is_vision
+
+
+def _is_vision_eval_dataset(dataset, *, unknown_is_vision = False) -> bool:
+    if isinstance(dataset, dict):
+        return any(
+            _is_vision_dataset(split, unknown_is_vision = unknown_is_vision)
+            for split in dataset.values()
+        )
+    return _is_vision_dataset(dataset, unknown_is_vision = unknown_is_vision)
+
+
+_HYBRID_CONFIG_MARKERS = (
+    "linear_conv_kernel_dim",
+    "linear_key_head_dim",
+    "linear_value_head_dim",
+    "full_attention_interval",
+)
+
+
+def _is_hybrid_linear_attention_model(model) -> bool:
+    """Detect models mixing linear-attention / state-space mixers (gated-delta,
+    Mamba-style) with a causal conv1d, e.g. Qwen3.5 / Qwen3-Next. Packing and
+    padding-free flatten the batch, and those recurrent + conv ops leak state
+    across sequence boundaries, so they must not be packed. Uses composite
+    structural evidence rather than a model-name match."""
+    if model is None:
+        return False
+
+    # Config-level: explicit hybrid layer schedule or linear-attn markers.
+    for config in (
+        getattr(model, "config", None),
+        getattr(getattr(model, "config", None), "text_config", None),
+    ):
+        if config is None:
+            continue
+        layer_types = getattr(config, "layer_types", None)
+        if isinstance(layer_types, (list, tuple)) and any(
+            isinstance(t, str) and "linear_attention" in t for t in layer_types
+        ):
+            return True
+        if any(hasattr(config, marker) for marker in _HYBRID_CONFIG_MARKERS):
+            return True
+
+    # Module-level: a mixer carrying a recurrent gated-delta op plus a conv1d.
+    named_modules = getattr(model, "named_modules", None)
+    if named_modules is None:
+        return False
+    seen = set()
+    for _, module in named_modules():
+        if id(module) in seen:
+            continue
+        seen.add(id(module))
+        cls = type(module).__name__
+        if not (
+            cls.endswith("GatedDeltaNet") or "LinearAttention" in cls or cls.endswith("Mamba2Mixer")
+        ):
+            continue
+        has_recurrent = any(
+            hasattr(module, attr)
+            for attr in ("chunk_gated_delta_rule", "recurrent_gated_delta_rule", "A_log")
+        )
+        if has_recurrent and hasattr(module, "conv1d"):
+            return True
+    return False
+
+
+def _resolve_string_model_config(model_name, config_arg):
+    """TRL materializes a string ``model=`` inside ``__init__``; resolve its config
+    up front so the packing guards run before the dataset is packed. Best-effort:
+    returns None if the config cannot be loaded."""
+    try:
+        from transformers import AutoConfig
+
+        init_kwargs = getattr(config_arg, "model_init_kwargs", None) or {}
+        # why: forward auth + cache args too. Dropping token/use_auth_token made a
+        # private hybrid fail to load (resolve as None) -> treated as non-hybrid ->
+        # packing enabled without the shim even though TRL later loads it with the token.
+        forward = {
+            key: init_kwargs[key]
+            for key in (
+                "trust_remote_code",
+                "revision",
+                "subfolder",
+                "token",
+                "use_auth_token",
+                "cache_dir",
+                "code_revision",
+            )
+            if key in init_kwargs
+        }
+        # why: TRL merges top-level args.trust_remote_code into the load via setdefault
+        # before create_model_from_path, so honor it here (model_init_kwargs wins), else
+        # a remote-code hybrid with SFTConfig(trust_remote_code=True) resolves as None
+        # and skips the guard.
+        top_level_trust_remote_code = getattr(config_arg, "trust_remote_code", None)
+        if top_level_trust_remote_code is not None:
+            forward.setdefault("trust_remote_code", top_level_trust_remote_code)
+        return AutoConfig.from_pretrained(model_name, **forward)
+    except Exception:
+        return None
+
+
+def _chunked_loss_bypasses_forward(config) -> bool:
+    """TRL's default ``loss_type="chunked_nll"`` patches the model forward and calls
+    the backbone directly, so a forward wrapper never runs. Detect it so hybrid
+    packing stays on the padded path instead of silently skipping the varlen shim."""
+    try:
+        import trl.trainer.sft_trainer as _sft_trainer
+    except Exception:
+        return False
+    if not hasattr(_sft_trainer, "_patch_chunked_ce_lm_head"):
+        return False  # TRL has no chunked-CE path -> forward is not bypassed
+    if getattr(config, "use_liger_kernel", False):
+        return False  # liger forces loss_type="nll" -> normal forward
+    return getattr(config, "loss_type", None) in (None, "chunked_nll")
 
 
 # Unsloth gradient accumulation fix:
@@ -416,6 +600,50 @@ def _resolve_trainer_params(trainer_class, init_fn):
     return set(params.keys())
 
 
+def _ensure_warnings_issued(model):
+    """Restore the `warnings_issued` dict that trl trainers write into.
+
+    transformers set `self.warnings_issued = {}` in `PreTrainedModel.__init__` up
+    to 5.0.0 and dropped it in 5.1.0. trl did not follow: grpo, dpo, online_dpo,
+    kto, orpo, cpo, rloo and experimental bco still open `__init__` with
+    `model.warnings_issued["estimate_tokens"] = True`, so the trainer cannot be
+    built at all:
+
+        AttributeError: 'Qwen2ForCausalLM' object has no attribute 'warnings_issued'
+
+    models/rl.py already guards this, but only in the source it GENERATES, so the
+    guard exists exactly when that generation succeeds. When it does not, unsloth
+    falls back to trl's own class and the write is unguarded again. Measured, so
+    the weaker claim is the right one: UNSLOTH_COMPILE_DISABLE=1 does NOT remove
+    the generated module, which is still written with the guard in it, so that is
+    not the gap this closes. The fallback is.
+
+    Best-effort, and no stricter than the generated guard: a non-module (trl also
+    accepts a repo id string) is left alone.
+    """
+    import torch
+
+    if not isinstance(model, torch.nn.Module):
+        return
+    try:
+        existing = getattr(model, "warnings_issued", None)
+        if isinstance(existing, dict):
+            return
+        if existing is None:
+            model.warnings_issued = {}
+        else:
+            # Preserve a non-dict value rather than discard it; trl only ever
+            # writes one boolean key.
+            try:
+                model.warnings_issued = dict(existing)
+            except Exception:
+                model.warnings_issued = {}
+    except Exception:
+        # A model refusing the assignment is trl's to report, not ours to turn
+        # into a different traceback.
+        pass
+
+
 def _backwards_compatible_trainer(trainer_class, config_class):
     original_init = trainer_class.__init__
 
@@ -476,6 +704,7 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             # Reconstruct kwargs for Trainer
             kwargs = trainer_kwargs
             kwargs["args"] = config
+        _ensure_warnings_issued(args[0] if args else kwargs.get("model"))
         original_init(self, *args, **kwargs)
 
     return new_init
@@ -498,30 +727,69 @@ def _patch_sft_trainer_auto_packing(trl_module):
         else:
             config_arg = kwargs.get("args")
 
-        model = kwargs.get("model")
-        is_unsupported_model = False
+        model = args[0] if len(args) >= 1 else kwargs.get("model")
         is_vlm = False
+        is_unsupported_model = False
+        is_hybrid = False
+        is_encoder_decoder = False
+        hybrid_varlen_active = False
         if model is not None:
             model_config = getattr(model, "config", None)
+            if model_config is None and isinstance(model, str):
+                # TRL builds a string model inside __init__; resolve its config now.
+                model_config = _resolve_string_model_config(model, config_arg)
             if model_config is not None:
                 model_types = get_transformers_model_type(model_config)
                 is_unsupported_model = any(x in PADDING_FREE_BLOCKLIST for x in model_types)
+                is_vlm = _is_vlm_config(model_config, model_types)
+                is_encoder_decoder = bool(getattr(model_config, "is_encoder_decoder", False))
+            hybrid_target = (
+                SimpleNamespace(config = model_config)
+                if isinstance(model, str) and model_config is not None
+                else model
+            )
+            is_hybrid = _is_hybrid_linear_attention_model(hybrid_target)
+            # Hybrid models corrupt packed batches unless the gated-delta conv + scan
+            # reset at sequence boundaries. Enable the experimental varlen shim (flag +
+            # kernels) so packing stays correct, else keep them blocked. A string model
+            # (patched only after init) and TRL's chunked-loss forward bypass both leave
+            # the shim off, so hybrid packing falls back to the padded path.
+            if (
+                is_hybrid
+                and not isinstance(model, str)
+                and not _chunked_loss_bypasses_forward(config_arg)
+            ):
+                try:
+                    hybrid_varlen_active = patch_hybrid_linear_attention_varlen(model)
+                except Exception:
+                    hybrid_varlen_active = False
 
-                architectures = getattr(model_config, "architectures", None)
-                if architectures is None:
-                    architectures = []
-                is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
-                is_vlm = is_vlm or hasattr(model_config, "vision_config")
-
-        processing_class = kwargs.get("processing_class") or kwargs.get("tokenizer")
-        data_collator = kwargs.get("data_collator")
+        processing_class = (
+            args[5] if len(args) >= 6 else kwargs.get("processing_class") or kwargs.get("tokenizer")
+        )
+        data_collator = args[2] if len(args) >= 3 else kwargs.get("data_collator")
+        train_dataset = args[3] if len(args) >= 4 else kwargs.get("train_dataset")
+        eval_dataset = args[4] if len(args) >= 5 else kwargs.get("eval_dataset")
+        is_processor = isinstance(processing_class, ProcessorMixin)
+        is_auto_processor_vlm = is_vlm and processing_class is None
+        is_vision_dataset = (
+            data_collator is None
+            and not is_processor
+            and (
+                _is_vision_dataset(train_dataset, unknown_is_vision = is_vlm)
+                or _is_vision_eval_dataset(eval_dataset, unknown_is_vision = is_vlm)
+            )
+        )
 
         # Disable padding-free for VLMs / custom collators / blocklisted models
         blocked = (
             (data_collator is not None)
-            or isinstance(processing_class, ProcessorMixin)
-            or is_vlm
+            or is_processor
+            or is_auto_processor_vlm
+            or is_vision_dataset
             or is_unsupported_model
+            or is_encoder_decoder
+            or (is_hybrid and not hybrid_varlen_active)
             or (
                 os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
             )  # Disable padding free on forced logits
@@ -535,14 +803,23 @@ def _patch_sft_trainer_auto_packing(trl_module):
 
         if blocked and requested_pack:
             reason = "custom data collator"
-            if data_collator is None and isinstance(processing_class, ProcessorMixin):
+            if data_collator is None and is_processor:
                 reason = "processor-based model"
-            elif is_vlm:
-                reason = "vision-language model"
+            elif is_auto_processor_vlm:
+                reason = "vision-language model with auto processor"
+            elif is_vision_dataset:
+                reason = "vision dataset"
+            elif is_encoder_decoder:
+                reason = "encoder-decoder model"
+            elif is_hybrid and not hybrid_varlen_active:
+                reason = "hybrid linear-attention model"
             elif is_unsupported_model:
                 reason = f"unsupported model type(s): {', '.join(model_types)}"
-            message = f"Unsloth: Sample packing skipped ({reason} detected)."
-            print(message)
+            elif data_collator is None:
+                # compute_metrics, preprocess_logits_for_metrics, for_inference() and the
+                # user can all set it, so name the flag and not a setter.
+                reason = "UNSLOTH_RETURN_LOGITS=1"
+            logger.warning(f"Unsloth: packing=True ignored ({reason}).")
 
         packing_active = False
         if _should_pack(config_arg) and not blocked:

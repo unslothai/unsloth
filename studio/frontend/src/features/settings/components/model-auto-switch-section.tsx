@@ -14,6 +14,9 @@ import {
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
+// Mirrors MIN_AUTO_UNLOAD_IDLE_SECONDS in the backend settings store.
+const MIN_IDLE_SECONDS = 60;
+
 export function ModelAutoSwitchSection() {
   const t = useT();
   const [settings, setSettings] = useState<OpenAIAutoSwitchSettings | null>(
@@ -45,24 +48,34 @@ export function ModelAutoSwitchSection() {
     };
   }, [t]);
 
-  // Parse the idle-seconds draft to a non-negative integer; empty/invalid -> null.
+  // Parse the idle-seconds draft: 0 (off) or >= MIN_IDLE_SECONDS; else null.
   const parseIdleSeconds = (): number | null => {
     if (!draftIdleSeconds.trim()) {
       return null;
     }
     const parsed = Number(draftIdleSeconds);
-    return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+    if (!Number.isInteger(parsed)) {
+      return null;
+    }
+    return parsed === 0 || parsed >= MIN_IDLE_SECONDS ? parsed : null;
   };
 
   const persist = async (
     enabled: boolean,
-    idleSeconds: number,
+    idleSeconds: number | undefined,
     syncDraft = true,
+    keepKv?: boolean,
+    autoDownload?: boolean,
   ) => {
     setIsSaving(true);
     setError(null);
     try {
-      const saved = await updateOpenAIAutoSwitchSettings(enabled, idleSeconds);
+      const saved = await updateOpenAIAutoSwitchSettings(
+        enabled,
+        idleSeconds,
+        keepKv,
+        autoDownload,
+      );
       setSettings(saved);
       if (syncDraft) {
         setDraftIdleSeconds(String(saved.autoUnloadIdleSeconds));
@@ -101,6 +114,16 @@ export function ModelAutoSwitchSection() {
     void persist(true, idleSeconds);
   };
 
+  const handleKeepKvToggle = (keepKv: boolean) => {
+    if (!settings) return;
+    void persist(settings.enabled, undefined, false, keepKv);
+  };
+
+  const handleAutoDownloadToggle = (autoDownload: boolean) => {
+    if (!settings) return;
+    void persist(settings.enabled, undefined, false, undefined, autoDownload);
+  };
+
   return (
     <SettingsSection title={t("settings.general.modelAutoSwitch.sectionTitle")}>
       <SettingsRow
@@ -111,6 +134,18 @@ export function ModelAutoSwitchSection() {
           checked={settings?.enabled ?? false}
           disabled={!settings || isSaving}
           onCheckedChange={handleToggle}
+        />
+      </SettingsRow>
+      <SettingsRow
+        label={t("settings.general.modelAutoSwitch.autoDownload")}
+        description={t(
+          "settings.general.modelAutoSwitch.autoDownloadDescription",
+        )}
+      >
+        <Switch
+          checked={settings?.autoDownloadModel ?? false}
+          disabled={!settings?.enabled || isSaving}
+          onCheckedChange={handleAutoDownloadToggle}
         />
       </SettingsRow>
       <SettingsRow
@@ -127,7 +162,9 @@ export function ModelAutoSwitchSection() {
                 min={0}
                 step={1}
                 value={draftIdleSeconds}
-                aria-label="Idle auto-unload seconds"
+                aria-label={t(
+                  "settings.general.modelAutoSwitch.idleSecondsAriaLabel",
+                )}
                 disabled={!settings?.enabled || isSaving}
                 onChange={(event) => setDraftIdleSeconds(event.target.value)}
                 className="h-8 w-24"
@@ -160,6 +197,18 @@ export function ModelAutoSwitchSection() {
           ) : null}
         </div>
       </SettingsRow>
+      {settings?.idleUnloadActive ? (
+        <SettingsRow
+          label={t("settings.general.modelAutoSwitch.keepKv")}
+          description={t("settings.general.modelAutoSwitch.keepKvDescription")}
+        >
+          <Switch
+            checked={settings.autoUnloadKeepKv}
+            disabled={isSaving}
+            onCheckedChange={handleKeepKvToggle}
+          />
+        </SettingsRow>
+      ) : null}
     </SettingsSection>
   );
 }

@@ -122,12 +122,12 @@ def calculate_cost(provider: str, model: str, usage: dict[str, Any]) -> dict[str
         "priced": bool(prices),
     }
 
-    # Accept raw (input_tokens/output_tokens) and Studio chat-style
+    # Accept raw (input_tokens/output_tokens) and Unsloth chat-style
     # (prompt_tokens/completion_tokens) envelopes. Cache buckets differ:
     #   raw Anthropic:    input_tokens EXCLUDES cache buckets
     #   raw OpenAI:       input_tokens INCLUDES cache_read
-    #   Studio Anthropic: prompt_tokens INCLUDES cache_creation + cache_read
-    #   Studio OpenAI:    prompt_tokens == raw input_tokens
+    #   Unsloth Anthropic: prompt_tokens INCLUDES cache_creation + cache_read
+    #   Unsloth OpenAI:    prompt_tokens == raw input_tokens
     # Clamp >=0 so corrupted payloads can't produce a negative bill.
     cache_creation = max(0, int(usage.get("cache_creation_input_tokens") or 0))
     cache_read_native_present = (
@@ -160,7 +160,7 @@ def calculate_cost(provider: str, model: str, usage: dict[str, Any]) -> dict[str
         output_tokens = max(0, int(usage.get("completion_tokens") or 0))
     if provider == "openai":
         # Cached tokens land on input_tokens_details (raw Responses) or
-        # prompt_tokens_details (Studio chat-style).
+        # prompt_tokens_details (Unsloth chat-style).
         for key in ("input_tokens_details", "prompt_tokens_details"):
             details = usage.get(key) or {}
             if isinstance(details, dict):

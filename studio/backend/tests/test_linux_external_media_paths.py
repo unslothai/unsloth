@@ -254,8 +254,10 @@ def test_legacy_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tm
     )
     fake_external_media = SimpleNamespace(
         linux_run_media_mount_roots = lambda: [media_root],
+        macos_volume_roots = lambda: [],
         windows_drive_roots = lambda: [],
     )
+    fake_paths.external_media = fake_external_media
     fake_studio_db = SimpleNamespace(
         list_scan_folders = lambda: [],
         contains_sensitive_path_component = studio_db.contains_sensitive_path_component,

@@ -148,9 +148,9 @@ def stdio_mcp_enabled() -> bool:
     if os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP") != "1":
         return False
     from state.tool_policy import get_tool_policy
-    from utils.host_policy import loopback_default_active
+    from utils.host_policy import loopback_default_active, remote_connector_active
 
-    if loopback_default_active() and get_tool_policy() is False:
+    if loopback_default_active() and (remote_connector_active() or get_tool_policy() is False):
         return False
     return True
 
@@ -262,6 +262,8 @@ _STDIO_SESSION_REAP_INTERVAL = 30.0
 _STDIO_CONNECT_TIMEOUT = 60.0  # allows first-run `npx -y ...` package download
 _STDIO_CLOSE_TIMEOUT = 10.0
 _STDIO_WEDGE_MARGIN = 15.0
+_STDIO_LIVENESS_TIMEOUT = 5.0
+_CANCEL_UNWIND_TIMEOUT = 2.0
 # Cap concurrent persistent sessions: each owns a subprocess + loop thread, and
 # the scope includes a caller-supplied thread_id, so an unbounded cache is a
 # resource-exhaustion surface. Overridable via env for large deployments.
@@ -308,6 +310,35 @@ def _transport_dead(session) -> bool:
     return False
 
 
+def _session_responsive(
+    session,
+    budget: Optional[float] = None,
+    cancel_event = None,
+) -> bool:
+    """Whether a session left dirty by an abandoned call can be reused: the
+    server must answer inside ``budget`` (the caller's remaining deadline).
+    Proves the server is alive, not that the abandoned call finished -- MCP
+    requests are concurrent. Probes with a raw single-page tools/list: ping
+    answers "Method not found" on a modern-era connection, and list_tools()
+    auto-paginates up to 250 pages."""
+    client = session.client
+    if client is None:
+        return False
+    window = _STDIO_LIVENESS_TIMEOUT if budget is None else min(_STDIO_LIVENESS_TIMEOUT, budget)
+    if window <= 0:
+        return False
+    probe = getattr(client, "list_tools_mcp", None) or client.list_tools
+    try:
+        # margin=0: a wedged loop must fail inside the window, not 15s past it.
+        session.run(_race_tool_call(probe(), window, cancel_event), window, margin = 0.0)
+    except _MCPCancelled:
+        raise
+    except Exception:  # noqa: BLE001
+        return False
+    session.dirty = False
+    return True
+
+
 class _SessionWedged(Exception):
     pass
 
@@ -332,6 +363,7 @@ class _StdioSession:
         self.client = None
         self.closed = threading.Event()
         self.defunct = False  # discarded; close once in_flight drains (see _retire)
+        self.dirty = False  # a call was abandoned on it; ping before reuse
         self._close_lock = threading.Lock()
         self.call_lock = threading.Lock()  # serializes tool calls on this session
         self.last_used = time.monotonic()
@@ -394,14 +426,20 @@ class _StdioSession:
         except Exception:
             return False
 
-    def run(self, coro, timeout: Optional[float]):
+    def run(
+        self,
+        coro,
+        timeout: Optional[float],
+        margin: float = _STDIO_WEDGE_MARGIN,
+    ):
         self.last_used = time.monotonic()
         future = asyncio.run_coroutine_threadsafe(coro, self.loop)
         # The coroutine enforces the tool timeout; the margin only catches a
         # wedged loop. No deadline at all when the caller set none -- but poll
         # so a session closed under us (server update/delete) can't hang the
-        # request thread forever on a stopped loop.
-        deadline = None if timeout is None else time.monotonic() + timeout + _STDIO_WEDGE_MARGIN
+        # request thread forever on a stopped loop. Callers whose whole budget is
+        # the timeout (the liveness probe) pass margin=0.
+        deadline = None if timeout is None else time.monotonic() + timeout + margin
         try:
             while True:
                 try:
@@ -854,9 +892,26 @@ def _flatten_result(result: Any) -> str:
     return body
 
 
-async def _race_tool_call(call_coro, timeout: Optional[float], cancel_event) -> Any:
+def _unwind_budget(unwind_timeout: float, timeout: Optional[float], elapsed: float) -> float:
+    """How long a cancelled call may take to unwind: whatever is left of the
+    caller's window, so the wait is never charged on top of an expired deadline."""
+    if not unwind_timeout:
+        return 0.0
+    if timeout is None:
+        return unwind_timeout
+    return min(unwind_timeout, max(0.0, timeout - elapsed))
+
+
+async def _race_tool_call(
+    call_coro,
+    timeout: Optional[float],
+    cancel_event,
+    unwind_timeout: float = 0.0,
+) -> Any:
     """Await ``call_coro`` under ``timeout``, polling ``cancel_event`` so a
-    /cancel POST interrupts even mid-network-read."""
+    /cancel POST interrupts even mid-network-read. ``unwind_timeout`` waits up to
+    that long for a cancelled call to finish unwinding; only callers that hand the
+    client back to a cache need it (one-shot clients are discarded anyway)."""
 
     async def _watch_cancel() -> None:
         while cancel_event is not None and not cancel_event.is_set():
@@ -865,6 +920,7 @@ async def _race_tool_call(call_coro, timeout: Optional[float], cancel_event) -> 
     if cancel_event is not None and cancel_event.is_set():
         call_coro.close()
         raise _MCPCancelled
+    started = time.monotonic()
     call_task = asyncio.create_task(call_coro)
     if cancel_event is None:
         return await asyncio.wait_for(call_task, timeout = timeout)
@@ -879,6 +935,11 @@ async def _race_tool_call(call_coro, timeout: Optional[float], cancel_event) -> 
         for t in (call_task, watch_task):
             if not t.done():
                 t.cancel()
+        # Let a cancelled call unwind before its session is reused, out of the
+        # caller's remaining budget. Outlasting it just leaves the session dirty.
+        left = _unwind_budget(unwind_timeout, timeout, time.monotonic() - started)
+        if left:
+            await asyncio.wait({call_task, watch_task}, timeout = left)
     if not done:
         raise asyncio.TimeoutError
     if call_task in done:
@@ -906,7 +967,7 @@ def _call_stdio_tool(
     def _remaining() -> Optional[float]:
         return None if deadline is None else max(0.0, deadline - time.monotonic())
 
-    # Callers without a Studio session id must retain the former one-shot
+    # Callers without an Unsloth session id must retain the former one-shot
     # behavior: no browser/cookie/tool state can leak into another request.
     # Use an ephemeral key (and close it below) rather than the shared empty
     # scope that the persistent-session cache used previously.
@@ -969,15 +1030,28 @@ def _call_stdio_tool(
                     retry = True
                 else:
                     raise RuntimeError("MCP server connection is not available")
+            elif session.dirty and not _session_responsive(session, _remaining(), cancel_event):
+                # Still stuck on the abandoned call; only now is a fresh one needed.
+                discard_session = True
+                if attempt == 0:
+                    retry = True
+                else:
+                    raise RuntimeError("MCP server is not responding")
             else:
                 rem = _remaining()
-                coro = _race_tool_call(session.client.call_tool(name, args), rem, cancel_event)
+                # raise_on_error=False for the same reason as the one-shot path.
+                coro = _race_tool_call(
+                    session.client.call_tool(name, args, raise_on_error = False),
+                    rem,
+                    cancel_event,
+                    # Only a cached session is worth waiting on.
+                    0.0 if ephemeral else _CANCEL_UNWIND_TIMEOUT,
+                )
                 return session.run(coro, rem)
         except (_MCPCancelled, asyncio.TimeoutError):
-            # _race_tool_call cancels the pending call but cancellation is
-            # cooperative. Never return this client to the cache while the
-            # timed-out/cancelled operation might still run on its transport.
-            discard_session = True
+            # Keep the session so a Stop doesn't destroy the server's state; the
+            # SDK drops the abandoned reply, and reuse is gated on a live probe.
+            session.dirty = True
             raise
         except _SessionWedged:
             discard_session = True

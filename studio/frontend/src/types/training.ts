@@ -4,6 +4,12 @@
 export type ModelType = "vision" | "audio" | "embeddings" | "text";
 export type TrainingMethod = "qlora" | "lora" | "full" | "cpt";
 
+export function isTrainingMethod(value: unknown): value is TrainingMethod {
+  return (
+    value === "qlora" || value === "lora" || value === "full" || value === "cpt"
+  );
+}
+
 export function isAdapterMethod(method: TrainingMethod): boolean {
   return method === "lora" || method === "qlora" || method === "cpt";
 }
@@ -40,7 +46,7 @@ export interface WizardState {
   loraRank: number;
   loraAlpha: number;
   loraDropout: number;
-  loraVariant: "lora" | "rslora" | "loftq";
+  loraVariant: "lora" | "rslora" | "loftq" | "dora";
   batchSize: number;
   gradientAccumulation: number;
   weightDecay: number;
@@ -84,7 +90,7 @@ export interface WizardActions {
   setLoraRank: (rank: number) => void;
   setLoraAlpha: (alpha: number) => void;
   setLoraDropout: (dropout: number) => void;
-  setLoraVariant: (v: "lora" | "rslora" | "loftq") => void;
+  setLoraVariant: (v: "lora" | "rslora" | "loftq" | "dora") => void;
   setBatchSize: (v: number) => void;
   setGradientAccumulation: (v: number) => void;
   setWeightDecay: (v: number) => void;

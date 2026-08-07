@@ -36,6 +36,12 @@ fi
 #                             forces a source build, and causes HTTP 422 errors.
 #                             Only use "master" temporarily when the latest release
 #                             is missing support for a new model architecture.
+#
+#   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "vulkan", "hip", or
+#                           "rocm". "cpu" forces the CPU-only prebuilt. "vulkan"
+#                           selects Vulkan even when CUDA or ROCm is detected.
+#                           "hip"/"rocm" keeps the detected HIP backend and opts
+#                           out of automatic Vulkan fallback.
 # ──────────────────────────────────────────────────────────────────────────
 _DEFAULT_LLAMA_PR_FORCE=""
 _DEFAULT_LLAMA_SOURCE="https://github.com/ggml-org/llama.cpp"
@@ -62,6 +68,27 @@ fi
 # Usage: substep <message> [color]         (color defaults to C_DIM)
 step()    { printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
 substep() { printf "  %-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
+
+setup_fail() {
+    local exit_code=$1
+    shift
+    [ "$exit_code" -ne 0 ] || exit_code=1
+    local message
+    message=$(printf '%s' "$*" | tr '\r\n' '  ')
+    case "${UNSLOTH_TAURI_MODE:-0}" in
+        1|true) printf '[TAURI:ERROR] %s\n' "$message" ;;
+    esac
+    exit "$exit_code"
+}
+
+# ── Helper: can the controlling terminal actually be opened for reading? ──
+# `test -r` only checks permission bits, which look fine in containers and
+# systemd units where open() then fails with ENXIO. Probe with a real open.
+# Mirrors install.sh's _can_read_tty; defined here too because setup.sh runs
+# as its own process (install.sh invokes it, it does not source it).
+_can_read_tty() {
+    ( : </dev/tty ) >/dev/null 2>&1
+}
 
 _is_verbose() {
     [ "${UNSLOTH_VERBOSE:-0}" = "1" ]
@@ -127,13 +154,13 @@ _suggest_npm_registry() {
     printf '\n' >&2
     step "frontend" "registry.npmjs.org looks blocked (corporate firewall/proxy?)" "$C_WARN" >&2
     if [ -n "$_mirror" ]; then
-        substep "Studio pins the public npm registry; your mirror is being ignored." >&2
+        substep "Unsloth pins the public npm registry; your mirror is being ignored." >&2
         substep "Detected a registry in your npm config:" >&2
         substep "  $_mirror" >&2
-        substep "Re-run pointing Studio at it:" >&2
+        substep "Re-run pointing Unsloth at it:" >&2
         substep "  UNSLOTH_NPM_REGISTRY=$_mirror ./install.sh --local" >&2
     else
-        substep "If you use a private mirror/proxy, point Studio at it and re-run:" >&2
+        substep "If you use a private mirror/proxy, point Unsloth at it and re-run:" >&2
         substep "  UNSLOTH_NPM_REGISTRY=https://your-mirror.example/api/npm/ ./install.sh --local" >&2
     fi
     substep "(min-release-age and save-exact stay enforced.)" >&2
@@ -160,7 +187,7 @@ _run_quiet() {
         exit_code=$?
         step "error" "$label failed (exit code $exit_code)" "$C_ERR" >&2
         if [ "$on_fail" = "exit" ]; then
-            exit "$exit_code"
+            setup_fail "$exit_code" "$label failed (exit code $exit_code)"
         else
             return "$exit_code"
         fi
@@ -169,7 +196,10 @@ _run_quiet() {
     local tmplog
     tmplog=$(mktemp) || {
         step "error" "Failed to create temporary file" "$C_ERR" >&2
-        [ "$on_fail" = "exit" ] && exit 1 || return 1
+        if [ "$on_fail" = "exit" ]; then
+            setup_fail 1 "Failed to create temporary file for $label"
+        fi
+        return 1
     }
 
     if "$@" >"$tmplog" 2>&1; then
@@ -183,7 +213,7 @@ _run_quiet() {
         rm -f "$tmplog"
 
         if [ "$on_fail" = "exit" ]; then
-            exit "$exit_code"
+            setup_fail "$exit_code" "$label failed (exit code $exit_code)"
         else
             return "$exit_code"
         fi
@@ -245,6 +275,336 @@ _resolve_cuda_archs() {
         fi
     done <<< "$_raw_caps"
     printf '%s' "$_archs"
+}
+
+# Reserved for the OS, and budgeted per compile job, both in MiB. Measured on
+# llama.cpp with CUDA 13.1, the heaviest translation units (flash-attention
+# template instances) peak at ~400 MiB RSS each, and -j20 peaked at 8.2 GiB
+# across ~30 processes, since nvcc forks cicc and ptxas. 2048 is deliberately
+# above that: it must also cover MSVC and hipcc, older and far heavier CUDA
+# toolkits (ggml-org/llama.cpp#17844 climbs past 16 GiB), and the link step.
+# Erring high costs build time; erring low costs the machine.
+_LLAMA_BUILD_RESERVE_MB=2048
+_LLAMA_BUILD_MB_PER_JOB=2048
+
+# Echo the cmake -j count. Args: core count, total RAM MiB ("" = unreadable,
+# which keeps the old core-count behaviour). UNSLOTH_LLAMA_BUILD_JOBS wins.
+# Pure, so the tests can drive it without faking hardware.
+_llama_jobs_for() {
+    local _cores=$1 _mem_mb=$2 _jobs
+    if [[ "${UNSLOTH_LLAMA_BUILD_JOBS:-}" =~ ^[0-9]+$ ]] && [ "$UNSLOTH_LLAMA_BUILD_JOBS" -ge 1 ]; then
+        printf '%s' "$UNSLOTH_LLAMA_BUILD_JOBS"
+        return 0
+    fi
+    if ! [[ "$_cores" =~ ^[0-9]+$ ]] || [ "$_cores" -lt 1 ]; then _cores=4; fi
+    if ! [[ "$_mem_mb" =~ ^[0-9]+$ ]]; then
+        printf '%s' "$_cores"
+        return 0
+    fi
+    _jobs=$(( (_mem_mb - _LLAMA_BUILD_RESERVE_MB) / _LLAMA_BUILD_MB_PER_JOB ))
+    [ "$_jobs" -lt 1 ] && _jobs=1
+    [ "$_jobs" -gt "$_cores" ] && _jobs=$_cores
+    printf '%s' "$_jobs"
+}
+
+# Echo the first line of $1 with whitespace stripped, or nothing. A builtin read
+# plus an expansion, not `head | tr`: this is best-effort on the install's
+# critical path under `set -euo pipefail`, and a failing pipeline took the whole
+# install down. -r alone does not rule that out (a directory passes it, and a
+# cgroup can be torn down between the test and the open); -f does.
+_cg_read() {
+    local _v=""
+    [ -f "$1" ] && [ -r "$1" ] || return 0
+    IFS= read -r _v < "$1" 2>/dev/null || true
+    printf '%s' "${_v//[[:space:]]/}"
+    return 0
+}
+
+# Echo $1 when it is a real limit. v2 writes "max"; v1 a near-2^63 sentinel.
+# Zero is a limit, not the absence of one: memory.high throttles and never
+# invokes the OOM killer (cgroup-v2.rst), so a process runs happily under
+# MemoryHigh=0 and must not then be handed its full core count.
+_cg_limit() {
+    [[ "$1" =~ ^[0-9]+$ ]] || return 0
+    [ "$1" -lt 4611686018427387904 ] && printf '%s' "$1"
+    return 0
+}
+
+# Echo "$1/$2" and every ancestor up to $1, innermost first, NUL-delimited: a
+# mount point may contain a newline, so a line-delimited list would split one
+# path into two. dirname is inlined for the same reason ($() eats a trailing
+# newline).
+_cg_dirs() {
+    local _root=$1 _cur
+    if [ -n "${2:-}" ] && [ "$2" != "/" ]; then
+        _cur="$_root/${2#/}"
+        while [ "$_cur" != "$_root" ] && [ "$_cur" != "/" ]; do
+            printf '%s\0' "$_cur"
+            case "$_cur" in
+                */*) _cur=${_cur%/*}; [ -n "$_cur" ] || _cur="/" ;;
+                *) break ;;
+            esac
+        done
+    fi
+    printf '%s\0' "$_root"
+}
+
+# The mountinfo path decoder as an awk function, in one place so its two callers
+# cannot drift. mountinfo escapes space, tab, newline and backslash as \040 and
+# friends; strtonum is a gawk extension, so the octal maths is done by hand to
+# also run under the mawk and BSD awk that Debian and macOS ship.
+_cg_unesc_prog() {
+    cat <<'_CG_AWK_UNESC'
+        function unesc(s,   out, i, c, o, v) {
+            out = ""; i = 1
+            while (i <= length(s)) {
+                c = substr(s, i, 1)
+                if (c == "\\" && substr(s, i + 1, 3) ~ /^[0-7][0-7][0-7]$/) {
+                    o = substr(s, i + 1, 3)
+                    v = (substr(o, 1, 1) + 0) * 64 + (substr(o, 2, 1) + 0) * 8 + (substr(o, 3, 1) + 0)
+                    out = out sprintf("%c", v); i += 4
+                } else { out = out c; i++ }
+            }
+            return out
+        }
+_CG_AWK_UNESC
+}
+
+# Echo $1 with its mountinfo escapes decoded. Decoding is deliberately late:
+# \011 and \012 decode to the very tab and newline that delimit the records
+# below, so decoding at the read would split one record into two. An escaped
+# path holds neither, so it travels intact and is decoded here.
+_cg_unesc() {
+    [ -n "$1" ] || return 0
+    printf '%s\n' "$1" | awk "$(_cg_unesc_prog)"'{ printf "%s", unesc($0); exit }' || true
+    return 0
+}
+
+# Echo every matching cgroup hierarchy as "<mount root><tab><mount point>", both
+# still escaped. $1 = a mountinfo file, $2 = "cgroup2" or a v1 controller name.
+# mountinfo is "... <root> <mountpoint> <opts> [tags] - <fstype> <source>
+# <superopts>", and a v1 hierarchy lists its controllers in the super options,
+# so a co-mounted or relocated one is found by name rather than assumed to sit
+# at <root>/<name>.
+_cg_mounts() {
+    [ -r "$1" ] || return 0
+    awk -v want="$2" '
+        {
+            for (i = 1; i <= NF; i++) if ($i == "-") break
+            if (i + 3 > NF) next
+            if (want == "cgroup2") {
+                if ($(i + 1) == "cgroup2") print $4 "\t" $5
+                next
+            }
+            if ($(i + 1) != "cgroup") next
+            n = split($(i + 3), opts, ",")
+            for (j = 1; j <= n; j++) if (opts[j] == want) { print $4 "\t" $5; next }
+        }' "$1" 2>/dev/null || true
+    return 0
+}
+
+# Echo the process's path within a mount, or nothing when the mount does not
+# expose it. Args: mount root, process cgroup path. A bind-mounted subtree shows
+# a mount root like /slice while /proc/self/cgroup reports /slice/job and the
+# files sit at <mountpoint>/job, so joining the two unmapped walks a path that
+# does not exist and settles on an outer limit instead of the binding one.
+_cg_rel() {
+    local _root=$1 _rel=$2
+    [ -n "$_rel" ] || return 0
+    [ "$_root" = "/" ] && { printf '%s' "$_rel"; return 0; }
+    case "$_rel" in
+        "$_root") printf '%s' "/" ;;
+        "$_root"/*) printf '%s' "${_rel#"$_root"}" ;;
+        # Not under this mount's root: nothing here describes this process.
+        *) : ;;
+    esac
+    return 0
+}
+
+# Echo EVERY "<root><tab><point>" on stdin whose root contains the process path
+# ($1), still escaped, one per line; or the first seen when none does. A
+# hierarchy can be mounted twice with different subtree roots (rootless podman
+# inside rootless podman): taking the first steps past the binding mount, and
+# taking only the most specific hides a limit above the narrower mount's root.
+# So every containing mount is inspected and the smallest allowance wins, which
+# makes the answer order-independent.
+_cg_pick_mounts() {
+    local _rel=$1 _root _point _droot _any="" _firstroot="" _firstpoint=""
+    while IFS=$'\t' read -r _root _point; do
+        [ -n "$_point" ] || continue
+        if [ -z "$_firstpoint" ]; then _firstroot=$_root; _firstpoint=$_point; fi
+        # /proc/self/cgroup is not escaped, so the root is compared decoded.
+        _droot=$(_cg_unesc "$_root")
+        [ -n "$(_cg_rel "$_droot" "$_rel")" ] || continue
+        printf '%s\t%s\n' "$_root" "$_point"
+        _any=1
+    done
+    [ -n "$_any" ] || [ -z "$_firstpoint" ] || printf '%s\t%s\n' "$_firstroot" "$_firstpoint"
+    return 0
+}
+
+# Echo the memory free under the binding cgroup limit in MiB, or nothing. Args:
+# fallback cgroup root, /proc/self/cgroup path, /proc/self/mountinfo path; all
+# arguments so the tests can drive a real tree. Mirrors dataset_num_proc.py:
+# reading the hierarchy root alone only works with a private cgroup namespace,
+# and under Slurm, systemd or --cgroupns=host the binding limit is the process's
+# own path or an ancestor's. Each limit pairs with the usage of the directory
+# that set it, since an ancestor's usage counts siblings this process cannot
+# see, and the smallest remaining allowance wins.
+_cgroup_free_mb() {
+    local _root=$1 _proc=$2 _mnt=${3:-} _rel _dir _used _limit _free _name _min=""
+    local _v2rel _v1rel _v2mnts _v1mnts _mroot _mpoint
+    _cg_consider() {
+        [ -n "$1" ] || return 0
+        if [[ "$2" =~ ^[0-9]+$ ]]; then _free=$(( $1 - $2 )); else _free=$1; fi
+        [ "$_free" -lt 0 ] && _free=0
+        if [ -z "$_min" ] || [ "$_free" -lt "$_min" ]; then _min=$_free; fi
+        return 0
+    }
+    # The process path is read first so the right mount can be chosen among
+    # several. Only the first two colons are delimiters: a systemd unit name may
+    # contain one, and -F: with $3 would truncate the path there.
+    _v2rel=$(awk '/^0::/ { print substr($0, 4); exit }' "$_proc" 2>/dev/null || true)
+    _v1rel=$(awk '
+        {
+            a = index($0, ":"); if (a == 0) next
+            rest = substr($0, a + 1)
+            b = index(rest, ":"); if (b == 0) next
+            if (substr(rest, 1, b - 1) ~ /(^|,)memory(,|$)/) { print substr(rest, b + 1); exit }
+        }' "$_proc" 2>/dev/null || true)
+    _v2mnts=$(_cg_mounts "$_mnt" cgroup2 | _cg_pick_mounts "$_v2rel")
+    _v1mnts=$(_cg_mounts "$_mnt" memory | _cg_pick_mounts "$_v1rel")
+    # Fall back to the conventional layout when mountinfo is unreadable.
+    [ -n "$_v2mnts" ] || _v2mnts=$(printf '/\t%s' "$_root")
+    [ -n "$_v1mnts" ] || _v1mnts=$(printf '/\t%s' "$_root/memory")
+
+    # The v2 line is "0::<path>"; systemd hybrid mode adds v1 lines alongside.
+    while IFS=$'\t' read -r _mroot _mpoint; do
+        [ -n "$_mpoint" ] || continue
+        # Decode now that a single path is in hand, after it survived the tab-
+        # and newline-delimited transport. The sentinel keeps $() from eating a
+        # trailing newline.
+        _mroot=$(_cg_unesc "$_mroot"; printf X); _mroot=${_mroot%X}
+        _mpoint=$(_cg_unesc "$_mpoint"; printf X); _mpoint=${_mpoint%X}
+        [ -d "$_mpoint" ] || continue
+        _rel=$(_cg_rel "$_mroot" "$_v2rel")
+        while IFS= read -r -d '' _dir; do
+            _used=$(_cg_read "$_dir/memory.current")
+            for _name in memory.max memory.high; do
+                _limit=$(_cg_limit "$(_cg_read "$_dir/$_name")")
+                _cg_consider "$_limit" "$_used"
+            done
+        done < <(_cg_dirs "$_mpoint" "$_rel")
+    done <<< "$_v2mnts"
+
+    # v1 is "<id>:<controllers>:<path>", and mounts are often combined.
+    while IFS=$'\t' read -r _mroot _mpoint; do
+        [ -n "$_mpoint" ] || continue
+        _mroot=$(_cg_unesc "$_mroot"; printf X); _mroot=${_mroot%X}
+        _mpoint=$(_cg_unesc "$_mpoint"; printf X); _mpoint=${_mpoint%X}
+        [ -d "$_mpoint" ] || continue
+        _rel=$(_cg_rel "$_mroot" "$_v1rel")
+        while IFS= read -r -d '' _dir; do
+            _used=$(_cg_read "$_dir/memory.usage_in_bytes")
+            _limit=$(_cg_limit "$(_cg_read "$_dir/memory.limit_in_bytes")")
+            _cg_consider "$_limit" "$_used"
+        done < <(_cg_dirs "$_mpoint" "$_rel")
+    done <<< "$_v1mnts"
+
+    [ -n "$_min" ] && printf '%d' "$(( _min / 1048576 ))"
+    return 0
+}
+
+# macOS available memory in MiB, read from vm_stat on stdin; empty when the
+# output does not parse. free + inactive is the reclaim-aware equivalent of
+# MemAvailable, and the page size is read from the header rather than assumed to
+# be 4096, which is wrong on Apple Silicon. Only those two: xnu's
+# osfmk/mach/vm_statistics.h says speculative pages "are already accounted for
+# in free_count", and purgeable is an attribute of a page rather than a queue,
+# so a volatile page is already counted on active or inactive. Adding either
+# double-counts. Under-counting is the safe direction for a cap: it costs build
+# time on a busy Mac rather than the machine.
+_vm_stat_avail_mb() {
+    awk '
+        /page size of/ {
+            for (i = 1; i < NF; i++) if ($i == "of") { ps = $(i + 1) + 0; break }
+        }
+        /^Pages (free|inactive)/ {
+            gsub(/\./, "", $NF); pages += $NF
+        }
+        # A zero page count is a reading; only a missing page size is a failure.
+        END { if (ps > 0) printf "%d", pages * ps / 1048576 }' || true
+    return 0
+}
+
+# Usable RAM in MiB; empty when it cannot be read. MemAvailable, not MemTotal: a
+# workstation with 8 GiB already resident cannot host a 14 GiB compile just
+# because 16 GiB is fitted. /proc is not namespaced either, so a lower cgroup
+# allowance wins. $1 is the meminfo file, an argument like every other reader's
+# path here so the tests can pin a number instead of racing the live one.
+_usable_ram_mb() {
+    local _meminfo=${1:-/proc/meminfo} _bytes _mb="" _free _avail
+    if [ -r "$_meminfo" ]; then
+        # MemAvailable counts reclaimable page cache; MemFree does not. Absent
+        # before Linux 3.14, where MemTotal is the only thing to go on. `|| true`
+        # because bash applies errexit to a failing assignment in POSIX mode, and
+        # an unreadable meminfo must cost the cap, not the install.
+        _mb=$(awk '/^MemAvailable:/ { printf "%d", $2 / 1024; exit }' "$_meminfo") || true
+        [ -n "$_mb" ] || _mb=$(awk '/^MemTotal:/ { printf "%d", $2 / 1024; exit }' "$_meminfo") || true
+    elif _bytes=$(sysctl -n hw.memsize 2>/dev/null); then
+        [[ "$_bytes" =~ ^[0-9]+$ ]] && _mb=$(( _bytes / 1048576 ))
+        # macOS has no MemAvailable, so hw.memsize is installed RAM and would
+        # hand a busy Mac a budget it cannot honour; vm_stat is the equivalent,
+        # with installed RAM as the fallback when it does not parse. Zero is
+        # kept: a Mac with nothing reclaimable should build at 1 job, not take
+        # its full core count.
+        _avail=$(vm_stat 2>/dev/null | _vm_stat_avail_mb || true)
+        if [[ "$_avail" =~ ^[0-9]+$ ]]; then _mb=$_avail; fi
+    fi
+    _free=$(_cgroup_free_mb /sys/fs/cgroup /proc/self/cgroup /proc/self/mountinfo)
+    if [[ "$_free" =~ ^[0-9]+$ ]]; then
+        if [ -z "$_mb" ] || [ "$_free" -lt "$_mb" ]; then _mb=$_free; fi
+    fi
+    printf '%s' "$_mb"
+    return 0
+}
+
+_llama_build_jobs() {
+    _llama_jobs_for \
+        "$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)" \
+        "$(_usable_ram_mb)"
+}
+
+# Opt-in staged GPU smoke test after a source build (#5854 gap 2). Default off:
+# llama-server's first GPU forward pass JIT-compiles CUDA kernels and stalls
+# installs for minutes on Blackwell. Same env as install_llama_prebuilt.py.
+_staged_validation_enabled() {
+    local _raw="${UNSLOTH_LLAMA_STAGED_VALIDATION:-}"
+    # Match install_llama_prebuilt.py staged_validation_enabled(): strip + lowercase.
+    _raw="$(printf '%s' "$_raw" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+    case "$_raw" in
+        1|true|yes|on) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Map the source-build GPU backend to install_llama_prebuilt --install-kind so
+# validate_server enables --n-gpu-layers for the right backends.
+_source_smoke_install_kind() {
+    if [ "${_TRY_METAL_CPU_FALLBACK:-false}" = true ]; then
+        printf '%s' "macos-arm64"
+        return 0
+    fi
+    case "${GPU_BACKEND:-}" in
+        cuda)
+            case "$(uname -m 2>/dev/null || true)" in
+                aarch64|arm64) printf '%s' "linux-arm64-cuda" ;;
+                *) printf '%s' "linux-cuda" ;;
+            esac
+            ;;
+        rocm) printf '%s' "linux-rocm" ;;
+        *) printf '%s' "" ;;
+    esac
 }
 
 # Run a GPU probe under a 10s timeout when `timeout` is available so a wedged
@@ -396,7 +756,7 @@ _print_cuda_driver_toolkit_mismatch() {
     local _driver_major=${_driver_version%%.*}
     substep "CUDA Toolkit $_toolkit_version is a major-version mismatch: toolkit major $_toolkit_major exceeds driver CUDA major $_driver_major ($_driver_version)." "$C_WARN"
     substep "Update the NVIDIA GPU driver to run CUDA Toolkit $_toolkit_version, or install a CUDA $_driver_major.x toolkit." "$C_WARN"
-    substep "Or let Studio use the prebuilt CUDA bundle; it does not need the local toolkit." "$C_WARN"
+    substep "Or let Unsloth use the prebuilt CUDA bundle; it does not need the local toolkit." "$C_WARN"
 }
 
 print_llama_error_log() {
@@ -471,6 +831,65 @@ rm -rf "$REPO_ROOT/unsloth_compiled_cache"
 rm -rf "$SCRIPT_DIR/backend/unsloth_compiled_cache"
 rm -rf "$SCRIPT_DIR/tmp/unsloth_compiled_cache"
 
+# WebView caches keyed by the bundle id can keep serving the previous frontend
+# after an update. Cache-only: storage, cookies, settings, models and the studio
+# database are untouched.
+_clear_webview_caches() {
+    # No HOME: bail rather than let `set -u` abort or "" expand to /Library and /.cache.
+    [ -n "${HOME:-}" ] || return 0
+    _wvc_bid="ai.unsloth.studio"
+    _wvc_paths=()
+    # The app's version stamp dir (main.rs webview_profile_root), which on macOS
+    # is not the cache dir, so it is tracked separately.
+    _wvc_root=""
+    case "$(uname -s 2>/dev/null)" in
+        Darwin)
+            # WKWebView keeps every cache-typed store under Library/Caches/<bid>;
+            # Library/WebKit/<bid> is user storage and is left alone.
+            _wvc_paths=("$HOME/Library/Caches/$_wvc_bid")
+            _wvc_root="$HOME/Library/Application Support/$_wvc_bid"
+            ;;
+        Linux)
+            # wry points WebKitGTK's base-cache dir at the app data dir, so the
+            # caches sit beside localstorage/, databases/ and cookies, which stay.
+            # A relative XDG_DATA_HOME is invalid per the XDG spec and dropped by
+            # dirs, so match Tauri and use the default rather than rm -rf under
+            # whatever directory the installer runs from.
+            _wvc_data="${XDG_DATA_HOME:-$HOME/.local/share}"
+            case "$_wvc_data" in /*) ;; *) _wvc_data="$HOME/.local/share" ;; esac
+            _wvc_data="$_wvc_data/$_wvc_bid"
+            _wvc_paths=(
+                "$_wvc_data/WebKitCache"
+                "$_wvc_data/CacheStorage"
+                "$_wvc_data/serviceworkers"
+            )
+            _wvc_root="$_wvc_data"
+            ;;
+        *) return 0 ;;
+    esac
+    # Drop the version stamp first. An update runs while the old WebView still holds
+    # these files, so the rm below can fail; the app's own clear is the retry, and it
+    # is skipped while the stamp matches the running version. Unconditional, since a
+    # repair or a local rebuild leaves the version unchanged and a redundant clear on
+    # the next launch is the cheap side. An `if`, not `[ ... ] && rm`: under `set -e`
+    # that compound returns 1 when the guard is false and would abort the install.
+    if [ -n "$_wvc_root" ]; then
+        rm -f "$_wvc_root/.webview-cache-cleared" 2>/dev/null || true
+    fi
+    _wvc_cleared=false
+    for _wvc_p in "${_wvc_paths[@]}"; do
+        # -L too: a dangling symlink still occupies the path.
+        [ -e "$_wvc_p" ] || [ -L "$_wvc_p" ] || continue
+        rm -rf "$_wvc_p" 2>/dev/null && _wvc_cleared=true || true
+    done
+    if [ "$_wvc_cleared" = true ]; then
+        substep "cleared stale WebView caches ($_wvc_bid); settings and data kept"
+    fi
+    return 0
+}
+# Not called here: under `set -e` with no trap, clearing before the UNSLOTH_STUDIO_HOME
+# / STUDIO_HOME override is validated lets a typo'd override delete the cache, then abort.
+
 # ── Detect Colab ──
 IS_COLAB=false
 keynames=$'\n'$(printenv | cut -d= -f1)
@@ -504,17 +923,30 @@ if [ -n "$_studio_override" ]; then
     if [ ! -d "$_studio_override" ]; then
         echo "ERROR: $_studio_override_var=$_studio_override does not exist." >&2
         echo "       Run install.sh to create the install root before 'unsloth studio update'." >&2
-        exit 1
+        setup_fail 1 "$_studio_override_var=$_studio_override does not exist"
     fi
-    [ -w "$_studio_override" ] || { echo "ERROR: $_studio_override_var=$_studio_override is not writable." >&2; exit 1; }
-    STUDIO_HOME="$(CDPATH= cd -P -- "$_studio_override" && pwd -P)" || exit 1
+    if [ ! -w "$_studio_override" ]; then
+        echo "ERROR: $_studio_override_var=$_studio_override is not writable." >&2
+        setup_fail 1 "$_studio_override_var=$_studio_override is not writable"
+    fi
+    STUDIO_HOME="$(CDPATH= cd -P -- "$_studio_override" && pwd -P)" ||
+        setup_fail 1 "Could not resolve $_studio_override_var=$_studio_override"
 else
     STUDIO_HOME="$HOME/.unsloth/studio"
 fi
+
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
 VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
 VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"
 VENV_T5_510_DIR="$STUDIO_HOME/.venv_t5_510"
+
+# The override is validated, so a typo can no longer cost the cache. Venv-gated because
+# a writable-but-empty override still aborts at the venv check below, and clearing first
+# would cost the cache for a run that then does nothing; a fresh install has neither venv
+# nor cache. Still before any install work, while the old frontend is the one on disk.
+if [ -x "$VENV_DIR/bin/python" ]; then
+    _clear_webview_caches
+fi
 
 _STUDIO_OWNED_MARKER=".unsloth-studio-owned"
 _LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
@@ -531,15 +963,48 @@ _STUDIO_HOME_IS_CUSTOM=false
 if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
     _STUDIO_HOME_IS_CUSTOM=true
 fi
-# Directory-local evidence Studio created "$1": only prebuilt-installer metadata
+# Directory-local evidence Unsloth created "$1": only prebuilt-installer metadata
 # counts (UNSLOTH_PREBUILT_INFO.json for llama.cpp, UNSLOTH_NODE_PREBUILT_INFO.json
-# for Node), both written only by our installers. Mirrors the setup.ps1 Node guard.
-# A markerless source build stays strict since this runs right before an rm -rf.
+# for Node, UNSLOTH_WHISPER_PREBUILT_INFO.json for whisper.cpp), all written only
+# by our installers. Mirrors the setup.ps1 Node guard. A markerless source build
+# stays strict since this runs right before an rm -rf.
 _studio_owned_adoptable() {
     [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] && return 0
     [ -f "$1/UNSLOTH_NODE_PREBUILT_INFO.json" ] && return 0
+    [ -f "$1/UNSLOTH_WHISPER_PREBUILT_INFO.json" ] && return 0
     return 1
 }
+# Search (+x), not read (+r), is what the marker probes need: inside a directory
+# we cannot search every probe reports absent, so our own install reads as someone else's.
+_studio_dir_unsearchable() {
+    [ -d "$1" ] || return 1
+    ( cd "$1" ) 2>/dev/null && return 1
+    return 0
+}
+
+# Mirrors Exit-PathAccessDenied in setup.ps1. owner-unverified means the marker
+# was unreadable, so do not claim the tree is ours or advise deleting it.
+_path_access_denied() {
+    _pad_dir="$1"
+    _pad_label="$2"
+    _pad_mode="${3:-}"
+    step "permissions" "$_pad_label at $_pad_dir cannot be read: permission denied" "$C_ERR"
+    if [ "$_pad_mode" = "owner-unverified" ]; then
+        substep "Unsloth cannot confirm this folder is its own install while it is unreadable, so it will not tell you to remove it" "$C_WARN"
+        substep "Restore access, or move the folder aside, then re-run setup:" "$C_WARN"
+    else
+        substep "This folder lives outside the app, so reinstalling Unsloth Studio reuses it and fails the same way" "$C_WARN"
+        substep "Simplest fix: delete or rename $_pad_dir, then re-run setup (it is a managed cache and gets reinstalled)" "$C_WARN"
+        substep "If deleting is denied too, it belongs to another user; restore access with:" "$C_WARN"
+    fi
+    substep "ls -ld \"$_pad_dir\"" "$C_WARN"
+    substep "chmod -R u+rwX \"$_pad_dir\"" "$C_WARN"
+    if [ "$_pad_mode" = "owner-unverified" ]; then
+        setup_fail 1 "Permission denied reading $_pad_label at $_pad_dir. Unsloth cannot confirm that folder is its own install while it is unreadable: restore access, or move it aside, then re-run setup."
+    fi
+    setup_fail 1 "Permission denied reading the existing $_pad_label at $_pad_dir. Delete or rename that folder (Unsloth reinstalls it) or restore access, then re-run setup. Reinstalling the app does not reset it."
+}
+
 _assert_studio_owned_or_absent() {
     _aso_dir="$1"
     _aso_label="$2"
@@ -549,9 +1014,14 @@ _assert_studio_owned_or_absent() {
             : > "$_aso_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
             return 0
         fi
-        echo "ERROR: $_aso_dir already exists and is not marked as a Studio-owned $_aso_label." >&2
+        # An unsearchable tree hides its own marker and so looks like someone else's:
+        # report permissions, not ownership.
+        if _studio_dir_unsearchable "$_aso_dir"; then
+            _path_access_denied "$_aso_dir" "$_aso_label" owner-unverified
+        fi
+        echo "ERROR: $_aso_dir already exists and is not marked as an Unsloth-owned $_aso_label." >&2
         echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." >&2
-        exit 1
+        setup_fail 1 "$_aso_label path is not an Unsloth-owned install: $_aso_dir"
     fi
 }
 
@@ -585,7 +1055,7 @@ if [ "$_NEED_FRONTEND_BUILD" = false ] && [ ! -d "$_OXC_DIR" ]; then
 else
 
 # ── Node (isolated; never touches the system Node/npm) ──
-# Studio's frontend (Vite 8) needs Node ^20.19 || >=22.12 || >=23 and npm >= 11.
+# Unsloth's frontend (Vite 8) needs Node ^20.19 || >=22.12 || >=23 and npm >= 11.
 # Three sources:
 #   system  -- system Node + npm already satisfy both; used read-only.
 #   bundled -- install a pinned isolated Node under $UNSLOTH_HOME/node, build-only.
@@ -666,15 +1136,15 @@ elif [ "$NODE_SOURCE" = bundled ]; then
     fi
     set -e
     if [ "$_NODE_STATUS" -eq 3 ]; then
-        step "node" "install blocked by another active Studio install" "$C_ERR"
+        step "node" "install blocked by another active Unsloth install" "$C_ERR"
         sed 's/^/   | /' "$_NODE_LOG" >&2; rm -f "$_NODE_LOG"
-        substep "close other Studio installs and retry"
-        exit 3
+        substep "close other Unsloth installs and retry"
+        setup_fail 3 "Node install is blocked by another active Unsloth install"
     elif [ "$_NODE_STATUS" -ne 0 ]; then
         step "node" "isolated Node install failed" "$C_ERR"
         sed 's/^/   | /' "$_NODE_LOG" >&2; rm -f "$_NODE_LOG"
         substep "install Node >= 20.19 (with npm >= 11) yourself and re-run, or check your network"
-        exit 1
+        setup_fail 1 "Could not install an isolated Node runtime"
     fi
     grep -Fq "already matches" "$_NODE_LOG" && verbose_substep "isolated Node already up to date"
     rm -f "$_NODE_LOG"
@@ -692,7 +1162,7 @@ elif [ "$NODE_SOURCE" = bundled ]; then
 else
     _FRONTEND_SKIP=true
     step "frontend" "skipped (no suitable Node; system left untouched)" "$C_WARN"
-    substep "found Node='${_SYS_NODE_VER:-none}' npm='${_SYS_NPM_VER:-none}'; Studio needs Node >=20.19/22.12/23 and npm >= 11"
+    substep "found Node='${_SYS_NODE_VER:-none}' npm='${_SYS_NPM_VER:-none}'; Unsloth needs Node >=20.19/22.12/23 and npm >= 11"
     substep "install a suitable Node + npm, or unset UNSLOTH_SKIP_NODE_INSTALL to let Unsloth manage an isolated Node"
 fi
 verbose_substep "node source: $NODE_SOURCE (sys node=${_SYS_NODE_VER:-none} npm=${_SYS_NPM_VER:-none}) dir=$NODE_DIR"
@@ -807,7 +1277,7 @@ if [ "$_bun_install_ok" = false ]; then
     if [ "$_npm_install_rc" -ne 0 ]; then
         _suggest_npm_registry "$_FRONTEND_INSTALL_LOG"
         rm -f "$_FRONTEND_INSTALL_LOG"
-        exit "$_npm_install_rc"
+        setup_fail "$_npm_install_rc" "Frontend dependency installation failed (exit code $_npm_install_rc)"
     fi
 fi
 _CAPTURE_LOG=""
@@ -847,7 +1317,7 @@ if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev
     if [ "$_oxc_install_rc" -ne 0 ]; then
         _suggest_npm_registry "$_OXC_INSTALL_LOG"
         rm -f "$_OXC_INSTALL_LOG"
-        exit "$_oxc_install_rc"
+        setup_fail "$_oxc_install_rc" "OXC validator dependency installation failed (exit code $_oxc_install_rc)"
     fi
     rm -f "$_OXC_INSTALL_LOG"
     cd "$SCRIPT_DIR"
@@ -873,11 +1343,11 @@ _remove_agent_instruction_files \
 _COLAB_NO_VENV=false
 if [ ! -x "$VENV_DIR/bin/python" ]; then
     if [ "$IS_COLAB" = true ]; then
-        # On Colab there is no Studio venv -- install backend deps into system Python.
+        # On Colab there is no Unsloth venv -- install backend deps into system Python.
         # Strip all version constraints so pip keeps Colab's pre-installed
         # packages (huggingface-hub, datasets, transformers) and only pulls
         # in genuinely missing ones (structlog, fastapi, etc.).
-        substep "Colab detected, installing Studio backend dependencies..."
+        substep "Colab detected, installing Unsloth backend dependencies..."
         _COLAB_REQS_TMP="$(mktemp)"
         sed 's/[><=!~;].*//' "$SCRIPT_DIR/backend/requirements/studio.txt" \
             | grep -v '^#' | grep -v '^$' > "$_COLAB_REQS_TMP"
@@ -885,7 +1355,7 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
             if ! run_quiet_no_exit "install Colab backend deps" pip install -q -r "$_COLAB_REQS_TMP"; then
                 rm -f "$_COLAB_REQS_TMP"
                 step "python" "Colab backend dependency install failed" "$C_ERR"
-                exit 1
+                setup_fail 1 "Colab backend dependency installation failed"
             fi
         else
             step "python" "no Colab backend dependencies resolved from requirements file" "$C_WARN"
@@ -896,7 +1366,7 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
         step "python" "venv not found at $VENV_DIR" "$C_ERR"
         substep "Run install.sh first to create the environment:"
         substep "curl -fsSL https://unsloth.ai/install.sh | sh"
-        exit 1
+        setup_fail 1 "Virtual environment not found at $VENV_DIR"
     fi
 else
     source "$VENV_DIR/bin/activate"
@@ -906,14 +1376,47 @@ install_python_stack() {
     python "$SCRIPT_DIR/install_python_stack.py"
 }
 
+# ── HTTP GET to stdout (supports curl and wget) ──
+# install.sh takes either transport everywhere, so a wget-only box installs fine
+# and then stalled here, where curl was the only way to fetch anything.
+_setup_http_get() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -LsSf "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- "$1"
+    else
+        return 1
+    fi
+}
+
+# Same, with a deadline, for the checks that must not hang the install.
+# wget has nothing like curl's total-transfer --max-time: --timeout is per
+# operation and it retries 20 times, so a stalled server took minutes and a slow
+# drip never ended. --tries=1 plus an outer `timeout` restores the 5s ceiling;
+# without timeout (base macOS, which ships curl anyway) the per-operation bound
+# stands rather than the check being dropped.
+_setup_http_get_timed() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --max-time 5 "$1"
+    elif command -v wget >/dev/null 2>&1; then
+        if command -v timeout >/dev/null 2>&1; then
+            timeout 5 wget -qO- --timeout=5 --tries=1 "$1"
+        else
+            wget -qO- --timeout=5 --tries=1 "$1"
+        fi
+    else
+        return 1
+    fi
+}
+
 USE_UV=false
 if command -v uv &>/dev/null; then
     USE_UV=true
 elif {
     if _is_verbose; then
-        curl -LsSf https://astral.sh/uv/install.sh | sh
+        _setup_http_get https://astral.sh/uv/install.sh | sh
     else
-        curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
+        _setup_http_get https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
     fi
 }; then
     export PATH="$HOME/.local/bin:$PATH"
@@ -926,6 +1429,11 @@ fast_install() {
     fi
     python -m pip install "$@"
 }
+
+fast_install_sidecar() (
+    unset UV_OVERRIDE
+    fast_install "$@"
+)
 
 cd "$SCRIPT_DIR"
 
@@ -954,7 +1462,7 @@ import sys; from importlib.metadata import version
 print(version(sys.argv[1]))
 " "$_PKG_NAME" 2>/dev/null || echo "")
 
-    LATEST_VER=$(curl -fsSL --max-time 5 "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null \
+    LATEST_VER=$(_setup_http_get_timed "https://pypi.org/pypi/$_PKG_NAME/json" 2>/dev/null \
         | "$VENV_DIR/bin/python" -c "import sys,json; print(json.load(sys.stdin)['info']['version'])" 2>/dev/null \
         || echo "")
 
@@ -976,6 +1484,108 @@ except (PackageNotFoundError, ValueError, IndexError):
 sys.exit(0 if (major, minor) >= (4, 14) else 1)
 " 2>/dev/null; then
             substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        fi
+        # An interrupted install leaves $_PKG_NAME current while studio.txt
+        # never finished, so the compare above says "up to date" and update --
+        # plus the desktop Repair button -- no-ops on a venv that cannot boot.
+        if ! "$VENV_DIR/bin/python" -c "
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import install_manifest
+except Exception:
+    sys.exit(0)  # older tree without the manifest helper: leave the fast path alone
+sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
+" "$SCRIPT_DIR" 2>/dev/null; then
+            substep "studio install incomplete -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        fi
+        # An XPU pin the venv does not satisfy. Only the dependency pass acts on it
+        # (install_python_stack's _ensure_xpu_torch), so without this escape a CPU install
+        # switched to UNSLOTH_TORCH_INDEX_FAMILY=xpu keeps its CPU wheel forever: the package
+        # version is current, so the fast path calls it up to date. Mirrors setup.ps1.
+        _setup_pin="${UNSLOTH_TORCH_INDEX_URL:-${UNSLOTH_TORCH_INDEX_FAMILY:-}}"
+        # Strip query/fragment first: an authenticated mirror (…/whl/xpu?token=...) is a
+        # supported pin shape, and missing it reads as "no XPU pin" and skips the repair.
+        _setup_pin="${_setup_pin%%\#*}"
+        _setup_pin="${_setup_pin%%\?*}"
+        # ALL trailing slashes, like the shared leaf parsers: a single %/ leaves "…/xpu/" behind.
+        while [ "${_setup_pin%/}" != "$_setup_pin" ]; do _setup_pin="${_setup_pin%/}"; done
+        # Exact, lowercased leaf, like every other leaf parser: a *xpu suffix match (…/private-xpu)
+        # would force a pass every update that _ensure_xpu_torch then declines to act on, and an
+        # uncased match would miss UNSLOTH_TORCH_INDEX_FAMILY=XPU that those parsers do accept.
+        _setup_pin_leaf=$(printf '%s' "${_setup_pin##*/}" | tr '[:upper:]' '[:lower:]')
+        # Disk first, no interpreter: version.py carries the local label, so a wedged Intel
+        # driver cannot hang `studio update` inside `import torch`. Read unconditionally, not
+        # only under a pin: the pin is one-shot, so the installed wheel is the only durable
+        # signal -- the same one _ensure_xpu_triton keys on.
+        _setup_pin_ok=false
+        _setup_pin_is_xpu=false
+        for _setup_pin_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+            [ -f "$_setup_pin_tv" ] || continue
+            _setup_pin_ver=$(sed -n "s/^__version__ = '\([^']*\)'.*/\1/p" "$_setup_pin_tv" | head -1)
+            case "$_setup_pin_ver" in
+                *+xpu)
+                    _setup_pin_is_xpu=true
+                    _setup_pin_maj=${_setup_pin_ver%%.*}
+                    _setup_pin_rest=${_setup_pin_ver#*.}
+                    _setup_pin_min=${_setup_pin_rest%%.*}
+                    case "$_setup_pin_maj$_setup_pin_min" in
+                        *[!0-9]*) ;;
+                        *) [ "$_setup_pin_maj" -eq 2 ] && [ "$_setup_pin_min" -ge 6 ] && \
+                           [ "$_setup_pin_min" -lt 11 ] && _setup_pin_ok=true ;;
+                    esac
+                    ;;
+            esac
+            break
+        done
+        # Correct torch is not enough: the Triton swap also lives in install_python_stack, so a
+        # migrated +xpu venv with a leftover generic triton keeps the CUDA build shadowing the
+        # XPU one. The dist-info glob below matches only generic "triton-<ver>" -- the XPU builds
+        # are pytorch_triton_xpu-* / triton_xpu-*.
+        # Leaves the shared classifiers recognise as a non-XPU family. EXACT families, mirroring
+        # install.sh _is_pip_rocm_family_leaf and install_python_stack _is_cuda_family_leaf: a
+        # merely prefixed leaf (cu128-private) is a custom verbatim pin they never repair, so
+        # escaping on one would force a pass every update that changes nothing.
+        _setup_known_nonxpu_leaf() {
+            case "$1" in
+                cpu|gfx[0-9]*) return 0 ;;
+                cu[0-9]*) case "${1#cu}" in *[!0-9]*) return 1 ;; esac ;;
+                rocm[0-9]*)
+                    # Both parts non-empty all-digits: rocm7., rocm7.2.1 are custom pins.
+                    _setup_rocm_rest="${1#rocm}"
+                    case "$_setup_rocm_rest" in
+                        *.*.*) return 1 ;;
+                        *.*)
+                            case "${_setup_rocm_rest%%.*}" in *[!0-9]*) return 1 ;; esac
+                            case "${_setup_rocm_rest#*.}" in "" | *[!0-9]*) return 1 ;; esac
+                            ;;
+                        *[!0-9]*) return 1 ;;
+                    esac
+                    ;;
+                *) return 1 ;;
+            esac
+            return 0
+        }
+        _setup_pin_known_nonxpu=false
+        _setup_known_nonxpu_leaf "$_setup_pin_leaf" && _setup_pin_known_nonxpu=true
+        _setup_generic_triton=false
+        if [ "$_setup_pin_is_xpu" = true ] || [ "$_setup_pin_leaf" = "xpu" ]; then
+            for _setup_tri in "$VENV_DIR"/lib/python*/site-packages/triton-*.dist-info; do
+                [ -d "$_setup_tri" ] && _setup_generic_triton=true && break
+            done
+        fi
+        if [ "$_setup_pin_leaf" = "xpu" ] && [ "$_setup_pin_ok" = false ]; then
+            substep "XPU index pinned but torch does not match -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        elif [ "$_setup_pin_is_xpu" = true ] && [ "$_setup_generic_triton" = true ]; then
+            substep "generic triton shadows the XPU build -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        elif [ "$_setup_pin_is_xpu" = true ] && [ "$_setup_pin_known_nonxpu" = true ]; then
+            # Migrating AWAY from XPU: the pin is authoritative, but only install_python_stack
+            # acts on it, so an up-to-date install kept its +xpu wheel over the requested family.
+            substep "$_setup_pin_leaf pinned over an XPU wheel -- forcing dependency pass to migrate..."
             _SKIP_PYTHON_DEPS=false
         fi
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
@@ -1033,30 +1643,30 @@ if [ "$_NEED_T5_INSTALL" = true ]; then
     [ -d "$VENV_T5_530_DIR" ] && rm -rf "$VENV_T5_530_DIR"
     mkdir -p "$VENV_T5_530_DIR"
     : > "$VENV_T5_530_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
-    run_quiet "install transformers 5.3.0" fast_install --target "$VENV_T5_530_DIR" --no-deps "transformers==5.3.0"
-    run_quiet "install huggingface_hub for t5_530" fast_install --target "$VENV_T5_530_DIR" --no-deps "huggingface_hub==1.8.0"
-    run_quiet "install hf_xet for t5_530" fast_install --target "$VENV_T5_530_DIR" --no-deps "hf_xet==1.4.2"
-    run_quiet "install tiktoken for t5_530" fast_install --target "$VENV_T5_530_DIR" "tiktoken"
+    run_quiet "install transformers 5.3.0" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "transformers==5.3.0"
+    run_quiet "install huggingface_hub for t5_530" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "huggingface_hub==1.8.0"
+    run_quiet "install hf_xet for t5_530" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "hf_xet==1.4.2"
+    run_quiet "install tiktoken for t5_530" fast_install_sidecar --target "$VENV_T5_530_DIR" "tiktoken"
     step "transformers" "5.3.0 pre-installed"
 
     _assert_studio_owned_or_absent "$VENV_T5_550_DIR" "transformers 5.5 sidecar venv"
     [ -d "$VENV_T5_550_DIR" ] && rm -rf "$VENV_T5_550_DIR"
     mkdir -p "$VENV_T5_550_DIR"
     : > "$VENV_T5_550_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
-    run_quiet "install transformers 5.5.0" fast_install --target "$VENV_T5_550_DIR" --no-deps "transformers==5.5.0"
-    run_quiet "install huggingface_hub for t5_550" fast_install --target "$VENV_T5_550_DIR" --no-deps "huggingface_hub==1.8.0"
-    run_quiet "install hf_xet for t5_550" fast_install --target "$VENV_T5_550_DIR" --no-deps "hf_xet==1.4.2"
-    run_quiet "install tiktoken for t5_550" fast_install --target "$VENV_T5_550_DIR" "tiktoken"
+    run_quiet "install transformers 5.5.0" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "transformers==5.5.0"
+    run_quiet "install huggingface_hub for t5_550" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "huggingface_hub==1.8.0"
+    run_quiet "install hf_xet for t5_550" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "hf_xet==1.4.2"
+    run_quiet "install tiktoken for t5_550" fast_install_sidecar --target "$VENV_T5_550_DIR" "tiktoken"
     step "transformers" "5.5.0 pre-installed"
 
     _assert_studio_owned_or_absent "$VENV_T5_510_DIR" "transformers 5.10 sidecar venv"
     [ -d "$VENV_T5_510_DIR" ] && rm -rf "$VENV_T5_510_DIR"
     mkdir -p "$VENV_T5_510_DIR"
     : > "$VENV_T5_510_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
-    run_quiet "install transformers 5.10.2" fast_install --target "$VENV_T5_510_DIR" --no-deps "transformers==5.10.2"
-    run_quiet "install huggingface_hub for t5_510" fast_install --target "$VENV_T5_510_DIR" --no-deps "huggingface_hub==1.8.0"
-    run_quiet "install hf_xet for t5_510" fast_install --target "$VENV_T5_510_DIR" --no-deps "hf_xet==1.4.2"
-    run_quiet "install tiktoken for t5_510" fast_install --target "$VENV_T5_510_DIR" "tiktoken"
+    run_quiet "install transformers 5.10.2" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "transformers==5.10.2"
+    run_quiet "install huggingface_hub for t5_510" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "huggingface_hub==1.8.0"
+    run_quiet "install hf_xet for t5_510" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "hf_xet==1.4.2"
+    run_quiet "install tiktoken for t5_510" fast_install_sidecar --target "$VENV_T5_510_DIR" "tiktoken"
     step "transformers" "5.10.2 pre-installed"
 fi
 fi
@@ -1074,6 +1684,40 @@ _setup_amd_detected=false
 _setup_nvidia_usable=false
 _setup_gfx_all=""
 _setup_mkt=""
+# Intel XPU. There is no vendor probe here like nvidia-smi / rocminfo -- Linux Intel support is
+# an explicit index pin, not autodetection -- so the installed runtime IS the signal. The local
+# label is read off disk first so a CPU-only host never pays for an `import torch`.
+_setup_torch_is_xpu=false
+_setup_xpu_ready=false
+for _setup_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+    [ -f "$_setup_tv" ] || continue
+    grep -q "^__version__ = '[^']*+xpu" "$_setup_tv" 2>/dev/null || continue
+    _setup_torch_is_xpu=true
+    # A +xpu wheel installs fine on a host whose driver never initialises, so only the runtime
+    # answer reaches the summary below. Bounded, because a stalled Intel driver wedges inside
+    # `import torch`: 60s rather than the smi probes' 10s, since a cold import is seconds on its
+    # own. The SIGALRM deadline lives inside the probe too, for hosts without `timeout` (base
+    # macOS, minimal Linux images). Either deadline expiring means "no XPU", as a failure does.
+    _setup_xpu_probe='import signal; signal.alarm(60); import torch,sys; sys.exit(0 if torch.xpu.is_available() else 1)'
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 60 "$VENV_DIR/bin/python" -c "$_setup_xpu_probe" >/dev/null 2>&1 && _setup_xpu_ready=true
+    elif "$VENV_DIR/bin/python" -c "$_setup_xpu_probe" >/dev/null 2>&1; then
+        _setup_xpu_ready=true
+    fi
+    break
+done
+
+# bitsandbytes carries XPU kernels (libbitsandbytes_xpu2025.so, _xpu2026.so) only from 0.50.0,
+# and unsloth's own floor is 0.45.5, so a pre-XPU wheel satisfies it forever. install.sh raises
+# the floor, but `unsloth studio update` runs THIS file, so an existing XPU user would keep a
+# kernel-less bitsandbytes and lose 4-bit QLoRA. Keyed on the wheel, not the runtime: a stalled
+# driver is no reason to skip the upgrade. --no-deps (torch and numpy are in), best effort.
+if [ "$_setup_torch_is_xpu" = true ]; then
+    # run_quiet_no_exit, NOT run_quiet: the latter exits via setup_fail, aborting an otherwise
+    # fine `studio update` over a best-effort step and leaving the warning below unreachable.
+    run_quiet_no_exit "install bitsandbytes (xpu)" fast_install --no-deps "bitsandbytes>=0.50.0" || \
+        substep "[WARN] could not install an XPU-capable bitsandbytes; 4-bit QLoRA may be unavailable."
+fi
 # NVIDIA priority: classify NVIDIA first and skip the AMD probes entirely on
 # a usable-NVIDIA host (mirrors _has_rocm_gpu in install_python_stack.py).
 # This also keeps a wedged rocminfo/amd-smi from hanging setup before the
@@ -1097,8 +1741,7 @@ if [ "$_setup_nvidia_usable" != true ]; then
         _setup_mkt=$(_setup_run_smi amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
             '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
     elif [ -e /dev/kfd ] && \
-         awk 'FNR==1{ gpu=0; amd=0 } /gpu_id/{ gpu=($2+0>0) } /vendor_id/{ amd=($2==4098) } \
-              gpu && amd { found=1 } END{ exit !found }' \
+         awk '/vendor_id/ && $2 == 4098 { found = 1 } END { exit !found }' \
              /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
         # KFD sysfs fallback, AMD vendor_id 4098 only (mirrors install.sh
         # _has_amd_rocm_gpu): covers AMD hosts where rocminfo/amd-smi are
@@ -1130,12 +1773,14 @@ elif [ "$_setup_amd_detected" = true ]; then
         # gfx1102 matched BEFORE gfx1100 so the spaceless "RX 7700S" lands on
         # gfx1102 (bash case has no negative lookahead like the PS tables).
         case "$_setup_mkt" in
-            *"9070 XT"*|*9080*)                                                                            _setup_gfx="gfx1201" ;;  # RDNA 4
-            *9070*|*9060*)                                                                                 _setup_gfx="gfx1200" ;;  # RDNA 4
-            *"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _setup_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo: Radeon 8060S/8050S/8040S iGPU, Ryzen AI Max+)
-            *"890M"*|*"880M"*|*"860M"*|*"840M"*|*"Strix Point"*|*"Krackan"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _setup_gfx="gfx1150" ;;  # RDNA 3.5 (Strix/Krackan Point: Radeon 890M/880M iGPU, Ryzen AI 9 HX 370/375)
-            *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*|*"PRO V710"*)                  _setup_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
-            *"RX 7900"*|*"RX 7800"*|*"RX 7700"*|*"PRO W7900"*|*"PRO W7800"*|*"PRO W7700"*)                  _setup_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
+            *9070*|*9080*)                                                                                 _setup_gfx="gfx1201" ;;  # RDNA 4 (Navi 48)
+            *9060*)                                                                                        _setup_gfx="gfx1200" ;;  # RDNA 4 (Navi 44)
+            *"8065S"*|*"8060S"*|*"8050S"*|*"8040S"*|*"Strix Halo"*|*"Ryzen AI Max"*|*"AI Max"*) _setup_gfx="gfx1151" ;;  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
+            *"890M"*|*"880M"*|*"Strix Point"*|*"HX 37"*|*"AI 9 HX"*|*"AI 9 36"*) _setup_gfx="gfx1150" ;;  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
+            *"860M"*|*"840M"*|*"Krackan"*|*"AI 7 35"*|*"AI 5 34"*|*"AI 7 PRO 35"*|*"AI 5 33"*) _setup_gfx="gfx1152" ;;  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
+            *"RX 7600"*|*"RX 7700S"*|*"RX 7650"*|*"PRO W7600"*|*"PRO W7500"*)                              _setup_gfx="gfx1102" ;;  # RDNA 3 (Navi 33)
+            *"RX 7800"*|*"RX 7700"*|*"PRO W7700"*|*"PRO V710"*)                                            _setup_gfx="gfx1101" ;;  # RDNA 3 (Navi 32)
+            *"RX 7900"*|*"PRO W7900"*|*"PRO W7800"*)                                                       _setup_gfx="gfx1100" ;;  # RDNA 3 desktop / workstation (Navi 31)
             *"780M"*|*"760M"*|*"740M"*|*"Phoenix"*|*"Hawk Point"*|*"Z1 Extreme"*|*"Z2 Extreme"*)            _setup_gfx="gfx1103" ;;  # RDNA 3 iGPU (Phoenix / Hawk Point)
             *"RX 6900"*|*"RX 6800"*|*"RX 6750"*|*"RX 6700"*|*"PRO W6800"*|*"PRO W6900"*)                    _setup_gfx="gfx1030" ;;  # RDNA 2 (Navi 21)
             *"RX 6650"*|*"RX 6600"*|*"PRO W6600"*|*"PRO W6650"*)                                            _setup_gfx="gfx1032" ;;  # RDNA 2 (Navi 23)
@@ -1164,6 +1809,18 @@ elif [ "$_setup_amd_detected" = true ]; then
     substep "ROCm: $_setup_rocm_root"
     [ -n "$_setup_rocm_ver" ] && substep "hipconfig: $_setup_rocm_ver"
     [ -n "$_setup_mkt" ] && [ -n "$_setup_gfx" ] && substep "GPU: $_setup_mkt"
+elif [ "$_setup_xpu_ready" = true ]; then
+    # Ranks below NVIDIA and AMD, as in setup.ps1: those hosts get their own wheels.
+    step "gpu" "Intel GPU detected (XPU runtime)"
+    substep "PyTorch XPU (SYCL) provides training and GPU inference on this GPU."
+elif [ "$_setup_torch_is_xpu" = true ]; then
+    # +xpu wheel installed but torch.xpu.is_available() said no: the Intel compute driver is
+    # missing or too old. Falling through would call the hardware unsupported instead.
+    step "gpu" "Intel GPU (XPU runtime unavailable)" "$C_WARN"
+    substep "PyTorch has the XPU build but cannot initialise it -- update the Intel GPU compute driver."
+    # Not "runs on CPU": with neither CUDA nor XPU, unsloth/device_type.py raises at import.
+    # llama.cpp is unaffected, which is what chat and GGUF run on.
+    substep "Until then training and GPU inference are unavailable; chat and GGUF still work."
 elif [ "$(uname -s 2>/dev/null)" = "Darwin" ] && [ "$(uname -m 2>/dev/null)" = "arm64" ]; then
     # Apple Silicon: llama.cpp builds with Metal over unified memory, so not a CPU-only host.
     step "gpu" "Apple Silicon (Metal, unified memory)"
@@ -1185,10 +1842,25 @@ LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 _NEED_LLAMA_SOURCE_BUILD=false
 _LLAMA_CPP_DEGRADED=false
+_LLAMA_CPP_NO_SPACE=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
 _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
+_source_backend_choice="$(printf '%s' "${UNSLOTH_LLAMA_CPP_BACKEND:-auto}" | awk '{$1=$1; print tolower($0)}')"
+_source_legacy_force_vulkan="$(printf '%s' "${UNSLOTH_FORCE_VULKAN:-}" | awk '{$1=$1; print tolower($0)}')"
+_explicit_vulkan_source_build=false
+if [ "$_HOST_SYSTEM" != "Darwin" ]; then
+    case "$_source_backend_choice" in
+        vulkan) _explicit_vulkan_source_build=true ;;
+        cpu|hip|rocm) ;;
+        *)
+            case "$_source_legacy_force_vulkan" in
+                1|true|yes|on) _explicit_vulkan_source_build=true ;;
+            esac
+            ;;
+    esac
+fi
 
 # Pick the release repo install_llama_prebuilt.py plans against. Every host this
 # installer supports now pulls its llama.cpp prebuilt from the unslothai fork: it
@@ -1228,7 +1900,7 @@ fi
 if [ -n "$_LLAMA_PR" ]; then
     if ! [[ "$_LLAMA_PR" =~ ^[0-9]+$ ]] || [ "$_LLAMA_PR" -le 0 ]; then
         step "llama.cpp" "UNSLOTH_LLAMA_PR=$_LLAMA_PR is not a valid PR number" "$C_ERR"
-        exit 1
+        setup_fail 1 "UNSLOTH_LLAMA_PR=$_LLAMA_PR is not a valid PR number"
     fi
     step "llama.cpp" "UNSLOTH_LLAMA_PR=$_LLAMA_PR -- will build from PR head" "$C_WARN"
     _RESOLVED_LLAMA_TAG="pr-$_LLAMA_PR"
@@ -1254,7 +1926,7 @@ _link_local_llama_quantize_shim() {
 }
 
 # Accept any layout LlamaCppBackend._layout_candidates() resolves so the flag
-# never rejects a tree Studio could actually run: a root-level llama-server (a
+# never rejects a tree Unsloth could actually run: a root-level llama-server (a
 # `make` build or a flat-extracted release) or the CMake build/bin/llama-server.
 _has_local_llama_server() {
     [ -x "$1/llama-server" ] || [ -x "$1/build/bin/llama-server" ]
@@ -1264,7 +1936,7 @@ _LOCAL_LLAMA_CPP_LINKED=false
 if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
     if [ ! -d "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" ]; then
         step "llama.cpp" "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $UNSLOTH_LOCAL_LLAMA_CPP_DIR" "$C_ERR"
-        exit 1
+        setup_fail 1 "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $UNSLOTH_LOCAL_LLAMA_CPP_DIR"
     fi
     _RESOLVED_LOCAL="$(CDPATH= cd -P -- "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" && pwd -P)"
     # Canonicalize the install path the same way before comparing: _RESOLVED_LOCAL
@@ -1298,13 +1970,13 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         # Reusing disables BOTH the prebuilt download and the source build, so the
         # linked tree must already contain a runnable llama-server in one of the
         # layouts the backend resolves (root-level or build/bin/). Fail clearly
-        # rather than link an unbuilt or wrong-platform checkout and leave Studio
+        # rather than link an unbuilt or wrong-platform checkout and leave Unsloth
         # with no usable binary.
         if ! _has_local_llama_server "$_RESOLVED_LOCAL"; then
             step "llama.cpp" "no llama-server under $_RESOLVED_LOCAL (looked for ./llama-server and ./build/bin/llama-server) -- build llama.cpp there first, or drop --with-llama-cpp-dir" "$C_ERR"
-            exit 1
+            setup_fail 1 "No llama-server was found under $_RESOLVED_LOCAL"
         fi
-        # A stale link from a previous --with-llama-cpp-dir run isn't Studio-owned
+        # A stale link from a previous --with-llama-cpp-dir run isn't Unsloth-owned
         # content; drop it before the ownership check so re-runs stay idempotent
         # for a custom UNSLOTH_STUDIO_HOME (the assert would otherwise follow the
         # link into the user's dir and reject it as unowned).
@@ -1312,7 +1984,14 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
             _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
         fi
-        rm -rf "$LLAMA_CPP_DIR"
+        rm -rf "$LLAMA_CPP_DIR" || true
+        if [ -e "$LLAMA_CPP_DIR" ]; then
+            if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then
+                _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
+            fi
+            step "llama.cpp" "the existing install could not be replaced with a link" "$C_ERR"
+            setup_fail 3 "$LLAMA_CPP_DIR could not be replaced with a link to $_RESOLVED_LOCAL."
+        fi
         ln -sfn "$_RESOLVED_LOCAL" "$LLAMA_CPP_DIR"
         _link_local_llama_quantize_shim "$LLAMA_CPP_DIR"
         step "llama.cpp" "linked local directory: $_RESOLVED_LOCAL"
@@ -1324,6 +2003,10 @@ fi
 
 if [ "$_LOCAL_LLAMA_CPP_LINKED" = true ]; then
     : # local directory linked above; skip prebuilt install
+elif [ "$_explicit_vulkan_source_build" = true ] && [ "$_NEED_LLAMA_SOURCE_BUILD" = true ]; then
+    step "llama.cpp" "Vulkan was explicitly requested, but this installation requires a source build" "$C_ERR"
+    substep "Vulkan source builds are not supported by this installer; use the prebuilt Vulkan bundle or unset the Vulkan override"
+    setup_fail 1 "Vulkan was explicitly requested, but this installation requires a source build, which this installer does not support. Use the prebuilt Vulkan bundle or unset the Vulkan override."
 elif [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
     step "llama.cpp" "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt" "$C_WARN"
     _NEED_LLAMA_SOURCE_BUILD=true
@@ -1354,10 +2037,49 @@ else
     # name-inferred arch). Implies --has-rocm on the installer side.
     if [ -n "${_setup_gfx:-}" ]; then
         _PREBUILT_CMD+=(--rocm-gfx "$_setup_gfx")
-    elif [ "$_setup_amd_detected" = true ]; then
-        # AMD was detected but gfx resolution failed; tell the installer ROCm is
-        # present so it can still attempt a prebuilt. Mirrors setup.ps1 behaviour.
+    elif [ "$_setup_amd_detected" = true ] && \
+         { command -v hipcc >/dev/null 2>&1 || [ -x /opt/rocm/bin/hipcc ] || \
+           ls /opt/rocm-*/bin/hipcc >/dev/null 2>&1; }; then
+        # AMD detected but gfx unknown (KFD-only host): forward --has-rocm only when
+        # hipcc can actually build llama.cpp (incl. a versioned /opt/rocm-*/bin, the
+        # same paths the source build uses). With no gfx the prebuilt resolver finds
+        # no ROCm bundle and the source build would fail, so without hipcc fall
+        # through to the CPU prebuilt instead of breaking the install.
         _PREBUILT_CMD+=(--has-rocm)
+    fi
+    # The normalized override affects llama.cpp only, not the training backend.
+    _llama_backend="$_source_backend_choice"
+    _legacy_force_vulkan="$_source_legacy_force_vulkan"
+    _explicit_vulkan_backend=false
+    case "$_llama_backend" in
+        cpu)
+            if [ "$_HOST_SYSTEM" = "Darwin" ]; then
+                step "llama.cpp" "UNSLOTH_LLAMA_CPP_BACKEND=cpu has no effect on macOS (universal build; use -ngl 0 at runtime for CPU-only)" "$C_WARN" >&2
+            else
+                _PREBUILT_CMD+=(--force-cpu)
+            fi
+            ;;
+        vulkan)
+            if [ "$_HOST_SYSTEM" = "Darwin" ]; then
+                step "llama.cpp" "Vulkan has no effect on macOS; the universal build uses Metal" "$C_WARN" >&2
+            else
+                _PREBUILT_CMD+=(--llama-backend vulkan)
+                _explicit_vulkan_backend=true
+                step "llama.cpp" "Vulkan selected for GGUF inference; the PyTorch training backend is unchanged" "$C_OK"
+            fi
+            ;;
+        ""|auto|hip|rocm) ;;
+        *) step "llama.cpp" "Ignoring UNSLOTH_LLAMA_CPP_BACKEND='$_llama_backend' (expected 'auto', 'cpu', 'vulkan', 'hip', or 'rocm')" "$C_WARN" >&2 ;;
+    esac
+    if [ "$_HOST_SYSTEM" != "Darwin" ]; then
+        case "$_llama_backend" in
+            cpu|vulkan|hip|rocm) ;;
+            *)
+                case "$_legacy_force_vulkan" in
+                    1|true|yes|on) _explicit_vulkan_backend=true ;;
+                esac
+                ;;
+        esac
     fi
     _PREBUILT_LOG="$(mktemp)"
     set +e
@@ -1389,17 +2111,46 @@ else
         if [ -d "$LLAMA_CPP_DIR" ]; then
             substep "existing install was restored"
         fi
-        substep "close Studio or other llama.cpp users and retry"
-        exit 3
-    else
-        step "llama.cpp" "prebuilt install failed (continuing)" "$C_WARN"
+        substep "close Unsloth or other llama.cpp users and retry"
+        setup_fail 3 "llama.cpp install is blocked by an active llama.cpp process"
+    elif [ "$_PREBUILT_STATUS" -eq 4 ]; then
+        step "llama.cpp" "not enough disk space to install llama.cpp" "$C_WARN"
+        print_llama_error_log "$_PREBUILT_LOG"
+        rm -f "$_PREBUILT_LOG"
+        substep "free up disk or move UNSLOTH_STUDIO_HOME/TMPDIR to a larger volume, then re-run"
+        _LLAMA_CPP_NO_SPACE=true
+        _has_local_llama_server "$LLAMA_CPP_DIR" || _LLAMA_CPP_DEGRADED=true
+        # A preserved CUDA/ROCm/CPU server does not satisfy an explicit Vulkan
+        # request, and it leaves _LLAMA_CPP_DEGRADED false, so without this the
+        # run reports success on the backend the user asked to replace.
+        if [ "$_explicit_vulkan_backend" = true ]; then
+            step "llama.cpp" "Vulkan was explicitly requested, so the installer will not keep the existing backend" "$C_ERR"
+            setup_fail 1 "Vulkan was explicitly requested, so the installer will not keep the existing llama.cpp backend."
+        fi
+    elif [ "$_PREBUILT_STATUS" -eq 2 ]; then
+        step "llama.cpp" "prebuilt install failed" "$C_WARN"
         print_llama_error_log "$_PREBUILT_LOG"
         rm -f "$_PREBUILT_LOG"
         if [ -d "$LLAMA_CPP_DIR" ]; then
             substep "prebuilt update failed; existing install restored"
         fi
-        substep "falling back to source build"
-        _NEED_LLAMA_SOURCE_BUILD=true
+        if [ "$_explicit_vulkan_backend" = true ]; then
+            step "llama.cpp" "Vulkan was explicitly requested, so the installer will not substitute a ROCm or CPU source build" "$C_ERR"
+            substep "check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG"
+            setup_fail 1 "Vulkan was explicitly requested, so the installer will not substitute a ROCm or CPU source build. Check the download error above or try a different UNSLOTH_LLAMA_RELEASE_TAG."
+        else
+            substep "falling back to source build"
+            _NEED_LLAMA_SOURCE_BUILD=true
+        fi
+    else
+        step "llama.cpp" "prebuilt helper failed unexpectedly" "$C_ERR"
+        print_llama_error_log "$_PREBUILT_LOG"
+        rm -f "$_PREBUILT_LOG"
+        if [ -d "$LLAMA_CPP_DIR" ]; then
+            substep "existing install was restored or left unchanged"
+        fi
+        substep "source build was not started because it cannot repair an unexpected helper or permissions error"
+        setup_fail 1 "llama.cpp prebuilt helper failed unexpectedly (exit code $_PREBUILT_STATUS). Check the error above and retry setup."
     fi
 fi
 
@@ -1442,25 +2193,46 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && grep -qi microsoft /proc/version 2>
         step "gguf deps" "installed"
     elif command -v sudo >/dev/null 2>&1; then
         step "gguf deps" "sudo required for: $_STILL_MISSING" "$C_WARN"
-        printf "  %-15s" ""
-        printf "accept? [Y/n] "
-        if [ -r /dev/tty ]; then
-            read -r REPLY </dev/tty || REPLY="y"
+        if _can_read_tty; then
+            printf "  %-15s" ""
+            printf "accept? [Y/n] "
+            # The device opened, so a failed read is EOF, not consent: decline.
+            read -r REPLY </dev/tty || REPLY="n"
+            case "$REPLY" in
+                [nN]*)
+                    substep "skipped -- run manually:"
+                    substep "sudo apt-get install -y $_STILL_MISSING"
+                    _SKIP_GGUF_BUILD=true
+                    ;;
+                *)
+                    # Degrade like the no-sudo branch below rather than letting
+                    # set -e abort setup on a bare apt error: missing GGUF build
+                    # deps are recoverable, not fatal.
+                    if sudo apt-get update -y </dev/null &&
+                        sudo apt-get install -y $_STILL_MISSING </dev/null; then
+                        step "gguf deps" "installed"
+                    else
+                        step "gguf deps" "install failed -- run manually:" "$C_WARN"
+                        substep "sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
+                        _SKIP_GGUF_BUILD=true
+                    fi
+                    ;;
+            esac
         else
-            REPLY="y"
-        fi
-        case "$REPLY" in
-            [nN]*)
-                substep "skipped -- run manually:"
-                substep "sudo apt-get install -y $_STILL_MISSING"
+            # Nobody can answer a prompt or type a password here, so -n makes
+            # sudo refuse rather than prompt into a closed stdin, and -k ignores
+            # any cached timestamp so only a real NOPASSWD rule gets through.
+            # Same treatment as install.sh's _smart_apt_install. This is the WSL
+            # GGUF-export case noted above, where sudo does want a password.
+            if sudo -n -k apt-get update -y </dev/null &&
+                sudo -n -k apt-get install -y $_STILL_MISSING </dev/null; then
+                step "gguf deps" "installed (non-interactive sudo)"
+            else
+                step "gguf deps" "needs sudo, no terminal -- run manually:" "$C_WARN"
+                substep "sudo apt-get update -y && sudo apt-get install -y $_STILL_MISSING"
                 _SKIP_GGUF_BUILD=true
-                ;;
-            *)
-                sudo apt-get update -y
-                sudo apt-get install -y $_STILL_MISSING
-                step "gguf deps" "installed"
-                ;;
-        esac
+            fi
+        fi
     else
         step "gguf deps" "missing (no sudo) -- install manually:" "$C_WARN"
         substep "apt-get install -y $_STILL_MISSING"
@@ -1811,7 +2583,8 @@ else
 
             substep "$_BUILD_DESC..."
 
-            NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+            NCPU=$(_llama_build_jobs)
+            verbose_substep "parallel jobs: $NCPU (RAM-capped; UNSLOTH_LLAMA_BUILD_JOBS overrides)"
             CMAKE_GENERATOR_ARGS=""
             if command -v ninja &>/dev/null; then
                 CMAKE_GENERATOR_ARGS="-G Ninja"
@@ -1874,10 +2647,57 @@ else
             run_quiet_no_exit "build diffusion visual server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
         fi
 
+        # Opt-in post-build GPU smoke test (#5854 gap 2). Default off (Blackwell
+        # CUDA JIT stalls). On failure, reuse the CPU fallback path so the user
+        # still gets a working llama-server. Runs before the install swap.
+        if [ "$BUILD_OK" = true ] && _staged_validation_enabled; then
+            _FB_LABEL="$(_gpu_fallback_label)"
+            _SMOKE_KIND="$(_source_smoke_install_kind)"
+            if [ -n "$_FB_LABEL" ]; then
+                _SMOKE_CMD=(
+                    python "$SCRIPT_DIR/install_llama_prebuilt.py"
+                    --validate-install "$_BUILD_TMP"
+                )
+                [ -n "$_SMOKE_KIND" ] && _SMOKE_CMD+=(--install-kind "$_SMOKE_KIND")
+                _SMOKE_RC=0
+                run_quiet_no_exit "validate source llama.cpp" "${_SMOKE_CMD[@]}" || _SMOKE_RC=$?
+                # Exit 4 is a full disk, not a bad build: the CPU rebuild needs even
+                # more space, so keep what we already have.
+                if [ "$_SMOKE_RC" -eq 4 ]; then
+                    substep "not enough disk space to validate the $_FB_LABEL build; keeping it" "$C_WARN"
+                    _LLAMA_CPP_NO_SPACE=true
+                elif [ "$_SMOKE_RC" -ne 0 ]; then
+                    substep "$_FB_LABEL source build failed smoke test; retrying CPU build..." "$C_WARN"
+                    _TRY_METAL_CPU_FALLBACK=false
+                    rm -rf "$_BUILD_TMP/build"
+                    if run_quiet_no_exit "cmake llama.cpp (cpu fallback)" cmake $CMAKE_GENERATOR_ARGS -S "$_BUILD_TMP" -B "$_BUILD_TMP/build" $CPU_FALLBACK_CMAKE_ARGS; then
+                        _BUILD_DESC="building (CPU fallback after $_FB_LABEL smoke failed)"
+                        GPU_BACKEND=""
+                        run_quiet_no_exit "build llama-server (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-server -j"$NCPU" || BUILD_OK=false
+                        if [ "$BUILD_OK" = true ]; then
+                            run_quiet_no_exit "build llama-quantize (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-quantize -j"$NCPU" || true
+                            run_quiet_no_exit "build diffusion visual server (cpu fallback)" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
+                        fi
+                    else
+                        BUILD_OK=false
+                    fi
+                fi
+            fi
+        fi
+
         # Swap only after build succeeds -- preserves existing install on failure
         if [ "$BUILD_OK" = true ]; then
             _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
-            rm -rf "$LLAMA_CPP_DIR"
+            # || true: without it a raw rm error aborts under errexit to a bare exit
+            # code, build stranded. Keep stderr: rm names the exact subpath, we cannot.
+            rm -rf "$LLAMA_CPP_DIR" || true
+            if [ -e "$LLAMA_CPP_DIR" ]; then
+                if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then
+                    _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
+                fi
+                step "llama.cpp" "built, but the existing install could not be replaced" "$C_ERR"
+                setup_fail 3 "The llama.cpp build succeeded but $LLAMA_CPP_DIR could not be replaced. The new build is at $_BUILD_TMP."
+            fi
             mv "$_BUILD_TMP" "$LLAMA_CPP_DIR"
             : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
             # Symlink to llama.cpp root -- check_llama_cpp() looks for the binary there
@@ -1886,7 +2706,7 @@ else
                 ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
             fi
             # DiffusionGemma visual server, if it was built (PR #24423): link next to
-            # llama-server so Studio serves DiffusionGemma GGUFs without DG_VISUAL_BIN.
+            # llama-server so Unsloth serves DiffusionGemma GGUFs without DG_VISUAL_BIN.
             if [ -f "$LLAMA_CPP_DIR/build/bin/llama-diffusion-gemma-visual-server" ]; then
                 ln -sf build/bin/llama-diffusion-gemma-visual-server "$LLAMA_CPP_DIR/llama-diffusion-gemma-visual-server"
             fi
@@ -1912,8 +2732,10 @@ fi  # end _SKIP_GGUF_BUILD check
 # An arm64 Linux GPU host source-builds for the GPU above. If that produced no
 # binary, install the fork's arm64 CPU prebuilt (app-<tag>-linux-arm64-cpu.tar.gz)
 # instead of leaving the host without llama.cpp. --cpu-fallback drops the GPU
-# attributes so the CPU bundle is selected rather than re-attempting CUDA.
+# attributes so the CPU bundle is selected rather than re-attempting CUDA. Skipped
+# on a full disk: the retry fails the same way and buries the hint.
 if [ "$_LLAMA_CPP_DEGRADED" = true ] \
+        && [ "$_LLAMA_CPP_NO_SPACE" != true ] \
         && [ "$_HOST_SYSTEM" = "Linux" ] \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; }; then
     substep "GPU source build unavailable; trying arm64 CPU prebuilt..."
@@ -1939,6 +2761,99 @@ if [ ! -L "$LLAMA_CPP_DIR" ] && {
         _studio_owned_adoptable "$LLAMA_CPP_DIR"
 }; then
     _remove_agent_instruction_files "$LLAMA_CPP_DIR"
+fi
+
+# ── whisper.cpp (local speech-to-text dictation engine) ──
+# Optional runtime for local dictation. Fail-open: any failure leaves the
+# Transformers STT engine and browser dictation working, so it never aborts
+# setup (unlike llama.cpp). Runs in 'unsloth studio update' too so the runtime
+# installs/refreshes without a compiler. Installs beside llama.cpp under the
+# same managed home the sidecar's _managed_whisper_cpp_dir() resolves.
+WHISPER_CPP_DIR="$UNSLOTH_HOME/whisper.cpp"
+if [ -n "${WHISPER_SERVER_PATH:-}" ] || [ -n "${UNSLOTH_WHISPER_CPP_PATH:-}" ]; then
+    verbose_substep "whisper.cpp: using a user-configured binary/dir; skipping managed install"
+elif [ "${UNSLOTH_SKIP_WHISPER_INSTALL:-0}" = "1" ]; then
+    verbose_substep "whisper.cpp: install skipped (UNSLOTH_SKIP_WHISPER_INSTALL=1)"
+else
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$WHISPER_CPP_DIR" "whisper.cpp install"
+    fi
+    _WHISPER_CMD=(python "$SCRIPT_DIR/install_whisper_prebuilt.py" --install-dir "$WHISPER_CPP_DIR")
+    if [ -n "${UNSLOTH_WHISPER_RELEASE_TAG:-}" ]; then
+        _WHISPER_CMD+=(--published-release-tag "$UNSLOTH_WHISPER_RELEASE_TAG")
+    fi
+    if [ -n "${_setup_gfx:-}" ]; then
+        _WHISPER_CMD+=(--rocm-gfx "$_setup_gfx")
+    elif [ "$_setup_amd_detected" = true ]; then
+        _WHISPER_CMD+=(--has-rocm)
+    fi
+    _WHISPER_LOG="$(mktemp)"
+    set +e
+    if _is_verbose; then
+        "${_WHISPER_CMD[@]}" 2>&1 | tee "$_WHISPER_LOG"
+        _WHISPER_STATUS=${PIPESTATUS[0]}
+    else
+        "${_WHISPER_CMD[@]}" >"$_WHISPER_LOG" 2>&1
+        _WHISPER_STATUS=$?
+    fi
+    set -e
+    if [ "$_WHISPER_STATUS" -eq 0 ]; then
+        if grep -Fq "already matches" "$_WHISPER_LOG"; then
+            step "whisper.cpp" "prebuilt up to date"
+        else
+            step "whisper.cpp" "prebuilt installed"
+        fi
+        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
+            : > "$WHISPER_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+        fi
+        rm -f "$_WHISPER_LOG"
+    elif [ "$_WHISPER_STATUS" -eq 3 ]; then
+        # A warm dictation server holds the binary; keep the old install.
+        step "whisper.cpp" "install busy; keeping existing runtime" "$C_WARN"
+        rm -f "$_WHISPER_LOG"
+    else
+        # A source build is opt-in. Keep the installer log until fallback has
+        # finished so setup can distinguish release skew from an operational
+        # installer failure and report the exact pairing when available.
+        _WHISPER_RECOVERED=false
+        _WHISPER_BUILD="$SCRIPT_DIR/../scripts/build_whisper_cpp.sh"
+        if [ "${UNSLOTH_WHISPER_FORCE_COMPILE:-0}" = "1" ] && [ -f "$_WHISPER_BUILD" ] \
+                && command -v cmake >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+            substep "whisper.cpp prebuilt unavailable; building from source (UNSLOTH_WHISPER_FORCE_COMPILE=1)..."
+            # The source build overwrites whisper-server in the managed dir but
+            # knows nothing about the prebuilt marker; a stale marker would make
+            # a later setup run report "already matches" and skip repairing the
+            # prebuilt over the source binary. Drop it before building.
+            rm -f "$WHISPER_CPP_DIR/UNSLOTH_WHISPER_PREBUILT_INFO.json" 2>/dev/null || true
+            if run_quiet_no_exit "whisper.cpp source build" sh "$_WHISPER_BUILD"; then
+                _WHISPER_RECOVERED=true
+                step "whisper.cpp" "source build installed"
+                if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$WHISPER_CPP_DIR" ]; then
+                    : > "$WHISPER_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+                fi
+            else
+                :
+            fi
+        fi
+        if [ "$_WHISPER_RECOVERED" != true ]; then
+            if [ "$_WHISPER_STATUS" -eq 2 ]; then
+                _WHISPER_REQUIRED_TAG="$(sed -n 's/.*slim bundle requires llama\.cpp \([^; ]*\).*/\1/p' "$_WHISPER_LOG" | tail -n 1)"
+                _WHISPER_INSTALLED_TAG="$(python - "$UNSLOTH_HOME/llama.cpp/UNSLOTH_PREBUILT_INFO.json" <<'PY' 2>/dev/null || true
+import json, sys
+try:
+    print(json.load(open(sys.argv[1], encoding="utf-8")).get("release_tag", ""))
+except Exception:
+    pass
+PY
+)"
+                _WHISPER_PAIRING="installed llama.cpp ${_WHISPER_INSTALLED_TAG:-unknown}; whisper requires ${_WHISPER_REQUIRED_TAG:-unknown}"
+                step "whisper.cpp" "no compatible prebuilt ($_WHISPER_PAIRING); curated whisper.cpp dictation is unavailable; publish the paired releases in llama.cpp then whisper.cpp order; browser and Transformers dictation remain available" "$C_WARN"
+            else
+                step "whisper.cpp" "prebuilt install failed; curated whisper.cpp dictation is unavailable; retry setup or inspect verbose output; browser and Transformers dictation remain available" "$C_WARN"
+            fi
+        fi
+        rm -f "$_WHISPER_LOG"
+    fi
 fi
 
 # ── Footer ──
@@ -1983,8 +2898,28 @@ echo ""
 # When called from install.sh (SKIP_STUDIO_BASE=1), exit non-zero so the
 # installer can report the GGUF failure after finishing PATH/shortcut setup.
 # When called directly via 'unsloth studio update', keep the install
-# successful -- the footer above already reports the limitation and Studio
+# successful -- the footer above already reports the limitation and Unsloth
 # is still usable for non-GGUF workflows.
 if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" = "1" ]; then
-    exit 1
+    # In Tauri mode a non-zero exit is not "report", it is "abort": install.rs turns the
+    # error into "Installation failed", so one transient prebuilt download failure (a
+    # single HTTP 403 rate limit will do it) fails the whole first-launch install of an
+    # app whose own footer just said Installed. Everything except GGUF inference works,
+    # and whisper.cpp in this same script already degrades rather than failing for
+    # exactly this case. Match it, and say what is missing and how to get it back.
+    #
+    # PROGRESS, not STEP: install.rs maps [TAURI:STEP] to the install-step event, and
+    # use-tauri-backend.ts counts those against the seven-entry INSTALL_STEPS list that
+    # install.sh already emits in full, so an eighth marker renders "Step 8 of 7" and
+    # discards the payload. [TAURI:PROGRESS] becomes install-progress-detail, which
+    # InstallingContent renders verbatim, so the user actually reads the limitation.
+    case "${UNSLOTH_TAURI_MODE:-0}" in
+        1|true)
+            printf '[TAURI:PROGRESS] %s\n' \
+                "llama.cpp unavailable; GGUF inference is disabled until 'unsloth studio update' succeeds"
+            ;;
+        *)
+            setup_fail 1 "llama.cpp setup did not produce a usable server"
+            ;;
+    esac
 fi

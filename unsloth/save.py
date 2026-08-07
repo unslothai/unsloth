@@ -32,8 +32,20 @@ except ImportError:
     import sys
     IS_WINDOWS = sys.platform == "win32"
     LLAMA_CPP_DEFAULT_DIR = "llama.cpp"
-from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
-from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+# Without bnb, peft stops exporting its 4bit LoRA layer too. Both names only feed
+# isinstance checks, so placeholders nothing can match are exact stand-ins.
+try:
+    from bitsandbytes.nn import Linear4bit as Bnb_Linear4bit
+    from peft.tuners.lora import Linear4bit as Peft_Linear4bit
+except Exception:
+
+    class Bnb_Linear4bit:
+        pass
+
+    class Peft_Linear4bit:
+        pass
+
+
 from peft.tuners.lora import Linear as Peft_Linear
 from typing import Optional, Callable, Union, List
 import sys
@@ -48,10 +60,17 @@ import functools
 from transformers.models.llama.modeling_llama import logger
 from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
 import subprocess
+import traceback
 import psutil
 import re
 from transformers.models.llama.modeling_llama import logger
-from .models.loader_utils import get_model_name
+from .models.loader_utils import (
+    get_model_name,
+    _resolve_hub_repo_cached_file,
+    _tokenizer_cache_dir,
+    _tokenizer_revision,
+    _tokenizer_wants_local_only,
+)
 from .models._utils import _convert_torchao_model
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
 from transformers import ProcessorMixin, PreTrainedTokenizerBase
@@ -228,7 +247,7 @@ def _loaded_via_remote_code(obj):
 
     Transformers loads auto_map code into the ``transformers_modules`` package, so a
     ``transformers_modules`` class proves the original load actually ran that remote code
-    (which the caller's / Studio's consent gate scans at load time). Export paths derive their
+    (which the caller's / Unsloth's consent gate scans at load time). Export paths derive their
     reload trust_remote_code from this - the already approved load decision - instead of from a
     checkpoint's static ``auto_map``: a model that loads with built-in classes must not have its
     unvetted remote code run when it is re-read during quantization export. Walks PEFT / wrapper
@@ -442,18 +461,43 @@ def _has_tokenizer_model(tokenizer, token = None):
         return False
     if os.path.isdir(source):
         return os.path.isfile(os.path.join(source, "tokenizer.model"))
-    if source in _TOKENIZER_MODEL_CACHE:
-        return _TOKENIZER_MODEL_CACHE[source]
+    # Refs of one repo can differ in whether they ship the asset, so memoize per ref.
+    revision = _tokenizer_revision(tokenizer)
+    cache_key = (source, revision)
+    if cache_key in _TOKENIZER_MODEL_CACHE:
+        return _TOKENIZER_MODEL_CACHE[cache_key]
+
+    # Hub repo id: probe local cache before model_info (issue #7481).
+    cache_dir = _tokenizer_cache_dir(tokenizer) or os.environ.get("HF_HUB_CACHE")
+    if not cache_dir:
+        hf_home = os.environ.get("HF_HOME")
+        if hf_home:
+            cache_dir = os.path.join(hf_home, "hub")
+
+    cached_path = _resolve_hub_repo_cached_file(
+        source,
+        "tokenizer.model",
+        token = token,
+        local_files_only = True,
+        cache_dir = cache_dir,
+        revision = revision,
+    )
+    if cached_path is not None:
+        _TOKENIZER_MODEL_CACHE[cache_key] = True
+        return True
+
+    if _tokenizer_wants_local_only(tokenizer):
+        return False
 
     try:
-        repo_info = HfApi(token = token).model_info(source, files_metadata = False)
+        repo_info = HfApi(token = token).model_info(source, revision = revision, files_metadata = False)
     except Exception:
         return False
 
     has_tokenizer_model = any(
         sibling.rfilename == "tokenizer.model" for sibling in (repo_info.siblings or [])
     )
-    _TOKENIZER_MODEL_CACHE[source] = has_tokenizer_model
+    _TOKENIZER_MODEL_CACHE[cache_key] = has_tokenizer_model
     return has_tokenizer_model
 
 
@@ -487,8 +531,7 @@ def _preserve_sentencepiece_tokenizer_assets(
                     json.dump(tokenizer_config, file, indent = 2, ensure_ascii = False)
                     file.write("\n")
                 logger.warning_once(
-                    f"Unsloth: Restored added_tokens_decoder metadata in "
-                    f"{tokenizer_config_path}."
+                    f"Unsloth: Restored added_tokens_decoder metadata in {tokenizer_config_path}."
                 )
 
     tokenizer_model = os.path.join(save_directory, "tokenizer.model")
@@ -504,20 +547,40 @@ def _preserve_sentencepiece_tokenizer_assets(
                 if os.path.isfile(local_path):
                     downloaded_path = local_path
             else:
-                from huggingface_hub import hf_hub_download
-                try:
-                    downloaded_path = hf_hub_download(
-                        repo_id = source,
-                        filename = "tokenizer.model",
-                        token = token,
-                    )
-                except Exception:
-                    downloaded_path = None
+                cache_dir = _tokenizer_cache_dir(tokenizer) or os.environ.get("HF_HUB_CACHE")
+                if not cache_dir:
+                    hf_home = os.environ.get("HF_HOME")
+                    if hf_home:
+                        cache_dir = os.path.join(hf_home, "hub")
+
+                cached_path = _resolve_hub_repo_cached_file(
+                    source,
+                    "tokenizer.model",
+                    token = token,
+                    local_files_only = True,
+                    cache_dir = cache_dir,
+                    revision = _tokenizer_revision(tokenizer),
+                )
+                if cached_path is not None:
+                    downloaded_path = cached_path
+                else:
+                    from huggingface_hub import hf_hub_download
+                    try:
+                        downloaded_path = hf_hub_download(
+                            repo_id = source,
+                            filename = "tokenizer.model",
+                            token = token,
+                            local_files_only = _tokenizer_wants_local_only(tokenizer),
+                            cache_dir = cache_dir,
+                            revision = _tokenizer_revision(tokenizer),
+                        )
+                    except Exception:
+                        downloaded_path = None
 
     if not os.path.isfile(tokenizer_model) and downloaded_path is not None:
         shutil.copy2(downloaded_path, tokenizer_model)
         logger.warning_once(
-            f"Unsloth: Preserved sentencepiece asset `tokenizer.model` in " f"{save_directory}."
+            f"Unsloth: Preserved sentencepiece asset `tokenizer.model` in {save_directory}."
         )
 
 
@@ -660,6 +723,16 @@ def _is_gpt_oss(model):
     return "GptOssForCausalLM" in architectures or getattr(config, "model_type", None) in (
         "gpt-oss",
         "gpt_oss",
+    )
+
+
+def _is_vlm(model):
+    config = getattr(model, "config", None)
+    if config is None:
+        return False
+    architectures = getattr(config, "architectures", None) or ()
+    return hasattr(config, "vision_config") or any(
+        x.endswith(("ForConditionalGeneration", "ForVisionText2Text")) for x in architectures
     )
 
 
@@ -1084,8 +1157,8 @@ def unsloth_save_model(
     max_ram = int(max(0, max_ram) * maximum_memory_usage)
     print(
         f"Unsloth: Will use up to "
-        f"{round(max_ram/1024/1024/1024, 2)} out of "
-        f"{round(psutil.virtual_memory().total/1024/1024/1024, 2)} RAM for saving."
+        f"{round(max_ram / 1024 / 1024 / 1024, 2)} out of "
+        f"{round(psutil.virtual_memory().total / 1024 / 1024 / 1024, 2)} RAM for saving."
     )
 
     # Move temporary_location to /tmp in Kaggle
@@ -1122,7 +1195,19 @@ def unsloth_save_model(
         torch_dtype
     )
 
-    max_vram = int(torch.cuda.get_device_properties(0).total_memory * maximum_memory_usage)
+    # A merged tensor lives on the GPU of its source layer, so budget against W's own
+    # device, not GPU0, else a sharded model OOMs GPU1+ while only GPU0 is checked.
+    _max_vram_by_device = {}
+
+    def _device_vram_budget(dev):
+        if dev.type != "cuda":
+            return None
+        idx = dev.index if dev.index is not None else torch.cuda.current_device()
+        if idx not in _max_vram_by_device:
+            _max_vram_by_device[idx] = int(
+                torch.cuda.get_device_properties(idx).total_memory * maximum_memory_usage
+            )
+        return _max_vram_by_device[idx]
 
     print("Unsloth: Saving model... This might take 5 minutes ...")
 
@@ -1138,8 +1223,15 @@ def unsloth_save_model(
             if bias is not None:
                 state_dict[f"model.layers.{j}.{item}.bias"] = bias
 
-            if (torch.cuda.memory_allocated() + W.nbytes) < max_vram:
-                # Save to GPU memory
+            _dev_budget = _device_vram_budget(W.device)
+            if (
+                _dev_budget is not None
+                and (torch.cuda.memory_allocated(W.device) + W.nbytes) < _dev_budget
+            ):
+                # Fits on W's own GPU
+                state_dict[name] = W
+            elif W.device.type != "cuda":
+                # Already off-GPU: keeping it costs no VRAM
                 state_dict[name] = W
             # [TODO] Saving to RAM seems to leak memory???
             # elif (max_ram - W.nbytes) > 0:
@@ -1634,7 +1726,7 @@ def install_llama_cpp_old(version = -10):
         import time
 
         for i in range(30):
-            print(f"**[WARNING]** Deleting llama.cpp directory... {30-i} seconds left.")
+            print(f"**[WARNING]** Deleting llama.cpp directory... {30 - i} seconds left.")
             time.sleep(1)
 
         shutil.rmtree("llama.cpp", ignore_errors = True)
@@ -1654,7 +1746,7 @@ def install_llama_cpp_old(version = -10):
         # Try using MAKE
         commands = [
             "make clean -C llama.cpp",
-            f"make all -j{(psutil.cpu_count() or 1)*2} -C llama.cpp",
+            f"make all -j{(psutil.cpu_count() or 1) * 2} -C llama.cpp",
         ]
         use_cmake = try_execute(commands) == "CMAKE"
 
@@ -1662,7 +1754,7 @@ def install_llama_cpp_old(version = -10):
         # Use CMAKE
         commands = [
             f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}",
-            f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1)*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
+            f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1) * 2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
             "cp llama.cpp/build/bin/llama-* llama.cpp",
             "rm -rf llama.cpp/build",
         ]
@@ -1706,7 +1798,7 @@ def install_llama_cpp_blocking(use_cuda = False):
             # https://github.com/ggerganov/llama.cpp/issues/7062
             # Weirdly GPU conversion for GGUF breaks??
             # f"{use_cuda} make all -j{(psutil.cpu_count() or 1)*2} -C llama.cpp",
-            f"make all -j{(psutil.cpu_count() or 1)*2} -C llama.cpp",
+            f"make all -j{(psutil.cpu_count() or 1) * 2} -C llama.cpp",
         ]
         use_cmake = try_execute(commands) == "CMAKE"
 
@@ -1714,7 +1806,7 @@ def install_llama_cpp_blocking(use_cuda = False):
         # Use CMAKE
         commands = [
             f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}",
-            f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1)*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
+            f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1) * 2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
             "cp llama.cpp/build/bin/llama-* llama.cpp",
             "rm -rf llama.cpp/build",
         ]
@@ -1933,7 +2025,13 @@ def save_to_gguf(
     # Check conversion success
     for file in initial_files:
         if not os.path.exists(file):
-            if IS_KAGGLE_ENVIRONMENT:
+            # Gated like the outer handler: the disk advice is only right when
+            # the disk is actually the problem, and a converter that has no
+            # llama.cpp support fails here with plenty of space free.
+            if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(
+                RuntimeError(f"Conversion produced no output at {file}"),
+                os.path.dirname(file) or None,
+            ):
                 raise RuntimeError(
                     f"Unsloth: Conversion failed for {file}\n"
                     "You are in a Kaggle environment with limited disk space (20GB).\n"
@@ -1942,8 +2040,7 @@ def save_to_gguf(
                 )
             else:
                 raise RuntimeError(
-                    f"Unsloth: Conversion failed for {file}\n"
-                    "Please check disk space and try again."
+                    f"Unsloth: Conversion failed for {file}\nPlease check disk space and try again."
                 )
 
     # Move initial GGUF files into a dedicated _gguf directory
@@ -2007,7 +2104,10 @@ def save_to_gguf(
                         quant_kwargs["n_threads"] = n_threads
                     return quantize_gguf(**quant_kwargs)
             except Exception as e:
-                if IS_KAGGLE_ENVIRONMENT:
+                # Same gate as above: a broken quantizer with 19GB free is not
+                # a disk problem, and the outer handler cannot undo an
+                # explanation already baked into this message.
+                if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(e, gguf_directory):
                     raise RuntimeError(
                         f"Unsloth: Quantization failed for {output_location}\n"
                         "You are in a Kaggle environment, which might be the reason this is failing.\n"
@@ -2018,7 +2118,7 @@ def save_to_gguf(
                         "You can try saving it to the `/tmp` directory for larger disk space.\n"
                         "I suggest you to save the 16bit model first, then use manual llama.cpp conversion.\n"
                         f"Error: {e}"
-                    )
+                    ) from e
                 else:
                     if IS_WINDOWS:
                         build_instructions = (
@@ -2039,7 +2139,7 @@ def save_to_gguf(
                         f"{build_instructions}\n"
                         "Once that's done, redo the quantization.\n"
                         f"Error: {e}"
-                    )
+                    ) from e  # keep the cause: the OOM check walks it for the returncode
 
         # Outputs already on disk pre-date this run; never delete them on a failure.
         preexisting_outputs = {
@@ -2770,6 +2870,72 @@ def push_to_ollama(tokenizer, gguf_location, username: str, model_name: str, tag
     print("Successfully pushed to ollama")
 
 
+def _offloaded_parameter_hint(model):
+    """Sentence to append when a save failed on offloaded (meta) parameters.
+
+    Accelerate leaves offloaded parameters on the meta device, so saving dies
+    inside accelerate with "'NoneType' object is not subscriptable" or "Cannot
+    copy out of meta tensor", neither of which names the offload. Returns ""
+    when no meta parameter is present, so unrelated failures are not
+    mislabelled.
+    """
+    try:
+        meta = []
+        for name, tensor in model.named_parameters():
+            if getattr(tensor, "device", None) is not None and tensor.device.type == "meta":
+                meta.append(name)
+                # A 30B MoE has thousands; listing them would bury the error.
+                if len(meta) >= 3:
+                    break
+        if not meta:
+            return ""
+        return (
+            f" Unsloth: this model has parameters on the meta device "
+            f"(offloaded because it did not fit the GPU), for example "
+            f"{', '.join(meta)}. Saving needs the real weights, which the "
+            f"offload hooks do not expose here. Re-run on a GPU large enough "
+            f"to hold the model without offloading, or reload it with "
+            f"`device_map` pinned to a single device before saving."
+        )
+    except Exception:
+        # A diagnostic must never replace the real error with its own.
+        return ""
+
+
+def _model_basename(name_or_path, default = "model") -> str:
+    """Leaf name of a model id or path, for use as a GGUF filename stem.
+
+    Strips `\\` as well as `/` on every host: `os.path.basename` returns the whole
+    `D:\\...` string on POSIX. A directory or drive left in the stem makes
+    `os.path.join(gguf_directory, stem)` discard gguf_directory under ntpath, so the
+    GGUF lands next to the base model (#7897); an empty stem gives a hidden
+    `.Q4_K_M.gguf` that `glob.glob` cannot see.
+    """
+    if name_or_path is None:
+        return default
+    try:
+        text = os.fspath(name_or_path)
+    except TypeError:
+        text = str(name_or_path)
+    if not isinstance(text, str) or not text.strip():
+        return default
+
+    # A real directory wins: a POSIX directory name may legally contain a backslash.
+    try:
+        if os.path.isdir(text):
+            base = os.path.basename(os.path.normpath(text))
+            if base and base not in (".", ".."):
+                return base
+    except (OSError, ValueError):
+        pass
+
+    base = text.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    # A bare drive ("D:") or "." would give a drive-relative or hidden output file.
+    if not base or base in (".", "..") or (len(base) == 2 and base[1] == ":"):
+        return default
+    return base
+
+
 @_normalize_tied_weights_keys_for_save
 def unsloth_save_pretrained_gguf(
     self,
@@ -2858,12 +3024,14 @@ def unsloth_save_pretrained_gguf(
             _outtype = "f16"
         return _unsloth_save_lora_gguf(self, tokenizer, save_directory, outtype = _outtype)
 
+    # base_model_name keeps the full id for create_ollama_modelfile's mapper lookup;
+    # only the filename stem is trimmed.
+    base_model_name = getattr(getattr(self, "config", None), "_name_or_path", None)
     try:
-        base_model_name = get_model_name(self.config._name_or_path, load_in_4bit = False)
-        model_name = base_model_name.split("/")[-1]
-    except:
-        base_model_name = self.config._name_or_path
-        model_name = base_model_name.split("/")[-1]
+        base_model_name = get_model_name(base_model_name, load_in_4bit = False)
+    except Exception:
+        pass
+    model_name = _model_basename(base_model_name)
 
     # Check if push_to_hub is requested
     if push_to_hub:
@@ -2872,13 +3040,7 @@ def unsloth_save_pretrained_gguf(
         )
 
     # Step 1: Check if this is a VLM (Vision-Language Model) and check if gpt-oss
-    is_vlm = False
-    if hasattr(self, "config") and hasattr(self.config, "architectures"):
-        is_vlm = any(
-            x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
-            for x in self.config.architectures
-        )
-        is_vlm = is_vlm or hasattr(self.config, "vision_config")
+    is_vlm = _is_vlm(self)
 
     is_processor = is_vlm and isinstance(tokenizer, ProcessorMixin)
 
@@ -2932,13 +3094,13 @@ def unsloth_save_pretrained_gguf(
     is_peft_model = isinstance(self, PeftModelForCausalLM) or isinstance(self, PeftModel)
 
     if is_peft_model:
-        print(f'Unsloth: Merging model weights to {"mxfp4" if is_gpt_oss else "16-bit"} format...')
+        print(f"Unsloth: Merging model weights to {'mxfp4' if is_gpt_oss else '16-bit'} format...")
         try:
             # Call unsloth_generic_save directly (it's in the same file)
             unsloth_generic_save(**arguments)
 
         except Exception as e:
-            raise RuntimeError(f"Failed to save/merge model: {e}")
+            raise RuntimeError(f"Failed to save/merge model: {e}{_offloaded_parameter_hint(self)}")
     else:
         # Non-PEFT model: checkpoint files already exist; point save_to_gguf
         # at the original path instead of re-saving to a temp subdir.
@@ -2961,7 +3123,7 @@ def unsloth_save_pretrained_gguf(
                 if tokenizer is not None:
                     tokenizer.save_pretrained(save_directory)
             except Exception as e:
-                raise RuntimeError(f"Failed to save model: {e}")
+                raise RuntimeError(f"Failed to save model: {e}{_offloaded_parameter_hint(self)}")
 
     if is_processor:
         tokenizer = tokenizer.tokenizer
@@ -3047,15 +3209,25 @@ def unsloth_save_pretrained_gguf(
             imatrix = imatrix_path,
         )
     except Exception as e:
-        if IS_KAGGLE_ENVIRONMENT:
+        if _gguf_child_was_oom_killed(e):
+            raise RuntimeError(
+                f"Unsloth: GGUF conversion was killed by the operating system "
+                f"(SIGKILL), which almost always means the machine ran out of "
+                f"host RAM. The converter holds tensors in RAM, so this is "
+                f"about system memory rather than GPU memory or disk.\n"
+                f"Try a smaller quantization, a machine with more RAM, or "
+                f"convert from a saved 16bit checkpoint on a larger host.\n"
+                f"Error: {e}"
+            ) from e
+        if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(e, save_directory):
             raise RuntimeError(
                 f"Unsloth: GGUF conversion failed in Kaggle environment.\n"
                 f"This is likely due to the 20GB disk space limit.\n"
                 f"Try saving to /tmp directory or use a smaller model.\n"
                 f"Error: {e}"
-            )
+            ) from e
         else:
-            raise RuntimeError(f"Unsloth: GGUF conversion failed: {e}")
+            raise RuntimeError(f"Unsloth: GGUF conversion failed: {e}") from e
 
     # Step 9: Create Ollama modelfile
     gguf_directory = f"{save_directory}_gguf"
@@ -3122,6 +3294,104 @@ def unsloth_save_pretrained_gguf(
     }
 
 
+# Errno 28 / ENOSPC and the wordings the various layers use for it.
+_DISK_FULL_PATTERNS = (
+    "no space left on device",
+    "not enough free space",
+    "disk quota exceeded",
+    "errno 28",
+    "insufficient disk",
+    "write failed: no space",
+)
+
+# Kaggle allows 20GB. Below this headroom a failed conversion is plausibly
+# about space; above it, blaming disk sends the user nowhere useful.
+_DISK_HEADROOM_BYTES = 2 * 1024**3
+
+# A SIGKILLed child is 128 + 9 to a shell, so llama-quantize (run through
+# `shell = True`) surfaces as "returned non-zero exit status 137" with no
+# signal named anywhere in the text.
+_OOM_KILL_PATTERNS = (
+    "sigkill",
+    "exit status 137",
+    "exit code 137",
+    "exited with code 137",
+    "exited with code -9",
+)
+
+
+def _iter_exception_chain(exc, max_links = 10):
+    """The exception plus its explicit causes and implicit contexts.
+
+    Every layer here re-raises as a plain RuntimeError, so `returncode` and the
+    original wording only survive on the chained cause.
+    """
+    seen = set()
+    queue = [exc]
+    while queue and len(seen) < max_links:
+        current = queue.pop(0)
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        yield current
+        queue.append(getattr(current, "__cause__", None))
+        queue.append(getattr(current, "__context__", None))
+
+
+def _gguf_child_was_oom_killed(exc):
+    """Was the converter killed by the kernel rather than failing on its own?
+
+    llama.cpp's converter loads tensors in host RAM, and a large model exceeds
+    what a free Colab or Kaggle VM has. The kernel OOM-killer takes the process
+    and subprocess reports only
+
+        Command '[...]' died with <Signals.SIGKILL: 9>
+
+    which says nothing about memory. Gemma3N_(4B)-Audio hits this on both the
+    plain and the high-RAM T4, having trained, inferred and merged cleanly.
+
+    SIGKILL alone is the signal: a converter that fails on its own raises and
+    exits non-zero, so a kill is either the OOM-killer or someone stopping the
+    run by hand, and both are worth naming.
+
+    llama-quantize runs under a shell, which reports the kill as exit status
+    137 instead of a signal, and every layer re-raises as a plain RuntimeError,
+    so the whole chain is checked rather than just the outermost exception.
+    """
+    for error in _iter_exception_chain(exc):
+        if getattr(error, "returncode", None) in (-9, 137):
+            return True
+        text = f"{error}".lower()
+        if any(pattern in text for pattern in _OOM_KILL_PATTERNS):
+            return True
+    return False
+
+
+def _gguf_failure_looks_like_disk(exc, save_directory = None):
+    """Is this GGUF failure plausibly about running out of disk?
+
+    Two independent signals, either alone sufficient: each can be absent for a
+    good reason. The message may name ENOSPC after the directory was cleaned
+    up, and the disk may be genuinely full while a subprocess surfaced
+    something vaguer. Never raises; an unreadable path just means "not disk".
+    """
+    text = f"{type(exc).__name__}: {exc}".lower()
+    if any(p in text for p in _DISK_FULL_PATTERNS):
+        return True
+    if getattr(exc, "errno", None) == 28:
+        return True
+    for path in (save_directory, os.getcwd()):
+        if not path:
+            continue
+        try:
+            if shutil.disk_usage(path).free < _DISK_HEADROOM_BYTES:
+                return True
+        except OSError:
+            # Never let the diagnostic be the thing that raises.
+            continue
+    return False
+
+
 def unsloth_push_to_hub_gguf(
     self,
     repo_id: str,
@@ -3143,6 +3413,7 @@ def unsloth_push_to_hub_gguf(
     datasets: Optional[List[str]] = None,
     save_method: str = None,
     imatrix_file = None,
+    is_main_process: bool = True,
 ):
     """
     Same as .push_to_hub(...) except 4bit weights are auto
@@ -3175,11 +3446,11 @@ def unsloth_push_to_hub_gguf(
     """
     if tokenizer is None:
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
+    if not is_main_process:
+        return None
 
     # save_method="lora" exports the adapter itself as a GGUF LoRA (not a merged model).
     if save_method is not None and str(save_method).lower() == "lora":
-        if not is_main_process:
-            return None  # only the main rank converts and uploads, like the local lora branch
         _qm = quantization_method
         if isinstance(_qm, (list, tuple)) and len(_qm) == 1:
             _qm = _qm[0]  # the gguf API allows a list; unwrap a single outtype
@@ -3233,6 +3504,7 @@ def unsloth_push_to_hub_gguf(
             first_conversion = first_conversion,
             push_to_hub = False,  # Never push from here
             token = token,  # forwarded so imatrix_file=True can read a gated/private upstream
+            is_main_process = is_main_process,
             max_shard_size = max_shard_size,
             safe_serialization = safe_serialization,
             temporary_location = temporary_location,
@@ -3622,13 +3894,7 @@ def _unsloth_save_lora_gguf(
         base_model_id = get_model_name(base_model_id, load_in_4bit = False)
     except Exception:
         pass
-    # Windows-safe basename (handles both C:\... and / separators).
-    if os.path.isdir(base_model_id):
-        model_name = os.path.basename(os.path.normpath(base_model_id))
-    else:
-        model_name = base_model_id.replace("\\", "/").rstrip("/").split("/")[-1]
-    if not model_name:
-        model_name = "model"
+    model_name = _model_basename(base_model_id)
 
     # Save the adapter; for a hub push use an isolated temp dir, else save_directory itself.
     if push_to_hub:
@@ -3771,11 +4037,16 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     return _unsloth_save_lora_gguf(self, tokenizer, save_directory, outtype = outtype)
 
 
-from .models.loader_utils import get_model_name
-from unsloth_zoo.saving_utils import (
-    merge_and_overwrite_lora,
-    prepare_saving,
+from .models.loader_utils import (
+    get_model_name,
+    _resolve_hub_repo_cached_file,
+    _tokenizer_cache_dir,
+    _tokenizer_wants_local_only,
 )
+
+# Imported lazily at the two call sites below: a zoo older than the one that made
+# its own bitsandbytes import optional would otherwise break `import unsloth` on a
+# host without bnb, which is the whole point of the guards above.
 from unsloth_zoo.llama_cpp import (
     install_llama_cpp,
     convert_to_gguf as _convert_to_gguf,
@@ -3856,7 +4127,7 @@ def _prewarm_base_model_hub_cache(
         from huggingface_hub import HfFileSystem, hf_hub_download, snapshot_download
 
         # Resolve the cache from the live env like the merge, not huggingface_hub's frozen
-        # constants: a runtime cache redirect (read-only default, Studio) would else miss (#6890).
+        # constants: a runtime cache redirect (read-only default, Unsloth) would else miss (#6890).
         try:
             from unsloth_zoo.hf_cache import _active_caches
             _hub_cache = _active_caches()[1]
@@ -4023,6 +4294,8 @@ def save_to_gguf_generic(
             quantization_type = quantization_type,
         )
         if repo_id is not None:
+            from unsloth_zoo.saving_utils import prepare_saving
+
             prepare_saving(
                 model,
                 repo_id,
@@ -4154,6 +4427,7 @@ def unsloth_generic_save(
         print(f"Unsloth: Model saved successfully to '{save_directory}'")
     else:
         _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
+        from unsloth_zoo.saving_utils import merge_and_overwrite_lora
         merge_and_overwrite_lora(
             get_model_name,
             model = model,
@@ -4502,13 +4776,7 @@ def _unsloth_save_torchao_with_given_config(
         quantization_config = TorchAoConfig(quant_type = torchao_config)
 
     # Determine if this is a VLM
-    is_vlm = False
-    if hasattr(model, "config") and hasattr(model.config, "architectures"):
-        is_vlm = any(
-            x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
-            for x in model.config.architectures
-        )
-        is_vlm = is_vlm or hasattr(model.config, "vision_config")
+    is_vlm = _is_vlm(model)
     auto_model = AutoModelForImageTextToText if is_vlm else AutoModelForCausalLM
     auto_processor = AutoProcessor if is_vlm else AutoTokenizer
 
@@ -4522,30 +4790,61 @@ def _unsloth_save_torchao_with_given_config(
     else:
         kwargs = {"dtype": torch.bfloat16}
 
-    # Reload with quantization applied
-    quantized_model = auto_model.from_pretrained(
-        save_directory,
-        device_map = "auto",
-        quantization_config = quantization_config,
-        **kwargs,
-    )
+    # Else the original stays resident on every GPU while device_map="auto" below
+    # loads a second copy.
+    model_restore = _offload_model_for_quantize_subprocess(model)
+    for _ in range(3):
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            torch.xpu.empty_cache()
 
-    torchao_save_directory = save_directory + "-torchao"
-
-    # TorchAO does not support safe_serialization right now 0.14.0 seems broken!
-    safe_serialization = Version(importlib_version("torchao")) > Version("0.14.0")
-    safe_serialization = False
-
-    if push_to_hub:
-        quantized_model.push_to_hub(
-            torchao_save_directory, safe_serialization = safe_serialization, token = token
+    # The original stays offloaded until the quantized copy is saved AND released,
+    # else both are resident at once and the restore OOMs.
+    try:
+        # Reload with quantization applied
+        quantized_model = auto_model.from_pretrained(
+            save_directory,
+            device_map = "auto",
+            quantization_config = quantization_config,
+            **kwargs,
         )
-        tokenizer.push_to_hub(torchao_save_directory, token = token)
-    else:
-        quantized_model.save_pretrained(
-            torchao_save_directory, safe_serialization = safe_serialization
-        )
-        tokenizer.save_pretrained(torchao_save_directory, token = token)
+
+        torchao_save_directory = save_directory + "-torchao"
+
+        # TorchAO does not support safe_serialization right now 0.14.0 seems broken!
+        safe_serialization = Version(importlib_version("torchao")) > Version("0.14.0")
+        safe_serialization = False
+
+        if push_to_hub:
+            quantized_model.push_to_hub(
+                torchao_save_directory, safe_serialization = safe_serialization, token = token
+            )
+            tokenizer.push_to_hub(torchao_save_directory, token = token)
+        else:
+            quantized_model.save_pretrained(
+                torchao_save_directory, safe_serialization = safe_serialization
+            )
+            tokenizer.save_pretrained(torchao_save_directory, token = token)
+
+    finally:
+        # del here, not at the end of the try: if save_pretrained raises, the copy
+        # would otherwise still be resident while the original is restored.
+        quantized_model = None
+        del quantized_model
+        # A failed save leaves a live traceback whose frames still hold the copy, so
+        # dropping the local alone does not free its VRAM.
+        _exc = sys.exc_info()[1]
+        if _exc is not None:
+            traceback.clear_frames(_exc.__traceback__)
+        for _ in range(3):
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            if hasattr(torch, "xpu") and torch.xpu.is_available():
+                torch.xpu.empty_cache()
+        _restore_model_after_quantize_subprocess(model, model_restore)
 
     # Clean up the intermediate unquantized model
     if os.path.exists(save_directory):
@@ -4581,6 +4880,318 @@ def _print_compressed_hw_note(scheme, out_dir):
         f"Unsloth: Saved {scheme} compressed checkpoint to '{out_dir}'.\n"
         f"Unsloth: Load it with vLLM for accelerated inference. Hardware for full speed: {hw}."
     )
+
+
+_DISPATCH_SNAPSHOT_ATTR = "_unsloth_dispatch_snapshot"
+
+
+def _accelerate_move_guards():
+    """The instance methods dispatch_model wraps to block moving an offloaded model."""
+    try:
+        from accelerate.hooks import _accelerate_added_attributes
+        return tuple(_accelerate_added_attributes)
+    except Exception:
+        return ("to", "cuda", "npu", "xpu", "mlu", "sdaa", "musa")
+
+
+_ACCELERATE_MOVE_GUARDS = _accelerate_move_guards()
+
+
+def _accelerate_dispatch_root(model):
+    """The module that really owns the accelerate dispatch.
+
+    A PEFT wrapper only proxies ``_hf_hook``, so ``delattr`` fails and
+    ``remove_hook_from_submodules`` raises before removing anything; ``hf_device_map``
+    keys are relative to the inner root too. Walks real children, never ``__getattr__``.
+    """
+    node, seen = model, set()
+    while id(node) not in seen:
+        seen.add(id(node))
+        if "hf_device_map" in getattr(node, "__dict__", {}):
+            return node
+        children = getattr(node, "__dict__", {}).get("_modules") or {}
+        nxt = next(
+            (
+                children[a]
+                for a in ("base_model", "model")
+                if hasattr(children.get(a), "named_modules")
+            ),
+            None,
+        )
+        if nxt is None:
+            return model
+        node = nxt
+    return model
+
+
+def _snapshot_dispatch_state(root):
+    """Hooks, tensor placements and instance forwards, so the dispatch can be replayed.
+
+    Re-deriving it with ``dispatch_model`` is not equivalent: PEFT reparents each
+    targeted ``Linear`` after transformers dispatched, so accelerate hooks modules that
+    never had any (measured: 395 -> 1379) and the logits shift enough to reorder top-5.
+    """
+    hooks = [
+        (name, mod.__dict__["_hf_hook"])
+        for name, mod in root.named_modules()
+        if "_hf_hook" in mod.__dict__
+    ]
+    # remove_duplicate=False: the default hides one half of every tied pair, exactly
+    # the half that needs re-tying below.
+    named = list(root.named_parameters(remove_duplicate = False)) + list(
+        root.named_buffers(remove_duplicate = False)
+    )
+    places = {name: tensor.device for name, tensor in named}
+    # Tied weights share one storage, but the CPU round trip repoints every tensor and
+    # tied_params_map is keyed on the old pointer, so replaying the hooks alone gives
+    # independent copies: double VRAM, and updates to one no longer reach the other.
+    # Skip meta tensors: offloaded parameters all sit on meta with pointer 0, which
+    # would collapse into one fake "tied" group of differently shaped tensors, and
+    # each side of a tie is already its own meta placeholder so nothing is lost.
+    groups = {}
+    for name, tensor in named:
+        if tensor.device.type == "meta":
+            continue
+        ptr = tensor.untyped_storage().data_ptr()
+        if ptr:
+            groups.setdefault(ptr, []).append(name)
+    ties = [names for names in groups.values() if len(names) > 1]
+    # Removing a hook restores `forward = _old_forward`, captured before unsloth patched
+    # the module, so a remove/re-add permanently drops every fused kernel installed after
+    # the dispatch (measured: apply_lora_mlp_swiglu on all 28 MLPs). It also deletes the
+    # `to`/`cuda`/... move guards, so record those too.
+    attrs = ("forward", "_old_forward") + tuple(_ACCELERATE_MOVE_GUARDS)
+    saved_attrs = {
+        name: {a: mod.__dict__[a] for a in attrs if a in mod.__dict__}
+        for name, mod in root.named_modules()
+        if any(a in mod.__dict__ for a in attrs)
+    }
+    # Re-adding a hook runs init_hook -> set_module_tensor_to_device, which builds a fresh
+    # Parameter and so drops .grad. Snapshot the gradients and reattach them on restore.
+    grads = {
+        name: getattr(tensor, "grad", None)
+        for name, tensor in root.named_parameters(remove_duplicate = False)
+        if getattr(tensor, "grad", None) is not None
+    }
+    return hooks, places, saved_attrs, ties, grads
+
+
+def _drop_accelerator_tied_param_cache(snapshot) -> None:
+    """Drop the GPU tensors accelerate caches in each hook's ``tied_params_map``.
+
+    Holding the hooks across the offload pins a GPU copy of the tied embedding (0.31 GB
+    of 1.24 GB here). The entries are keyed on the pre-move ``data_ptr`` so they are
+    stale anyway, and re-attaching repopulates them.
+    """
+    for _name, hook in snapshot[0]:
+        cache = getattr(hook, "tied_params_map", None)
+        if not cache:
+            continue
+        for ptr in list(cache):
+            entry = cache[ptr]
+            for device in list(entry):
+                if str(device) != "cpu":
+                    del entry[device]
+            if not entry:
+                del cache[ptr]
+
+
+def _split_tensor_path(root, full_name):
+    """``("model.embed_tokens.weight")`` -> ``(the module, "weight")``."""
+    mod_name, _, attr = full_name.rpartition(".")
+    try:
+        return (root.get_submodule(mod_name) if mod_name else root), attr
+    except AttributeError:
+        return None, attr
+
+
+def _lookup_tensor(root, full_name):
+    mod, attr = _split_tensor_path(root, full_name)
+    if mod is None:
+        return None
+    for store in ("_parameters", "_buffers"):
+        found = (getattr(mod, store, None) or {}).get(attr)
+        if found is not None:
+            return found
+    return None
+
+
+def _share_tensor(root, full_name, leader) -> None:
+    """Point ``full_name`` back at ``leader``, restoring a tie."""
+    mod, attr = _split_tensor_path(root, full_name)
+    if mod is None:
+        return
+    for store in ("_parameters", "_buffers"):
+        target = getattr(mod, store, None)
+        if target is None or attr not in target:
+            continue
+        current = target[attr]
+        if current is None or current.device != leader.device or current.shape != leader.shape:
+            return  # not actually the same tensor; leave it alone
+        target[attr] = leader
+        return
+
+
+def _restore_dispatch_state(root, snapshot) -> None:
+    """Replay ``_snapshot_dispatch_state``."""
+    from accelerate.hooks import add_hook_to_module
+
+    hooks, places, saved_attrs, ties, grads = snapshot
+    for name, hook in hooks:
+        add_hook_to_module(root.get_submodule(name) if name else root, hook)
+
+    # Re-adding a hook rewraps whatever `_old_forward` now holds, so put the exact
+    # callables back, `_old_forward` first.
+    for name, values in saved_attrs.items():
+        mod = root.get_submodule(name) if name else root
+        for attr in ("_old_forward", "forward", *_ACCELERATE_MOVE_GUARDS):
+            if attr in values:
+                mod.__dict__[attr] = values[attr]
+
+    # init_hook only re-places tensors the hooked module owns, so anything added after
+    # the dispatch (the LoRA adapters) is still on CPU.
+    for mod_name, mod in root.named_modules():
+        for attr in ("_parameters", "_buffers"):
+            store = getattr(mod, attr, None)
+            if not store:
+                continue
+            for tensor_name, tensor in list(store.items()):
+                if tensor is None:
+                    continue
+                full = f"{mod_name}.{tensor_name}" if mod_name else tensor_name
+                want = places.get(full)
+                if want is None or tensor.device == want:
+                    continue
+                if getattr(tensor, "quant_state", None) is not None:
+                    # Only bitsandbytes' own .to() moves absmax/code/state2 with the data.
+                    mod.to(want)
+                else:
+                    tensor.data = tensor.data.to(want)
+
+    # Reattach the gradients init_hook discarded, on their weight's device.
+    for name, grad in grads.items():
+        tensor = _lookup_tensor(root, name)
+        if tensor is not None and tensor.grad is None and tensor.shape == grad.shape:
+            tensor.grad = grad.to(tensor.device)
+
+    # Re-tie last, once every tensor is back on its own device.
+    for names in ties:
+        leader = _lookup_tensor(root, names[0])
+        if leader is None:
+            continue
+        for follower in names[1:]:
+            _share_tensor(root, follower, leader)
+    # init_hook refilled tied_params_map with the pre-retie tensors, now unreferenced
+    # by the model but still pinned by the map.
+    if ties:
+        _drop_accelerator_tied_param_cache(snapshot)
+
+
+def _offload_model_for_quantize_subprocess(model):
+    """Best-effort: move the model's weights off the GPU before the quantized export
+    loads its own copy from disk, so the GPUs need not hold both at once. Returns an
+    opaque token for ``_restore_model_after_quantize_subprocess`` (None if nothing moved).
+
+    Two shapes are handled:
+      * single-device CUDA/XPU model -> ``.to("cpu")``, restored with ``.to(device)``;
+      * accelerate-dispatched model (a multi-GPU ``device_map`` shard, e.g. the Studio
+        multi-GPU export load) -> hooks removed and moved to CPU, restored by replaying
+        the dispatch. A plain ``.to("cpu")`` is invalid here, which is why the old
+        single-device-only move left every GPU holding a full copy. A map spilling to
+        CPU is still released, but disk/meta targets are left alone: accelerate keeps
+        those parameters off the model, so moving would materialize the whole checkpoint.
+
+    Quantized (bnb) models are attempted too rather than skipped: Studio exports load
+    4-bit by DEFAULT, so skipping them left a shard on every GPU. transformers refuses
+    ``.to()`` for some bitsandbytes builds and that refusal raises before anything moves,
+    so the failure path restores the model and returns None, i.e. the old behaviour.
+    """
+    try:
+        _has_xpu = hasattr(torch, "xpu") and torch.xpu.is_available()
+        if not ((torch.cuda.is_available() or _has_xpu) and hasattr(model, "parameters")):
+            return None
+        device_map = getattr(model, "hf_device_map", None)
+        if device_map:
+            targets = {str(v).lower() for v in device_map.values()}
+            # A cpu spill is fine to move, it is already in host RAM. disk/meta is not:
+            # those parameters are off the model, so .to("cpu") would materialize the
+            # whole checkpoint into RAM.
+            if not all(t.isdigit() or t.startswith(("cuda", "xpu")) or t == "cpu" for t in targets):
+                return None
+            if not any(t.isdigit() or t.startswith(("cuda", "xpu")) for t in targets):
+                return None  # nothing on an accelerator: no GPU memory to reclaim
+            from accelerate.hooks import remove_hook_from_submodules
+
+            # A PEFT wrapper only proxies the hooks; they live on the inner root.
+            root = _accelerate_dispatch_root(model)
+            try:
+                setattr(root, _DISPATCH_SNAPSHOT_ATTR, _snapshot_dispatch_state(root))
+            except Exception as snap_exc:
+                # Restore will fall back to re-deriving from the device_map.
+                logger.warning_once(
+                    f"Unsloth: could not snapshot the accelerate dispatch "
+                    f"({type(snap_exc).__name__}: {snap_exc}); re-dispatching on restore."
+                )
+            remove_hook_from_submodules(root)
+            try:
+                model.to("cpu")
+            except Exception:
+                # The move failed after the hooks came off; re-dispatch so the model is
+                # left usable rather than hookless and half-moved across CPU/GPUs.
+                _restore_model_after_quantize_subprocess(model, ("dispatch", dict(device_map)))
+                return None
+            snapshot = getattr(root, _DISPATCH_SNAPSHOT_ATTR, None)
+            if snapshot is not None:
+                _drop_accelerator_tied_param_cache(snapshot)
+            return ("dispatch", dict(device_map))
+        devices = {str(p.device) for p in model.parameters()}
+        if len(devices) == 1 and next(iter(devices)).startswith(("cuda", "xpu")):
+            device = next(model.parameters()).device
+            try:
+                model.to("cpu")
+            except Exception:
+                _restore_model_after_quantize_subprocess(model, ("device", device))
+                return None
+            return ("device", device)
+    except Exception as exc:
+        # A silent `return None` is indistinguishable from "nothing to move", which
+        # hides a real bug behind a merely slower export.
+        logger.warning_once(
+            f"Unsloth: could not free the model's accelerator memory before the quantized "
+            f"export ({type(exc).__name__}: {exc}); continuing with the model resident."
+        )
+        return None
+    return None
+
+
+def _restore_model_after_quantize_subprocess(model, restore_token) -> None:
+    """Undo ``_offload_model_for_quantize_subprocess``; warns instead of raising."""
+    if restore_token is None:
+        return
+    kind, value = restore_token
+    try:
+        if kind == "dispatch":
+            root = _accelerate_dispatch_root(model)
+            snapshot = root.__dict__.pop(_DISPATCH_SNAPSHOT_ATTR, None)
+            if snapshot is not None:
+                _restore_dispatch_state(root, snapshot)
+            else:
+                from accelerate import dispatch_model
+
+                # skip_keys matters: without it accelerate moves every forward kwarg
+                # to the executing device, wrong for device-invariant cache tensors.
+                dispatch_model(
+                    root,
+                    device_map = value,
+                    skip_keys = getattr(root, "_skip_keys_device_placement", None),
+                )
+        else:
+            model.to(value)  # restore the model to its original device
+    except Exception:
+        logger.warning_once(
+            "Unsloth: could not restore the model to its original device(s) after the "
+            "quantized export; it may remain on CPU."
+        )
 
 
 def _unsloth_save_compressed_tensors(
@@ -4652,7 +5263,7 @@ def _unsloth_save_compressed_tensors(
 
     # 2) Pick the local working dir. For a hub push, save_directory is a repo id, so merge and
     #    quantize inside an isolated temp dir instead of writing ./<repo_id> into the cwd.
-    repo_id, work_tmp, calib_tmp, model_dev = None, None, None, None
+    repo_id, work_tmp, calib_tmp, model_restore = None, None, None, None
     if push_to_hub:
         repo_id = os.fspath(save_directory)
         work_tmp = tempfile.mkdtemp(prefix = "unsloth-compressed-")
@@ -4804,23 +5415,8 @@ def _unsloth_save_compressed_tensors(
             cmd += ["--variant", variant]
 
         # Free the in-memory model's CUDA memory before the subprocess loads its own copy from
-        # disk, so a single GPU need not hold both at once. Best-effort and restored in finally;
-        # skipped for quantized or multi-device models where moving is unsafe.
-        try:
-            if (
-                torch.cuda.is_available()
-                and hasattr(model, "parameters")
-                and not getattr(model, "is_loaded_in_4bit", False)
-                and not getattr(model, "is_loaded_in_8bit", False)
-                and not getattr(model, "is_quantized", False)
-            ):
-                _devs = {str(p.device) for p in model.parameters()}
-                if len(_devs) == 1 and next(iter(_devs)).startswith("cuda"):
-                    _dev = next(model.parameters()).device
-                    model.to("cpu")
-                    model_dev = _dev  # set only after a successful move, so finally can restore
-        except Exception:
-            model_dev = None
+        # disk, so the GPUs need not hold both at once. Best-effort, restored in finally.
+        model_restore = _offload_model_for_quantize_subprocess(model)
         for _ in range(3):
             gc.collect()
             if torch.cuda.is_available():
@@ -4891,14 +5487,7 @@ def _unsloth_save_compressed_tensors(
         _print_compressed_hw_note(scheme, result)
         return result
     finally:
-        if model_dev is not None:
-            try:
-                model.to(model_dev)  # restore the model to its original device
-            except Exception:
-                logger.warning_once(
-                    "Unsloth: could not restore the model to its original device after compressed "
-                    "export; it may remain on CPU."
-                )
+        _restore_model_after_quantize_subprocess(model, model_restore)
         if calib_tmp is not None and os.path.isdir(calib_tmp):
             shutil.rmtree(calib_tmp, ignore_errors = True)
         if work_tmp is not None:
@@ -4957,7 +5546,7 @@ def _unsloth_save_torchao(
     # Always merge into an isolated temp staging dir (never save_directory itself), so a co-selected
     # 16-bit export written to save_directory is not overwritten or deleted; the torchao output is
     # the sibling "<save_directory>-<suffix>" (or the repo id on a hub push).
-    repo_id, work_tmp, model_dev = None, None, None
+    repo_id, work_tmp, model_restore = None, None, None
     work_tmp = tempfile.mkdtemp(prefix = "unsloth-torchao-")
     if push_to_hub:
         repo_id = os.fspath(save_directory)
@@ -5035,25 +5624,12 @@ def _unsloth_save_torchao(
             auto_model = AutoModelForCausalLM
         auto_processor = AutoProcessor if is_vlm else AutoTokenizer
 
-        # 3) Free the in-memory model's accelerator memory before reloading a fresh copy from disk.
-        #    Covers CUDA and XPU (torchao runs on Intel GPUs too), so the original doesn't sit
-        #    resident alongside the reloaded copy and OOM a device that fit the model once.
+        # 3) Free the in-memory model's accelerator memory before reloading a fresh copy from
+        #    disk, else it sits resident alongside the copy and OOMs a device that fit the
+        #    model once. Covers CUDA and XPU (torchao runs on Intel GPUs too) plus multi-GPU
+        #    dispatched shards, which a plain .to("cpu") cannot move.
         _has_xpu = hasattr(torch, "xpu") and torch.xpu.is_available()
-        try:
-            if (
-                (torch.cuda.is_available() or _has_xpu)
-                and hasattr(model, "parameters")
-                and not getattr(model, "is_loaded_in_4bit", False)
-                and not getattr(model, "is_loaded_in_8bit", False)
-                and not getattr(model, "is_quantized", False)
-            ):
-                _devs = {str(p.device) for p in model.parameters()}
-                if len(_devs) == 1 and next(iter(_devs)).startswith(("cuda", "xpu")):
-                    _dev = next(model.parameters()).device
-                    model.to("cpu")
-                    model_dev = _dev
-        except Exception:
-            model_dev = None
+        model_restore = _offload_model_for_quantize_subprocess(model)
         for _ in range(3):
             gc.collect()
             if torch.cuda.is_available():
@@ -5124,14 +5700,20 @@ def _unsloth_save_torchao(
         )
         return result
     finally:
-        if model_dev is not None:
-            try:
-                model.to(model_dev)
-            except Exception:
-                logger.warning_once(
-                    "Unsloth: could not restore the model to its original device after torchao "
-                    "export; it may remain on CPU."
-                )
+        # A raise pins the copy in the local and the live traceback, so free both or the
+        # restore below OOMs.
+        quantized_model = None
+        del quantized_model
+        _exc = sys.exc_info()[1]
+        if _exc is not None:
+            traceback.clear_frames(_exc.__traceback__)
+        for _ in range(3):
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            if hasattr(torch, "xpu") and torch.xpu.is_available():
+                torch.xpu.empty_cache()
+        _restore_model_after_quantize_subprocess(model, model_restore)
         if work_tmp is not None:
             shutil.rmtree(work_tmp, ignore_errors = True)
         for _ in range(3):

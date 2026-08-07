@@ -4,12 +4,15 @@
 import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 type ModelLoadDescriptionProps = {
   title?: string | null;
   message?: string | null;
   progressPercent?: number | null;
   progressLabel?: string | null;
+  // Extra classes for the root row (e.g. a titleless caller dropping min-h-12).
+  className?: string;
 };
 
 function clampProgress(value: number): number {
@@ -39,6 +42,7 @@ export function ModelLoadDescription({
   message,
   progressPercent,
   progressLabel,
+  className,
 }: ModelLoadDescriptionProps) {
   const hasProgress = typeof progressPercent === "number";
   // Split once at the top so the JSX below stays flat (no IIFE).
@@ -46,7 +50,7 @@ export function ModelLoadDescription({
     splitProgressLabel(progressLabel);
 
   return (
-    <div className="relative flex min-h-12 w-full items-stretch gap-2">
+    <div className={cn("relative flex min-h-12 w-full items-stretch gap-2", className)}>
       <div className="flex h-full shrink-0 items-center self-center">
         <Spinner className="size-3.5 text-muted-foreground" />
       </div>
@@ -54,14 +58,14 @@ export function ModelLoadDescription({
         {title ? <p className="text-foreground leading-tight font-semibold">{title}</p> : null}
         {hasProgress ? (
           <div className="w-full pt-1">
-            <div className="flex items-center justify-between gap-2 text-[10px] font-medium tracking-[0.08em] text-muted-foreground/80">
+            <div className="flex items-center justify-between gap-2 text-ui-10 font-medium tracking-[0.08em] text-muted-foreground/80">
               <span className="min-w-0 truncate">{labelPrimary}</span>
               <span className="shrink-0 tabular-nums">
                 {Math.round(clampProgress(progressPercent))}%
               </span>
             </div>
             {labelSecondary ? (
-              <div className="truncate pt-0.5 text-[10px] font-medium tracking-[0.08em] text-muted-foreground/60">
+              <div className="truncate pt-0.5 text-ui-10 font-medium tracking-[0.08em] text-muted-foreground/60">
                 {labelSecondary}
               </div>
             ) : null}
@@ -107,7 +111,7 @@ export function ModelLoadInlineStatus({
             <Progress value={clampProgress(progressPercent)} className="h-1 bg-foreground/[0.08]" />
           </div>
           <div
-            className="flex shrink-0 items-center gap-1 text-[10px] font-medium tracking-[0.08em] text-muted-foreground/80"
+            className="flex shrink-0 items-center gap-1 text-ui-10 font-medium tracking-[0.08em] text-muted-foreground/80"
             title={progressLabel ?? undefined}
           >
             {/* Tight inline layout: show only the primary (bytes) chunk;
@@ -124,7 +128,7 @@ export function ModelLoadInlineStatus({
           type="button"
           size="xs"
           variant="outline"
-          className="shrink-0 text-[11px]"
+          className="shrink-0 text-ui-11"
           onClick={onStop}
         >
           Stop

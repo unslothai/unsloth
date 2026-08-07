@@ -18,6 +18,9 @@ interface TransformersUpgradeDialogStore {
   errorMessage: string | null;
   /** Model ships custom code; without a PyPI install the load may fall back to trust_remote_code. */
   trustRemoteCodeFallback: boolean;
+  /** The caller already confirmed the model swap's "stop N chats" prompt, so the install
+   *  may stop them too; without it the install 409s and Retry can never succeed. */
+  forceCancelActive: boolean;
   /** True once this consent's install completed. The install unloads the previous
    *  model before swapping, so the caller must treat it as already unloaded; the
    *  custom-code fallback resolves true without installing and leaves it loaded. */
@@ -34,7 +37,7 @@ interface TransformersUpgradeDialogStore {
   requestConsent: (
     modelName: string,
     upgrade: TransformersUpgradeInfo,
-    options?: { trustRemoteCodeFallback?: boolean },
+    options?: { trustRemoteCodeFallback?: boolean; forceCancelActive?: boolean },
   ) => Promise<boolean>;
   /** Accept/Retry: run the install; on success resolve(true) and close. */
   install: () => Promise<void>;
@@ -49,6 +52,7 @@ export const useTransformersUpgradeDialogStore =
     phase: "consent",
     errorMessage: null,
     trustRemoteCodeFallback: false,
+    forceCancelActive: false,
     installRan: false,
     serverUnloadedChat: false,
     requestConsent: (modelName, upgrade, options) =>
@@ -62,6 +66,7 @@ export const useTransformersUpgradeDialogStore =
           phase: "consent",
           errorMessage: null,
           trustRemoteCodeFallback: Boolean(options?.trustRemoteCodeFallback),
+          forceCancelActive: Boolean(options?.forceCancelActive),
           installRan: false,
         });
       }),
@@ -71,14 +76,14 @@ export const useTransformersUpgradeDialogStore =
       return value;
     },
     install: async () => {
-      const { upgrade, phase } = get();
+      const { upgrade, phase, forceCancelActive } = get();
       const version = upgrade?.pypi_version;
       if (!version || phase === "installing") return;
       const requestResolver = pendingResolver;
       set({ phase: "installing", errorMessage: null });
       let result: Awaited<ReturnType<typeof installLatestTransformers>>;
       try {
-        result = await installLatestTransformers(version);
+        result = await installLatestTransformers(version, forceCancelActive);
         // Latch the server-side unload IMMEDIATELY, before any resolver-identity
         // guard: even a superseded consent's install may have unloaded the chat
         // model, and the signal must survive for whichever load consumes it next.
@@ -133,6 +138,7 @@ export const useTransformersUpgradeDialogStore =
         phase: "consent",
         errorMessage: null,
         trustRemoteCodeFallback: false,
+        forceCancelActive: false,
       });
       resolver?.(installed);
     },

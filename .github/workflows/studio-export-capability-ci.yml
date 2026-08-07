@@ -9,7 +9,7 @@
 # export is validated separately. No GPU / model / llama.cpp: the tests mock the probes and block
 # torch/unsloth, so the job installs only a CPU PyTorch plus import deps.
 
-name: Studio export capability
+name: Unsloth export capability
 
 on:
   pull_request:
@@ -22,18 +22,15 @@ on:
       - '.github/workflows/studio-export-capability-ci.yml'
   push:
     branches: [main]
-    paths:
-      - 'studio/backend/utils/hardware/hardware.py'
-      - 'studio/backend/core/export/export.py'
-      - 'studio/backend/routes/export.py'
-      - 'studio/backend/main.py'
-      - 'studio/backend/tests/test_export_capability.py'
-      - '.github/workflows/studio-export-capability-ci.yml'
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -44,17 +41,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # No macOS leg on purpose. The only command this job runs is
+        # `pytest tests/test_export_capability.py`, and every test in that file
+        # goes through `_patch()`, which monkeypatches `_has_torch`,
+        # `get_device` and `is_apple_silicon`. Nothing in it touches Metal, MLX
+        # or any Apple binary, so a real Mac proves nothing a Linux runner does
+        # not already prove -- and studio-backend-ci.yml runs the same file on
+        # ubuntu-latest as part of `pytest tests/`. macOS concurrency is capped
+        # at 5 account-wide, so a leg that buys no signal is worth reclaiming.
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     env:
       # No accelerator on hosted runners; keep detection on the CPU path.
       CUDA_VISIBLE_DEVICES: ""
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
           cache: 'pip'

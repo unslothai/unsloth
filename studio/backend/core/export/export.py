@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional, Tuple, List
 
 # unsloth imports torch on non-MLX hosts, so a --no-torch install raises here. Stay importable
-# (null the classes) so exports return a clean "PyTorch is not installed" error, not an import crash.
+# (null the classes) so exports return a clean "PyTorch is not installed" error.
 try:
     from unsloth import FastLanguageModel, FastVisionModel, _IS_MLX
     _UNSLOTH_IMPORT_ERROR = None
@@ -29,6 +29,7 @@ from huggingface_hub import HfApi, ModelCard
 from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
+from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.model_config import detect_audio_type
 from utils.paths import (
     ensure_dir,
@@ -38,8 +39,7 @@ from utils.paths import (
 )
 from core.inference import get_inference_backend
 
-# GPU/PyTorch-only imports, skipped on MLX and on a --no-torch install so the module stays
-# importable; export then degrades to a clear "PyTorch is not installed" error.
+# GPU/PyTorch-only imports, skipped on MLX and --no-torch installs so the module stays importable.
 torch = None
 _TORCH_IMPORT_ERROR: Optional[BaseException] = None
 if not _IS_MLX:
@@ -81,6 +81,81 @@ _PYTORCH_MISSING_MESSAGE = (
 _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = False
 
 
+def _multi_gpu_device_map_kwargs() -> dict:
+    """``device_map`` kwargs for sharding a checkpoint across every visible GPU.
+
+    unsloth's ``from_pretrained`` defaults to ``device_map="sequential"``, which stacks
+    the whole model on GPU0 and OOMs multi-GPU hosts whose other GPUs sit empty (#7053).
+    Returns ``{"device_map": "balanced"}`` only on a real multi-GPU CUDA/ROCm host
+    (mirroring the inference loader's ``get_device_map``), else empty so single-GPU, CPU
+    and MLX loads keep the loader default."""
+    if _IS_MLX:
+        return {}
+    try:
+        from utils.hardware import get_device_map, get_parent_visible_gpu_ids
+
+        visible = get_parent_visible_gpu_ids()
+        if len(visible) > 1:
+            device_map = get_device_map(visible)
+        elif not visible:
+            # UUID/MIG masks resolve to no numeric ids; get_device_map(None) falls back to the visible count.
+            device_map = get_device_map(None)
+        else:
+            return {}
+        if device_map == "balanced":
+            return {"device_map": device_map}
+    except Exception as exc:
+        logger.debug(f"multi-GPU device_map resolution failed; using loader default: {exc}")
+    return {}
+
+
+def _is_oom_error(exc: BaseException) -> bool:
+    """True for an accelerator OOM, however it is spelled.
+
+    accelerate and transformers re-raise it as a plain ``RuntimeError`` on several paths
+    and ROCm/XPU use their own classes, so match the message too.
+    """
+    if torch is not None:
+        oom_types = tuple(
+            t
+            for t in (
+                getattr(torch, "OutOfMemoryError", None),
+                getattr(getattr(torch, "cuda", None), "OutOfMemoryError", None),
+                getattr(getattr(torch, "xpu", None), "OutOfMemoryError", None),
+            )
+            if isinstance(t, type)
+        )
+        if oom_types and isinstance(exc, oom_types):
+            return True
+    return "out of memory" in f"{type(exc).__name__}: {exc}".lower()
+
+
+def _is_cpu_spill_rejection(exc: BaseException) -> bool:
+    """bitsandbytes refuses a map that spills to CPU/disk with a plain ``ValueError``.
+
+    Busy secondary GPUs can make ``balanced`` spill to CPU even where the old sequential
+    load fit on GPU0, and that message says nothing about memory, so the retry has to
+    match it explicitly. See transformers ``quantizers/quantizer_bnb_4bit.py``.
+    """
+    return "dispatched on the cpu or the disk" in str(exc).lower()
+
+
+class _CpuSpillRetry(Exception):
+    """A multi-GPU load that succeeded but left modules offloaded to CPU/disk."""
+
+
+def _cpu_offloaded_modules(model) -> int:
+    """Count the modules a load parked on CPU or disk.
+
+    Only bitsandbytes refuses such a map; a full-precision load accepts it, leaves the
+    parameters on meta and dies much later in safetensors with "Cannot copy out of meta
+    tensor". Nothing raises at load time, so inspect the map directly. PEFT re-dispatches
+    when attaching an adapter, so in practice this catches merged checkpoints.
+    """
+    device_map = getattr(model, "hf_device_map", None) or {}
+    return sum(1 for target in device_map.values() if str(target) in ("cpu", "disk"))
+
+
 def _supports_kwarg(fn, name):
     """True if `fn` accepts keyword `name` directly or via **kwargs."""
     import inspect
@@ -90,6 +165,31 @@ def _supports_kwarg(fn, name):
     except (TypeError, ValueError):
         return False
     return name in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def _reported_gguf_files(result):
+    """Absolute GGUF paths unsloth reported writing, or None if it reported nothing.
+
+    None means "fall back to the legacy heuristics", which covers every older shape:
+    pre-2025.10 unsloth returned nothing, is_main_process=False returns None, and
+    save_method="lora" returns a str. An empty result is None too, since a stale
+    manifest is indistinguishable from an old build.
+    """
+    if not isinstance(result, dict):
+        return None
+    files = result.get("gguf_files")
+    if not isinstance(files, (list, tuple)):
+        return None
+
+    resolved = []
+    for entry in files:
+        # A malformed payload must not be half-trusted.
+        if not isinstance(entry, (str, os.PathLike)):
+            return None
+        path = os.path.abspath(os.fspath(entry))
+        if path.lower().endswith(".gguf") and os.path.isfile(path):
+            resolved.append(path)
+    return resolved or None
 
 
 def _compressed_export_supported():
@@ -165,7 +265,7 @@ def _offline_window_if(local_files_only):
 def _is_wsl():
     """Detect if running under Windows Subsystem for Linux."""
     try:
-        return "microsoft" in open("/proc/version").read().lower()
+        return "microsoft" in open("/proc/version", encoding = "utf-8").read().lower()
     except Exception:
         return False
 
@@ -192,7 +292,6 @@ def _apply_wsl_sudo_patch():
         logger.warning(f"Could not apply WSL sudo patch: {e}")
 
 
-# Model card template
 MODEL_CARD = """---
 base_model: {base_model}
 tags:
@@ -271,6 +370,7 @@ class ExportBackend:
         load_in_4bit: bool = True,
         trust_remote_code: bool = False,
         hf_token: Optional[str] = None,
+        _device_map_override: Optional[dict] = None,
     ) -> Tuple[bool, str]:
         """
         Load a checkpoint for export.
@@ -303,6 +403,13 @@ class ExportBackend:
             # Skip the Hub when offline so a no-internet export uses the local cache.
             local_files_only = _hf_offline()
 
+            # Shard across every visible GPU instead of stacking on GPU0 (#7053); {} on single-GPU/CPU/MLX.
+            _device_map_kw = (
+                _multi_gpu_device_map_kwargs()
+                if _device_map_override is None
+                else _device_map_override
+            )
+
             # Run the type-detection probes in the forced-offline window (else a gated
             # base 404s); it covers is_vision_model's Hub reads + the transformers-5
             # subprocess, and local_files_only makes detect_audio_type's requests.get skip.
@@ -328,6 +435,7 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
+                    **_device_map_kw,
                 )
 
             elif self._audio_type == "whisper":
@@ -343,6 +451,7 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
+                    **_device_map_kw,
                 )
 
             elif self._audio_type == "snac":
@@ -355,6 +464,7 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
+                    **_device_map_kw,
                 )
 
             elif self._audio_type == "bicodec":
@@ -368,6 +478,7 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
+                    **_device_map_kw,
                 )
 
             elif self._audio_type == "dac":
@@ -380,6 +491,7 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
+                    **_device_map_kw,
                 )
 
             elif self.is_vision:
@@ -392,6 +504,7 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
+                    **_device_map_kw,
                 )
                 tokenizer = processor  # vision: processor acts as tokenizer
 
@@ -405,13 +518,27 @@ class ExportBackend:
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
+                    **_device_map_kw,
                 )
+
+            # Only when we asked for the multi-GPU map: a single-GPU host has no second
+            # placement to retry on, so leave its behaviour untouched.
+            _offloaded = _cpu_offloaded_modules(model) if _device_map_kw else 0
+            if _device_map_override is None and _offloaded:
+                del model
+                raise _CpuSpillRetry(f"{_offloaded} module(s) offloaded to CPU/disk")
 
             if _IS_MLX:
                 # MLX doesn't use PeftModel — detect LoRA via adapter_config.json
                 self.is_peft = adapter_config.exists()
             else:
                 self.is_peft = isinstance(model, (PeftModel, PeftModelForCausalLM))
+
+            restored_repo_id = restore_hf_cache_repo_identity(model, base_model)
+            if restored_repo_id:
+                logger.info(
+                    f"Restored Hub model identity for legacy adapter export: {restored_repo_id}"
+                )
 
             self.current_model = model
             self.current_tokenizer = tokenizer
@@ -429,11 +556,41 @@ class ExportBackend:
             return True, f"Loaded {model_type} model{peft_info} successfully"
 
         except Exception as e:
-            logger.error(f"Error loading checkpoint: {e}")
-            import traceback
+            # Sharding is an optimisation, never a requirement. "balanced" budgets from the
+            # free memory read BEFORE this process opens a CUDA context on each GPU, so when
+            # a training or chat job already owns the others the shard can OOM, or spill to
+            # CPU and be refused by bitsandbytes, where the old single-device load succeeded.
+            # Fall back once before giving up.
+            if (
+                _device_map_override is None
+                and (
+                    isinstance(e, _CpuSpillRetry) or _is_oom_error(e) or _is_cpu_spill_rejection(e)
+                )
+                and _multi_gpu_device_map_kwargs()
+            ):
+                # Retry outside this block: the live traceback pins the half-built model's
+                # frames, so an in-block retry inherits the exhausted device.
+                retry_reason = str(e)
+            else:
+                logger.error(f"Error loading checkpoint: {e}")
+                import traceback
 
-            logger.error(traceback.format_exc())
-            return False, f"Failed to load checkpoint: {str(e)}"
+                logger.error(traceback.format_exc())
+                return False, f"Failed to load checkpoint: {str(e)}"
+
+        logger.warning(
+            f"Multi-GPU export load unusable ({retry_reason}); retrying on "
+            f"the single-device loader default."
+        )
+        self.cleanup_memory()
+        return self.load_checkpoint(
+            checkpoint_path,
+            max_seq_length = max_seq_length,
+            load_in_4bit = load_in_4bit,
+            trust_remote_code = trust_remote_code,
+            hf_token = hf_token,
+            _device_map_override = {},
+        )
 
     def _write_export_metadata(self, save_directory: str):
         """Write export_metadata.json with base model info for Chat page discovery."""
@@ -445,7 +602,7 @@ class ExportBackend:
             )
             metadata = {"base_model": base_model}
             metadata_path = os.path.join(save_directory, "export_metadata.json")
-            with open(metadata_path, "w") as f:
+            with open(metadata_path, "w", encoding = "utf-8") as f:
                 json.dump(metadata, f, indent = 2)
             logger.info(f"Wrote export metadata to {metadata_path}")
         except Exception as e:
@@ -920,12 +1077,47 @@ class ExportBackend:
 
                 _model_tmp = os.path.join(abs_save_dir, f"_tmp_model_{uuid.uuid4().hex[:8]}")
                 model_tmp_to_cleanup = _model_tmp
-                self.current_model.save_pretrained_gguf(
+                _gguf_result = self.current_model.save_pretrained_gguf(
                     _model_tmp,
                     self.current_tokenizer,
                     quantization_method = quant_method,
                     **imatrix_kw,
                 )
+
+                # Trust what unsloth reports over guessing: the heuristics below only
+                # check cwd, new subdirs of the save dir, and the checkpoint sibling,
+                # so anything written elsewhere was silently lost (#7897). Relocate
+                # first, before the flatten pass rmtree's the temp dir it lives in.
+                for src in _reported_gguf_files(_gguf_result) or []:
+                    dest = os.path.join(abs_save_dir, os.path.basename(src))
+                    if os.path.abspath(src) == os.path.abspath(dest):
+                        continue
+                    try:
+                        shutil.move(src, dest)
+                    except FileNotFoundError:
+                        continue
+                    logger.info(
+                        f"Relocated GGUF (reported by unsloth): "
+                        f"{os.path.basename(src)} → {abs_save_dir}/"
+                    )
+
+                # The Modelfile lands in the temp *_gguf dir, which the flatten pass
+                # deletes after moving only *.gguf.
+                _modelfile = (
+                    _gguf_result.get("modelfile_location")
+                    if isinstance(_gguf_result, dict)
+                    else None
+                )
+                if (
+                    isinstance(_modelfile, str)
+                    and os.path.isfile(_modelfile)
+                    and os.path.dirname(os.path.abspath(_modelfile)) != abs_save_dir
+                ):
+                    try:
+                        shutil.move(_modelfile, os.path.join(abs_save_dir, "Modelfile"))
+                        logger.info(f"Relocated Modelfile → {abs_save_dir}/")
+                    except OSError:
+                        pass
 
                 # Relocate the .gguf that convert_to_gguf wrote to cwd (repo root).
                 new_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf"))) - pre_existing_ggufs
@@ -940,7 +1132,9 @@ class ExportBackend:
                         continue
                     if sub.name in pre_existing_subs:
                         continue
-                    for src in sub.glob("*.gguf"):
+                    # rglob: the rmtree below is unconditional, so a GGUF one level
+                    # deeper (sharded output) would otherwise be destroyed.
+                    for src in sorted(sub.rglob("*.gguf")):
                         dest = os.path.join(abs_save_dir, src.name)
                         shutil.move(str(src), dest)
                         logger.info(f"Relocated GGUF: {src.name} → {abs_save_dir}/")
@@ -965,15 +1159,32 @@ class ExportBackend:
                         shutil.rmtree(str(gguf_dir), ignore_errors = True)
                         logger.info(f"Cleaned up intermediate GGUF dir: {gguf_dir}")
 
-                # Write export metadata so the Chat page can identify the base model
-                self._write_export_metadata(abs_save_dir)
-
-                final_ggufs = sorted(glob.glob(os.path.join(abs_save_dir, "*.gguf")))
+                # iterdir, not glob.glob: glob hides dot-leading names, so an empty
+                # model stem's ".Q4_K_M.gguf" got reported as "(none)".
+                final_ggufs = sorted(
+                    str(p)
+                    for p in Path(abs_save_dir).iterdir()
+                    if p.is_file() and p.name.lower().endswith(".gguf")
+                )
                 logger.info(
                     "GGUF export complete. Final files in %s:\n  %s",
                     abs_save_dir,
                     "\n  ".join(os.path.basename(f) for f in final_ggufs) or "(none)",
                 )
+                if not final_ggufs:
+                    # Reporting success over an empty directory is what hid #7897.
+                    shutil.rmtree(model_tmp_to_cleanup, ignore_errors = True)
+                    return (
+                        False,
+                        f"GGUF conversion reported success but wrote no .gguf file to "
+                        f"{abs_save_dir}. Check the export log for the path the "
+                        f"converter actually used, then upgrade with "
+                        f"`pip install --upgrade unsloth unsloth_zoo` and retry.",
+                        None,
+                    )
+
+                # Only write metadata once an artifact is actually present.
+                self._write_export_metadata(abs_save_dir)
                 output_path = str(Path(abs_save_dir).resolve())
 
             if push_to_hub:
@@ -1048,6 +1259,21 @@ class ExportBackend:
                     "Use the safetensors adapter instead.",
                     None,
                 )
+            # llama.cpp's convert_lora_to_gguf.py has no concept of DoRA's
+            # lora_magnitude_vector tensors: it only reads the standard
+            # lora_A/lora_B delta, so exporting a DoRA adapter would silently
+            # drop the magnitude rescaling and produce a GGUF LoRA file that
+            # loads fine but no longer matches the trained model.
+            _peft_config = getattr(self.current_model, "peft_config", {}).get("default")
+            if getattr(_peft_config, "use_dora", False):
+                return (
+                    False,
+                    "GGUF LoRA export is not supported for DoRA adapters: the GGUF LoRA "
+                    "format has no way to represent DoRA's magnitude vectors, so the "
+                    "exported file would silently lose the DoRA behavior. Use the "
+                    "safetensors adapter instead, or merge to a full GGUF model.",
+                    None,
+                )
             outtype = str(gguf_outtype).lower()
             if outtype not in _GGUF_LORA_OUTTYPES:
                 return (
@@ -1085,7 +1311,12 @@ class ExportBackend:
                         # Forward the token so convert_lora_to_gguf.py can fetch a gated base's config.
                         token = hf_token or None,
                     )
-                    final_ggufs = sorted(glob.glob(os.path.join(save_directory, "*.gguf")))
+                    # iterdir, not glob.glob: glob hides dot-leading names.
+                    final_ggufs = sorted(
+                        str(p)
+                        for p in Path(save_directory).iterdir()
+                        if p.is_file() and p.name.lower().endswith(".gguf")
+                    )
                     logger.info(
                         "LoRA GGUF export complete. Files in %s:\n  %s",
                         save_directory,

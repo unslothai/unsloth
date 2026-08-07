@@ -64,9 +64,7 @@ class TestFunctionStyleTrailingText:
         # The real closing </function> is the last one; the literal inside
         # the code argument must survive (rfind, not the first match).
         text = (
-            "<function=python><parameter=code>"
-            'print("</function>")'
-            "</parameter></function> all done"
+            '<function=python><parameter=code>print("</function>")</parameter></function> all done'
         )
         call = _only(text)
         assert call == {"name": "python", "arguments": {"code": 'print("</function>")'}}
@@ -146,9 +144,7 @@ class TestParityWithJsonStyle:
 
 class TestGemmaNativeStyle:
     def test_closed_native_call_with_trailing_prose_is_accepted(self):
-        text = (
-            '<|tool_call>call:terminal{command:"ls -la",workdir:"."}<tool_call|>' " running it now"
-        )
+        text = '<|tool_call>call:terminal{command:"ls -la",workdir:"."}<tool_call|> running it now'
         calls = parse_tool_calls_from_text(text, allow_incomplete = False)
         assert len(calls) == 1
         assert calls[0]["function"]["name"] == "terminal"
@@ -792,7 +788,7 @@ def test_tool_call_parser_declares_future_annotations_for_py39_import():
     from pathlib import Path
     src = (
         Path(__file__).resolve().parent.parent / "core" / "inference" / "tool_call_parser.py"
-    ).read_text()
+    ).read_text(encoding = "utf-8")
     assert "from __future__ import annotations" in src
 
 
@@ -874,7 +870,13 @@ class TestHealerSignalAlignment:
 
     def test_heal_signals_subset_of_promotable_formats(self):
         from core.inference.passthrough_healing import _HEAL_SIGNALS
-        assert set(_HEAL_SIGNALS) == {"<tool_call>", "<|tool_call>", "<function=", "[TOOL_CALLS]"}
+        assert set(_HEAL_SIGNALS) == {
+            "<tool_call>",
+            "<|tool_call>",
+            "<function=",
+            "[TOOL_CALLS]",
+            "<|content_invoke_tool_json|>",
+        }
 
     def test_stream_healer_does_not_hold_llama_python_tag_text(self):
         from core.inference.passthrough_healing import StreamToolCallHealer
@@ -1063,8 +1065,7 @@ class TestBareJsonOuterOverXmlLiteral:
 
     def test_bare_json_code_arg_quoting_function_xml(self):
         text = (
-            '{"name": "python", "arguments": '
-            '{"code": "run() # <function=terminal>ls</function>"}}'
+            '{"name": "python", "arguments": {"code": "run() # <function=terminal>ls</function>"}}'
         )
         calls = parse_tool_calls_from_text(text, enabled_tool_names = {"python"})
         assert [c["function"]["name"] for c in calls] == ["python"]
@@ -1294,8 +1295,7 @@ class TestLeadingWrapperlessGemmaOverEmbeddedMarkers:
 
     def test_leading_gemma_wins_over_quoted_xml_literal(self):
         text = (
-            'call:web_search{query:"explain <tool_call>'
-            '{"name":"evil","arguments":{}}</tool_call>"}'
+            'call:web_search{query:"explain <tool_call>{"name":"evil","arguments":{}}</tool_call>"}'
         )
         calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search", "evil"})
         assert [c["function"]["name"] for c in calls] == ["web_search"]
