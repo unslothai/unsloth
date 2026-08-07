@@ -384,7 +384,12 @@ def test_child_env_omits_cuda_runtime_dirs_for_cpu_bundle(monkeypatch, tmp_path)
     assert called["n"] == 0
 
 
-def _make_cuda_bundle(tmp_path, *, runtime_line = "cuda13", linked_from = None):
+def _make_cuda_bundle(
+    tmp_path,
+    *,
+    runtime_line = "cuda13",
+    linked_from = None,
+):
     """A CUDA whisper bundle whose install marker names a CUDA runtime line."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -396,9 +401,7 @@ def _make_cuda_bundle(tmp_path, *, runtime_line = "cuda13", linked_from = None):
             marker["runtime_line"] = runtime_line
         if linked_from is not None:
             marker["linked_from"] = str(linked_from)
-        (tmp_path / "UNSLOTH_WHISPER_PREBUILT_INFO.json").write_text(
-            json.dumps(marker)
-        )
+        (tmp_path / "UNSLOTH_WHISPER_PREBUILT_INFO.json").write_text(json.dumps(marker))
     return bindir
 
 
