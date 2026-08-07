@@ -1069,6 +1069,7 @@ try:
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
+        _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
         _hf_offline_if_unreachable,
@@ -1120,6 +1121,7 @@ except ImportError:
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
+        _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
         _hf_offline_if_unreachable,
@@ -3880,16 +3882,32 @@ def _active_gguf_intent(
     native_grant_backed: bool,
 ) -> GgufLoadIntent:
     backend_extra = list(llama_backend.extra_args or ())
-    effective_extra = (
-        request.llama_extra_args
-        if request.llama_extra_args is not None
-        else strip_shadowing_flags(
+    request_fields_set = getattr(request, "model_fields_set", set())
+    inherits_extras = request.llama_extra_args is None
+    if inherits_extras:
+        effective_extra = strip_shadowing_flags(
             backend_extra,
             strip_split_mode = _should_strip_split_mode(request, backend_extra),
             strip_tensor_split = _should_strip_tensor_split(request),
             strip_offload = request.gpu_memory_mode == "manual",
         )
-    )
+        # mirror _resolve_inherited_extra_args, or a stale inherited -b / -ub reads as equal
+        batch_stripped_extra = strip_shadowing_flags(
+            effective_extra,
+            strip_context = False,
+            strip_cache = False,
+            strip_spec = False,
+            strip_template = False,
+            strip_split_mode = False,
+            strip_batch = "n_batch" in request_fields_set,
+            strip_ubatch = "n_ubatch" in request_fields_set,
+        )
+        # a strip that changed the list is an override, so the dedupe compares the stripped one
+        batch_overrides_inherit = batch_stripped_extra != effective_extra
+        effective_extra = batch_stripped_extra
+    else:
+        effective_extra = request.llama_extra_args
+        batch_overrides_inherit = False
     source = llama_backend.last_load_intent or GgufLoadIntent(
         model_identifier = model_identifier,
         gguf_path = None if llama_backend.hf_repo else llama_backend.gguf_path,
@@ -3915,7 +3933,7 @@ def _active_gguf_intent(
         mtp_draft_path = _mtp_draft_for_path(llama_backend.gguf_path, native_grant_backed),
         dspark_draft_path = _dspark_draft_for_path(llama_backend.gguf_path, native_grant_backed),
         compare_mtp_draft = True,
-        extra_args_inherited = request.llama_extra_args is None,
+        extra_args_inherited = inherits_extras and not batch_overrides_inherit,
     )
 
 
@@ -5060,6 +5078,11 @@ def _remote_gguf_companion_bytes(
         return 0
 
 
+# Upper bound on any current tokenizer, used to rebuild the compute buffer when a
+# truncated header drops the token array. Above Llama 4 / Gemma 3 (256k), the widest shipping.
+_ASSUMED_MAX_VOCAB = 262144
+
+
 def _estimate_gguf_kv_gb(
     gguf_path: str,
     max_seq_length: int,
@@ -5067,10 +5090,18 @@ def _estimate_gguf_kv_gb(
     n_parallel: int = 1,
     cache_type_kv: Optional[str] = None,
     tensor_parallel: bool = False,
+    n_batch: Optional[int] = None,
+    n_ubatch: Optional[int] = None,
+    n_devices: int = 1,
+    is_diffusion: bool = False,
 ) -> float:
-    """KV-cache VRAM (GB) at the larger of max_seq_length and any `--ctx-size`/`-c`
-    override, over n_parallel slots, using the effective cache settings and managed
-    launcher defaults. 0 if metadata is unreadable."""
+    """KV-cache plus compute-buffer VRAM (GB) at the larger of max_seq_length and
+    any `--ctx-size`/`-c` override, over n_parallel slots at the effective
+    micro-batch, using the effective cache settings and managed launcher
+    defaults. Compute buffers scale with the split the loader budgets: tensor
+    mode reserves them on every device, a multi-GPU layer split replicates the
+    context-linear term; ``is_diffusion`` skips them, since the diffusion
+    runner ignores the llama-server batch flags. 0 if metadata is unreadable."""
     try:
         from core.inference.llama_server_args import parse_ctx_override
 
@@ -5110,6 +5141,21 @@ def _estimate_gguf_kv_gb(
                 planned_cache_types,
                 key = _kv_bytes_per_elem,
             )
+        # the loader raises --batch-size to max(slots, 2) before launch, and llama.cpp
+        # caps the micro-batch against it, so budget from the emitted value. Diffusion
+        # takes neither flag, and SWA metadata prices the KV against the micro-batch,
+        # so consuming them here would charge a diffusion load for a batch it never
+        # runs. Gated like the remote branch already is.
+        effective_ubatch = (
+            None
+            if is_diffusion
+            else _extra_args_n_ubatch(
+                llama_extra_args,
+                n_ctx = ctx,
+                n_batch = _emitted_n_batch(n_batch, slots),
+                n_ubatch = n_ubatch,
+            )
+        )
         kv = probe._estimate_kv_cache_bytes(
             ctx,
             cache_type_for_budget,
@@ -5119,10 +5165,76 @@ def _estimate_gguf_kv_gb(
                 llama_extra_args,
                 default = managed_kv_unified,
             ),
-            n_ubatch = _extra_args_n_ubatch(llama_extra_args, n_ctx = ctx),
+            n_ubatch = effective_ubatch,
             flash_attn = False,
         )
-        return kv / (1024**3)
+        # the load reserves ubatch-scaled compute buffers, so they count against training too
+        if is_diffusion:
+            return kv / (1024**3)
+        devices = max(1, int(n_devices))
+
+        def _flat_buffer(per_device_tensor: bool) -> int:
+            """Flat compute buffer, rebuilt when the header is short of a vocab size.
+
+            _estimate_compute_buffer_bytes returns 0 when vocab_size or embedding_length is
+            missing. Only the first is reachable: _vocab_size is set solely from the
+            tokenizer.ggml.tokens array length, which a truncated header drops while keeping
+            the dims. So rebuild from the real formula with a vocab ceiling rather than
+            substituting the loader's flat reserve. The loader can afford that reserve
+            because over-reserving there just shrinks the context; here it denies the load.
+            """
+            flat = probe._estimate_compute_buffer_bytes(
+                n_ubatch = effective_ubatch,
+                n_parallel = slots,
+                per_device_tensor = per_device_tensor,
+            )
+            if flat > 0:
+                return flat
+            # getattr: a bare backend double carries neither dims nor constants.
+            n_embd = getattr(probe, "_embedding_length", None) or 0
+            if n_embd <= 0:
+                return 0  # nothing to rebuild from; the total is floored below instead
+            ub = max(1, int(effective_ubatch or probe._DEFAULT_N_UBATCH))
+            act_scratch = 4 * n_embd * ub * 4
+            out_buffer = _ASSUMED_MAX_VOCAB * ub * 4
+            raw = (
+                2 * act_scratch + out_buffer * slots
+                if per_device_tensor
+                else act_scratch + out_buffer * max(0, slots - 1)
+            )
+            return int(raw * probe._COMPUTE_BUFFER_SAFETY)
+
+        if tensor_parallel:
+            # mirrors _plan_tensor_parallel: per-device buffer and ctx growth on every device
+            compute = devices * (
+                _flat_buffer(True)
+                + probe._compute_buffer_ctx_bytes(ctx, effective_ubatch, cache_type_for_budget)
+            )
+        else:
+            # mirrors the layer fit: flat buffer once, then per extra device, ctx growth per
+            # device. layer_split follows the loader's own condition: extras that disable
+            # pipeline parallelism (-ot, -ncmoe, --no-kv-offload) leave one KQ-mask copy.
+            from core.inference.llama_cpp import _pipeline_parallel_disabled_by_args
+            pipeline_parallel_off = _pipeline_parallel_disabled_by_args(
+                llama_extra_args, n_layers = getattr(probe, "_n_layers", None)
+            )
+            compute = (
+                _flat_buffer(False)
+                + (devices - 1) * probe._PIPELINE_PER_DEVICE_OVERHEAD_MIB * 1024 * 1024
+                + devices
+                * probe._compute_buffer_ctx_bytes(
+                    ctx,
+                    effective_ubatch,
+                    cache_type_for_budget,
+                    layer_split = devices > 1 and not pipeline_parallel_off,
+                )
+            )
+        if compute <= 0:
+            # No embedding_length, so both compute terms are blind while the launch still
+            # reserves buffers. Floor at the loader's flat reserve, charged once: it is an
+            # invented number, and scaling an invention per device has no basis.
+            compute = int(getattr(probe, "_TENSOR_PARALLEL_BUFFER_RESERVE_MIB", 0)) * 1024**2
+        return (kv + compute) / (1024**3)
     except Exception as e:
         logger.warning(f"Could not size GGUF KV cache for training guard: {e}")
         return 0.0
@@ -5137,6 +5249,10 @@ def _estimate_gguf_required_gb(
     n_parallel: int = 1,
     cache_type_kv: Optional[str] = None,
     tensor_parallel: bool = False,
+    n_batch: Optional[int] = None,
+    n_ubatch: Optional[int] = None,
+    n_devices: int = 1,
+    is_diffusion: bool = False,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
@@ -5204,6 +5320,10 @@ def _estimate_gguf_required_gb(
                 n_parallel,
                 cache_type_kv,
                 tensor_parallel,
+                n_batch,
+                n_ubatch,
+                n_devices,
+                is_diffusion,
             )
 
         repo = getattr(config, "gguf_hf_repo", None)
@@ -5228,11 +5348,106 @@ def _estimate_gguf_required_gb(
                 include_mtp = (not _charge_no_drafter and (_auto_dspark or not dspark_requested)),
                 include_dspark = (_dspark_capable and (_auto_dspark or dspark_requested)),
             )
-            return (main_bytes + companions) / (1024**3)
+            total_gb = (main_bytes + companions) / (1024**3)
+            # remote dims are unreadable; only the kq mask, linear in ubatch x ctx, can be sized here
+            from core.inference.llama_server_args import parse_ctx_override
+
+            try:
+                ctx_override = parse_ctx_override(llama_extra_args) or 0
+            except Exception:
+                ctx_override = 0
+            ctx = max(max_seq_length or 0, ctx_override)
+            effective_ubatch = (
+                None
+                if is_diffusion
+                else _extra_args_n_ubatch(
+                    llama_extra_args,
+                    n_ctx = ctx if ctx > 0 else None,
+                    # same floor raise the loader applies at launch
+                    n_batch = _emitted_n_batch(n_batch, n_parallel),
+                    n_ubatch = n_ubatch,
+                )
+            )
+            if effective_ubatch:
+                # auto context: assume the native one fits at least a full micro-batch
+                budget_ctx = ctx if ctx > 0 else effective_ubatch
+                devices = max(1, int(n_devices))
+                # A multi-device layer split materialises the KQ mask _CTX_COMPUTE_SPLIT_MULT
+                # times, the same step _compute_buffer_ctx_bytes applies locally; charging
+                # the single-copy rate under-reserved 4x. Tensor mode is already correct
+                # (measured at the single-device rate, replicated per device). n_layers is
+                # None here: the header is unread, so -ngl cannot be resolved, but -ot /
+                # -ncmoe / --no-kv-offload / -sm none still register. Without this gate the
+                # same model 409s while remote and loads once cached.
+                from core.inference.llama_cpp import _pipeline_parallel_disabled_by_args
+
+                split_mult = (
+                    LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT
+                    if devices > 1
+                    and not tensor_parallel
+                    and not _pipeline_parallel_disabled_by_args(llama_extra_args, n_layers = None)
+                    else 1
+                )
+                mask_bytes = (
+                    budget_ctx
+                    * effective_ubatch
+                    * 2
+                    * LlamaCppBackend._CTX_COMPUTE_F16_MASK_SAFETY
+                    * devices
+                    * split_mult
+                )
+                # The mask is only the context-linear half. The flat half needs the dims,
+                # which are unreadable remotely, but its dominant term needs just a vocab
+                # ceiling: llama.cpp reserves n_vocab * ubatch * 4 per slot past the first
+                # (every slot under tensor mode), so n_batch = n_ubatch = 32768 on two
+                # slots is ~32 GiB the mask does not cover. Omitting it let the guard admit
+                # an uncached load that then OOMs the training job it exists to protect.
+                # The activation scratch needs embedding_length and stays uncharged: it is
+                # the small half, and over-reserving here denies the load outright.
+                # Scaled per device only in tensor mode, mirroring the local branch: a
+                # layer split folds the flat buffer in once (_flat_buffer(False)), and
+                # only tensor mode replicates it on every card.
+                _out_slots = n_parallel if tensor_parallel else max(0, n_parallel - 1)
+                out_buffer_bytes = (
+                    _ASSUMED_MAX_VOCAB
+                    * effective_ubatch
+                    * 4
+                    * _out_slots
+                    * (devices if tensor_parallel else 1)
+                    * LlamaCppBackend._COMPUTE_BUFFER_SAFETY
+                )
+                total_gb += (mask_bytes + out_buffer_bytes) / (1024**3)
+            return total_gb
         return None
     except Exception as e:
         logger.warning(f"Could not size GGUF model for training guard: {e}")
         return None
+
+
+def _guard_device_count(
+    requested_gpu_ids: Optional[list[int]],
+    vulkan_gpu_memory: Optional[list[tuple[int, int, int]]] = None,
+    *,
+    tensor_parallel: bool = False,
+) -> int:
+    """Devices the launch would spread its compute buffers over.
+
+    Tensor mode replicates them on every usable device, so it takes the pool: a pin,
+    else ggml's Vulkan probe (_effective_gpu_count sees CUDA only), else CUDA. A layer
+    split lands on the fewest GPUs that hold the model, so a pin is charged for what it
+    names and automatic placement for one. That last one is an approximation, not an
+    identity: _select_gpus returns [1] only when the model FITS on one card and
+    accumulates otherwise, so a model too big for one is under-charged by the same margin
+    that charging the whole candidate pool would over-charge one that fits. Resolving it
+    needs the free-VRAM map, which only arrives downstream in
+    can_load_chat_during_training; one device is the side that does not 409 a load that
+    launches on one.
+    """
+    if not tensor_parallel:
+        return max(1, len(requested_gpu_ids or ()))
+    if not requested_gpu_ids and vulkan_gpu_memory:
+        return max(1, len(vulkan_gpu_memory))
+    return max(1, LlamaCppBackend._effective_gpu_count(requested_gpu_ids))
 
 
 def _gguf_layer_count(config: ModelConfig) -> Optional[int]:
@@ -5484,6 +5699,39 @@ async def _prepare_load_placement(
     return _LoadPlacement(requested, resolved, is_vulkan, diffusion_kind)
 
 
+def _inherited_batch_flags_stripped(request) -> bool:
+    """Whether inheriting the resident extras drops a -b / -ub a set field supersedes.
+
+    _active_gguf_intent computes this inline (``batch_overrides_inherit``). Without it here
+    ``extra_args_inherited`` stays True, so _runtime_matches_intent compares the launched
+    extras (still carrying the stale flag) instead of the stripped override, and an Apply
+    that only raises the batch size reports ``already_loaded``.
+    """
+    if getattr(request, "llama_extra_args", None) is not None:
+        return False
+    fields_set = getattr(request, "model_fields_set", set())
+    strip_batch = "n_batch" in fields_set
+    strip_ubatch = "n_ubatch" in fields_set
+    if not (strip_batch or strip_ubatch):
+        return False
+    stored = list(getattr(get_llama_cpp_backend(), "extra_args", None) or ())
+    if not stored:
+        return False
+    return (
+        strip_shadowing_flags(
+            stored,
+            strip_context = False,
+            strip_cache = False,
+            strip_spec = False,
+            strip_template = False,
+            strip_split_mode = False,
+            strip_batch = strip_batch,
+            strip_ubatch = strip_ubatch,
+        )
+        != stored
+    )
+
+
 def _resolve_gguf_load_intent(
     config: ModelConfig,
     request: LoadRequest,
@@ -5538,7 +5786,11 @@ def _resolve_gguf_load_intent(
         n_parallel = n_parallel,
         is_vision = config.is_vision,
         gpu_ids_are_vulkan_ordinals = placement.gpu_ids_are_vulkan_ordinals,
-        extra_args_inherited = getattr(request, "llama_extra_args", None) is None,
+        extra_args_inherited = (
+            getattr(request, "llama_extra_args", None) is None
+            # a strip that changed the list is an override, so the dedupe compares it
+            and not _inherited_batch_flags_stripped(request)
+        ),
     )
 
 
@@ -5666,6 +5918,25 @@ def _guard_chat_load_against_training(
         and (gpu_ids_are_vulkan_ordinals or (binary and LlamaCppBackend._is_vulkan_backend(binary)))
     )
 
+    # ggml's vulkan pool, probed once: the device count and the free-vram view below both read it
+    vulkan_gpu_memory: Optional[list[tuple[int, int, int]]] = None
+    if is_vulkan_backend and (
+        gpu_ids_are_vulkan_ordinals
+        or diffusion_kind is False
+        or (diffusion_kind is None and not requested_gpu_ids)
+    ):
+        vulkan_gpu_memory = LlamaCppBackend._get_gpu_memory(binary)
+        if not requested_gpu_ids:
+            # automatic placement prefers the discrete cards, like the loader's fit
+            vulkan_gpu_memory = LlamaCppBackend._vulkan_auto_gpu_memory(vulkan_gpu_memory)
+
+    guard_tensor_parallel = _effective_tensor_parallel(
+        llama_extra_args, _guard_tensor_parallel
+    ) and (is_vulkan_backend or LlamaCppBackend._effective_gpu_count(requested_gpu_ids) >= 2)
+    guard_n_devices = _guard_device_count(
+        requested_gpu_ids, vulkan_gpu_memory, tensor_parallel = guard_tensor_parallel
+    )
+
     # Size with the count that will actually launch, or a load that fits gets a
     # 409: diffusion never receives --parallel, load_model clamps to 1 on an
     # llama-server without --kv-unified, and it clamps MTP to 1 as well. An
@@ -5697,13 +5968,14 @@ def _guard_chat_load_against_training(
             speculative_type = getattr(request, "speculative_type", None),
             n_parallel = n_parallel,
             cache_type_kv = request.cache_type_kv,
-            tensor_parallel = (
-                _effective_tensor_parallel(llama_extra_args, _guard_tensor_parallel)
-                and (
-                    is_vulkan_backend
-                    or LlamaCppBackend._effective_gpu_count(requested_gpu_ids) >= 2
-                )
-            ),
+            # getattr: older callers hand this guard a bare request double
+            n_batch = getattr(request, "n_batch", None),
+            n_ubatch = getattr(request, "n_ubatch", None),
+            tensor_parallel = guard_tensor_parallel,
+            # size the compute buffers for the split the loader would budget
+            n_devices = guard_n_devices,
+            # a confirmed diffusion runner ignores the batch flags, so no reserve for it
+            is_diffusion = diffusion_kind is True,
         )
         if is_gguf
         else None
@@ -5724,11 +5996,9 @@ def _guard_chat_load_against_training(
     vulkan_free_vram_gb = None
     if is_gguf:
         if is_vulkan_backend and (gpu_ids_are_vulkan_ordinals or diffusion_kind is False):
-            gpu_memory = LlamaCppBackend._get_gpu_memory(binary)
-            if not requested_gpu_ids:
-                gpu_memory = LlamaCppBackend._vulkan_auto_gpu_memory(gpu_memory)
             vulkan_free_vram_gb = {
-                index: free_mib / 1024.0 for index, free_mib, _total_mib in gpu_memory
+                index: free_mib / 1024.0
+                for index, free_mib, _total_mib in (vulkan_gpu_memory or [])
             }
         elif is_vulkan_backend and diffusion_kind is None and requested_gpu_ids:
             # Until the header is available, the model may use either the Vulkan
@@ -5849,6 +6119,9 @@ def _resolve_inherited_extra_args(
             # must not last-wins-override it. auto leaves a user's inherited -ngl
             # alone. getattr: a validate request reuses this resolver, no offload fields.
             strip_offload = getattr(request, "gpu_memory_mode", "auto") == "manual",
+            # a set field emits its own flag; an inherited -b / -ub would last-wins-override it
+            strip_batch = "n_batch" in fields_set,
+            strip_ubatch = "n_ubatch" in fields_set,
         )
         try:
             extra_llama_args = validate_extra_args(stripped)

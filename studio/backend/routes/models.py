@@ -3284,12 +3284,16 @@ async def get_gguf_variants(
                     downloaded = bool(v.downloaded),
                     update_available = bool(getattr(v, "update_available", False)),
                     partial = bool(getattr(v, "partial", False)),
+                    cleanable = bool(getattr(v, "cleanable", False)),
                 )
                 for v in response.variants
             ],
             has_vision = response.has_vision,
             default_variant = response.default_variant,
             context_length = await _read_native_context_length_bounded(context_model, local),
+            resolved_locally = bool(getattr(response, "resolved_locally", False)),
+            loadable_variants = getattr(response, "loadable_variants", None),
+            loadable = getattr(response, "loadable", None),
         )
     except HTTPException:
         raise
