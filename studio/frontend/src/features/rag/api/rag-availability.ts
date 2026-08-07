@@ -30,10 +30,16 @@ const DEFAULT_UNAVAILABLE_REASON =
   "RAG is unavailable on this machine: the sqlite-vec extension could not be loaded.";
 
 // What routes/rag.py sends with its 503 ("RAG is unavailable: the sqlite-vec extension
-// could not be loaded."). Matched on these two stable fragments rather than the whole
-// sentence, so a reworded detail still reads as the backend's verdict while a proxy's
-// "Service Temporarily Unavailable" does not.
-const RAG_UNAVAILABLE_MARKERS = ["rag is unavailable", "sqlite-vec"];
+// could not be loaded."). Matched on the extension name rather than the whole sentence,
+// so a reworded detail still reads as the backend's verdict while a proxy's "Service
+// Temporarily Unavailable" does not.
+//
+// Deliberately NOT "rag is unavailable" as well. That phrase is the loose half of the
+// pair: anything RAG-aware in front of the backend could emit it without meaning the
+// extension, and matching either fragment would then persist a capability verdict from a
+// transient outage. "sqlite-vec" is a package name, so nothing upstream says it by
+// accident, and the whole capability being gated here is exactly that extension.
+const RAG_UNAVAILABLE_MARKERS = ["sqlite-vec"];
 
 /** True only for a 503 body the RAG router itself produced. */
 function isRagUnavailableDetail(detail: string | null | undefined): detail is string {

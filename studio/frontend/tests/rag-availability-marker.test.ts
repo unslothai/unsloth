@@ -354,6 +354,11 @@ test("a generic 503 from a proxy is not read as a RAG capability verdict", () =>
     null,
     {},
     "<html><body><h1>503 Service Unavailable</h1></body></html>",
+    // Anything RAG-aware in front of the backend can say this without meaning the
+    // extension, so the phrase alone must not persist a capability verdict. Only the
+    // package name does, since nothing upstream emits it by accident.
+    { detail: "RAG is unavailable right now, try again shortly" },
+    { detail: "RAG unavailable: upstream timeout" },
   ]) {
     noteRagResponse(503, body);
     assert.equal(
