@@ -711,6 +711,88 @@ def _loaded_context_length() -> int | None:
     return None
 
 
+def _estimate_prompt_tokens(messages: list[dict]) -> int:
+    """Conservative prompt token estimate for max_tokens clamping.
+
+    Uses the same chars-per-token heuristic as synthesis evidence budgeting so
+    Deep Research sizes output against the same context window it already probes.
+    """
+    chars = 0
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            chars += len(content)
+            continue
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict):
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        chars += len(text)
+    return max(1, int(chars / _SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN) + len(messages) * 4)
+
+
+def _clamp_max_tokens_for_context(
+    requested: int,
+    messages: list[dict],
+    *,
+    context_length: int | None = None,
+) -> int:
+    ctx = context_length if context_length is not None else _loaded_context_length()
+    if not ctx:
+        return requested
+    available = max(1, ctx - _estimate_prompt_tokens(messages))
+    return max(1, min(requested, available))
+
+
+def _resolve_max_tokens(
+    max_tokens: int | None, inference: dict[str, Any], messages: list[dict]
+) -> int:
+    requested = int(max_tokens or inference.get("maxTokens") or 4096)
+    ceiling = 16384 if max_tokens is not None else 8192
+    capped = min(requested, ceiling)
+    return _clamp_max_tokens_for_context(capped, messages)
+
+
+def _normalize_completion_usage(raw: Any) -> dict[str, int] | None:
+    if not isinstance(raw, dict):
+        return None
+    usage: dict[str, int] = {}
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        value = raw.get(key)
+        if isinstance(value, (int, float)):
+            usage[key] = int(value)
+    return usage or None
+
+
+def _completion_hit_context_wall(
+    usage: dict[str, int] | None,
+    *,
+    requested_max_tokens: int,
+    context_length: int | None = None,
+) -> bool:
+    if not usage:
+        return False
+    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+    completion_tokens = int(usage.get("completion_tokens") or 0)
+    total_tokens = int(usage.get("total_tokens") or prompt_tokens + completion_tokens)
+    ctx = context_length if context_length is not None else _loaded_context_length()
+    if ctx is not None and total_tokens >= ctx:
+        return True
+    return completion_tokens < requested_max_tokens
+
+
+def _synthesis_length_limit_error(
+    usage: dict[str, int] | None, *, requested_max_tokens: int
+) -> str:
+    if _completion_hit_context_wall(usage, requested_max_tokens = requested_max_tokens):
+        return (
+            "Local model report hit the loaded context window before completion. "
+            "Increase Context Length in chat settings or reduce the research evidence size."
+        )
+    return "Local model report reached its output limit before completion"
+
+
 async def _model_unloaded(response: httpx.Response) -> bool:
     """Whether the local endpoint refused because no model is loaded (routes.inference). That is
     transient for a durable run -- the model can be loaded again -- unlike any other 400."""
@@ -1552,7 +1634,6 @@ class ResearchSupervisor:
             "messages": messages,
             "stream": False,
             "temperature": inference.get("temperature", 0.2),
-            "max_tokens": min(int(inference.get("maxTokens") or 4096), 8192),
         }
         if inference.get("topP") is not None:
             payload["top_p"] = inference["topP"]
@@ -1569,6 +1650,7 @@ class ResearchSupervisor:
                 model_waits = 0
                 while True:
                     await self._check_active(run["id"])
+                    payload["max_tokens"] = _resolve_max_tokens(None, inference, messages)
                     try:
                         post_task = asyncio.create_task(
                             client.post(
@@ -1741,7 +1823,7 @@ class ResearchSupervisor:
         step_position: int | None = None,
         max_tokens: int | None = None,
         enable_thinking: bool | None = None,
-    ) -> tuple[str, str, str | None]:
+    ) -> tuple[str, str, str | None, dict[str, int] | None]:
         call_id = uuid.uuid4().hex
         expires = (datetime.now(timezone.utc) + timedelta(hours = 2)).isoformat()
         token, key = await asyncio.to_thread(
@@ -1757,11 +1839,8 @@ class ResearchSupervisor:
             "model": inference.get("model") or config.get("model") or "",
             "messages": messages,
             "stream": True,
+            "stream_options": {"include_usage": True},
             "temperature": inference.get("temperature", 0.2),
-            "max_tokens": min(
-                int(max_tokens or inference.get("maxTokens") or 4096),
-                16384 if max_tokens is not None else 8192,
-            ),
         }
         if inference.get("topP") is not None:
             payload["top_p"] = inference["topP"]
@@ -1782,6 +1861,7 @@ class ResearchSupervisor:
         pending_reasoning_offset = 0
         last_progress_flush = asyncio.get_running_loop().time()
         finish_reason: str | None = None
+        usage: dict[str, int] | None = None
         semantic_output_at: float | None = None
         first_output_deadline: float | None = None
 
@@ -1877,6 +1957,11 @@ class ResearchSupervisor:
                 attempt = 0
                 try:
                     while True:
+                        payload["max_tokens"] = _resolve_max_tokens(
+                            max_tokens,
+                            inference,
+                            messages,
+                        )
                         request = client.build_request(
                             "POST",
                             self._endpoint(),
@@ -1952,6 +2037,11 @@ class ResearchSupervisor:
                             chunk = json.loads(data)
                             if isinstance(chunk, dict) and "error" in chunk:
                                 raise RuntimeError("Local model stream failed")
+                            normalized_usage = _normalize_completion_usage(
+                                chunk.get("usage") if isinstance(chunk, dict) else None
+                            )
+                            if normalized_usage is not None:
+                                usage = normalized_usage
                             choice = chunk.get("choices", [{}])[0]
                             delta = choice.get("delta", {})
                             if isinstance(choice.get("finish_reason"), str):
@@ -2004,7 +2094,7 @@ class ResearchSupervisor:
                                 exc_info = True,
                             )
             await flush_progress()
-            return report, reasoning, finish_reason
+            return report, reasoning, finish_reason, usage
         except (TimeoutError, asyncio.TimeoutError) as exc:
             raise ModelWallClockTimeout(
                 "Local model request exceeded its wall-clock timeout"
@@ -2139,7 +2229,7 @@ class ResearchSupervisor:
                 planning_total, len(planner_system) + len(planning_question), _MAX_CONTEXT_CHARS
             )
         ]
-        response, planning_reasoning, _finish_reason = await self._stream_completion(
+        response, planning_reasoning, _finish_reason, _usage = await self._stream_completion(
             run,
             [
                 {
@@ -2359,7 +2449,7 @@ class ResearchSupervisor:
                     decision_total, decision_scaffold + evidence_chars, _MAX_CONTEXT_CHARS
                 )
             ]
-            decision, decision_reasoning, _finish_reason = await self._stream_completion(
+            decision, decision_reasoning, _finish_reason, _usage = await self._stream_completion(
                 run,
                 [
                     {
@@ -2681,7 +2771,12 @@ class ResearchSupervisor:
                 _MAX_CONTEXT_CHARS,
             )
         ]
-        audit_response, audit_reasoning, _audit_finish_reason = await self._stream_completion(
+        (
+            audit_response,
+            audit_reasoning,
+            _audit_finish_reason,
+            _audit_usage,
+        ) = await self._stream_completion(
             run,
             [
                 {
@@ -2787,7 +2882,12 @@ class ResearchSupervisor:
                 ),
             },
         ]
-        report, synthesis_reasoning, synthesis_finish_reason = await self._stream_completion(
+        (
+            report,
+            synthesis_reasoning,
+            synthesis_finish_reason,
+            synthesis_usage,
+        ) = await self._stream_completion(
             run,
             synthesis_messages,
             phase = "synthesis",
@@ -2807,10 +2907,16 @@ class ResearchSupervisor:
                 },
                 synthesis_messages[1],
             ]
+            recovery_max_tokens = _resolve_max_tokens(
+                16384,
+                run["config"].get("inferenceRequest") or {},
+                recovery_messages,
+            )
             (
                 recovered_report,
                 recovery_reasoning,
                 recovery_finish_reason,
+                recovery_usage,
             ) = await self._stream_completion(
                 run,
                 recovery_messages,
@@ -2821,9 +2927,15 @@ class ResearchSupervisor:
             synthesis_reasoning += recovery_reasoning
             report = recovered_report
             synthesis_finish_reason = recovery_finish_reason
+            synthesis_usage = recovery_usage
             await self._check_active(run["id"])
             if synthesis_finish_reason == "length":
-                raise ValueError("Local model report reached its output limit before completion")
+                raise ValueError(
+                    _synthesis_length_limit_error(
+                        synthesis_usage,
+                        requested_max_tokens = recovery_max_tokens,
+                    )
+                )
         if not report.strip():
             report = _recover_report_from_reasoning(synthesis_reasoning)
         if not report:

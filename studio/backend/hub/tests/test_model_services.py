@@ -2877,6 +2877,21 @@ def test_completed_gguf_split_variant_requires_all_shards(tmp_path):
     assert "Q8_0" in inventory_scan._completed_gguf_variants(snapshot)
 
 
+def test_completed_gguf_variants_ignores_big_endian_by_the_loader_label(tmp_path):
+    # The scan reads Q4_K_M here, the loader reads F16 and refuses the file as big-endian. By
+    # the scan's label it would vouch for Q4_K_M, and _complete_with_servable skips complete
+    # quants, so the torn split below would be reported downloaded.
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "0-F16-be-checkpoint-Q4_K_M.gguf").write_bytes(b"GGUF")
+    (snapshot / "z-Q4_K_M-00001-of-00002.gguf").write_bytes(b"GGUF")
+
+    assert "Q4_K_M" not in inventory_scan._completed_gguf_variants(snapshot)
+
+    (snapshot / "z-Q4_K_M-00002-of-00002.gguf").write_bytes(b"GGUF")
+    assert "Q4_K_M" in inventory_scan._completed_gguf_variants(snapshot)
+
+
 def test_variant_partial_accepts_variant_filtered_legacy_hashes(monkeypatch, tmp_path):
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path)
 
