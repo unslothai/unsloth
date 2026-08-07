@@ -1385,10 +1385,17 @@ jobs:
           RELEASE_DRAFT: ${{ inputs.draft }}
         run: |
           set -euo pipefail
+          # Written here rather than in the conditional create step below, because
+          # `Generate and publish versioned updater metadata` reads this file on
+          # every run, including reruns against an already existing release.
+          notes_file="$RUNNER_TEMP/desktop-release-notes.md"
+          printf '%s\n' "$DESKTOP_RELEASE_NOTES" > "$notes_file"
+
           release_json="$RUNNER_TEMP/versioned-release.json"
+          view_error="$RUNNER_TEMP/versioned-release-view.err"
           # REST tag lookup omits drafts; `gh release view` also checks pending tags.
           if gh release view "$DESKTOP_RELEASE_TAG" \
-            --json tagName,isDraft,isPrerelease > "$release_json" 2>/dev/null; then
+            --json tagName,isDraft,isPrerelease > "$release_json" 2>"$view_error"; then
             python3 <<'PY'
           import json
           import os
@@ -1406,8 +1413,16 @@ jobs:
               sys.exit('Existing desktop release prerelease state does not match the requested version')
           PY
             echo "create=false" >> "$GITHUB_OUTPUT"
-          else
+          elif grep -qi 'release not found' "$view_error"; then
             echo "create=true" >> "$GITHUB_OUTPUT"
+          else
+            # `gh` exits non-zero for any failure, so a transient API, auth or rate
+            # limit error looks identical to a missing release. Treating those as
+            # "not found" would disclose the bundles to VirusTotal for a run that
+            # cannot publish, so fail here instead.
+            echo "::error::Could not determine whether $DESKTOP_RELEASE_TAG exists; refusing to treat this as a missing release"
+            cat "$view_error" >&2
+            exit 1
           fi
 
       # ── Advisory multi-engine scan of the bundles we are about to publish ──
@@ -1462,8 +1477,8 @@ jobs:
           RELEASE_DRAFT: ${{ inputs.draft }}
         run: |
           set -euo pipefail
+          # Written by the validation step above, which always runs.
           notes_file="$RUNNER_TEMP/desktop-release-notes.md"
-          printf '%s\n' "$DESKTOP_RELEASE_NOTES" > "$notes_file"
 
           release_flags=(
             --title "Unsloth ${STUDIO_VERSION}"

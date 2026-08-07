@@ -680,11 +680,17 @@ class TestRetryBackoffRespectsTheDeadline:
 class TestWorkflowOrdering:
     """The scan must not disclose bundles for a release that cannot be published."""
 
-    def _publish_steps(self):
+    def _publish_step_list(self):
         yaml = pytest.importorskip("yaml")
         workflow = REPO_ROOT / ".github" / "workflows" / "release-desktop.yml"
         data = yaml.safe_load(workflow.read_text(encoding = "utf-8"))
-        return [step.get("name") for step in data["jobs"]["publish-release"]["steps"]]
+        return data["jobs"]["publish-release"]["steps"]
+
+    def _publish_steps(self):
+        return [step.get("name") for step in self._publish_step_list()]
+
+    def _publish_step_map(self):
+        return {step.get("name"): step for step in self._publish_step_list()}
 
     def test_scan_runs_after_the_release_is_validated(self):
         names = self._publish_steps()
@@ -701,6 +707,22 @@ class TestWorkflowOrdering:
         assert names.index("Create versioned release") < names.index(
             "Publish versioned release assets"
         )
+
+    def test_release_notes_are_written_unconditionally(self):
+        # The updater metadata step reads this file on every run, including a
+        # rerun against an existing release where creation is skipped.
+        steps = self._publish_step_map()
+        assert "desktop-release-notes.md" in steps["Validate versioned release state"]["run"]
+        metadata = steps["Generate and publish versioned updater metadata"]["run"]
+        assert "desktop-release-notes.md" in metadata
+
+    def test_a_failed_lookup_is_not_treated_as_a_missing_release(self):
+        # `gh` exits non-zero for any failure, so a transient API or auth error
+        # would otherwise disclose the bundles for a run that cannot publish.
+        run = self._publish_step_map()["Validate versioned release state"]["run"]
+        assert "release not found" in run
+        assert "create=true" in run.split("release not found", 1)[1]
+        assert "exit 1" in run
 
     def test_release_creation_is_gated_on_the_validation_step(self):
         yaml = pytest.importorskip("yaml")
