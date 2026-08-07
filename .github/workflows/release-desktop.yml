@@ -346,13 +346,10 @@ jobs:
       max-parallel: 1
       matrix:
         include:
-          - platform: macos-latest
-            args: '--target aarch64-apple-darwin'
-            label: macOS (Apple Silicon)
-            artifact: macos-aarch64
-          # - platform: macos-latest
-          #   args: '--target x86_64-apple-darwin'
-          #   label: macOS (Intel)
+          - platform: ubuntu-22.04
+            args: ''
+            label: Linux (x64)
+            artifact: linux-x64
           - platform: windows-latest
             args: ''
             label: Windows (x64)
@@ -1249,9 +1246,9 @@ jobs:
           files = [path for path in asset_dir.iterdir() if path.is_file()]
           base_name = f'Unsloth-Desktop-{os.environ["ASSET_VERSION"]}'
           expected_names = {
-              f'{base_name}-MacOS.dmg',
-              f'{base_name}-ARM64.app.tar.gz',
-              f'{base_name}-ARM64.app.tar.gz.sig',
+              f'{base_name}-Linux.AppImage',
+              f'{base_name}-Linux.AppImage.sig',
+              f'{base_name}-Ubuntu.deb',
               f'{base_name}-Windows.exe',
               f'{base_name}-Windows.exe.sig',
           }
@@ -1370,7 +1367,7 @@ jobs:
                   ),
               }
 
-          darwin = entry('.app.tar.gz.sig')
+          linux = entry('.AppImage.sig')
           windows = entry('.exe.sig')
           notes = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-notes.md').read_text()
           metadata = {
@@ -1380,8 +1377,8 @@ jobs:
               'notes': notes,
               'pub_date': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
               'platforms': {
-                  'darwin-aarch64': darwin,
-                  'darwin-aarch64-app': darwin,
+                  'linux-x86_64': linux,
+                  'linux-x86_64-appimage': linux,
                   'windows-x86_64': windows,
                   'windows-x86_64-nsis': windows,
               },
@@ -1447,7 +1444,7 @@ jobs:
               sys.exit('latest.json missing platforms')
 
           required_families = {
-              'darwin-aarch64': False,
+              'linux-x86_64': False,
               'windows-x86_64': False,
           }
           expected_prefix = f'https://github.com/wasimysaid/unsloth/releases/download/{release_tag}/'
