@@ -230,6 +230,9 @@ async fn provision_desktop_auth() -> Result<(), String> {
     cmd.args(["studio", "provision-desktop-auth"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
+    #[cfg(target_os = "linux")]
+    crate::process::scrub_appimage_python_env_tokio(&mut cmd);
+
     // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME.
     // Scrub so provisioning writes match what the Rust auth code reads.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
