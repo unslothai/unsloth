@@ -2214,3 +2214,80 @@ class TestAGpuIdsPinOverridesADeviceFlag:
         assert re.search(r"self\._clear_device_placement_env\(_mem_env\)", src)
         call = src.find("self._weights_in_host_memory(", strip)
         assert call != -1 and "extra_args = _mem_extra_args" in src[call : call + 400]
+
+
+class TestFitOffRetryDropsTheLock:
+    """The mirror of TestFitOnRetryReArmsResidency. --fit off leaves -ngl at its
+    default, which llama.cpp resolves to every layer (llama-model.cpp:
+    n_gpu_layers < 0 -> n_layer_all + 1), so a lock taken for the fitted attempt
+    would reserve a full host copy of a fully offloaded model."""
+
+    @staticmethod
+    def _retry_argv(original, managed, *, drops):
+        """What the fallback builds: append --fit off, then drop the managed run."""
+        from core.inference.llama_cpp import _without_subsequence
+
+        run = [*original, "--fit", "off"]
+        return _without_subsequence(run, managed) if drops else run
+
+    def test_the_retry_is_not_page_locked(self):
+        managed = ["--load-mode", "mmap+mlock"]
+        original = [*managed, "--fit", "on", "--temp", "0.7"]
+        assert resolve_effective_memory_state(original, {}) == (True, False)
+        retry = self._retry_argv(original, managed, drops = True)
+        assert resolve_effective_memory_state(retry, {}) == (False, False)
+        assert retry == ["--fit", "on", "--temp", "0.7", "--fit", "off"]
+
+    def test_the_legacy_flag_path_drops_too(self):
+        managed = ["--mlock"]
+        original = [*managed, "--fit", "on"]
+        retry = self._retry_argv(original, managed, drops = True)
+        assert resolve_effective_memory_state(retry, {}) == (False, False)
+
+    def test_a_user_mlock_in_the_extras_survives(self):
+        """Managed flags go in before the user's, so only the first run is ours."""
+        managed = ["--mlock"]
+        original = [*managed, "--fit", "on", "--mlock"]
+        retry = self._retry_argv(original, managed, drops = True)
+        assert retry == ["--fit", "on", "--mlock", "--fit", "off"]
+        assert resolve_effective_memory_state(retry, {}) == (True, False)
+
+    def test_staying_host_resident_keeps_the_lock(self):
+        managed = ["--load-mode", "mmap+mlock"]
+        original = [*managed, "--fit", "on"]
+        retry = self._retry_argv(original, managed, drops = False)
+        assert resolve_effective_memory_state(retry, {}) == (True, False)
+
+    def test_the_dropped_launch_does_not_demand_a_reload(self, monkeypatch):
+        """mlock_applicable goes False with the lock, so a later residency save
+        is not compared against a lock this launch deliberately dropped."""
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+        managed = ["--load-mode", "mmap+mlock"]
+        state = resolve_effective_memory_state(
+            self._retry_argv([*managed, "--fit", "on"], managed, drops = True), {}
+        )
+        assert memory_state_satisfies_settings(state, True, False) is True
+
+    def test_the_launch_really_reclassifies_the_fit_off_retry(self):
+        """Source check: the branch must re-ask the gate and clear the
+        bookkeeping, so it cannot drift back to reusing the fitted verdict."""
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        branch = src.find('run_cmd = [*run_cmd, "--fit", "off"]')
+        assert branch != -1, "the --fit off retry moved"
+        tail = src[branch : branch + 2200]
+        for needle in (
+            "self._weights_in_host_memory(",
+            "fully_gpu_offloaded = True",
+            "_without_subsequence(run_cmd, _mem_managed)",
+            "_mem_host_resident = False",
+            "self._memory_mlock_applicable = False",
+            "resolve_effective_memory_state(run_cmd, env)",
+        ):
+            assert needle in tail, needle

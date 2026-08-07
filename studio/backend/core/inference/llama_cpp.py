@@ -2676,6 +2676,20 @@ def _extra_args_main_device(extra_args: Optional[Iterable[str]]) -> Optional[str
     return _extra_args_device(extra_args, {"--device", "-dev"})
 
 
+def _without_subsequence(tokens: List[str], run: List[str]) -> List[str]:
+    """``tokens`` with the first contiguous occurrence of ``run`` removed.
+
+    Only the exact flags Unsloth appended go, so a user's own identical flag
+    elsewhere in the command survives. Unchanged when ``run`` is not present.
+    """
+    if not run:
+        return list(tokens)
+    for i in range(len(tokens) - len(run) + 1):
+        if tokens[i : i + len(run)] == run:
+            return [*tokens[:i], *tokens[i + len(run) :]]
+    return list(tokens)
+
+
 _CPU_DEVICE_VALUES = frozenset({"cpu", "none"})
 
 
@@ -11302,6 +11316,34 @@ class LlamaCppBackend:
                                 self._llama_log_path,
                             )
                             run_cmd = [*run_cmd, "--fit", "off"]
+                            # The mirror of the --fit on retry above. Turning the
+                            # fitter off leaves -ngl at its default, which llama.cpp
+                            # resolves to every layer, so the fitted attempt's
+                            # host-resident verdict can stop holding. Drop a
+                            # page-lock the retry no longer needs rather than
+                            # reserving a full host copy of a fully offloaded model.
+                            if _mem_managed and _mem_host_resident:
+                                if not self._weights_in_host_memory(
+                                    fully_gpu_offloaded = True,
+                                    gpu_memory_mode = gpu_memory_mode,
+                                    gpu_layers = gpu_layers,
+                                    extra_args = _mem_extra_args,
+                                    gpu_indices = gpu_indices,
+                                    is_vulkan_backend = is_vulkan_backend,
+                                    binary = binary,
+                                    env = _mem_env,
+                                ):
+                                    run_cmd = _without_subsequence(run_cmd, _mem_managed)
+                                    _mem_host_resident = False
+                                    # Recorded so a later "keep resident" save is not
+                                    # compared against a lock this launch dropped,
+                                    # which would demand a pointless reload.
+                                    self._memory_mlock_applicable = False
+                                    logger.info(
+                                        "Model Memory: dropping the page-lock for "
+                                        "the --fit off retry; it offloads every layer."
+                                    )
+                                self._memory_state = resolve_effective_memory_state(run_cmd, env)
                             continue
                         return False
 
