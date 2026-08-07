@@ -198,6 +198,7 @@ jobs:
           CUT=$(( NOW - CUT_MINUTES * 60 ))
           RESTORED=0
           STALE=0
+          FAILED=0
 
           # Only ever re-enable something this repository's own allowlist claims
           # as sweepable, minus `never` for the same reason the sweeper
@@ -242,7 +243,11 @@ jobs:
               echo "re-enabled ${path} (disabled ${AGE}m; restore threshold ${CUT_MINUTES}m, limit ${MAX_DISABLED_MINUTES}m)"
               RESTORED=$(( RESTORED + 1 ))
             else
+              # Counted, not raised here. The ids left in the list are other
+              # workflows that are just as disabled, so bailing out on the first
+              # rate-limited call would leave them down too.
               echo "::error::could not re-enable ${path}; enable it by hand in the Actions tab"
+              FAILED=$(( FAILED + 1 ))
             fi
           done < "${RUNNER_TEMP}/workflows.txt"
 
@@ -255,6 +260,20 @@ jobs:
             echo "guard: ${STALE} workflow(s) due for restore, none touched (CI_PREEMPT_ENABLED is not 'true')" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "guard: restored ${RESTORED}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # `::error::` only writes an annotation; the step's status comes from
+          # the exit code alone. Without this a guard that could not put a
+          # workflow back ends green, and the thing watching this is watching
+          # for a failed scheduled run, so the one signal that the advertised
+          # bound has stopped holding is the one never sent. Reported after the
+          # summary so the record of what was and was not restored survives the
+          # nonzero exit, and after the loop so every id is still attempted.
+          # Unreachable while the feature is off, because DRY skips the enable
+          # call before FAILED can move.
+          if [ "$FAILED" -gt 0 ]; then
+            echo "guard: ${FAILED} workflow(s) could NOT be re-enabled and are still disabled" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
 
   # ---------------------------------------------------------------------------
@@ -353,18 +372,38 @@ jobs:
             fi
           done <<<"$FILES"
 
+          # Returns nonzero if any id could not be enabled, having tried them
+          # all. Counted rather than written as `gh api ... && echo ok || echo
+          # error`, because that form reports the status of the last echo, which
+          # is always 0: a resume that restored nothing would look exactly like
+          # one that restored everything, both to a release pipeline reading
+          # this job's conclusion as "CI is back" and to anyone reading the
+          # summary afterwards.
           enable_all() {
+            local failed=0
             while read -r ID; do
               [ "$DRY" = 1 ] && { echo "would enable workflow ${ID}"; continue; }
-              gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${ID}/enable" \
-                && echo "enabled ${ID}" || echo "::error::could not enable ${ID}"
+              if gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${ID}/enable"; then
+                echo "enabled ${ID}"
+              else
+                echo "::error::could not enable ${ID}"
+                failed=$(( failed + 1 ))
+              fi
             done < "${RUNNER_TEMP}/ids.txt"
+            [ "$failed" = 0 ]
           }
 
           if [ "$MODE" = "resume" ]; then
-            enable_all
-            echo "resume complete (${REASON})" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
+            # Called as an `if` test rather than bare, so the -e in this step's
+            # default `bash -e {0}` cannot abort before the summary is written.
+            # With DRY=1 nothing is enabled and nothing is counted, so this
+            # branch still cannot fail a run with CI_PREEMPT_ENABLED unset.
+            if enable_all; then
+              echo "resume complete (${REASON})" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "resume INCOMPLETE (${REASON}): one or more workflows are still disabled. The guard restores them within ${MAX_DISABLED_MINUTES}m of the pause, once it gets a runner" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
 
           if [ "$MODE" = "pause" ]; then
