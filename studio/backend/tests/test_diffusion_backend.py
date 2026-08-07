@@ -5032,9 +5032,18 @@ def test_generate_resets_the_step_cache_before_every_chunk(fake_runtime, tmp_pat
 
 
 class _FakeSibling:
-    def __init__(self, rfilename, size):
+    def __init__(
+        self,
+        rfilename,
+        size,
+        lfs = None,
+        blob_id = None,
+    ):
         self.rfilename = rfilename
         self.size = size
+        # Both shapes the hub has used, so a test can pin which one the code reads.
+        self.lfs = lfs
+        self.blob_id = blob_id
 
 
 class _FakeInfo:
@@ -5644,6 +5653,46 @@ def test_the_plan_pins_the_cache_probe_to_the_revision_model_info_reported(monke
         "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
     )
     assert seen == ["cafe1234"]
+
+
+def test_the_plan_reads_a_dict_shaped_lfs_entry(monkeypatch):
+    # `RepoSibling.lfs` has had two shapes. huggingface_hub builds a `BlobLfsInfo` dataclass on
+    # the pinned 0.36.2 -- checked against the live API -- but older releases type it as a plain
+    # dict, and a `getattr(lfs, "sha256")` on one of those falls through to `blob_id`. That is the
+    # git object id, not the sha256 the cache names its blobs with, so the probe misses on every
+    # file and a metadata-only republish re-downloads a GGUF that never changed.
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/FLUX.1-dev-GGUF": [
+                _FakeSibling(
+                    "flux1-dev-Q4_K_M.gguf",
+                    7 * GB,
+                    lfs = {"sha256": "d" * 64},
+                    blob_id = "not-the-content-id",
+                ),
+            ],
+            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo",
+        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
+    )
+    monkeypatch.setattr(
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+    )
+    _no_cache(monkeypatch)
+    seen = []
+    monkeypatch.setattr(
+        "core.inference.diffusion._hub_file_cached",
+        lambda repo_id, filename, revision = None, blob_id = None: seen.append(blob_id) or True,
+    )
+
+    DiffusionBackend().download_plan(
+        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
+    )
+    assert seen == ["d" * 64], "the git object id reached the probe instead of the content sha"
 
 
 def test_an_unknown_revision_never_counts_as_cached(monkeypatch):

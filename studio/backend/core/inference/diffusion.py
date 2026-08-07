@@ -1557,11 +1557,19 @@ class DiffusionBackend:
                 if blobs_out is not None:
                     # The file's content id, which outlives the commit that shipped it: a
                     # metadata-only republish moves the sha and leaves this alone.
+                    #
+                    # Through the hub helper rather than a `getattr` here, because `lfs` has had
+                    # two shapes. huggingface_hub builds a `BlobLfsInfo` dataclass today (checked
+                    # against the live API on the pinned 0.36.2), but it is typed as a plain dict
+                    # in older releases, and a `getattr` on one of those silently falls through
+                    # to `blob_id` -- the git object id, which is not the sha256 the cache names
+                    # its blobs with, so every lookup misses. `sibling_sha256` already knows both
+                    # shapes and is what the GGUF download plan uses.
+                    from hub.utils.gguf_plan import sibling_sha256
                     for sib in info.siblings:
                         if sib.rfilename != gguf_filename:
                             continue
-                        lfs = getattr(sib, "lfs", None)
-                        content = getattr(lfs, "sha256", None) or getattr(sib, "blob_id", None)
+                        content = sibling_sha256(sib)
                         if content:
                             blobs_out["checkpoint"] = str(content)
                         break
