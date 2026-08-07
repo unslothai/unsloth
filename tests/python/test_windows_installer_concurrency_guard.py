@@ -134,8 +134,8 @@ def test_x86_powershell_reports_64_bit_managed_process(tmp_path: Path):
     scripts.mkdir(parents = True)
     probe = scripts / "guard-probe.exe"
     shutil.copy2(Path(os.environ["SystemRoot"]) / "System32" / "PING.EXE", probe)
-    # Long-lived: a 32-bit shell pays a WOW64 start plus an Add-Type compile, so
-    # a short probe can exit before the scan runs and empty the result.
+    # Long-lived: a 32-bit shell pays a WOW64 start plus an Add-Type compile, so a
+    # short probe can exit before the scan runs.
     child = subprocess.Popen(
         [str(probe), "-n", "120", "127.0.0.1"],
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),

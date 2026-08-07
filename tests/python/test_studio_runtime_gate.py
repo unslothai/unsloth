@@ -192,8 +192,7 @@ def test_idle_scan_excludes_verified_launcher_and_blocks_another_managed_image(
 @pytest.mark.skipif(os.name != "nt", reason = "Windows process inspection is required")
 def test_idle_scan_excludes_the_venv_python_redirector(tmp_path, monkeypatch):
     # install.ps1 runs `Scripts\unsloth.exe studio setup` and Tauri runs the venv
-    # interpreter directly, so both arrive through the redirector. Without the
-    # exemption each blocks on its own launcher.
+    # interpreter, so both arrive through the redirector and would self-block.
     studio_home = tmp_path / "studio"
     scripts = studio_home / "unsloth_studio" / "Scripts"
     managed_python = scripts / "python.exe"
@@ -240,8 +239,7 @@ def test_idle_scan_excludes_the_venv_python_redirector(tmp_path, monkeypatch):
     payload[2]["ExecutablePath"] = str(tmp_path / "Unsloth" / "unsloth.exe")
     gate.ensure_managed_environment_is_idle(studio_home)
 
-    # Only the direct parent is the redirector; a managed image above it is a
-    # real consumer.
+    # Only the direct parent is the redirector; a managed image above is a consumer.
     payload[2]["ExecutablePath"] = str(managed_python)
     with pytest.raises(RuntimeError, match = rf"PID {launcher_pid}"):
         gate.ensure_managed_environment_is_idle(studio_home)

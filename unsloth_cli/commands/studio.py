@@ -2808,8 +2808,8 @@ def _wait_for_windows_setup_process(process) -> int:
                 **_windows_hidden_subprocess_kwargs(),
             )
         except BaseException:
-            # If taskkill itself is interrupted or unavailable, keep the gate
-            # until setup exits naturally rather than exposing a live mutator.
+            # taskkill interrupted or unavailable: hold the gate until setup
+            # exits naturally rather than exposing a live mutator.
             pass
         while process.poll() is None:
             try:

@@ -409,7 +409,6 @@ public static class UnslothStudioFinalPathV2
         return $resolved.TrimEnd('\', '/')
     }
 
-
     # Custom Unsloth roots are not supported with --tauri (the desktop app uses
     # the Windows profile folder). Pass through if the override is that same root.
     if ($TauriMode -and $envOverride) {
@@ -1475,8 +1474,7 @@ exit 0
 
     function Get-StudioRuntimePathHash {
         param([Parameter(Mandatory = $true)][string]$Path)
-        # Keep the resolved spelling byte-for-byte. Cross-language Unicode case
-        # conversion is not stable (for example, .NET and Python differ on ß).
+        # Byte-for-byte spelling: .NET and Python disagree on Unicode case (ß).
         $canonical = Get-StudioFinalPath -Path $Path
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($canonical)
         $sha256 = [System.Security.Cryptography.SHA256]::Create()
@@ -1519,9 +1517,8 @@ exit 0
             [Parameter(Mandatory = $true)][string]$Path
         )
         $names = @()
-        # true: confirmed Tauri default -> SID lock
-        # false: confirmed custom root -> path lock
-        # null: identity resolution failed -> take both and fail closed
+        # true: Tauri default -> SID lock. false: custom root -> path lock.
+        # null: identity unresolved -> take both and fail closed.
         if ($TauriRootMatch -ne $false) {
             $names += Get-StudioRuntimeMutexName
         }
@@ -1589,7 +1586,6 @@ exit 0
         }
     }
 
-
     function Get-RunningStudioVenvProcesses {
         param(
             [Parameter(Mandatory = $true)][string]$VenvPath,
@@ -1601,9 +1597,8 @@ exit 0
             throw "Could not resolve managed Studio process path '$VenvPath': $($_.Exception.Message)"
         }
 
-        # Block only confirmed executable identities. A command line or working
-        # directory that merely mentions the managed path is not proof that the
-        # process has Studio files open and should not create a false abort.
+        # Block only confirmed executable identities: a command line or working
+        # directory that merely mentions the path is not proof of an open file.
         foreach ($process in @(Get-Process -ErrorAction SilentlyContinue)) {
             $executable = $null
             try { $executable = [UnslothStudioFinalPathV2]::GetProcessImagePath($process.Id) } catch { continue }
@@ -2285,7 +2280,6 @@ exit 0
     $script:StudioVenvRollbackActive = $false
     $script:StudioVenvRollbackPartial = $false
 
-
     function Test-VenvPythonReady {
         param([Parameter(Mandatory = $true)][string]$PythonExe)
         if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) { return $false }
@@ -2569,8 +2563,7 @@ exit 0
     ) {
         # Old layout (~/.unsloth/studio/.venv) exists -- validate before migrating.
         # Skip custom-root env-mode installs so we do not replace an unrelated
-        # project .venv. An explicit override of the managed default root keeps
-        # legacy migration enabled.
+        # project .venv; an override of the managed default root still migrates.
         $OldVenv = Join-Path $StudioHome ".venv"
         $OldPy = Join-Path $OldVenv "Scripts\python.exe"
         substep "found legacy Unsloth environment, validating..."
@@ -2600,8 +2593,7 @@ exit 0
         -and (Test-Path -LiteralPath (Join-Path $env:USERPROFILE "unsloth_studio\Scripts\python.exe"))
     ) {
         # CWD-relative venv from old install.ps1 -> migrate to absolute path.
-        # Skip custom-root env-mode installs so we do not relocate the old
-        # default-install venv into a workspace root.
+        # Skip custom-root env-mode so it is not relocated into a workspace root.
         $CwdVenv = Join-Path $env:USERPROFILE "unsloth_studio"
         substep "found CWD-relative Unsloth environment, migrating to $VenvDir..."
         Move-Item -LiteralPath $CwdVenv -Destination $VenvDir -Force
@@ -4016,8 +4008,8 @@ exit 0
     # can trip over an unsupported `python` 3.14 or a Store stub on PATH even
     # though the venv is fine). setup.ps1 Test-Path-guards this before use.
     $env:UNSLOTH_SETUP_PYTHON = Join-Path $VenvDir "Scripts\python.exe"
-    # The installer already owns the runtime mutex; let the setup child inherit
-    # that admission instead of deadlocking while trying to reacquire it.
+    # Installer already owns the runtime mutex; the child inherits it rather
+    # than deadlocking trying to reacquire it.
     $previousSetupRuntimeGateHandoff = $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF
     $hadPreviousSetupRuntimeGateHandoff = ($null -ne $previousSetupRuntimeGateHandoff)
     $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = "1"
@@ -4197,9 +4189,8 @@ exit 0
         Write-Host ""
         $reply = Read-Host "  Start Unsloth Studio now? [Y/n]"
         if ([string]::IsNullOrWhiteSpace($reply) -or $reply -match '^[Yy]') {
-            # Keep both locks until Windows has created the process. A second
-            # installer can then acquire the locks, but its process scan sees
-            # the new Studio process before it can mutate the environment.
+            # Keep both locks until the process exists: a second installer can
+            # then take them, but its scan sees Studio before it mutates.
             $_runtimeGateHandoff = $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF
             try {
                 $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = "1"

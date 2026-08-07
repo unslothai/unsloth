@@ -287,9 +287,8 @@ fn run_backend_update_with_terminal_events(
     };
     let _ = app.emit(progress_event, "Starting backend update...");
 
-    // Unlike read-only probes, update mutates the managed environment for its
-    // entire lifetime. This function is synchronous, so the thread-owned Win32
-    // mutex is acquired and released on the same thread without crossing await.
+    // Update mutates the managed environment for its whole lifetime. This function
+    // is synchronous, so the thread-owned Win32 mutex never crosses an await.
     let result = crate::process::with_studio_runtime_launch_guard(|| {
         crate::process::ensure_managed_environment_is_idle(&bin)?;
         let (stdout, stderr) =

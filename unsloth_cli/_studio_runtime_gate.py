@@ -237,8 +237,7 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
 
     venv = studio_home / "unsloth_studio"
     protected_root = _canonical_windows_path(venv)
-    # Not gated on exists(): a shim renamed out of the way mid-update still runs,
-    # and an absent path can never match a live image anyway.
+    # Not gated on exists(): a shim renamed out of the way mid-update still runs.
     protected_files = {
         _canonical_windows_path(candidate)
         for candidate in (
@@ -280,18 +279,15 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
         if int(process.get("ProcessId") or -1) > 0
     }
 
-    # The current updater may have been entered through the managed console shim.
-    # Ignore only verified launcher ancestors. A managed backend may start an
-    # update as its child, and that backend must still block replacement.
+    # The updater may itself have been entered through the managed console shim,
+    # so exempt verified launcher ancestors only: a managed backend that starts
+    # an update as its child must still block replacement.
     #
     # venv\Scripts\python.exe is a redirector (bpo-34977): it starts base Python
-    # as a child and waits, so a launch through the venv arrives as
-    # python.exe -> us. Our image is then the base interpreter while
-    # sys.executable still names the redirector, which identifies our direct
-    # parent as that launcher rather than a live consumer. Exempt that one hop
-    # only; every ancestor above it must be a shim. install.ps1 goes through
-    # unsloth.exe and the Tauri updater launches the redirector directly, so
-    # both need it, while a managed backend deeper up still blocks.
+    # as a child and waits, so a venv launch arrives as python.exe -> us. Our
+    # image is then the base interpreter while sys.executable still names the
+    # redirector, which identifies our direct parent as that launcher rather
+    # than a live consumer. Exempt that one hop only; above it must be a shim.
     excluded_pids = {os.getpid()}
     descendant_pid = os.getpid()
     self_executable = (process_by_pid.get(os.getpid()) or {}).get("ExecutablePath")

@@ -173,10 +173,9 @@ fn acquire_studio_runtime_launch_guard() -> Result<StudioManagedRuntimeLaunchGua
 
 /// Serialize creation of managed-environment children with install/repair.
 ///
-/// The guard deliberately ends when the synchronous operation returns. The
-/// installer acquires the same mutex and then scans for managed processes, so
-/// keeping the gate through child creation closes the race without carrying a
-/// thread-owned Win32 mutex across an async wait.
+/// The guard ends when the sync operation returns. The installer takes the same
+/// mutex then scans for managed processes, so holding it through child creation
+/// closes the race without carrying a thread-owned Win32 mutex across an await.
 #[cfg(windows)]
 fn with_named_studio_runtime_launch_guard<T>(
     name: &str,
@@ -283,12 +282,11 @@ fn process_image_path(process_id: u32) -> Option<std::path::PathBuf> {
     )))
 }
 
-/// Reject an update when a confirmed process image is executing from the
-/// target venv or the exact supported Studio shim.
+/// Reject an update when a process image runs from the target venv or the exact
+/// supported Studio shim.
 ///
-/// Callers must hold the runtime launch mutex before invoking this check and
-/// retain it through the complete mutation. Older consumers are found here,
-/// while new guarded launches cannot start after the scan.
+/// Callers must hold the runtime launch mutex across the whole mutation: this
+/// scan finds older consumers, and the gate blocks new launches after it.
 pub(crate) fn ensure_managed_environment_is_idle(
     managed_binary: &std::path::Path,
 ) -> Result<(), String> {
