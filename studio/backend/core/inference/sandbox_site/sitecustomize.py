@@ -412,6 +412,151 @@ def _guard_legacy_source_loader():
         cls.exec_module = guarded_exec_module
 
 
+_CHILD_PROCESS_AUDIT_EVENTS = frozenset(
+    {"subprocess.Popen", "os.exec", "os.posix_spawn", "os.system"}
+)
+
+
+def _make_child_process_guard():
+    """Build the spawn guard from closure state only.
+
+    Captured here so sandbox code reaching this module via ``sys.modules``
+    cannot rebind a helper out from under the audit hook.
+    """
+    import re
+
+    # Carries the guard into a child; clearing it drops ``sitecustomize``.
+    guard_env_vars = ("PYTHONPATH",)
+    shell_interpreters = frozenset({"bash", "cmd", "dash", "fish", "ksh", "sh", "zsh"})
+    site_dir = os.path.realpath(os.path.dirname(os.path.abspath(__file__)))
+    # ``t`` suffix: free-threaded CPython ships as python3.13t / python3.14t.
+    python_program_re = re.compile(
+        r"(?:python(?:w)?(?:\d+(?:\.\d+)*)?t?|pypy(?:\d+(?:\.\d+)*)?|py)"
+    )
+    site_flag_cluster_re = re.compile(r"-[^-]*[SEI][^-]*")
+    environ = os.environ
+    pathsep = os.pathsep
+    basename = os.path.basename
+    realpath = os.path.realpath
+    filesystem_encoding = sys.getfilesystemencoding()
+
+    def decode(value):
+        if isinstance(value, bytes):
+            try:
+                return value.decode(filesystem_encoding, "surrogateescape")
+            except (LookupError, UnicodeDecodeError):
+                return None
+        return value if isinstance(value, str) else None
+
+    def program_base(token):
+        token = decode(token)
+        if not token:
+            return None
+        base = basename(token.replace("\\", "/")).lower()
+        return base[:-4] if base.endswith(".exe") else base
+
+    def is_python_program(token):
+        base = program_base(token)
+        return base is not None and bool(python_program_re.fullmatch(base))
+
+    def flags_suppress_sitecustomize(arguments):
+        """-S / -E / -I (and clusters) skip sitecustomize."""
+        skip_next = False
+        for argument in arguments:
+            argument = decode(argument)
+            if argument is None:
+                return True
+            if skip_next:
+                skip_next = False
+                continue
+            if argument in ("-c", "-m", "--") or not argument.startswith("-"):
+                break
+            if argument in ("--ignore-environment", "--isolated", "--no-site"):
+                return True
+            if site_flag_cluster_re.fullmatch(argument):
+                return True
+            if argument in ("-W", "-X", "--check-hash-based-pycs"):
+                skip_next = True
+        return False
+
+    def pythonpath_keeps_guard(value):
+        value = decode(value)
+        if not value:
+            return False
+        for entry in value.split(pathsep):
+            if not entry:
+                continue
+            try:
+                if realpath(entry) == site_dir:
+                    return True
+            except OSError:
+                continue
+        return False
+
+    def child_env_keeps_guard(env):
+        if env is None:
+            source = environ
+        else:
+            try:
+                source = {decode(key): value for key, value in dict(env).items()}
+            except (AttributeError, TypeError, ValueError):
+                return False
+        return all(pythonpath_keeps_guard(source.get(name)) for name in guard_env_vars)
+
+    def shell_script_escapes_guard(script):
+        """Token scan of a shell script for an unguarded launch."""
+        script = decode(script)
+        if not script:
+            return False
+        import shlex
+
+        try:
+            tokens = shlex.split(script, comments = False)
+        except ValueError:
+            tokens = script.split()
+        for index, token in enumerate(tokens):
+            if "=" in token and not token.startswith("-"):
+                name, _, value = token.partition("=")
+                if name.upper() in guard_env_vars and not pythonpath_keeps_guard(value):
+                    return True
+            if is_python_program(token) and flags_suppress_sitecustomize(tokens[index + 1 :]):
+                return True
+        return False
+
+    def launch_escapes_guard(
+        argv,
+        env,
+        shell_string = False,
+    ):
+        if shell_string:
+            return shell_script_escapes_guard(argv)
+        if isinstance(argv, (str, bytes)):
+            argv = [argv]
+        try:
+            argv = list(argv)
+        except TypeError:
+            return False
+        if not argv:
+            return False
+        base = program_base(argv[0])
+        if base is None:
+            return False
+        # ``shell = True`` arrives as ['/bin/sh', '-c', script]; scan that script.
+        if base in shell_interpreters:
+            for index in range(1, len(argv)):
+                token = decode(argv[index])
+                if token and (token == "/c" or (token.startswith("-") and token.endswith("c"))):
+                    return index + 1 < len(argv) and shell_script_escapes_guard(argv[index + 1])
+            return False
+        if not python_program_re.fullmatch(base):
+            return False
+        if flags_suppress_sitecustomize(argv[1:]):
+            return True
+        return not child_env_keeps_guard(env)
+
+    return launch_escapes_guard
+
+
 def _make_network_guard_audit():
     """Create a guard whose decisions do not depend on mutable module globals."""
     blocked = _BLOCKED_NETWORK_MODULES
@@ -424,6 +569,8 @@ def _make_network_guard_audit():
     realpath = os.path.realpath
     relpath = os.path.relpath
     shim_path = realpath(__file__)
+    child_process_events = _CHILD_PROCESS_AUDIT_EVENTS
+    launch_escapes_guard = _make_child_process_guard()
 
     def blocked_error(root):
         raise ModuleNotFoundError(
@@ -521,7 +668,40 @@ def _make_network_guard_audit():
             return not (frame_uses_package(frame, "httpx") or frame_uses_package(frame, "httpcore"))
         return True
 
+    def guard_child_process(event, args):
+        """Deny spawning a Python child that would start without this guard.
+
+        The host scanner only sees program text it can read (a ``-c`` payload, a
+        here-doc body). ``python script.py`` is never scanned, so a guarded child
+        could still fork an unguarded grandchild. Checking at the spawn boundary
+        closes that regardless of how the launching code arrived. Non-Python and
+        guard-inheriting children are untouched.
+        """
+
+        def argument(index):
+            try:
+                return args[index]
+            except (IndexError, KeyError, TypeError):
+                return None
+
+        if event == "subprocess.Popen":  # (executable, args, cwd, env)
+            argv, env, shell_string = argument(1), argument(3), False
+        elif event in ("os.exec", "os.posix_spawn"):  # (path, args, env)
+            argv, env, shell_string = argument(1), argument(2), False
+        elif event == "os.system":  # (command,) -- a shell script string
+            argv, env, shell_string = argument(0), None, True
+        else:
+            return
+        if launch_escapes_guard(argv, env, shell_string):
+            raise PermissionError(
+                "Blocked: sandboxed code cannot start a Python child process "
+                "without the Studio runtime guard"
+            )
+
     def audit(event, args):
+        if event in child_process_events:
+            guard_child_process(event, args)
+            return
         if event == "import" and args:
             fullname = args[0]
             if not isinstance(fullname, str):

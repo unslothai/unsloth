@@ -1265,3 +1265,83 @@ class TestHfUploadEnvAndSecretLeakBlock:
             ' operations=[], token="hf_xxx")',
             expect_phrase = "HF upload token= cannot be set",
         )
+
+
+class TestChildEnvironmentInheritance:
+    """Extending an inherited environment is not guard suppression.
+
+    ``env=`` only defeats the guard when the child loses PYTHONPATH.
+    """
+
+    def test_environ_copy_bound_to_name_allowed(self):
+        _ok(
+            "import os, subprocess\n"
+            "e = os.environ.copy()\n"
+            "e['MY_VAR'] = '1'\n"
+            "subprocess.run(['python', '-c', 'print(1)'], env = e)"
+        )
+
+    def test_environ_splat_dict_allowed(self):
+        _ok(
+            "import os, subprocess\n"
+            "subprocess.run(['python', '-c', 'print(1)'], env = {**os.environ, 'MY_VAR': '1'})"
+        )
+
+    def test_dict_of_environ_allowed(self):
+        _ok(
+            "import os, subprocess\n"
+            "e = dict(os.environ)\n"
+            "e['MY_VAR'] = '1'\n"
+            "subprocess.run(['python', '-c', 'print(1)'], env = e)"
+        )
+
+    def test_copy_with_pythonpath_cleared_blocked(self):
+        _blocked(
+            "import os, subprocess\n"
+            "e = os.environ.copy()\n"
+            "e['PYTHONPATH'] = ''\n"
+            "subprocess.run(['python', '-c', 'import boto3'], env = e)",
+            expect_phrase = "runtime guard",
+        )
+
+    def test_copy_with_guard_var_popped_blocked(self):
+        _blocked(
+            "import os, subprocess\n"
+            "e = os.environ.copy()\n"
+            "e.pop('PYTHONPATH', None)\n"
+            "subprocess.run(['python', '-c', 'import boto3'], env = e)",
+            expect_phrase = "runtime guard",
+        )
+
+    def test_copy_cleared_blocked(self):
+        _blocked(
+            "import os, subprocess\n"
+            "e = os.environ.copy()\n"
+            "e.clear()\n"
+            "subprocess.run(['python', '-c', 'import boto3'], env = e)",
+            expect_phrase = "runtime guard",
+        )
+
+    def test_copy_updated_with_unknown_mapping_blocked(self):
+        _blocked(
+            "import os, subprocess\n"
+            "e = os.environ.copy()\n"
+            "e.update(other)\n"
+            "subprocess.run(['python', '-c', 'import boto3'], env = e)",
+            expect_phrase = "runtime guard",
+        )
+
+    def test_literal_dict_without_environ_still_blocked(self):
+        _blocked(
+            "import subprocess\n"
+            "subprocess.run(['python', '-c', 'import boto3'], env = {'PATH': '/usr/bin'})",
+            expect_phrase = "runtime guard",
+        )
+
+    def test_splat_dict_overriding_guard_var_blocked(self):
+        _blocked(
+            "import os, subprocess\n"
+            "subprocess.run(['python', '-c', 'import boto3'],"
+            " env = {**os.environ, 'PYTHONPATH': ''})",
+            expect_phrase = "runtime guard",
+        )

@@ -223,7 +223,10 @@ def _python_executable_token(token: str) -> bool:
     base = os.path.basename(token.replace("\\", "/")).lower()
     if base.endswith(".exe"):
         base = base[:-4]
-    return bool(re.fullmatch(r"(?:python(?:w)?(?:\d+(?:\.\d+)*)?|py)", base))
+    # ``t`` suffix: free-threaded CPython ships as python3.13t / python3.14t.
+    return bool(
+        re.fullmatch(r"(?:python(?:w)?(?:\d+(?:\.\d+)*)?t?|pypy(?:\d+(?:\.\d+)*)?|py)", base)
+    )
 
 
 def _shell_command_segments(command: str) -> list[list[str]]:
@@ -612,9 +615,60 @@ _HEREDOC_START_RE = re.compile(r"<<-?\s*(?P<quote>['\"]?)(?P<name>[A-Za-z_][A-Za
 # (python <(printf ...)) runs a generated script this static scan cannot see;
 # the inner generator's output is the program, so fail closed on this shape.
 _PYTHON_PROCESS_SUB_SCRIPT_RE = re.compile(
-    r"(?:^|[\s;&|(])(?:[\w./\\-]*/)?python(?:w)?[0-9.]*(?:\.exe)?(?:\s+-[^\s]*)*\s+<\(",
+    r"(?:^|[\s;&|(])(?:[\w./\\-]*/)?(?:python(?:w)?[0-9.]*t?|pypy[0-9.]*)(?:\.exe)?"
+    r"(?:\s+-[^\s]*)*\s+<\(",
     re.IGNORECASE,
 )
+
+
+def _heredoc_opener_offsets(line: str) -> set[int]:
+    """Offsets on ``line`` where a ``<<`` actually opens a here-doc.
+
+    A ``<<`` inside a quoted word (``grep 'a << b' f``) or arithmetic
+    (``$(( 1 << n ))``) is not an opener, so it must not reach the
+    malformed-delimiter fail-closed path and block the whole command. Quote state
+    is per line: an unbalanced quote leaves the rest quoted, as the shell does.
+    """
+    offsets: set[int] = set()
+    quote: str | None = None
+    arithmetic = 0
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if quote == "'":
+            if char == "'":
+                quote = None
+            index += 1
+            continue
+        if char == "\\":
+            index += 2
+            continue
+        if quote == '"':
+            if char == '"':
+                quote = None
+            index += 1
+            continue
+        if char in "\"'":
+            quote = char
+            index += 1
+            continue
+        if line.startswith("$((", index):
+            arithmetic += 1
+            index += 3
+            continue
+        # Bare ``((`` is arithmetic only in command position, else subshell grouping.
+        if line.startswith("((", index) and (index == 0 or line[index - 1] in " \t;&|("):
+            arithmetic += 1
+            index += 2
+            continue
+        if arithmetic and line.startswith("))", index):
+            arithmetic -= 1
+            index += 2
+            continue
+        if line.startswith("<<", index) and not arithmetic:
+            offsets.add(index)
+        index += 1
+    return offsets
 
 
 def _shell_here_doc_entries(command: str) -> tuple[list[tuple[str, str]], bool]:
@@ -626,7 +680,8 @@ def _shell_here_doc_entries(command: str) -> tuple[list[tuple[str, str]], bool]:
     index = 0
     while index < len(lines):
         line = lines[index]
-        matches = list(_HEREDOC_START_RE.finditer(line))
+        openers = _heredoc_opener_offsets(line)
+        matches = [m for m in _HEREDOC_START_RE.finditer(line) if m.start() in openers]
         if not matches:
             index += 1
             continue
@@ -920,34 +975,151 @@ def _python_payload_mutates_sandbox_env(node: ast.AST, os_aliases: set[str]) -> 
     return False
 
 
-def _python_payload_child_env_taints_guard(node: ast.Call, os_aliases: set[str]) -> bool:
+def _python_payload_child_env_taints_guard(
+    node: ast.Call,
+    os_aliases: set[str],
+    env_copy_aliases: set[str] | None = None,
+) -> bool:
     env_node = _python_call_keyword(node, "env")
     if env_node is None:
         return False
-    return _python_env_node_taints_guard(env_node, os_aliases)
+    return _python_env_node_taints_guard(env_node, os_aliases, env_copy_aliases)
 
 
-def _python_env_node_taints_guard(env_node: ast.AST, os_aliases: set[str]) -> bool:
+def _python_env_derives_from_environ(
+    node: ast.AST,
+    os_aliases: set[str],
+    env_copy_aliases: set[str] | None = None,
+) -> bool:
+    """True when ``node`` is a full copy of ``os.environ``.
+
+    It still carries PYTHONPATH, so passing it as ``env=`` keeps the guard.
+    """
+    if (
+        isinstance(node, ast.Attribute)
+        and node.attr == "environ"
+        and isinstance(node.value, ast.Name)
+        and node.value.id in os_aliases
+    ):
+        return True
+    if isinstance(node, ast.Name):
+        return bool(env_copy_aliases) and node.id in env_copy_aliases
+    if not isinstance(node, ast.Call):
+        return False
+    # os.environ.copy()
+    if isinstance(node.func, ast.Attribute) and node.func.attr == "copy":
+        return _python_env_derives_from_environ(node.func.value, os_aliases, env_copy_aliases)
+    # dict(os.environ) / dict(**os.environ)
+    if isinstance(node.func, ast.Name) and node.func.id == "dict":
+        keywords = node.keywords or []
+        if any(keyword.arg for keyword in keywords):
+            return False
+        sources = list(node.args) + [keyword.value for keyword in keywords]
+        if len(sources) != 1:
+            return False
+        return _python_env_derives_from_environ(sources[0], os_aliases, env_copy_aliases)
+    return False
+
+
+def _python_env_node_taints_guard(
+    env_node: ast.AST,
+    os_aliases: set[str],
+    env_copy_aliases: set[str] | None = None,
+) -> bool:
     if isinstance(env_node, ast.Constant) and env_node.value is None:
         return False
-    if (
-        isinstance(env_node, ast.Attribute)
-        and env_node.attr == "environ"
-        and isinstance(env_node.value, ast.Name)
-        and env_node.value.id in os_aliases
-    ):
+    if _python_env_derives_from_environ(env_node, os_aliases, env_copy_aliases):
         return False
-    if (
-        isinstance(env_node, ast.Call)
-        and isinstance(env_node.func, ast.Attribute)
-        and env_node.func.attr == "copy"
-        and isinstance(env_node.func.value, ast.Attribute)
-        and env_node.func.value.attr == "environ"
-        and isinstance(env_node.func.value.value, ast.Name)
-        and env_node.func.value.value.id in os_aliases
-    ):
-        return False
+    # ``{**os.environ, "MY_VAR": "1"}`` inherits the guard, so it is safe while
+    # every explicit key is a known non-guard literal. A dict with no
+    # ``os.environ`` base drops PYTHONPATH and stays tainted.
+    if isinstance(env_node, ast.Dict):
+        inherits_environ = False
+        for key, value in zip(env_node.keys, env_node.values):
+            if key is None:
+                if not _python_env_derives_from_environ(value, os_aliases, env_copy_aliases):
+                    return True
+                inherits_environ = True
+                continue
+            name = _python_env_key(key)
+            if name is None or name in _SANDBOX_PYTHON_ENV_VARS:
+                return True
+        return not inherits_environ
     return True
+
+
+def _python_environ_copy_aliases(tree: ast.AST, os_aliases: set[str]) -> set[str]:
+    """Names bound to an ``os.environ`` copy with no guard key rewritten.
+
+    ``e = os.environ.copy(); e["MY_VAR"] = "1"`` is the ordinary way to extend a
+    child environment and must not read as suppressing the guard. Any write of a
+    guard variable, or of an unresolvable key, drops the name back to fail-closed.
+    """
+    assigns = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+    ]
+    aliases: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for assign in assigns:
+            name = assign.targets[0].id
+            if name in aliases:
+                continue
+            # Safe as a direct ``env=`` argument means safe bound to a name.
+            if not _python_env_node_taints_guard(assign.value, os_aliases, aliases):
+                aliases.add(name)
+                changed = True
+
+    def tracked(node: ast.AST) -> str | None:
+        return node.id if isinstance(node, ast.Name) and node.id in aliases else None
+
+    tainted: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Subscript):
+                    name = tracked(target.value)
+                    if name is not None:
+                        key = _python_env_key(target.slice)
+                        if key is None or key in _SANDBOX_PYTHON_ENV_VARS:
+                            tainted.add(name)
+                # ``e |= {...}`` can overwrite a guard key in place.
+                elif isinstance(node, ast.AugAssign) and tracked(target) is not None:
+                    if _python_env_mapping_taints_guard(node.value):
+                        tainted.add(target.id)
+        elif isinstance(node, ast.Delete):
+            for target in node.targets:
+                if isinstance(target, ast.Subscript):
+                    name = tracked(target.value)
+                    if name is not None:
+                        key = _python_env_key(target.slice)
+                        if key is None or key in _SANDBOX_PYTHON_ENV_VARS:
+                            tainted.add(name)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            name = tracked(node.func.value)
+            if name is None:
+                continue
+            if node.func.attr in {"clear", "popitem"}:
+                tainted.add(name)
+            elif node.func.attr in {"pop", "setdefault", "__delitem__", "__setitem__"}:
+                key = _python_env_key(node.args[0]) if node.args else None
+                if key is None or key in _SANDBOX_PYTHON_ENV_VARS:
+                    tainted.add(name)
+            elif node.func.attr == "update":
+                if not node.args or _python_env_mapping_taints_guard(node.args[0]):
+                    tainted.add(name)
+                if any(
+                    keyword.arg is None or keyword.arg.upper() in _SANDBOX_PYTHON_ENV_VARS
+                    for keyword in node.keywords or []
+                ):
+                    tainted.add(name)
+    return aliases - tainted
 
 
 def _python_subprocess_command_argument(node: ast.Call, command_node: ast.AST) -> str | None:
@@ -999,14 +1171,21 @@ def _python_os_exec_command_argument(node: ast.Call, launcher: str) -> str | Non
     return shlex.join([executable, *parts])
 
 
-def _python_os_exec_env_taints_guard(node: ast.Call, launcher: str, os_aliases: set[str]) -> bool:
+def _python_os_exec_env_taints_guard(
+    node: ast.Call,
+    launcher: str,
+    os_aliases: set[str],
+    env_copy_aliases: set[str] | None = None,
+) -> bool:
     if launcher in {"execle", "execlpe"}:
         env_node = node.args[-1] if len(node.args) >= 2 else None
     elif launcher in {"execve", "execvpe", "posix_spawn", "posix_spawnp"}:
         env_node = node.args[2] if len(node.args) > 2 else None
     else:
         env_node = None
-    return env_node is not None and _python_env_node_taints_guard(env_node, os_aliases)
+    return env_node is not None and _python_env_node_taints_guard(
+        env_node, os_aliases, env_copy_aliases
+    )
 
 
 def _python_payload_launches_startup_bypass(
@@ -1073,6 +1252,7 @@ def _python_payload_launches_startup_bypass(
                         asyncio_shell_aliases.add(alias.asname or alias.name)
         if _python_payload_mutates_sandbox_env(node, os_aliases):
             environment_tainted = True
+    env_copy_aliases = _python_environ_copy_aliases(tree, os_aliases)
     # Propagate simple launcher aliases assigned by name
     # (``r = subprocess.run``; ``r([...])``) to a fixpoint so chained rebinds
     # (``a = subprocess.run; b = a``) resolve too.
@@ -1150,7 +1330,7 @@ def _python_payload_launches_startup_bypass(
         if not isinstance(node, ast.Call):
             continue
         nested = None
-        env_tainted = _python_payload_child_env_taints_guard(node, os_aliases)
+        env_tainted = _python_payload_child_env_taints_guard(node, os_aliases, env_copy_aliases)
         # Recurse into a statically-known ``exec``/``eval`` string payload so a
         # child launch hidden inside ``exec("... subprocess.run([...]) ...")`` is
         # scanned rather than treated as an opaque call.
@@ -1177,7 +1357,9 @@ def _python_payload_launches_startup_bypass(
         elif isinstance(node.func, ast.Name) and node.func.id in os_exec_aliases:
             launcher = os_exec_aliases[node.func.id]
             nested = _python_os_exec_command_argument(node, launcher)
-            env_tainted = _python_os_exec_env_taints_guard(node, launcher, os_aliases)
+            env_tainted = _python_os_exec_env_taints_guard(
+                node, launcher, os_aliases, env_copy_aliases
+            )
         elif isinstance(node.func, ast.Attribute):
             if (
                 isinstance(node.func.value, ast.Name)
@@ -1201,7 +1383,9 @@ def _python_payload_launches_startup_bypass(
                 and node.func.attr in _PYTHON_OS_EXEC_LAUNCHERS
             ):
                 nested = _python_os_exec_command_argument(node, node.func.attr)
-                env_tainted = _python_os_exec_env_taints_guard(node, node.func.attr, os_aliases)
+                env_tainted = _python_os_exec_env_taints_guard(
+                    node, node.func.attr, os_aliases, env_copy_aliases
+                )
             elif (
                 isinstance(node.func.value, ast.Name)
                 and node.func.value.id in pty_aliases
@@ -3741,9 +3925,21 @@ _RENDER_HTML_NETWORK_MEMBERS = frozenset(
     }
 )
 _RENDER_HTML_NETWORK_ATTRIBUTES = frozenset(
-    {"src", "href", "srcset", "action", "formaction", "poster", "data", "ping"}
+    {
+        "src",
+        "href",
+        "srcset",
+        "action",
+        "formaction",
+        "poster",
+        "data",
+        "ping",
+        # imagesrcset fetches like srcset; background is a live image load.
+        "imagesrcset",
+        "background",
+    }
 )
-_RENDER_HTML_URL_LIST_ATTRIBUTES = frozenset({"srcset", "ping"})
+_RENDER_HTML_URL_LIST_ATTRIBUTES = frozenset({"srcset", "ping", "imagesrcset"})
 _RENDER_HTML_URL_LIST_NETWORK_RE = re.compile(r"(?:^|[\s,])(?:https?:|/)", re.IGNORECASE)
 _RENDER_HTML_JS_NETWORK_URL_RE = re.compile(r"(?:^|[\s,:'\"`\[(])(?:https?:|/)", re.IGNORECASE)
 _RENDER_HTML_ACTIVE_DATA_MIME_TYPES = frozenset(

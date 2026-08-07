@@ -1965,3 +1965,17 @@ def test_confirm_gate_needs_stream():
     assert _confirm_gate_needs_stream(req(permission_mode = "off", enabled_tools = safe)) is False
     assert _confirm_gate_needs_stream(req(permission_mode = "full", enabled_tools = safe)) is False
     assert _confirm_gate_needs_stream(req(enabled_tools = safe, stream = False)) is False
+
+
+def test_render_html_covers_remaining_url_loading_attributes():
+    # imagesrcset and background are live image fetches, so remote values ask.
+    def rh(code):
+        return is_potentially_unsafe_tool_call("render_html", {"code": code})
+
+    assert rh("<link rel=preload as=image imagesrcset='https://evil/x.png 1x'>") is True
+    assert rh("<link rel=preload as=image imagesrcset='a.png 1x, /b.png 2x'>") is True
+    assert rh("<body background='https://evil/bg.png'>") is True
+    assert rh("<script>el.setAttribute('background', 'https://evil/bg.png')</script>") is True
+    # Local-only values stay on the automatic path.
+    assert rh("<link rel=preload as=image imagesrcset='a.png 1x, b.png 2x'>") is False
+    assert rh("<body background='bg.png'>") is False

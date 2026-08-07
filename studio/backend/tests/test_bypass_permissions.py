@@ -910,3 +910,64 @@ def test_anthropic_request_model_bypass_default_false():
     assert AnthropicMessagesRequest.model_fields["bypass_permissions"].default is False
     req = AnthropicMessagesRequest(model = "x", messages = [], max_tokens = 8)
     assert bool(req.bypass_permissions) is False
+
+
+# The here-doc scan fails closed on an opener with no delimiter line. A ``<<``
+# in a quoted word or arithmetic is not an opener and must not reach that path.
+@pytest.mark.parametrize(
+    "command",
+    [
+        "grep 'std::cout << x' main.cpp",
+        'echo "a << b"',
+        "echo $((1 << shift))",
+        "x=$((1<<n)); echo $x",
+        "if (( 1 << n )); then echo hi; fi",
+        'printf "%s\\n" "shift << amount"',
+    ],
+)
+def test_literal_shift_is_not_a_here_doc(command):
+    assert tools._sandbox_python_startup_bypasses_guard(command) is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python <<'PY'\nimport os\nPY",
+        # A quoted ``<<`` must not shadow the real opener on the same line.
+        "echo 'a << b'; python <<'PY'\nimport os\nPY",
+    ],
+)
+def test_real_here_doc_still_parsed(command):
+    entries, malformed = tools._shell_here_doc_entries(command)
+    assert entries and not malformed
+
+
+def test_unterminated_here_doc_still_fails_closed():
+    assert tools._sandbox_python_startup_bypasses_guard("python <<PY\nimport os") is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Free-threaded CPython ships as python3.13t / python3.14t.
+        "python3.13t -S -c 'import boto3'",
+        "python3.14t -E -c 'import boto3'",
+        "pypy3 -S -c 'import boto3'",
+        "PYTHONPATH= python3.13t -c 'import boto3'",
+    ],
+)
+def test_free_threaded_and_pypy_interpreters_are_recognised(command):
+    assert tools._sandbox_python_startup_bypasses_guard(command) is True
+
+
+@pytest.mark.parametrize(
+    "token",
+    ["python3.13t", "python3.14t", "pypy", "pypy3.11", "python3.12", "py", "pythonw.exe"],
+)
+def test_python_executable_tokens(token):
+    assert tools._python_executable_token(token) is True
+
+
+@pytest.mark.parametrize("token", ["pythonic", "mypy", "python-config", "pytest"])
+def test_non_python_executable_tokens(token):
+    assert tools._python_executable_token(token) is False

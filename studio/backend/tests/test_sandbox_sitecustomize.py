@@ -520,3 +520,118 @@ def test_os_open_trunc_without_creat_missing_stays_truthful(monkeypatch, tmp_pat
         assert not os.path.exists(os.path.join(os.getcwd(), "missing_xyz.bin"))
     finally:
         _restore_patch_targets(saved)
+
+
+# Spawn-boundary guard. ``python script.py`` is never scanned by the host, so
+# without a runtime check a guarded child can fork an unguarded grandchild.
+# Real subprocesses: the guard only exists once the shim loads as sitecustomize.
+
+_GRANDCHILD = "import boto3\nprint('REACHED', boto3.__version__)\n"
+
+_ESCAPE_PAYLOADS = {
+    "subprocess_site_flag": (
+        "import subprocess, sys\nsubprocess.run([sys.executable, '-E', 'grand.py'])\n"
+    ),
+    "environ_stripped": (
+        "import os, subprocess, sys\n"
+        "os.environ.pop('PYTHONPATH', None)\n"
+        "subprocess.run([sys.executable, 'grand.py'])\n"
+    ),
+    "explicit_empty_env": (
+        "import subprocess, sys\nsubprocess.run([sys.executable, 'grand.py'], env = {})\n"
+    ),
+    "os_system_site_flag": "import os, sys\nos.system(sys.executable + ' -E grand.py')\n",
+    "shell_true_site_flag": (
+        "import subprocess, sys\nsubprocess.run(sys.executable + ' -E grand.py', shell = True)\n"
+    ),
+}
+
+
+def _run_child(
+    tmp_path,
+    source,
+    site_dir,
+    sandboxed = True,
+):
+    import subprocess
+    import sys
+
+    script = tmp_path / "payload.py"
+    script.write_text(source)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(site_dir)
+    if sandboxed:
+        env["UNSLOTH_STUDIO_SANDBOXED"] = "1"
+    else:
+        env.pop("UNSLOTH_STUDIO_SANDBOXED", None)
+    done = subprocess.run(
+        [sys.executable, str(script)],
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 120,
+        cwd = tmp_path,
+    )
+    return done.stdout + done.stderr
+
+
+def _run_sandboxed(tmp_path, source):
+    return _run_child(tmp_path, source, _SHIM.parent)
+
+
+@pytest.mark.parametrize("payload", sorted(_ESCAPE_PAYLOADS))
+def test_unguarded_python_grandchild_is_blocked(tmp_path, payload):
+    (tmp_path / "grand.py").write_text(_GRANDCHILD)
+    output = _run_sandboxed(tmp_path, _ESCAPE_PAYLOADS[payload])
+    assert "REACHED" not in output, output
+    assert "without the Studio runtime guard" in output, output
+
+
+def test_guarded_python_child_still_runs(tmp_path):
+    # A guard-inheriting child is ordinary work; its own shim denies the import.
+    (tmp_path / "grand.py").write_text("print('child ran')\n")
+    output = _run_sandboxed(
+        tmp_path,
+        "import subprocess, sys\n"
+        "print(subprocess.run([sys.executable, 'grand.py'],"
+        " capture_output = True, text = True).stdout.strip())\n",
+    )
+    assert "child ran" in output, output
+    assert "runtime guard" not in output, output
+
+
+def test_non_python_child_is_untouched(tmp_path):
+    output = _run_sandboxed(
+        tmp_path,
+        "import subprocess\n"
+        "print(subprocess.run(['echo', 'hi'], capture_output = True, text = True).stdout.strip())\n",
+    )
+    assert "hi" in output, output
+    assert "runtime guard" not in output, output
+
+
+def test_guard_helpers_cannot_be_rebound_by_sandbox_code(tmp_path):
+    # The check is closure state, so rebinding module helpers cannot disarm it.
+    (tmp_path / "grand.py").write_text(_GRANDCHILD)
+    output = _run_sandboxed(
+        tmp_path,
+        "import sitecustomize, subprocess, sys\n"
+        "sitecustomize._make_child_process_guard = lambda: (lambda *a, **k: False)\n"
+        "sitecustomize._CHILD_PROCESS_AUDIT_EVENTS = frozenset()\n"
+        "subprocess.run([sys.executable, '-E', 'grand.py'])\n",
+    )
+    assert "REACHED" not in output, output
+    assert "without the Studio runtime guard" in output, output
+
+
+def test_full_access_bypass_does_not_install_the_spawn_guard(tmp_path):
+    # Full access keeps the path remap but none of the guards.
+    (tmp_path / "grand.py").write_text("print('child ran')\n")
+    output = _run_child(
+        tmp_path,
+        "import subprocess, sys\nsubprocess.run([sys.executable, '-E', 'grand.py'])\n",
+        _SHIM.parent.parent / "bypass_site",
+        sandboxed = False,
+    )
+    assert "child ran" in output, output
+    assert "runtime guard" not in output, output
