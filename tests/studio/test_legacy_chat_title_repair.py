@@ -96,9 +96,10 @@ def test_the_migration_stays_off_where_the_guard_is_not_enforced():
     repair = _read(REPAIR)
     assert "if (!(await backendEnforcesTitleGuard())) return 0;" in repair
     assert 'const response = await authFetch("/openapi.json");' in repair
-    assert "return schemaDeclaresExpectedTitle(await response.json());" in repair
-    # A failed probe is not cached, or one hiccup parks the migration all session.
-    assert "guardSupport = null;" in repair
+    assert "probe = readGuardProbe( response.ok, response.ok ? await response.json() : null, );" in repair
+    # Only a settled answer is cached. A 401 while the token warms up, or a 503
+    # during startup, would otherwise park the migration for the session.
+    assert "if (!probe.settled) guardSupport = null;" in repair
 
     backend = (BACKEND / "routes/chat_history.py").read_text(encoding = "utf-8")
     # The probe reads the schema, so the field has to be declared on the model.

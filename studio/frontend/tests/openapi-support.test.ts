@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { schemaDeclaresExpectedTitle } from "../src/features/chat/utils/openapi-support.ts";
+import {
+  readGuardProbe,
+  schemaDeclaresExpectedTitle,
+} from "../src/features/chat/utils/openapi-support.ts";
 
 /** The shape FastAPI serves for the patch model. */
 function documentWith(properties: Record<string, unknown>) {
@@ -50,4 +53,27 @@ test("anything unreadable reads as unsupported", () => {
   ]) {
     assert.equal(schemaDeclaresExpectedTitle(document), false);
   }
+});
+
+test("a schema that arrived settles the question either way", () => {
+  const supported = readGuardProbe(
+    true,
+    documentWith({ ...OLD_PROPERTIES, expectedTitle: { type: "string" } }),
+  );
+  assert.deepEqual(supported, { supported: true, settled: true });
+
+  // An old backend is a real answer, so it is worth remembering.
+  assert.deepEqual(readGuardProbe(true, documentWith(OLD_PROPERTIES)), {
+    supported: false,
+    settled: true,
+  });
+});
+
+test("an HTTP failure is a moment, not an answer", () => {
+  // 401 while the token warms up, 503 during startup. Remembering these would
+  // park the migration for the rest of the session.
+  assert.deepEqual(readGuardProbe(false, null), {
+    supported: false,
+    settled: false,
+  });
 });

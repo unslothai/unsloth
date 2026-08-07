@@ -11,7 +11,7 @@ import {
   selectLegacyRepairPage,
   threadsMissingMessages,
 } from "./chat-title";
-import { schemaDeclaresExpectedTitle } from "./openapi-support";
+import { type GuardProbe, readGuardProbe } from "./openapi-support";
 import { runWithConcurrency } from "./run-with-concurrency";
 import { createSerialQueue } from "./serial-queue";
 
@@ -44,14 +44,19 @@ let guardSupport: Promise<boolean> | null = null;
  *  without touching anything. Anything unreadable reads as unsupported. */
 function backendEnforcesTitleGuard(): Promise<boolean> {
   guardSupport ??= (async () => {
+    let probe: GuardProbe = { supported: false, settled: false };
     try {
       const response = await authFetch("/openapi.json");
-      if (!response.ok) return false;
-      return schemaDeclaresExpectedTitle(await response.json());
+      probe = readGuardProbe(
+        response.ok,
+        response.ok ? await response.json() : null,
+      );
     } catch {
-      guardSupport = null;
-      return false;
+      probe = { supported: false, settled: false };
     }
+    // Only a settled answer is worth remembering.
+    if (!probe.settled) guardSupport = null;
+    return probe.supported;
   })();
   return guardSupport;
 }
