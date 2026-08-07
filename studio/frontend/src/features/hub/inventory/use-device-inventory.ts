@@ -370,6 +370,12 @@ export function useDeviceInventorySources<
         const current = useDeviceInventoryStore.getState()[
           source
         ] as DeviceInventorySourceState<DeviceInventoryRows[typeof source]>;
+        const existingPostCold = postColdForce.get(key) as
+          | Promise<DeviceInventoryRows[typeof source]>
+          | undefined;
+        if (existingPostCold) {
+          return existingPostCold;
+        }
         const pending = inFlight.get(key);
         if (pending && !current.ready) {
           let forced = postColdForce.get(key) as

@@ -11,6 +11,10 @@ const PICKERS_SOURCE = new URL(
   "../src/features/model-picker/components/model-selector/pickers.tsx",
   import.meta.url,
 );
+const USE_DEVICE_INVENTORY_SOURCE = new URL(
+  "../src/features/hub/inventory/use-device-inventory.ts",
+  import.meta.url,
+);
 
 test("forced refresh coalesces with an in-flight cold fetch", () => {
   assert.equal(
@@ -42,6 +46,15 @@ test("non-forced refresh always coalesces with an in-flight request", () => {
       inFlight: true,
     }),
     true,
+  );
+});
+
+test("refresh reuses an in-flight post-cold forced scan", () => {
+  const source = readFileSync(USE_DEVICE_INVENTORY_SOURCE, "utf8");
+  assert.match(source, /const existingPostCold = postColdForce\.get\(key\)/);
+  assert.match(
+    source,
+    /if \(existingPostCold\) \{\s*return existingPostCold;\s*\}/,
   );
 });
 
