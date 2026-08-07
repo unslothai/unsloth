@@ -26,13 +26,18 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# Everything a user can run to install, update or remove Unsloth. `unsloth
-# studio update` shells out to studio/setup.sh, so it counts too.
+# Everything a user can run to install, update or remove Unsloth. `unsloth studio
+# update` shells out to studio/setup.sh, and install.sh runs (downloading it when
+# absent) scripts/install_rocm_wsl_strixhalo.sh on the automatic WSL path, so a
+# question in either stalls a piped install just the same.
 SCANNED_SCRIPTS = (
     "install.sh",
     "install.ps1",
     "studio/setup.sh",
     "studio/setup.ps1",
+    "scripts/install_gemma4_mlx.sh",
+    "scripts/install_qwen3_6_mlx.sh",
+    "scripts/install_rocm_wsl_strixhalo.sh",
     "scripts/uninstall.sh",
     "scripts/uninstall.ps1",
 )
@@ -61,9 +66,13 @@ _MARKER = re.compile(
     r"\[\s*[yn]\s*/\s*[yn]\s*\]|\(\s*[yn]\s*/\s*[yn]\s*\)|\byes\s*/\s*no\b", re.IGNORECASE
 )
 
-# Anything that blocks waiting on a human.
+# Anything that blocks waiting on a human. `-p` is matched as an option word, not
+# anchored on preceding whitespace: it may be bundled (`read -rp`, `read -rsp`)
+# and may sit directly after `read`, where `read\s+` has eaten the only space.
+# The scan stops at `;|&` -- a `mkdir -p` later on the line is another command.
 _POSIX_READ = re.compile(
-    r"(?:^|[\s;&|(])read\s+(?![a-zA-Z_]+=)[^\n]*?(?:<\s*/dev/tty|(?:^|\s)-p(?:\s|\"|'))"
+    r"(?:^|[\s;&|(])read\s+(?![a-zA-Z_]+=)"
+    r"(?:-[a-zA-Z]*p(?=[\s\"']|$)|[^\n;|&]*?(?:<\s*/dev/tty|\s-[a-zA-Z]*p(?=[\s\"']|$)))"
 )
 _PWSH_READ = re.compile(r"Read-Host|PromptForChoice|ReadKey\s*\(", re.IGNORECASE)
 
@@ -226,6 +235,7 @@ def test_every_installer_script_is_scanned():
         "install*.ps1",
         "studio/setup*.sh",
         "studio/setup*.ps1",
+        "scripts/install*.sh",
         "scripts/uninstall*.sh",
         "scripts/uninstall*.ps1",
     )
@@ -281,6 +291,36 @@ def test_detects_read_dash_p():
     assert [question for _, _, question in find_prompts("install.sh", source)] == [
         "keep existing config?",
     ]
+
+
+@pytest.mark.parametrize(
+    "read_line",
+    (
+        'read -p "  Build llama.cpp with CUDA support? " _reply',
+        'read -rp "  Build llama.cpp with CUDA support? " _reply',
+        'read -rsp "  Build llama.cpp with CUDA support? " _reply',
+        'read -r -p "  Build llama.cpp with CUDA support? " _reply',
+        'read -p"  Build llama.cpp with CUDA support? " _reply',
+    ),
+)
+def test_detects_read_dash_p_without_a_marker(read_line: str):
+    """`-p` carries the prompt itself, so there is no marker for the first pass and
+    the read pass is all that stands between these and a stalled install. Bundling
+    is the usual bash spelling, so neither may hinge on a space before `-p`."""
+    assert [question for _, _, question in find_prompts("studio/setup.sh", read_line + "\n")] == [
+        "build llama.cpp with cuda support?",
+    ]
+
+
+def test_ignores_dash_p_belonging_to_a_later_command():
+    """`mkdir -p` after a non-interactive read is not a prompt: matching it fails CI
+    on an ordinary installer edit."""
+    source = (
+        'read -r _line < "$config_file"; mkdir -p "$_dest"\n'
+        'while IFS= read -r _root; do mkdir -p "$_root"; done < "$manifest"\n'
+        'read -r _v < "$_pci_vendor" && install -p "$_v" "$_dest"\n'
+    )
+    assert find_prompts("install.sh", source) == []
 
 
 def test_detects_powershell_read_host():
