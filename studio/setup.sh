@@ -577,7 +577,11 @@ _clear_webview_caches() {
     fi
     return 0
 }
-_clear_webview_caches
+# Deliberately NOT called here. setup.sh runs under `set -euo pipefail` with no
+# trap, and the UNSLOTH_STUDIO_HOME / STUDIO_HOME override is not validated until
+# further down. Clearing first means a typo'd override deletes the WebView cache
+# and only then aborts, which is a side effect the pre-existing fail-fast path
+# never had. The call site is after the override is known to be good.
 
 # ── Detect Colab ──
 IS_COLAB=false
@@ -623,6 +627,12 @@ if [ -n "$_studio_override" ]; then
 else
     STUDIO_HOME="$HOME/.unsloth/studio"
 fi
+
+# Now that the override has been validated, the clear can run without turning a
+# typo into cache loss. Still before any install work, which is the ordering that
+# matters: the caches must go while the old frontend is the one on disk.
+_clear_webview_caches
+
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
 VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
 VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"

@@ -141,6 +141,33 @@ else
     echo "  FAIL: setup.sh never calls _clear_webview_caches"; FAIL=$((FAIL+1))
 fi
 
+# ── 8. a bad override must not cost the user their cache ──
+# Every case above extracts the function, so none of them sees the one thing
+# that is a property of the script rather than the function: where the call
+# sits. setup.sh runs under `set -euo pipefail` with no trap, so a clear placed
+# before the UNSLOTH_STUDIO_HOME validation turns a typo into cache loss plus
+# the same abort. Driven in situ, which is the only way to observe the ordering.
+_ord_home=$(new_home)
+mkdir -p "$_ord_home/.local/share/$BID/WebKitCache" "$_ord_home/.local/share/$BID/CacheStorage"
+: > "$_ord_home/.local/share/$BID/WebKitCache/asset.js"
+_ord_out=$(
+    cd "$(dirname "$SETUP_SH")" &&
+    env -u XDG_DATA_HOME -u STUDIO_HOME \
+        HOME="$_ord_home" UNSLOTH_STUDIO_HOME="$_ord_home/typo-not-a-real-dir" \
+        UNSLOTH_TAURI_MODE=0 bash "$SETUP_SH" 2>&1
+) && _ord_rc=0 || _ord_rc=$?
+if [ "$_ord_rc" = 0 ]; then
+    echo "  FAIL: bad override did not abort (rc=0)"; FAIL=$((FAIL+1))
+else
+    echo "  PASS: bad override still aborts (rc=$_ord_rc)"; PASS=$((PASS+1))
+fi
+case "$_ord_out" in
+    *"does not exist"*) echo "  PASS: abort names the bad override"; PASS=$((PASS+1)) ;;
+    *) echo "  FAIL: abort message missing: $_ord_out"; FAIL=$((FAIL+1)) ;;
+esac
+assert_present "bad override leaves the cache alone" \
+    "$_ord_home/.local/share/$BID/WebKitCache/asset.js"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]
