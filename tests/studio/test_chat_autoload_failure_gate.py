@@ -1343,3 +1343,27 @@ def test_a_cached_safetensors_repo_is_still_auto_loaded():
 
     assert _loaded_paths(out) == ["org/base"]
     assert _downloads_started(out) == []
+
+
+@pytest.mark.parametrize("broken", ["ggufRepos", "modelRepos"])
+def test_an_hf_cache_row_is_used_when_the_cached_lookup_fails(broken):
+    """/api/hub/local also reports hf_cache rows, which autoload normally skips
+    because the cached lists already carry them. When one of those lists fails
+    they are the only evidence left, and dropping them left a device whose one
+    model lives in that cache with nothing to load: the gap also blocks the
+    default, so the send ended with no model at all."""
+    row = "{ ...LOCAL_GGUF, source: 'hf_cache' }"
+    out = _run(f"scenario({{ {broken}: 'throw', localModels: [{row}] }})")
+
+    assert _loaded_paths(out) == [LOCAL_GGUF_PATH]
+    assert _downloads_started(out) == []
+
+
+def test_an_hf_cache_row_stays_excluded_when_both_lookups_answer():
+    """Control: with the cached lists healthy the row is a duplicate of what they
+    already report, so autoload keeps skipping it."""
+    row = "{ ...LOCAL_GGUF, source: 'hf_cache' }"
+    out = _run(f"scenario({{ localModels: [{row}] }})")
+
+    assert LOCAL_GGUF_PATH not in _loaded_paths(out)
+    assert _loaded_paths(out) == [DEFAULT_MODEL]

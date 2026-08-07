@@ -183,6 +183,29 @@ _NON_CHAT_GENERATIVE_ARCHITECTURES = frozenset(
         "WhisperForConditionalGeneration",
     }
 )
+_BARE_TEXT_BACKBONE_ARCHITECTURES = frozenset(
+    {
+        "BartModel",
+        "BloomModel",
+        "FalconModel",
+        "GPT2Model",
+        "GPTJModel",
+        "GPTNeoXModel",
+        "Gemma2Model",
+        "Gemma3Model",
+        "GemmaModel",
+        "LlamaModel",
+        "MistralModel",
+        "MixtralModel",
+        "MptModel",
+        "OPTModel",
+        "Phi3Model",
+        "PhiModel",
+        "Qwen2Model",
+        "Qwen3Model",
+        "T5Model",
+    }
+)
 _ENCODER_ONLY_MODEL_TYPES = frozenset(
     {
         "albert",
@@ -313,6 +336,11 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
     if any(name.endswith(_GENERATIVE_ARCHITECTURE_SUFFIXES) for name in names):
         return True
     if names and all(name.endswith(_NON_GENERATIVE_ARCHITECTURE_SUFFIXES) for name in names):
+        return False
+    # AutoModel.save_pretrained on a chat family writes the backbone name, and a
+    # backbone has no LM head to generate with. Named explicitly rather than by
+    # shape so an unfamiliar FooModel still fails open.
+    if names and all(name in _BARE_TEXT_BACKBONE_ARCHITECTURES for name in names):
         return False
 
     # The type alone decides. Matching on the name shape too kept rows chat-capable

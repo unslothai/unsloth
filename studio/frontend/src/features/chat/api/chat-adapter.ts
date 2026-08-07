@@ -1906,9 +1906,16 @@ const AUTO_LOAD_LOCAL_SOURCES: ReadonlySet<string> = new Set([
  * an adapter resolves its base model (a Hub fetch when the base is uncached),
  * and a scan-folder checkpoint is a pickle with no Hub security scan.
  */
-function isAutoLoadableLocalRow(row: LocalModelInfo): boolean {
+function isAutoLoadableLocalRow(
+  row: LocalModelInfo,
+  // Set when a cached lookup failed. The excluded hf_cache rows are then the only
+  // evidence of that cache, and dropping them left a device whose one model lives
+  // there with nothing to load and no fallback, since the gap blocks the default.
+  admitHfCache = false,
+): boolean {
   return (
-    AUTO_LOAD_LOCAL_SOURCES.has(row.source) &&
+    (AUTO_LOAD_LOCAL_SOURCES.has(row.source) ||
+      (admitHfCache && row.source === "hf_cache")) &&
     // Absent capabilities means the backend did not classify, not "not chat":
     // requiring true skipped the row and fell through to downloading the
     // default. Same rule the cached rows use; an explicit false still excludes.
@@ -2796,6 +2803,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     const localRows =
       localSettled.status === "fulfilled" ? localSettled.value.models : [];
     const inventoryIncomplete = inventory.some((r) => r.status === "rejected");
+    // Only the two managed-cache lookups: /api/hub/local also reports hf_cache
+    // rows, so when either of these failed that response covers the gap.
+    const cachedInventoryFailed =
+      ggufSettled.status === "rejected" || modelsSettled.status === "rejected";
     if (inventoryIncomplete) hadNonTrustFailure = true;
 
     // Managed cache plus everything the picker indexes on disk. Reading only
@@ -2806,7 +2817,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         cachedModelsRunOnThisPlatform()
           ? allModelRepos.filter(isChattableCachedRepo)
           : [],
-        localRows.filter(isAutoLoadableLocalRow),
+        localRows.filter((row) => isAutoLoadableLocalRow(row, cachedInventoryFailed)),
         store.params.maxSeqLength,
         options?.abortSignal,
       ),

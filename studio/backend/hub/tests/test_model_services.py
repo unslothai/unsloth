@@ -4741,3 +4741,35 @@ def test_a_generative_head_still_wins_over_the_encoder_type(tmp_path, config):
     (path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
 
     assert model_common._local_transformers_can_chat(path) is True
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"model_type": "llama", "architectures": ["LlamaModel"]},
+        {"model_type": "gpt2", "architectures": ["GPT2Model"]},
+        {"model_type": "t5", "architectures": ["T5Model"]},
+        {"model_type": "mistral", "architectures": ["MistralModel"]},
+    ],
+)
+def test_a_bare_text_backbone_is_not_chat_capable(tmp_path, config):
+    """AutoModel.save_pretrained writes the backbone name, and a backbone has no
+    LM head, so the cascade would load one and stop before a usable chat model."""
+    path = tmp_path / "backbone"
+    path.mkdir()
+    (path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+
+    assert model_common._local_transformers_can_chat(path) is False
+
+
+def test_an_unfamiliar_backbone_still_fails_open(tmp_path):
+    """The list is explicit, not shape-matched, so a custom FooModel stays
+    inconclusive and keeps its format capability."""
+    path = tmp_path / "custom"
+    path.mkdir()
+    (path / "config.json").write_text(
+        json.dumps({"model_type": "brand_new_arch", "architectures": ["FooModel"]}),
+        encoding = "utf-8",
+    )
+
+    assert model_common._local_transformers_can_chat(path) is None
