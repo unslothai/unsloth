@@ -4687,3 +4687,57 @@ def test_a_causal_lm_without_architectures_still_fails_open(tmp_path):
     (path / "config.json").write_text(json.dumps({"model_type": "some_new_llm"}), encoding = "utf-8")
 
     assert model_common._local_transformers_can_chat(path) is None
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"model_type": "blip", "architectures": ["BlipForConditionalGeneration"]},
+        {"model_type": "blip-2", "architectures": ["Blip2ForConditionalGeneration"]},
+        {"model_type": "instructblip", "architectures": ["InstructBlipForConditionalGeneration"]},
+        {"model_type": "git", "architectures": ["GitForCausalLM"]},
+    ],
+)
+def test_an_image_captioner_is_not_chat_capable(tmp_path, config):
+    """These generate text, but only about an image, so a plain text turn fails.
+    They are smaller than a chat model, so the smallest-first cascade would load
+    one and stop looking."""
+    path = tmp_path / "captioner"
+    path.mkdir()
+    (path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+
+    assert model_common._local_transformers_can_chat(path) is False
+
+
+@pytest.mark.parametrize(
+    "architecture",
+    ["CLIPTextModelWithProjection", "CLIPVisionModelWithProjection", "CLIPTextModel"],
+)
+def test_a_projection_head_encoder_is_not_chat_capable(tmp_path, architecture):
+    """The encoder-only branch used to also require the name to end in Model, so a
+    projection variant fell through and kept the safetensors format capability."""
+    path = tmp_path / "proj"
+    path.mkdir()
+    (path / "config.json").write_text(
+        json.dumps({"model_type": "clip", "architectures": [architecture]}), encoding = "utf-8"
+    )
+
+    assert model_common._local_transformers_can_chat(path) is False
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"model_type": "bert", "architectures": ["BertLMHeadModel"]},
+        {"model_type": "t5", "architectures": ["T5ForConditionalGeneration"]},
+        {"model_type": "qwen3", "architectures": ["Qwen3ForCausalLM"]},
+    ],
+)
+def test_a_generative_head_still_wins_over_the_encoder_type(tmp_path, config):
+    """Control for both gates above: a generative architecture is accepted before
+    the type list is consulted, so bert plus an LM head stays chat-capable."""
+    path = tmp_path / "gen"
+    path.mkdir()
+    (path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+
+    assert model_common._local_transformers_can_chat(path) is True

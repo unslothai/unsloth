@@ -153,6 +153,13 @@ _NON_GENERATIVE_ARCHITECTURE_SUFFIXES = (
 # already hides Whisper snapshots, so only the scan-folder rows need this.
 _NON_CHAT_GENERATIVE_MODEL_TYPES = frozenset(
     {
+        # Captioners generate text but only about an image, so a plain text turn
+        # fails. They are small enough to sort ahead of a real chat model.
+        "blip",
+        "blip-2",
+        "blip_2",
+        "git",
+        "instructblip",
         "musicgen",
         "musicgen_melody",
         "speech-encoder-decoder",
@@ -165,6 +172,10 @@ _NON_CHAT_GENERATIVE_MODEL_TYPES = frozenset(
 )
 _NON_CHAT_GENERATIVE_ARCHITECTURES = frozenset(
     {
+        "Blip2ForConditionalGeneration",
+        "BlipForConditionalGeneration",
+        "GitForCausalLM",
+        "InstructBlipForConditionalGeneration",
         "MusicgenForConditionalGeneration",
         "SpeechEncoderDecoderModel",
         "Speech2TextForConditionalGeneration",
@@ -304,14 +315,13 @@ def _local_transformers_can_chat(path: Path) -> Optional[bool]:
     if names and all(name.endswith(_NON_GENERATIVE_ARCHITECTURE_SUFFIXES) for name in names):
         return False
 
-    # No architectures is the common case, not a rare one: google/siglip2-* ships
-    # config.json without the key. Requiring it left those rows chat-capable, and
-    # an encoder is small enough to sort first and spend the whole attempt budget
-    # before a real chat model. The generative checks above already ran, and every
-    # type in the set is encoder-only, so an empty list is safe to exclude here.
-    if normalized_type in _ENCODER_ONLY_MODEL_TYPES and all(
-        name.endswith("Model") for name in names
-    ):
+    # The type alone decides. Matching on the name shape too kept rows chat-capable
+    # whenever it did not fit: google/siglip2-* omits architectures entirely, and
+    # CLIPTextModelWithProjection ends in neither Model nor a known suffix. Both are
+    # small enough to sort first and spend the whole attempt budget before a real
+    # chat model. Anything generative already returned True above, including
+    # BertLMHeadModel via the LMHeadModel suffix, so no chat row reaches here.
+    if normalized_type in _ENCODER_ONLY_MODEL_TYPES:
         return False
     return None
 
