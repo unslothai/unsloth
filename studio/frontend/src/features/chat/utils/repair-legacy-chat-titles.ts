@@ -18,12 +18,11 @@ import { type GuardProbe, readGuardProbe } from "./openapi-support";
 import { runWithConcurrency } from "./run-with-concurrency";
 import { createSerialQueue } from "./serial-queue";
 
-/** Threads already tried. A repaired title stops matching anyway; this keeps
- *  the ones that could not be rewritten off every later refresh. */
+/** Threads already tried, so ones that could not be rewritten stay off every
+ *  later refresh. */
 const attempted = new Set<string>();
 
-/** Rows per pass, so a long history drains in pages instead of putting its
- *  whole backlog on the backend at once. */
+/** Rows per pass, so a long history drains in pages. */
 const REPAIR_PER_PASS = 100;
 
 /** Writes in flight. Each PATCH is a synchronous SQLite call server side. */
@@ -32,19 +31,17 @@ const REPAIR_CONCURRENCY = 4;
 /** Breather between pages. */
 const REPAIR_PAGE_PAUSE_MS = 500;
 
-/** Several sidebars can be mounted at once, so REPAIR_CONCURRENCY only holds
- *  if their passes queue rather than run alongside each other. */
+/** Several sidebars can be mounted at once, so REPAIR_CONCURRENCY only holds if
+ *  their passes queue rather than overlap. */
 const serial = createSerialQueue();
 
 /** Cached once the served schema answers. A failed probe is not cached, so a
- *  hiccup at startup does not park the migration for the session. */
+ *  startup hiccup does not park the migration for the session. */
 let guardSupport: Promise<boolean> | null = null;
 
-/** Whether this backend enforces the conditional title patch.
- *
- *  Probing by sending one is not an option: an older backend would apply the
- *  write, which is the harm being checked for. The served schema says so
- *  without touching anything. Anything unreadable reads as unsupported. */
+/** Whether this backend enforces the conditional title patch. Probing by
+ *  sending one would let an older backend apply the write, the very harm being
+ *  checked for, so the served schema answers; anything unreadable is a no. */
 function backendEnforcesTitleGuard(): Promise<boolean> {
   guardSupport ??= (async () => {
     let probe: GuardProbe = { supported: false, settled: false };
@@ -64,8 +61,7 @@ function backendEnforcesTitleGuard(): Promise<boolean> {
   return guardSupport;
 }
 
-/** Rewrite titles stored pre-cut at 48 chars so they grow with the sidebar
- *  again. */
+/** Rewrite titles stored pre-cut at 48 chars so they grow with the sidebar. */
 export function repairLegacyChatTitles(
   threads: ThreadRecord[],
 ): Promise<number> {
@@ -73,8 +69,8 @@ export function repairLegacyChatTitles(
 }
 
 async function runRepairPass(threads: ThreadRecord[]): Promise<number> {
-  // Nothing is claimed or marked until the guard is known to be enforced: a
-  // rewrite that can silently beat a rename is not worth a tidier title.
+  // Claim nothing until the guard is known: a rewrite that can silently beat a
+  // rename is not worth a tidier title.
   if (!(await backendEnforcesTitleGuard())) return 0;
 
   const { candidates, rest, hasMore } = selectLegacyRepairPage(
@@ -88,9 +84,8 @@ async function runRepairPass(threads: ThreadRecord[]): Promise<number> {
 
   let messages: Map<string, MessageRecord[]>;
   try {
-    // Read here, not from a map the caller fetched earlier: the backend's own
-    // view, taken as late as possible, is what the rewrite has to be based on.
-    // One batched call for the page.
+    // Not the caller's earlier map: the backend's own view, taken as late as
+    // possible, is what the rewrite has to be based on. One batched call.
     messages = await batchListChatMessages(ids);
   } catch {
     // Nothing was decided, so let a later refresh try these again.
@@ -98,15 +93,13 @@ async function runRepairPass(threads: ThreadRecord[]): Promise<number> {
     return 0;
   }
 
-  // Backend messages only. Dexie keeps rows the backend has pruned, since
-  // deleting a message never clears them, so anything that merges the two could
-  // put a deleted prompt back into a title. A chat whose messages have not been
-  // imported yet reads as unknown below and is retried once they land.
+  // Backend messages only: Dexie keeps rows the backend has pruned, so merging
+  // the two could put a deleted prompt back into a title. A chat not imported
+  // yet reads as unknown below and is retried once its messages land.
   const repairs = planLegacyTitleRepairs(candidates, messages);
 
-  // A chat with nothing stored is either mid-import, so worth another pass, or
-  // one the user emptied, which no pass can change. The ledger tells them
-  // apart, and is only worth fetching when there is something to decide.
+  // Nothing stored means either mid-import or emptied by the user; the ledger
+  // tells them apart, and is only fetched when there is something to decide.
   const withoutMessages = threadsMissingMessages(ids, messages);
   if (withoutMessages.length > 0) {
     let imported = new Set<string>();
@@ -124,14 +117,11 @@ async function runRepairPass(threads: ThreadRecord[]): Promise<number> {
   await runWithConcurrency(repairs, REPAIR_CONCURRENCY, async (repair) => {
     try {
       // The backend PATCH directly, not updateStoredChatThread: that ensures
-      // the thread first, which re-imports one deleted on another client from
-      // the Dexie rows still sitting here. A migration must never create
-      // anything, so a missing thread has to stay missing and 404.
-      //
-      // Both guards make this atomic: a rename or a deleted opening prompt
-      // landing now answers 409, so the user's title stays and no deleted text
-      // is expanded into one. A title patch leaves updatedAt alone, so Recents
-      // keeps its order.
+      // the thread first, re-importing one deleted on another client from the
+      // Dexie rows still here, and a migration must never create anything.
+      // Both guards answer 409 if a rename or a delete of the opening prompt
+      // lands first, and a title patch leaves updatedAt alone, so Recents keeps
+      // its order.
       await updateChatThread(
         repair.threadId,
         { title: repair.title },
@@ -146,9 +136,8 @@ async function runRepairPass(threads: ThreadRecord[]): Promise<number> {
     }
   });
 
-  // A page that wrote nothing fires no history update, so the next page has to
-  // be scheduled here rather than left waiting on an unrelated refresh. It runs
-  // on `rest`, so rows this page unmarked cannot be drawn again by this drain.
+  // A page that wrote nothing fires no history update, so schedule the next one
+  // here. It runs on `rest`, so rows this page unmarked are not drawn again.
   if (hasMore) {
     setTimeout(() => {
       void repairLegacyChatTitles(rest).catch(() => undefined);

@@ -45,8 +45,7 @@ test("a title the sidebar can clip keeps the whole first line", () => {
 test("only a pasted wall of text is cut, and with a real ellipsis", () => {
   const wall = "x".repeat(200);
   const title = fallbackTitleFromUserText(wall);
-  // 120 UTF-16 units all in, the ellipsis included, which is what the rename
-  // input accepts. A longer one cannot be edited until a character is deleted.
+  // 120 UTF-16 units including the ellipsis, which is what the input accepts.
   assert.equal(title.length, 120);
   assert.ok(title.endsWith("…"));
   assert.ok(!title.includes("..."));
@@ -66,8 +65,7 @@ test("a line already inside the budget is stored whole", () => {
 });
 
 test("the cap never splits an emoji into a lone surrogate", () => {
-  // A lone surrogate survives JSON.stringify but fails the backend's SQLite
-  // bind, so the title write would 500.
+  // A lone surrogate survives JSON.stringify but 500s the backend's SQLite bind.
   const line = "x".repeat(119) + "\u{1F600} tail";
   // A raw cut at the budget lands mid-pair.
   assert.equal(UNPAIRED_SURROGATE.test(line.slice(0, 120)), true);
@@ -79,9 +77,8 @@ test("the cap never splits an emoji into a lone surrogate", () => {
 });
 
 test("a lone surrogate is dropped even when the line is under the cap", () => {
-  // The cut sanitises what it walks, so only over-cap input used to be safe.
-  // Under the cap the line was stored as it came, and one unpaired surrogate
-  // reaching the backend fails its SQLite bind and 500s the title write.
+  // The cut sanitises what it walks, so under-cap lines used to be stored as
+  // they came, and one unpaired surrogate 500s the backend's title write.
   const line = "x".repeat(60) + "\uD83D";
   assert.ok(line.length <= 120);
   assert.equal(UNPAIRED_SURROGATE.test(line), true);
@@ -126,9 +123,8 @@ test("repair rewrites legacy rows and leaves every other row untouched", () => {
 });
 
 test("a drain advances even when a whole page failed and was unmarked", () => {
-  // Failures get unmarked so a later refresh can retry them. If the next page
-  // were selected off the same list it would draw them straight back in and
-  // spin on the failing rows, never reaching the rest.
+  // Failures get unmarked for a later refresh. Selecting the next page off the
+  // same list would draw them straight back in and never reach the rest.
   const legacy = LONG.slice(0, 48) + "...";
   const threads = ["a", "b", "c", "d"].map((id) => thread(id, legacy));
 
@@ -148,8 +144,7 @@ test("a drain advances even when a whole page failed and was unmarked", () => {
 });
 
 test("the opening message is the earliest one, not the first row returned", () => {
-  // A local Dexie read comes back in index order, so the array can start on a
-  // later turn.
+  // A local read comes back in index order, so it can start on a later turn.
   const later: MessageRecord = {
     ...userMessage("a", "a later question entirely"),
     id: "a-m9",
@@ -173,8 +168,7 @@ test("the opening message is the earliest one, not the first row returned", () =
 });
 
 test("two prompts sharing a timestamp break on id, as the backend does", () => {
-  // The write is guarded on this id, so the two have to agree on which message
-  // is the opening one or every such repair would be rejected.
+  // The write is guarded on this id, so both orders must pick the same message.
   const legacy = LONG.slice(0, 48) + "...";
   const first: MessageRecord = { ...userMessage("a", LONG), id: "a-m1" };
   const second: MessageRecord = {
@@ -230,8 +224,7 @@ test("a page skips rows already tried and reports the leftovers", () => {
 });
 
 test("a thread the backend has nothing for still gets a local read", () => {
-  // A legacy chat not yet imported reads empty from the backend, and an id it
-  // has never heard of is missing from the map entirely.
+  // A not-yet-imported chat reads empty; an unknown id is missing from the map.
   const messages = new Map<string, MessageRecord[]>([
     ["a", [userMessage("a", LONG)]],
     ["b", []],
@@ -245,8 +238,7 @@ test("a thread the backend has nothing for still gets a local read", () => {
 
 
 test("a chat with nothing stored is left for a later refresh", () => {
-  // Its messages may simply not be imported yet. The row is not written off,
-  // and once they land a later pass rewrites the title from them.
+  // Its messages may not be imported yet, so a later pass rewrites the title.
   const legacy = LONG.slice(0, 48) + "...";
   const candidates = [thread("a", legacy)];
   const messages = new Map<string, MessageRecord[]>();
@@ -262,11 +254,9 @@ test("a chat with nothing stored is left for a later refresh", () => {
 });
 
 test("a chat whose opening prompt is gone is decided, not retried forever", () => {
-  // Nothing stored means the import may still land, so those rows are unmarked
-  // and tried again. A chat that does have messages is a complete answer: the
-  // opening prompt was deleted or edited, so no later pass can prove the title.
-  // Unmarking it too would re-select it on every refresh for the session, since
-  // its title stays clipped and keeps matching the pre-filter.
+  // A chat that does have messages is a complete answer: the opening prompt was
+  // deleted or edited, so no later pass can prove the title. Unmarking it would
+  // re-select it on every refresh, since its title stays clipped.
   const legacy = LONG.slice(0, 48) + "...";
   const candidates = [thread("a", legacy)];
   const messages = new Map<string, MessageRecord[]>([
@@ -283,9 +273,8 @@ test("a chat whose opening prompt is gone is decided, not retried forever", () =
 });
 
 test("an emptied chat is decided, one still importing is not", () => {
-  // Both read back as zero messages. The ledger is what tells them apart: a
-  // thread it knows was imported, so empty is the whole answer, while one it
-  // has never seen may still be on its way.
+  // Both read back as zero messages. The ledger tells them apart: one it knows
+  // was imported is simply empty, one it has never seen may still be on its way.
   const ids = ["emptied", "importing", "fine"];
   const messages = new Map<string, MessageRecord[]>([
     ["emptied", []],

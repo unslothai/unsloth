@@ -39,8 +39,7 @@ def test_the_repair_reads_its_own_messages_as_late_as_it_can():
     )
 
     storage = _read(STORAGE)
-    # The shared list function keeps its original shape: nothing hands a
-    # message map out of it.
+    # Nothing hands a message map out of the shared list function.
     assert "messagesByThreadId" not in storage
 
 
@@ -61,8 +60,7 @@ def test_an_emptied_chat_is_not_retried_for_the_session():
     title stays clipped and keeps matching the pre-filter."""
     repair = _read(REPAIR)
     assert "const withoutMessages = threadsMissingMessages(ids, messages);" in repair
-    # Only fetched when there is something to decide, so a page of ordinary
-    # rows does not pay for it.
+    # Only fetched when there is something to decide.
     assert "if (withoutMessages.length > 0) {" in repair
     assert "imported = await listChatImportLedger();" in repair
     assert (
@@ -86,8 +84,7 @@ def test_the_next_page_is_scheduled_rather_than_waited_for():
     would come back for the rest of the backlog."""
     repair = _read(REPAIR)
     assert "if (hasMore) { setTimeout(" in repair
-    # On `rest`: a row this page unmarked must not be drawn again by the same
-    # drain, or a failing PATCH starves every row behind it.
+    # On `rest`: a row this page unmarked must not starve the rows behind it.
     assert "void repairLegacyChatTitles(rest)" in repair
     assert "REPAIR_PAGE_PAUSE_MS" in repair
 
@@ -132,13 +129,11 @@ def test_the_migration_stays_off_where_the_guard_is_not_enforced():
         "probe = readGuardProbe( response.ok, response.ok ? await response.json() : null, );"
         in repair
     )
-    # Only a settled answer is cached. A 401 while the token warms up, or a 503
-    # during startup, would otherwise park the migration for the session.
+    # Only a settled answer is cached, or a 401 at startup parks the migration.
     assert "if (!probe.settled) guardSupport = null;" in repair
 
     backend = (BACKEND / "routes/chat_history.py").read_text(encoding = "utf-8")
-    # The probe reads the schema, so the fields have to be declared on the
-    # model. It looks for both, and both are what make the write safe.
+    # The probe reads the schema, so the fields have to be declared on the model.
     assert "expectedTitle: Optional[str] = None" in backend
 
 

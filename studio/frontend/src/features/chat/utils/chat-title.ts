@@ -3,20 +3,19 @@
 
 import type { MessageRecord, ThreadRecord } from "../types";
 
-/** The sidebar clips the title with CSS, so store the whole first line and a
- *  wider sidebar shows more of it. Caps a pasted wall of text, and matches the
- *  rename input's maxLength, which counts UTF-16 units and includes any
- *  ellipsis this adds. */
+/** Store the whole first line and let the sidebar clip it with CSS, so a wider
+ *  one shows more. Matches the rename input's maxLength: UTF-16 units, ellipsis
+ *  included. */
 export const FALLBACK_TITLE_MAX = 120;
 
-/** Older titles were stored pre-cut at 48 chars with a literal "...", so no
- *  width could reveal more. Kept to find and rewrite those rows. */
+/** Older titles were stored pre-cut at 48 chars with a literal "...". Kept to
+ *  find and rewrite those rows. */
 export const LEGACY_FALLBACK_TITLE_MAX = 48;
 const LEGACY_FALLBACK_SUFFIX = "...";
 
-/** Drop unpaired surrogates. They render as nothing, and one reaching the
- *  backend fails its SQLite bind, so the title write 500s. Iteration yields a
- *  valid pair whole, leaving a lone surrogate as a single unit in the range. */
+/** Drop unpaired surrogates: they render as nothing, and one reaching the
+ *  backend fails its SQLite bind and 500s the title write. Iteration yields a
+ *  valid pair whole, so a length-1 unit in the range is a lone surrogate. */
 function dropLoneSurrogates(text: string): string {
   let out = "";
   for (const character of text) {
@@ -29,14 +28,12 @@ function dropLoneSurrogates(text: string): string {
 
 function firstLineOf(text: string): string {
   const firstLine = (text || "").split(/\r?\n/, 1)[0] ?? "";
-  // Drop first: a surrogate removed from between two spaces would otherwise
-  // leave the pair behind, and one at the end would leave a trailing space.
+  // Drop surrogates first, or removing one can leave a double or trailing space.
   return dropLoneSurrogates(firstLine).replace(/\s+/g, " ").trim();
 }
 
-/** Cut to at most `maxUnits` UTF-16 units, the unit maxLength counts, without
- *  splitting an astral character in half. A lone surrogate parses fine and then
- *  fails the backend's SQLite bind. */
+/** Cut to at most `maxUnits` UTF-16 units without splitting an astral character:
+ *  a lone surrogate parses fine and then fails the backend's SQLite bind. */
 function cutToUnits(text: string, maxUnits: number): string {
   let out = "";
   for (const character of text) {
@@ -50,8 +47,7 @@ export function fallbackTitleFromUserText(userText: string): string {
   const cleaned = firstLineOf(userText);
   if (!cleaned) return "New Chat";
   if (cleaned.length <= FALLBACK_TITLE_MAX) return cleaned;
-  // The ellipsis takes one of the budget, so the whole title still fits what
-  // the rename input accepts.
+  // The ellipsis takes one of the budget, so the title still fits the input.
   return cutToUnits(cleaned, FALLBACK_TITLE_MAX - 1).trimEnd() + "…";
 }
 
@@ -97,16 +93,16 @@ export interface LegacyTitleRepair {
   threadId: string;
   /** The clipped title the rewrite is based on, guarding the write. */
   previousTitle: string;
-  /** The message the new title came from, guarding it too: deleting it must
-   *  not leave its text expanded into the title. */
+  /** The message the title came from, guarded too: deleting it must not leave
+   *  its text expanded into the title. */
   openingMessageId: string;
   title: string;
 }
 
 export interface LegacyRepairPage {
   candidates: ThreadRecord[];
-  /** Everything this page did not take. The next page reads from here, so a
-   *  row this page failed on cannot be picked up again by the same drain. */
+  /** What this page skipped. The next page reads it, so a row this page failed
+   *  on is not redrawn by the same drain. */
   rest: ThreadRecord[];
   hasMore: boolean;
 }
@@ -140,9 +136,8 @@ export function threadsMissingMessages(
 
 /** Of those, the ones still worth retrying: no record of their import
  *  finishing, so their messages may yet land. One the ledger knows is simply
- *  empty, every message deleted, which no later pass can change. Retrying
- *  those would re-read them on every refresh for the session, since the title
- *  stays clipped and keeps matching the pre-filter. */
+ *  empty, and retrying it would re-read it on every refresh for the session,
+ *  since its title stays clipped and keeps matching the pre-filter. */
 export function threadsAwaitingImport(
   ids: readonly string[],
   messagesByThreadId: ReadonlyMap<string, MessageRecord[]>,
@@ -162,8 +157,7 @@ export function planLegacyTitleRepairs(
   const repairs: LegacyTitleRepair[] = [];
   for (const thread of threads) {
     const messages = messagesByThreadId.get(thread.id) ?? [];
-    // Earliest, not first in the array: a local read is in index order.
-    // Ties break on id, the order the backend reads it in.
+    // Earliest, not first in the array; ties break on id, as the backend does.
     const opening = messages
       .filter((m) => m.role === "user")
       .reduce<MessageRecord | undefined>((earliest, m) => {
