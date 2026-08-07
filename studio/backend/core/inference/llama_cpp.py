@@ -13864,9 +13864,14 @@ class LlamaCppBackend:
         # retrieval call would actually prompt (ask mode); auto never gates the
         # safe search_knowledge_base tool, so retrieval must still run there.
         # off never prompts either, so it also keeps first-pass retrieval.
+        from core.inference.chat_template_helpers import trailing_assistant_text
+
+        # A resumed turn must keep the partial as the trailing message: autoinject
+        # appends a tool call plus its result, which moves the boundary and makes the
+        # model open a fresh answer instead of continuing.
         _skip_autoinject = (
             confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
-        )
+        ) or bool(continue_final_message and trailing_assistant_text(conversation))
         _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
         if _auto:
             for _ev in _auto["events"]:
@@ -14091,7 +14096,6 @@ class LlamaCppBackend:
             from core.inference.chat_template_helpers import (
                 append_assistant_turn,
                 neutralize_control_markup_in_messages,
-                trailing_assistant_text,
             )
 
             payload = {

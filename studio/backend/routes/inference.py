@@ -10453,15 +10453,24 @@ async def openai_chat_completions(
             _gguf_display_tool_names = _display_tool_name_gate(tools_to_use)
 
             # ── Strip stale tool-call XML from conversation history ─
+            # The continuation target keeps its exact whitespace: the frontend appends
+            # the model's output to the partial it holds, so trimming the tail here
+            # would resume from a different boundary and double or drop indentation.
+            _gguf_continue_target = (
+                gguf_messages[-1] if _continue_final_message(payload) and gguf_messages else None
+            )
             for _msg in gguf_messages:
                 if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
                     # Gate on enabled tool names, like the live strip, so a documented inactive
                     # ``foo[ARGS]{...}`` survives in the replayed prompt context.
-                    _msg["content"] = _strip_tool_xml_for_display(
+                    _stripped = _strip_tool_xml_for_display(
                         _msg["content"],
                         auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
                         enabled_tool_names = _gguf_display_tool_names,
-                    ).strip()
+                    )
+                    _msg["content"] = (
+                        _stripped if _msg is _gguf_continue_target else _stripped.strip()
+                    )
 
             def gguf_generate_with_tools():
                 return llama_backend.generate_chat_completion_with_tools(
@@ -11880,18 +11889,27 @@ async def openai_chat_completions(
         # Active tool names gating the bare-rehearsal strip, matching the loop gate.
         _sf_display_tool_names = _display_tool_name_gate(_sf_tools_to_use)
 
-        # Strip stale tool-call XML from prior assistant turns.
+        # Strip stale tool-call XML from prior assistant turns. The continuation target
+        # keeps its exact whitespace (see the GGUF path).
+        _sf_continue_target = (
+            chat_messages[-1] if _continue_final_message(payload) and chat_messages else None
+        )
         _sf_chat_messages = []
         for _msg in chat_messages:
             if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
+                _sf_stripped = _strip_tool_xml_for_display(
+                    _msg["content"],
+                    auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                    enabled_tool_names = _sf_display_tool_names,
+                )
                 _sf_chat_messages.append(
                     {
                         **_msg,
-                        "content": _strip_tool_xml_for_display(
-                            _msg["content"],
-                            auto_heal_tool_calls = _sf_auto_heal_tool_calls,
-                            enabled_tool_names = _sf_display_tool_names,
-                        ).strip(),
+                        "content": (
+                            _sf_stripped
+                            if _msg is _sf_continue_target
+                            else _sf_stripped.strip()
+                        ),
                     }
                 )
             else:

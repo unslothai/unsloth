@@ -66,7 +66,10 @@ from core.inference.tool_loop_controller import (
     status_for_tool,
     tool_event_provenance,
 )
-from core.inference.chat_template_helpers import append_assistant_turn
+from core.inference.chat_template_helpers import (
+    append_assistant_turn,
+    trailing_assistant_text,
+)
 from core.inference.tool_stream_exec import stream_tool_execution
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
@@ -542,9 +545,12 @@ def run_safetensors_tool_loop(
 
     # off never prompts, so (like auto) it must not lose first-pass retrieval
     # even if a direct caller passes a stale confirm_tool_calls flag.
+    # A resumed turn must keep the partial as the trailing message: autoinject
+    # appends a tool call plus its result, which moves the boundary and makes the
+    # model open a fresh answer instead of continuing.
     _skip_autoinject = (
         confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
-    )
+    ) or bool(continue_final_message and trailing_assistant_text(conversation))
     _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
     if _auto:
         for _ev in _auto["events"]:

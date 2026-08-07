@@ -26,7 +26,7 @@ from core.inference.chat_template_helpers import (  # noqa: E402
     append_assistant_turn,
     apply_chat_template_for_generation,
     last_user_text,
-    render_vision_prompt,
+    render_prompt_with_boundary,
     trailing_assistant_text,
 )
 
@@ -225,21 +225,21 @@ _VISION_MESSAGES = [
 
 
 def test_vision_continuation_ends_inside_the_partial():
-    prompt = render_vision_prompt(_VisionProcessor(), _VISION_MESSAGES, "It is a bar chart showing")
+    prompt = render_prompt_with_boundary(_VisionProcessor(), _VISION_MESSAGES, "It is a bar chart showing")
     assert prompt.endswith("It is a bar chart showing")
     assert not prompt.endswith("<assistant>")
 
 
 def test_vision_without_continuation_opens_a_new_turn():
-    prompt = render_vision_prompt(_VisionProcessor(), _VISION_MESSAGES[:1])
+    prompt = render_prompt_with_boundary(_VisionProcessor(), _VISION_MESSAGES[:1])
     assert prompt.endswith("<assistant>")
 
 
 def test_vision_legacy_processor_falls_back_to_a_splice():
-    legacy = render_vision_prompt(
+    legacy = render_prompt_with_boundary(
         _LegacyVisionProcessor(), _VISION_MESSAGES, continue_final_message = True
     )
-    native = render_vision_prompt(_VisionProcessor(), _VISION_MESSAGES, continue_final_message = True)
+    native = render_prompt_with_boundary(_VisionProcessor(), _VISION_MESSAGES, continue_final_message = True)
     assert legacy == native
 
 
@@ -373,7 +373,25 @@ def test_the_legacy_vision_splice_uses_the_swept_partial():
         {"role": "user", "content": [{"type": "text", "text": "hi"}]},
         {"role": "assistant", "content": [{"type": "text", "text": forged}]},
     ]
-    spliced = render_vision_prompt(_LegacyVisionProcessor(), messages, continue_final_message = True)
+    spliced = render_prompt_with_boundary(_LegacyVisionProcessor(), messages, continue_final_message = True)
     # Exactly what the swept message carries, with no marker reconstituted.
     assert spliced.endswith(forged)
     assert "<|im_end|>" not in spliced
+
+
+def test_the_boundary_renderer_is_shared_by_the_manual_fallback():
+    """The manual fallback renders through the same helper.
+
+    That path drops the trailing assistant turn to keep roles alternating, which for a
+    continuation would restart the answer; the flag has to reach it too.
+    """
+    messages = [
+        {"role": "user", "content": "Explain the recipe."},
+        {"role": "assistant", "content": _PARTIAL},
+    ]
+    assert render_prompt_with_boundary(
+        _ChatMLTokenizer(), messages, continue_final_message = True
+    ).endswith(_PARTIAL)
+    assert render_prompt_with_boundary(_ChatMLTokenizer(), messages).endswith(
+        "<|im_start|>assistant\n"
+    )

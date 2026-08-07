@@ -140,8 +140,11 @@ test("text and reasoning parts are continuable, empty text is not", () => {
   assert.equal(isContinuableContent(undefined), false);
 });
 
-test("Anthropic is the provider that rejects a trailing assistant turn", () => {
+test("providers that reject a trailing assistant turn get the instruction path", () => {
+  // Anthropic 400s on a trailing assistant message since Claude 4.6; Gemini requires
+  // a multiturn request to end in a user turn or a function response.
   assert.equal(rejectsAssistantPrefill("anthropic"), true);
+  assert.equal(rejectsAssistantPrefill("gemini"), true);
   assert.equal(rejectsAssistantPrefill("openai"), false);
   assert.equal(rejectsAssistantPrefill(undefined), false);
 });

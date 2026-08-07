@@ -1186,7 +1186,9 @@ class InferenceBackend:
         except Exception as e:
             logger.error(f"Error applying chat template: {e}")
             # Fall back to manual formatting
-            formatted_prompt = self.format_chat_prompt(messages, system_prompt)
+            formatted_prompt = self.format_chat_prompt(
+                messages, system_prompt, continue_final_message = continue_final_message
+            )
             reasoning_channel_markers = None
             reasoning_channel_markers_resolved = True
 
@@ -1233,7 +1235,7 @@ class InferenceBackend:
         # assistant partial) still prompts from the turn that asked the question.
         from core.inference.chat_template_helpers import (
             last_user_text,
-            render_vision_prompt,
+            render_prompt_with_boundary,
             trailing_assistant_text,
         )
 
@@ -1284,7 +1286,7 @@ class InferenceBackend:
 
             def _render_vision(msgs):
                 # Partial taken from the swept msgs, not the raw pre-sweep capture.
-                return render_vision_prompt(
+                return render_prompt_with_boundary(
                     processor, msgs, continue_final_message = bool(continue_partial)
                 )
 
@@ -1309,7 +1311,9 @@ class InferenceBackend:
             prompt_text = input_text
         else:
             # Text-only path for a vision model
-            formatted_prompt = self.format_chat_prompt(messages, system_prompt)
+            formatted_prompt = self.format_chat_prompt(
+                messages, system_prompt, continue_final_message = continue_final_message
+            )
             inputs = raw_tokenizer(formatted_prompt, return_tensors = "pt").to(model.device)
             prompt_text = formatted_prompt
 
@@ -2137,6 +2141,7 @@ class InferenceBackend:
         self,
         messages: list,
         system_prompt: str = None,
+        continue_final_message: bool = False,
     ) -> str:
         if not self.active_model_name or self.active_model_name not in self.models:
             logger.error("No active model available")
@@ -2178,14 +2183,21 @@ class InferenceBackend:
                 elif role == "system":
                     continue
 
-        if chat_messages and chat_messages[-1]["role"] == "assistant":
+        # A continuation resumes that turn, so dropping it would restart the answer.
+        _continuing = continue_final_message and bool(
+            chat_messages and chat_messages[-1]["role"] == "assistant"
+        )
+        if not _continuing and chat_messages and chat_messages[-1]["role"] == "assistant":
             logger.debug("Removing final assistant message to ensure proper alternation")
             chat_messages.pop()
 
         # Direct tokenizer render bypasses the choke point, and the user sub above
         # leaves system_prompt and replayed assistant text raw. Profiled off this same
         # tokenizer, so the sweep matches what the text path would do (#7066).
-        from core.inference.chat_template_helpers import markup_for_tokenizer
+        from core.inference.chat_template_helpers import (
+            markup_for_tokenizer,
+            render_prompt_with_boundary,
+        )
 
         chat_messages = neutralize_control_markup_in_messages(
             chat_messages, None, markup_for_tokenizer(tokenizer)
@@ -2196,8 +2208,8 @@ class InferenceBackend:
             logger.info(f"  {i}: {msg['role']} - {msg['content'][:50]}...")
 
         try:
-            formatted_prompt = tokenizer.apply_chat_template(
-                chat_messages, tokenize = False, add_generation_prompt = True
+            formatted_prompt = render_prompt_with_boundary(
+                tokenizer, chat_messages, continue_final_message = _continuing
             )
             logger.info(f"Successfully applied tokenizer's native chat template")
             return formatted_prompt

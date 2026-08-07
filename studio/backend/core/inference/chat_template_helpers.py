@@ -2371,12 +2371,12 @@ def append_assistant_turn(
     conversation.append(assistant_msg)
 
 
-def render_vision_prompt(
+def render_prompt_with_boundary(
     processor,
     messages: list,
     continue_final_message: bool = False,
 ) -> str:
-    """Render a vision turn through the processor's own template.
+    """Render *messages* through a renderer's own chat template.
 
     With *continue_final_message* the prompt ends inside the trailing assistant turn,
     so the model resumes it. Processors predating the kwarg get a manual splice, whose

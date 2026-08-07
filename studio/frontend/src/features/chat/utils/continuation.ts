@@ -151,13 +151,16 @@ export function isContinuableContent(
  * Providers that reject a trailing assistant turn.
  *
  * Anthropic removed assistant prefill in Claude 4.6 (400 on the last message being
- * assistant) and never allowed it with extended thinking, so a prefilled request
- * fails outright. Those get the partial plus an instruction turn instead.
+ * assistant) and never allowed it with extended thinking. Gemini requires a multiturn
+ * request to end in a user turn or a function response and 400s otherwise. Both get
+ * the partial plus an instruction turn instead, keeping the last message a user turn.
  */
+const PREFILL_REJECTING_PROVIDERS = new Set(["anthropic", "gemini"]);
+
 export function rejectsAssistantPrefill(
   providerType: string | undefined,
 ): boolean {
-  return providerType === "anthropic";
+  return providerType != null && PREFILL_REJECTING_PROVIDERS.has(providerType);
 }
 
 /** Asks for a continuation when the partial cannot be sent as a prefill. */
