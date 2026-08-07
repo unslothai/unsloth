@@ -12,15 +12,13 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""Every CUDA spoof in the suite must report a plausible amount of FREE memory.
+"""Every CUDA spoof must report a plausible amount of FREE memory.
 
 `torch.cuda.mem_get_info` returns `(free, total)` and delegates to
 `cudart().cudaMemGetInfo`, so a spoof answering zero free describes an exhausted
-card. Code that sizes work against the free pool then refuses to run at all:
-unsloth_zoo's fused cross entropy takes half of it as its chunk target and
-raises "No or negligible GPU memory available for fused cross entropy" instead
-of chunking. That failed `test_sft_trains_on_cpu` on a host with four idle GPUs,
-and read as a product bug for as long as nobody looked at the fixture.
+card. unsloth_zoo's fused cross entropy takes half of it as its chunk target and
+raises rather than chunking, which failed `test_sft_trains_on_cpu` on a host with
+four idle GPUs and read as a product bug until someone read the fixture.
 
 Source-level, because importing either spoof mutates the interpreter's torch.
 """
@@ -55,9 +53,8 @@ def _memory_tuples(path):
             if not (isinstance(value, ast.Tuple) and len(value.elts) == 2):
                 continue
             try:
-                # `ast.literal_eval` cannot fold `60 * 1024**3`, which is how
-                # every one of these is written. Evaluate the arithmetic with
-                # nothing in scope instead.
+                # `literal_eval` cannot fold `60 * 1024**3`, which is how these
+                # are written. Evaluate with nothing in scope instead.
                 found.append(
                     tuple(eval(ast.unparse(e), {"__builtins__": {}}, {}) for e in value.elts)
                 )
@@ -74,5 +71,4 @@ def test_a_spoofed_card_is_not_reported_as_full(filename):
         assert free > 0, f"{filename} reports {free} bytes free, i.e. an exhausted card"
         assert free <= total, f"{filename} reports more free ({free}) than total ({total})"
         # Half the free pool is the fused loss's chunk target, capped at 4GB.
-        # Under 8GB free changes the sizing the rest of the suite assumes.
         assert free >= 8 * 1024**3, f"{filename} reports only {free} bytes free"
