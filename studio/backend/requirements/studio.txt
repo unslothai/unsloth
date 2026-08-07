@@ -13,7 +13,7 @@ pyjwt
 huggingface-hub==0.36.2
 # OS-trust-store TLS for corporate TLS-inspection proxies; runtime counterpart
 # of install.sh's UV_NATIVE_TLS. See utils/native_tls.py.
-truststore>=0.10.4
+truststore>=0.10.4; python_version >= "3.10"
 structlog>=24.1.0
 diceware
 ddgs

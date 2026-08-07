@@ -16,8 +16,12 @@ OS store (macOS Security framework, Windows CertStore, OpenSSL dirs on Linux)
 — the runtime counterpart of ``UV_NATIVE_TLS`` in install.sh, and the same
 mechanism pip enables by default since 24.2. Injection is process-wide but
 does not survive into spawned interpreters, so each network-touching entry
-point (main.py and the download, inference, training, and export workers)
-calls :func:`activate_native_tls` before its first TLS connection.
+point (main.py and the download, inference, training, export, and data-recipe
+workers) calls :func:`activate_native_tls` before its first TLS connection;
+the ``python -c`` transformers probe carries an inline copy of the gating
+because it cannot import backend modules. Activation also exports
+``UV_SYSTEM_CERTS``/``UV_NATIVE_TLS`` for uv child installers (wheel repairs,
+lazy accelerators), whose rustls ignores in-process injection.
 
 Defaults mirror install.sh: on for macOS and Windows (well-defined OS stores,
 and the fleets where TLS inspection is common), opt-in on Linux via
@@ -62,6 +66,13 @@ def activate_native_tls() -> bool:
         return True
     if not native_tls_enabled():
         return False
+    # uv/pip child installers (wheel repairs, lazy accelerator installs) do
+    # their own TLS: uv's rustls ignores in-process injection entirely, so
+    # mirror install.sh and point them at the OS store too (both vars: uv
+    # >= 0.11 reads UV_SYSTEM_CERTS, older reads UV_NATIVE_TLS). setdefault
+    # keeps explicit user overrides.
+    os.environ.setdefault("UV_SYSTEM_CERTS", "1")
+    os.environ.setdefault("UV_NATIVE_TLS", "1")
     try:
         import truststore
         truststore.inject_into_ssl()

@@ -28,6 +28,8 @@ from utils import native_tls
 def _reset_activation(monkeypatch):
     monkeypatch.setattr(native_tls, "_activated", False)
     monkeypatch.delenv("UNSLOTH_STUDIO_NATIVE_TLS", raising = False)
+    monkeypatch.delenv("UV_SYSTEM_CERTS", raising = False)
+    monkeypatch.delenv("UV_NATIVE_TLS", raising = False)
 
 
 def _fake_truststore(monkeypatch):
@@ -68,6 +70,39 @@ def test_activate_injects_once(monkeypatch):
     assert native_tls.activate_native_tls() is True
     assert native_tls.activate_native_tls() is True
     assert calls == ["inject"]
+
+
+def test_activate_exports_uv_native_tls(monkeypatch):
+    import os
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    _fake_truststore(monkeypatch)
+
+    assert native_tls.activate_native_tls() is True
+    assert os.environ["UV_SYSTEM_CERTS"] == "1"
+    assert os.environ["UV_NATIVE_TLS"] == "1"
+
+
+def test_activate_keeps_explicit_uv_override(monkeypatch):
+    import os
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setenv("UV_SYSTEM_CERTS", "0")
+    _fake_truststore(monkeypatch)
+
+    assert native_tls.activate_native_tls() is True
+    assert os.environ["UV_SYSTEM_CERTS"] == "0"
+
+
+def test_disabled_does_not_touch_uv_env(monkeypatch):
+    import os
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    _fake_truststore(monkeypatch)
+
+    assert native_tls.activate_native_tls() is False
+    assert "UV_SYSTEM_CERTS" not in os.environ
+    assert "UV_NATIVE_TLS" not in os.environ
 
 
 def test_activate_noop_when_disabled(monkeypatch):

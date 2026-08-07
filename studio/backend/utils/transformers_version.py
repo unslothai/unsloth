@@ -1408,6 +1408,15 @@ _PROBE_TIMEOUT_SECS = 60
 _PROBE_CONFIG_SCRIPT = r"""
 import sys, os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+# Keep gating in sync with utils/native_tls.py -- this -c child cannot import
+# backend modules, and AutoConfig.from_pretrained may download from the Hub.
+_flag = os.environ.get("UNSLOTH_STUDIO_NATIVE_TLS", "").strip().lower()
+if _flag in {"1", "true", "yes"} or (_flag not in {"0", "false", "no"} and sys.platform in ("darwin", "win32")):
+    try:
+        import truststore
+        truststore.inject_into_ssl()
+    except Exception:
+        pass
 target_dir, model_name = sys.argv[1], sys.argv[2]
 if target_dir:  # empty = probe the ambient (default 4.57.x) transformers, no sidecar prepend
     sys.path.insert(0, target_dir)
