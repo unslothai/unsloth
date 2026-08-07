@@ -113,6 +113,7 @@ def test_rag_available_propagates_real_database_errors(
 
 def test_list_knowledge_bases_degrades_to_empty(rag_home, reset_unavailable_warning, monkeypatch):
     from routes import rag as rag_routes
+
     _break_extension_load(monkeypatch)
     out = rag_routes.list_knowledge_bases(subject = "tester")
     assert out["knowledgeBases"] == []
@@ -125,9 +126,7 @@ def test_list_knowledge_bases_degrades_to_empty(rag_home, reset_unavailable_warn
     "call",
     [
         pytest.param(
-            lambda r: r.create_knowledge_base(
-                r.CreateKbRequest(name = "notes"), subject = "tester"
-            ),
+            lambda r: r.create_knowledge_base(r.CreateKbRequest(name = "notes"), subject = "tester"),
             id = "create-kb",
         ),
         pytest.param(
@@ -246,9 +245,7 @@ def test_a_first_request_that_discovers_the_missing_library_still_gets_503(
     monkeypatch.setattr(rag_db, "_extension_loaded", True)
     assert rag_db.rag_available() is True
     with pytest.raises(HTTPException) as err:
-        rag_routes.create_knowledge_base(
-            rag_routes.CreateKbRequest(name = "notes"), subject = "tester"
-        )
+        rag_routes.create_knowledge_base(rag_routes.CreateKbRequest(name = "notes"), subject = "tester")
     assert err.value.status_code == 503
     assert err.value.detail == UNAVAILABLE
 
@@ -362,9 +359,7 @@ def test_mutating_endpoints_still_raise_real_database_errors(
     monkeypatch.setattr(rag_db, "_extension_loaded", True)
     monkeypatch.setattr(rag_db, "get_connection", _boom)
     with pytest.raises(sqlite3.OperationalError, match = "database is locked"):
-        rag_routes.create_knowledge_base(
-            rag_routes.CreateKbRequest(name = "notes"), subject = "tester"
-        )
+        rag_routes.create_knowledge_base(rag_routes.CreateKbRequest(name = "notes"), subject = "tester")
 
 
 @pytest.mark.skipif(
