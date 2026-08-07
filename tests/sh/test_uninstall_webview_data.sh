@@ -424,6 +424,49 @@ case "$_out" in
         echo "  FAIL: linux: vanished marker dir still reported success"; FAIL=$((FAIL+1)) ;;
 esac
 
+# ── 3j5. studio.db itself a symlink out of the tree. -f follows it, rm -rf unlinks only
+# the link, so the database survives and the summary must not report it gone. Same root
+# cause as the relocated-install case, different shape. ──
+H=$(new_home)
+_DBTARGET=$(mktemp -d "$_TMP_ROOT/dbtarget.XXXXXX")
+mkdir -p "$H/.unsloth/studio/unsloth_studio"
+: > "$H/.unsloth/studio/unsloth_studio/.unsloth-studio-owned"
+: > "$_DBTARGET/studio.db"
+ln -s "$_DBTARGET/studio.db" "$H/.unsloth/studio/studio.db"
+_out=$(run_uninstall_out "$H" Linux)
+assert_present "linux: symlinked studio.db target survived" "$_DBTARGET/studio.db"
+case "$_out" in
+    *"studio.db it found"*)
+        echo "  FAIL: linux: claimed the database is gone but the target survived"
+        FAIL=$((FAIL+1)) ;;
+    *)  echo "  PASS: linux: symlinked studio.db -> no claim that it is gone"
+        PASS=$((PASS+1)) ;;
+esac
+
+# ── 3j6. Provider API keys are NOT in studio.db. providers_db.py: "API keys are NOT
+# stored here: they live only in the browser (localStorage) and are sent encrypted
+# per-request." install.sh runs with TAURI_MODE=false, so the default install serves the
+# UI to a normal browser and the keys sit in that browser's profile, which this script
+# never touches. No branch may claim they were removed. ──
+for _case in dbremoved nodb; do
+    H=$(new_home)
+    mkdir -p "$H/.unsloth/studio/unsloth_studio"
+    : > "$H/.unsloth/studio/unsloth_studio/.unsloth-studio-owned"
+    [ "$_case" = dbremoved ] && : > "$H/.unsloth/studio/studio.db"
+    _out=$(run_uninstall_out "$H" Linux)
+    case "$_out" in
+        *"saved provider API keys"*|*"API keys and chat history"*|*"API keys and local chat"*)
+            echo "  FAIL: $_case: claimed the provider API keys were removed"; FAIL=$((FAIL+1)) ;;
+        *)  echo "  PASS: $_case: no claim that the provider API keys were removed"
+            PASS=$((PASS+1)) ;;
+    esac
+    case "$_out" in
+        *"localStorage, not in studio.db"*)
+            echo "  PASS: $_case: says where the keys actually are"; PASS=$((PASS+1)) ;;
+        *)  echo "  FAIL: $_case: never says where the keys actually are"; FAIL=$((FAIL+1)) ;;
+    esac
+done
+
 # ── 3k. _set_marker itself must survive a write it cannot perform. 3i only proves the
 # mktemp -d guard holds, since an unusable TMPDIR leaves the marker path empty and the
 # redirection never runs. This drives the redirection directly: the marker directory

@@ -123,6 +123,25 @@ _run_as_home_owner() {
     fi
 }
 
+# Is the desktop app running? Only called when there is no pkill to ask, so it reads
+# /proc, the one process inventory such a system still has. Scoped to the owner of the
+# $HOME being cleared, matching the pkill -u call below.
+_studio_app_running() {
+    [ -d /proc ] || return 1
+    _sar_uid=$(_home_uid)
+    for _sar_p in /proc/[0-9]*; do
+        [ -r "$_sar_p/comm" ] || continue
+        _sar_comm=$(cat "$_sar_p/comm" 2>/dev/null || true)
+        [ "$_sar_comm" = "unsloth-studio" ] || continue
+        if [ -n "$_sar_uid" ]; then
+            _sar_owner=$(stat -c %u "$_sar_p" 2>/dev/null || stat -f %u "$_sar_p" 2>/dev/null || true)
+            [ "$_sar_owner" = "$_sar_uid" ] || continue
+        fi
+        return 0
+    done
+    return 1
+}
+
 _pkill_studio() {
     # Prefer PID files written by _spawn_terminal so we only touch our own installs.
     for _data_dir in "$HOME/.local/share/unsloth" $(_custom_studio_data_dirs); do
@@ -132,7 +151,17 @@ _pkill_studio() {
         done
     done
 
-    command -v pkill >/dev/null 2>&1 || return 0
+    if ! command -v pkill >/dev/null 2>&1; then
+        # No procps. The PID-file sweep above is all we can do, and install.sh never
+        # requires pkill, so this is a real configuration. If the desktop app is still
+        # up, its WebView helpers re-create the profile right after we delete it, so
+        # the removal is incomplete and the summary must not claim otherwise.
+        if _studio_app_running; then
+            echo "  pkill not found and Unsloth Studio is running; close it and re-run" >&2
+            _set_marker "$_REMOVE_FAILED_FLAG"
+        fi
+        return 0
+    fi
 
     # Scope fallback patterns to the install roots we are removing so a
     # different Unsloth install (different UNSLOTH_STUDIO_HOME) is not touched.
@@ -193,8 +222,9 @@ $_roots_from_conf"
 # reach the summary.
 #   remove-failed  an rm failed, or a root was skipped while still holding data
 #   db-removed     a removed install root actually held studio.db
-# studio.db is what holds chat_threads/chat_messages and the saved provider keys
-# (backend/storage/studio_db.py, providers_db.py, both via studio_root()), and it lives
+# studio.db is what holds chat_threads/chat_messages (backend/storage/studio_db.py via
+# studio_root()). Not the provider API keys: providers_db.py says they "live only in the
+# browser (localStorage) and are sent encrypted per-request". studio.db lives
 # under the install root, so an env-mode install keeps it inside the custom root. A bare
 # run with neither variable exported cannot discover that root, so the summary must not
 # claim the history is gone unless a database was really deleted.
@@ -258,12 +288,19 @@ _remove_root_recording_db() {
     _rrd_real=$(CDPATH= cd -P -- "$_rrd_root" 2>/dev/null && pwd -P) || _rrd_real=""
     [ -n "$_rrd_real" ] || _rrd_real="$_rrd_root"
     _rrd_had_db=0
-    if [ -f "$_rrd_real/studio.db" ]; then
+    _rrd_db="$_rrd_real/studio.db"
+    if [ -f "$_rrd_db" ]; then
         _rrd_had_db=1
+        # The database itself can be a symlink out of the tree. -f follows it, but the
+        # rm below unlinks the link and leaves the target, so track where the bytes are.
+        if [ -L "$_rrd_db" ]; then
+            _rrd_db_target=$(readlink -f "$_rrd_db" 2>/dev/null || true)
+            [ -n "$_rrd_db_target" ] && _rrd_db="$_rrd_db_target"
+        fi
     fi
     _remove_path "$_rrd_root"
     if [ "$_rrd_had_db" = 1 ]; then
-        if [ -f "$_rrd_real/studio.db" ]; then
+        if [ -f "$_rrd_db" ]; then
             # Only the link went, or the delete failed: the data is still on disk.
             _set_marker "$_REMOVE_FAILED_FLAG"
         else
@@ -728,23 +765,26 @@ _unsloth_uninstall_main() {
         # Also the no-marker-storage case: without it a failed rm left no record, so
         # reporting success would be a guess in the one direction that misleads.
         echo "Note: some paths could not be removed (see 'could not remove:' above), so the"
-        echo "      signed-in session, saved provider API keys and local chat history may"
-        echo "      still be on disk. Remove those paths by hand to clear them."
+        echo "      signed-in session and local chat history may still be on disk. Remove"
+        echo "      those paths by hand to clear them."
     elif _marker_set "$_DB_REMOVED_FLAG"; then
         # Scoped to what was removed. A default and an env-mode install can coexist, and
         # with neither variable exported the custom root is never discovered, so an
         # unqualified "are gone" would be false for the database still sitting in it.
         echo "Note: this also removed the app's WebView data and the studio.db it found, so"
-        echo "      the signed-in session, saved provider API keys and chat history in the"
-        echo "      install(s) removed above are gone."
+        echo "      the desktop app's session and the chat history in the install(s) removed"
+        echo "      above are gone."
     else
         # No studio.db was deleted, so only the WebView-local data is accounted for.
         # Claiming the keys and history are gone would be false for an env-mode install
         # whose root this run never discovered.
         echo "Note: this also removed the app's WebView data, so the signed-in session is gone."
-        echo "      No studio.db was found, so any saved provider API keys and chat history in"
-        echo "      an install root this run did not see are still on disk."
+        echo "      No studio.db was found, so any chat history in an install root this run"
+        echo "      did not see is still on disk."
     fi
+    echo "Note: provider API keys are kept in the browser's localStorage, not in studio.db."
+    echo "      Unless you ran Studio as the desktop app, clear site data for the"
+    echo "      http://localhost:<port> origin you used to remove them."
     echo "Note: Hugging Face model cache at ~/.cache/huggingface was left in place."
     echo "Remove it manually with 'rm -rf ~/.cache/huggingface/hub' if desired."
     # Env-mode installs leave no breadcrumb in $HOME, so a custom root can

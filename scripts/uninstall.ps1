@@ -98,8 +98,9 @@ Environment:
     }
 
     # Record whether the install root about to be removed carries a studio.db. That file
-    # holds chat_threads/chat_messages and the saved provider keys (backend/storage/
-    # studio_db.py, providers_db.py, both via studio_root()) and lives under the install
+    # holds chat_threads/chat_messages (backend/storage/studio_db.py via studio_root()).
+    # Not the provider API keys: providers_db.py says they "live only in the browser
+    # (localStorage) and are sent encrypted per-request". studio.db lives under the install
     # root, so an env-mode install keeps it inside the custom root. A bare run with neither
     # variable set cannot discover that root, so the summary must not claim the history is
     # gone unless a database was really deleted.
@@ -724,22 +725,25 @@ Environment:
     Write-Host "Unsloth Studio uninstalled."
     if ($script:RemoveFailed) {
         Write-Host "Note: some paths could not be removed (see 'could not remove:' above), so the"
-        Write-Host "      signed-in session, saved provider API keys and local chat history may"
-        Write-Host "      still be on disk. Remove those paths by hand to clear them."
+        Write-Host "      signed-in session and local chat history may still be on disk. Remove"
+        Write-Host "      those paths by hand to clear them."
     } elseif ($script:StudioDbRemoved) {
         # Scoped to what was removed: a default and an env-mode install can coexist, and
         # with neither variable set the custom root is never discovered.
         Write-Host "Note: this also removed the app's WebView data and the studio.db it found, so"
-        Write-Host "      the signed-in session, saved provider API keys and chat history in the"
-        Write-Host "      install(s) removed above are gone."
+        Write-Host "      the desktop app's session and the chat history in the install(s) removed"
+        Write-Host "      above are gone."
     } else {
         # No studio.db was deleted, so only the WebView-local data is accounted for.
         # Claiming the keys and history are gone would be false for an env-mode install
         # whose root this run never discovered.
         Write-Host "Note: this also removed the app's WebView data, so the signed-in session is gone."
-        Write-Host "      No studio.db was found, so any saved provider API keys and chat history in"
-        Write-Host "      an install root this run did not see are still on disk."
+        Write-Host "      No studio.db was found, so any chat history in an install root this run"
+        Write-Host "      did not see is still on disk."
     }
+    Write-Host "Note: provider API keys are kept in the browser's localStorage, not in studio.db."
+    Write-Host "      Unless you ran Studio as the desktop app, clear site data for the"
+    Write-Host "      http://localhost:<port> origin you used to remove them."
     Write-Host "Note: Hugging Face model cache at %USERPROFILE%\.cache\huggingface was left in place."
     Write-Host "Remove it manually with 'Remove-Item -Recurse -Force `"$env:USERPROFILE\.cache\huggingface\hub`"' if desired."
     if (-not $env:UNSLOTH_STUDIO_HOME -and -not $env:STUDIO_HOME) {
