@@ -636,7 +636,8 @@ def test_wsl_drive_path_is_normalized_like_the_load(in_tmp_cwd, monkeypatch):
         gguf_variants,
         "_loader_normalize_path",
         lambda path: f"{in_tmp_cwd}/mnt/{path[0].lower()}/{path[3:].replace(chr(92), '/')}"
-        if len(path) >= 3 and path[1] == ":" else path,
+        if len(path) >= 3 and path[1] == ":"
+        else path,
     )
     gguf_dir = in_tmp_cwd / "mnt" / "c" / "models" / "qwen"
     gguf_dir.mkdir(parents = True)
