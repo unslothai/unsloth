@@ -100,6 +100,7 @@ import {
   incompleteLabel,
   isContinuableContent,
   readIncompleteInfo,
+  readTextThoughtSignature,
 } from "@/features/chat/utils/continuation";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
@@ -4937,6 +4938,11 @@ const ContinueMessageBar: FC = () => {
   const continuable = useAuiState(({ message }) =>
     isContinuableContent(message.content),
   );
+  // Gemini signs its text parts; the resumed turn is replayed from this branch, so
+  // the signature travels with the partial.
+  const thoughtSignature = useAuiState(({ message }) =>
+    readTextThoughtSignature(message.content),
+  );
   // Audio input routes to a generator that re-listens to the recording and answers
   // afresh rather than resuming, so continuing there would append a second answer.
   const fromAudioInput = useAuiState(({ thread }) =>
@@ -4976,7 +4982,9 @@ const ContinueMessageBar: FC = () => {
     aui.thread().startRun({
       parentId,
       runConfig: {
-        custom: { [CONTINUATION_RUN_CONFIG_KEY]: { partial } },
+        custom: {
+          [CONTINUATION_RUN_CONFIG_KEY]: { partial, thoughtSignature },
+        },
       },
     });
   };

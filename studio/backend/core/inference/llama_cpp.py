@@ -14776,11 +14776,13 @@ class LlamaCppBackend:
                                 f"model responded without calling tools "
                                 f"({len(_stripped)} chars)"
                             )
-                            conversation.append(
-                                {
-                                    "role": "assistant",
-                                    "content": _stripped,
-                                }
+                            # Merges into a resumed partial: the nudge that follows is
+                            # a user turn, so a second assistant turn would break
+                            # alternation.
+                            append_assistant_turn(
+                                conversation,
+                                {"role": "assistant", "content": _stripped},
+                                continue_final_message = continue_final_message,
                             )
                             available_tool_names = [
                                 (tool.get("function") or {}).get("name")

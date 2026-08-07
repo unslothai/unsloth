@@ -2356,16 +2356,11 @@ def append_assistant_turn(
     just added are one turn, so they are merged. Self-limiting: after a tool result
     the conversation no longer ends with a plain assistant turn.
     """
-    prev = conversation[-1] if conversation else None
-    if (
-        continue_final_message
-        and isinstance(prev, dict)
-        and prev.get("role") == "assistant"
-        and not prev.get("tool_calls")
-        and isinstance(prev.get("content"), str)
-        and isinstance(assistant_msg.get("content"), str)
-    ):
-        assistant_msg["content"] = f"{prev['content']}{assistant_msg['content']}"
+    # Same acceptance rule as the prompt boundary, so a partial sent as text parts
+    # merges too instead of appending a second assistant turn.
+    prev_text = trailing_assistant_text(conversation) if continue_final_message else None
+    if prev_text is not None and isinstance(assistant_msg.get("content"), str):
+        assistant_msg["content"] = f"{prev_text}{assistant_msg['content']}"
         conversation[-1] = assistant_msg
         return
     conversation.append(assistant_msg)

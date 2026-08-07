@@ -1055,7 +1055,13 @@ def run_safetensors_tool_loop(
                         MAX_ACT_REPROMPTS,
                         len(intent_text),
                     )
-                    conversation.append({"role": "assistant", "content": intent_text})
+                    # Merges into a resumed partial: the nudge that follows is a user
+                    # turn, so a second assistant turn would break alternation.
+                    append_assistant_turn(
+                        conversation,
+                        {"role": "assistant", "content": intent_text},
+                        continue_final_message = continue_final_message,
+                    )
                     tool_hint = " or ".join(_active_tool_names(active_tools)) or "an available tool"
                     conversation.append(
                         {

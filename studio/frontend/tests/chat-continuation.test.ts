@@ -15,6 +15,7 @@ const {
   joinContinuation,
   readContinuationRequest,
   readIncompleteInfo,
+  readTextThoughtSignature,
   rejectsAssistantPrefill,
   stripContinuationOverlap,
 } = await import("../src/features/chat/utils/continuation.ts");
@@ -164,5 +165,37 @@ test("the overlap repair can eat a legitimate repeat, so local output skips it",
   assert.equal(
     `${partial} ${continuation}`,
     "Ranking them, the clear winner is the second result the second result held up best under load.",
+  );
+});
+
+test("a continuation carries the Gemini signature of the turn it resumes", () => {
+  // The sibling run drops the original assistant message, so the signature has to
+  // travel with the partial or the model history goes back to Gemini unsigned.
+  assert.equal(
+    readTextThoughtSignature([
+      { type: "text", text: "first", _google_thought_signature: "SIG-A" },
+      { type: "text", text: "second", _google_thought_signature: "SIG-B" },
+    ]),
+    "SIG-B",
+  );
+  assert.equal(
+    readTextThoughtSignature([{ type: "reasoning", text: "hmm" }]),
+    undefined,
+  );
+  assert.equal(readTextThoughtSignature([{ type: "text", text: "x" }]), undefined);
+  assert.equal(readTextThoughtSignature(undefined), undefined);
+
+  assert.deepEqual(
+    readContinuationRequest({
+      custom: { unslothContinuation: { partial: "half", thoughtSignature: "SIG" } },
+    }),
+    { partial: "half", thoughtSignature: "SIG" },
+  );
+  // An unsigned turn stays unsigned rather than gaining an empty key.
+  assert.deepEqual(
+    readContinuationRequest({
+      custom: { unslothContinuation: { partial: "half" } },
+    }),
+    { partial: "half" },
   );
 });

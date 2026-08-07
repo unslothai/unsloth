@@ -401,3 +401,95 @@ def test_the_boundary_renderer_is_shared_by_the_manual_fallback():
     assert render_prompt_with_boundary(_ChatMLTokenizer(), messages).endswith(
         "<|im_start|>assistant\n"
     )
+
+
+@pytest.mark.parametrize(
+    "format_type, opener",
+    [
+        ("llama3", "<|start_header_id|>assistant<|end_header_id|>\n\n"),
+        ("chatml", "<|im_start|>assistant\n"),
+        ("mistral", "[/INST] "),
+        ("alpaca", "### Assistant:\n"),
+        ("generic", "Assistant: "),
+    ],
+)
+def test_the_manual_formatters_resume_instead_of_opening_a_new_turn(format_type, opener):
+    """Every manual formatter closes the turn, so continuing has to splice.
+
+    These run when the tokenizer template raises or a base model has none, which is
+    exactly where a restart would otherwise be invisible.
+    """
+    from core.inference.inference import InferenceBackend
+
+    class _RaisingTokenizer:
+        chat_template = None
+
+        def apply_chat_template(self, *args, **kwargs):
+            raise ValueError("chat_template is not set")
+
+    backend = InferenceBackend.__new__(InferenceBackend)
+    backend.active_model_name = "m"
+    backend.models = {
+        "m": {
+            "tokenizer": _RaisingTokenizer(),
+            "chat_template_info": {
+                "has_template": True,
+                "format_type": format_type,
+                "special_tokens": {},
+            },
+        }
+    }
+
+    resumed = backend.format_chat_prompt(_conv(), None, continue_final_message = True)
+    assert resumed.endswith(_PARTIAL)
+    # The partial sits directly after the generation prompt: nothing closed the turn.
+    assert resumed.endswith(f"{opener}{_PARTIAL}")
+    assert backend.format_chat_prompt(_conv(), None).endswith(opener)
+
+    # A base model with no detected template takes the generic path.
+    backend.models["m"]["chat_template_info"] = {"has_template": False}
+    assert backend.format_chat_prompt(_conv(), None, continue_final_message = True).endswith(
+        f"Assistant: {_PARTIAL}"
+    )
+
+
+def test_a_text_part_partial_merges_rather_than_doubling_the_turn():
+    """The merge follows the same rule as the prompt boundary.
+
+    OpenAI-format callers may send the partial as text parts, which the continuation
+    guard accepts; a string-only merge would leave two assistant turns before the
+    tool result and strict templates reject that render.
+    """
+    conversation = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": [{"type": "text", "text": "Looking that "}]},
+    ]
+    append_assistant_turn(
+        conversation,
+        {"role": "assistant", "content": "up now.", "tool_calls": [{"id": "c1"}]},
+        continue_final_message = True,
+    )
+    assert len(conversation) == 2
+    assert conversation[-1]["content"] == "Looking that up now."
+    assert conversation[-1]["tool_calls"] == [{"id": "c1"}]
+
+
+def test_a_merge_stops_once_the_turn_is_no_longer_the_resumed_one():
+    """Self-limiting: after a tool result or a nudge the partial is not trailing."""
+    after_tool = [
+        {"role": "assistant", "content": "x", "tool_calls": [{"id": "c1"}]},
+        {"role": "tool", "content": "result"},
+    ]
+    append_assistant_turn(
+        after_tool, {"role": "assistant", "content": "y"}, continue_final_message = True
+    )
+    assert len(after_tool) == 3
+
+    after_nudge = [
+        {"role": "assistant", "content": "I will search."},
+        {"role": "user", "content": "Call the tool."},
+    ]
+    append_assistant_turn(
+        after_nudge, {"role": "assistant", "content": "z"}, continue_final_message = True
+    )
+    assert len(after_nudge) == 3

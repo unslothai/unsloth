@@ -148,6 +148,33 @@ export function isContinuableContent(
 }
 
 /**
+ * The newest Gemini text-part thoughtSignature on an assistant turn.
+ *
+ * The streaming adapter pins it onto the final text part; the continuation carries it
+ * so the resumed turn is replayed signed rather than as bare text.
+ */
+export function readTextThoughtSignature(
+  content: readonly unknown[] | undefined,
+): string | undefined {
+  if (!content) {
+    return undefined;
+  }
+  for (let i = content.length - 1; i >= 0; i -= 1) {
+    const part = content[i] as
+      | { type?: string; _google_thought_signature?: unknown }
+      | undefined;
+    if (part?.type !== "text") {
+      continue;
+    }
+    const signature = part._google_thought_signature;
+    if (typeof signature === "string" && signature) {
+      return signature;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Providers that reject a trailing assistant turn.
  *
  * Anthropic removed assistant prefill in Claude 4.6 (400 on the last message being
@@ -174,6 +201,12 @@ export const CONTINUATION_RUN_CONFIG_KEY = "unslothContinuation";
 export type ContinuationRequest = {
   /** The partial answer to resume, exactly as it was rendered. */
   partial: string;
+  /**
+   * Gemini text-part thoughtSignature from the turn being resumed. The sibling run
+   * drops the original assistant message, so replaying it here keeps the model
+   * history signed for Gemini 3's strict validation.
+   */
+  thoughtSignature?: string;
 };
 
 /** Read a continuation request out of a run's `runConfig`, if it is one. */
@@ -183,11 +216,14 @@ export function readContinuationRequest(
   const custom = (runConfig as { custom?: Record<string, unknown> } | undefined)
     ?.custom;
   const request = custom?.[CONTINUATION_RUN_CONFIG_KEY] as
-    | { partial?: unknown }
+    | { partial?: unknown; thoughtSignature?: unknown }
     | undefined;
   const partial = request?.partial;
   if (typeof partial === "string" && partial.length > 0) {
-    return { partial };
+    const signature = request?.thoughtSignature;
+    return typeof signature === "string" && signature
+      ? { partial, thoughtSignature: signature }
+      : { partial };
   }
   return null;
 }

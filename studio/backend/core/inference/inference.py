@@ -2225,19 +2225,24 @@ class InferenceBackend:
                 f"""Failed with messages: {[f"{m['role']}: {m['content'][:30]}..." for m in chat_messages]}"""
             )
 
+        # Every manual formatter closes the assistant turn and opens a new one, so a
+        # continuation renders without the partial and resumes from its text instead.
+        partial = chat_messages[-1]["content"] if _continuing else None
+        manual_messages = chat_messages[:-1] if _continuing else chat_messages
+
         if chat_template_info.get("has_template", False):
             logger.info("Falling back to manual template formatting based on detected patterns")
             template_type = chat_template_info.get("format_type", "generic")
             manual_prompt = self._format_chat_manual(
-                chat_messages,
+                manual_messages,
                 template_type,
                 chat_template_info.get("special_tokens", {}),
             )
             logger.info(f"Manual template result: {manual_prompt[:200]}...")
-            return manual_prompt
         else:
             logger.info("Using generic chat formatting for base model")
-            return self._format_generic_template(chat_messages, {})
+            manual_prompt = self._format_generic_template(manual_messages, {})
+        return f"{manual_prompt}{partial}" if partial else manual_prompt
 
     def _format_chat_manual(self, messages: list, template_type: str, special_tokens: dict) -> str:
         """Manual chat-formatting fallback when the tokenizer template fails.

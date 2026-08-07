@@ -3460,6 +3460,12 @@ export function createOpenAIStreamAdapter(
           role: "assistant",
           content: continuation.partial,
         });
+        // Replay the resumed turn's Gemini signature: the original assistant message
+        // is not in this branch, so without it the model history goes back unsigned.
+        attachAssistantThoughtSignature(
+          outboundMessages,
+          continuation.thoughtSignature,
+        );
         // Anthropic 400s when the last message is an assistant turn, so it gets an
         // instruction turn after the partial instead of a prefill.
         if (rejectsAssistantPrefill(externalProvider?.providerType)) {
