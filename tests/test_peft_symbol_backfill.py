@@ -1,12 +1,11 @@
 """Tests _backfill_missing_peft_symbols in import_fixes.py.
 
 peft's ``transformers_weight_conversion`` imports 3 names from
-``transformers.conversion_mapping`` and 8 from ``transformers.core_model_loading``
-at module top level. Unsloth stubs those submodules when absent, but an
-importable submodule can still lack individual symbols: transformers 5.0.0.dev0
-ships ``conversion_mapping`` WITHOUT ``_MODEL_TO_CONVERSION_PATTERN``, whose
+``transformers.conversion_mapping`` and 8 from ``core_model_loading`` at module
+top level. Unsloth stubs those submodules when absent, but an importable one can
+still lack individual symbols: transformers 5.0.0.dev0 ships
+``conversion_mapping`` WITHOUT ``_MODEL_TO_CONVERSION_PATTERN``, whose
 ImportError took down `import unsloth` in Ministral_3_(3B)_Reinforcement_Learning.
-
 The old guard only asked whether the submodule imported. Backfilling must be
 strictly additive: never replace a real module, never overwrite a real symbol.
 """
@@ -131,9 +130,9 @@ def test_required_symbols_match_peft_import_list():
 
 
 # ---- saying so when the stand-in is not equivalent -----------------------
-# The inert donors are the truth wherever the symbol never existed, but not for
-# a transformers 5 that has conversions and renamed one, so warn rather than
-# silently skip work peft should have done.
+# Inert donors are right wherever the symbol never existed, but not for a
+# transformers 5 that merely renamed one, so warn rather than silently skip
+# work peft should have done.
 
 
 def test_a_missing_mapping_function_is_announced():
