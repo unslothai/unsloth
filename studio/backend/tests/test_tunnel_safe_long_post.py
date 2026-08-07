@@ -338,7 +338,9 @@ def _stub_unsloth_load_over_a_resident_gguf(route, monkeypatch, *, teardown):
         "resolve_effective_chat_template_override",
         lambda model_identifier = None, user_override = None: None,
     )
-    monkeypatch.setattr(route, "_hf_offline_if_dns_dead", contextlib.nullcontext)
+    # Both guards: the load path resolves its config under the per-model one.
+    monkeypatch.setattr(route, "_hf_offline_if_unreachable", contextlib.nullcontext)
+    monkeypatch.setattr(route, "_hf_offline_if_unreachable_for", contextlib.nullcontext)
     monkeypatch.setattr(route, "_mlx_distributed_launch_detected", lambda: False)
     monkeypatch.setattr(
         route.ModelConfig,

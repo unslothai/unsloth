@@ -230,13 +230,6 @@ async fn provision_desktop_auth() -> Result<(), String> {
     cmd.args(["studio", "provision-desktop-auth"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
-    #[cfg(target_os = "linux")]
-    if std::env::var_os("APPIMAGE").is_some() {
-        cmd.env_remove("LD_LIBRARY_PATH");
-        cmd.env_remove("PYTHONHOME");
-        cmd.env_remove("PYTHONPATH");
-    }
-
     // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME.
     // Scrub so provisioning writes match what the Rust auth code reads.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
@@ -335,9 +328,7 @@ async fn desktop_auth_inner(
     if backend.source == PortSource::Discovered {
         diagnostics::record_attached_external_backend(diagnostics, backend.port);
     }
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
+    let client = crate::loopback_http::client(std::time::Duration::from_secs(5))
         .map_err(|e| format!("Desktop auth failed: {}", e))?;
 
     for attempt in 0..2 {

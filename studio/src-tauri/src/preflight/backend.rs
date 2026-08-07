@@ -155,9 +155,8 @@ fn backend_capability_stale_reason(health: &BackendHealth) -> Option<String> {
     if health.supports_desktop_backend_ownership != Some(true) {
         return Some("desktop_backend_ownership_unsupported".to_string());
     }
-    // Unauthenticated /api/health gates `version` behind a bearer; capability bits
-    // (protocol/manageability/auth/ownership) above are only set by backends >=
-    // MIN_DESKTOP_BACKEND_VERSION, so missing version means "auth-gated", not "old".
+    // Unauthenticated /api/health gates `version` behind a bearer, and the bits
+    // above predate the floor, so no version means "auth-gated", not "old".
     match health.version.as_deref() {
         Some(version) if !version.is_empty() => backend_version_stale_reason(Some(version)),
         _ => None,
@@ -170,10 +169,7 @@ struct DesktopLoginProbe<'a> {
 }
 
 pub(super) async fn probe_ownerless_spawned_backend(port: u16) -> BackendProbe {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-    {
+    let client = match crate::loopback_http::client(Duration::from_secs(2)) {
         Ok(client) => client,
         Err(_) => return BackendProbe::Missing,
     };
@@ -294,10 +290,7 @@ pub(super) async fn backend_desktop_auth_status(
 }
 
 pub(super) async fn probe_existing_backends(ignored_ports: &[u16]) -> BackendProbe {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-    {
+    let client = match crate::loopback_http::client(Duration::from_secs(2)) {
         Ok(client) => client,
         Err(_) => return BackendProbe::Missing,
     };

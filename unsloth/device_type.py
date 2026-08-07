@@ -20,12 +20,17 @@ __all__ = [
     "DEVICE_COUNT",
     "ALLOW_PREQUANTIZED_MODELS",
     "ALLOW_BITSANDBYTES",
+    "get_device_stats",
+    "clean_gpu_cache",
+    "get_current_device",
+    "resolve_hip_gpu_stats_name",
     "is_mlx_available",
 ]
 
 import functools
 import inspect
 import os
+import re
 from unsloth_zoo.utils import Version
 from .bnb_availability import native_kernels_ready
 
@@ -53,12 +58,15 @@ def is_hip():
 
 @functools.cache
 def get_device_type():
+    # MLX first: torch is never imported on the MLX runtime, so claiming "cuda" here
+    # would NameError in get_device_count. Matches unsloth/__init__.py and
+    # unsloth_zoo.device_type, which both pick MLX ahead of the CPU fallback.
+    if _IS_MLX:
+        return "mlx"
     # Test-only CPU fallback: report "cuda" so every DEVICE_TYPE == "cuda"
     # branch behaves identically. Read once per process (function is cached).
     if os.environ.get("UNSLOTH_ALLOW_CPU", "0") == "1":
         return "cuda"
-    if _IS_MLX:
-        return "mlx"
     if hasattr(torch, "cuda") and torch.cuda.is_available():
         if is_hip():
             return "hip"
@@ -179,3 +187,68 @@ if DEVICE_TYPE == "hip":
             from bitsandbytes.nn.modules import Params4bit
             if "blocksize = 64 if not HIP_ENVIRONMENT else 128" in inspect.getsource(Params4bit):
                 ALLOW_PREQUANTIZED_MODELS = False
+
+
+def resolve_hip_gpu_stats_name(gpu_stats):
+    name = str(getattr(gpu_stats, "name", "") or "").strip()
+    name = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip()
+    normalized_name = name.lower().strip(". ")
+    if normalized_name and normalized_name not in ("amd radeon graphics",):
+        return name + ". "
+
+    try:
+        torch_name = str(torch.cuda.get_device_name(0) or "").strip()
+        torch_name = re.sub(r"\s*\([^)]*\)\s*$", "", torch_name).strip()
+    except Exception:
+        torch_name = ""
+    normalized_torch_name = torch_name.lower().strip(". ")
+    if normalized_torch_name and normalized_torch_name not in ("amd radeon graphics",):
+        return torch_name + ". "
+
+    arch_name = ""
+    for key in ("gcnArchName", "gcn_arch_name", "arch_name", "gfx_arch_name"):
+        value = getattr(gpu_stats, key, None)
+        if value is not None and str(value).strip():
+            arch_name = str(value).strip()
+            break
+
+    if arch_name:
+        match = re.search(r"(gfx[0-9a-z]+)", arch_name, flags = re.I)
+        if match:
+            return f"AMD {match.group(1).lower()} GPU. "
+    return "AMD GPU. "
+
+
+_DEVICE_MODULE = None if _IS_MLX else getattr(torch, DEVICE_TYPE_TORCH, None)
+if not _IS_MLX and _DEVICE_MODULE is None:
+    raise RuntimeError(f"Unsloth: PyTorch does not provide the {DEVICE_TYPE_TORCH} backend.")
+
+
+def get_device_stats() -> tuple[str, str, float]:
+    """Return (name, stats_snippet, max_memory_gb)."""
+    if _DEVICE_MODULE is None:
+        raise RuntimeError("Unsloth: GPU statistics are unavailable on the MLX runtime.")
+    gpu_stats = _DEVICE_MODULE.get_device_properties(0)
+    max_memory = round(gpu_stats.total_memory / 1024**3, 3)
+
+    if DEVICE_TYPE == "hip":
+        name = resolve_hip_gpu_stats_name(gpu_stats)
+        snippet = f"ROCm Toolkit: {torch.version.hip}."
+    elif DEVICE_TYPE == "xpu":
+        name = gpu_stats.name + ". " if gpu_stats.name else "Intel XPU Device. "
+        snippet = f"Intel Toolkit: {torch.version.xpu}."
+    else:
+        name = gpu_stats.name + ". " if gpu_stats.name else "NVIDIA GPU Device. "
+        snippet = f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}."
+    return name, snippet, max_memory
+
+
+def clean_gpu_cache() -> None:
+    """Clear GPU cache for current device type."""
+    if _DEVICE_MODULE is not None:
+        _DEVICE_MODULE.empty_cache()
+
+
+def get_current_device() -> int:
+    """Get current device index."""
+    return 0 if _DEVICE_MODULE is None else _DEVICE_MODULE.current_device()

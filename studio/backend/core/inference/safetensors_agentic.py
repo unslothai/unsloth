@@ -492,6 +492,8 @@ def run_safetensors_tool_loop(
     bypass_permissions: bool = False,
     permission_mode: Optional[str] = None,
     reasoning_prefilled: bool = False,
+    markup = None,
+    renderable_tools = None,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -557,8 +559,23 @@ def run_safetensors_tool_loop(
     # Detection must see the same names as the strip gate (ORIGINAL list, incl. a spent
     # one-shot), else its repeat is stripped but never drained and the turn ends blank.
     _detect_tools = [] if unrestricted_tools else list(tools or [])
+    # Sanitized at construction: prepare_call authorizes against the controller, so a tool
+    # dropped from the prompt for unsafe markup must leave the controller too. The gates above
+    # keep the ORIGINAL names: those decide what LOOKS like a call, not what may run (#7066).
+    from core.inference.chat_template_helpers import neutralize_tool_descriptions
+
+    # *markup* is the same profile the renderer uses, so a tool is never dropped from the
+    # controller over a marker this model does not treat as structure. *renderable_tools*,
+    # when the caller supplies it, is the catalog safe under every template this turn could
+    # select: the native-template fallback renders with a different profile, and prepare_call
+    # must not authorize a tool that render left out of the prompt (#7066).
+    _authorized = (
+        renderable_tools
+        if renderable_tools is not None
+        else neutralize_tool_descriptions(tools, None, markup)
+    )
     tool_controller = ToolLoopController(
-        tools = None if unrestricted_tools else tools,
+        tools = (None if unrestricted_tools else _authorized),
         auto_heal_tool_calls = auto_heal_tool_calls,
     )
     # RAG: cap knowledge-base searches per assistant turn (controller-agnostic).

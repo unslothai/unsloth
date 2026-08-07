@@ -47,7 +47,7 @@ import time
 import weakref
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable, Iterator, Literal, Optional
+from typing import Callable, Iterator, Literal, Optional, Sequence
 
 from loggers import get_logger
 
@@ -58,10 +58,12 @@ logger = get_logger(__name__)
 
 from hub.utils.hf_cache_state import (
     INCOMPLETE_SUFFIX,
+    TRANSPORT_AUTO,
     TRANSPORT_HTTP,
     TRANSPORT_XET,
     TRANSPORT_MARKER_NAME,
     VALID_TRANSPORTS,
+    VALID_TRANSPORT_MODES,
     has_active_incomplete_blobs,
     iter_repo_cache_dirs,
     iter_active_repo_cache_dirs,
@@ -81,10 +83,30 @@ class DownloadTransportCapability:
 class DownloadTransportCapabilities:
     http: DownloadTransportCapability
     xet: DownloadTransportCapability
+    # What "auto" would pick right now, and why, so the picker can say
+    # "Auto (HTTP -- Xet stalled twice on this machine)" instead of just "Auto".
+    auto_resolves_to: str = TRANSPORT_XET
+    auto_reason: Optional[str] = None
 
 
-def get_download_transport_capabilities() -> DownloadTransportCapabilities:
+def get_download_transport_capabilities(*, probe: bool = False) -> DownloadTransportCapabilities:
     xet_available = importlib.util.find_spec("hf_xet") is not None
+    auto_transport = TRANSPORT_XET if xet_available else TRANSPORT_HTTP
+    auto_reason: Optional[str] = None
+    if xet_available:
+        try:
+            from utils.hf_xet_fallback import xet_health
+
+            # Default probe = False: the UI polls this endpoint, so it answers from the cached
+            # verdict and local signals. The download-start path opts in, since otherwise a host
+            # with an unreachable CAS and no recorded failures yet would learn only by stalling.
+            health = xet_health(probe = probe)
+            if health is not None:
+                auto_transport = TRANSPORT_XET if health.use_xet else TRANSPORT_HTTP
+                auto_reason = str(health.reason)
+        except Exception:
+            # No opinion: keep the optimistic default; the download-time ladder still recovers.
+            pass
     return DownloadTransportCapabilities(
         http = DownloadTransportCapability(available = True),
         xet = DownloadTransportCapability(
@@ -93,6 +115,8 @@ def get_download_transport_capabilities() -> DownloadTransportCapabilities:
             if xet_available
             else "Xet transport is unavailable because hf_xet is not installed.",
         ),
+        auto_resolves_to = auto_transport,
+        auto_reason = auto_reason,
     )
 
 
@@ -543,7 +567,17 @@ def prepare_cache_for_transport(
     the environment. Markers are written for the new mode before returning.
     """
     if mode not in VALID_TRANSPORTS:
-        raise ValueError(f"Invalid transport mode: {mode!r}")
+        if mode == TRANSPORT_AUTO:
+            # "auto" is a request preference, not a cache writer: it must be resolved to xet/http
+            # before reaching this layer. Naming it turns "invalid transport" into the actual bug.
+            raise ValueError(
+                f"{TRANSPORT_AUTO!r} must be resolved to a concrete transport before preparing the "
+                f"cache; expected one of {sorted(VALID_TRANSPORTS)}"
+            )
+        raise ValueError(
+            f"Invalid transport mode: {mode!r} (transports: {sorted(VALID_TRANSPORTS)}, "
+            f"request modes: {sorted(VALID_TRANSPORT_MODES)})"
+        )
     root = hf_cache_root(create = True) if root is None else hf_cache_root(create = True, root = root)
     if root is None:
         return 0
@@ -775,6 +809,8 @@ class DownloadMetadata:
     completed_baseline_bytes: int = 0
     hub_cache: Optional[str] = None
     xet_cache: Optional[str] = None
+    # Scoped jobs only: the exact files to fetch, kept so the XET -> HTTP retry respawns the same scoped download.
+    scoped_files: tuple[str, ...] = ()
 
 
 @dataclass(frozen = True)
@@ -951,6 +987,20 @@ class DownloadRegistry:
                 metadata = replace(metadata, transport = marker_transport)
             return terminal_state, metadata
 
+    def job_transport(self, key: str) -> Optional[str]:
+        """The transport a live job is running on. None when it has no metadata."""
+        key = normalize_job_key(key)
+        with self._lock:
+            metadata = self._metadata.get(key)
+            return metadata.transport if metadata is not None else None
+
+    def job_cancel_transport(self, key: str) -> Optional[str]:
+        """A live job's cancel marker, when a fallback left one. See metadata."""
+        key = normalize_job_key(key)
+        with self._lock:
+            metadata = self._metadata.get(key)
+            return metadata.cancel_marker_transport if metadata is not None else None
+
     def update_job_transport(self, key: str, transport: str) -> None:
         key = normalize_job_key(key)
         with self._lock:
@@ -1101,6 +1151,7 @@ class DownloadRegistry:
         cancel_marker_transport: Optional[str] = None,
         hub_cache: Optional[str] = None,
         xet_cache: Optional[str] = None,
+        scoped_files: Optional[Sequence[str]] = None,
     ) -> tuple[bool, str]:
         key = normalize_job_key(key)
         repo = _repo_of_key(key)
@@ -1153,6 +1204,15 @@ class DownloadRegistry:
                 return False, conflict_state
             current = self._jobs.get(key, DownloadState("idle")).state
             if current in _ACTIVE_STATES and not replace_active:
+                # A scope slot is shared by every file set that rides it (two quants of one repo both key as "@diffusion"), so adopting
+                # the live job would let the caller wait on files it never asked for. Reject instead, under the lock.
+                live = self._metadata.get(key)
+                if (
+                    scoped_files is not None
+                    and live is not None
+                    and sorted(set(live.scoped_files)) != sorted(set(scoped_files))
+                ):
+                    return False, "scope_file_mismatch"
                 return False, current
             if generation is None:
                 self._generation_seq += 1
@@ -1176,6 +1236,7 @@ class DownloadRegistry:
                     ),
                     hub_cache = hub_cache,
                     xet_cache = xet_cache,
+                    scoped_files = tuple(scoped_files or ()),
                 )
                 if cancel_marker_transport is not None:
                     self._cancel_marker_transports[key] = cancel_marker_transport

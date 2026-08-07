@@ -5,6 +5,34 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const ko = {
+  picker: {
+    onDevice: "기기",
+    huggingFace: "Hugging Face",
+    retry: "다시 시도",
+    loadMore: "더 불러오기",
+    offlineTitle: "오프라인 상태입니다",
+    offlineBody: "캐시된 또는 로컬 {noun}을 사용하려면 '기기'로 전환하세요.",
+    offlineSwitchDevice: "기기",
+    searchAriaLabel: "{noun} 검색",
+    modelSourceAriaLabel: "모델 소스",
+    hubSectionAriaLabel: "Hub 섹션",
+    pickModelFile: "디스크에서 모델 파일 선택",
+    ejectLoadedModel: "로드된 모델 꺼내기",
+    multipleMatches:
+      "일치하는 {noun} 항목이 여러 개 있습니다. 목록에서 하나를 선택하세요.",
+    rateLimitedTitle: "Hugging Face 요청 한도에 도달했습니다",
+    rateLimitedBody: "잠시 기다린 후 {noun} 검색을 다시 시도하세요.",
+    hfToken: {
+      label: "HF 토큰",
+      saved: "저장됨",
+      add: "추가",
+      savedAriaLabel: "Hugging Face 토큰이 저장되었습니다",
+      addAriaLabel: "Hugging Face 토큰 설정",
+      savedHint: "토큰이 저장되었습니다. 사용할 때 접근 권한을 확인합니다.",
+      addHint:
+        "비공개 및 접근 제한 리포지토리를 이용하려면 토큰을 설정하세요.",
+    },
+  },
   common: {
     cancel: "취소",
     close: "닫기",
@@ -24,7 +52,7 @@ export const ko = {
   shell: {
     beta: "BETA",
     brand: "unsloth",
-    product: "Unsloth Studio",
+    product: "Unsloth",
     accountMenu: "{name} 계정 메뉴",
     updateAvailable: "업데이트 사용 가능",
     resize: {
@@ -50,8 +78,14 @@ export const ko = {
       compare: "비교",
       search: "검색",
       hub: "모델 허브",
+      projects: "프로젝트",
       train: "학습",
       recipes: "레시피",
+      images: "이미지",
+      video: "동영상",
+      more: "더 보기",
+      customizeSidebar: "사이드바 사용자 지정",
+      newBadge: "신규",
       export: "내보내기",
       recents: "최근 항목",
       noChatsYet: "아직 채팅이 없습니다",
@@ -66,17 +100,17 @@ export const ko = {
     },
     notFound: {
       title: "페이지를 찾을 수 없습니다",
-      description: "{path} 은(는) 존재하지 않습니다.",
+      description: "{path} 경로가 존재하지 않습니다.",
       backToChat: "채팅으로 돌아가기",
     },
     dialog: {
       deleteChat: {
         title: "채팅 삭제",
-        description: '이 채팅 "{name}" 을(를) 삭제하시겠습니까?',
+        description: '이름이 "{name}"인 채팅을 삭제하시겠습니까?',
       },
       deleteRun: {
         title: "학습 실행 삭제",
-        description: '이 실행 "{name}" 을(를) 삭제하시겠습니까?',
+        description: '이름이 "{name}"인 실행을 삭제하시겠습니까?',
       },
       renameChat: {
         title: "채팅 이름 변경",
@@ -101,16 +135,168 @@ export const ko = {
       title: "설정",
       description: "Unsloth 환경설정을 관리합니다.",
       closeAriaLabel: "설정 닫기",
+      searchPlaceholder: "설정 검색…",
+      searchNoResults: "설정을 찾을 수 없습니다.",
     },
     tabs: {
       general: "일반",
       profile: "프로필",
-      appearance: "외관",
+      appearance: "모양",
       resources: "시스템",
       chat: "채팅",
       connections: "연결",
       apiKeys: "API",
       about: "정보",
+      data: "데이터",
+      agents: "에이전트",
+      voice: "음성",
+    },
+    voice: {
+      title: "음성",
+      description: "마이크, 받아쓰기, 음성 인식 및 소리 내어 읽기",
+      dictation: {
+        sectionTitle: "받아쓰기",
+        engineLabel: "받아쓰기 엔진",
+        engineBrowser: "브라우저",
+        engineBrowserDescription:
+          "브라우저의 음성 서비스로 오디오를 텍스트로 변환합니다. STT 모델을 사용하려면 '로컬 음성 인식'을 선택하세요.",
+        engineModel: "로컬 음성 인식",
+        engineModelDescription:
+          "음성 인식(STT) 모델을 로컬에서 실행하며 오프라인으로 동작합니다. 다운로드 후 로드하고, 일정 시간 사용하지 않으면 자동으로 해제됩니다.",
+        sttModelLabel: "음성 인식 모델",
+        sttModelDescription: "로컬에서 실행할 STT 모델을 선택하거나 검색하세요.",
+        sttModelSearchPlaceholder: "모델 검색",
+        sttModelSearching: "Hugging Face에서 검색 중…",
+        sttModelValidating: "Whisper 호환성 확인 중…",
+        sttModelNoResults: "Whisper 모델을 찾을 수 없습니다",
+        sttModelInvalid: "이 저장소는 받아쓰기에 사용할 수 없습니다",
+        sttModelFailed: "STT 모델을 로드하지 못했습니다",
+        sttModelUnsupported: "이 브라우저에서는 녹음을 지원하지 않습니다",
+        sttChecking: "확인 중…",
+        sttOnDemand: "다운로드됨",
+        sttLoadingModel: "모델을 로드하는 중…",
+        sttReady: "{device}에 로드됨",
+        sttLoaded: "로드됨",
+        sttUnavailable:
+          "이 서버에 설치되어 있지 않습니다. 로컬 받아쓰기를 사용하려면 `unsloth studio update`를 실행하세요.",
+        sttRetry: "다시 시도",
+        sttDownloadChecking: "다운로드 상태를 확인하는 중…",
+        sttNotDownloaded: "다운로드되지 않음",
+        sttDownloadStatusFailed: "다운로드 상태를 확인하지 못했습니다",
+        sttDownload: "다운로드",
+        sttDownloadConfirmTitle: "{model}을(를) 다운로드할까요?",
+        sttDownloadConfirmBody:
+          "로컬 받아쓰기는 완전히 오프라인으로 동작하지만, 먼저 {model} 음성 모델이 필요합니다. 약 {size} 크기이며 Hugging Face 캐시에 한 번만 다운로드합니다.",
+        sttDownloadConfirmBodyUnsized:
+          "로컬 받아쓰기는 완전히 오프라인으로 동작하지만, 먼저 {model} 음성 모델이 필요합니다. Hugging Face 캐시에 한 번만 다운로드합니다.",
+        sttOpenVoiceSettings: "음성 설정 열기",
+        sttDownloadStarted: "{model} 다운로드 중",
+        sttDownloading: "다운로드 중… {progress}%",
+        sttCancelDownload: "취소",
+        sttCancellingDownload: "취소하는 중…",
+        sttCancelDownloadFailed: "다운로드를 취소하지 못했습니다",
+        sttDownloadComplete: "음성 인식 모델을 다운로드했습니다",
+        sttModelReady: "{model}을(를) 받아쓰기에 사용할 수 있습니다",
+        sttRecommended: "권장",
+        sttDownloadFailed: "음성 인식 모델을 다운로드하지 못했습니다",
+        sttLoad: "로드",
+        sttUnload: "해제",
+        sttUnloading: "해제하는 중…",
+        microphoneLabel: "마이크",
+        microphoneFallbackName: "마이크 {index}",
+        microphoneDescription: "받아쓰기에 사용됩니다",
+        microphoneFallbackHint:
+          "받아쓰기에 사용됩니다. 브라우저 음성 엔진이 이 장치를 사용할 수 없으면 시스템 기본값으로 대체됩니다",
+        microphoneGrantDescription:
+          "장치 이름을 표시하려면 마이크 접근을 허용하세요",
+        allowMicrophone: "마이크 허용",
+        micAccessBlocked:
+          "마이크 접근이 차단되었습니다. 이 Unsloth 페이지에 마이크 접근을 허용한 뒤 다시 시도하세요.",
+        micAccessUnsupported:
+          "이 브라우저나 환경에서는 마이크 접근을 지원하지 않습니다.",
+        systemDefault: "시스템 기본값",
+        savedMicDisconnected: "저장된 마이크(연결되지 않음)",
+        languageLabel: "받아쓰기 언어",
+        languageDescription: "인식할 언어",
+        languageAuto: "자동(브라우저 언어)",
+      },
+      dictionary: {
+        sectionTitle: "받아쓰기 사전",
+        sectionDescription: "받아쓰기에서 특정 단어나 문구를 어떻게 표기할지 설정합니다",
+        manageLabel: "사용자 지정 표기",
+        manage: "관리",
+        backToVoice: "음성으로 돌아가기",
+        addEntry: "항목 추가",
+        newEntryAria: "새 받아쓰기 사전 항목",
+        entryPlaceholder: "김민지",
+        entryAria: "받아쓰기 사전 항목 {index}",
+        removeEntryAria: "받아쓰기 사전 항목 {index} 삭제",
+      },
+      recents: {
+        sectionTitle: "받아쓰기 기록",
+        sectionDescription:
+          "모든 받아쓰기가 여기에 저장되어 텍스트를 다시 찾을 수 있습니다",
+        manageLabel: "받아쓰기 기록",
+        manage: "관리",
+        pageDescription:
+          "모든 받아쓰기가 저장됩니다. 보거나 복사하거나 삭제할 수 있고, 해당 받아쓰기를 사용한 채팅을 열 수도 있습니다.",
+        searchPlaceholder: "받아쓰기 검색",
+        sortLabel: "받아쓰기 정렬",
+        sortNewest: "최신순",
+        sortOldest: "오래된순",
+        sortAlpha: "가나다순",
+        noMatches: "검색과 일치하는 받아쓰기가 없습니다",
+        detailTitle: "저장된 받아쓰기",
+        backToVoice: "음성으로 돌아가기",
+        backToRecents: "최근 받아쓰기로 돌아가기",
+        view: "받아쓰기 전체 보기",
+        empty: "아직 받아쓰기가 없습니다",
+        dictationColumn: "받아쓰기",
+        dateColumn: "생성 날짜",
+        copy: "받아쓰기 복사",
+        copied: "클립보드에 복사했습니다",
+        copyFailed: "클립보드에 복사하지 못했습니다",
+        delete: "받아쓰기 삭제",
+        deleteTitle: "받아쓰기 삭제",
+        deleteDescription:
+          "저장된 이 받아쓰기를 삭제할까요? 되돌릴 수 없습니다.",
+        deleteLinkedDescription:
+          "저장된 이 받아쓰기를 삭제할까요? 이 받아쓰기가 사용된 채팅도 함께 삭제할 수 있습니다. 되돌릴 수 없습니다.",
+        deleteWithChat: "채팅과 받아쓰기 삭제",
+        deleteWithChatFailed: "채팅을 삭제하지 못했습니다",
+        clear: "기록 지우기",
+        clearTitle: "받아쓰기 기록 지우기",
+        clearDescription:
+          "저장된 받아쓰기를 모두 삭제할까요? 되돌릴 수 없습니다.",
+        clearConfirm: "모두 지우기",
+        showMore: "더 보기({count})",
+        openChat: "채팅 열기",
+      },
+      readAloud: {
+        sectionTitle: "소리 내어 읽기",
+        buttonLabel: "소리 내어 읽기 버튼",
+        buttonDescription: "어시스턴트 응답에 표시",
+        engineLabel: "TTS 엔진",
+        engineSystemDescription: "기기 내장 음성",
+        engineStudioDescription: "로드된 오디오 모델을 사용합니다(예: Orpheus)",
+        engineSystem: "시스템 음성",
+        engineStudio: "TTS 모델 로드",
+        modelLabel: "TTS 모델",
+        modelDescription:
+          "모델 선택기에서 오디오 모델을 로드하세요(예: Orpheus TTS)",
+        voiceLabel: "음성",
+        voiceDescription: "이 기기에서 가장 좋은 음성",
+        speedLabel: "속도",
+        pitchLabel: "음높이",
+        volumeLabel: "볼륨",
+        previewLabel: "음성 미리 듣기",
+        previewDescription: "짧은 샘플을 재생합니다",
+        previewAction: "미리 듣기",
+        previewFailed: "TTS 미리 듣기에 실패했습니다",
+        stopAction: "정지",
+        ttsLabel: "텍스트 음성 변환",
+        notSupported: "이 브라우저에서는 지원되지 않습니다",
+      },
     },
     general: {
       title: "일반",
@@ -121,6 +307,8 @@ export const ko = {
         "게이트된 모델을 불러오고 아티팩트를 푸시하는 데 사용됩니다.",
       hideToken: "토큰 숨기기",
       showToken: "토큰 표시",
+      clearToken: "지우기",
+      checkingToken: "토큰 확인 중...",
       tokenValidated: "토큰이 확인되었습니다",
       password: "비밀번호",
       passwordDescription: "이 Unsloth 계정의 비밀번호를 변경합니다.",
@@ -129,6 +317,13 @@ export const ko = {
         title: "비밀번호 변경",
         description:
           "현재 비밀번호를 입력하고 새 비밀번호를 선택하세요(최소 {minLength}자).",
+        setTrigger: "원격 비밀번호 설정",
+        setTitle: "원격 비밀번호 설정",
+        setDescription:
+          "원격 브라우저가 unsloth 계정으로 로그인할 때 사용할 비밀번호를 선택하세요(최소 {minLength}자). Unsloth 데스크톱 앱은 계속 자동으로 로그인합니다.",
+        setSubmit: "비밀번호 설정",
+        setting: "설정 중...",
+        setDone: "비밀번호가 설정되었습니다.",
         currentPassword: "현재 비밀번호",
         newPassword: "새 비밀번호",
         confirmPassword: "새 비밀번호 확인",
@@ -141,6 +336,7 @@ export const ko = {
         updating: "업데이트 중...",
         updated: "비밀번호가 업데이트되었습니다.",
         updateFailed: "비밀번호 업데이트에 실패했습니다.",
+        newHasSpaces: "새 비밀번호에는 공백을 넣을 수 없습니다.",
       },
       chatDefaults: "채팅 기본값",
       autoTitleNewChats: "새 채팅 제목 자동 생성",
@@ -160,17 +356,23 @@ export const ko = {
         sectionTitle: "모델 자동 전환 (OpenAI API)",
         enable: "요청에 따라 모델 전환",
         enableDescription:
-          "OpenAI 호환 요청이 다운로드된 다른 GGUF를 지정하면, 응답하기 전에 해당 모델을 불러옵니다. 기본값은 꺼짐이며, 알 수 없는 이름은 불러온 모델을 계속 제공합니다.",
+          "API 요청에 지정된 GGUF가 다운로드되어 있으면 응답 전에 해당 모델을 불러옵니다. 기본값은 꺼짐입니다.",
         idleUnload: "유휴 시 자동 해제",
         idleUnloadDescription:
           "지정한 유휴 시간(초)이 지나면 모델을 해제하여 VRAM을 확보합니다. 다음 요청 시 다시 불러옵니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",
-        idleNeedsEnable:
-          "해제된 모델이 다음 사용 시 다시 로드되도록 하려면 요청에 따라 모델 전환을 켜세요.",
+        idleSecondsAriaLabel: "유휴 시 자동 해제까지의 시간(초)",
+        idleNeedsEnable: "먼저 ‘요청에 따라 모델 전환’을 켜세요.",
         idleActiveViaEnv:
           "유휴 시 자동 해제가 UNSLOTH_MODEL_IDLE_TTL 환경 변수를 통해 활성화되어 있습니다.",
         loadError: "모델 자동 전환 설정을 불러오지 못했습니다.",
         saveError: "모델 자동 전환 설정을 저장하지 못했습니다.",
         idleError: "모델을 로드 상태로 유지하려면 0을, 그렇지 않으면 60초 이상을 입력하세요.",
+        autoDownload: "아직 받지 않은 모델 다운로드",
+        autoDownloadDescription:
+          "API 요청에 지정되었지만 아직 내려받지 않은 GGUF를 가져옵니다. 그러면 API 키가 있는 사람은 누구나 디스크와 대역폭을 사용할 수 있습니다.",
+        keepKv: "유휴 해제 후에도 채팅 컨텍스트 유지",
+        keepKvDescription:
+          "유휴 해제 전에 KV 캐시를 저장해, 이어서 하는 채팅이 기록을 다시 읽지 않도록 합니다. 디스크를 최대 10GB 사용합니다.",
       },
       previewSharing: {
         sectionTitle: "미리보기 공유",
@@ -242,6 +444,12 @@ export const ko = {
           "로컬 전용 환경설정을 지우고 Unsloth를 다시 로드합니다. 채팅, API 접근 권한, DB 기반 설정은 유지됩니다.",
         confirmAction: "재설정 후 다시 로드",
       },
+      permissions: {
+        sectionTitle: "권한",
+        bypassLabel: "도구 권한",
+        bypassDescription:
+          "채팅의 도구 호출(터미널, python, 웹, MCP)을 실행하기 전에 Unsloth가 승인하는 방식입니다. “Full access”를 선택하면 승인과 코드 샌드박스가 꺼집니다.",
+      },
     },
     profile: {
       title: "프로필",
@@ -265,10 +473,73 @@ export const ko = {
         "이번 세션에서는 사진이 업데이트되었지만, 다시 로드하면 유지되지 않을 수 있습니다.",
       photoUpdateErrorTitle: "프로필 사진을 업데이트할 수 없습니다",
       imageUseError: "이 이미지를 사용할 수 없습니다.",
+      uploadPhoto: "사진 업로드",
+      removePhoto: "제거",
+      pictureOptions: "프로필 사진 옵션",
+      greetingSloth: "인사말에 나무늘보 표시",
+      greetingSlothDescription: "채팅 인사말에 나무늘보를 표시합니다.",
+      noPicture: "프로필 사진 없음",
+      noneLabel: "없음",
+      stats: {
+        title: "내 통계",
+        subtitle:
+          "아래 내용은 모두 본인의 기록을 바탕으로 계산됩니다. 아무것도 수집하거나 Unsloth로 전송하지 않습니다.",
+        retry: "다시 시도",
+        privacyNote:
+          "통계는 사용 중인 Unsloth에 저장된 채팅 및 학습 기록을 바탕으로 계산됩니다. 아무것도 수집하지 않으며, Unsloth나 제3자에게 전송하지 않습니다.",
+        emptyChats:
+          "아직 채팅이 없습니다. 대화를 시작하면 여기에 통계가 채워집니다.",
+        lifetimeTokens: "누적 토큰",
+        peakTokens: "최고 기록일",
+        longestChat: "가장 긴 채팅",
+        currentStreak: "현재 연속 기록",
+        longestStreak: "최장 연속 기록",
+        activityTitle: "토큰 활동",
+        activityDescription: "최근 {weeks} 동안 {total}",
+        mode: {
+          daily: "일별",
+          weekly: "주별",
+          cumulative: "누적",
+        },
+        cellTooltip: "{date} · {tokens}, {messages}",
+        weekTooltip: "{date} 주간 · {tokens}",
+        less: "적음",
+        more: "많음",
+        insightsTitle: "활동 분석",
+        totalChats: "전체 채팅",
+        totalMessages: "전체 메시지",
+        tokensIn: "보낸 토큰",
+        tokensOut: "생성된 토큰",
+        cachedTokens: "캐시된 토큰",
+        cachedValue: "{tokens}(입력의 {percent}%)",
+        avgTokensPerChat: "채팅당 평균 토큰",
+        timeInChat: "채팅 시간",
+        activeDays: "활동 일수",
+        toolCalls: "도구 호출",
+        attachments: "첨부한 파일",
+        avgSpeed: "평균 속도",
+        bestSpeed: "가장 빠른 응답",
+        firstToken: "첫 토큰까지 평균 시간",
+        tokensPerSecond: "{value} tok/s",
+        topModelsTitle: "가장 많이 쓴 모델",
+        topModelsDescription: "주고받은 토큰 기준 순위",
+        modelSummary: "{tokens} · {messages}",
+        noModels: "아직 모델 사용 기록이 없습니다.",
+        trainingTitle: "학습",
+        trainingDescription: "이 작업 공간의 파인튜닝 실행",
+        trainingRuns: "실행",
+        trainingCompleted: "완료",
+        trainingSteps: "스텝",
+        trainingTokens: "학습한 토큰",
+        trainingTime: "학습 시간",
+        bestLoss: "최저 loss",
+        runSteps: "{steps}",
+        runLoss: "loss {loss}",
+      },
     },
     appearance: {
       title: "외관",
-      description: "이 기기에서 Unsloth Studio가 표시되는 방식입니다.",
+      description: "이 기기에서 Unsloth가 표시되는 방식입니다.",
       theme: {
         title: "테마",
         label: "색상 구성",
@@ -276,6 +547,93 @@ export const ko = {
         system: "시스템",
         light: "라이트",
         dark: "다크",
+      },
+      palette: {
+        label: "색상 팔레트",
+        description: "라이트 모드와 다크 모드에서 Unsloth 전반에 쓰이는 색상입니다.",
+        standard: "표준",
+        classic: "클래식",
+        minimal: "미니멀",
+      },
+      custom: {
+        reset: "초기화",
+        resetAll: "사용자 지정 초기화",
+        preferencesTitle: "환경설정",
+        colors: {
+          lightGroup: "라이트 테마",
+          darkGroup: "다크 테마",
+          accent: "강조색",
+          background: "배경",
+          foreground: "전경",
+        },
+        fontDefault: "기본",
+        fontBundledGroup: "기본 제공",
+        fontImportedGroup: "가져온 글꼴",
+        fontDeviceGroup: "이 기기",
+        fontFolderGroup: "폴더에서",
+        fontDeviceLoading: "기기 글꼴을 찾는 중…",
+        fontSearch: "글꼴 검색…",
+        fontNoResults: "글꼴을 찾을 수 없습니다.",
+        colorPicker: {
+          hue: "색조",
+          hex: "16진수 색상",
+          eyedropper: "화면에서 색상 선택",
+        },
+        uiFont: {
+          label: "UI 글꼴",
+        },
+        headingFont: {
+          label: "제목 글꼴",
+        },
+        chatFont: {
+          label: "채팅 글꼴",
+        },
+        codeFont: {
+          label: "코드 글꼴",
+        },
+        importFont: {
+          upload: "업로드",
+          scanFolder: "폴더 선택",
+          alreadyAvailable:
+            "이 글꼴은 이미 있으므로 기존 사본을 사용합니다.",
+          folderNoFonts: "해당 폴더에서 글꼴 파일을 찾을 수 없습니다.",
+          remove: "제거",
+          errorInvalidType:
+            "지원하지 않는 파일 형식입니다. .woff2, .woff, .ttf 또는 .otf를 사용하세요.",
+          errorTooLarge: "글꼴 파일이 너무 큽니다(최대 1.5MB).",
+          errorLimit: "글꼴은 최대 3개까지 가져올 수 있습니다.",
+          errorStorageFull:
+            "이 글꼴을 저장할 로컬 저장 공간이 부족합니다. 가져온 글꼴을 먼저 제거하세요.",
+          errorFailed: "이 글꼴 파일을 불러올 수 없습니다.",
+        },
+        uiFontSize: {
+          label: "UI 글꼴 크기",
+          description: "Unsloth UI에 쓰이는 기본 크기를 조정합니다.",
+        },
+        codeFontSize: {
+          label: "코드 글꼴 크기",
+          description: "코드에 쓰이는 기본 크기를 조정합니다.",
+        },
+        fontSmoothing: {
+          label: "글꼴 다듬기",
+          description: "글꼴 안티앨리어싱을 사용합니다.",
+        },
+        contrast: {
+          label: "대비",
+          description: "테두리와 보조 텍스트의 강도입니다.",
+        },
+        reduceMotion: {
+          label: "동작 줄이기",
+          description: "애니메이션을 줄이거나 시스템 설정을 따릅니다.",
+          system: "시스템",
+          on: "켜기",
+          off: "끄기",
+        },
+        pointerCursors: {
+          label: "포인터 커서 사용",
+          description:
+            "상호작용 요소 위에 마우스를 올리면 커서를 포인터로 바꿉니다.",
+        },
       },
       language: {
         title: "언어",
@@ -289,6 +647,21 @@ export const ko = {
         compactSidebarDescription:
           "사이드바를 아이콘으로 접지 않고 펼친 상태로 유지합니다.",
       },
+      sidebarNav: {
+        title: "사이드바 탐색",
+        description:
+          "사이드바 탭을 고정하고 순서를 바꿉니다. 고정하지 않은 탭은 ‘더 보기’ 메뉴에 모입니다. 고정하지 않은 탭이 하나뿐이면 항목이 하나뿐인 메뉴를 만들지 않고 그 탭을 숨깁니다. 새 채팅은 항상 고정됩니다.",
+        dragToReorder: "끌어서 순서 변경",
+        pinToSidebar: "{name}을(를) 사이드바에 고정",
+        moreHolds: "더 보기({count})",
+      },
+      sidebarMenu: {
+        title: "사이드바 메뉴",
+        description:
+          "사이드바 프로필 메뉴의 항목을 표시하거나 숨기고 순서를 바꿉니다. 설정, 도움말, 로그아웃, 종료는 고정됩니다.",
+        darkModeToggle: "다크 모드 전환",
+        dragToReorder: "끌어서 순서 변경",
+      },
     },
     resources: {
       title: "시스템",
@@ -298,6 +671,12 @@ export const ko = {
       disableOverlay: "오버레이 비활성화",
       liveMonitor: {
         title: "실시간 모니터",
+        apiTitle: "API 모니터",
+        summary: "진행 중인 요청, 오류 및 토큰 사용량",
+        status: "진행 중 {active}개 · 최근 {recent}개 · {model}",
+        noModelLoaded: "로드된 모델 없음",
+        autoOpen: "플로팅 모니터 자동 표시",
+        autoOpenDescription: "API 트래픽이 들어오면 작은 패널을 엽니다.",
         cpu: "CPU",
         ram: "RAM",
         disk: "디스크",
@@ -305,17 +684,19 @@ export const ko = {
         cpuCores: "논리 {logical}개 / 물리 {physical}개 코어",
         currentLoad: "현재 부하",
         free: "{value} 여유",
-        noGpu: "표시된 GPU 없음",
+        noGpu: "인식되는 GPU 없음",
       },
       gpu: {
         title: "GPU 장치",
-        noGpu: "표시된 GPU가 감지되지 않았습니다. 위에 CPU 전용 리소스가 표시됩니다.",
+        ggufInference: "GGUF 추론",
+        unavailable: "사용할 수 없음",
+        noGpu: "인식되는 GPU가 없습니다. 위에는 CPU 관련 리소스만 표시됩니다.",
         unknownDevice: "알 수 없는 GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
         used: "{value} 사용 중",
         free: "{value} 여유",
-        total: "{value} 전체",
+        total: "총 {value}",
       },
       storage: {
         title: "저장소",
@@ -325,12 +706,23 @@ export const ko = {
         modelsFolder: "모델 폴더",
         modelsFolderKeywords:
           "모델 폴더 디렉터리 디렉토리 경로 위치 저장 다운로드 캐시 저장소 디스크 드라이브 이동 변경 models folder path hugging face",
-        modelsFolderDescription: "다운로드한 모델이 저장되는 위치입니다.",
+        modelsFolderDescription:
+          "다운로드한 모델이 저장되는 위치입니다. 시스템 드라이브에 모델을 저장하지 않으려면 위치를 변경하세요.",
         openAction: "열기",
         copyAction: "경로 복사",
         copied: "경로가 복사되었습니다",
         openError: "폴더를 열지 못했습니다",
         copyError: "경로를 복사하지 못했습니다",
+        futureDownloads: "새 다운로드만",
+        environmentManaged: "{variable} 환경 변수로 관리됩니다.",
+        locationFree: "{free} 남음",
+        changeAction: "변경",
+        resetAction: "기본값 사용",
+        chooseTitle: "모델 다운로드 위치 선택",
+        chooseAction: "앞으로의 다운로드에 사용",
+        cacheSaved: "모델 다운로드 위치를 변경했습니다",
+        cacheSaveError: "모델 다운로드 위치를 변경하지 못했습니다",
+        cachePickerError: "폴더 선택 창을 열지 못했습니다",
       },
       environment: {
         title: "환경",
@@ -344,12 +736,130 @@ export const ko = {
         unknown: "알 수 없음",
       },
     },
+    agents: {
+      title: "에이전트",
+      description:
+        "unsloth start로 Claude Code, Codex 같은 코딩 에이전트를 로컬 모델에 연결하세요.",
+      intro:
+        "명령은 Claude Code, Codex, Hermes, OpenClaw, OpenCode를 비롯한 에이전트를 Unsloth가 로컬에서 제공하는 모델에 완전히 오프라인으로 연결합니다. OpenAI 호환 서버를 실행하며 에이전트의 설정 파일은 전혀 건드리지 않습니다.",
+      readDocs: "문서 보기",
+      copy: "복사",
+      copied: "복사됨",
+      commandBuilder: "명령 빌더",
+      agent: "코딩 에이전트",
+      model: "모델",
+      searchModels: "GGUF 모델 검색...",
+      noModels: "일치하는 GGUF 모델이 없습니다.",
+      showingModels:
+        "전체 {total}개 중 {shown}개를 표시하고 있습니다. 계속 입력하면 목록이 좁혀집니다.",
+      quantization: "양자화",
+      loadingQuantizations: "양자화 목록을 불러오는 중...",
+      noQuantizations: "별도 양자화 없음",
+      recommended: "권장",
+      downloaded: "다운로드됨",
+      quantizationLoadError:
+        "양자화 목록을 불러오지 못했습니다. 명령은 사용 가능한 모델 값을 사용합니다.",
+      generatedCommand: "생성된 명령",
+      docs: "문서",
+      agentDocs: "{agent} 설정 문서 열기",
+      copyGeneratedCommand: "생성된 명령 복사",
+      modelNote:
+        "Codex에는 llama-server가 제공하는 GGUF 모델이 필요합니다. 다른 에이전트는 transformers 기반 모델도 사용할 수 있습니다. Unsloth에 이미 로드된 모델을 쓰려면 --model을 빼세요.",
+      subagent: {
+        title: "로컬 모델을 서브에이전트로 사용",
+        description:
+          "{agent}는 현재 모델을 유지한 채, 선택한 작업만 이 로컬 Unsloth 모델에 위임합니다.",
+        setupCommand: "설정 명령",
+        copySetupCommand: "서브에이전트 설정 명령 복사",
+        usagePrompt: "그런 다음 {agent}에서 다음과 같이 입력하세요:",
+        copyUsagePrompt: "서브에이전트 사용 프롬프트 복사",
+        defaultPrompt: "로컬 에이전트를 실행해 이 함수를 구현해 줘.",
+        opencodePrompt: "@unsloth 이 테스트 실패의 원인을 찾아줘",
+      },
+      quickstart: {
+        title: "명령 만들기",
+        description:
+          "Studio에 현재 로드된 모델로 에이전트를 실행합니다. 먼저 모델을 로드한 다음 claude를 아래 지원되는 에이전트로 바꾸세요.",
+        noneDetected: "PATH에서 지원되는 에이전트 CLI를 찾지 못했습니다.",
+        installed: "설치됨",
+      },
+      supportedAgents: {
+        title: "지원되는 에이전트",
+        description: "각 에이전트는 고유한 명령으로 실행됩니다:",
+        requiresGguf: "GGUF 모델 필요",
+      },
+      models: {
+        title: "모델 선택",
+        description:
+          "--model로 모델과 양자화를 지정하고, --context-length로 컨텍스트 창을 설정하세요. 양자화 접미사를 쓰거나 --gguf-variant 플래그를 명시하면 됩니다.",
+        suffixLabel: "양자화 접미사 사용",
+        variantLabel: "변형 플래그 명시",
+      },
+      options: {
+        title: "주요 옵션",
+        description:
+          "Unsloth 플래그가 먼저 처리되고, 인식되지 않은 값은 그대로 에이전트에 전달됩니다.",
+        model:
+          "모델을 선택합니다. --model이 없으면 unsloth start는 Studio에 현재 로드된 모델을 사용하며, 로드된 모델이 없으면 오류가 납니다.",
+        contextLength:
+          "요청할 컨텍스트 길이를 설정합니다(별칭: --max-seq-length).",
+        ggufVariant: "GGUF 양자화 변형을 선택합니다.",
+        loadIn4bit: "Hugging Face 모델의 4비트 로딩을 켜거나 끕니다.",
+        tensorParallel: "여러 GPU에 걸친 텐서 병렬 처리를 켜거나 끕니다.",
+        serve: "자동 로컬 서버를 켜거나 끕니다.",
+        launch: "에이전트를 실행하거나, 명령과 환경 변수만 출력합니다.",
+        persist:
+          "Unsloth가 관리하는 에이전트 저장소를 실행 사이에 유지합니다.",
+        asSubagent:
+          "상위 에이전트는 현재 모델을 유지하고 Unsloth를 로컬 서브에이전트로 등록합니다(Claude Code, Codex, OpenCode).",
+        apiKey:
+          "Unsloth API 키를 지정합니다(또는 UNSLOTH_API_KEY 환경 변수를 설정합니다).",
+        yolo: "승인 확인을 건너뜁니다. 신뢰할 수 있는 환경에서만 사용하세요.",
+      },
+      remote: {
+        title: "원격 Studio에 연결",
+        description:
+          "실행 전에 다음을 설정하면 unsloth start를 다른 곳에서 실행 중인 Studio로 연결할 수 있습니다(또는 --api-key를 직접 전달):",
+      },
+      passthrough: {
+        title: "에이전트에 인자 전달",
+        description:
+          "Unsloth 플래그 뒤의 인자는 에이전트 자체로 전달되므로 resume 같은 기본 명령도 그대로 동작합니다:",
+      },
+      dryRun: {
+        title: "실행하지 않고 미리 보기",
+        description:
+          "--no-launch를 붙이면 에이전트를 실행하는 대신 환경 변수와 명령을 출력합니다. --model이 설정되어 있으면 모델은 그래도 확인되고 로드될 수 있습니다.",
+      },
+    },
     chat: {
       title: "채팅",
-      description: "이 기기에 저장된 채팅 기록을 관리합니다.",
+      description: "이 기기에서 채팅이 작동하는 방식을 사용자 지정합니다.",
+      modelSelection: {
+        title: "모델 선택 설정",
+        expandQuantizations: "양자화 펼치기",
+        expandQuantizationsDescription:
+          "켬: ‘On Device’의 GGUF 모델 양자화 옵션을 즉시 표시합니다. 끔: 모델을 클릭하면 양자화 옵션이 표시됩니다.",
+        showAllQuantizations: "모든 양자화 표시",
+        showAllQuantizationsDescription:
+          "켬: 아직 다운로드하지 않은 항목을 포함해 ‘On Device’의 모든 양자화를 표시합니다. 끔: 다운로드한 양자화만 표시합니다.",
+      },
+      menu: {
+        title: "채팅 메뉴",
+        description:
+          "채팅의 + 사이드 메뉴에 항목을 고정합니다. 나머지 항목은 ‘더 보기’로 이동합니다.",
+        chatWithFiles: "파일과 채팅(RAG)",
+        mcp: "MCP",
+        savedPrompts: "저장된 프롬프트",
+        compareChat: "채팅 비교",
+        exportChat: "채팅 내보내기",
+      },
+      showResponseModel: "응답 모델 표시",
+      showResponseModelDescription:
+        "어시스턴트 응답에 모델 메타데이터를 표시합니다.",
       modelDisclaimer: "모델 고지 표시",
       modelDisclaimerDescription:
-        '채팅 상자 아래에 "LLM은 실수를 할 수 있습니다"를 표시합니다.',
+        '채팅 상자 아래에 "LLMs can make mistakes" 문구를 표시합니다.',
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "HTML 블록 접기",
@@ -417,6 +927,55 @@ export const ko = {
         "저장소 지우기에 실패했습니다. {count}개의 채팅이 남아 있을 수 있습니다. 다시 시도하세요.",
       failedToClearChats: "채팅 지우기에 실패했습니다",
     },
+    data: {
+      title: "데이터",
+      backToData: "데이터로 돌아가기",
+      exportFailed: "채팅을 내보내지 못했습니다",
+      description:
+        "이 기기에 저장된 채팅 기록과 업로드한 파일을 관리합니다.",
+      archivedChats: "보관된 채팅",
+      archivedChatsDescription: "보관한 채팅을 확인하고 관리합니다.",
+      manageAction: "관리",
+      exportArchivedChats: "내보내기",
+      exportingArchivedChats: "내보내는 중...",
+      exportedOneArchivedChat: "보관된 채팅 1개를 내보냈습니다",
+      exportedArchivedChatCount: "보관된 채팅 {count}개를 내보냈습니다",
+      noArchivedChatsToExport: "내보낼 보관된 채팅이 없습니다.",
+      failedToExportArchivedChats: "보관된 채팅을 내보내지 못했습니다",
+      archiveAllChats: "모든 채팅 보관",
+      archiveAllChatsDescription:
+        "최근 항목과 프로젝트의 모든 채팅을 보관함으로 옮깁니다.",
+      noChatsToArchive: "보관할 채팅이 없습니다.",
+      archiveAllAction: "모두 보관",
+      archivingAction: "보관하는 중...",
+      archiveAllChatsTitle: "모든 채팅을 보관할까요?",
+      archiveAllChatsConfirmDescription:
+        "이 기기의 모든 채팅을 보관함으로 옮깁니다. 보관된 채팅은 계속 사용할 수 있고 언제든지 보관을 해제할 수 있습니다.",
+      archivedAllChats: "모든 채팅을 보관했습니다",
+      archivedOneChat: "채팅 1개를 보관했습니다",
+      archivedChatCount: "채팅 {count}개를 보관했습니다",
+      failedToArchiveChats: "채팅을 보관하지 못했습니다",
+      confirmBeforeDeleting: "삭제 전 확인",
+      confirmBeforeDeletingDescription:
+        "채팅을 삭제하기 전에 확인을 요청합니다. 끄면 즉시 삭제합니다.",
+      filesSection: "파일",
+      uploadedFiles: "업로드한 파일",
+      uploadedFilesDescription:
+        "채팅, 프로젝트, 지식 베이스에 업로드한 파일을 확인하고 관리합니다.",
+      fineTuneExport: "채팅을 학습 데이터로 사용",
+      fineTuneExportDescription:
+        "채팅으로 파인튜닝용 JSONL 데이터셋을 만듭니다. 학습에서 불러오거나, 레시피에서 다듬거나, 그대로 내보낼 수 있습니다.",
+      fineTuneExportAction: "JSONL 내보내기",
+      fineTuneRunAction: "실행",
+      fineTuneExportingAction: "내보내는 중...",
+      fineTuneOpenRecipesAction: "레시피에서 열기",
+      fineTuneOpeningRecipesAction: "여는 중...",
+      fineTuneTrainAction: "학습 탭으로 불러오기",
+      fineTuneTrainingAction: "불러오는 중...",
+      fineTuneExportFailed: "학습 데이터를 내보내지 못했습니다",
+      fineTuneRecipeFailed: "레시피에서 채팅을 열지 못했습니다",
+      fineTuneTrainFailed: "학습 탭에 데이터셋을 불러오지 못했습니다",
+    },
     connections: {
       title: "연결",
       description: "제공자 및 외부 연결을 관리합니다.",
@@ -425,11 +984,11 @@ export const ko = {
       title: "API",
       description: "OpenAI 호환 API를 통해 Unsloth에 접근합니다.",
       readDocs: "API 문서 읽기",
-      noAccess: "아직 API 접근 권한이 없습니다.",
+      noAccess: "아직 액세스 토큰이 없습니다.",
       accessTokens: "액세스 토큰",
       loadError: "API 접근 권한을 불러오지 못했습니다.",
       createError: "액세스 토큰을 생성하지 못했습니다.",
-      revokeError: "액세스 토큰을 취소하지 못했습니다.",
+      revokeError: "액세스 토큰을 폐기하지 못했습니다.",
       never: "만료 없음",
       tokenNamePlaceholder: "토큰 이름(예: production)",
       newAccessTokenName: "새 액세스 토큰 이름",
@@ -438,7 +997,7 @@ export const ko = {
       newTokenCreated: "새 액세스 토큰이 생성되었습니다",
       accessTokenCopied: "액세스 토큰이 복사되었습니다",
       copyAccessToken: "액세스 토큰 복사",
-      copyNow: "지금 복사하세요 - 다시 표시되지 않습니다.",
+      copyNow: "지금 복사하세요. 이 토큰은 다시 표시되지 않습니다.",
       usageExamples: "사용 예시",
       usageTools: "도구",
       exampleCurlTools: "curl + 도구",
@@ -451,7 +1010,7 @@ export const ko = {
       osWindows: "Windows",
       secureHttps: "보안 HTTPS",
       secureHttpsHint:
-        "0.0.0.0 포트는 여전히 전역에서 접근할 수 있습니다. 완전한 보안을 위해서는 --secure로 Unsloth Studio를 실행하여 이 HTTPS 링크만 노출하세요.",
+        "0.0.0.0 포트는 여전히 전역에서 접근할 수 있습니다. 완전한 보안을 위해서는 --secure로 Unsloth를 실행하여 이 HTTPS 링크만 노출하세요.",
       copyTunnelUrl: "터널 URL 복사",
       copySnippet: "스니펫 복사",
       copy: "복사",
@@ -459,41 +1018,41 @@ export const ko = {
       setupDocs: "설정 문서:",
       codingAgents: "코딩 에이전트",
       codingAgentsHint:
-        "이 서버를 대상으로 코딩 에이전트를 실행합니다. 로드된 모델을 사용하며, 로컬 서버는 API 키를 자동으로 발급하고 원격 서버는 명령에 포함합니다.",
+        "이 서버에 연결된 코딩 에이전트를 실행합니다. 로드된 모델을 사용하며, 로컬 서버에서는 API 키를 자동으로 발급하고 원격 서버에서는 명령에 API 키를 포함합니다.",
       codingAgentsSwap: "claude를 codex, openclaw, opencode 또는 hermes로 바꾸세요.",
       codingAgentDetected: "이 컴퓨터에 설치됨",
       codingAgentsDetectedHint: "이 컴퓨터에서 감지됨: {agents}.",
       relativeNever: "없음",
       relativeJustNow: "방금",
-      relativeHoursAgo: "{count}시간 전",
-      relativeDaysAgo: "{count}일 전",
-      relativeMonthsAgo: "{count}개월 전",
-      relativeYearsAgo: "{count}년 전",
       expired: "만료됨",
       today: "오늘",
-      inDays: "{count}일 후",
-      created: "{value}에 생성됨",
-      used: "{value}에 사용됨",
-      expires: "{value}에 만료됨",
+      created: "생성: {value}",
+      used: "마지막 사용: {value}",
+      expires: "만료: {value}",
       actionsFor: "{name} 작업",
       copyPrefix: "접두사 복사",
-      revokeToken: "토큰 취소",
-      revokeTitle: '액세스 토큰 "{name}" 을(를) 취소하시겠습니까?',
+      revokeToken: "토큰 폐기",
+      revokeTitle: '액세스 토큰 "{name}"을 폐기하시겠습니까?',
       revokeDescription:
         "이 토큰을 사용하는 앱은 즉시 접근 권한을 잃습니다. 이 작업은 되돌릴 수 없습니다.",
-      revokeAction: '"{name}" 취소',
-      revoking: "취소 중...",
+      revokeAction: '"{name}" 폐기',
+      revoking: "폐기 중...",
+      usageNoModel:
+        "모델을 로드하거나 다운로드하면 실행 가능한 예제가 표시됩니다. 이 서버에는 아직 지정할 모델이 없습니다.",
     },
     about: {
       title: "정보",
       description: "문서, 릴리스 노트, 피드백 및 빌드 정보입니다.",
       studioVersion: "Unsloth 버전",
       packageVersion: "패키지 버전",
+      desktopAppVersion: "데스크톱 앱 버전",
+      desktopAppVersionUnavailable: "확인할 수 없음",
       llamaCppVersion: "llama.cpp 버전",
       hardware: "하드웨어",
       gpu: "GPU",
       cuda: "CUDA",
       rocm: "ROCm",
+      xpu: "XPU",
       updates: "업데이트",
       help: "도움말",
       documentation: "문서",
@@ -503,20 +1062,20 @@ export const ko = {
       reportIssue: "문제 보고",
       license: {
         sectionTitle: "라이선스",
-        studioLabel: "Unsloth Studio",
+        studioLabel: "Unsloth",
         studioLicense: "AGPL-3.0",
-        studioDescription: "GNU AGPL v3.0 하에 오픈 소스입니다.",
+        studioDescription: "GNU AGPL v3.0에 따라 공개된 오픈 소스입니다.",
         libraryLabel: "Unsloth Core",
         libraryLicense: "Apache-2.0",
-        libraryDescription: "Apache 2.0 하에 라이선스가 부여됩니다.",
+        libraryDescription: "Apache 2.0 라이선스에 따라 배포됩니다.",
       },
       dangerZone: "위험 구역",
-      shutDownStudio: "Unsloth Studio 종료",
+      shutDownStudio: "Unsloth 종료",
       shutDownStudioDescription:
         "Unsloth 서버를 중지하고 세션을 종료합니다.",
       shutDown: "종료",
       update: {
-        title: "Unsloth Studio 업데이트",
+        title: "Unsloth 업데이트",
         commandText: "{label} 텍스트",
         copied: "복사됨",
         copyCommand: "명령 복사",
@@ -528,7 +1087,7 @@ export const ko = {
         installCommandUnix: "macOS/Linux 설치 명령",
         installCommandWindows: "Windows 설치 명령",
         localInstallDetected:
-          "로컬 설치가 감지되었습니다. PyPI로 대체되지 않도록 원래 체크아웃에서 업데이트하세요.",
+          "로컬 설치가 감지되었습니다. PyPI 설치로 대체되지 않도록 원래 체크아웃에서 업데이트하세요.",
         pullThenUpdate:
           "최신 변경 사항을 가져온 다음 로컬 설치 프로그램을 실행하세요:",
         gitPullCommand: "git pull 명령",
@@ -539,7 +1098,30 @@ export const ko = {
           "저장소 체크아웃이 아직 있다면 거기에서 로컬 설치 프로그램을 실행하세요:",
         restartAfterUpdate: "업데이트 후 Unsloth를 다시 시작하세요.",
         desktopManaged:
-          "데스크톱 앱은 번들된 백엔드를 최신 상태로 유지하며 새 버전이 있으면 알립니다.",
+          "데스크톱 앱은 새 앱 버전을 자동으로 확인합니다. 여기서 언제든지 업데이트를 확인하거나 설치할 수도 있습니다.",
+        desktopReady: "데스크톱 앱 업데이트",
+        desktopReadyDescription:
+          "새로운 데스크톱 앱 버전이 있는지 확인합니다.",
+        desktopChecking: "업데이트 확인 중",
+        desktopCheckingDescription: "보통 몇 초 정도 걸립니다.",
+        desktopAvailable: "데스크톱 앱 {version} 버전을 사용할 수 있습니다",
+        desktopAvailableDescription:
+          "지금 업데이트하면 완료 후 데스크톱 앱이 다시 시작됩니다.",
+        desktopExternalServer:
+          "서버를 시작한 터미널에서 `unsloth studio update`를 실행하세요.",
+        desktopManualInstall:
+          "릴리스 페이지를 열어 최신 Linux 패키지를 설치하세요.",
+        desktopCheckFailed: "업데이트를 확인하지 못했습니다",
+        desktopCheckFailedDescription:
+          "연결 상태를 확인한 후 다시 시도하세요.",
+        desktopCurrent: "데스크톱 앱이 최신 버전입니다",
+        desktopCurrentDescription: "Unsloth가 계속 자동으로 확인합니다.",
+        checkForUpdates: "업데이트 확인",
+        checkAgain: "다시 확인",
+        retryCheck: "다시 시도",
+        checking: "확인 중...",
+        updateNow: "지금 업데이트",
+        openReleasePage: "릴리스 페이지 열기",
         unknownInstall:
           "Unsloth 설치 방식을 감지할 수 없습니다. 설치 프로그램 또는 PyPI 설치의 경우 위 명령을 사용하세요.",
         localCheckout:
@@ -553,8 +1135,195 @@ export const ko = {
     },
   },
   studio: {
+    imageTraining: "이미지 학습",
+    goToImageTraining: "이미지 학습으로 이동",
     routeTitle: "학습",
-    title: "파인튜닝 스튜디오",
+    wizard: {
+      modelTitle: "모델",
+      modelDescription: "모델과 학습 방법 선택",
+      datasetTitle: "데이터셋",
+      datasetDescription: "학습 데이터 선택 또는 업로드",
+      paramsTitle: "매개변수",
+      paramsDescription: "학습 매개변수 구성",
+      configTitle: "구성",
+      configDescription: "구성 저장 및 불러오기",
+      modelLabel: "모델",
+      methodLabel: "방법",
+      datasetLabel: "데이터셋",
+      modelTooltip: "파인튜닝할 기본 모델입니다.",
+      methodTooltip: "모델 학습 방식입니다. LoRA와 QLoRA는 전체 가중치 대신 작은 어댑터를 업데이트합니다.",
+      datasetTooltip: "모델을 파인튜닝하는 데 사용하는 학습 데이터입니다.",
+      hfTokenLabel: "Hugging Face 토큰",
+      hfTokenDescription:
+        "액세스가 제한되거나 비공개인 모델 및 데이터 세트에 필요합니다.",
+      hfTokenGet: "토큰 받기",
+      hfTokenChecking: "토큰 확인 중…",
+      modelPickerDescription:
+        "Hugging Face를 검색하거나 이 기기에 이미 있는 학습 가능한 모델을 선택하세요.",
+      trainingMethod: "학습 방법",
+      trainingMethodDescription: "{model}을 미세 조정할 방법을 선택하세요",
+      trainingMethodTooltip:
+        "QLoRA는 VRAM 사용량을 최소화하기 위해 4비트 양자화를 사용합니다. LoRA는 16비트 가중치를 사용하며, 전체 미세 조정은 모든 가중치를 업데이트합니다.",
+      datasetPickerDescription:
+        "Hugging Face를 검색하거나 이 기기에 이미 있는 데이터셋을 선택하세요.",
+      uploadDataset: "데이터셋 업로드",
+      uploadDatasetDescription:
+        "CSV, JSONL, JSON 및 Parquet를 지원합니다.",
+      chooseFile: "파일 선택",
+      format: "형식",
+      autoDetect: "자동 감지",
+      uploadLocalLabel: "또는 로컬 파일 업로드",
+      sourceBrowse: "찾아보기",
+      releaseToUpload: "놓으면 업로드됩니다",
+      loadYaml: "YAML 불러오기",
+      saveYaml: "YAML 저장",
+      resetDefaults: "기본값으로 재설정",
+      cachedModelGoneTitle: "캐시된 모델을 더 이상 사용할 수 없습니다",
+      cachedModelGoneDescription:
+        "모델 파일이 더 이상 이 기기에 없어 학습 시 다시 다운로드합니다.",
+      cachedDatasetGoneTitle: "캐시된 데이터셋을 더 이상 사용할 수 없습니다",
+      cachedDatasetGoneDescription:
+        "데이터셋 파일이 더 이상 이 기기에 없어 학습 시 다시 다운로드합니다.",
+    },
+    preview: {
+      title: "실행 미리보기",
+      ready: "준비됨",
+      notReady: "준비 안 됨",
+      modelPending: "모델 선택 대기",
+      datasetPending: "데이터셋 선택 대기",
+      method: "방법",
+      length: "길이",
+      stepZero: "{count}스텝",
+      step: "{count}스텝",
+      stepTwo: "{count}스텝",
+      stepFew: "{count}스텝",
+      stepMany: "{count}스텝",
+      steps: "{count}스텝",
+      epochZero: "{count}에포크",
+      epoch: "{count}에포크",
+      epochTwo: "{count}에포크",
+      epochFew: "{count}에포크",
+      epochMany: "{count}에포크",
+      epochs: "{count}에포크",
+      batch: "배치",
+      context: "컨텍스트",
+      lr: "LR",
+      hardware: "하드웨어",
+      noGpu: "GPU가 감지되지 않았습니다",
+      hfToken: "HF 토큰",
+      saved: "저장됨",
+      notSet: "설정 안 됨",
+      files: "파일",
+      model: "모델",
+      dataset: "데이터셋",
+      downloadsOnStart: "시작 시 다운로드",
+      continuesOnStart: "시작 시 이어서 다운로드",
+      noticeModelDownload:
+        "이 모델은 아직 기기에 없습니다. 학습 시 자동으로 다운로드합니다.",
+      noticeModelPartial:
+        "모델을 불러오기 전에 완료되지 않은 다운로드를 마칩니다.",
+      noticeDatasetDownload:
+        "이 데이터셋은 아직 기기에 없습니다. 학습 시 자동으로 다운로드합니다.",
+      noticeDatasetPartial:
+        "데이터셋을 읽기 전에 완료되지 않은 다운로드를 마칩니다.",
+      advancedSettings: "고급 설정",
+      defaultAdvancedSettings: "기본값",
+      nonDefaultAdvancedSettings: "기본값이 아닌 설정 {count}개",
+    },
+    datasetPicker: {
+      noun: "데이터셋",
+      selectDataset: "데이터셋 선택",
+      hubPlaceholder: "Hugging Face 데이터셋 검색...",
+      devicePlaceholder: "로컬 데이터셋 검색...",
+      useAsHubDataset: "Hugging Face 데이터셋으로 사용",
+      hfCacheLabel: "HF 캐시",
+      sourceRecipe: "레시피",
+      sourceUpload: "업로드",
+      sourceLocal: "로컬",
+      scanningLocal: "이 기기의 데이터셋을 스캔하는 중…",
+      couldntScan: "로컬 데이터셋을 스캔하지 못했습니다",
+      someLocationsUnscanned:
+        "일부 데이터셋 위치를 스캔하지 못했습니다.",
+      noLocalDatasets:
+        "아직 이 기기에 데이터셋이 없습니다. 허브에서 다운로드하거나, 레시피에서 만들거나, 파일을 업로드하세요.",
+      openDataRecipes: "데이터 레시피 열기",
+      searchingHub: "Hugging Face 검색 중…",
+      noDatasetsFound: "데이터셋을 찾을 수 없습니다.",
+      tokenRejectedTitle: "Hugging Face 토큰이 거부되었습니다",
+      tokenRejectedBody:
+        "설정 → 일반에서 토큰을 업데이트한 후 다시 시도하세요.",
+      hubUnreachable: "Hugging Face에 연결하지 못했습니다",
+      cantUseDataset: "데이터셋을 사용할 수 없습니다",
+      reasonInvalidHubId:
+        "유효한 Hugging Face 데이터셋 ID를 입력하세요. 형식은 repo 또는 owner/repo이며 영문자, 숫자, ., _, -만 사용할 수 있습니다(각 부분 최대 96자).",
+    },
+    modelPicker: {
+      noun: "모델",
+      selectModel: "모델 선택",
+      hubPlaceholder: "Hugging Face ID 검색 또는 붙여넣기...",
+      devicePlaceholder: "로컬 모델 검색 또는 폴더 경로 붙여넣기...",
+      useAsHubModel: "Hugging Face 모델로 사용",
+      useAsLocalPath: "로컬 경로로 사용",
+      hfCacheLabel: "HF 캐시",
+      sourceModelsFolder: "모델 폴더",
+      sourceHfCache: "HF 캐시",
+      sourceLmStudio: "LM Studio",
+      sourceOllama: "Ollama",
+      sourceCustomFolder: "사용자 지정 폴더",
+      sourceLocalModel: "로컬 모델",
+      scanningLocal: "로컬 모델을 스캔하는 중…",
+      couldntScan: "로컬 모델을 스캔하지 못했습니다",
+      someLocationsUnscanned: "일부 로컬 위치를 스캔하지 못했습니다.",
+      noLocalModels: "로컬 모델을 찾을 수 없습니다.",
+      noLocalModelsHint:
+        "위에 폴더 경로를 붙여넣거나 Hugging Face로 전환하세요.",
+      searchingHub: "Hugging Face 검색 중…",
+      noModelsFound: "모델을 찾을 수 없습니다.",
+      tokenRejectedTitle: "Hugging Face 토큰이 거부되었습니다",
+      tokenRejectedBody:
+        "설정 → 일반에서 토큰을 업데이트한 후 다시 시도하세요.",
+      hubUnreachable: "Hugging Face에 연결하지 못했습니다",
+      cantUseModel: "이 모델은 학습에 사용할 수 없습니다",
+      reasonTypeMismatch:
+        "이 모델은 이전 단계에서 선택한 학습 유형과 일치하지 않습니다.",
+      reasonInvalidHubId:
+        "유효한 Hugging Face 모델 ID를 입력하세요. 형식은 repo 또는 owner/repo이며 영문자, 숫자, ., _, -만 사용할 수 있습니다(각 부분 최대 96자).",
+      reasonEmptyId: "모델 ID 또는 로컬 모델 경로를 입력하세요.",
+      reasonGguf: "GGUF 모델은 학습에 사용할 수 없습니다.",
+      reasonAdapter:
+        "어댑터 출력은 기본 학습 모델로 사용할 수 없습니다.",
+      reasonNotTrainable: "기기에 있는 이 모델은 학습할 수 없습니다.",
+      reasonUnsupportedFormat:
+        "이 모델 형식은 학습에서 지원되지 않습니다.",
+      vramNeeds: "약 {est}GB VRAM 필요 (GPU: {total}GB)",
+      vramTight: "약 {est}GB VRAM ({total}GB에서 빠듯함)",
+      vramApprox: "약 {est}GB VRAM",
+      vramOomBadge: "OOM",
+      vramTightBadge: "빠듯함",
+    },
+    methods: {
+      qlora: {
+        label: "QLoRA",
+        hint: "4비트 양자화. VRAM을 가장 적게 사용하며 가장 빠르게 시작합니다.",
+        note: "4비트",
+      },
+      lora: {
+        label: "LoRA",
+        hint: "16비트 어댑터. 품질과 메모리 사용량의 균형을 맞춥니다.",
+        note: "16비트",
+      },
+      full: {
+        label: "전체 파인튜닝",
+        hint:
+          "모든 가중치를 학습합니다. 품질이 가장 높지만 VRAM이 가장 많이 필요합니다.",
+        note: "fp16",
+      },
+      cpt: {
+        label: "지속 사전학습",
+        hint: "새로운 도메인이나 언어를 위해 사전학습을 이어갑니다.",
+        note: "지속",
+      },
+    },
     subtitles: {
       configure: "구성하고 학습 시작",
       trainingInProgress: "학습 진행 중",
@@ -585,65 +1354,29 @@ export const ko = {
       checkingDataset: "데이터셋을 확인하는 중...",
       trainingConfig: "학습 구성",
     },
-    model: {
-      title: "모델",
-      description: "기본 모델과 학습 방법을 선택하세요",
-      fasterTrainingBadge: "2배 빠른 학습",
-      baseModel: "기본 모델",
-      localModel: "로컬 모델",
-      localModelTooltip:
-        "로컬에 다운로드한 모델의 경로 또는 커스텀 HF 저장소입니다.",
-      scanningLocalAndCachedModels: "로컬 및 캐시된 모델을 스캔하는 중...",
-      scanning: "스캔 중...",
-      scanningLocalModels: "로컬 모델을 스캔하는 중...",
-      noLocalModelsFound: "로컬 모델을 찾을 수 없습니다",
-      noLocalModelsFoundManual:
-        "로컬 모델을 찾을 수 없습니다. 경로를 직접 입력하세요.",
-      failedToLoadLocalModels: "로컬 모델을 불러오지 못했습니다",
-      hfCache: "HF 캐시",
-      customFolders: "커스텀 폴더",
-      localDir: "로컬 디렉터리",
-      huggingFaceModel: "Hugging Face 모델",
-      huggingFaceModelTooltip:
-        "Hugging Face 모델을 검색하거나 추천 목록에서 선택하세요.",
-      searchModels: "모델 검색...",
-      searching: "검색 중...",
-      noModelsFound: "모델을 찾을 수 없습니다",
-      needsVram: "약 {vram}GB VRAM 필요 (GPU: {gpu}GB)",
-      tightVram: "약 {vram}GB VRAM ({gpu}GB에서 빠듯함)",
-      vramEstimate: "약 {vram}GB VRAM",
-      method: "방법",
-      methodTooltip:
-        "QLoRA는 4비트 양자화를 사용해 VRAM을 최소화합니다. LoRA는 16비트를 사용합니다. Full은 모든 가중치를 업데이트합니다. CPT(Continued Pretraining)는 원시 텍스트로 학습하여 채팅 형식 없이 모델을 새 도메인에 적응시킵니다.",
-      readMore: "더 알아보기",
-      fullFineTune: "전체 파인튜닝",
-      checkingToken: "토큰 확인 중...",
-      getOrUpdateToken: "토큰 가져오기 또는 업데이트",
-      huggingFaceTokenOptional: "Hugging Face 토큰 (선택 사항)",
-      continuedPretraining: "지속 사전학습",
-      localModels: "로컬 모델",
-      localModelsFound: "{count}개의 로컬/캐시된 모델을 찾았습니다",
-      loadingLocalModels: "로컬 모델을 로딩하는 중...",
-    },
     dataset: {
-      title: "데이터셋",
-      description: "학습 데이터를 선택하거나 업로드하세요",
+      selectors: {
+        subset: "하위 집합",
+        subsetTooltip: "사용할 데이터셋 하위 집합(구성)을 선택하세요.",
+        trainSplit: "학습 분할",
+        trainSplitTooltip: "학습에 사용할 분할을 선택하세요.",
+        evaluationSplit: "평가 분할",
+        evaluationSplitTooltip:
+          "평가에 사용할 분할을 선택하세요. 없음을 선택하면 학습 중 평가를 수행하지 않습니다.",
+        selectSubset: "하위 집합 선택...",
+        selectSplit: "분할 선택...",
+        none: "없음",
+        loading: "데이터셋 구성과 분할을 불러오는 중...",
+        manualTitle: "데이터셋 옵션 직접 입력",
+        manualDescription:
+          "사용할 Hugging Face 구성 및 분할의 정확한 이름을 입력하세요.",
+        manualSubsetPlaceholder: "선택적 구성 이름",
+        manualRequired: "학습 분할이 필요합니다.",
+        manualTooLong: "128자 이하로 입력하세요.",
+        manualInvalid: "이 값에 지원되지 않는 문자가 포함되어 있습니다.",
+      },
       source: "데이터셋 소스",
-      chooseDataset: "데이터셋 선택",
-      chooseDatasetTooltip:
-        "팝업 탭을 사용해 Hugging Face와 로컬 레시피 출력 간에 전환하세요.",
-      localTab: "로컬",
-      searchHuggingFaceDatasets: "Hugging Face 데이터셋 검색...",
-      searchLocalDatasets: "로컬 데이터셋 검색...",
-      searching: "검색 중...",
-      noDatasetsFound: "데이터셋을 찾을 수 없습니다",
-      loadingLocalDatasets: "로컬 데이터셋을 로딩하는 중...",
-      failedToLoadLocalDatasets: "로컬 데이터셋을 불러오지 못했습니다.",
-      noLocalDatasetsYet: "아직 로컬 데이터셋이 없습니다.",
-      noLocalDatasetsMatchSearch: "검색과 일치하는 로컬 데이터셋이 없습니다.",
-      openDataRecipes: "Data Recipes 열기",
-      browsingSource: "{browsing} 탐색 중. 현재 선택은 {current}로 유지됩니다.",
-      localDatasets: "로컬 데이터셋",
+      sourceAriaLabel: "데이터셋 소스",
       localDataset: "로컬 데이터셋",
       localDatasetRows: " / {count}행",
       huggingFaceDataset: "Hugging Face 데이터셋",
@@ -655,14 +1388,72 @@ export const ko = {
       updated: "업데이트됨",
       evalDataset: "평가 데이터셋",
       uploading: "업로드 중...",
-      upload: "업로드",
       uploadEvalFile: "평가 파일 업로드",
+      fileTooLarge: "파일이 너무 큽니다",
+      fileTooLargeDescription:
+        "{file}의 크기는 {size}입니다. 학습용 업로드는 최대 {limit}까지 지원합니다.",
+      uploadLimitsHint:
+        "CSV, JSONL, JSON, Parquet · 최대 {limit}; PDF/DOCX/TXT → Learning Recipes",
+      documentRedirect: {
+        title: "이 파일은 먼저 변환해야 합니다",
+        genericFile: "이 파일",
+        description:
+          "{file}: 학습 준비가 된 데이터셋이 아닌 원본 자료입니다. Data Recipes에서 문서를 데이터셋으로 변환한 후 여기로 돌아와 파인튜닝하세요.",
+        nextStepTitle: "권장하는 다음 단계",
+        nextStepDescription:
+          "Learning Recipes를 열고 PDF grounded QA와 같은 문서 기반 레시피로 시작하세요.",
+        openAction: "Learning Recipes 열기",
+      },
       evalDatasetDescription:
         "선택 사항. 제공하지 않으면 학습 데이터에서 일부가 분할됩니다.",
       advanced: "고급",
       targetFormat: "대상 형식",
       targetFormatTooltip:
         "학습 데이터의 형식입니다. 자동 감지는 대부분의 데이터셋에서 작동합니다.",
+      streamingInfoAriaLabel: "데이터셋 스트리밍 정보",
+      streaming: {
+        label: "스트리밍 활성화",
+        description:
+          "Hugging Face 텍스트 데이터셋을 다운로드하지 않고 스트리밍합니다.",
+        unavailable: "스트리밍을 사용할 수 없습니다. 활성화하려면:",
+        completionsUnavailable:
+          "데이터셋 스트리밍이 활성화된 동안에는 사용할 수 없습니다.",
+        blockers: {
+          source:
+            "Hugging Face 데이터셋을 사용하세요(로컬 업로드 또는 S3 소스는 사용할 수 없음).",
+          maxSteps:
+            "최대 스텝을 0보다 크게 설정하세요. 스트리밍 데이터셋은 길이를 미리 알 수 없습니다.",
+          trainOnCompletions: '"어시스턴트 응답만"을 끄세요.',
+          evalSplit:
+            "별도의 평가 분할을 선택하세요. 평가가 켜져 있지만 학습 분할과 다른 평가 분할이 설정되지 않았습니다.",
+          visionModel: "비전 모델은 스트리밍을 지원하지 않습니다.",
+          audioModel: "오디오 모델은 스트리밍을 지원하지 않습니다.",
+          embeddingModel:
+            "임베딩 모델은 스트리밍을 지원하지 않습니다(학습에 전체 데이터셋이 필요함).",
+          imageDataset:
+            "이 데이터셋에는 이미지가 포함된 것으로 보여 스트리밍할 수 없습니다.",
+          audioDataset:
+            "이 데이터셋에는 오디오가 포함된 것으로 보여 스트리밍할 수 없습니다.",
+          appleSilicon:
+            "Apple Silicon(MLX)에서는 아직 스트리밍을 지원하지 않습니다.",
+        },
+        options: {
+          trainOnCompletions: "어시스턴트 응답만",
+          evaluation: "평가(별도의 평가 분할 필요)",
+        },
+        notifications: {
+          disabledForDetectedModality:
+            "이미지 또는 오디오 데이터셋은 전체 다운로드가 필요하여 스트리밍을 껐습니다. 설정을 검토한 후 학습을 다시 시작하세요.",
+          turnedOffMaxSteps:
+            "스트리밍을 껐습니다. 스트리밍에는 0보다 큰 고정 최대 스텝이 필요합니다.",
+          adjusted:
+            "스트리밍에 맞게 조정했습니다. 호환되지 않는 옵션을 비활성화했습니다: {options}.",
+          needsMaxSteps:
+            "스트리밍에는 고정 최대 스텝이 필요합니다(스트리밍 데이터셋은 길이를 미리 알 수 없음). 먼저 최대 스텝을 0보다 크게 설정하세요.",
+          enabledAdjusted:
+            "스트리밍을 활성화했습니다. 호환되지 않는 옵션을 비활성화했습니다: {options}.",
+        },
+      },
       auto: "자동",
       rawText: "원시 텍스트",
       trainSplitStart: "학습 분할 시작",
@@ -674,6 +1465,9 @@ export const ko = {
       endPlaceholder: "끝",
       clear: "지우기",
       dropFileOrClick: "파일 1개를 여기에 놓거나 클릭하여 업로드하세요",
+      uploadDetails: "업로드 세부정보",
+      uploadDetailsTooltip:
+        "파일당 최대 {limit}입니다. PDF, DOCX 및 TXT는 바로 학습할 수 있는 데이터셋이 아니므로 먼저 레시피에서 변환하세요.",
       viewDataset: "데이터셋 보기",
       uploadFailed: "업로드에 실패했습니다",
       unknownError: "알 수 없는 오류",
@@ -684,9 +1478,27 @@ export const ko = {
       uploadOneFileAtATime: "한 번에 하나의 파일만 업로드하세요",
       uploadSingleFileDescription:
         "학습 데이터셋 업로드는 단일 파일만 받습니다.",
-      checkingToken: "토큰 확인 중...",
-      getOrUpdateToken: "토큰 가져오기 또는 업데이트",
       preview: "데이터셋 미리보기",
+      previewLoadingHuggingFace:
+        "Hugging Face에서 데이터셋 미리보기를 가져오는 중...",
+      previewLoading: "미리보기를 불러오는 중...",
+      mappingRequirements: {
+        audioAndText: "오디오 및 텍스트",
+        imageAndText: "이미지 및 텍스트",
+        instructionAndOutput: "지시문 및 출력",
+        humanAndGpt: "human 및 gpt",
+        userAndAssistant: "사용자 및 어시스턴트",
+      },
+      mappingStatus: {
+        heuristicTitle: "휴리스틱으로 감지된 매핑",
+        readyTitle: "매핑 준비 완료",
+        requiredTitle: "데이터셋 열 매핑",
+        heuristicDescription:
+          "휴리스틱을 사용해 아래 열 매핑을 자동으로 감지했습니다. 열 머리글의 드롭다운에서 검토하고 조정하거나 AI 지원을 사용해 더 정확하게 매핑하세요.",
+        readyDescription: "문제없습니다. 이 데이터셋을 자동으로 변환합니다.",
+        requiredDescription:
+          "머리글의 드롭다운을 사용해 열에 역할을 할당하세요. 최소한 {required}을(를) 할당해야 합니다.",
+      },
       split: "분할",
       subset: "서브셋",
       s3: {
@@ -716,8 +1528,11 @@ export const ko = {
       },
     },
     params: {
-      title: "매개변수",
-      description: "학습 하이퍼파라미터를 구성하세요",
+      mode: {
+        simple: "간단",
+        advanced: "고급",
+        ariaLabel: "매개변수 모드",
+      },
       projectName: "프로젝트 이름",
       optional: "선택 사항",
       projectNameDescription:
@@ -730,13 +1545,9 @@ export const ko = {
       useEpochs: "에포크 사용",
       maxStepsTooltip: "전체 옵티마이저 스텝 수를 재정의합니다.",
       epochsTooltip: "데이터셋을 완전히 순회하는 횟수입니다.",
-      epochsDescription: "각 에포크는 데이터셋을 한 번 완전히 순회하는 것입니다.",
-      maxStepsDescription:
-        "학습을 고정된 옵티마이저 스텝 수로 제한합니다.",
       contextLength: "컨텍스트 길이",
       contextLengthTooltip: "학습 샘플당 최대 토큰 수입니다.",
       customContextLength: "사용자 지정 값 입력",
-      contextLengthDescription: "학습 샘플의 최대 시퀀스 길이",
       learningRate: "학습률",
       learningRateTooltip:
         "가중치 업데이트의 스텝 크기입니다. 값이 낮을수록 학습이 느리지만 더 안정적입니다.",
@@ -744,9 +1555,7 @@ export const ko = {
         "권장값: LoRA는 2e-4, CPT는 5e-5, 전체 파인튜닝은 2e-5",
       embeddingLearningRate: "임베딩 학습률",
       embeddingLearningRateTooltip:
-        "CPT가 embed_tokens를 학습할 때만 사용됩니다. 임베딩은 LoRA 가중치보다 불안정해지기 쉬우므로 보통 더 작은 학습률이 필요합니다. 비워 두면 lr/10을 사용하며, 일반적인 범위는 주 학습률보다 2배~10배 작습니다. 어휘 또는 도메인 토큰 적응이 너무 느릴 때만 높이세요.",
-      embeddingLearningRateDescription:
-        "비워 두면 lr/10을 사용합니다(권장). 일반적인 범위는 주 학습률보다 2배~10배 작습니다.",
+        "CPT가 embed_tokens를 학습할 때만 사용됩니다. 임베딩은 LoRA 가중치보다 불안정해지기 쉬우므로 보통 더 작은 학습률이 필요합니다. 비워 두면 lr/10을 사용하며, 일반적인 범위는 주 학습률의 1/10~1/2입니다. 어휘 또는 도메인 토큰 적응이 너무 느릴 때만 높이세요.",
       rank: "랭크",
       rankTooltip:
         "저랭크 행렬의 차원입니다. 높을수록 용량이 커집니다.",
@@ -765,12 +1574,15 @@ export const ko = {
       stableRank: "안정 랭크",
       memoryEfficient: "메모리 효율적",
       weightDecomposed: "가중치 분해",
+      notSupportedAppleSilicon: "Apple Silicon에서는 지원되지 않음",
       optimization: "최적화",
       schedule: "스케줄",
       memory: "메모리",
       optimizer: "옵티마이저",
       optimizerTooltip:
         "최적화 알고리즘입니다. 8비트 변형은 메모리 사용량을 줄입니다. 비전 모델에는 Fused가 권장됩니다.",
+      optimizerTooltipMlx:
+        "최적화 알고리즘입니다. 기본값은 AdamW입니다. Lion은 메모리를 적게 사용하지만 일반적으로 더 낮은 학습률이 필요합니다.",
       lrScheduler: "LR 스케줄러",
       lrSchedulerTooltip:
         "학습 중 학습률이 변하는 방식입니다. Linear는 꾸준히 감소하고, Cosine은 곡선으로 감소합니다.",
@@ -805,9 +1617,9 @@ export const ko = {
         "평가 사이의 간격을 전체 학습 스텝 수의 비율로 나타냅니다(0-1). 0으로 설정하면 평가가 비활성화됩니다. 예: 0.01 = 스텝의 1%마다 평가.",
       seed: "시드",
       seedTooltip: "재현성을 위한 랜덤 시드입니다.",
-      gradCheckpoint: "그래디언트 체크포인트",
+      gradCheckpoint: "그래디언트 체크포인팅",
       gradCheckpointTooltip:
-        "활성화를 재계산하여 연산으로 메모리를 절약합니다.",
+        "활성화를 재계산해 연산량을 늘리는 대신 메모리 사용량을 줄입니다.",
       none: "없음",
       standard: "표준",
       enablePacking: "패킹 활성화",
@@ -815,25 +1627,63 @@ export const ko = {
       readMore: "더 알아보기",
     },
     training: {
-      title: "학습",
-      description: "학습을 모니터링하고 제어합니다",
-      chartNoDataTitle: "아직 학습 데이터가 없습니다",
-      chartNoDataDescription: "학습을 시작하면 loss 진행 상황을 볼 수 있습니다",
       startTraining: "학습 시작",
       starting: "시작 중...",
       loadingModel: "모델을 로딩하는 중...",
       checkingDataset: "데이터셋을 확인하는 중...",
-      configLabel: "학습 구성",
-      upload: "업로드",
+      startFailed: "학습을 시작하지 못했습니다",
+      startUnconfirmed:
+        "학습이 시작되었는지 확인할 수 없습니다. 백그라운드에서 상태를 확인하고 있습니다.",
+      stopFailed: "학습을 중지하지 못했습니다",
+      trainingStillActiveTitle: "학습이 아직 진행 중입니다",
+      stopBeforeConfig: "먼저 학습을 중지한 후 구성 화면으로 돌아가세요.",
+      resumeFailed: "학습을 재개하지 못했습니다",
+      resumeFailedTitle: "학습을 재개할 수 없습니다",
+      resumeUnavailable:
+        "중지되었거나 오류로 종료된 실행 중 저장된 체크포인트가 있는 실행만 재개할 수 있습니다.",
+      chooseModel: "모델 선택",
+      chooseDataset: "데이터셋 선택",
+      chooseModelAndDataset: "모델과 데이터셋 선택",
+      modelUnverified:
+        "이 모델의 설정을 확인하지 못했습니다. 연결 또는 Hugging Face 토큰을 확인한 후 다시 시도하세요.",
+      legacyDatasetScriptUnsupported:
+        "이 Hub 데이터셋은 레거시 사용자 지정 스크립트를 사용하므로 이 학습 흐름에서는 지원되지 않습니다.",
+      hfModelAccessDenied:
+        "Hugging Face에서 이 모델에 대한 접근을 거부했습니다. 저장소 접근 권한이 있는 유효한 Hugging Face 토큰을 추가하고 필요한 접근 약관에 동의한 후 다시 시도하세요.",
+      hfModelVerificationRateLimited:
+        "Hugging Face 모델 검증 요청이 속도 제한에 도달했습니다. 잠시 후 다시 시도하세요.",
+      hfModelVerificationFailed:
+        "Hugging Face 모델을 검증할 수 없습니다. 저장소 ID와 접근 토큰을 확인하세요.",
+      hfModelMetadataUnavailable:
+        "Hugging Face 모델 메타데이터를 일시적으로 사용할 수 없습니다. 학습을 시작하기 전에 다시 시도하세요.",
+      datasetUnverified:
+        "데이터셋이 이 모델과 호환되는지 확인하지 못했습니다. 연결 또는 Hugging Face 토큰을 확인하세요. 학습을 시작하면 다시 확인합니다.",
+      setupChanged:
+        "확인하는 동안 학습 설정이 변경되었습니다. 설정을 검토한 후 학습을 다시 시작하세요.",
+      validation: {
+        s3MultimodalUnsupported:
+          "비전 또는 오디오 학습에는 아직 S3 데이터셋을 사용할 수 없습니다.",
+        s3BucketRequired: "S3 버킷 이름을 먼저 입력하세요.",
+        s3CredentialsRequired:
+          "S3 액세스 키를 입력하거나 IAM 역할을 활성화하세요.",
+        modelRequired: "기본 모델을 먼저 선택하세요.",
+        learningRatePositive: "0보다 큰 학습률을 입력하세요.",
+        embeddingLearningRateRange:
+          "0보다 크고 1보다 작은 임베딩 학습률을 입력하세요.",
+        hfDatasetRequired: "Hugging Face 데이터셋을 먼저 선택하세요.",
+        hfDatasetSplitRequired: "먼저 학습 분할을 선택하거나 입력하세요.",
+        localDatasetRequired: "로컬 데이터셋을 먼저 선택하세요.",
+        unsupportedDatasetSource: "지원되지 않는 데이터셋 소스입니다.",
+      },
       uploadConfigTooltip: "저장된 YAML 구성 불러오기",
-      save: "저장",
       saveConfigTooltip: "현재 구성을 YAML로 다운로드",
-      reset: "재설정",
       resetConfigTooltip: "모델 기본값으로 재설정",
       configLoaded: "구성이 로드되었습니다",
       failedToLoadConfig: "구성을 불러오지 못했습니다",
       invalidYamlFile: "잘못된 YAML 파일입니다",
+      configTooLarge: "학습 구성 파일이 너무 큽니다(최대 1 MiB).",
       failedToReadFile: "파일을 읽지 못했습니다",
+      failedToSaveConfig: "구성을 저장하지 못했습니다",
       parametersReset: "매개변수가 모델 기본값으로 재설정되었습니다",
       audioIncompatible:
         "이 모델은 오디오를 지원하지 않습니다. 오디오를 지원하는 모델로 전환하거나 오디오가 아닌 데이터셋을 선택하세요.",
@@ -844,7 +1694,8 @@ export const ko = {
       continueAction: "학습 계속",
       cancelAction: "학습 취소",
       stopTitle: "학습 중지",
-      stopDescription: "현재 학습 실행을 중지하는 방법을 선택하세요.",
+      stopDescription:
+        "현재 학습 실행을 중지하는 방법을 선택하세요. '중지 후 저장'은 나중에 재개할 수 있는 체크포인트를 저장하지만, '학습 취소'는 재개할 수 없습니다.",
       stopAction: "중지",
       stopping: "중지 중...",
       stopAndSave: "중지 후 저장",
@@ -857,6 +1708,20 @@ export const ko = {
     },
     history: {
       title: "기록",
+      filesDeleted: "파일이 삭제되었습니다",
+      deleteArtifactsLabel: "디스크의 어댑터 파일도 삭제",
+      deleteArtifactsDescription:
+        "저장된 어댑터와 체크포인트를 포함한 이 실행의 출력 폴더를 삭제합니다.",
+      deleteArtifactsSharedNote:
+        "다른 실행이 이 출력 폴더를 공유합니다. 이 폴더를 사용하는 마지막 실행이 삭제될 때까지 파일이 유지됩니다.",
+      artifactsKeptShared:
+        "실행이 삭제되었습니다. 다른 실행이 같은 폴더를 사용하므로 어댑터 파일은 유지되었습니다.",
+      deleteArtifactsActiveError:
+        "진행 중인 학습 실행에서 이 파일을 사용하고 있습니다. 파일을 삭제하기 전에 학습을 중지하세요.",
+      deleteArtifactsFailed:
+        "실행은 삭제되었지만 관련 파일을 제거하지 못했습니다.",
+      deleteArtifactsRetainedError:
+        "어댑터 파일을 삭제할 수 없어 학습 실행이 기록에 유지되었습니다.",
       emptyTitle: "아직 학습 실행이 없습니다",
       emptyDescription:
         "아직 학습 실행이 없습니다. 구성 탭에서 첫 학습 실행을 시작하세요.",
@@ -880,15 +1745,12 @@ export const ko = {
       steps: "스텝",
       lossTrendSparkline: "Loss 추세 스파크라인",
       relativeJustNow: "방금",
-      relativeMinutesAgo: "{count}분 전",
-      relativeHoursAgo: "{count}시간 전",
-      relativeDaysAgo: "{count}일 전",
       status: {
         completed: "완료됨",
         stopped: "중지됨",
         error: "오류",
         running: "실행 중",
-        continued: "계속됨",
+        continued: "나중에 재개됨",
       },
       message: {
         completed: "학습이 완료되었습니다",
@@ -905,9 +1767,9 @@ export const ko = {
       settingsDescription:
         "학습이 계속 실행되는 동안 차트 표시를 조정합니다.",
       openSettings: "차트 설정 열기",
-      viewWindow: "보기 창",
-      viewWindowDescription: "최신 스텝만 또는 전체 기록을 표시합니다.",
-      window: "창",
+      viewWindow: "표시 구간",
+      viewWindowDescription: "최신 스텝만 표시하거나 전체 기록을 표시합니다.",
+      window: "구간",
       all: "전체",
       trainingLoss: "학습 손실",
       trainingLossDescription: "오버레이와 EMA 평활화를 제어합니다.",
@@ -916,12 +1778,12 @@ export const ko = {
       showRawLoss: "원시 loss 표시",
       showSmoothedLoss: "평활화된 loss 표시",
       showAverageLine: "평균선 표시",
-      scaleAndCleanup: "스케일 및 정리",
+      scaleAndCleanup: "스케일 및 이상치 처리",
       linear: "선형",
       log: "로그",
-      noClip: "클립 없음",
-      clipP99: "p99 클립",
-      clipP95: "p95 클립",
+      noClip: "클리핑 없음",
+      clipP99: "p99 클리핑",
+      clipP95: "p95 클리핑",
       lossAxis: "손실 축",
       gradientNormAxis: "그래디언트 노름 축",
       learningRateAxis: "학습률 축",
@@ -987,6 +1849,7 @@ export const ko = {
         loadingDataset: "데이터셋 로딩 중",
         configuring: "구성 중",
         training: "학습 중",
+        finalizing: "모델 저장 중",
         completed: "완료됨",
         error: "오류",
         stopped: "중지됨",

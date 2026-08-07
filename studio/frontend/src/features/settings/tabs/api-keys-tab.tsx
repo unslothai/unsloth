@@ -14,11 +14,12 @@ import { translate, useT } from "@/i18n";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
 import { fetchApiKeys, revokeApiKey, type ApiKey } from "../api/api-keys";
-import { ApiMonitorConsole } from "../components/api-monitor-console";
+import { MonitorLink } from "../components/monitor-link";
 import { ApiKeyRow } from "../components/api-key-row";
 import { CreateKeyForm } from "../components/create-key-form";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
+import { RemoteAccessSection } from "../components/remote-access-section";
 import { UsageExamples } from "../components/usage-examples";
 
 export function ApiKeysTab() {
@@ -168,9 +169,11 @@ export function ApiKeysTab() {
         )}
       </section>
 
-      <ModelAutoSwitchSection />
+      <MonitorLink />
 
-      <ApiMonitorConsole />
+      <RemoteAccessSection />
+
+      <ModelAutoSwitchSection />
 
       <UsageExamples apiKey={revealed} />
 
