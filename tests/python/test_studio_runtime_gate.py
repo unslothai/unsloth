@@ -189,6 +189,58 @@ def test_idle_scan_excludes_verified_launcher_and_blocks_another_managed_image(
 
 
 @pytest.mark.skipif(os.name != "nt", reason = "Windows process inspection is required")
+def test_idle_scan_excludes_the_venv_python_redirector_under_a_shim(tmp_path, monkeypatch):
+    # install.ps1 runs `Scripts\unsloth.exe studio setup`, and the venv redirector
+    # sits between that shim and base Python. Without it the installer blocks itself.
+    studio_home = tmp_path / "studio"
+    scripts = studio_home / "unsloth_studio" / "Scripts"
+    managed_python = scripts / "python.exe"
+    managed_launcher = scripts / "unsloth.exe"
+    scripts.mkdir(parents = True)
+    managed_python.write_bytes(b"MZ")
+    managed_launcher.write_bytes(b"MZ")
+    current_pid = os.getpid()
+    redirector_pid = current_pid + 1_075_000
+    launcher_pid = redirector_pid + 1
+    payload = [
+        {
+            "ProcessId": current_pid,
+            "ParentProcessId": redirector_pid,
+            "Name": "python.exe",
+            "ExecutablePath": str(tmp_path / "base" / "python.exe"),
+        },
+        {
+            "ProcessId": redirector_pid,
+            "ParentProcessId": launcher_pid,
+            "Name": "python.exe",
+            "ExecutablePath": str(managed_python),
+        },
+        {
+            "ProcessId": launcher_pid,
+            "ParentProcessId": 0,
+            "Name": "unsloth.exe",
+            "ExecutablePath": str(managed_launcher),
+        },
+    ]
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode = 0,
+            stdout = json.dumps(payload),
+            stderr = "",
+        ),
+    )
+    gate.ensure_managed_environment_is_idle(studio_home)
+
+    # A redirector with no shim above it is an ordinary managed process.
+    payload[1]["ParentProcessId"] = 0
+    del payload[2]
+    with pytest.raises(RuntimeError, match = rf"PID {redirector_pid}"):
+        gate.ensure_managed_environment_is_idle(studio_home)
+
+
+@pytest.mark.skipif(os.name != "nt", reason = "Windows process inspection is required")
 def test_idle_scan_does_not_exclude_managed_parent_of_updater(tmp_path, monkeypatch):
     studio_home = tmp_path / "studio"
     scripts = studio_home / "unsloth_studio" / "Scripts"

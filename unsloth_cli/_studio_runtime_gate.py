@@ -237,14 +237,16 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
 
     venv = studio_home / "unsloth_studio"
     protected_root = _canonical_windows_path(venv)
+    # Not gated on exists(): a shim renamed out of the way mid-update still runs,
+    # and an absent path can never match a live image anyway.
     protected_files = {
         _canonical_windows_path(candidate)
         for candidate in (
             venv / "Scripts" / "unsloth.exe",
             studio_home / "bin" / "unsloth.exe",
         )
-        if candidate.exists()
     }
+    managed_python = _canonical_windows_path(venv / "Scripts" / "python.exe")
 
     script = (
         "$ErrorActionPreference='Stop';"
@@ -282,8 +284,14 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
     # The current updater may have been entered through the managed console shim.
     # Ignore only verified launcher ancestors. A managed backend may start an
     # update as its child, and that backend must still block replacement.
+    #
+    # venv\Scripts\python.exe is a redirector: it runs base Python as a child and
+    # waits, so the launcher chain is unsloth.exe -> python.exe -> us. Carry one
+    # such redirector as pending and exempt it only once a shim is found directly
+    # above it, so a managed backend that spawns an update still blocks.
     excluded_pids = {os.getpid()}
     descendant_pid = os.getpid()
+    pending_redirector_pid = -1
     for _ in range(16):
         descendant = process_by_pid.get(descendant_pid)
         if descendant is None:
@@ -298,11 +306,17 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
         if not parent_executable:
             break
         parent_image = _canonical_windows_path(Path(str(parent_executable)))
-        if not any(
+        if any(
             _windows_paths_equal(parent_image, protected_file) for protected_file in protected_files
         ):
+            if pending_redirector_pid > 0:
+                excluded_pids.add(pending_redirector_pid)
+                pending_redirector_pid = -1
+            excluded_pids.add(parent_pid)
+        elif pending_redirector_pid < 0 and _windows_paths_equal(parent_image, managed_python):
+            pending_redirector_pid = parent_pid
+        else:
             break
-        excluded_pids.add(parent_pid)
         descendant_pid = parent_pid
 
     for process_id, process in process_by_pid.items():

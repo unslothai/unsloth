@@ -164,7 +164,7 @@ def _studio_runtime_launch_guard(*, inherited: bool = False):
         acquired = guard.__enter__()
     except _studio_runtime_gate.StudioRuntimeGateBusy:
         typer.echo(
-            "Error: Unsloth Studio installation is modifying the managed environment. "
+            "Error: Unsloth installation is modifying the managed environment. "
             "Wait for it to finish, then try again.",
             err = True,
         )

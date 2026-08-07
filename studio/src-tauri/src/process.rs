@@ -61,7 +61,7 @@ fn acquire_named_studio_runtime_launch_guard(
                 let _ = windows_sys::Win32::Foundation::CloseHandle(handle);
             }
             Err(
-                "Unsloth Studio installation is modifying the managed environment. Wait for it to finish, then start the backend again."
+                "Unsloth installation is modifying the managed environment. Wait for it to finish, then start the backend again."
                     .to_string(),
             )
         }
