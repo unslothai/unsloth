@@ -1276,3 +1276,41 @@ def test_streamed_choice_finish_reasons_are_compared_across_chunks(monkeypatch):
     assert row_for(["stop", "stop"]) == "stop"
     # Used to report "length": each chunk agreed with itself and the last one won.
     assert row_for(["stop", "length"]) is None
+
+
+def test_streamed_stop_reason_is_withheld_until_the_request_finishes(monkeypatch):
+    # An n > 1 stream finishes its choices in separate chunks, so publishing the first one
+    # would state a request-level verdict while the rest are still running, then retract it.
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+    )
+
+    def row():
+        return next(r for r in monitor.snapshot() if r["id"] == entry_id)
+
+    monitor.note_stop_reason(entry_id, "stop")
+    assert row()["finished_at"] is None
+    assert row()["stop_reason"] is None
+    monitor.note_stop_reason(entry_id, "stop")
+    assert row()["stop_reason"] is None
+    monitor.finish(entry_id)
+    assert row()["stop_reason"] == "stop"
+
+
+def test_non_streaming_stop_reason_survives_the_finish(monkeypatch):
+    # Nothing accumulates on that path, so resolving at finish must not clear what
+    # set_perf already recorded.
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+    )
+    monitor.set_perf(entry_id, stop_reason = "stop")
+    monitor.finish(entry_id)
+    assert next(r for r in monitor.snapshot() if r["id"] == entry_id)["stop_reason"] == "stop"

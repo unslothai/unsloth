@@ -387,11 +387,12 @@ class ApiMonitor:
             entry.updated_at = time.time()
 
     def note_stop_reason(self, entry_id: Optional[str], reason: Optional[str]) -> None:
-        """Record one choice's finish reason.
+        """Record one choice's finish reason, without publishing it yet.
 
-        The row carries a single stop reason, so it only describes the request while every
-        choice agrees. Clears it again as soon as two disagree, which last-write-wins per
-        chunk could not do.
+        The row carries a single stop reason, so it only describes the request once every
+        choice has reported one. An n > 1 stream finishes its choices in separate chunks,
+        so publishing here would state a request-level verdict from the first one and
+        retract it when a later choice disagrees. :meth:`finish` resolves it instead.
         """
         if not entry_id or not reason:
             return
@@ -400,9 +401,14 @@ class ApiMonitor:
             if entry is None:
                 return
             entry.stop_reasons_seen.add(str(reason))
-            seen = entry.stop_reasons_seen
-            entry.stop_reason = next(iter(seen)) if len(seen) == 1 else None
             entry.updated_at = time.time()
+
+    @staticmethod
+    def _resolve_stop_reason_locked(entry: ApiRequestEntry) -> None:
+        """Publish the accumulated finish reasons, if they agree."""
+        seen = entry.stop_reasons_seen
+        if seen:
+            entry.stop_reason = next(iter(seen)) if len(seen) == 1 else None
 
     def set_usage(
         self,
@@ -456,6 +462,7 @@ class ApiMonitor:
             # already ran) must not move finished_*.
             if entry.finished_at is not None:
                 return
+            self._resolve_stop_reason_locked(entry)
             now = time.time()
             entry.status = status
             entry.updated_at = now
