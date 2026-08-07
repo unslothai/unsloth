@@ -75,7 +75,7 @@ _PWSH_READ = re.compile(
     r"Read-Host|PromptForChoice|Console\]::(?:In\.)?Read(?:Line|Key)|ReadKey\s*\(", re.IGNORECASE
 )
 
-# `scripts/<helper>.sh` as an entry point invokes it, quoted or after a path prefix.
+# A `scripts/<helper>` mention is an invocation, quoted or behind a path prefix.
 _HELPER_REF = re.compile(r"scripts/([A-Za-z0-9_.-]+\.(?:sh|ps1))")
 
 _QUOTED = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"' r"|'([^']*)'")
@@ -237,6 +237,7 @@ def test_every_installer_script_is_scanned():
         "studio/setup*.sh",
         "studio/setup*.ps1",
         "scripts/install*.sh",
+        "scripts/install*.ps1",
         "scripts/uninstall*.sh",
         "scripts/uninstall*.ps1",
     )
@@ -253,12 +254,14 @@ def test_every_installer_script_is_scanned():
     )
 
 
-def test_helpers_the_entry_points_invoke_are_scanned():
+def test_helpers_the_installers_invoke_are_scanned():
     """Naming the helpers by hand only ever covers the ones we thought of, so read
-    them back out of the entry points: whatever they reach, the guard scans."""
+    them back out instead: whatever the installers reach, the guard scans. Every
+    scanned script is a source, not just the entry points, so a helper that grows
+    a helper of its own is caught as soon as the first one is listed here."""
     referenced = {
         f"scripts/{match.group(1)}"
-        for script in ENTRY_POINTS
+        for script in SCANNED_SCRIPTS
         for line in (REPO_ROOT / script).read_text(encoding = "utf-8").splitlines()
         if not _is_comment(line)
         for match in _HELPER_REF.finditer(line)
