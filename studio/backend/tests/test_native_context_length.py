@@ -819,9 +819,11 @@ class TestRouteCompleteness:
         is positive: the only reads of the splatted name are the splat and the object of an
         allowed subscript write.
         """
-        for leak in ("alias = fields\n                alias.pop('native_context_length')",
-                     "_scrub(fields)",
-                     "return InferenceStatusResponse(is_gguf = True, **fields, extra = fields)"):
+        for leak in (
+            "alias = fields\n                alias.pop('native_context_length')",
+            "_scrub(fields)",
+            "return InferenceStatusResponse(is_gguf = True, **fields, extra = fields)",
+        ):
             assert not self._accepts(
                 f"""
                 fields = _llama_runtime_fields(llama_backend)
