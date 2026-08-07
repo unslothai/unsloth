@@ -498,6 +498,10 @@ assert_eq "vm_stat sums the reclaimable classes" "48" "$(printf '%s\n' "$_VM_SAM
 assert_eq "vm_stat ignores active and wired" "48" \
     "$(printf '%s\n' "$_VM_SAMPLE" | sed 's/999999/1/' | run_vm_stat)"
 assert_eq "vm_stat gibberish yields nothing" "" "$(printf 'no stats here\n' | run_vm_stat)"
+# A header with no reclaimable pages is a zero reading, not a parse failure.
+assert_eq "vm_stat reports a genuine zero" "0" \
+    "$(printf '%s\n' "Mach Virtual Memory Statistics: (page size of 16384 bytes)" \
+        "Pages active: 999999." | run_vm_stat)"
 
 # And _usable_ram_mb must consult it. An unreadable meminfo path forces the
 # branch that reads hw.memsize -- but that branch is an `elif` on sysctl
@@ -511,7 +515,18 @@ assert_eq "_usable_ram_mb prefers vm_stat over hw.memsize" "777" \
                 _vm_stat_avail_mb() { printf "777"; }
                 _usable_ram_mb "$2"' \
         _ "$_RAM_FILE" "$_TMPD/no-meminfo")"
-# And falls back to installed RAM when vm_stat gives nothing.
+# Zero is a reading and is kept. Falling back to 16 GiB of installed RAM on a
+# Mac with nothing reclaimable is exactly the oversubscription this PR removes.
+assert_eq "_usable_ram_mb keeps a zero reading" "0" \
+    "$(bash -c '. "$1"
+                sysctl() { printf "17179869184"; }
+                _cgroup_free_mb() { :; }
+                _vm_stat_avail_mb() { printf "0"; }
+                _usable_ram_mb "$2"' \
+        _ "$_RAM_FILE" "$_TMPD/no-meminfo")"
+# And zero usable still builds, at one job.
+assert_eq "zero usable RAM still builds at 1 job" "1" "$(run_jobs 20 0 "")"
+# Only unparseable output falls back to installed RAM.
 assert_eq "_usable_ram_mb falls back to hw.memsize" "16384" \
     "$(bash -c '. "$1"
                 sysctl() { printf "17179869184"; }

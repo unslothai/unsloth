@@ -535,7 +535,9 @@ _vm_stat_avail_mb() {
         /^Pages (free|inactive|speculative|purgeable)/ {
             gsub(/\./, "", $NF); pages += $NF
         }
-        END { if (ps > 0 && pages > 0) printf "%d", pages * ps / 1048576 }' || true
+        # A zero page count is a reading, not a parse failure; a missing page
+        # size is the only thing that means the output did not parse.
+        END { if (ps > 0) printf "%d", pages * ps / 1048576 }' || true
     return 0
 }
 
@@ -561,7 +563,9 @@ _usable_ram_mb() {
         # hand a busy Mac a budget it cannot honour. vm_stat is the equivalent;
         # installed RAM stays the fallback if the output does not parse.
         _avail=$(vm_stat 2>/dev/null | _vm_stat_avail_mb || true)
-        if [[ "$_avail" =~ ^[0-9]+$ ]] && [ "$_avail" -gt 0 ]; then _mb=$_avail; fi
+        # Zero included: a Mac with nothing reclaimable should build at 1 job,
+        # not fall back to installed RAM and take its full core count.
+        if [[ "$_avail" =~ ^[0-9]+$ ]]; then _mb=$_avail; fi
     fi
     _free=$(_cgroup_free_mb /sys/fs/cgroup /proc/self/cgroup /proc/self/mountinfo)
     if [[ "$_free" =~ ^[0-9]+$ ]]; then
