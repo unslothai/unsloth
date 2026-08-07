@@ -732,8 +732,12 @@ def _completed_gguf_variants(snapshot_dir: Optional[Path]) -> set[str]:
         if not is_gguf_filename(rel) or is_mmproj_filename(rel) or is_mtp_drafter_path(rel):
             continue
         quant = extract_quant_label(rel)
-        # Mirror the lister: a big-endian build is never offered, so it cannot vouch for the quant.
-        if is_big_endian_gguf_path(rel, quant):
+        # Mirror the lister: a big-endian build is never offered, so it cannot vouch for the
+        # quant. Judged with the loader's label, since the two extractors disagree on
+        # F16-be-checkpoint-Q4_K_M and this file must not mark Q4_K_M complete.
+        from utils.models.model_config import _extract_quant_label as _loader_quant
+
+        if is_big_endian_gguf_path(rel, _loader_quant(rel)):
             continue
         if empty:
             # The resolver still opens this file, so a zero-byte first pick is unjudgeable.

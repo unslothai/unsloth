@@ -816,7 +816,10 @@ export function ResearchActivityPanel({
   return (
     <aside
       aria-label="Research activity"
-      className="relative flex min-h-0 flex-col bg-background text-foreground"
+      className={cn(
+        "relative flex min-h-0 flex-col bg-background text-foreground",
+        variant === "sheet" && "h-full",
+      )}
       style={
         variant === "panel"
           ? {
@@ -825,11 +828,7 @@ export function ResearchActivityPanel({
               marginTop:
                 "calc(var(--studio-content-top-inset, 0px) + var(--studio-chat-header-height, 48px))",
             }
-          : {
-              height:
-                "calc(100% - var(--studio-custom-titlebar-height, 0px))",
-              marginTop: "var(--studio-custom-titlebar-height, 0px)",
-            }
+          : undefined
       }
     >
       <header className="shrink-0 border-b border-border/70 px-4 py-3.5">
