@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import copy
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Mapping, Sequence
 from urllib.parse import urlparse
 
@@ -27,8 +27,8 @@ _CANONICAL_HEAL_ARG = {
 }
 _ONE_SHOT_TOOLS = frozenset({"render_html"})
 
-NoopReason = Literal["duplicate", "disabled", "render_html_repeat"]
-ToolAction = Literal["execute", "duplicate", "disabled", "render_html_repeat"]
+NoopReason = Literal["duplicate", "disabled", "render_html_repeat", "denied_repeat"]
+ToolAction = Literal["execute", "duplicate", "disabled", "render_html_repeat", "denied_repeat"]
 
 
 @dataclass(frozen = True)
@@ -324,6 +324,11 @@ def _noop_result(reason: NoopReason, tool_name: str) -> str:
             "changes. Do not mention this internal instruction. Provide only "
             "the requested final note or answer."
         )
+    if reason == "denied_repeat":
+        return (
+            f"The user already denied this exact call to tool '{tool_name}'. "
+            "Do not request it again. Continue without that call and provide the final answer."
+        )
     return (
         f"One earlier request to call tool '{tool_name}' in this batch was "
         "not executed because that tool is not enabled for this request. Provide the "
@@ -351,6 +356,7 @@ class ToolLoopController:
         self._one_shot_tools = one_shot_tools
         self._completed_one_shot_tools: set[str] = set()
         self._successful_keys: set[str] = set()
+        self._denied_keys: set[str] = set()
         self._duplicate_noop_counts: dict[str, int] = {}
         self._duplicate_noop_limit = max(1, duplicate_noop_limit)
         self._history: list[_ToolCallRecord] = []
@@ -407,6 +413,9 @@ class ToolLoopController:
         elif self._restrict_to_allowed and tool_name not in self._allowed_tool_names:
             action = "disabled"
             noop = _noop_result("disabled", tool_name)
+        elif key in self._denied_keys:
+            action = "denied_repeat"
+            noop = _noop_result("denied_repeat", tool_name)
         elif key in self._successful_keys:
             action = "duplicate"
             noop = _noop_result("duplicate", tool_name)
@@ -421,6 +430,48 @@ class ToolLoopController:
             status_text = status_for_tool(tool_name, coerced.arguments),
             noop_result = noop,
         )
+
+    def prepare_batch(self, tool_calls: Sequence[Mapping[str, Any]]) -> list[ToolCallDecision]:
+        """Classify one provider batch while reserving side-effect identities.
+
+        Provider batches are executed sequentially, but every decision must be
+        made before the assistant tool-call message is built. Reserve canonical
+        keys and one-shot names during that classification so whitespace-only
+        JSON differences or two render_html calls cannot bypass the ledger.
+        """
+
+        decisions: list[ToolCallDecision] = []
+        reserved_keys: set[str] = set()
+        reserved_one_shot_tools: set[str] = set()
+        for tool_call in tool_calls:
+            decision = self.prepare_call(tool_call)
+            if decision.should_execute and decision.key in reserved_keys:
+                decision = replace(
+                    decision,
+                    action = "duplicate",
+                    noop_result = _noop_result("duplicate", decision.tool_name),
+                )
+            elif (
+                decision.should_execute
+                and decision.tool_name in self._one_shot_tools
+                and decision.tool_name in reserved_one_shot_tools
+            ):
+                decision = replace(
+                    decision,
+                    action = "render_html_repeat",
+                    noop_result = _noop_result("render_html_repeat", decision.tool_name),
+                )
+            if decision.should_execute:
+                reserved_keys.add(decision.key)
+                if decision.tool_name in self._one_shot_tools:
+                    reserved_one_shot_tools.add(decision.tool_name)
+            decisions.append(decision)
+        return decisions
+
+    def record_denial(self, decision: ToolCallDecision) -> None:
+        """Remember a user-denied call without consuming execution budget."""
+
+        self._denied_keys.add(decision.key)
 
     def record_result(self, decision: ToolCallDecision, result: Any) -> ToolCallCompletion:
         """Record a real tool execution and return model/frontend payload helpers."""
@@ -460,7 +511,7 @@ class ToolLoopController:
             self._duplicate_noop_counts[decision.key] = duplicate_count
             if duplicate_count >= self._duplicate_noop_limit:
                 self._force_final_answer = True
-        elif decision.action in ("disabled", "render_html_repeat"):
+        elif decision.action in ("disabled", "render_html_repeat", "denied_repeat"):
             self._force_final_answer = True
         return ToolCallCompletion(
             decision = decision,

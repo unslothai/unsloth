@@ -251,6 +251,29 @@ def test_provider_tool_events_survive_managed_round(monkeypatch):
     assert forwarded[0]["choices"] == []
 
 
+def test_provider_tool_event_after_studio_call_delta_survives(monkeypatch):
+    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
+    hosted_event = {
+        "id": "chatcmpl-hosted",
+        "object": "chat.completion.chunk",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
+        "_toolEvent": {
+            "type": "tool_end",
+            "tool_name": "image_generation",
+            "tool_call_id": "image_after_call",
+            "image_b64": "encoded-image",
+        },
+    }
+    tool_round = _tool_round()
+    tool_round.insert(1, "data: " + json.dumps(hosted_event))
+    client = _FakeClient([tool_round, [_chunk(delta = {"content": "done"}), "data: [DONE]"]])
+
+    output = asyncio.run(_collect(client))
+
+    forwarded = [json.loads(line[len("data:") :]) for line in output if "_toolEvent" in line]
+    assert [payload["_toolEvent"]["tool_call_id"] for payload in forwarded] == ["image_after_call"]
+
+
 def test_usage_is_aggregated_across_provider_rounds(monkeypatch):
     monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
     client = _FakeClient(
@@ -559,3 +582,145 @@ def test_cancel_interrupts_a_silent_provider_stream():
         await stream.aclose()
 
     asyncio.run(run())
+
+
+def test_upstream_sse_comments_are_forwarded(monkeypatch):
+    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
+    client = _FakeClient(
+        [
+            [": keep-alive", *_tool_round()],
+            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
+        ]
+    )
+
+    output = asyncio.run(_collect(client))
+
+    assert ": keep-alive" in output
+
+
+def test_provider_error_discards_partial_tool_call(monkeypatch):
+    executed = []
+    monkeypatch.setattr(
+        loop_mod,
+        "execute_tool",
+        lambda name, arguments, **_kwargs: executed.append((name, arguments)),
+    )
+    partial = _chunk(
+        delta = {
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": "call_partial",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"query":"Cai'},
+                }
+            ]
+        }
+    )
+    error = "data: " + json.dumps({"error": {"message": "upstream failed"}})
+    client = _FakeClient([[partial, error, "data: [DONE]"]])
+
+    output = asyncio.run(_collect(client))
+
+    assert executed == []
+    assert any("upstream failed" in line for line in output)
+
+
+def test_abrupt_eof_discards_partial_tool_call(monkeypatch):
+    executed = []
+    monkeypatch.setattr(
+        loop_mod,
+        "execute_tool",
+        lambda name, arguments, **_kwargs: executed.append((name, arguments)),
+    )
+    partial = _chunk(
+        delta = {
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": "call_partial",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"query":"Cai'},
+                }
+            ]
+        }
+    )
+
+    with pytest.raises(RuntimeError, match = "before completing"):
+        asyncio.run(_collect(_FakeClient([[partial]])))
+
+    assert executed == []
+
+
+def test_parallel_batch_deduplicates_normalized_arguments(monkeypatch):
+    executed = []
+
+    def fake_execute(name, arguments, **_kwargs):
+        executed.append((name, arguments))
+        return "ok"
+
+    monkeypatch.setattr(loop_mod, "execute_tool", fake_execute)
+    parallel_round = [
+        _chunk(
+            delta = {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_first",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"query":"Cairo"}',
+                        },
+                    },
+                    {
+                        "index": 1,
+                        "id": "call_duplicate",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{ "query": "Cairo" }',
+                        },
+                    },
+                ]
+            }
+        ),
+        _chunk(delta = {}, finish_reason = "tool_calls"),
+        "data: [DONE]",
+    ]
+    client = _FakeClient([parallel_round, [_chunk(delta = {"content": "done"}), "data: [DONE]"]])
+
+    asyncio.run(_collect(client))
+
+    assert executed == [("web_search", {"query": "Cairo"})]
+    assert [call["id"] for call in client.calls[1]["messages"][-3]["tool_calls"]] == ["call_first"]
+
+
+def test_repeated_denial_prompts_once_then_forces_final_answer(monkeypatch):
+    approvals = []
+
+    def deny(*_args):
+        approvals.append("deny")
+        return "deny"
+
+    monkeypatch.setattr(loop_mod, "new_approval_id", lambda: "approval")
+    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda *_args: object())
+    monkeypatch.setattr(loop_mod, "wait_tool_decision", deny)
+    monkeypatch.setattr(
+        loop_mod,
+        "execute_tool",
+        lambda *_args, **_kwargs: pytest.fail("denied tool must not execute"),
+    )
+    client = _FakeClient(
+        [
+            _named_tool_round("web_search", "call_first", '{"query":"Cairo"}'),
+            _named_tool_round("web_search", "call_repeat", '{ "query": "Cairo" }'),
+            [_chunk(delta = {"content": "done"}), "data: [DONE]"],
+        ]
+    )
+
+    asyncio.run(_collect(client, confirm_tool_calls = True))
+
+    assert approvals == ["deny"]
+    assert len(client.calls) == 3
+    assert client.calls[2]["tools"] is None

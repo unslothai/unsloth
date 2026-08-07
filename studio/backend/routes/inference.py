@@ -9019,7 +9019,7 @@ async def _proxy_to_external_provider(
 
     if (
         payload.confirm_tool_calls
-        and not studio_tool_execution
+        and not _use_external_studio_tools
         and not payload.bypass_permissions
         and (
             payload.enable_tools is True
@@ -9157,6 +9157,9 @@ async def _proxy_to_external_provider(
                 # trusting it would append a second [DONE] after the provider's.
                 if _is_openai_sse_done(line):
                     sent_done = True
+            if cancel_event.is_set():
+                api_monitor.finish(monitor_id, "cancelled")
+                return
             if not sent_done:
                 if not stream_failed:
                     api_monitor.finish(monitor_id)

@@ -203,6 +203,39 @@ def test_failed_call_does_not_block_retry():
     assert retry.action == "execute"
 
 
+def test_prepare_batch_reserves_canonical_duplicates_and_one_shot_tools():
+    controller = ToolLoopController(tools = [_tool("web_search"), _tool("render_html")])
+    decisions = controller.prepare_batch(
+        [
+            _call("web_search", '{"query":"gpu"}', "call_a"),
+            _call("web_search", '{ "query": "gpu" }', "call_b"),
+            _call("render_html", {"code": "first"}, "call_c"),
+            _call("render_html", {"code": "second"}, "call_d"),
+        ]
+    )
+
+    assert [decision.action for decision in decisions] == [
+        "execute",
+        "duplicate",
+        "execute",
+        "render_html_repeat",
+    ]
+
+
+def test_repeated_denied_call_becomes_a_terminal_noop():
+    controller = ToolLoopController(tools = [_tool("terminal")])
+    denied = controller.prepare_call(_call("terminal", {"command": "echo no"}, "call_a"))
+    controller.record_denial(denied)
+
+    repeated = controller.prepare_call(_call("terminal", {"command": "echo no"}, "call_b"))
+    completion = controller.record_noop(repeated)
+
+    assert repeated.action == "denied_repeat"
+    assert "already denied" in completion.model_message()["content"]
+    assert controller.force_final_answer
+    assert controller.active_tools() == []
+
+
 def test_empty_enabled_tool_list_blocks_all_tool_calls():
     controller = ToolLoopController(tools = [])
     decision = controller.prepare_call(_call("web_search", {"query": "gpu prices"}))

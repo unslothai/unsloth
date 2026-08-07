@@ -172,7 +172,7 @@ def _without_tool_transport(
     cloned["choices"] = kept_choices
     # Intermediate usage belongs to an internal tool-selection pass, not the
     # final browser-visible answer. Error payloads must still pass through.
-    if has_tool_calls and not kept_choices and "error" not in cloned:
+    if has_tool_calls and not kept_choices and "error" not in cloned and "_toolEvent" not in cloned:
         return None
     # Final-pass usage-only chunks remain useful. Stripped fragments do not.
     if (
@@ -280,6 +280,8 @@ async def stream_external_chat_with_tools(
         active_tools = tool_controller.active_tools()
         round_calls: dict[int, dict[str, Any]] = {}
         assistant_text: list[str] = []
+        round_finished = False
+        round_failed = False
         upstream = client.stream_chat_completion(
             messages = conversation,
             model = model,
@@ -309,7 +311,12 @@ async def stream_external_chat_with_tools(
                 finally:
                     next_task = None
                 payload = _sse_data(line)
+                if payload is None:
+                    if isinstance(line, str) and line.lstrip().startswith(":"):
+                        yield line
+                    continue
                 if payload is _DONE:
+                    round_finished = True
                     if not round_calls:
                         if aggregate_usage and usage_template is not None and not usage_emitted:
                             yield _combined_usage_line(usage_template, aggregate_usage)
@@ -318,6 +325,14 @@ async def stream_external_chat_with_tools(
                     continue
                 has_usage = False
                 if isinstance(payload, Mapping):
+                    if "error" in payload:
+                        round_failed = True
+                    choices = payload.get("choices")
+                    if isinstance(choices, list) and any(
+                        isinstance(choice, Mapping) and choice.get("finish_reason") is not None
+                        for choice in choices
+                    ):
+                        round_finished = True
                     usage = payload.get("usage")
                     if isinstance(usage, Mapping):
                         _accumulate_usage(aggregate_usage, usage)
@@ -342,6 +357,12 @@ async def stream_external_chat_with_tools(
             except RuntimeError:
                 pass
 
+        if round_failed:
+            return
+        if round_calls and not round_finished:
+            raise RuntimeError(
+                "External provider stream ended before completing its tool-call response."
+            )
         if not round_calls:
             if aggregate_usage and usage_template is not None and not usage_emitted:
                 yield _combined_usage_line(usage_template, aggregate_usage)
@@ -376,7 +397,9 @@ async def stream_external_chat_with_tools(
         if parallel_tool_calls is False:
             normalized_calls = normalized_calls[:1]
 
-        decision_pairs = [(tool_controller.prepare_call(call), call) for call in normalized_calls]
+        decision_pairs = list(
+            zip(tool_controller.prepare_batch(normalized_calls), normalized_calls)
+        )
         decisions = [decision for decision, _call in decision_pairs]
         executable_pairs = [
             (decision, call) for decision, call in decision_pairs if decision.should_execute
@@ -426,7 +449,7 @@ async def stream_external_chat_with_tools(
             conversation.append(assistant_message)
 
         deferred_noops: list[dict[str, Any]] = []
-        for decision in decisions:
+        for decision, _raw_call in decision_pairs:
             if not decision.should_execute:
                 completion = tool_controller.record_noop(decision)
                 deferred_noops.append(completion.model_message())
@@ -485,6 +508,7 @@ async def stream_external_chat_with_tools(
                     if decision.tool_call_id:
                         denied["tool_call_id"] = decision.tool_call_id
                     conversation.append(denied)
+                    tool_controller.record_denial(decision)
                     continue
                 decision_slot = None
             finally:
