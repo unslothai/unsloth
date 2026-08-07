@@ -2547,7 +2547,7 @@ def test_the_micro_batch_advisory_compares_against_the_emitted_batch():
     assert "Math.max(config.nBatch, batchFloor)" in page
     assert "config.nUbatch > effectiveBatch" in page
     # the rendered number too, or the text still names a batch nothing runs at
-    assert "llama.cpp will run at{\" \"} {effectiveBatch}." in page
+    assert 'llama.cpp will run at{" "} {effectiveBatch}.' in page
     # and the floor must be declared before the comparison that uses it
     assert page.index("const batchFloor =") < page.index("const effectiveBatch =")
 
