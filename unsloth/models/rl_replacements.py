@@ -520,6 +520,8 @@ def _replace_or_fallback(
     fallback_pattern,
     fallback_new,
     where = "",
+    required = False,
+    consequence = "",
 ):
     """str.replace over a wide anchor, with a narrower anchor to fall back on.
 
@@ -535,6 +537,11 @@ def _replace_or_fallback(
     So: try the wide anchor, then a narrow one that survives more drift, and warn
     only when both miss. `fallback_new` is an `re.sub` template, so it can carry
     the matched indentation over with `\\g<indent>`.
+
+    `required = True` keeps the two-anchor tolerance but raises rather than warns
+    when BOTH miss, for an edit whose absence is not the no-op it looks like.
+    `consequence` says what that absence does, since the warning below speaks only
+    about the worker count.
     """
     if old in function:
         return function.replace(old, new, 1)
@@ -548,6 +555,11 @@ def _replace_or_fallback(
         )
         return function
 
+    if required:
+        raise RuntimeError(
+            f"Unsloth: failed to apply a required source edit ({where}) "
+            f"(anchor not found){consequence}; please file a bug report."
+        )
     _warn_once(
         where,
         f"Unsloth: skipped an optional source edit ({where}) (anchor not found); "
@@ -598,6 +610,16 @@ def sft_trainer_prepare_dataset(function_name, function):
                 fallback_pattern = _ZOO_MAX_LENGTH_SEED,
                 fallback_new = r'\g<indent>max_seq_length = getattr(args, "max_length", 0) or 0',
                 where = "sft_prepare_dataset max_length seed",
+                # Not optional, unlike the worker count this helper was written for.
+                # The generated trainer clears `args.max_length` for padding-free, so
+                # an unrewritten seed reads that `None` instead of the `0` that makes
+                # the guard below fall through to `max_seq_length`: raw datasets stop
+                # being truncated, or `None > 0` raises. Both anchors missing means
+                # the neighbouring _require_replace edits have almost certainly gone
+                # too, so this raises where they do rather than one call later.
+                required = True,
+                consequence = ", so `max_length` would not be enforced for raw "
+                              "datasets under padding-free batching",
             )
             # why: route each edit through _require_replace so a drifted anchor fails
             # loudly instead of leaving a dangling reference to the setup variables.

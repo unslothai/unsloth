@@ -1966,3 +1966,93 @@ def test_the_memo_still_reuses_an_unchanged_datasets_split():
     first = seen["ds"]
     stub.evaluate(eval_dataset = late)
     assert seen["ds"] is first
+
+
+# ── round nine: the refusal, the required rewrite, and the one-shot stream ────
+def test_capping_the_train_split_cannot_undo_the_unknown_mode_refusal():
+    """`_unsloth_capped` is seeded from the mode and then had to survive.
+
+    The eval branches combine with `and`; the train branch assigned over the
+    seed, so a `truncation_mode` that is neither keep_start nor keep_end printed
+    "not being enforced" and was then served as keep_start anyway, with
+    `max_length` cleared and padding-free left on.
+    """
+    block = _padding_free_codegen_block()
+    assert "train_dataset, _unsloth_split_ok = _unsloth_cap_split(train_dataset)" in block
+    assert "_unsloth_capped = _unsloth_capped and _unsloth_split_ok" in block
+    assert "train_dataset, _unsloth_capped = _unsloth_cap_split" not in block
+
+
+def test_the_scan_refuses_a_single_pass_stream_instead_of_draining_it():
+    """Reading a one-shot stream to check it IS consuming it.
+
+    The trainer would then receive an exhausted split, or one short by the whole
+    scanned prefix. Two `iter()` calls returning the same object is what marks
+    one, and the answer is the same as for an unfinished prefix: not proven.
+    """
+    block = _padding_free_codegen_block()
+    assert "_unsloth_rows = iter(_ds)" in block
+    assert "if _unsloth_rows is iter(_ds): return False" in block
+    assert "for _unsloth_row in _ds:" not in block
+    scan_at = block.index("_unsloth_rows = iter(_ds)")
+    loop_at = block.index("for _row in _unsloth_rows:")
+    assert scan_at < loop_at, "the guard has to run before anything is read"
+
+
+def test_a_one_shot_stream_survives_the_cap_scan():
+    """The behaviour the codegen assertions above stand for, run for real."""
+    scanned = {"rows": 0}
+
+    def _stream():
+        for i in range(4):
+            scanned["rows"] += 1
+            yield {"input_ids": [1] * (i + 1)}
+
+    rows = _stream()
+    # What the generated helper does, in the same order.
+    probe = iter(rows)
+    assert probe is iter(rows), "a generator is its own iterator"
+    assert scanned["rows"] == 0, "the guard must not read a row"
+    assert [r["input_ids"] for r in rows] == [[1], [1, 1], [1, 1, 1], [1, 1, 1, 1]]
+
+
+def test_the_max_length_seed_rewrite_is_required():
+    """Not the optional worker-count edit this helper was written for.
+
+    The generated trainer clears `args.max_length`, so an unrewritten seed reads
+    that `None` rather than the `0` that makes the guard fall through, and a raw
+    dataset stops being truncated. Both anchors missing has to fail loudly.
+    """
+    import re as _re
+
+    import pytest as _pytest
+
+    from unsloth.models import rl_replacements
+
+    with _pytest.raises(RuntimeError, match = "required source edit"):
+        rl_replacements._replace_or_fallback(
+            "def f():\n    pass\n",
+            "    max_seq_length = getattr(args, \"max_length\", 0)",
+            "    max_seq_length = getattr(args, \"max_length\", 0) or 0",
+            fallback_pattern = _re.compile(r"^nothing matches this$", _re.MULTILINE),
+            fallback_new = r"x",
+            where = "sft_prepare_dataset max_length seed",
+            required = True,
+        )
+
+
+def test_an_optional_rewrite_still_only_warns():
+    """The control: the worker-count edit must keep degrading quietly."""
+    import re as _re
+
+    from unsloth.models import rl_replacements
+
+    source = "def f():\n    pass\n"
+    assert rl_replacements._replace_or_fallback(
+        source,
+        "not present either",
+        "x",
+        fallback_pattern = _re.compile(r"^nothing matches this$", _re.MULTILINE),
+        fallback_new = r"x",
+        where = "dataset_num_proc",
+    ) == source

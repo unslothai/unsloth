@@ -1772,8 +1772,19 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "        try:\n"
                     "            try:    _n = len(_ds)\n"
                     "            except Exception: _n = None\n"
+                    # A single-pass stream cannot be scanned at all: reading it here IS
+                    # consuming it, and the trainer would then get an exhausted split
+                    # (or one short by up to 1024 rows). Two `iter()` calls handing back
+                    # the same object is what says so -- true for a bare generator and
+                    # for a `torch.utils.data.IterableDataset` that returns shared
+                    # iterator state, false for a `datasets.IterableDataset`, which
+                    # restarts. Unverifiable, so answer as the prefix case below does:
+                    # not proven within the cap, which drops the enforcement claim and
+                    # leaves every row where it is.
+                    "            _unsloth_rows = iter(_ds)\n"
+                    "            if _unsloth_rows is iter(_ds): return False\n"
                     "            _seen = 0\n"
-                    "            for _row in _ds:\n"
+                    "            for _row in _unsloth_rows:\n"
                     "                if 'input_ids' not in _row: return True\n"
                     "                if len(_row['input_ids']) > _unsloth_cap: return False\n"
                     # An unexhausted stream is UNVERIFIED, not verified. Calling the
@@ -1960,8 +1971,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            if not _unsloth_known_mode:\n"
                     "                print('Unsloth: `truncation_mode = ' + str(_unsloth_truncation_mode) + '` is not one of keep_start / keep_end, so `max_length` is not being enforced here.')\n"
                     # A raw train split is tokenized with the cap by prep, so leave it alone.
+                    # `and`, like the eval splits below. A plain assignment threw away the
+                    # unknown-mode refusal seeded above, so a `truncation_mode` this cannot
+                    # honour was warned about and then silently served as keep_start, with
+                    # `max_length` cleared and padding-free left on.
                     "            if not _unsloth_prep_truncates:\n"
-                    "                train_dataset, _unsloth_capped = _unsloth_cap_split(train_dataset)\n"
+                    "                train_dataset, _unsloth_split_ok = _unsloth_cap_split(train_dataset)\n"
+                    "                _unsloth_capped = _unsloth_capped and _unsloth_split_ok\n"
                     # An eval split TRL will PACK must not be truncated first. The branch
                     # is gated on `not args.packing`, but `eval_packing` is resolved
                     # separately:
