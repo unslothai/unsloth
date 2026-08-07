@@ -754,7 +754,14 @@ jobs:
         env:
           ARTIFACT_PATHS: ${{ steps.build_linux.outputs.artifactPaths }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # The signing key is not password protected, and no secret of this name
+          # exists, so this expression has always resolved to the empty string.
+          # Stated literally rather than left pointing at a secret that is not
+          # there: the value is unchanged, but it no longer reads as configuration
+          # someone forgot to set. Empty is not the same as unset here -- tauri
+          # prompts for a password when the variable is absent, which would hang
+          # the job, so the line stays.
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         run: |
           set -euo pipefail
           deb_path="$(
@@ -803,7 +810,14 @@ jobs:
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # The signing key is not password protected, and no secret of this name
+          # exists, so this expression has always resolved to the empty string.
+          # Stated literally rather than left pointing at a secret that is not
+          # there: the value is unchanged, but it no longer reads as configuration
+          # someone forgot to set. Empty is not the same as unset here -- tauri
+          # prompts for a password when the variable is absent, which would hang
+          # the job, so the line stays.
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
@@ -961,7 +975,14 @@ jobs:
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # The signing key is not password protected, and no secret of this name
+          # exists, so this expression has always resolved to the empty string.
+          # Stated literally rather than left pointing at a secret that is not
+          # there: the value is unchanged, but it no longer reads as configuration
+          # someone forgot to set. Empty is not the same as unset here -- tauri
+          # prompts for a password when the variable is absent, which would hang
+          # the job, so the line stays.
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
