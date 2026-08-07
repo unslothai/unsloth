@@ -558,6 +558,7 @@ def test_a_failed_move_aside_warns_that_unsloth_may_not_upgrade(
         return real_replace(source, destination)
 
     monkeypatch.setattr(studio.os, "replace", refuse_move)
+
     def setup(**_kwargs):
         ran.append(True)
         # Sampled here: a successful update unlinks the backup on the way out.
