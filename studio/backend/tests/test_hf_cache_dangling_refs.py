@@ -410,9 +410,9 @@ def test_load_id_names_the_snapshot_holding_the_safetensors_payload(tmp_path, mo
     assert rows[0]["model_format"] == "safetensors"
     load_dir = Path(rows[0]["load_id"])
     # from_pretrained(load_id) must find the weights the row advertised.
-    assert any(entry.suffix == ".safetensors" for entry in load_dir.iterdir()), (
-        f"load_id {load_dir.name} holds no weights; payload is in {OLDER[:8]}"
-    )
+    assert any(
+        entry.suffix == ".safetensors" for entry in load_dir.iterdir()
+    ), f"load_id {load_dir.name} holds no weights; payload is in {OLDER[:8]}"
     assert load_dir == repo_dir / "snapshots" / OLDER
 
 
@@ -433,9 +433,9 @@ def test_load_id_names_the_snapshot_holding_the_advertised_gguf_quant(tmp_path, 
     assert rows[0]["size_bytes"] == 32
     load_dir = Path(rows[0]["load_id"])
     variants, _has_vision = list_local_gguf_variants(str(load_dir))
-    assert [v.quant for v in variants] == ["Q4_K_M"], (
-        f"no variant resolves under load_id {load_dir.name}; the quant is in {OLDER[:8]}"
-    )
+    assert [v.quant for v in variants] == [
+        "Q4_K_M"
+    ], f"no variant resolves under load_id {load_dir.name}; the quant is in {OLDER[:8]}"
     assert load_dir == repo_dir / "snapshots" / OLDER
 
 
@@ -473,9 +473,9 @@ def test_load_id_leaves_the_payload_snapshot_when_main_resolves_elsewhere(tmp_pa
         if load_id == "Org/Model"
         else Path(load_id)
     )
-    assert any(entry.suffix == ".safetensors" for entry in resolved.iterdir()), (
-        f"load_id {load_id} resolves to {resolved.name}, which holds no weights"
-    )
+    assert any(
+        entry.suffix == ".safetensors" for entry in resolved.iterdir()
+    ), f"load_id {load_id} resolves to {resolved.name}, which holds no weights"
     assert Path(load_id) == repo_dir / "snapshots" / OLDER
 
 
@@ -769,9 +769,9 @@ def test_a_companion_only_snapshot_is_not_a_gguf_payload(tmp_path, monkeypatch):
     assert [row["repo_id"] for row in rows] == ["Org/Model"]
     load_dir = Path(rows[0]["load_id"])
     variants, _has_vision = list_local_gguf_variants(str(load_dir))
-    assert [v.quant for v in variants], (
-        f"load_id {load_dir.name[:8]} offers no quant at all; it holds only a companion drafter"
-    )
+    assert [
+        v.quant for v in variants
+    ], f"load_id {load_dir.name[:8]} offers no quant at all; it holds only a companion drafter"
     assert load_dir == repo_dir / "snapshots" / OLDER
 
 
@@ -1586,9 +1586,9 @@ def test_the_scan_loop_cannot_advertise_a_signal_it_did_not_scope(scan):
             )
         }
     )
-    assert set(handed_off) <= _REPO_WIDE_HELPERS, (
-        f"{scan} hands the whole repo to {sorted(set(handed_off) - _REPO_WIDE_HELPERS)}"
-    )
+    assert (
+        set(handed_off) <= _REPO_WIDE_HELPERS
+    ), f"{scan} hands the whole repo to {sorted(set(handed_off) - _REPO_WIDE_HELPERS)}"
 
 
 @pytest.mark.parametrize("module, allowed", sorted(_MTIME_READERS.items()))
@@ -1601,9 +1601,9 @@ def test_only_the_shared_key_orders_snapshots_by_mtime(module, allowed):
         for name, node in _function_defs(_BACKEND / module).items()
         if any(isinstance(sub, ast.Attribute) and sub.attr == "st_mtime" for sub in ast.walk(node))
     }
-    assert readers == set(allowed), (
-        f"{module} reads a snapshot mtime outside snapshot_selection_key: {sorted(readers)}"
-    )
+    assert readers == set(
+        allowed
+    ), f"{module} reads a snapshot mtime outside snapshot_selection_key: {sorted(readers)}"
 
 
 # --- review-round regressions -------------------------------------------------

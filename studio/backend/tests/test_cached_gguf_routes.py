@@ -2570,9 +2570,9 @@ def test_arch_to_task_agrees_with_the_loader_on_ambiguous_archs():
             loader_accepts = True
         except (ValueError, FileNotFoundError):
             loader_accepts = False
-        assert (task == "text-to-image") == loader_accepts, (
-            f"{fam.name}: picker task={task} but loader accepts={loader_accepts}"
-        )
+        assert (
+            task == "text-to-image"
+        ) == loader_accepts, f"{fam.name}: picker task={task} but loader accepts={loader_accepts}"
 
 
 def _clear_chat_delete_guards(monkeypatch):
@@ -3243,9 +3243,9 @@ def test_cached_repo_task_agrees_with_the_image_loader(monkeypatch):
             loader_accepts = True
         except (ValueError, FileNotFoundError, RuntimeError):
             loader_accepts = False
-        assert (task == "text-to-image") == loader_accepts, (
-            f"{repo_id}: picker task={task} but loader accepts={loader_accepts}"
-        )
+        assert (
+            task == "text-to-image"
+        ) == loader_accepts, f"{repo_id}: picker task={task} but loader accepts={loader_accepts}"
 
 
 def test_cached_picker_hides_a_family_this_diffusers_cannot_build(monkeypatch):
@@ -3382,9 +3382,9 @@ def test_every_shipped_video_family_resolves_on_this_diffusers():
     from core.inference.diffusion_families import family_pipeline_available
     from core.inference.video_families import _FAMILIES as _VIDEO_FAMILIES
     for fam in _VIDEO_FAMILIES:
-        assert family_pipeline_available(fam), (
-            f"{fam.name}: {fam.pipeline_class} is not in diffusers"
-        )
+        assert family_pipeline_available(
+            fam
+        ), f"{fam.name}: {fam.pipeline_class} is not in diffusers"
 
 
 def test_the_gguf_picker_and_the_image_loader_agree_on_an_old_diffusers(monkeypatch):
@@ -3407,9 +3407,9 @@ def test_the_gguf_picker_and_the_image_loader_agree_on_an_old_diffusers(monkeypa
                 loader_accepts = True
             except (ValueError, FileNotFoundError, RuntimeError):
                 loader_accepts = False
-            assert (task == "text-to-image") == loader_accepts, (
-                f"{repo_id} on {engine}: picker task={task} but loader accepts={loader_accepts}"
-            )
+            assert (
+                (task == "text-to-image") == loader_accepts
+            ), f"{repo_id} on {engine}: picker task={task} but loader accepts={loader_accepts}"
 
 
 def test_a_cancelled_siblings_resume_survives_the_local_listing(monkeypatch, tmp_path):
