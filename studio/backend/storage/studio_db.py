@@ -1642,8 +1642,7 @@ def update_chat_thread(
 
     conn = get_connection()
     try:
-        # The guards ride in the WHERE clause so the checks and the write are
-        # one statement.
+        # Guards ride in the WHERE clause, so check and write are one statement.
         where = ["id = ?"]
         guard: list = [id]
         if expected_title is not None:

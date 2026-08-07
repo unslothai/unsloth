@@ -34,8 +34,7 @@ test("a backend that declares the fields enforces the guards", () => {
 });
 
 test("a backend from before the fields does not", () => {
-  // It drops the unknown fields and applies the write, so the migration has to
-  // stay off there.
+  // It drops the unknown fields and writes anyway, so the migration stays off.
   assert.equal(schemaDeclaresRepairGuards(documentWith(OLD_PROPERTIES)), false);
 });
 
@@ -78,8 +77,8 @@ test("a schema that arrived settles the question either way", () => {
 });
 
 test("an HTTP failure is a moment, not an answer", () => {
-  // 401 while the token warms up, 503 during startup. Remembering these would
-  // park the migration for the rest of the session.
+  // 401 while the token warms up, 503 at startup. Caching one would park the
+  // migration for the session.
   assert.deepEqual(readGuardProbe(false, null), {
     supported: false,
     settled: false,

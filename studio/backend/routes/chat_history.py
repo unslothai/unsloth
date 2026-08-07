@@ -71,11 +71,9 @@ class ChatThread(BaseModel):
 
 class ChatThreadPatch(BaseModel):
     title: Optional[str] = None
-    # Set to apply the patch only while the row still holds this title, so a
-    # rename racing a background rewrite wins.
+    # Apply only while the row still holds this title, so a rename beats a background rewrite.
     expectedTitle: Optional[str] = None
-    # Set to apply it only while this is still the thread's opening user
-    # message, so a title derived from one that was deleted is rejected.
+    # Apply only while this is still the opening user message, so a title from a deleted one is rejected.
     expectedOpeningMessageId: Optional[str] = None
     modelType: Optional[Literal["base", "lora", "model1", "model2"]] = None
     modelId: Optional[str] = None

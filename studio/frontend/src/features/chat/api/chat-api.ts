@@ -726,11 +726,9 @@ export async function saveChatThread(
 }
 
 export interface UpdateChatThreadOptions {
-  /** Apply the patch only while the row still holds this title. The server
-   *  answers 409 otherwise, so a rename beats a background rewrite. */
+  /** Apply only while the row still holds this title, else 409. */
   expectedTitle?: string;
-  /** And only while this is still the thread's opening user message, so a
-   *  title taken from a prompt that was just deleted is rejected. */
+  /** And only while this is still the thread's opening user message. */
   expectedOpeningMessageId?: string;
 }
 

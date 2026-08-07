@@ -1,14 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Both fields the conditional title patch rides on. */
 const GUARD_FIELDS = ["expectedTitle", "expectedOpeningMessageId"] as const;
 
-/** Whether the served schema declares the conditional title patch.
- *
- *  The desktop app ships its own frontend against a separately installed
- *  backend, and an older one drops these fields and applies the write
- *  unguarded. Anything unrecognised reads as unsupported. */
+/** Whether the served schema declares the guard fields. The desktop app ships
+ *  its own frontend against a separately installed backend, and an older one
+ *  drops these and writes unguarded. Anything unrecognised is unsupported. */
 export function schemaDeclaresRepairGuards(document: unknown): boolean {
   if (typeof document !== "object" || document === null) return false;
   const components = (document as { components?: unknown }).components;
@@ -25,9 +22,9 @@ export function schemaDeclaresRepairGuards(document: unknown): boolean {
 
 export interface GuardProbe {
   supported: boolean;
-  /** Only a schema that arrived and parsed settles the question. Anything else
-   *  is a moment in time: a 401 while the token warms up, a 503 during startup.
-   *  Remembering those would park the migration for the whole session. */
+  /** Only a schema that arrived and parsed settles it. A 401 while the token
+   *  warms up or a 503 at startup is a moment, not an answer, and caching one
+   *  would park the migration for the session. */
   settled: boolean;
 }
 

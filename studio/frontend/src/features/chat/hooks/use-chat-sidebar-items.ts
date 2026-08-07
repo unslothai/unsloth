@@ -132,8 +132,8 @@ export function useChatSidebarItems(options?: {
         if (cancelled || seq !== requestSeq) return;
         setAllThreads(threads);
         setLoaded(true);
-        // Older pre-cut titles cannot grow with the sidebar. The repair reads
-        // its own messages, as late as it can, rather than taking this list's.
+        // Pre-cut legacy titles cannot grow with the sidebar. The repair reads
+        // its own messages, as late as it can, not this list's.
         void repairLegacyChatTitles(threads).catch(() => undefined);
       } catch (error) {
         if (isExpectedBackgroundChatStorageError(error)) {
