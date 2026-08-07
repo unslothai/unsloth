@@ -905,7 +905,6 @@ def test_free_never_reports_a_slot_admission_would_refuse():
     without subtracting it from `free` prints free slots next to a queued request.
     """
     from core.inference.llama_admission import LlamaAdmissionQueue
-
     for capacity, held, tickets in itertools.product(range(1, 5), range(0, 5), range(0, 3)):
         if held > capacity:
             continue
@@ -947,12 +946,7 @@ def test_queue_panel_never_shows_a_free_slot_next_to_a_resume(monkeypatch):
     monkeypatch.setattr(inf, "peek_llama_admission_snapshot", lambda _base: queue.snapshot())
     monkeypatch.setattr(inf, "_direct_llama_inflight", 0)
 
-    assert inf._monitor_queue_state() == {
-        "capacity": 1,
-        "active": 0,
-        "queued": 1,
-        "free": 0,
-    }
+    assert inf._monitor_queue_state() == {"capacity": 1, "active": 0, "queued": 1, "free": 0}
 
 
 def test_set_perf_survives_an_out_of_range_engine_number():
@@ -1019,9 +1013,7 @@ def test_direct_llama_counter_is_started_last_before_its_guarding_try():
     import textwrap
 
     for func_name in ("openai_completions", "openai_embeddings"):
-        tree = ast.parse(
-            textwrap.dedent(inspect.getsource(getattr(inference_route, func_name)))
-        )
+        tree = ast.parse(textwrap.dedent(inspect.getsource(getattr(inference_route, func_name))))
         started = [
             node
             for node in ast.walk(tree)
