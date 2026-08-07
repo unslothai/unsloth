@@ -277,6 +277,304 @@ _resolve_cuda_archs() {
     printf '%s' "$_archs"
 }
 
+# Reserved for the OS, and budgeted per compile job, both in MiB. Measured on
+# llama.cpp with CUDA 13.1, the heaviest translation units (flash-attention
+# template instances) peak at ~400 MiB RSS each, and -j20 peaked at 8.2 GiB
+# across ~30 processes, since nvcc forks cicc and ptxas. 2048 is deliberately
+# above that: it must also cover MSVC and hipcc, older and far heavier CUDA
+# toolkits (ggml-org/llama.cpp#17844 climbs past 16 GiB), and the link step.
+# Erring high costs build time; erring low costs the machine.
+_LLAMA_BUILD_RESERVE_MB=2048
+_LLAMA_BUILD_MB_PER_JOB=2048
+
+# Echo the cmake -j count. Args: core count, total RAM MiB ("" = unreadable,
+# which keeps the old core-count behaviour). UNSLOTH_LLAMA_BUILD_JOBS wins.
+# Pure, so the tests can drive it without faking hardware.
+_llama_jobs_for() {
+    local _cores=$1 _mem_mb=$2 _jobs
+    if [[ "${UNSLOTH_LLAMA_BUILD_JOBS:-}" =~ ^[0-9]+$ ]] && [ "$UNSLOTH_LLAMA_BUILD_JOBS" -ge 1 ]; then
+        printf '%s' "$UNSLOTH_LLAMA_BUILD_JOBS"
+        return 0
+    fi
+    if ! [[ "$_cores" =~ ^[0-9]+$ ]] || [ "$_cores" -lt 1 ]; then _cores=4; fi
+    if ! [[ "$_mem_mb" =~ ^[0-9]+$ ]]; then
+        printf '%s' "$_cores"
+        return 0
+    fi
+    _jobs=$(( (_mem_mb - _LLAMA_BUILD_RESERVE_MB) / _LLAMA_BUILD_MB_PER_JOB ))
+    [ "$_jobs" -lt 1 ] && _jobs=1
+    [ "$_jobs" -gt "$_cores" ] && _jobs=$_cores
+    printf '%s' "$_jobs"
+}
+
+# Echo the first line of $1 with whitespace stripped, or nothing. A builtin read
+# plus an expansion, not `head | tr`: this is best-effort on the install's
+# critical path under `set -euo pipefail`, and a failing pipeline took the whole
+# install down. -r alone does not rule that out (a directory passes it, and a
+# cgroup can be torn down between the test and the open); -f does.
+_cg_read() {
+    local _v=""
+    [ -f "$1" ] && [ -r "$1" ] || return 0
+    IFS= read -r _v < "$1" 2>/dev/null || true
+    printf '%s' "${_v//[[:space:]]/}"
+    return 0
+}
+
+# Echo $1 when it is a real limit. v2 writes "max"; v1 a near-2^63 sentinel.
+# Zero is a limit, not the absence of one: memory.high throttles and never
+# invokes the OOM killer (cgroup-v2.rst), so a process runs happily under
+# MemoryHigh=0 and must not then be handed its full core count.
+_cg_limit() {
+    [[ "$1" =~ ^[0-9]+$ ]] || return 0
+    [ "$1" -lt 4611686018427387904 ] && printf '%s' "$1"
+    return 0
+}
+
+# Echo "$1/$2" and every ancestor up to $1, innermost first, NUL-delimited: a
+# mount point may contain a newline, so a line-delimited list would split one
+# path into two. dirname is inlined for the same reason ($() eats a trailing
+# newline).
+_cg_dirs() {
+    local _root=$1 _cur
+    if [ -n "${2:-}" ] && [ "$2" != "/" ]; then
+        _cur="$_root/${2#/}"
+        while [ "$_cur" != "$_root" ] && [ "$_cur" != "/" ]; do
+            printf '%s\0' "$_cur"
+            case "$_cur" in
+                */*) _cur=${_cur%/*}; [ -n "$_cur" ] || _cur="/" ;;
+                *) break ;;
+            esac
+        done
+    fi
+    printf '%s\0' "$_root"
+}
+
+# The mountinfo path decoder as an awk function, in one place so its two callers
+# cannot drift. mountinfo escapes space, tab, newline and backslash as \040 and
+# friends; strtonum is a gawk extension, so the octal maths is done by hand to
+# also run under the mawk and BSD awk that Debian and macOS ship.
+_cg_unesc_prog() {
+    cat <<'_CG_AWK_UNESC'
+        function unesc(s,   out, i, c, o, v) {
+            out = ""; i = 1
+            while (i <= length(s)) {
+                c = substr(s, i, 1)
+                if (c == "\\" && substr(s, i + 1, 3) ~ /^[0-7][0-7][0-7]$/) {
+                    o = substr(s, i + 1, 3)
+                    v = (substr(o, 1, 1) + 0) * 64 + (substr(o, 2, 1) + 0) * 8 + (substr(o, 3, 1) + 0)
+                    out = out sprintf("%c", v); i += 4
+                } else { out = out c; i++ }
+            }
+            return out
+        }
+_CG_AWK_UNESC
+}
+
+# Echo $1 with its mountinfo escapes decoded. Decoding is deliberately late:
+# \011 and \012 decode to the very tab and newline that delimit the records
+# below, so decoding at the read would split one record into two. An escaped
+# path holds neither, so it travels intact and is decoded here.
+_cg_unesc() {
+    [ -n "$1" ] || return 0
+    printf '%s\n' "$1" | awk "$(_cg_unesc_prog)"'{ printf "%s", unesc($0); exit }' || true
+    return 0
+}
+
+# Echo every matching cgroup hierarchy as "<mount root><tab><mount point>", both
+# still escaped. $1 = a mountinfo file, $2 = "cgroup2" or a v1 controller name.
+# mountinfo is "... <root> <mountpoint> <opts> [tags] - <fstype> <source>
+# <superopts>", and a v1 hierarchy lists its controllers in the super options,
+# so a co-mounted or relocated one is found by name rather than assumed to sit
+# at <root>/<name>.
+_cg_mounts() {
+    [ -r "$1" ] || return 0
+    awk -v want="$2" '
+        {
+            for (i = 1; i <= NF; i++) if ($i == "-") break
+            if (i + 3 > NF) next
+            if (want == "cgroup2") {
+                if ($(i + 1) == "cgroup2") print $4 "\t" $5
+                next
+            }
+            if ($(i + 1) != "cgroup") next
+            n = split($(i + 3), opts, ",")
+            for (j = 1; j <= n; j++) if (opts[j] == want) { print $4 "\t" $5; next }
+        }' "$1" 2>/dev/null || true
+    return 0
+}
+
+# Echo the process's path within a mount, or nothing when the mount does not
+# expose it. Args: mount root, process cgroup path. A bind-mounted subtree shows
+# a mount root like /slice while /proc/self/cgroup reports /slice/job and the
+# files sit at <mountpoint>/job, so joining the two unmapped walks a path that
+# does not exist and settles on an outer limit instead of the binding one.
+_cg_rel() {
+    local _root=$1 _rel=$2
+    [ -n "$_rel" ] || return 0
+    [ "$_root" = "/" ] && { printf '%s' "$_rel"; return 0; }
+    case "$_rel" in
+        "$_root") printf '%s' "/" ;;
+        "$_root"/*) printf '%s' "${_rel#"$_root"}" ;;
+        # Not under this mount's root: nothing here describes this process.
+        *) : ;;
+    esac
+    return 0
+}
+
+# Echo EVERY "<root><tab><point>" on stdin whose root contains the process path
+# ($1), still escaped, one per line; or the first seen when none does. A
+# hierarchy can be mounted twice with different subtree roots (rootless podman
+# inside rootless podman): taking the first steps past the binding mount, and
+# taking only the most specific hides a limit above the narrower mount's root.
+# So every containing mount is inspected and the smallest allowance wins, which
+# makes the answer order-independent.
+_cg_pick_mounts() {
+    local _rel=$1 _root _point _droot _any="" _firstroot="" _firstpoint=""
+    while IFS=$'\t' read -r _root _point; do
+        [ -n "$_point" ] || continue
+        if [ -z "$_firstpoint" ]; then _firstroot=$_root; _firstpoint=$_point; fi
+        # /proc/self/cgroup is not escaped, so the root is compared decoded.
+        _droot=$(_cg_unesc "$_root")
+        [ -n "$(_cg_rel "$_droot" "$_rel")" ] || continue
+        printf '%s\t%s\n' "$_root" "$_point"
+        _any=1
+    done
+    [ -n "$_any" ] || [ -z "$_firstpoint" ] || printf '%s\t%s\n' "$_firstroot" "$_firstpoint"
+    return 0
+}
+
+# Echo the memory free under the binding cgroup limit in MiB, or nothing. Args:
+# fallback cgroup root, /proc/self/cgroup path, /proc/self/mountinfo path; all
+# arguments so the tests can drive a real tree. Mirrors dataset_num_proc.py:
+# reading the hierarchy root alone only works with a private cgroup namespace,
+# and under Slurm, systemd or --cgroupns=host the binding limit is the process's
+# own path or an ancestor's. Each limit pairs with the usage of the directory
+# that set it, since an ancestor's usage counts siblings this process cannot
+# see, and the smallest remaining allowance wins.
+_cgroup_free_mb() {
+    local _root=$1 _proc=$2 _mnt=${3:-} _rel _dir _used _limit _free _name _min=""
+    local _v2rel _v1rel _v2mnts _v1mnts _mroot _mpoint
+    _cg_consider() {
+        [ -n "$1" ] || return 0
+        if [[ "$2" =~ ^[0-9]+$ ]]; then _free=$(( $1 - $2 )); else _free=$1; fi
+        [ "$_free" -lt 0 ] && _free=0
+        if [ -z "$_min" ] || [ "$_free" -lt "$_min" ]; then _min=$_free; fi
+        return 0
+    }
+    # The process path is read first so the right mount can be chosen among
+    # several. Only the first two colons are delimiters: a systemd unit name may
+    # contain one, and -F: with $3 would truncate the path there.
+    _v2rel=$(awk '/^0::/ { print substr($0, 4); exit }' "$_proc" 2>/dev/null || true)
+    _v1rel=$(awk '
+        {
+            a = index($0, ":"); if (a == 0) next
+            rest = substr($0, a + 1)
+            b = index(rest, ":"); if (b == 0) next
+            if (substr(rest, 1, b - 1) ~ /(^|,)memory(,|$)/) { print substr(rest, b + 1); exit }
+        }' "$_proc" 2>/dev/null || true)
+    _v2mnts=$(_cg_mounts "$_mnt" cgroup2 | _cg_pick_mounts "$_v2rel")
+    _v1mnts=$(_cg_mounts "$_mnt" memory | _cg_pick_mounts "$_v1rel")
+    # Fall back to the conventional layout when mountinfo is unreadable.
+    [ -n "$_v2mnts" ] || _v2mnts=$(printf '/\t%s' "$_root")
+    [ -n "$_v1mnts" ] || _v1mnts=$(printf '/\t%s' "$_root/memory")
+
+    # The v2 line is "0::<path>"; systemd hybrid mode adds v1 lines alongside.
+    while IFS=$'\t' read -r _mroot _mpoint; do
+        [ -n "$_mpoint" ] || continue
+        # Decode now that a single path is in hand, after it survived the tab-
+        # and newline-delimited transport. The sentinel keeps $() from eating a
+        # trailing newline.
+        _mroot=$(_cg_unesc "$_mroot"; printf X); _mroot=${_mroot%X}
+        _mpoint=$(_cg_unesc "$_mpoint"; printf X); _mpoint=${_mpoint%X}
+        [ -d "$_mpoint" ] || continue
+        _rel=$(_cg_rel "$_mroot" "$_v2rel")
+        while IFS= read -r -d '' _dir; do
+            _used=$(_cg_read "$_dir/memory.current")
+            for _name in memory.max memory.high; do
+                _limit=$(_cg_limit "$(_cg_read "$_dir/$_name")")
+                _cg_consider "$_limit" "$_used"
+            done
+        done < <(_cg_dirs "$_mpoint" "$_rel")
+    done <<< "$_v2mnts"
+
+    # v1 is "<id>:<controllers>:<path>", and mounts are often combined.
+    while IFS=$'\t' read -r _mroot _mpoint; do
+        [ -n "$_mpoint" ] || continue
+        _mroot=$(_cg_unesc "$_mroot"; printf X); _mroot=${_mroot%X}
+        _mpoint=$(_cg_unesc "$_mpoint"; printf X); _mpoint=${_mpoint%X}
+        [ -d "$_mpoint" ] || continue
+        _rel=$(_cg_rel "$_mroot" "$_v1rel")
+        while IFS= read -r -d '' _dir; do
+            _used=$(_cg_read "$_dir/memory.usage_in_bytes")
+            _limit=$(_cg_limit "$(_cg_read "$_dir/memory.limit_in_bytes")")
+            _cg_consider "$_limit" "$_used"
+        done < <(_cg_dirs "$_mpoint" "$_rel")
+    done <<< "$_v1mnts"
+
+    [ -n "$_min" ] && printf '%d' "$(( _min / 1048576 ))"
+    return 0
+}
+
+# macOS available memory in MiB, read from vm_stat on stdin; empty when the
+# output does not parse. free + inactive is the reclaim-aware equivalent of
+# MemAvailable, and the page size is read from the header rather than assumed to
+# be 4096, which is wrong on Apple Silicon. Only those two: xnu's
+# osfmk/mach/vm_statistics.h says speculative pages "are already accounted for
+# in free_count", and purgeable is an attribute of a page rather than a queue,
+# so a volatile page is already counted on active or inactive. Adding either
+# double-counts. Under-counting is the safe direction for a cap: it costs build
+# time on a busy Mac rather than the machine.
+_vm_stat_avail_mb() {
+    awk '
+        /page size of/ {
+            for (i = 1; i < NF; i++) if ($i == "of") { ps = $(i + 1) + 0; break }
+        }
+        /^Pages (free|inactive)/ {
+            gsub(/\./, "", $NF); pages += $NF
+        }
+        # A zero page count is a reading; only a missing page size is a failure.
+        END { if (ps > 0) printf "%d", pages * ps / 1048576 }' || true
+    return 0
+}
+
+# Usable RAM in MiB; empty when it cannot be read. MemAvailable, not MemTotal: a
+# workstation with 8 GiB already resident cannot host a 14 GiB compile just
+# because 16 GiB is fitted. /proc is not namespaced either, so a lower cgroup
+# allowance wins. $1 is the meminfo file, an argument like every other reader's
+# path here so the tests can pin a number instead of racing the live one.
+_usable_ram_mb() {
+    local _meminfo=${1:-/proc/meminfo} _bytes _mb="" _free _avail
+    if [ -r "$_meminfo" ]; then
+        # MemAvailable counts reclaimable page cache; MemFree does not. Absent
+        # before Linux 3.14, where MemTotal is the only thing to go on. `|| true`
+        # because bash applies errexit to a failing assignment in POSIX mode, and
+        # an unreadable meminfo must cost the cap, not the install.
+        _mb=$(awk '/^MemAvailable:/ { printf "%d", $2 / 1024; exit }' "$_meminfo") || true
+        [ -n "$_mb" ] || _mb=$(awk '/^MemTotal:/ { printf "%d", $2 / 1024; exit }' "$_meminfo") || true
+    elif _bytes=$(sysctl -n hw.memsize 2>/dev/null); then
+        [[ "$_bytes" =~ ^[0-9]+$ ]] && _mb=$(( _bytes / 1048576 ))
+        # macOS has no MemAvailable, so hw.memsize is installed RAM and would
+        # hand a busy Mac a budget it cannot honour; vm_stat is the equivalent,
+        # with installed RAM as the fallback when it does not parse. Zero is
+        # kept: a Mac with nothing reclaimable should build at 1 job, not take
+        # its full core count.
+        _avail=$(vm_stat 2>/dev/null | _vm_stat_avail_mb || true)
+        if [[ "$_avail" =~ ^[0-9]+$ ]]; then _mb=$_avail; fi
+    fi
+    _free=$(_cgroup_free_mb /sys/fs/cgroup /proc/self/cgroup /proc/self/mountinfo)
+    if [[ "$_free" =~ ^[0-9]+$ ]]; then
+        if [ -z "$_mb" ] || [ "$_free" -lt "$_mb" ]; then _mb=$_free; fi
+    fi
+    printf '%s' "$_mb"
+    return 0
+}
+
+_llama_build_jobs() {
+    _llama_jobs_for \
+        "$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)" \
+        "$(_usable_ram_mb)"
+}
+
 # Opt-in staged GPU smoke test after a source build (#5854 gap 2). Default off:
 # llama-server's first GPU forward pass JIT-compiles CUDA kernels and stalls
 # installs for minutes on Blackwell. Same env as install_llama_prebuilt.py.
@@ -2217,7 +2515,8 @@ else
 
             substep "$_BUILD_DESC..."
 
-            NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+            NCPU=$(_llama_build_jobs)
+            verbose_substep "parallel jobs: $NCPU (RAM-capped; UNSLOTH_LLAMA_BUILD_JOBS overrides)"
             CMAKE_GENERATOR_ARGS=""
             if command -v ninja &>/dev/null; then
                 CMAKE_GENERATOR_ARGS="-G Ninja"

@@ -55,7 +55,11 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -77,15 +81,15 @@ jobs:
       STUDIO_PORT: '18896'
       HF_HOME: ${{ github.workspace }}/hf-cache
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -95,7 +99,7 @@ jobs:
       # enableCrossOsArchive lets Windows (which tars with --force-local) join it.
       - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
         id: cache-hf
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         continue-on-error: true
         with:
           path: hf-cache
@@ -134,7 +138,7 @@ jobs:
         # on main at all. That is the thrash loop: PR misses -> downloads ->
         # saves its own copy -> evicts main's -> next PR misses.
         if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: hf-cache
           key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
@@ -381,6 +385,67 @@ jobs:
           sleep 2
 
       # ---------------------------------------------------------------
+      # Tab-capability phase. The assertion is that the Train row SPINS rather than
+      # greying out while the hardware verdict is unmeasured.
+      #
+      # It gets its own boot on a cold port anyway, and no "wait for healthy" step
+      # where every other phase has one, because a settled backend is the wrong
+      # starting state to walk the tabs from. But do not read that as the phase
+      # keeping the provisional window open for the script: it does not, and this
+      # comment used to claim it did. `hardware_detecting` covers stage 0 of the warm
+      # only, and on this runner's --no-torch install with no MLX present that stage
+      # is a failed `import torch` plus one failed metadata lookup, so the verdict
+      # settles inside a second of the port binding -- while Playwright is still
+      # launching Chromium. Boot ordering buys the first /api/health probe a
+      # provisional reply and nothing past it.
+      #
+      # So the script does not depend on the window being open. It holds the
+      # browser's own /api/health at hardware_detecting=true and asserts against
+      # that, which is open for as long as it needs on any host. The real warm is
+      # still sampled when it happens to still be running, and still fails on a real
+      # grey-out, but nothing is required of it.
+      # ---------------------------------------------------------------
+      - name: Reset auth + boot Unsloth for the tab-capability smoke (port 18893)
+        run: |
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port 18893 --log logs/studio_tabs.log --pid-var STUDIO_TABS_PID
+
+      - name: Pass bootstrap pw for the tab-capability smoke
+        run: |
+          # Wait for the password file, not for health: health is the thing under test.
+          for i in $(seq 1 180); do
+            [ -f ~/.unsloth/studio/auth/.bootstrap_password ] && break
+            sleep 1
+          done
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          echo "::add-mask::$OLD"
+          echo "STUDIO_TABS_OLD_PW=$OLD" >> "$GITHUB_ENV"
+
+      - name: Drive the Train/Video capability gate with Playwright
+        env:
+          BASE_URL: http://127.0.0.1:18893
+          STUDIO_OLD_PW: ${{ env.STUDIO_TABS_OLD_PW }}
+          PW_ART_DIR: logs/playwright_mac_tabs
+          # The default 330s outlives the launcher's 300s startup grace, which is the
+          # point when a Tauri shell is driving the backend. Nothing here runs that
+          # watchdog (this phase boots `unsloth studio` directly), so the full window
+          # would spend five macOS-runner minutes proving something this job cannot
+          # observe. The watchdog itself is covered by the Rust tests in
+          # studio/src-tauri/src/commands.rs. What is unique to this phase is the
+          # first-paint tab assertion, so keep the liveness poll just long enough to
+          # cover the warm and the tab walk.
+          STUDIO_MAC_SURVIVAL_S: '120'
+        run: |
+          mkdir -p logs/playwright_mac_tabs
+          python tests/studio/playwright_mac_tab_capabilities.py
+
+      - name: Stop tab-capability Unsloth
+        if: always()
+        run: |
+          kill "${STUDIO_TABS_PID}" 2>/dev/null || true
+          sleep 2
+
+      # ---------------------------------------------------------------
       # API + auth phase, absorbed from studio-mac-api-smoke.yml.
       # Runs on 18894: 18896 and 18897 were used by the UI phases above and
       # 18895 by the permission-browser script, so a fresh port keeps this
@@ -563,6 +628,8 @@ jobs:
             logs/playwright-permissions-*
             logs/playwright_extra
             logs/studio-permissions-*.log
+            logs/studio_tabs.log
+            logs/playwright_mac_tabs
           # 1 day, matching the repository-wide cap. A larger value here is
           # silently clamped to that cap today, so stating 7 only invites the
           # artifacts to re-inflate if the cap is ever raised.

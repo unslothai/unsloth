@@ -63,8 +63,16 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # The event is part of the group so a scheduled run and a push to main cannot
+  # coalesce. Both resolve to refs/heads/main, and the default queue: single keeps
+  # only one pending run, so without this a merge burst silently drops the nightly:
+  # cancel-in-progress protects the running run, never the pending one.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -119,12 +127,12 @@ jobs:
       # anyone using @v0 / @v2 / @latest references. Pinning to a 40-
       # char SHA freezes this action at known-good code; Dependabot's
       # github-actions ecosystem will auto-bump the SHA.
-      # v2.19.1 commit:
+      # v2.20.0 commit:
       # Per-job allowlist: advisory-audit hits PyPI, npm registry,
       # crates.io advisories, GitHub release artefacts (osv-scanner
       # binary), Semgrep registry, and TruffleHog's own GitHub action.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
           egress-policy: block
           disable-sudo: true
@@ -144,19 +152,19 @@ jobs:
             crates.io:443
             semgrep.dev:443
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # Full history so TruffleHog can diff base..head; without
           # this it sees only the latest commit and reports nothing.
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
           cache: 'pip'
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
 
@@ -546,7 +554,7 @@ jobs:
       # ─────────────────────────────────────────────────────────────
       - name: TruffleHog (secrets in diff)
         continue-on-error: true
-        uses: trufflesecurity/trufflehog@37b77001d0174ebec2fcca2bd83ff83a6d45a3ab  # v3.95.3
+        uses: trufflesecurity/trufflehog@6f3c981e7b77f235fd2702dd74af25fc4b72bf11  # v3.96.0
         with:
           path: ./
           base: ${{ github.event.pull_request.base.sha || '' }}
@@ -778,7 +786,7 @@ jobs:
       # Per-job allowlist: pip-scan-packages only fetches PyPI archives
       # via scan_packages.py + pip download. No npm or cargo traffic.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
           egress-policy: block
           disable-sudo: true
@@ -790,11 +798,11 @@ jobs:
             pypi.org:443
             files.pythonhosted.org:443
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -973,7 +981,7 @@ jobs:
       # registry.npmjs.org. GitHub endpoints retained for checkout +
       # setup-python action machinery.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
           egress-policy: block
           disable-sudo: true
@@ -984,11 +992,11 @@ jobs:
             objects.githubusercontent.com:443
             registry.npmjs.org:443
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
 
@@ -1057,7 +1065,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
           egress-policy: block
           disable-sudo: true
@@ -1069,11 +1077,11 @@ jobs:
             pypi.org:443
             files.pythonhosted.org:443
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
 
@@ -1094,7 +1102,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
           egress-policy: block
           disable-sudo: true
@@ -1106,11 +1114,11 @@ jobs:
             pypi.org:443
             files.pythonhosted.org:443
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
 
@@ -1147,7 +1155,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
           egress-policy: audit
           disable-sudo: true
@@ -1158,18 +1166,18 @@ jobs:
             objects.githubusercontent.com:443
             registry.npmjs.org:443
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # Need the base commit accessible for `git show
           # <base-sha>:studio/frontend/package-lock.json` below.
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
 

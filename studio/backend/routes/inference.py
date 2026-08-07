@@ -2015,7 +2015,7 @@ def _request_used_api_key(request: Any) -> bool:
 from state.tool_approvals import resolve_tool_decision
 
 from core.inference.key_exchange import decrypt_api_key
-from core.inference.model_ids import model_id_matches, public_model_id
+from core.inference.model_ids import display_model_name, model_id_matches, public_model_id
 from core.inference.api_monitor import api_monitor
 from core.inference.llama_http import nonstreaming_client
 from core.inference.tool_call_parser import (
@@ -3704,7 +3704,9 @@ def _gguf_load_response(
     return LoadResponse(
         status = status,
         model = model,
-        display_name = display_name or model,
+        # Not the bare identifier: the already-resident path leaves display_name unset,
+        # and a cached repo loads from its snapshot dir, so clients label it by path.
+        display_name = display_name or display_model_name(model) or model,
         is_lora = False,
         is_gguf = True,
         is_local_model = is_local_model,

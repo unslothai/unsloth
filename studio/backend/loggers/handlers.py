@@ -10,6 +10,7 @@ get_logger (factory for structured loggers).
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import time
@@ -106,6 +107,19 @@ _QUIET_SUCCESS_PATHS = {
     "/api/hub/datasets/download-progress",
     "/api/hub/datasets/active-downloads",
     "/api/hub/datasets/transport-status",
+    # Boot-burst catalog reads. The SPA refetches these on every auth change, store
+    # rehydration and settings/provider dialog open, and each one is a plain read whose
+    # outcome is already visible as the populated (or empty) list in the UI.
+    # Provider registry + configs: syncExternalProvidersFromBackend fetches the pair in
+    # one Promise.all, so they always arrive as two lines saying the same thing.
+    "/api/providers/registry",
+    "/api/providers/",
+    # Fetched in the same Promise.all as /api/models/list and /api/inference/status, both
+    # of which keep their access line, so the resync is still traceable without it.
+    "/api/models/loras",
+    # Re-read once per auth generation at boot. Suppression is GET-only, so the PUT that
+    # actually writes a profile change still logs.
+    "/api/settings/personalization",
 }
 # The token-refresh route. Its first 2xx means the client has obtained a valid
 # session, so from then on chat 401s are real failures and must stay visible.
@@ -129,6 +143,55 @@ def _is_quiet_success(method: str, path: str, status_code: int, pre_auth: bool) 
     if 200 <= status_code < 300:
         return path in _QUIET_SUCCESS_PATHS or path in _CHAT_LIST_PATHS
     return pre_auth and status_code == 401 and path in _CHAT_LIST_PATHS
+
+
+# An unhandled request exception is logged twice: once here as a structured
+# request_failed event whose "exception" field already carries the whole traceback
+# (format_exc_info renders it, see loggers/config.py), and then again by uvicorn on
+# stderr as "Exception in ASGI application" after the re-raise. The desktop shell
+# mirrors every stderr line separately into tauri.log, so the second copy alone costs
+# ~90 lines per failure. Keep the structured copy and drop uvicorn's.
+_UVICORN_ASGI_EXC_MSG = "Exception in ASGI application"
+# Set on the exception instance itself rather than tracked in a side table: the object
+# is what uvicorn hands us, so the match cannot go stale or collide with a recycled id,
+# and an exception raised above this middleware (CORS, remote-access, the protocol
+# layer) carries no marker and keeps uvicorn's traceback.
+_LOGGED_EXC_ATTR = "_unsloth_request_failed_logged"
+
+
+def _mark_exception_logged(exc: BaseException) -> None:
+    """Flag exc as already reported by request_failed. Best effort: an exception type
+    that refuses attributes just means both copies are logged, as before."""
+    try:
+        setattr(exc, _LOGGED_EXC_ATTR, True)
+    except Exception:
+        pass
+
+
+class _DropDuplicateAsgiException(logging.Filter):
+    """Drop uvicorn's "Exception in ASGI application" record when request_failed has
+    already logged that same exception. Anything else, including a failure that never
+    reached this middleware, passes through untouched. --verbose keeps both copies."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if _VERBOSE_ACCESS_LOG:
+            return True
+        try:
+            msg = record.msg if isinstance(record.msg, str) else ""
+            if not msg.startswith(_UVICORN_ASGI_EXC_MSG):
+                return True
+            exc_info = record.exc_info
+            exc = exc_info[1] if isinstance(exc_info, tuple) else exc_info
+            return not getattr(exc, _LOGGED_EXC_ATTR, False)
+        except Exception:
+            return True
+
+
+def install_uvicorn_duplicate_exception_filter() -> None:
+    """Attach the duplicate-traceback filter to uvicorn's error logger. Same
+    logger-level filter technique as run.py's startup-line rewrite; safe to call more
+    than once because a second identical install only re-checks the same records."""
+    logging.getLogger("uvicorn.error").addFilter(_DropDuplicateAsgiException())
 
 
 class LoggingMiddleware:
@@ -195,6 +258,7 @@ class LoggingMiddleware:
                 process_time_ms = round((time.perf_counter() - start_time) * 1000, 2),
                 exc_info = True,
             )
+            _mark_exception_logged(exc)
             raise
         else:
             end_time = time.perf_counter()

@@ -322,6 +322,7 @@ from utils.torch_warmup import (
     join_background_warm,
     reset_background_warm,
     start_background_warm,
+    warm_status,
 )
 from utils.cache_cleanup import clear_unsloth_compiled_cache
 from utils.lifespan_shutdown import run_lifespan_shutdown
@@ -1292,10 +1293,36 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str]]]:
     return None
 
 
+def _torch_warm_in_progress() -> bool:
+    """True while the coordinated warm thread is still working through its stages.
+
+    A separate field from ``hardware_detecting`` on purpose, rather than widening that one.
+    Hardware detection is only ``_STAGES[0]``; inference_backend, transformers, datasets and
+    unsloth_zoo import after it, and those C-extension imports are the ones that hold the GIL
+    for seconds at a time. A launcher ending its startup grace on ``hardware_detecting``
+    alone ends it with the expensive half of the warm still ahead of it, which is the window
+    the grace exists for. But that marker also means "this hardware verdict is provisional,
+    re-read it", and config/hardware-verdict.ts keeps the UI provisional and polling while it
+    is set, so keeping it lit through datasets would hide Train for the whole warm over a
+    verdict that settled seconds in. Two meanings, two fields.
+
+    A snapshot read of module state, no lock and no wait, so /api/liveness stays cheap.
+
+    False whenever no warm thread is running, which is what keeps the deferred case working:
+    with UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 the warm never starts, and one retired mid-stage
+    by a shutdown never finishes. Neither will ever set ``finished``, so deriving this from
+    "not finished" would report warming forever and hold the launcher's startup grace open
+    until it expired on its own. Absence therefore covers both "warm is over" and "no warm is
+    coming", and the field needs no deferred companion of its own.
+    """
+    status = warm_status()
+    return bool(status["started"] and not status["finished"] and status["alive"])
+
+
 @app.get("/api/liveness")
 async def liveness_check():
     """Cheap process liveness for desktop port validation."""
-    return {
+    alive = {
         "status": "alive",
         "service": "Unsloth UI Backend",
         "desktop_protocol_version": 1,
@@ -1307,6 +1334,23 @@ async def liveness_check():
         "studio_root_id": _studio_root_id(),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
+    # Same unsettled markers /api/health publishes, and for the desktop health watchdog they
+    # are the point of the route: it probes liveness every 15s and holds its startup grace
+    # period open until a reply says the warm-up is over, because the warm thread's
+    # `import torch` holds the GIL and can stall the next probes on a healthy process.
+    # The watchdog reads torch_warm_in_progress for that, not hardware_detecting: the GIL is
+    # held just as hard by transformers and unsloth_zoo, which import after detection settles.
+    # Both are non-blocking reads of module-level state, so unlike health this neither starts
+    # detection nor waits on it and the route stays cheap.
+    if _torch_warm_in_progress():
+        alive["torch_warm_in_progress"] = True
+    if _hardware_snapshot() is None:
+        alive["hardware_detecting"] = True
+        if os.environ.get(DISABLE_ENV_VAR) == "1":
+            # Nothing is detecting while the warm is switched off, so the verdict will not
+            # settle on its own. Say so, or the watchdog holds its grace open for nothing.
+            alive["hardware_detection_deferred"] = True
+    return alive
 
 
 @app.get("/api/health")
@@ -1340,6 +1384,10 @@ async def health_check(request: Request):
         "native_path_leases_supported": native_path_leases_supported(),
         **({"desktop_owner": owner} if (owner := _desktop_owner()) else {}),
     }
+    # Lockstep with /api/liveness: the launcher falls back to this route on a backend too old
+    # to have liveness, so the warm marker has to reach it by the same path.
+    if _torch_warm_in_progress():
+        base["torch_warm_in_progress"] = True
     if snapshot is None:
         # chat_only above is the pre-detection default, not a measurement; clients should re-read.
         base["hardware_detecting"] = True
@@ -1386,6 +1434,10 @@ async def health_check(request: Request):
         authed.pop("hardware_detecting", None)
         # Same for the deferred marker: the client reads it first and would keep the old reason.
         authed.pop("hardware_detection_deferred", None)
+        # torch_warm_in_progress deliberately survives. It does not qualify the verdict below;
+        # a settled verdict is exactly the state where the warm has finished stage one and is
+        # off importing transformers, and dropping it here would hand the watchdog the same
+        # too-early "startup is over" this field exists to replace.
     else:
         # A re-detect started during the bearer await and base carries no chat_only_reason, so a
         # client reading this as measured would store reason null and stop the sidebar's recovery
@@ -1583,7 +1635,7 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
     import os
     import time
     import logging
-    from utils.hardware import get_device, export_capability
+    from utils.hardware import get_device, export_capability, video_capability
     from utils.hardware.hardware import _backend_label
 
     logger = logging.getLogger(__name__)
@@ -1659,6 +1711,8 @@ def get_system_info(current_subject: str = Depends(get_current_subject)):
         "ml_packages": ml_packages,
         # Export capability + torch-aware reason. See /api/system/hardware.
         **export_capability(),
+        # Video capability + reason, same shape. Additive: older clients ignore the extra keys.
+        **video_capability(),
     }
 
 
@@ -1682,13 +1736,20 @@ def get_hardware_info(
     method auto-selection. Sync def (not async): hardware/detail probes can
     shell out, and FastAPI runs sync endpoints in a threadpool.
     """
-    from utils.hardware import get_gpu_summary, get_package_versions, export_capability
+    from utils.hardware import (
+        get_gpu_summary,
+        get_package_versions,
+        export_capability,
+        video_capability,
+    )
 
     body = {
         "gpu": get_gpu_summary(),
         "versions": get_package_versions(),
         # Export capability + torch-aware reason; the Export UI grays out with the message.
         **export_capability(),
+        # Video capability + reason; the Video page shows the message in place of the generator.
+        **video_capability(),
     }
     if include_details:
         from utils.llama_cpp_update import get_installed_llama_version

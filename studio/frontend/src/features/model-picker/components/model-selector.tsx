@@ -38,7 +38,7 @@ import {
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import {
   isOllamaLinkPath,
-  publicModelId,
+  modelDisplayName,
 } from "../model-config/model-identity";
 import {
   type PerModelConfig,
@@ -757,16 +757,17 @@ export function ModelSelector({
   const currentModel = useMemo(() => {
     if (!selected) return undefined;
     const found = optionById.get(selected);
-    // A model loaded by path is absent from the list, and its raw id fills the
-    // header; label it with the public id the backend reports as active_model.
-    const name = publicModelId(selected);
+    // No catalog entry (yet, or ever); a cached GGUF's checkpoint is a snapshot path.
+    // The leaf, not the namespaced public id (#7966), matches the catalog row that
+    // later replaces this one.
+    const fallbackName = modelDisplayName(selected);
     if (activeGgufVariant) {
       const desc = `GGUF · ${activeGgufVariant}`;
       return found
         ? { ...found, description: desc }
-        : { id: selected, name, description: desc };
+        : { id: selected, name: fallbackName, description: desc };
     }
-    return found ?? { id: selected, name };
+    return found ?? { id: selected, name: fallbackName };
   }, [selected, optionById, activeGgufVariant]);
 
   function handleSelect(id: string, meta: ModelSelectorChangeMeta) {
