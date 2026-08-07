@@ -504,20 +504,26 @@ def _upstream_message(
 
 
 class ScriptedClient:
-    """Fake nonstreaming_client() returning scripted JSON bodies, counting POSTs."""
+    """Fake upstream client returning scripted JSON bodies, counting POSTs."""
 
     def __init__(self, bodies):
         self.bodies = list(bodies)
         self.posts = []
+        self.closed = False
 
     async def post(
         self,
         _url,
         json = None,
         timeout = None,
+        headers = None,
     ):
         self.posts.append(json)
         return httpx.Response(200, json = self.bodies[min(len(self.posts) - 1, len(self.bodies) - 1)])
+
+    async def aclose(self):
+        # The Anthropic pass-through owns its client and closes it in a finally.
+        self.closed = True
 
 
 async def _drive_non_streaming(monkeypatch, payload, bodies):
@@ -866,7 +872,7 @@ class TestNudgeRetryAnthropic:
         from routes.inference import _anthropic_passthrough_non_streaming
 
         client = ScriptedClient(bodies)
-        monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+        monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
         response = await _anthropic_passthrough_non_streaming(
             _llama_backend(),
             [{"role": "user", "content": "hi"}],
@@ -924,7 +930,7 @@ class TestAnthropicPassthroughHealingText:
         from routes.inference import _anthropic_passthrough_non_streaming
 
         client = ScriptedClient([upstream])
-        monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+        monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
         response = await _anthropic_passthrough_non_streaming(
             _llama_backend(),
             [{"role": "user", "content": "hi"}],
@@ -1170,7 +1176,7 @@ class TestAnthropicNonStreamingRoute:
         from routes.inference import _anthropic_passthrough_non_streaming
 
         client = ScriptedClient(bodies)
-        monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+        monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
         response = await _anthropic_passthrough_non_streaming(
             _llama_backend(),
             [{"role": "user", "content": "hi"}],
@@ -1421,6 +1427,7 @@ class TestHealerSignalAlignment:
             "<|tool_call>",
             "<function=",
             "[TOOL_CALLS]",
+            "<|content_invoke_tool_json|>",
         }
 
     def test_prose_with_bare_args_marker_streams_through(self):

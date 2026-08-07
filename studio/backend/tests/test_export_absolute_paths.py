@@ -101,13 +101,20 @@ def _install_lightweight_backend_stubs(monkeypatch):
     monkeypatch.setitem(sys.modules, "auth.authentication", auth_mod)
 
     core_pkg = types.ModuleType("core")
+    core_pkg.__path__ = []
     core_export = types.ModuleType("core.export")
     core_export.get_export_backend = lambda: None
     core_inference = types.ModuleType("core.inference")
+    core_inference.__path__ = []
     core_inference.get_inference_backend = lambda: None
     monkeypatch.setitem(sys.modules, "core", core_pkg)
     monkeypatch.setitem(sys.modules, "core.export", core_export)
     monkeypatch.setitem(sys.modules, "core.inference", core_inference)
+    _load_module(
+        "core.inference.model_ids",
+        "core/inference/model_ids.py",
+        monkeypatch,
+    )
 
     utils_pkg = types.ModuleType("utils")
     utils_pkg.__path__ = []
@@ -120,6 +127,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
     utils_pkg.paths = utils_paths
     utils_paths.storage_roots = storage_roots
     utils_paths.is_local_path = lambda value: Path(str(value)).is_absolute()
+    utils_paths.normalize_path = lambda value: value
     utils_paths.outputs_root = lambda: Path("outputs")
     utils_paths.exports_root = storage_roots.exports_root
     utils_paths.resolve_cached_repo_id_case = lambda value: value
@@ -132,10 +140,12 @@ def _install_lightweight_backend_stubs(monkeypatch):
     utils_utils.log_and_http_error = lambda *args, **kwargs: (_ for _ in ()).throw(
         _HTTPException(kwargs.get("status_code", 500), kwargs.get("detail"))
     )
+    utils_utils.canonical_model_repo_id = lambda value: value
     utils_utils.safe_error_detail = lambda value: str(value)
     monkeypatch.setitem(sys.modules, "utils.utils", utils_utils)
 
     utils_models = types.ModuleType("utils.models")
+    utils_models.__path__ = []
     for name in (
         "scan_trained_models",
         "scan_exported_models",
@@ -153,11 +163,17 @@ def _install_lightweight_backend_stubs(monkeypatch):
     utils_models.is_embedding_model = lambda *args, **kwargs: False
     utils_models.ModelConfig = object
     monkeypatch.setitem(sys.modules, "utils.models", utils_models)
+    _load_module(
+        "utils.models.model_identity",
+        "utils/models/model_identity.py",
+        monkeypatch,
+    )
 
     utils_model_config = types.ModuleType("utils.models.model_config")
     utils_model_config._pick_best_gguf = lambda variants: variants[0] if variants else None
     utils_model_config._extract_quant_label = lambda value: value
     utils_model_config._is_big_endian_gguf_path = lambda *args, **kwargs: False
+    utils_model_config._is_mtp_drafter = lambda *args, **kwargs: False
     utils_model_config.is_audio_input_type = lambda *args, **kwargs: None
     monkeypatch.setitem(
         sys.modules,

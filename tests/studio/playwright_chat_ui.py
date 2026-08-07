@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Comprehensive Studio chat UI test, run locally + in CI."""
+"""Comprehensive Unsloth chat UI test, run locally + in CI."""
 
 import json
 import os
@@ -48,9 +48,21 @@ STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
 # Per-turn assistant-bubble wait. The free macos-14 runner is ~3-5x
 # slower at gemma-3-270m CPU inference; this lets it bump the timeout.
 TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
+# How long the rapid-submit step holds the first turn's response. Only needs to
+# outlast the 100 ms follow-up wait; kept well clear of it so a loaded runner
+# cannot close the gap, and paid once per run.
+RAPID_FIRST_TURN_HOLD_S = 3.0
 
 # Wall-clock cap for the whole script (healthy run is 5-9 min).
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
+
+# Run only bootstrap plus permission controls for fast cross-browser checks.
+PERMISSION_ONLY = os.environ.get("STUDIO_UI_PERMISSION_ONLY", "0") == "1"
+
+# Default stays Chromium for CI. Local runs can select firefox/webkit or a
+# Chromium channel such as chrome/msedge.
+PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
+PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
 
 # Per-fetch budget; /api/inference/load is the slowest (cold-cache GGUF load).
 FETCH_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_FETCH_TIMEOUT_MS", "30000"))
@@ -90,7 +102,7 @@ def expected_default_model():
         / "defaults.py"
     )
     try:
-        tree = ast.parse(defaults_path.read_text())
+        tree = ast.parse(defaults_path.read_text(encoding = "utf-8"))
     except Exception as exc:
         fail(f"could not read {defaults_path}: {exc}")
     models = None
@@ -116,6 +128,126 @@ def soft_fail(m):
     info(f"WARN (strict-off): {m}")
 
 
+def exercise_permission_mode_controls(page, shoot):
+    """Exercise labels, migration, persistence, confirmation, and focus."""
+    step("permission levels: labels, persistence, confirmation, and focus")
+    pill = page.locator('button[aria-label="Permission level for tool calls"]:visible').first
+    expect(pill).to_be_visible()
+
+    def expect_mode(label):
+        expect(pill).to_have_attribute("data-pill-label", label)
+        expect(pill).to_contain_text(label)
+
+    def open_menu():
+        pill.click()
+        menu = page.get_by_role("menu").last
+        expect(menu).to_be_visible()
+        return menu
+
+    def choose(label):
+        menu = open_menu()
+        item = menu.get_by_role("menuitem").filter(has_text = label).first
+        expect(item).to_be_visible()
+        item.click()
+
+    # Fresh profiles default to Approve for me.
+    expect_mode("Approve for me")
+    menu = open_menu()
+    for label in (
+        "Ask for approval",
+        "Approve for me",
+        "Run automatically",
+        "Full access",
+    ):
+        expect(menu.get_by_role("menuitem").filter(has_text = label).first).to_be_visible()
+    if menu.get_by_text("Off", exact = True).count() != 0:
+        fail("legacy Off label is still visible")
+    if menu.locator('[role="menuitem"] button, [role="menuitem"] [role="button"]').count():
+        fail("permission menu contains nested interactive controls")
+    page.keyboard.press("Escape")
+    expect(pill).to_be_focused()
+
+    # The active row is a no-op and must not open the Full access dialog.
+    choose("Approve for me")
+    expect_mode("Approve for me")
+    expect(page.get_by_role("alertdialog")).to_have_count(0)
+
+    # Pointer and compact-layout coverage.
+    page.set_viewport_size({"width": 390, "height": 844})
+    expect(pill).to_be_visible()
+    box = pill.bounding_box()
+    if box is None or box["x"] < 0 or box["x"] + box["width"] > 390:
+        fail(f"permission pill is clipped in compact layout: {box!r}")
+    page.set_viewport_size({"width": 1280, "height": 900})
+
+    # Legacy setting migration: true -> ask, false -> off, absent -> auto.
+    migration_cases = (
+        ("true", "Ask for approval"),
+        ("false", "Run automatically"),
+        (None, "Approve for me"),
+    )
+    for legacy_value, expected_label in migration_cases:
+        page.evaluate(
+            """(legacyValue) => {
+                localStorage.removeItem("unsloth_chat_permission_mode");
+                if (legacyValue === null) {
+                    localStorage.removeItem("unsloth_chat_confirm_tool_calls");
+                } else {
+                    localStorage.setItem(
+                        "unsloth_chat_confirm_tool_calls",
+                        legacyValue,
+                    );
+                }
+            }""",
+            legacy_value,
+        )
+        page.reload(wait_until = "domcontentloaded")
+        expect(pill).to_be_visible()
+        expect_mode(expected_label)
+
+    choose("Run automatically")
+    expect_mode("Run automatically")
+    expect(page.locator('button[data-pill-label="Search"]:visible').first).to_be_visible()
+    expect(page.locator('button[data-pill-label="Code"]:visible').first).to_be_visible()
+    stored = page.evaluate("() => localStorage.getItem('unsloth_chat_permission_mode')")
+    if stored != "off":
+        fail(f"Run automatically persisted {stored!r}, expected 'off'")
+
+    # Full access requires explicit consent and never overwrites persistence.
+    choose("Full access")
+    dialog = page.get_by_role("alertdialog")
+    expect(dialog).to_be_visible()
+    expect(dialog.get_by_role("heading", name = "Enable Full access?")).to_be_visible()
+    expect(dialog).to_contain_text("the code sandbox")
+    dialog.get_by_role("button", name = "Cancel").click()
+    expect(dialog).to_be_hidden()
+    expect_mode("Run automatically")
+
+    choose("Full access")
+    expect(dialog).to_be_visible()
+    dialog.get_by_role("button", name = "I understand").click()
+    expect_mode("Full access")
+    expect(pill).to_have_attribute("data-variant", "danger")
+    active_icon = pill.locator(".composer-pill-glyph > :first-child")
+    pill.hover()
+    page.wait_for_timeout(200)
+    icon_opacity = float(active_icon.evaluate("el => getComputedStyle(el).opacity"))
+    if icon_opacity < 0.5:
+        fail(f"Full access icon disappeared on hover (opacity={icon_opacity})")
+    stored = page.evaluate("() => localStorage.getItem('unsloth_chat_permission_mode')")
+    if stored != "off":
+        fail(f"Full access overwrote persisted mode with {stored!r}")
+
+    page.reload(wait_until = "domcontentloaded")
+    expect(pill).to_be_visible()
+    expect_mode("Run automatically")
+
+    # Leave the full chat smoke in the fresh-install default.
+    choose("Approve for me")
+    expect_mode("Approve for me")
+    shoot("04-permission-levels")
+
+
 def login_via_api(pw):
     req = urllib.request.Request(
         f"{BASE}/api/auth/login",
@@ -135,6 +267,266 @@ def parse_rgb(s):
     return tuple(int(x) for x in m.groups()) if m else None
 
 
+def exercise_floating_monitor_geometry(page):
+    """Exercise content, drag, native resize, and viewport geometry."""
+    monitor = page.get_by_test_id("floating-monitor")
+    monitor.wait_for(state = "visible", timeout = 10_000)
+    monitor_handle = page.get_by_test_id("floating-monitor-drag-handle")
+    viewport = page.viewport_size
+    if viewport is None:
+        fail("Playwright viewport unavailable for floating monitor check")
+    inset = 16
+    tolerance = 1
+
+    def monitor_box(label):
+        box = monitor.bounding_box()
+        if box is None:
+            fail(f"floating monitor has no bounding box during {label}")
+        return box
+
+    def wait_for_box(label, predicate):
+        deadline = time.time() + 5
+        box = monitor_box(label)
+        while not predicate(box) and time.time() < deadline:
+            page.wait_for_timeout(50)
+            box = monitor_box(label)
+        if not predicate(box):
+            fail(f"floating monitor did not settle during {label}: {box!r}")
+        return box
+
+    def pointer_drag(start_x, start_y, end_x, end_y):
+        page.mouse.move(start_x, start_y)
+        page.mouse.down()
+        page.mouse.move(end_x, end_y, steps = 10)
+        page.mouse.up()
+        page.wait_for_timeout(100)
+
+    def drag_monitor_to(x, y):
+        box = monitor_handle.bounding_box()
+        if box is None:
+            fail("floating monitor handle has no bounding box")
+        pointer_drag(
+            box["x"] + box["width"] / 2,
+            box["y"] + box["height"] / 2,
+            x,
+            y,
+        )
+        return monitor_box("drag")
+
+    def resize_monitor_to(
+        x,
+        y,
+        grip_inset = 8,
+    ):
+        before = monitor_box("resize")
+        pointer_drag(
+            before["x"] + before["width"] - grip_inset,
+            before["y"] + before["height"] - grip_inset,
+            x,
+            y,
+        )
+        return before, monitor_box("resize")
+
+    def expect_close(actual, expected, label):
+        if abs(actual - expected) > tolerance:
+            fail(f"{label}: expected {expected!r}, got {actual!r}")
+
+    def is_inside(box, surface):
+        return (
+            box["x"] >= inset - tolerance
+            and box["y"] >= inset - tolerance
+            and box["x"] + box["width"] <= surface["width"] - inset + tolerance
+            and box["y"] + box["height"] <= surface["height"] - inset + tolerance
+        )
+
+    # Every assertion below compares heights sampled seconds apart against this
+    # baseline, so the panel must already be showing its final row set. Until the
+    # first /api/system response is applied the panel paints use-system.ts's
+    # zero-filled DEFAULT_SYSTEM, which has no GPU: on a host that reports one
+    # (macos-14 reports a single MLX device) the VRAM row then appears and adds
+    # ~59px permanently. The caller only waited for the /api/system *request*, so
+    # sampling here can capture the pre-payload height -- a height the panel never
+    # returns to, which "content shrink" would then wait out its whole deadline
+    # chasing. Wait for the payload itself, and for the panel to have finished
+    # resizing to it.
+    try:
+        page.wait_for_function(
+            r"""() => {
+                const monitor = document.querySelector(
+                    '[data-testid="floating-monitor"]'
+                );
+                const content = document.querySelector(
+                    '[data-testid="floating-monitor-content"]'
+                );
+                if (!(monitor && content)) return false;
+                // DEFAULT_SYSTEM reports a 0 GiB RAM total; a real payload never does.
+                const readout = content.innerText.match(
+                    /([\d.]+)\s*GiB\s*\/\s*([\d.]+)\s*GiB/
+                );
+                if (!readout || !(Number.parseFloat(readout[2]) > 0)) return false;
+                // The rows commit a pass before the panel resizes to them, so the
+                // panel is only done reacting once its scroll region exactly fits
+                // the content it was reconciled against.
+                const scroll = content.parentElement;
+                const monitorHeight = monitor.getBoundingClientRect().height;
+                const contentHeight = content.getBoundingClientRect().height;
+                const scrollHeight = scroll.getBoundingClientRect().height;
+                if (Math.abs(scrollHeight - contentHeight) > 1) return false;
+                // Row insertion also lands a frame before the gap between rows
+                // does, and that intermediate state is self-consistent. Require
+                // the geometry to hold for two consecutive animation frames --
+                // this runs under the default polling="raf", and it is how
+                // Playwright itself defines a stable element.
+                //
+                // Position belongs in the signature as well as size. An undragged
+                // panel is bottom-anchored by re-clamping its top against the new
+                // height, and that lands a frame AFTER the height it reacts to, so
+                // a size-only signature reports settled while the panel is still
+                // where the shorter version put it. Sampling there reads a bottom
+                // inset that is exactly the growth too low. Deliberately not
+                // waiting on the expected inset itself: that would gate on the
+                // very thing the assertions below check and turn a real
+                // misplacement into a timeout instead of a failure.
+                const rect = monitor.getBoundingClientRect();
+                const signature = [
+                    monitorHeight, contentHeight,
+                    Math.round(rect.top), Math.round(rect.left),
+                ].join("x");
+                const settled = window.__unslothMonitorGeometry === signature;
+                window.__unslothMonitorGeometry = signature;
+                return settled;
+            }""",
+            timeout = 30_000,
+        )
+    except Exception as exc:
+        fail(f"floating monitor never settled on an /api/system payload: {exc!r}")
+
+    initial_box = monitor_box("initial placement")
+    expect_close(
+        initial_box["x"] + initial_box["width"],
+        viewport["width"] - inset,
+        "initial right inset",
+    )
+    expect_close(
+        initial_box["y"] + initial_box["height"],
+        viewport["height"] - inset,
+        "initial bottom inset",
+    )
+
+    # Delayed GPU rows must expand upward and retain the initial bottom anchor.
+    # The probe goes in the content region, where a real row is rendered.
+    monitor.get_by_test_id("floating-monitor-content").evaluate(
+        """node => {
+            const probe = document.createElement("div");
+            probe.dataset.testid = "floating-monitor-growth-probe";
+            probe.style.height = "48px";
+            node.appendChild(probe);
+        }"""
+    )
+    grown_box = wait_for_box(
+        "content growth",
+        lambda box: box["height"] >= initial_box["height"] + 47,
+    )
+    expect_close(
+        grown_box["y"] + grown_box["height"],
+        viewport["height"] - inset,
+        "content growth bottom inset",
+    )
+    monitor.get_by_test_id("floating-monitor-growth-probe").evaluate("node => node.remove()")
+    initial_box = wait_for_box(
+        "content shrink",
+        lambda box: (
+            abs(box["height"] - initial_box["height"]) <= tolerance
+            and abs(box["y"] + box["height"] - viewport["height"] + inset) <= tolerance
+        ),
+    )
+
+    # Chromium retains a blocked inline resize request. A subsequent drag must
+    # not reveal that hidden size.
+    _, blocked_box = resize_monitor_to(
+        viewport["width"] - 2,
+        viewport["height"] - 2,
+    )
+    expect_close(blocked_box["width"], initial_box["width"], "blocked width")
+    expect_close(blocked_box["height"], initial_box["height"], "blocked height")
+    left_box = drag_monitor_to(0, viewport["height"] / 2)
+    expect_close(left_box["x"], inset, "left inset")
+    expect_close(left_box["width"], initial_box["width"], "post-drag width")
+    expect_close(left_box["height"], initial_box["height"], "post-drag height")
+    right_box = drag_monitor_to(viewport["width"], viewport["height"] / 2)
+    expect_close(
+        right_box["x"] + right_box["width"],
+        viewport["width"] - inset,
+        "right inset",
+    )
+
+    # Constraint changes during pointer capture must rebase the active drag.
+    handle_box = monitor_handle.bounding_box()
+    if handle_box is None:
+        fail("floating monitor handle has no active-drag bounding box")
+    page.mouse.move(
+        handle_box["x"] + handle_box["width"] / 2,
+        handle_box["y"] + handle_box["height"] / 2,
+    )
+    page.mouse.down()
+    reduced_viewport = {"width": 500, "height": 400}
+    page.set_viewport_size(reduced_viewport)
+    page.mouse.move(498, 398, steps = 10)
+    page.mouse.up()
+    wait_for_box(
+        "active viewport shrink",
+        lambda box: is_inside(box, reduced_viewport),
+    )
+
+    narrow_viewport = {"width": 260, "height": 400}
+    page.set_viewport_size(narrow_viewport)
+    wait_for_box("narrow viewport", lambda box: is_inside(box, narrow_viewport))
+    page.set_viewport_size(viewport)
+    wait_for_box("viewport restore", lambda box: is_inside(box, viewport))
+
+    resize_start = drag_monitor_to(0, 0)
+    _, resized_box = resize_monitor_to(
+        resize_start["x"] + resize_start["width"] - 8 + 40,
+        resize_start["y"] + resize_start["height"] - 8 + 30,
+    )
+    expect_close(resized_box["width"], resize_start["width"] + 40, "resize width")
+    expect_close(resized_box["height"], resize_start["height"] + 30, "resize height")
+    expect_close(resized_box["x"], resize_start["x"], "resize left edge")
+    expect_close(resized_box["y"], resize_start["y"], "resize top edge")
+
+    _, minimum_box = resize_monitor_to(
+        resized_box["x"] + resized_box["width"] - 102,
+        resized_box["y"] + resized_box["height"] - 102,
+        grip_inset = 2,
+    )
+    expect_close(minimum_box["width"], resize_start["width"], "minimum width")
+    expect_close(minimum_box["height"], resize_start["height"], "minimum height")
+
+    drag_monitor_to(0, 0)
+    _, maximum_box = resize_monitor_to(
+        viewport["width"] - 2,
+        viewport["height"] - 2,
+    )
+    expect_close(
+        maximum_box["x"] + maximum_box["width"],
+        viewport["width"] - inset,
+        "maximum resize right inset",
+    )
+    expect_close(
+        maximum_box["y"] + maximum_box["height"],
+        viewport["height"] - inset,
+        "maximum resize bottom inset",
+    )
+
+    # Do not leave the maximum-size overlay above the shutdown controls.
+    monitor.get_by_role("button", name = "Close").click()
+    monitor.wait_for(state = "hidden")
+    info(
+        "OK floating monitor preserves native resize and stays stable across "
+        "content, drag, and viewport changes"
+    )
+
+
 with sync_playwright() as p:
     _watchdog = install_wall_clock_watchdog(
         WALL_TIMEOUT_S,
@@ -145,21 +537,36 @@ with sync_playwright() as p:
     # DB is still migrating; this 30s probe catches that gap before we
     # sink 60s into a change-password timeout. Diagnostic only.
     wait_for_health(BASE, timeout = 30.0, info = info)
-    # Chromium launch args: see `tests/studio/_playwright_robust.py`.
-    browser = p.chromium.launch(
-        headless = True,
-        args = chromium_launch_args(),
-    )
+    if PLAYWRIGHT_BROWSER not in ("chromium", "firefox", "webkit"):
+        fail(f"unsupported STUDIO_PLAYWRIGHT_BROWSER={PLAYWRIGHT_BROWSER!r}")
+    browser_type = getattr(p, PLAYWRIGHT_BROWSER)
+    launch_kwargs = {"headless": True}
+    if PLAYWRIGHT_BROWSER == "chromium":
+        launch_kwargs["args"] = chromium_launch_args()
+        if PLAYWRIGHT_CHANNEL:
+            launch_kwargs["channel"] = PLAYWRIGHT_CHANNEL
+    elif PLAYWRIGHT_CHANNEL:
+        fail("STUDIO_PLAYWRIGHT_CHANNEL requires chromium")
+    browser = browser_type.launch(**launch_kwargs)
     ctx = browser.new_context(
         viewport = {"width": 1280, "height": 900},
         # Reduce motion so view-transition animations don't intercept
         # pointer events and break Playwright's actionability check.
         reduced_motion = "reduce",
     )
-    # Hard-disable CSS view-transitions: Studio's theme toggle + sidebar
+    # Hard-disable CSS view-transitions: Unsloth's theme toggle + sidebar
     # collapse run startViewTransition() which can leave <html> intercepting
     # pointer events for a beat after each route swap. See _playwright_robust.py.
     install_view_transition_killer(ctx)
+    system_requests: list[str] = []
+    ctx.on(
+        "request",
+        lambda request: (
+            system_requests.append(request.url)
+            if request.url.split("?", 1)[0].endswith("/api/system")
+            else None
+        ),
+    )
     page = ctx.new_page()
     # 60s default (was 30s): macos-14 under --single-process Chromium is
     # slow enough that renders/webfonts/lazy routes routinely crowd 30s.
@@ -355,6 +762,15 @@ with sync_playwright() as p:
         raise last_err
     shoot("03-chat-loaded")
 
+    exercise_permission_mode_controls(page, shoot)
+    if PERMISSION_ONLY:
+        info(
+            "permission-only run passed "
+            f"(browser={PLAYWRIGHT_BROWSER}, channel={PLAYWRIGHT_CHANNEL or 'bundled'})"
+        )
+        browser.close()
+        sys.exit(0)
+
     # /api/models/list and /api/inference/load need a bearer; the
     # frontend stores it under "unsloth_auth_token" (auth/session.ts).
     token = robust_evaluate(
@@ -468,7 +884,7 @@ with sync_playwright() as p:
         fail(f"/api/inference/load returned {load_resp['status']}: {load_resp.get('body')!r}")
     info(f"loaded model: {(load_resp['body'] or {}).get('display_name')}")
 
-    # Studio caches model state in zustand; reload so the composer picks
+    # Unsloth caches model state in zustand; reload so the composer picks
     # up the loaded model.
     page.reload()
     composer = page.locator('textarea[aria-label="Message input"]')
@@ -484,7 +900,7 @@ with sync_playwright() as p:
     # (app-sidebar.tsx) -- as stable as anything in the codebase.
     picker_btn = page.locator('[data-tour="chat-model-selector"]').first
     if picker_btn.count() == 0:
-        # Fall back to text-based locators for older Studio builds.
+        # Fall back to text-based locators for older Unsloth builds.
         picker_btn = page.locator(
             'button:has-text("gemma-3-270m"), '
             'button:has-text("Gemma 3"), '
@@ -538,7 +954,13 @@ with sync_playwright() as p:
         page.wait_for_timeout(300)
 
     # ─────────────────────────────────────────────────────
-    # 4. Five chat turns, all non-empty.
+    # 4. A follow-up submitted 100 ms after a normal send must queue behind it.
+    # This targets the interval before assistant-ui paints isRunning: without a
+    # synchronous per-thread reservation the second submit starts immediately,
+    # cancels the first turn, and leaves its assistant bubble empty.
+    # ─────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
+    # 4b. Five chat turns, all non-empty.
     # ─────────────────────────────────────────────────────
     prompts = [
         "Reply with exactly: hello",
@@ -639,6 +1061,185 @@ with sync_playwright() as p:
             shoot(f"04-turn-{idx}-still-streaming")
             raise
 
+    step("rapid submit: 100 ms follow-up queues behind the first turn")
+    rapid_bubbles_before = _bubble_count()
+    composer_form = page.locator('form:has(textarea[aria-label="Message input"])').first
+    # How long a reply takes is not ours to decide: sampling settings, whatever
+    # GGUF_REPO points at and an early EOS all move it, and a short answer can
+    # finish inside the follow-up delay on a fast runner, leaving nothing to
+    # queue behind. So hold the first turn's response open rather than hope it
+    # is slow.
+    #
+    # The follow-up and the observation both run in the page, not here. The sync
+    # Playwright route handler runs on this thread, so a wait inside it blocks
+    # the test: the handler would fire during a wait_for_timeout, finish, and
+    # release the request before a Python-side second submit could happen, which
+    # puts the hold entirely before the follow-up instead of across it. Page
+    # timers keep running while this thread is parked in the handler.
+    # Everything here runs in the page. Playwright's sync route handler runs on
+    # this thread, so holding a request there blocks the test itself and the
+    # follow-up cannot be sent while the hold is in effect; and the page cannot
+    # observe a Playwright interception, so no in-page timer can be aligned with
+    # one. Wrapping fetch solves both: the page sees the exact moment the first
+    # turn's request goes out, sends the follow-up then, and delays the response
+    # itself, so the turn is provably still running with no timing assumption.
+    page.evaluate(
+        """(args) => {
+            const [secondPrompt, holdMs] = args;
+            window.__unslothRapid = {
+                intercepted: false, submitted: false, queueSeen: false,
+                observed: false, error: null, seen: [], holdUntil: 0,
+            };
+            const state = window.__unslothRapid;
+            const realFetch = window.fetch;
+            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+            const sendFollowUp = (deadline) => {
+                if (state.submitted || state.error) return;
+                // Re-query, and retry: this is the chat's first message, so
+                // sending it swaps the welcome composer for the dock composer.
+                // A node captured earlier is detached, and for a short window
+                // there is no connected composer at all.
+                const composer = document.querySelector(
+                    'textarea[aria-label="Message input"]'
+                );
+                if (!composer || !composer.isConnected || !composer.form) {
+                    if (deadline === undefined) deadline = Date.now() + 5000;
+                    // Never retry past the hold. The response is released when
+                    // it expires, so a submit after that races a buffered reply
+                    // finishing first and would report a queue failure for an
+                    // application that behaved correctly.
+                    if (state.holdUntil) {
+                        deadline = Math.min(deadline, state.holdUntil - 250);
+                    }
+                    if (Date.now() > deadline) {
+                        state.error = "no connected composer for the follow-up";
+                        return;
+                    }
+                    setTimeout(() => sendFollowUp(deadline), 25);
+                    return;
+                }
+                // React tracks the value on the node, so a plain assignment is
+                // reverted on the next render.
+                const setValue = Object.getOwnPropertyDescriptor(
+                    window.HTMLTextAreaElement.prototype, "value"
+                ).set;
+                setValue.call(composer, secondPrompt);
+                composer.dispatchEvent(new Event("input", { bubbles: true }));
+                composer.form.requestSubmit();
+                state.submitted = true;
+            };
+
+            window.fetch = async (...a) => {
+                const url = String(
+                    (a[0] && a[0].url) ? a[0].url : a[0]
+                );
+                const isTurn = url.includes("chat/completions");
+                if (isTurn && !state.intercepted) {
+                    state.intercepted = true;
+                    state.holdUntil = Date.now() + holdMs;
+                    state.seen.push(url);
+                    const response = realFetch(...a);
+                    // The request is out and the turn is running. Send the
+                    // follow-up now, then keep the response pending so it
+                    // cannot complete first.
+                    setTimeout(() => sendFollowUp(), 0);
+                    await sleep(holdMs);
+                    return response;
+                }
+                return realFetch(...a);
+            };
+
+            // Always restore. A wrapper left in place for the rest of the
+            // run is a monkeypatch with no teardown, and every later turn would
+            // pay for it.
+            window.__unslothRapidArm = () => setTimeout(() => sendFollowUp(), 100);
+
+            window.__unslothRapidRestore = () => {
+                window.fetch = realFetch;
+                clearInterval(poll);
+            };
+
+            const poll = setInterval(() => {
+                if (document.querySelector(
+                    'button[aria-label="Remove queued prompt 1"]'
+                )) {
+                    state.queueSeen = true;
+                    clearInterval(poll);
+                }
+            }, 25);
+            setTimeout(() => {
+                clearInterval(poll);
+                if (!state.queueSeen && !state.error) {
+                    // Resolve the wait rather than let it die on a generic
+                    // Playwright timeout. That path is the regression this step
+                    // exists to catch, and leaving it unresolved makes the
+                    // screenshot, the explicit message and the fetch teardown
+                    // below unreachable in exactly that case.
+                    state.observed = true;
+                }
+            }, 20000);
+        }""",
+        ["Reply with exactly: rapid-second", int(RAPID_FIRST_TURN_HOLD_S * 1000)],
+    )
+
+    composer.fill("Reply with exactly: rapid-first")
+    composer_form.evaluate("form => form.requestSubmit()")
+    # Arm the 100 ms path now that the first turn has been submitted. Whichever
+    # fires first wins and the other is a no-op, so this still covers the
+    # pre-render interval the step is named after, while the fetch path keeps
+    # the guarantee when persistence delays the request.
+    page.evaluate("() => window.__unslothRapidArm && window.__unslothRapidArm()")
+
+    page.wait_for_function(
+        """() => window.__unslothRapid
+            && (window.__unslothRapid.queueSeen
+                || window.__unslothRapid.observed
+                || window.__unslothRapid.error)""",
+        timeout = 60_000,
+    )
+    state = page.evaluate("() => window.__unslothRapid")
+    page.evaluate("() => { if (window.__unslothRapidRestore) window.__unslothRapidRestore(); }")
+    if state["error"]:
+        shoot("04-rapid-submit-no-composer")
+        fail(f"could not send the follow-up: {state['error']}")
+    # queueSeen is the property under test; the hold is only the means of
+    # guaranteeing the first turn was still running. If the queue formed, it
+    # formed, whether or not the hold was needed. Only demand the interception
+    # when it did not, so an unheld run cannot report a silent pass.
+    if not state["queueSeen"] and not state["intercepted"]:
+        fail(
+            "the first turn's request was never seen, so it was never held, "
+            f"and no queue formed; saw {state['seen']}"
+        )
+    # The follow-up went out after the first turn's request was issued and while
+    # its response was still held, so that turn was necessarily running. A
+    # missing queue control is therefore a real regression, not timing.
+    if not state["queueSeen"]:
+        shoot("04-rapid-submit-no-queue")
+        fail(
+            "follow-up sent during a held first turn did not appear as queued "
+            f"work (submitted={state['submitted']}, intercepted="
+            f"{state['intercepted']})"
+        )
+
+    page.wait_for_function(
+        """(want) => {
+            const replies = Array.from(
+                document.querySelectorAll('[data-role="assistant"]')
+            ).slice(-2);
+            return replies.length === 2 &&
+                document.querySelectorAll('[data-role="assistant"]').length >= want &&
+                replies.every((reply) => (reply.innerText || '').trim().length > 0) &&
+                !document.querySelector('button[aria-label="Stop generating"]') &&
+                !document.querySelector('button[aria-label="Remove queued prompt 1"]');
+        }""",
+        arg = rapid_bubbles_before + 2,
+        timeout = TURN_TIMEOUT_MS * 2,
+    )
+    shoot("04-rapid-submit-queued")
+    info("OK 100 ms follow-up waited and both assistant turns completed")
+
     for i, p_ in enumerate(prompts, start = 1):
         step(f"turn {i}: {p_!r}")
         send_and_wait(p_, i)
@@ -669,10 +1270,16 @@ with sync_playwright() as p:
     last_assistant = page.locator('[data-role="assistant"]').last
     last_assistant.hover()
     page.wait_for_timeout(400)
-    regen_btn = page.get_by_role(
-        "button",
-        name = re.compile(r"(reload|regenerate)", re.I),
-    ).first
+    # Exclude disabled controls: the picker's new disabled "Reload model"
+    # button also matches and sorts first, so .first would target it.
+    regen_btn = (
+        page.get_by_role(
+            "button",
+            name = re.compile(r"(reload|regenerate)", re.I),
+        )
+        .and_(page.locator("button:not([disabled])"))
+        .first
+    )
     if regen_btn.count() > 0:
         regen_btn.click()
         try:
@@ -778,6 +1385,111 @@ with sync_playwright() as p:
             page.keyboard.press("Escape")
         page.wait_for_timeout(300)
 
+    def read_chat_typography():
+        """Read message typography after a user-driven theme transition."""
+        return robust_evaluate(
+            page,
+            """() => {
+                const root = document.documentElement;
+                const assistant = Array.from(
+                    document.querySelectorAll('.aui-assistant-message-root')
+                );
+                const user = Array.from(
+                    document.querySelectorAll('.aui-user-message-root')
+                );
+                if (assistant.length === 0 || user.length === 0) {
+                    return { error: 'chat message roots are missing' };
+                }
+                const ua = navigator.userAgent.toLowerCase();
+                const role = (nodes) => {
+                    const styles = nodes.map((node) => getComputedStyle(node));
+                    return {
+                        fontWeight: [...new Set(styles.map((style) => style.fontWeight))],
+                        letterSpacing: [...new Set(styles.map((style) => style.letterSpacing))],
+                        // The tracking is authored in em, so it only means anything next to the
+                        // size it resolved against.
+                        fontSize: [...new Set(styles.map((style) => style.fontSize))],
+                    };
+                };
+                return {
+                    // The scale the size tokens are multiplied by: index.css sets the 15px
+                    // product default, and the appearance store overrides it inline as
+                    // preference / 16 for any other size.
+                    uiFontScale: getComputedStyle(root)
+                        .getPropertyValue('--ui-font-scale').trim(),
+                    actualRenderLinux: root.classList.contains('render-linux'),
+                    isDesktopLinux: ua.includes('linux') && !ua.includes('android'),
+                    isDark: root.classList.contains('dark'),
+                    usesBaselineTypography: (
+                        root.classList.contains('no-font-smoothing') ||
+                        root.hasAttribute('data-chat-font') ||
+                        root.hasAttribute('data-ui-font')
+                    ),
+                    assistant: role(assistant),
+                    user: role(user),
+                };
+            }""",
+        )
+
+    # text-ui-15p5 unscaled (index.css: calc(0.96875rem * var(--ui-font-scale, 1))).
+    _TEXT_UI_15P5_PX = 15.5
+
+    def assert_chat_typography(label, typography):
+        if typography.get("error"):
+            fail(typography["error"])
+        if typography["actualRenderLinux"] != typography["isDesktopLinux"]:
+            fail(f"desktop Linux detection mismatch: {typography!r}")
+        is_dark = typography["isDark"]
+        # Tracking is authored in em (thread.tsx tracking-[0.01em] / dark:tracking-[0.02em], and
+        # 0.023em for the lighter dark-mode instance on Linux), so assert the em and let the size
+        # come from the element. Pinning px assumed a 16px base and broke the moment the product
+        # default became 15px (--ui-font-scale in index.css), which any font-size preference does too.
+        expected_em = 0.02 if is_dark else 0.01
+        if typography["isDesktopLinux"] and not typography["usesBaselineTypography"]:
+            expected_weight = "350" if is_dark else "390"
+            if is_dark:
+                expected_em = 0.023
+        else:
+            expected_weight = "410"
+        for role in ("assistant", "user"):
+            actual = typography[role]
+            if actual["fontWeight"] != [expected_weight]:
+                fail(
+                    f"chat font weight {label}/{role}: expected {expected_weight}, "
+                    f"got {actual['fontWeight']!r}"
+                )
+            if len(actual["fontSize"]) != 1:
+                fail(f"chat font size {label}/{role}: not uniform, got {actual['fontSize']!r}")
+            font_size = float(actual["fontSize"][0].removesuffix("px"))
+            # Pin the token, not a range: one spanning every preference (12 to 20, so
+            # 11.625px to 19.375px) also admits the neighbouring tokens.
+            try:
+                ui_font_scale = float(typography.get("uiFontScale") or "1")
+            except ValueError:
+                ui_font_scale = None
+            if ui_font_scale is None:
+                fail(f"chat font size {label}/{role}: unreadable --ui-font-scale")
+            expected_size = _TEXT_UI_15P5_PX * ui_font_scale
+            if abs(font_size - expected_size) > 0.01:
+                fail(
+                    f"chat font size {label}/{role}: expected text-ui-15p5, "
+                    f"{_TEXT_UI_15P5_PX}px * {ui_font_scale} = {expected_size:g}px, "
+                    f"got {font_size}px"
+                )
+            expected_spacing = expected_em * font_size
+            # float() raises on "normal", which is how zero tracking is reported.
+            spacings = [
+                0.0 if v.strip() == "normal" else float(v.removesuffix("px"))
+                for v in actual["letterSpacing"]
+            ]
+            # Sub-pixel tolerance only: the browser reports the exact product, so anything larger
+            # would stop the check from noticing a changed tracking value.
+            if len(spacings) != 1 or abs(spacings[0] - expected_spacing) > 0.005:
+                fail(
+                    f"chat letter spacing {label}/{role}: expected {expected_em}em of "
+                    f"{font_size}px = {expected_spacing:g}px, got {actual['letterSpacing']!r}"
+                )
+
     # ─────────────────────────────────────────────────────
     # 9. Theme toggle -- multiple cycles + computed-bg-color check
     # (light is near-white >240; dark is near-black <40).
@@ -786,6 +1498,7 @@ with sync_playwright() as p:
     if acct.count() > 0:
         step("theme toggle x3 with computed-color assertion")
         observed = []
+        typography_states = []
         for cycle in range(3):
             # Wait for any prior dropdown to fully detach: clicking while
             # the view-transition is still open no-ops silently. The
@@ -874,6 +1587,9 @@ with sync_playwright() as p:
             }""",
             )
             observed.append(bg)
+            typography = read_chat_typography()
+            assert_chat_typography(f"theme-cycle-{cycle + 1}", typography)
+            typography_states.append(typography)
             shoot(f"10-theme-cycle-{cycle + 1}")
             info(f"  cycle {cycle + 1}: dark={bg['isDark']} body bg={bg['bg']!r}")
         # Across cycles we should see both a near-white (light) and a
@@ -884,7 +1600,7 @@ with sync_playwright() as p:
         if len(observed) < 3:
             soft_fail(f"theme toggle ran only {len(observed)} cycle(s), expected 3")
         # Don't strict-fail on both polarities: the runner's
-        # prefers-color-scheme + Studio's "system" default can collapse
+        # prefers-color-scheme + Unsloth's "system" default can collapse
         # to one polarity even when .dark toggles correctly. The 3-cycle
         # completion above is the real invariant.
         if light_seen and dark_seen:
@@ -895,6 +1611,20 @@ with sync_playwright() as p:
                 f"cycles: light_seen={light_seen}, dark_seen={dark_seen} "
                 "(toggle may not flip on this runner's color-scheme)"
             )
+
+        # These are user-driven theme transitions, not synthetic class
+        # changes. A completed three-cycle toggle must expose both typography
+        # states before we check the Linux selector.
+        if len(typography_states) != 3:
+            soft_fail(
+                f"chat typography observed {len(typography_states)} theme state(s), expected 3"
+            )
+        elif {state["isDark"] for state in typography_states} != {False, True}:
+            soft_fail(f"chat typography did not observe both themes: {typography_states!r}")
+        else:
+            info("OK chat typography platform and theme behavior")
+    else:
+        soft_fail("chat typography requires the account-menu theme control")
 
     # ─────────────────────────────────────────────────────
     # 10. Sidebar nav: New Chat, Compare, Search, Recipes.
@@ -915,6 +1645,20 @@ with sync_playwright() as p:
             if c.count() > 0:
                 btn = c
                 break
+        if btn is None:
+            # Unpinned rows (Video, Recipes, Export by default) live in the sidebar's "More" flyout, which opens on hover, so hover
+            # first: a click would toggle it back shut. Click is the fallback for a no-hover environment.
+            more_btn = page.get_by_role("button", name = re.compile(r"^\s*More\s*$", re.I)).first
+            if more_btn.count() > 0:
+                more_btn.hover()
+                page.wait_for_timeout(500)
+                item = page.get_by_role("menuitem", name = re.compile(label, re.I)).first
+                if item.count() == 0:
+                    more_btn.click(force = True)
+                    page.wait_for_timeout(500)
+                    item = page.get_by_role("menuitem", name = re.compile(label, re.I)).first
+                if item.count() > 0:
+                    btn = item
         if btn is None:
             soft_fail(f"nav '{label}' not found")
             return False
@@ -1250,7 +1994,7 @@ with sync_playwright() as p:
     try:
         refresh_status = int(refresh_proc.stdout.strip())
     except ValueError:
-        fail(f"curl refresh-token check returned invalid status: " f"{refresh_proc.stdout!r}")
+        fail(f"curl refresh-token check returned invalid status: {refresh_proc.stdout!r}")
     if refresh_status == 200:
         fail(f"/api/auth/refresh should fail after CLI rotation; got 200")
     info(
@@ -1259,31 +2003,160 @@ with sync_playwright() as p:
     )
 
     # ─────────────────────────────────────────────────────
-    # 17. Shutdown via the account menu. The "Stop server" action
-    # POSTs /api/shutdown, swaps in the "Unsloth Studio has stopped"
-    # placeholder, and /api/health goes unreachable shortly after.
+    # 17. Persisted monitor auth boundary, then shutdown. A monitor left open
+    # must stay dormant on /login and resume after successful authentication.
     # ─────────────────────────────────────────────────────
-    step("Shutdown via account menu")
-    # Re-login with NEW2 for a valid /api/shutdown token (CLI rotation
-    # invalidated the old one). The stale token can make the SPA auth guard
-    # abort this goto with ERR_ABORTED, or redirect to the same /login URL
-    # ("interrupted by another navigation"); resolve on domcontentloaded and
-    # tolerate either -- the pw-field wait below confirms we are on /login.
-    _tolerated_nav = ("ERR_ABORTED", "interrupted by another navigation")
+    step("persisted monitor stays dormant on /login and resumes after auth")
+    # Start fresh after the CLI rotation invalidates this browser session.
+    # Stay in the SAME context: macOS Chromium runs --single-process, where
+    # closing the last context kills the browser and a second context cannot
+    # be created. Open the new page before closing the old one; the context
+    # init script covers the new page.
     try:
-        page.goto(f"{BASE}/login", wait_until = "domcontentloaded", timeout = 60_000)
+        ctx.clear_cookies()
     except Exception as exc:
-        if not any(t in str(exc) for t in _tolerated_nav):
-            raise
-        info(f"goto /login interrupted ({exc!r}); password-field wait will confirm /login")
-    pw_field = page.locator("#password")
-    pw_field.wait_for(state = "visible", timeout = 60_000)
-    pw_field.fill(NEW2)
-    page.locator('button[type="submit"]').click()
+        info(f"WARN clearing stale session cookies failed: {exc!r}")
+    robust_evaluate(
+        page,
+        """() => localStorage.setItem(
+            "unsloth_monitor_overlay",
+            JSON.stringify({ state: { isOpen: true, isMinimized: false }, version: 0 })
+        )""",
+    )
+    # Auth tokens live in localStorage, and /login's guest guard redirects on
+    # their mere presence, so drop them before navigating.
+    try:
+        page.evaluate(
+            "['unsloth_auth_token', 'unsloth_auth_refresh_token']"
+            ".forEach((key) => localStorage.removeItem(key))"
+        )
+    except Exception as exc:
+        info(f"WARN clearing stale auth tokens failed: {exc!r}")
+    _fresh_page = ctx.new_page()
+    _fresh_page.set_default_timeout(60_000)
+    _fresh_page.on("pageerror", lambda e: page_errors.append(str(e)))
+    _fresh_page.on("console", _on_console)
+    try:
+        page.close()
+    except Exception:
+        pass
+    page = _fresh_page
+    login_system_request_count = len(system_requests)
+
+    # Re-login with NEW2 for a valid /api/shutdown token. Route changes can
+    # still abort or interrupt this navigation, so the field wait below is the
+    # final confirmation that we reached /login.
+    _tolerated_nav = ("ERR_ABORTED", "interrupted by another navigation")
+    # A slow CI runner can make this re-login navigation time out even with the
+    # server healthy, so retry the whole goto/wait/fill/submit sequence (mirrors
+    # the change-password retry above). wait_for_health is a diagnostic pre-gate.
+    wait_for_health(BASE, timeout = 30.0, info = info)
+    relogin_err: Exception | None = None
+    for _relogin_attempt in range(3):
+        try:
+            try:
+                page.goto(f"{BASE}/login", wait_until = "domcontentloaded", timeout = 60_000)
+            except Exception as exc:
+                if not any(t in str(exc) for t in _tolerated_nav):
+                    raise
+                info(f"goto /login interrupted ({exc!r}); password-field wait will confirm /login")
+            pw_field = page.locator("#password")
+            pw_field.wait_for(state = "visible", timeout = 60_000)
+            page.keyboard.press("Control+,")
+            page.wait_for_timeout(5_500)
+            if len(system_requests) != login_system_request_count:
+                raise AssertionError(
+                    "persisted monitor requested /api/system while /login was active"
+                )
+            if "/login" not in page.url:
+                raise AssertionError(f"login route reloaded or redirected unexpectedly: {page.url}")
+            pw_field.fill(NEW2)
+            # Wait on the login POST so a transient 4xx/5xx is caught and retried
+            # here, not swallowed until the out-of-loop composer wait.
+            status, _ = click_and_wait_for_response(
+                page,
+                url_substr = "/api/auth/login",
+                method = "POST",
+                do_click = lambda: page.locator('button[type="submit"]').click(),
+                timeout_ms = 30_000,
+                info = lambda m: print(f"[ui]   {m}", flush = True),
+            )
+            if status is not None and status >= 400:
+                raise AssertionError(
+                    f"login POST returned {status}; see console_errors={console_errors[:1]!r}"
+                )
+            relogin_err = None
+            break
+        except Exception as e:
+            relogin_err = e
+            try:
+                cur_url = page.url
+            except Exception:
+                cur_url = "<page closed>"
+            print(
+                f"[ui]   re-login attempt {_relogin_attempt + 1} failed: "
+                f"{type(e).__name__}: {str(e)[:200]}; page.url={cur_url}; "
+                f"page_errors={len(page_errors)} console_errors={len(console_errors)}",
+                flush = True,
+            )
+            if console_errors:
+                print(
+                    f"[ui]   first console.error: {console_errors[0][:200]!r}",
+                    flush = True,
+                )
+            if page_errors:
+                print(f"[ui]   first pageerror:    {page_errors[0][:200]!r}", flush = True)
+            try:
+                shoot(f"18-relogin-attempt-{_relogin_attempt + 1}-fail")
+            except Exception:
+                pass
+            if _relogin_attempt < 2:
+                # ERR_NO_BUFFER_SPACE needs the OS to recover socket
+                # buffers; back off 5s then 15s before retrying.
+                if "ERR_NO_BUFFER_SPACE" in str(e):
+                    backoff_s = 5 if _relogin_attempt == 0 else 15
+                    print(
+                        f"[ui]   ENOBUFS detected; sleeping {backoff_s}s "
+                        f"before retry to let OS recover socket buffers...",
+                        flush = True,
+                    )
+                    time.sleep(backoff_s)
+                # Replace the page if it died; otherwise next iteration's
+                # page.goto() handles the reload.
+                old_page = page
+                page = recover_or_replace_page(
+                    page,
+                    ctx,
+                    default_timeout_ms = 60_000,
+                    info = lambda m: print(f"[ui]   recovery: {m}", flush = True),
+                )
+                # A freshly created replacement page loses the pageerror/console
+                # listeners; re-attach so error tracking survives recovery.
+                if page is not old_page:
+                    page.on("pageerror", lambda e: page_errors.append(str(e)))
+                    page.on("console", _on_console)
+    if relogin_err is not None:
+        raise relogin_err
+    # Composer mount confirms the rotated session is authenticated. Kept OUTSIDE the
+    # retry: the loop breaks right after submit, so we never re-goto /login once login
+    # has set tokens -- that would hit the guest guard, redirect to /chat, and make a
+    # merely-slow composer look like a broken login.
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
+    monitor_deadline = time.time() + 10
+    while len(system_requests) == login_system_request_count and time.time() < monitor_deadline:
+        page.wait_for_timeout(100)
+    if len(system_requests) == login_system_request_count:
+        fail("persisted monitor did not resume /api/system polling after login")
+    if page.get_by_role("dialog", name = re.compile(r"^Settings$")).count() != 0:
+        fail("settings shortcut on /login left the dialog open after authentication")
+    info("OK persisted monitor stayed dormant on /login and resumed after authentication")
+
+    exercise_floating_monitor_geometry(page)
+
     shoot("18-relogin-with-NEW2")
 
+    step("Shutdown via account menu")
     acct_btn = page.locator('button[aria-label$=" account menu"]').first
     if acct_btn.count() == 0:
         fail("account menu button missing -- can't reach Shutdown")
@@ -1305,14 +2178,14 @@ with sync_playwright() as p:
     stop_btn.click()
 
     # Wait for the post-shutdown placeholder body (the component swaps in
-    # "Unsloth Studio has stopped." once /api/shutdown returns ok).
+    # "Unsloth has stopped." once /api/shutdown returns ok).
     try:
         page.wait_for_function(
-            """() => /Unsloth Studio has stopped/.test(document.body.innerText)""",
+            """() => /Unsloth has stopped/.test(document.body.innerText)""",
             timeout = 15_000,
         )
         shoot("20-shutdown-placeholder")
-        info("OK 'Unsloth Studio has stopped' placeholder rendered")
+        info("OK 'Unsloth has stopped' placeholder rendered")
     except Exception as exc:
         info(f"WARN shutdown placeholder didn't render: {exc!r}")
 

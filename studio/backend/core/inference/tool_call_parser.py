@@ -54,6 +54,8 @@ TOOL_XML_SIGNALS = (
     # Kimi K2 / Moonshot.
     "<|tool_calls_section_begin|>",
     "<|tool_call_begin|>",
+    # TML Inkling native call marker.
+    "<|content_invoke_tool_json|>",
 )
 
 
@@ -164,15 +166,40 @@ RAG_SEARCH_CAP_NUDGE = (
 
 
 # ── Plan-without-action re-prompt (shared by the GGUF and safetensors loops) ──
+# Verbs naming work this turn. Narrow on purpose: "install"/"add"/"open" belong to
+# advice for the user, which must not be re-prompted.
+_ACTION_VERB = (
+    r"(?:search|check|look|find|fetch|get|call|use|run|query|invoke|analy[sz]e"
+    r"|review|inspect|read|gather|examine|retrieve|browse|consult|verify"
+    r"|confirm|compute|calculate|determine|identify|render)"
+)
+# Offering to help hands control back exactly like "let me know": measured on real
+# turns, "I'll do my best to help" and "allow me to assist" close a clarification
+# request and never precede a tool call. "help you" keeps its plan reading when an
+# action follows it ("I'll help you search the web").
+_HELP_OFFER = (
+    r"(?:do(?:ing)?\s+my\s+best|try\s+my\s+best|be\s+(?:able|happy|glad)\s+to\b"
+    r"|assist\b|help\s+you\b(?!\s+" + _ACTION_VERB + r")|give\s+you\s+accurate\b)"
+)
 # Forward-looking intent: the model says what it *will* do, not a final answer.
 INTENT_SIGNAL = re.compile(
-    r"(?i)("
-    # Direct intent ("I'll", "Let me"); lookahead drops negated forms
-    # ("I will not") so a refusal does not re-prompt.
-    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall|let me|allow me)\b(?!\s+(?:not|never)\b)"
+    r"(?im)("
+    # Direct intent ("I'll"); lookahead drops negated forms ("I will not").
+    r"\b(i['\u2019](ll|m going to|m gonna)|i am (going to|gonna)|i will|i shall)\b"
+    r"(?!\s+(?:not|never)\b)(?!\s+" + _HELP_OFFER + r")"
     r"|"
-    # Step/plan framing: "First ...", "Step 1:", "Here's my plan"
-    r"\b(?:first\b|step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
+    # "let me know" hands control back rather than announcing an action.
+    r"\b(?:let me|allow me)\b(?!\s+(?:not|never|know)\b)(?!\s+to\s+" + _HELP_OFFER + r")"
+    r"|"
+    # Step/plan framing. "first" must open a sentence and be followed by a plan
+    # (pronoun, "my/our plan", or an action verb); otherwise it is prose ("The
+    # first line is blank.", "First place went to Alice") or advice to the user.
+    r"(?:^|[.!?]\s+)\s*(?:the\s+)?first\s+step\b"
+    r"|(?:^|[.!?]\s+)\s*first\s*[,:–—-]?\s+(?:my|our)\s+(?:plan|approach|step)\b"
+    r"|(?:^|[.!?]\s+)\s*first\s*[,:–—-]?\s+(?:i|we|let['’]?s|let us)\b"
+    r"|(?:^|[.!?]\s+)\s*first\s*[,:–—-]?\s+" + _ACTION_VERB + r"\b"
+    r"|"
+    r"\b(?:step \d+:?|here['\u2019]?s (?:my |the |a )?(?:plan|approach))"
     r"|"
     r"\b(?:now i|next i)\b"
     r")"
@@ -181,11 +208,49 @@ INTENT_SIGNAL = re.compile(
 # times since #5620); safetensors and MLX inherit the same cap from here.
 MAX_ACT_REPROMPTS = 3
 REPROMPT_MAX_CHARS = 2000
+# Composer badge while a hidden re-prompted turn regenerates, else the UI looks
+# hung. Matched exactly by the frontend (utils/tool-status.ts); keep in sync.
+NUDGE_TOOL_CALLS_STATUS = "Nudging tool calls"
 
 
 def is_short_intent_without_action(text: str) -> bool:
     stripped = text.strip()
     return 0 < len(stripped) < REPROMPT_MAX_CHARS and INTENT_SIGNAL.search(stripped) is not None
+
+
+# Leading marks are kept unless they are quotes or brackets, so ".NET" survives;
+# stripping all non-word chars would collapse "C++" and "C#" to the same token.
+_REPEAT_TRAIL_PUNCT = ".,;:!?\"'`()[]{}<>‘’“”"
+_REPEAT_LEAD_PUNCT = "\"'`([{‘“"
+
+
+def _normalize_for_repeat(text: str) -> str:
+    words = []
+    for word in text.lower().split():
+        stripped = word.rstrip(_REPEAT_TRAIL_PUNCT).lstrip(_REPEAT_LEAD_PUNCT)
+        # Keep marks-only tokens: "value is 5" and "value is < 5" differ, and
+        # dropping the "<" threw the corrected attempt away.
+        words.append(stripped or word)
+    return " ".join(words)
+
+
+# A nudge that just gets the same answer back has not worked, so stop there.
+# Exact after normalisation, deliberately. Every relaxation tried here lost a real
+# correction: a similarity ratio is length dependent (one changed token in a 50-word
+# plan still scored 0.98), a set ignores order ("cats not dogs"), and ignoring filler
+# words eats the target itself ("The Who", "OK Go"). A missed repeat costs one nudge
+# out of MAX_ACT_REPROMPTS; a false one strands the plan unexecuted.
+def is_reprompt_repeat(text: str, previous: str) -> bool:
+    return is_reprompt_restatement(text, previous)
+
+
+# Same comparison, different decision: this one discards the turn. An appended answer
+# must not match, and deletions flip meaning ("is not supported" -> "is supported").
+def is_reprompt_restatement(text: str, previous: str) -> bool:
+    if not previous:
+        return False
+    a, b = _normalize_for_repeat(text), _normalize_for_repeat(previous)
+    return bool(a) and a == b
 
 
 def reprompt_to_act_message(tool_hint: str) -> str:

@@ -16,6 +16,11 @@ import os, importlib.util, platform
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
+# Relax Metal's context-store timeout before MLX modules can initialize Metal.
+# Keep an explicit user value authoritative.
+if platform.system() == "Darwin" and platform.machine() == "arm64":
+    os.environ.setdefault("AGX_RELAX_CDM_CTXSTORE_TIMEOUT", "1")
+
 # ── Windows console UTF-8 safety ─────────────────────────────────────────────
 # Legacy Windows consoles (cp1252) can't encode Unsloth's emoji/box-drawing
 # glyphs and crash with UnicodeEncodeError. Force stdout/stderr to UTF-8 only on
@@ -76,6 +81,22 @@ def _is_mlx_available():
 _IS_MLX = _is_mlx_available()
 
 if _IS_MLX:
+    # _gpu_init does this on the GPU path; the MLX path never reaches it, so
+    # torchao 0.18 + torch < 2.10 dies on `ScalingType`. No-op otherwise.
+    try:
+        from .import_fixes import fix_torchao_torch_symbol_skew as _fix_torchao
+        _fix_torchao()
+        del _fix_torchao
+    except Exception:
+        pass
+    try:
+        # Same reason: MLX audio reaches xcodec2 -> torchtune -> the old
+        # torchao.dtypes.nf4tensor path.
+        from .import_fixes import fix_torchao_nf4tensor_move as _fix_nf4
+        _fix_nf4()
+        del _fix_nf4
+    except Exception:
+        pass
     try:
         import unsloth_zoo
     except ImportError as _e:
@@ -587,9 +608,7 @@ if _IS_MLX:
 
     def _assign_mlx_positional_kwarg(kwargs, name, value):
         if name in kwargs:
-            raise TypeError(
-                f"UnslothTrainer.__init__() got multiple values for argument " f"{name!r}"
-            )
+            raise TypeError(f"UnslothTrainer.__init__() got multiple values for argument {name!r}")
         kwargs[name] = value
 
     def _normalize_mlx_trainer_init_args(args, kwargs):
@@ -1309,7 +1328,15 @@ if _IS_MLX:
 
     def train_on_responses_only(*args, **kwargs):
         """Mask non-response tokens through the shared zoo dataset helper."""
-        from unsloth_zoo.dataset_utils import train_on_responses_only as _train_on_responses_only
+        # Prefer the chat_templates export, which bounds the zoo's dataset.map()
+        # worker count (issue #2693). It is None on a torch-free host; fall back
+        # so the zoo raises its own ImportError, not "NoneType is not callable".
+        from .chat_templates import train_on_responses_only as _train_on_responses_only
+
+        if _train_on_responses_only is None:
+            from unsloth_zoo.dataset_utils import (
+                train_on_responses_only as _train_on_responses_only,
+            )
         return _train_on_responses_only(*args, **kwargs)
 
     def _safe_mlx_trl_star_exports(_trl):

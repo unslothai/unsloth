@@ -13,6 +13,7 @@ export type PersistedInferenceParams = Partial<
 export interface PersistedChatPreset {
   name: string;
   params: PersistedInferenceParams;
+  loadConfig?: Record<string, unknown>;
 }
 
 export interface PersistedChatSettings {

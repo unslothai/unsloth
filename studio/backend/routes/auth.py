@@ -23,14 +23,17 @@ from models.auth import (
     ChangePasswordRequest,
     CreateApiKeyRequest,
     CreateApiKeyResponse,
+    DesktopInitialPasswordRequest,
     DesktopLoginRequest,
     RefreshTokenRequest,
 )
 from models.users import Token
 from auth import storage, hashing
 from auth.authentication import (
+    authenticated_via_desktop_jwt,
     create_access_token,
     create_refresh_token,
+    get_current_credential,
     get_current_subject,
     get_current_subject_allow_password_change,
     refresh_access_token,
@@ -338,11 +341,11 @@ def _clear_login_bucket(key: tuple[str, str]) -> None:
 # so FastAPI runs it in the threadpool rather than blocking the event loop.
 @router.get("/identity")
 def identity(nonce: str, request: Request) -> dict:
-    """Challenge-response proof this is the real local Studio: caller sends a nonce,
+    """Challenge-response proof this is the real local Unsloth: caller sends a nonce,
     gets HMAC(install identity secret, nonce, connection address + port).
     Unauthenticated and side-effect free; a process that can't read the same-user
     secret can't forge a proof, and binding to the address/port the connection
-    landed on stops a squatter relaying a proof from the real Studio elsewhere."""
+    landed on stops a squatter relaying a proof from the real Unsloth elsewhere."""
     try:
         raw = base64.urlsafe_b64decode(nonce)
     except Exception:
@@ -399,7 +402,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
             detail = f"Incorrect password. To reset it, run this in your terminal: {_reset_password_command()}",
         )
 
-    salt, pwd_hash, _jwt_secret, must_change_password = record
+    salt, pwd_hash, jwt_secret, must_change_password = record
     if not hashing.verify_password(payload.password, salt, pwd_hash):
         _record_login_failure(key)
         raise HTTPException(
@@ -409,8 +412,10 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
 
     _clear_login_bucket(key)
     _clear_login_bucket(unknown_key)
-    access_token = create_access_token(subject = payload.username)
-    refresh_token = create_refresh_token(subject = payload.username)
+    # Issue against the credential version just verified, not whatever is in the DB
+    # now: a concurrent reset-password must not hand this login a post-reset session.
+    access_token = create_access_token(subject = payload.username, secret = jwt_secret)
+    refresh_token = create_refresh_token(subject = payload.username, secret = jwt_secret)
     return Token(
         access_token = access_token,
         refresh_token = refresh_token,
@@ -438,16 +443,17 @@ async def logout(
 @router.post("/desktop-login", response_model = Token)
 async def desktop_login(payload: DesktopLoginRequest) -> Token:
     """Exchange a local desktop secret for normal admin-subject tokens."""
-    username = storage.validate_desktop_secret(payload.secret)
-    if username is None:
+    verified = storage.validate_desktop_secret_with_credential(payload.secret)
+    if verified is None:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Desktop authentication failed",
         )
+    username, jwt_secret = verified
 
     return Token(
-        access_token = create_access_token(subject = username, desktop = True),
-        refresh_token = create_refresh_token(subject = username, desktop = True),
+        access_token = create_access_token(subject = username, desktop = True, secret = jwt_secret),
+        refresh_token = create_refresh_token(subject = username, desktop = True, secret = jwt_secret),
         token_type = "bearer",
         must_change_password = False,
     )
@@ -462,9 +468,11 @@ async def refresh(payload: RefreshTokenRequest) -> Token:
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid or expired refresh token",
         )
-    username, is_desktop = consumed
-    new_access_token = create_access_token(subject = username, desktop = is_desktop)
-    new_refresh_token = create_refresh_token(subject = username, desktop = is_desktop)
+    username, is_desktop, jwt_secret = consumed
+    new_access_token = create_access_token(subject = username, desktop = is_desktop, secret = jwt_secret)
+    new_refresh_token = create_refresh_token(
+        subject = username, desktop = is_desktop, secret = jwt_secret
+    )
 
     return Token(
         access_token = new_access_token,
@@ -474,11 +482,81 @@ async def refresh(payload: RefreshTokenRequest) -> Token:
     )
 
 
+@router.post("/desktop-initial-password", response_model = Token)
+async def set_desktop_initial_password(
+    payload: DesktopInitialPasswordRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject_allow_password_change),
+    is_desktop: bool = Depends(authenticated_via_desktop_jwt),
+) -> Token:
+    """Set the first real password from the desktop app, which never sees the seeded one.
+
+    Desktop auth is passwordless, so the desktop user cannot complete the normal
+    flow: it needs the generated bootstrap password that only the terminal ever
+    printed. Remote browser logins do need a real password, so an
+    already-authenticated desktop session may set it while the seeded credential
+    is still in place. Once set, change-password owns every later change.
+    """
+    if not is_desktop:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "This action requires the Unsloth desktop app.",
+        )
+
+    record = storage.get_user_and_secret(current_subject)
+    if record is None:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "User session is invalid",
+        )
+
+    _salt, pwd_hash, _jwt_secret, must_change_password = record
+    if not must_change_password:
+        raise HTTPException(
+            status_code = status.HTTP_409_CONFLICT,
+            detail = "A password is already set. Change it instead.",
+        )
+    if any(ch.isspace() for ch in payload.new_password):
+        raise HTTPException(
+            status_code = status.HTTP_400_BAD_REQUEST,
+            detail = "New password cannot contain spaces",
+        )
+
+    # Conditional on the credential just read: a web password change or a
+    # reset-password landing while this request is in flight must not be
+    # overwritten by a caller that verified no password at all.
+    new_secret = storage.update_password(
+        current_subject,
+        payload.new_password,
+        revoke_refresh_tokens = True,
+        expect_password_hash = pwd_hash,
+        preserve_desktop_secret = True,
+    )
+    if new_secret is None:
+        raise HTTPException(
+            status_code = status.HTTP_409_CONFLICT,
+            detail = "The password changed while this request was in flight. Try again.",
+        )
+    try:
+        request.app.state.bootstrap_password = None
+    except AttributeError:
+        pass
+    access_token = create_access_token(subject = current_subject, desktop = True, secret = new_secret)
+    refresh_token = create_refresh_token(subject = current_subject, desktop = True, secret = new_secret)
+    return Token(
+        access_token = access_token,
+        refresh_token = refresh_token,
+        token_type = "bearer",
+        must_change_password = False,
+    )
+
+
 @router.post("/change-password", response_model = Token)
 async def change_password(
     payload: ChangePasswordRequest,
     request: Request,
     current_subject: str = Depends(get_current_subject_allow_password_change),
+    is_desktop: bool = Depends(authenticated_via_desktop_jwt),
 ) -> Token:
     """Allow the authenticated user to replace the default password."""
     record = storage.get_user_and_secret(current_subject)
@@ -494,20 +572,46 @@ async def change_password(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Current password is incorrect",
         )
+    if any(ch.isspace() for ch in payload.new_password):
+        raise HTTPException(
+            status_code = status.HTTP_400_BAD_REQUEST,
+            detail = "New password cannot contain spaces",
+        )
     if payload.current_password == payload.new_password:
         raise HTTPException(
             status_code = status.HTTP_400_BAD_REQUEST,
             detail = "New password must be different from the current password",
         )
 
-    storage.update_password(current_subject, payload.new_password)
-    storage.revoke_user_refresh_tokens(current_subject)
+    # Single transaction: a separate refresh-token purge could fail after the
+    # password commit, leaving pre-change tokens able to mint access tokens.
+    # Conditional on the hash just verified: a reset-password that landed while
+    # this request was in flight must not be overwritten by it.
+    # The desktop app authenticates with a local secret rather than this
+    # password; revoking that secret would break its auto-auth over a change it
+    # made itself. A browser session still revokes it.
+    new_secret = storage.update_password(
+        current_subject,
+        payload.new_password,
+        revoke_refresh_tokens = True,
+        expect_password_hash = pwd_hash,
+        preserve_desktop_secret = is_desktop,
+    )
+    if new_secret is None:
+        raise HTTPException(
+            status_code = status.HTTP_409_CONFLICT,
+            detail = "The password changed while this request was in flight. Sign in again.",
+        )
     try:
         request.app.state.bootstrap_password = None
     except AttributeError:
         pass
-    access_token = create_access_token(subject = current_subject)
-    refresh_token = create_refresh_token(subject = current_subject)
+    access_token = create_access_token(
+        subject = current_subject, desktop = is_desktop, secret = new_secret
+    )
+    refresh_token = create_refresh_token(
+        subject = current_subject, desktop = is_desktop, secret = new_secret
+    )
     return Token(
         access_token = access_token,
         refresh_token = refresh_token,
@@ -535,20 +639,28 @@ def _row_to_api_key_response(row: dict) -> ApiKeyResponse:
 
 @router.post("/api-keys", response_model = CreateApiKeyResponse)
 async def create_api_key(
-    payload: CreateApiKeyRequest, current_subject: str = Depends(get_current_subject)
+    payload: CreateApiKeyRequest, credential: tuple = Depends(get_current_credential)
 ) -> CreateApiKeyResponse:
     """Create a new API key. The raw key is returned once and cannot be retrieved later."""
+    current_subject, generation = credential
     expires_at = None
     if payload.expires_in_days is not None:
         expires_at = (
             datetime.now(timezone.utc) + timedelta(days = payload.expires_in_days)
         ).isoformat()
 
-    raw_key, row = storage.create_api_key(
-        username = current_subject,
-        name = payload.name,
-        expires_at = expires_at,
-    )
+    try:
+        raw_key, row = storage.create_api_key(
+            username = current_subject,
+            name = payload.name,
+            expires_at = expires_at,
+            expect_gen = generation,
+        )
+    except storage.CredentialRotated:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Invalid or expired token",
+        )
     return CreateApiKeyResponse(
         key = raw_key,
         api_key = _row_to_api_key_response(row),

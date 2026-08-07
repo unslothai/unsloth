@@ -330,7 +330,7 @@ def test_refusal_chunk_is_proper_openai_delta_shape(monkeypatch):
 
 
 def test_refusal_tool_event_chunk_shape(monkeypatch):
-    """Drop signal rides a Studio `_toolEvent` envelope (delta={},
+    """Drop signal rides an Unsloth `_toolEvent` envelope (delta={},
     finish_reason=null); the frontend latches on
     `_toolEvent.type == "anthropic_refusal"`."""
     _, lines = _capture(monkeypatch, sse = _refusal_sse(), model = "claude-opus-4-7")
@@ -409,7 +409,7 @@ def _fast_speed_sse(model: str = "claude-opus-4-7", speed: str = "fast") -> byte
 
 
 def test_usage_speed_propagates_to_final_usage_chunk_fast(monkeypatch):
-    """``usage.speed == "fast"`` from upstream must reach the Studio usage chunk."""
+    """``usage.speed == "fast"`` from upstream must reach the Unsloth usage chunk."""
     _, lines = _capture(monkeypatch, sse = _fast_speed_sse(speed = "fast"))
     usage_lines = [l for l in lines if l.startswith("data: ") and '"usage"' in l]
     assert usage_lines, lines
@@ -428,7 +428,7 @@ def test_usage_speed_propagates_to_final_usage_chunk_standard(monkeypatch):
 
 
 def test_usage_speed_absent_when_anthropic_does_not_report(monkeypatch):
-    """Studio must not invent ``usage.speed`` when upstream omits it."""
+    """Unsloth must not invent ``usage.speed`` when upstream omits it."""
     _, lines = _capture(monkeypatch)
     parsed = [
         json.loads(l[len("data: ") :]) for l in lines if l.startswith("data: ") and '"usage"' in l

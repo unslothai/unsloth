@@ -4,7 +4,7 @@
 """Behavioral tests for the --with-llama-cpp-dir 'unmanaged local link' contract.
 
 When the canonical llama.cpp dir is a symlink (POSIX) / junction (Windows) to a
-user's own checkout, Studio must treat it as externally managed:
+user's own checkout, Unsloth must treat it as externally managed:
   - the in-app updater must not offer or apply a prebuilt over the link
   - orphan cleanup must not kill a llama-server the user launched from that tree
 
@@ -19,6 +19,13 @@ import pytest
 
 from utils import llama_cpp_update as u
 from core.inference.llama_cpp import LlamaCppBackend
+
+
+@pytest.fixture(autouse = True)
+def _no_whisper_piggyback(monkeypatch):
+    # Keep the whisper piggyback probe off the host: these tests exercise the
+    # llama local-link contract only.
+    monkeypatch.setattr(u, "_whisper_chain_status", lambda **kwargs: None)
 
 
 def _make_link(link: Path, target: Path) -> None:
@@ -67,7 +74,7 @@ def test_active_install_is_local_link(tmp_path: Path) -> None:
     binary = str(link / _server_subpath())
     assert u._active_install_is_local_link(binary) is True
 
-    # A plain (non-link) llama.cpp dir is Studio-managed, not a local link.
+    # A plain (non-link) llama.cpp dir is Unsloth-managed, not a local link.
     plain = tmp_path / "plain" / "llama.cpp"
     plain.mkdir(parents = True)
     assert u._active_install_is_local_link(str(plain / _server_subpath())) is False

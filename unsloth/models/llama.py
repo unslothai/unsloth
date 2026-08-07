@@ -28,7 +28,11 @@ from ._utils import (
     is_bfloat16_supported,
     get_quant_type,
 )
-from .loader_utils import _exclude_rope_inv_freq_from_ddp, _get_fp8_mode_and_check_settings
+from .loader_utils import (
+    _exclude_rope_inv_freq_from_ddp,
+    _get_fp8_mode_and_check_settings,
+    _restore_dropped_fp8_scales,
+)
 from ..utils.packing import (
     get_packed_info_from_kwargs,
     mask_packed_sequence_boundaries,
@@ -57,6 +61,9 @@ from ..device_type import (
     DEVICE_TYPE_TORCH,
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
+    get_device_stats,
+    clean_gpu_cache,
+    get_current_device,
 )
 
 transformers_version = Version(transformers_version)
@@ -72,7 +79,8 @@ from transformers.models.llama.modeling_llama import (
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
 )
-from transformers.modeling_attn_mask_utils import (
+from unsloth.models._attn_mask_compat import (
+    AttentionMaskConverter,
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
 from ..kernels import *
@@ -121,13 +129,6 @@ from triton import __version__ as triton_version
 
 HAS_XFORMERS = xformers is not None
 BlockDiagonalCausalMask = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
-
-if DEVICE_TYPE == "xpu":
-    clean_gpu_cache = torch.xpu.empty_cache
-    get_current_device = torch.xpu.current_device
-else:
-    clean_gpu_cache = torch.cuda.empty_cache
-    get_current_device = torch.cuda.current_device
 
 
 def original_apply_qkv(self, X):
@@ -1099,8 +1100,6 @@ def LlamaModel_fast_forward(
                 # masked_fill is making stuff slower!
                 # self. GA_mask = create_boolean_mask(n = n, sliding_window = 0)
                 # self.SWA_mask = create_boolean_mask(n = n, sliding_window = self.config.sliding_window)
-                from transformers.modeling_attn_mask_utils import AttentionMaskConverter
-
                 self.SWA_mask = (
                     AttentionMaskConverter(
                         is_causal = True,
@@ -1649,6 +1648,26 @@ def _rope_scaling_as_dict(rope_scaling):
         return {k: v for k, v in vars(rope_scaling).items() if not k.startswith("_")}
     except TypeError:
         return {}
+
+
+def _extended_rope_scaling(config, factor):
+    """RoPE scaling to extend a model past its native window. Keeps native llama3 as-is
+    (linear extension is far worse for long context); everything else gets linear. Returns
+    (scaling_or_None, type): None keeps llama3. The linear dict carries rope_theta so
+    transformers v5 (which stores it under rope_parameters) keeps the real base, not 10000.
+    Only llama3 is preserved because patch_llama_rope_scaling can only rebuild linear/llama3/
+    longrope and its longrope branch needs a top-level original_max_position_embeddings."""
+    existing = _rope_scaling_as_dict(
+        getattr(config, "rope_scaling", None) or getattr(config, "rope_parameters", None) or {}
+    )
+    existing_type = existing.get("rope_type") or existing.get("type")
+    if existing_type == "llama3":
+        return None, existing_type
+    return {
+        "type": "linear",
+        "factor": factor,
+        "rope_theta": _get_rope_theta(config),
+    }, existing_type
 
 
 def _llama3_inv_freq_from_config(
@@ -2225,6 +2244,25 @@ def unsloth_fast_generate(self, *args, **kwargs):
     return output
 
 
+def _vllm_will_load_weights(fast_inference, num_labels = None):
+    """Whether vLLM, which takes no revision, ends up owning the weight load.
+
+    The loader has to answer this before it probes the config, since that probe's ref
+    decides which architecture class the load is dispatched to. Mirrors the checks at the
+    top of from_pretrained below, which calls this too so the two cannot drift.
+    """
+    if not fast_inference or num_labels is not None:
+        return False
+    # from_pretrained clears fast_inference when vLLM is missing but re-enables it on hip.
+    if DEVICE_TYPE == "hip":
+        return True
+    if not is_vLLM_available():
+        return False
+    if DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:
+        return False
+    return True
+
+
 class FastLlamaModel:
     @staticmethod
     def _prepare_for_qat(model, qat_scheme):
@@ -2280,6 +2318,7 @@ class FastLlamaModel:
         tokenizer_name = None,
         trust_remote_code = False,
         revision = None,
+        tokenizer_revision = None,
         fast_inference = False,  # uses vLLM
         gpu_memory_utilization = 0.5,
         float8_kv_cache = False,
@@ -2319,47 +2358,33 @@ class FastLlamaModel:
                 raise RuntimeError(
                     "Unsloth: `unsloth_vllm_standby` is True, but  environment variable `UNSLOTH_VLLM_STANDBY` is not set to 1!"
                 )
+            # Only vLLM cannot take a revision; fast_inference may have just been cleared
+            # above, and a num_labels load stays in-process, so both can honour the pin.
+            if _vllm_will_load_weights(fast_inference, num_labels) and revision is not None:
+                # vLLM fetches the default branch, so pinning only the config and tokenizer
+                # would mix two refs in one model.
+                logger.warning_once(
+                    f"Unsloth: Ignoring revision = `{revision}` since vLLM loads weights from "
+                    "the default branch. Use `fast_inference = False` to load a pinned revision."
+                )
+                revision = None
+                tokenizer_revision = None
+
+        if tokenizer_revision is None and tokenizer_name in (None, model_name):
+            # A direct call, or a wrapper forwarding only `revision`, leaves this unset.
+            tokenizer_revision = revision
 
         token = hf_login(token)
         if model_patcher is None:
             model_patcher = FastLlamaModel
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
 
-        if DEVICE_TYPE == "cuda":
-            gpu_stats = torch.cuda.get_device_properties(0)
-            gpu_stats_name = (
-                gpu_stats.name + ". " if gpu_stats.name != "" else "NVIDIA GPU Device. "
-            )
-            gpu_version = torch.version.cuda
-            gpu_stats_snippet = (
-                f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {gpu_version}."
-            )
-            try:
-                vllm_version = f" vLLM: {importlib_version('vllm')}."
-            except:
-                vllm_version = ""
-        elif DEVICE_TYPE == "hip":
-            gpu_stats = torch.cuda.get_device_properties(0)
-            gpu_stats_name = resolve_hip_gpu_stats_name(gpu_stats)
-            gpu_version = torch.version.hip
-            gpu_stats_snippet = f"ROCm Toolkit: {gpu_version}."
-            try:
-                vllm_version = f" vLLM: {importlib_version('vllm')}."
-            except:
-                vllm_version = ""
-        elif DEVICE_TYPE == "xpu":
-            gpu_stats = torch.xpu.get_device_properties(0)
-            gpu_stats_name = gpu_stats.name + ". " if gpu_stats.name != "" else "Intel XPU Device. "
-            gpu_version = torch.version.xpu
-            gpu_stats_snippet = f"Intel Toolkit: {gpu_version}."
-            try:
-                vllm_version = f" vLLM: {importlib_version('vllm')}."
-            except:
-                vllm_version = ""
-        else:
-            raise ValueError(f"Unsloth: Unsupported device type: {DEVICE_TYPE}")
+        gpu_stats_name, gpu_stats_snippet, max_memory = get_device_stats()
 
-        max_memory = round(gpu_stats.total_memory / 1024 / 1024 / 1024, 3)
+        try:
+            vllm_version = f" vLLM: {importlib_version('vllm')}."
+        except:
+            vllm_version = ""
 
         statistics = (
             f"==((====))==  Unsloth {__version__}: Fast {model_patcher.__name__[4:-5]} patching. Transformers: {transformers_version}.{vllm_version}\n"
@@ -2417,6 +2442,7 @@ class FastLlamaModel:
                     model_name,
                     token = token,
                     attn_implementation = "sdpa",
+                    revision = revision,
                 )
                 _checkpoint_quant = getattr(_checkpoint_config, "quantization_config", None)
                 if _checkpoint_quant is not None:
@@ -2426,6 +2452,7 @@ class FastLlamaModel:
                 model_name,
                 token = token,
                 attn_implementation = "sdpa",
+                revision = revision,
             )
         model_config.model_name = model_name
         model_max_seq_length = model_config.max_position_embeddings
@@ -2439,11 +2466,12 @@ class FastLlamaModel:
         preferred_attn_impl = resolve_attention_implementation(model_function, model_config)
 
         # Prefetch the repo (killable child) so the weight load is a cache hit. Runs after the
-        # AutoConfig/model-class check so an unsupported repo fails on its small config fetch. No
-        # revision: the load resolves model_name (maybe a remapped prequant repo) on its default branch.
+        # AutoConfig/model-class check so an unsupported repo fails on its small config fetch.
+        # Warm the revision the load uses, or the repo downloads twice.
         _prefetched = maybe_prefetch_hf_snapshot(
             model_name,
             token = token,
+            revision = revision,
             cache_dir = kwargs.get("cache_dir"),
             local_files_only = kwargs.get("local_files_only", False),
             # Skip the warm only for a real vLLM load; a num_labels classification load still goes
@@ -2503,6 +2531,7 @@ class FastLlamaModel:
                 cache_dir = _tokenizer_cache_dir,
                 local_files_only = kwargs.get("local_files_only", False),
                 tokenizer_only = True,
+                revision = tokenizer_revision,
             )
 
         has_rope_scaling = False
@@ -2518,34 +2547,33 @@ class FastLlamaModel:
             max_seq_length = model_max_seq_length
 
         if (rope_scaling is None) and (max_seq_length > model_max_seq_length):
-            rope_scaling = max_seq_length / model_max_seq_length
+            factor = max_seq_length / model_max_seq_length
 
             if fast_inference:
                 raise NotImplementedError(
                     "Unsloth: Fast inference does not yet work with RoPE Scaling."
                 )
 
-            logger.warning_once(
-                f"Unsloth: {model_name} can only handle sequence lengths of at most "
-                f"{model_max_seq_length}.\nBut with kaiokendev's RoPE scaling of "
-                f"{round(rope_scaling, 3)}, it can be magically be extended to "
-                f"{max_seq_length}!"
-            )
-
-            # Warn RoPE scaling isn't allowed
-            if not has_rope_scaling:
-                raise RuntimeError(
-                    f"However, {model_name} doesn't support RoPE Scaling!\n"
-                    "Please file a feature request at https://github.com/unslothai/unsloth."
+            linear_scaling, native_type = _extended_rope_scaling(model_config, factor)
+            if linear_scaling is not None:
+                logger.warning_once(
+                    f"Unsloth: {model_name} can only handle sequence lengths of at most "
+                    f"{model_max_seq_length}.\nBut with kaiokendev's RoPE scaling of "
+                    f"{round(factor, 3)}, it can be magically be extended to "
+                    f"{max_seq_length}!"
                 )
-
-            rope_scaling = {
-                "type": "linear",
-                "factor": rope_scaling,
-            }
-
-            # Add to kwargs
-            kwargs["rope_scaling"] = rope_scaling
+                if not has_rope_scaling:
+                    raise RuntimeError(
+                        f"However, {model_name} doesn't support RoPE Scaling!\n"
+                        "Please file a feature request at https://github.com/unslothai/unsloth."
+                    )
+                kwargs["rope_scaling"] = linear_scaling
+            else:
+                # Native llama3 scaling already handles long context; just widen the window.
+                logger.warning_once(
+                    f"Unsloth: extending {model_name} to {max_seq_length} using its native "
+                    f"{native_type} RoPE scaling."
+                )
 
         from .loader_utils import (
             check_and_disable_bitsandbytes_loading,
@@ -2637,6 +2665,7 @@ class FastLlamaModel:
                     token = token,
                     trust_remote_code = trust_remote_code,
                     attn_implementation = preferred_attn_impl,
+                    revision = revision,
                     **kwargs,
                 )
                 # Defensive: ensure the task head is in a floating dtype, guarding
@@ -2659,6 +2688,18 @@ class FastLlamaModel:
                     offload_embedding = False,
                     fast_inference = fast_inference,
                 )
+                # Re-apply block-fp8 weight_scale_inv tensors transformers dropped on load (#6200).
+                _restore_dropped_fp8_scales(
+                    model,
+                    model_name,
+                    local_files_only = kwargs.get("local_files_only", False),
+                    token = token,
+                    # Read scales from the same revision as the weights.
+                    revision = revision,
+                    subfolder = kwargs.get("subfolder"),
+                    cache_dir = kwargs.get("cache_dir"),
+                    variant = kwargs.get("variant"),
+                )
             elif not fast_inference:
                 if user_config is not None:
                     # Transformers 5.x @strict model init rejects extra kwargs next
@@ -2673,6 +2714,7 @@ class FastLlamaModel:
                         token = token,
                         trust_remote_code = trust_remote_code,
                         attn_implementation = preferred_attn_impl,
+                        revision = revision,
                         **kwargs,
                     )
                 else:
@@ -2685,6 +2727,7 @@ class FastLlamaModel:
                         max_position_embeddings = max_position_embeddings,
                         trust_remote_code = trust_remote_code,
                         attn_implementation = preferred_attn_impl,
+                        revision = revision,
                         **kwargs,
                     )
                 # Attach dispatch hooks for bnb multi-device loads.
@@ -2696,6 +2739,18 @@ class FastLlamaModel:
                     load_in_8bit = kwargs.get("load_in_8bit", False),
                     offload_embedding = False,
                     fast_inference = False,
+                )
+                # Re-apply block-fp8 weight_scale_inv tensors transformers dropped on load (#6200).
+                _restore_dropped_fp8_scales(
+                    model,
+                    model_name,
+                    local_files_only = kwargs.get("local_files_only", False),
+                    token = token,
+                    # Read scales from the same revision as the weights.
+                    revision = revision,
+                    subfolder = kwargs.get("subfolder"),
+                    cache_dir = kwargs.get("cache_dir"),
+                    variant = kwargs.get("variant"),
                 )
                 model.fast_generate = make_fast_generate_wrapper(model.generate)
                 model.fast_generate_batches = None
@@ -2768,6 +2823,7 @@ class FastLlamaModel:
             token = token,
             trust_remote_code = trust_remote_code,
             fix_tokenizer = fix_tokenizer,
+            revision = tokenizer_revision,
             **_tokenizer_cache_kwargs,
         )
 
@@ -2823,10 +2879,7 @@ class FastLlamaModel:
         import gc
         for _ in range(3):
             gc.collect()
-            if DEVICE_TYPE == "xpu":
-                torch.xpu.empty_cache()
-            else:
-                torch.cuda.empty_cache()"""
+            clean_gpu_cache()"""
 
         debug_info = debug_info.split("\n")
         debug_info = "\n".join([debug_info[0]] + [spaces + x[8:] for x in debug_info[1:]])
@@ -3092,6 +3145,15 @@ class FastLlamaModel:
             check_all = True
             for param in check_parameters:
                 check_all = check_all and (peft_config[param] == eval(param))
+
+            # use_dora arrives via **kwargs, not a named parameter of this
+            # function, so it can't go in check_parameters (which uses
+            # eval(param) and needs each entry to be a bound local name).
+            # Compare it explicitly so a DoRA request against an existing
+            # plain-LoRA adapter doesn't silently pass through unchanged.
+            check_all = check_all and (
+                bool(peft_config.get("use_dora", False)) == bool(kwargs.get("use_dora", False))
+            )
 
             # Check save_modules
             old_target_modules = list(peft_config["target_modules"])

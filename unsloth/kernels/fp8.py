@@ -43,6 +43,11 @@ except:
     )
 
 try:
+    from transformers.integrations.finegrained_fp8 import FP8GroupedLinear
+except:
+    FP8GroupedLinear = None
+
+try:
     from transformers.integrations.fbgemm_fp8 import FbgemmFp8Linear
 except:
     FbgemmFp8Linear = None
@@ -688,3 +693,66 @@ if FbgemmFp8Linear is not None:
     FbgemmFp8Linear.forward = module_forward_patch(fbgemm_fp8_linear, "weight_scale")
 if FP8Linear is not None:
     FP8Linear.forward = module_forward_patch(fp8_block_quant_linear, "weight_scale_inv")
+
+# FP8GroupedLinear's fused grouped matmul has no autograd formula, so training
+# backward fails. In training, use a custom autograd Function: dequant the frozen
+# fp8 weight for a differentiable bmm, saving only the fp8 weight + scale and
+# unwrapping TP shards; eval keeps the fused kernel. Gate on self.training (not
+# is_grad_enabled) so the grad-checkpoint no-grad forward and its recompute match.
+if FP8GroupedLinear is not None:
+    _fp8_grouped_forward_orig = FP8GroupedLinear.forward
+
+    def _fp8_to_local(t):
+        dt = getattr(getattr(torch, "distributed", None), "tensor", None)
+        DTensor = getattr(dt, "DTensor", None) if dt is not None else None
+        return t.to_local() if DTensor is not None and isinstance(t, DTensor) else t
+
+    def _fp8_grouped_dequant(weight, scale_inv, block_size, dtype):
+        # Honor the layer's block size; weight_dequant would assume 128 and mis-scale.
+        if block_size is not None and len(block_size) == 2:
+            return _blockwise_weight_dequant_any_shape(weight, scale_inv.float(), block_size, dtype)
+        return weight_dequant(weight, scale_inv.float()).to(dtype)
+
+    class _FP8GroupedMM(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, x, weight, scale_inv, n_groups, block_size, bias):
+            weight, scale_inv = _fp8_to_local(weight), _fp8_to_local(scale_inv)
+            hidden = x.shape[-1]
+            W = _fp8_grouped_dequant(weight, scale_inv, block_size, x.dtype)
+            out_per = W.shape[0] // n_groups
+            xg = x.reshape(-1, n_groups, hidden).transpose(0, 1)
+            y = torch.bmm(xg, W.view(n_groups, out_per, hidden).transpose(1, 2))
+            y = y.transpose(0, 1).reshape(*x.shape[:-2], n_groups, out_per)
+            if bias is not None:
+                y = y + bias.view(n_groups, out_per)
+            ctx.save_for_backward(weight, scale_inv)
+            ctx.n_groups, ctx.out_per, ctx.x_shape = n_groups, out_per, x.shape
+            ctx.dtype, ctx.has_bias, ctx.block_size = x.dtype, bias is not None, block_size
+            return y
+
+        @staticmethod
+        def backward(ctx, grad_y):
+            weight, scale_inv = ctx.saved_tensors
+            ng, out_per, hidden = ctx.n_groups, ctx.out_per, ctx.x_shape[-1]
+            W = _fp8_grouped_dequant(weight, scale_inv, ctx.block_size, ctx.dtype).view(
+                ng, out_per, hidden
+            )
+            gy = grad_y.reshape(-1, ng, out_per).transpose(0, 1)
+            grad_x = torch.bmm(gy, W).transpose(0, 1).reshape(ctx.x_shape)
+            grad_bias = gy.sum(1).reshape(-1) if ctx.has_bias else None
+            return grad_x, None, None, None, None, grad_bias
+
+    def _fp8_grouped_forward(self, x):
+        if self.weight.element_size() > 1 or not self.training:
+            return _fp8_grouped_forward_orig(self, x)
+        bias = self.bias if self.has_bias else None
+        return _FP8GroupedMM.apply(
+            x,
+            self.weight,
+            self.weight_scale_inv,
+            self.n_groups,
+            getattr(self, "block_size", None),
+            bias,
+        )
+
+    FP8GroupedLinear.forward = _fp8_grouped_forward

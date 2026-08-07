@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Windows counterpart to studio-api-smoke.yml / studio-mac-api-smoke.yml.
+# Windows counterpart to studio-api-smoke.yml, and to the API phase of
+# studio-mac-ui-smoke.yml (which absorbed the former studio-mac-api-smoke.yml).
 # Same tests/studio/studio_api_smoke.py exercise (CORS hardening, auth
 # state machine, JWT expiry, API key lifecycle, /v1/models /
 # /v1/embeddings / /v1/responses, endpoint-by-endpoint auth audit) but
@@ -9,7 +10,7 @@
 # (Section 6) is Linux-only and short-circuits on non-POSIX; the rest
 # is platform-portable.
 
-name: Windows Studio API CI
+name: Windows Unsloth API CI
 
 on:
   pull_request:
@@ -21,6 +22,9 @@ on:
       - 'pyproject.toml'
       - 'tests/studio/**'
       - '.github/workflows/studio-windows-api-smoke.yml'
+      # Every server boot in this workflow shells out to that script, so an edit
+      # to it changes what this workflow actually runs.
+      - '.github/scripts/boot-studio-api-only.sh'
   push:
     branches: [main, pip]
   workflow_dispatch:
@@ -34,7 +38,7 @@ permissions:
 
 jobs:
   api-smoke:
-    name: Studio API & Auth Tests
+    name: Unsloth API & Auth Tests
     runs-on: windows-latest
     timeout-minutes: 30
     defaults:
@@ -84,7 +88,17 @@ jobs:
           bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }}
-        if: always() && steps.prime-hf.outcome == 'success'
+        # Save on main only. Caches created on a PR ref are scoped to that
+        # merge ref -- per GitHub's docs they "can only be restored by re-runs
+        # of the pull request" -- while every PR *can* restore from the default
+        # branch. So a PR-scoped save helps almost nothing and competes for the
+        # 10GB per-repo budget, and when that budget is exceeded GitHub evicts
+        # by least-recently-used, which deletes main's copies that all PRs share.
+        # This repo was measured at 33.3GB across 30 caches, 3.3x over, with the
+        # same 4.6GB model held four times on four different PR refs and no copy
+        # on main at all. That is the thrash loop: PR misses -> downloads ->
+        # saves its own copy -> evicts main's -> next PR misses.
+        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
@@ -105,7 +119,7 @@ jobs:
           # studio-windows-update-smoke.yml for the full rationale --
           # creating an empty studio/frontend/dist trips setup.ps1's
           # mtime-based staleness check into "frontend up to date, skip
-          # rebuild" and Studio boots with an empty dist directory.
+          # rebuild" and Unsloth boots with an empty dist directory.
           # Add-MpPreference accepts paths that do not yet exist.
           foreach ($p in @(
             "$env:USERPROFILE\.unsloth",
@@ -121,7 +135,7 @@ jobs:
             }
           }
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -161,7 +175,7 @@ jobs:
           echo "install.ps1 installed the Windows prebuilt llama.cpp:"
           cat "$INFO"
 
-      - name: Add Studio shim to GITHUB_PATH
+      - name: Add Unsloth shim to GITHUB_PATH
         # install.ps1's User-PATH update doesn't propagate to a
         # running Git Bash session; export the shim dir so the
         # next `unsloth ...` invocation finds it.
@@ -177,13 +191,10 @@ jobs:
       - name: Install pyjwt for the JWT-expiry forge test
         run: python -m pip install 'pyjwt>=2.6'
 
-      - name: Reset auth + boot Studio (API-only)
+      - name: Reset auth + boot Unsloth (API-only)
         run: |
-          unsloth studio reset-password
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
-            > logs/studio.log 2>&1 &
-          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+          # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
+          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
 
       - name: Wait for /api/health
         run: |
@@ -207,7 +218,7 @@ jobs:
           echo "STUDIO_NEW_PW=$NEW"  >> "$GITHUB_ENV"
           echo "STUDIO_NEW2_PW=$NEW2" >> "$GITHUB_ENV"
 
-      - name: Run Studio API & Auth tests
+      - name: Run Unsloth API & Auth tests
         # Do NOT pin STUDIO_AUTH_DIR here. The Mac/Linux mirrors
         # hardcode runner-specific paths (/Users/runner/...,
         # /home/runner/...), but on Windows the path is
@@ -219,7 +230,7 @@ jobs:
           BASE_URL: http://127.0.0.1:18895
         run: python tests/studio/studio_api_smoke.py
 
-      - name: Stop Studio
+      - name: Stop Unsloth
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true

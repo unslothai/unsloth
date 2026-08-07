@@ -103,7 +103,7 @@ def _markdown_incomplete(markdown: str, plain: str) -> bool:
     return markdown_letters < _PDF_INCOMPLETE_RATIO * plain_letters
 
 
-def _pdf_markdown(doc) -> list[str] | None:
+def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
     """Per-page layout-aware Markdown (tables, headings, lists) via pymupdf4llm; index
     i maps to page i+1. Returns None when the lib is missing, extraction fails, or the
     page count does not line up, so the caller falls back to plain PyMuPDF text."""
@@ -112,28 +112,44 @@ def _pdf_markdown(doc) -> list[str] | None:
     except Exception:
         return None
     try:
-        chunks = pymupdf4llm.to_markdown(
-            doc,
-            page_chunks = True,
-            show_progress = False,
-        )
+        kwargs = {"page_chunks": True, "show_progress": False}
+        if pages is not None:
+            kwargs["pages"] = list(pages)
+        chunks = pymupdf4llm.to_markdown(doc, **kwargs)
     except Exception:  # noqa: BLE001 - never let Markdown extraction break ingestion
         logger.warning("pymupdf4llm extraction failed; using plain text", exc_info = True)
         return None
-    if not isinstance(chunks, list) or len(chunks) != doc.page_count:
+    expected_pages = doc.page_count if pages is None else len(pages)
+    if not isinstance(chunks, list) or len(chunks) != expected_pages:
         return None
     return [str(c.get("text") or "") for c in chunks]
 
 
-def _pdf(path: str, want_images: bool) -> tuple[list[Page], list[ParsedImage]]:
+def _pdf(
+    source: str | bytes,
+    want_images: bool,
+    max_pages: int | None = None,
+) -> tuple[list[Page], list[ParsedImage], int]:
     import fitz  # PyMuPDF
 
     pages: list[Page] = []
     images: list[ParsedImage] = []
-    doc = fitz.open(path)
+    doc = (
+        fitz.open(stream = source, filetype = "pdf") if isinstance(source, bytes) else fitz.open(source)
+    )
     try:
-        md = _pdf_markdown(doc) if config.PDF_MARKDOWN else None
-        for i, page in enumerate(doc):
+        if doc.needs_pass:
+            raise ValueError("encrypted PDF requires a password")
+        total_pages = doc.page_count
+        page_numbers = range(total_pages if max_pages is None else min(total_pages, max_pages))
+        if not config.PDF_MARKDOWN:
+            md = None
+        elif max_pages is None:
+            md = _pdf_markdown(doc)
+        else:
+            md = _pdf_markdown(doc, page_numbers)
+        for i, page_number in enumerate(page_numbers):
+            page = doc[page_number]
             plain = page.get_text("text") or ""
             candidate = md[i] if md else ""
             # Prefer layout-aware Markdown (keeps tables/headings legible for retrieval),
@@ -147,7 +163,7 @@ def _pdf(path: str, want_images: bool) -> tuple[list[Page], list[ParsedImage]]:
                 text = candidate
             else:
                 text = plain
-            pages.append(_page(text, i + 1))
+            pages.append(_page(text, page_number + 1))
             if want_images:
                 for img in page.get_images(full = True):
                     xref = img[0]
@@ -161,13 +177,22 @@ def _pdf(path: str, want_images: bool) -> tuple[list[Page], list[ParsedImage]]:
                         images.append(
                             ParsedImage(
                                 image_bytes = image_bytes,
-                                page_number = i + 1,
+                                page_number = page_number + 1,
                                 xref = xref,
                             )
                         )
     finally:
         doc.close()
-    return pages, images
+    return pages, images, total_pages
+
+
+def parse_pdf_bytes(data: bytes, *, max_pages: int | None = None) -> tuple[list[Page], int]:
+    """Extract PDF pages from an in-memory download using the ingestion parser.
+
+    Returns the (capped) pages plus the document's full page count, so a caller
+    that set ``max_pages`` can tell a fully-read short PDF from a truncated one."""
+    pages, _images, total_pages = _pdf(data, want_images = False, max_pages = max_pages)
+    return pages, total_pages
 
 
 def _merge_rects(boxes: list) -> list:
@@ -416,7 +441,7 @@ def parse(path: str, *, want_images: bool = False):
     ext = os.path.splitext(path)[1].lower()
 
     if ext == ".pdf":
-        pages, images = _pdf(path, want_images)
+        pages, images, _total = _pdf(path, want_images)
         return (pages, images) if want_images else pages
 
     if ext == ".docx":

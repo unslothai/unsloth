@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from ..device_type import DEVICE_TYPE_TORCH
+import hashlib
 import importlib
 import os
 import torch
@@ -191,19 +192,43 @@ def _get_new_mapper():
             .replace("MAP_TO_UNSLOTH_16bit", "NEW_MAP_TO_UNSLOTH_16bit")
         )
 
-        exec(new_mapper, globals())
+        # Exec into a throwaway namespace, never globals(). The slice also carries
+        # FLOAT_TO_FP8_BLOCK_MAPPER / FLOAT_TO_FP8_ROW_MAPPER, the _add_* helpers
+        # and the builder's loop variables, so exec'ing into globals() would swap
+        # the FP8 tables this module imported from the installed mapper for the
+        # ones on GitHub main. This is only a probe for "would a newer Unsloth
+        # support this name?", so it must not change what the installed version
+        # resolves; the fetched FP8 tables are returned for the probe to use
+        # instead of being written over the installed ones.
+        namespace = {}
+        exec(new_mapper, namespace)
         return (
-            NEW_INT_TO_FLOAT_MAPPER,
-            NEW_FLOAT_TO_INT_MAPPER,
-            NEW_MAP_TO_UNSLOTH_16bit,
+            namespace["NEW_INT_TO_FLOAT_MAPPER"],
+            namespace["NEW_FLOAT_TO_INT_MAPPER"],
+            namespace["NEW_MAP_TO_UNSLOTH_16bit"],
+            # .get, not []: these two come from the fetched file under its own names (unlike
+            # the NEW_ names above, renamed here), so an older or renamed mapper.py would
+            # KeyError into the bare except and take the 4bit half of the probe down too.
+            # {} is safe: the probe runs only after the installed tables already missed.
+            namespace.get("FLOAT_TO_FP8_BLOCK_MAPPER", {}),
+            namespace.get("FLOAT_TO_FP8_ROW_MAPPER", {}),
         )
     except:
-        return {}, {}, {}
+        return {}, {}, {}, {}, {}
 
 
 def _resolve_with_mappers(
-    model_name, load_in_4bit, load_in_fp8, int_to_float, float_to_int, map_to_unsloth_16bit
+    model_name,
+    load_in_4bit,
+    load_in_fp8,
+    int_to_float,
+    float_to_int,
+    map_to_unsloth_16bit,
+    fp8_block = None,
+    fp8_row = None,
 ):
+    # fp8_block/fp8_row default to the installed tables; the newer-mapper probe passes the
+    # fetched ones so it can answer for new FP8 repos without rebinding the installed ones.
     return __get_model_name(
         model_name = model_name,
         load_in_4bit = load_in_4bit,
@@ -211,8 +236,8 @@ def _resolve_with_mappers(
         FLOAT_TO_INT_MAPPER = float_to_int,
         MAP_TO_UNSLOTH_16bit = map_to_unsloth_16bit,
         load_in_fp8 = load_in_fp8,
-        FLOAT_TO_FP8_BLOCK_MAPPER = FLOAT_TO_FP8_BLOCK_MAPPER,
-        FLOAT_TO_FP8_ROW_MAPPER = FLOAT_TO_FP8_ROW_MAPPER,
+        FLOAT_TO_FP8_BLOCK_MAPPER = FLOAT_TO_FP8_BLOCK_MAPPER if fp8_block is None else fp8_block,
+        FLOAT_TO_FP8_ROW_MAPPER = FLOAT_TO_FP8_ROW_MAPPER if fp8_row is None else fp8_row,
     )
 
 
@@ -252,9 +277,13 @@ def get_model_name(
         and not _env_says_offline()  # offline: skip the remote (raw GitHub) mapper refresh
     ):
         # Try checking if a new Unsloth version allows it!
-        NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER, NEW_MAP_TO_UNSLOTH_16bit = (
-            _get_new_mapper()
-        )
+        (
+            NEW_INT_TO_FLOAT_MAPPER,
+            NEW_FLOAT_TO_INT_MAPPER,
+            NEW_MAP_TO_UNSLOTH_16bit,
+            NEW_FP8_BLOCK_MAPPER,
+            NEW_FP8_ROW_MAPPER,
+        ) = _get_new_mapper()
         upgraded_model_name = _resolve_with_mappers(
             model_name = model_name,
             load_in_4bit = load_in_4bit,
@@ -262,6 +291,10 @@ def get_model_name(
             int_to_float = NEW_INT_TO_FLOAT_MAPPER,
             float_to_int = NEW_FLOAT_TO_INT_MAPPER,
             map_to_unsloth_16bit = NEW_MAP_TO_UNSLOTH_16bit,
+            # the fp8 probe has to look at the FETCHED tables too, or a new fp8 repo would
+            # miss both here and in the installed tables and skip the upgrade message
+            fp8_block = NEW_FP8_BLOCK_MAPPER,
+            fp8_row = NEW_FP8_ROW_MAPPER,
         )
         if upgraded_model_name is not None:
             raise NotImplementedError(
@@ -282,11 +315,16 @@ def _offline_quantize_to_fp8(
     fp8_mode: str,
     *,
     text_only: bool = False,
+    revision: str = None,
 ) -> str:
     """Quantize the model to fp8 via torchao, save to a temp dir, return its path.
 
     For vllm >= 0.12.0, prefer dynamic quantization in vllm instead (via
     hf_overrides={"quantization_config_file": "torchao_config.json"}).
+
+    The caller's revision has to reach the source loads, and the cache name has to name it
+    too: the returned path replaces model_name, so the revision gate downstream drops the
+    pin, and two refs of one repo would otherwise share (and reuse) a single artifact.
     """
     from transformers import (
         AutoModelForCausalLM,
@@ -297,7 +335,7 @@ def _offline_quantize_to_fp8(
         AutoConfig,
     )
 
-    config = AutoConfig.from_pretrained(model_name)
+    config = AutoConfig.from_pretrained(model_name, revision = revision)
     is_vlm = any(
         x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
         for x in (getattr(config, "architectures", None) or [])
@@ -324,6 +362,12 @@ def _offline_quantize_to_fp8(
     temp_dir = tempfile.gettempdir()
     # Cache text-only and full-VLM artifacts separately so neither reuses the other. #5816
     cache_name = model_name.split("/")[-1] + "-fp8-" + fp8_mode
+    if revision is not None:
+        # Sanitizing is lossy (`release/v1` and `release.v1` collapse), so a digest of the
+        # raw ref rides along and two refs never share an artifact.
+        digest = hashlib.sha256(revision.encode("utf-8")).hexdigest()[:12]
+        readable = re.sub(r"[^0-9A-Za-z_-]", "_", revision)[:40]
+        cache_name += "-rev-" + readable + "-" + digest
     if text_config is not None:
         cache_name += "-text-only"
     new_model_name = os.path.join(temp_dir, cache_name)
@@ -343,9 +387,10 @@ def _offline_quantize_to_fp8(
         model = auto_model.from_pretrained(
             model_name,
             config = config,
+            revision = revision,
             **load_kwargs,
         )
-        tokenizer = auto_processor.from_pretrained(model_name)
+        tokenizer = auto_processor.from_pretrained(model_name, revision = revision)
         model.save_pretrained(new_model_name, safe_serialization = False)
         del model
         for _ in range(2):
@@ -365,6 +410,287 @@ def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
         )
     except:
         pass
+
+
+_FP8_DTYPES = tuple(
+    dtype
+    for dtype in (getattr(torch, "float8_e4m3fn", None), getattr(torch, "float8_e5m2", None))
+    if dtype is not None
+)
+
+
+def _fp8_block_size_from_config(model):
+    """Return the [block_out, block_in] block size of an fp8 checkpoint, or None if not block-fp8."""
+    config = getattr(model, "config", None)
+    quant = getattr(config, "quantization_config", None)
+    if quant is None:
+        return None
+    if hasattr(quant, "to_dict"):
+        quant = quant.to_dict()
+    if not isinstance(quant, dict):
+        return None
+    if quant.get("quant_method") != "fp8":
+        return None
+    block = quant.get("weight_block_size")
+    if not block:
+        return None
+    if isinstance(block, (int, float)):
+        block = [block, block]
+    elif isinstance(block, (list, tuple)):
+        if len(block) == 1:
+            block = [block[0], block[0]]
+        elif len(block) < 2:
+            return None
+    else:
+        return None
+    return [int(block[0]), int(block[1])]
+
+
+def _load_fp8_weight_map(
+    model_name,
+    local_files_only,
+    token,
+    revision = None,
+    subfolder = None,
+    cache_dir = None,
+):
+    """Return the checkpoint's tensor->file map, using the same snapshot the load used.
+
+    Prefers the sharded `model.safetensors.index.json`; falls back to a single `model.safetensors`
+    (every tensor maps to that one file) so unsharded checkpoints are covered too.
+    """
+
+    def _local_path(filename):
+        return (
+            os.path.join(model_name, subfolder, filename)
+            if subfolder
+            else os.path.join(model_name, filename)
+        )
+
+    def _remote_path(filename):
+        from huggingface_hub import hf_hub_download
+        return hf_hub_download(
+            model_name,
+            filename,
+            revision = revision,
+            subfolder = subfolder,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+            token = token,
+        )
+
+    index_file = "model.safetensors.index.json"
+    single_file = "model.safetensors"
+    is_local = os.path.isdir(model_name)
+
+    # Sharded checkpoint.
+    if is_local and os.path.exists(_local_path(index_file)):
+        index_path = _local_path(index_file)
+    elif not is_local:
+        try:
+            index_path = _remote_path(index_file)
+        except Exception:
+            index_path = None
+    else:
+        index_path = None
+    if index_path is not None:
+        import json
+        with open(index_path, "r", encoding = "utf-8") as f:
+            return json.load(f).get("weight_map", None)
+
+    # Unsharded single file: map every tensor to it.
+    try:
+        if is_local and os.path.exists(_local_path(single_file)):
+            single_path = _local_path(single_file)
+        elif not is_local:
+            single_path = _remote_path(single_file)
+        else:
+            return None
+        from safetensors import safe_open
+        with safe_open(single_path, framework = "pt") as f:
+            return {key: single_file for key in f.keys()}
+    except Exception:
+        return None
+
+
+def _resolve_fp8_shard(
+    model_name,
+    shard,
+    local_files_only,
+    token,
+    revision = None,
+    subfolder = None,
+    cache_dir = None,
+):
+    """Resolve a checkpoint shard filename to a local path (repo id or local dir)."""
+    if os.path.isdir(model_name):
+        return (
+            os.path.join(model_name, subfolder, shard)
+            if subfolder
+            else os.path.join(model_name, shard)
+        )
+    from huggingface_hub import hf_hub_download
+
+    return hf_hub_download(
+        model_name,
+        shard,
+        revision = revision,
+        subfolder = subfolder,
+        cache_dir = cache_dir,
+        local_files_only = local_files_only,
+        token = token,
+    )
+
+
+def _match_fp8_module(module_by_name, base):
+    """Resolve a checkpoint module name to a live module, allowing for VLM key remappings.
+
+    VLM loads can name the text tower differently from the checkpoint keys: `text_only=True`
+    strips the `language_model.` wrapper (so `model.language_model.layers.*` -> `model.layers.*`),
+    and full VLM loads may expose `model.language_model.*` while the checkpoint stores
+    `language_model.model.*`. Try the raw key first, then a few safe remappings.
+    """
+    if base in module_by_name:
+        return module_by_name[base]
+    candidates = []
+    if "language_model." in base:
+        candidates.append(base.replace("language_model.", "", 1))  # text-only: drop wrapper
+    if "language_model.model." in base:
+        candidates.append(base.replace("language_model.model.", "model.language_model.", 1))
+    if base.startswith("language_model."):
+        candidates.append("model." + base)  # add model. prefix
+    for candidate in candidates:
+        if candidate in module_by_name:
+            return module_by_name[candidate]
+    return None
+
+
+def _restore_dropped_fp8_scales(
+    model,
+    model_name,
+    *,
+    local_files_only = False,
+    token = None,
+    revision = None,
+    subfolder = None,
+    cache_dir = None,
+    variant = None,
+):
+    """Re-apply block-fp8 `weight_scale_inv` tensors that transformers dropped on load.
+
+    On some block-scale fp8 checkpoints (e.g. Qwen3.6-27B-FP8, issue #6200) transformers fails to
+    convert a Linear (such as `mlp.gate_proj`) to an fp8 module, loading the raw quantized values
+    into a plain bf16 weight and discarding its `weight_scale_inv` as an unexpected key. The weight
+    is then used un-scaled, producing a garbage model. For every checkpoint scale whose live weight
+    is not fp8, dequantize the orphaned weight in place. Modules that were converted correctly keep
+    an fp8 weight and are skipped, so a healthy checkpoint is a no-op. Returns (restored, skipped).
+    """
+    try:
+        block = _fp8_block_size_from_config(model)
+        if block is None or not _FP8_DTYPES:
+            return (0, 0)
+        # A variant load reads variant-named files; skip to avoid applying default scales to them.
+        if variant:
+            return (0, 0)
+        # No fp8 params means the checkpoint was dequantized on purpose (e.g. load_in_16bit);
+        # re-applying a scale would corrupt those already-correct 16bit weights, so do nothing.
+        if not any(p.dtype in _FP8_DTYPES for p in model.parameters()):
+            return (0, 0)
+        weight_map = _load_fp8_weight_map(
+            model_name, local_files_only, token, revision, subfolder, cache_dir
+        )
+        if not weight_map:
+            return (0, 0)
+
+        scale_keys = {k: v for k, v in weight_map.items() if k.endswith(".weight_scale_inv")}
+        if not scale_keys:
+            return (0, 0)
+
+        module_by_name = dict(model.named_modules())
+        bs0, bs1 = block
+        restored = 0
+        skipped = 0
+        failed = 0
+        offloaded = 0
+        shard_cache = {}
+        for scale_key, shard in scale_keys.items():
+            base = scale_key[: -len(".weight_scale_inv")]
+            module = _match_fp8_module(module_by_name, base)
+            if module is None:
+                continue
+            weight = getattr(module, "weight", None)
+            if not isinstance(weight, torch.Tensor) or weight.ndim != 2:
+                continue
+            if weight.device.type == "meta":
+                # Disk-offloaded layer: weight lives on meta until forward, so it cannot be
+                # scaled in place here. Count and warn rather than silently leave it unscaled.
+                offloaded += 1
+                continue
+            if weight.dtype in _FP8_DTYPES:
+                # Correctly converted fp8 module: the fp8 path already handles the scale.
+                skipped += 1
+                continue
+
+            # Errors after this point are per-tensor: warn and continue, never abort or hide them.
+            try:
+                if shard not in shard_cache:
+                    from safetensors import safe_open
+                    shard_path = _resolve_fp8_shard(
+                        model_name,
+                        shard,
+                        local_files_only,
+                        token,
+                        revision,
+                        subfolder,
+                        cache_dir,
+                    )
+                    shard_cache[shard] = safe_open(shard_path, framework = "pt")
+                scale = shard_cache[shard].get_tensor(scale_key).to(torch.float32)
+
+                out_features, in_features = weight.shape
+                out_blocks = (out_features + bs0 - 1) // bs0
+                in_blocks = (in_features + bs1 - 1) // bs1
+                if tuple(scale.shape) == (out_blocks, in_blocks):
+                    pass
+                elif tuple(scale.shape) == (in_blocks, out_blocks) and out_blocks != in_blocks:
+                    # Transposed block layout: same handling as the fp8 forward path.
+                    scale = scale.t().contiguous()
+                else:
+                    # Shape does not match the block grid: skip rather than apply a wrong scale.
+                    continue
+                scale = scale.to(weight.device)
+                with torch.no_grad():
+                    if out_features % bs0 == 0 and in_features % bs1 == 0:
+                        # Memory-frugal path: multiply block views in place against the broadcast
+                        # fp32 scale, avoiding a full expanded scale and fp32 copy that could OOM.
+                        # The in-place multiply promotes to fp32, matching the fallback exactly.
+                        module.weight.data.view(out_blocks, bs0, in_blocks, bs1).mul_(
+                            scale[:, None, :, None]
+                        )
+                    else:
+                        scale_expanded = scale.repeat_interleave(bs0, dim = 0).repeat_interleave(
+                            bs1, dim = 1
+                        )[:out_features, :in_features]
+                        module.weight.data = (weight.to(torch.float32) * scale_expanded).to(
+                            weight.dtype
+                        )
+                restored += 1
+            except Exception:
+                failed += 1
+                continue
+
+        if restored > 0:
+            print(f"Unsloth: Restored {restored} dropped FP8 weight_scale_inv tensor(s) on load")
+        if failed > 0:
+            print(f"Unsloth: {failed} dropped FP8 weight_scale_inv tensor(s) could not be restored")
+        if offloaded > 0:
+            print(
+                f"Unsloth: {offloaded} dropped FP8 weight_scale_inv tensor(s) skipped because the "
+                "layer is disk-offloaded; load without disk offload so the scales can be restored"
+            )
+        return (restored, skipped)
+    except Exception:
+        return (0, 0)
 
 
 def check_and_disable_bitsandbytes_loading(
@@ -540,7 +866,7 @@ def _exclude_rope_inv_freq_from_ddp(model):
 
 # =============================================================================
 # Offline loading - single source of truth (shared by vision.py, loader.py and
-# the Studio exporter). Decide offline ONCE at the load boundary and force it
+# the Unsloth exporter). Decide offline ONCE at the load boundary and force it
 # ONCE around the whole load, so every nested HF call inherits it.
 # =============================================================================
 
@@ -560,6 +886,84 @@ def _get_effective_local_files_only(kwargs):
     if kwargs.get("local_files_only", None):
         return True
     return _env_says_offline()
+
+
+# Attribute stamped on a tokenizer/processor that was loaded local-only, so a later
+# save still knows. transformers takes local_files_only as an explicit from_pretrained
+# parameter and never copies it into tokenizer.init_kwargs, and _offline_aware_load
+# restores the offline env vars when the load window closes, so without this stamp an
+# explicit local_files_only = True load is invisible by the time we save (issue #7481).
+_LOCAL_FILES_ONLY_ATTR = "_unsloth_local_files_only"
+# The load's cache_dir travels with it too: saving derives one from HF_HUB_CACHE /
+# HF_HOME, which does not see a caller-supplied cache.
+_LOADED_CACHE_DIR_ATTR = "_unsloth_loaded_cache_dir"
+# So does the ref it was read at: saving restores sentencepiece assets from
+# tokenizer.name_or_path, which names the repo but not the branch.
+_LOADED_REVISION_ATTR = "_unsloth_loaded_revision"
+
+
+def _mark_loaded_revision(result, revision):
+    """Stamp the ref a tokenizer/processor was loaded at onto the returned objects."""
+    if revision is None:
+        return result
+    for obj in result if isinstance(result, (tuple, list)) else (result,):
+        try:
+            targets = (obj, getattr(obj, "tokenizer", None))
+        except Exception:
+            targets = (obj,)
+        for target in targets:
+            if target is None:
+                continue
+            # Skip objects that reject new attributes (__slots__).
+            try:
+                setattr(target, _LOADED_REVISION_ATTR, str(revision))
+            except Exception:
+                pass
+    return result
+
+
+def _tokenizer_revision(tokenizer):
+    """The ref this tokenizer was loaded at, or None for the default branch."""
+    tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+    return getattr(tokenizer, _LOADED_REVISION_ATTR, None)
+
+
+def _mark_loaded_local_files_only(result, cache_dir = None):
+    """Stamp a load's local-only mode and cache_dir onto the returned objects."""
+    for obj in result if isinstance(result, (tuple, list)) else (result,):
+        try:
+            # A processor keeps the tokenizer that _has_tokenizer_model unwraps to,
+            # so stamp both (a wrapped model can raise from its own __getattr__).
+            targets = (obj, getattr(obj, "tokenizer", None))
+        except Exception:
+            targets = (obj,)
+        for target in targets:
+            if target is None:
+                continue
+            # Objects that reject new attributes (__slots__) are skipped.
+            try:
+                setattr(target, _LOCAL_FILES_ONLY_ATTR, True)
+                if cache_dir:
+                    setattr(target, _LOADED_CACHE_DIR_ATTR, str(cache_dir))
+            except Exception:
+                pass
+    return result
+
+
+def _tokenizer_cache_dir(tokenizer):
+    """The cache_dir the load used, when it was not the environment's."""
+    tokenizer = tokenizer.tokenizer if hasattr(tokenizer, "tokenizer") else tokenizer
+    return getattr(tokenizer, _LOADED_CACHE_DIR_ATTR, None)
+
+
+def _tokenizer_wants_local_only(tokenizer):
+    """True when Hub metadata probes should be skipped for this tokenizer."""
+    if _env_says_offline():
+        return True
+    if getattr(tokenizer, _LOCAL_FILES_ONLY_ATTR, False):
+        return True
+    init_kwargs = getattr(tokenizer, "init_kwargs", None) or {}
+    return bool(init_kwargs.get("local_files_only"))
 
 
 def _is_offline_related_error(exc):
@@ -786,7 +1190,9 @@ def _offline_aware_load(fn):
         if _get_effective_local_files_only(kwargs):
             kwargs["local_files_only"] = True
             with _force_hf_offline():
-                return fn(*args, **kwargs)
+                # Stamp inside the window: the env vars are restored on exit, so the
+                # request has to travel on the objects themselves to reach saving.
+                return _mark_loaded_local_files_only(fn(*args, **kwargs), kwargs.get("cache_dir"))
         _pb_were_disabled = _progress_bars_were_disabled()  # restore before any retry
         try:
             return fn(*args, **kwargs)
@@ -842,6 +1248,153 @@ def _has_local_processor_files(path):
     build AutoProcessor; tokenizer files alone are not enough)."""
     return os.path.exists(os.path.join(path, "processor_config.json")) or os.path.exists(
         os.path.join(path, "preprocessor_config.json")
+    )
+
+
+def _resolve_hub_repo_local_dir(
+    repo_id,
+    *,
+    token = None,
+    cache_dir = None,
+    revision = None,
+    # Default closed: a "resolve local dir" helper must not download. False here
+    # means five filenames each retried with backoff before it gives up.
+    local_files_only = True,
+    filenames = (
+        "tokenizer_config.json",
+        "config.json",
+        "tokenizer.json",
+        "preprocessor_config.json",
+        "processor_config.json",
+    ),
+):
+    """Return a local snapshot directory for a Hub repo id when files are cached.
+
+    On transformers 4.57.2 through 5.5.4, ``PreTrainedTokenizerFast.from_pretrained``
+    on a repo id can still call ``model_info()`` when ``local_files_only=True`` and
+    no offline env var is set. Loading from the resolved snapshot dir avoids that
+    Hub probe. Upstream fixed this in transformers 5.6.0 (huggingface/transformers#43603);
+    this helper can be removed once the supported floor is past that version.
+    """
+    if not isinstance(repo_id, str) or not repo_id:
+        return None
+    if os.path.isdir(repo_id):
+        return repo_id
+    if cache_dir is None:
+        cache_dir = os.environ.get("HF_HUB_CACHE")
+    from huggingface_hub import hf_hub_download
+
+    for filename in filenames:
+        try:
+            path = hf_hub_download(
+                repo_id = repo_id,
+                filename = filename,
+                token = token,
+                cache_dir = cache_dir,
+                local_files_only = local_files_only,
+                revision = revision,
+            )
+            if path and os.path.isfile(path):
+                return os.path.dirname(path)
+        except Exception:
+            continue
+    return None
+
+
+def _resolve_hub_repo_cached_file(
+    repo_id,
+    filename,
+    *,
+    token = None,
+    cache_dir = None,
+    local_files_only = True,
+    revision = None,
+):
+    """Return a cached file path under a Hub snapshot, or None if absent."""
+    local_dir = _resolve_hub_repo_local_dir(
+        repo_id,
+        token = token,
+        cache_dir = cache_dir,
+        local_files_only = local_files_only,
+        revision = revision,
+        filenames = (filename,),
+    )
+    if local_dir is None:
+        return None
+    path = os.path.join(local_dir, filename)
+    return path if os.path.isfile(path) else None
+
+
+def _hub_repo_or_local_path(
+    repo_id,
+    *,
+    token = None,
+    cache_dir = None,
+    local_files_only = False,
+    filenames = None,
+    revision = None,
+):
+    """Prefer a cached snapshot path over a Hub repo id when offline or ``local_files_only``."""
+    if isinstance(repo_id, str) and os.path.isdir(repo_id):
+        return repo_id
+    lfo = bool(local_files_only) or _env_says_offline()
+    if not lfo:
+        return repo_id
+    local_dir = _resolve_hub_repo_local_dir(
+        repo_id,
+        token = token,
+        cache_dir = cache_dir,
+        local_files_only = True,
+        revision = revision,
+        filenames = filenames
+        or (
+            "tokenizer_config.json",
+            "config.json",
+            "tokenizer.json",
+            "preprocessor_config.json",
+            "processor_config.json",
+        ),
+    )
+    return local_dir if local_dir is not None else repo_id
+
+
+def _load_pretrained_tokenizer_fast(
+    tokenizer_name,
+    *,
+    padding_side = "left",
+    token = None,
+    trust_remote_code = False,
+    cache_dir = None,
+    local_files_only = False,
+    revision = None,
+):
+    """Load ``PreTrainedTokenizerFast`` without Hub metadata probes when cached/offline.
+
+    Needed on transformers 4.57.2-5.5.4; redundant once the floor is past 5.6.0.
+    """
+    from transformers import PreTrainedTokenizerFast
+
+    lfo = bool(local_files_only) or _env_says_offline()
+    load_path = _hub_repo_or_local_path(
+        tokenizer_name,
+        token = token,
+        cache_dir = cache_dir,
+        local_files_only = lfo,
+        revision = revision,
+        filenames = (
+            "tokenizer_config.json",
+            "tokenizer.json",
+            "tokenizer.model",
+        ),
+    )
+    return PreTrainedTokenizerFast.from_pretrained(
+        load_path,
+        padding_side = padding_side,
+        token = token,
+        trust_remote_code = trust_remote_code,
+        cache_dir = cache_dir,
+        local_files_only = lfo,
+        revision = revision,
     )
 
 
