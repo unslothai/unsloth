@@ -11734,9 +11734,7 @@ class LlamaCppBackend:
                             # gets one CPU attempt with vision preserved.
                             if self._is_signal_crash(_retry_rc):
                                 _cpu_replay_cmd = (
-                                    _last_spawn_cmd
-                                    if _projector_msg
-                                    else _vision_cpu_replay_cmd
+                                    _last_spawn_cmd if _projector_msg else _vision_cpu_replay_cmd
                                 )
                                 if _try_auto_vulkan_cpu_fallback(
                                     _cpu_replay_cmd,

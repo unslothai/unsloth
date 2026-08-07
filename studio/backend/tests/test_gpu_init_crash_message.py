@@ -94,11 +94,7 @@ def _run_cpu_fallback_load(
         encoded = value.encode()
         return struct.pack("<Q", len(encoded)) + encoded
 
-    metadata = (
-        _gguf_string("general.architecture")
-        + struct.pack("<I", 8)
-        + _gguf_string("llama")
-    )
+    metadata = _gguf_string("general.architecture") + struct.pack("<I", 8) + _gguf_string("llama")
     gguf = tmp_path / "model.gguf"
     gguf.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
     mmproj = tmp_path / "mmproj.gguf"
@@ -138,9 +134,7 @@ def _run_cpu_fallback_load(
         "PATH": os.environ.get("PATH", ""),
         **(mmproj_env or {}),
     }
-    backend._is_projector_incompatibility = (
-        lambda output: "projector-incompatible" in output
-    )
+    backend._is_projector_incompatibility = lambda output: "projector-incompatible" in output
 
     launches = []
     fallback_sources = []
