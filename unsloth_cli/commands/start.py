@@ -2165,9 +2165,12 @@ def _attach_gguf_check_for_codex(
                             f"{repo} is incomplete (zero bytes or a split missing shards); "
                             "re-download or re-copy it before pointing Codex at it."
                         )
-                    # An explicit variant still goes to the probe, which judges the marked
-                    # parent; the checks above already covered this file itself.
-                    if not variant:
+                    # Only a spelling this OS can judge is settled here: a Windows path read
+                    # from WSL skips the absence check above and reads as ready, so returning
+                    # on it would vouch for a file nobody looked at. An explicit variant also
+                    # goes to the probe, which judges the marked parent; the checks above
+                    # already covered this file itself.
+                    if not variant and _path_syntax_is_native(repo):
                         return
             # A remote server's filesystem isn't ours to read, and the load takes the .gguf
             # suffix as authoritative without checking existence, so ask the server instead.
@@ -2213,9 +2216,12 @@ def _attach_gguf_check_for_codex(
         # that performs the load.
         if isinstance(variants, list) and isinstance(info, dict):
             offered = info.get("loadable_variants")
-            # No list but a positive verdict: a direct file loads itself regardless of
-            # quant, so a variant can't make it fail.
-            if variant and offered is None and info.get("loadable") is True:
+            # No allow-list means the identifier is a direct file, which from_identifier
+            # loads as itself whatever the quant -- so the variantless verdict is the
+            # verdict, either way. Only a server that omits the field falls through.
+            if variant and offered is None and isinstance(info.get("loadable"), bool):
+                if not info["loadable"]:
+                    _fail_codex_needs_gguf(candidate)
                 return
             if variant and isinstance(offered, list):
                 wanted_variant = str(variant).strip().lower()

@@ -6576,6 +6576,47 @@ def test_codex_attach_check_probes_direct_paths_on_remote_servers(monkeypatch, c
     start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/foo-Q4_K_M.gguf")
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "every spelling is native on Windows")
+def test_codex_attach_check_probes_non_native_direct_paths(monkeypatch, capsys):
+    # A Windows path read from WSL is deliberately exempt from the absence check (it parses
+    # to nonsense here) and reads as ready for the same reason, so nothing about it was
+    # actually verified. Returning on it would vouch for a file nobody looked at, and the
+    # load takes the .gguf suffix as authoritative -- teardown, then failure.
+    urls = _fake_variants(monkeypatch, {"variants": [], "resolved_locally": True})
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", r"C:\models\typo-Q4_K_M.gguf")
+    assert "Codex needs a GGUF model" in capsys.readouterr().err
+    assert urls, "the server was never asked"
+    # The server holding it still passes.
+    _fake_variants(
+        monkeypatch,
+        {"variants": [{"quant": "Q4_K_M", "partial": False}], "resolved_locally": True},
+    )
+    start._attach_gguf_check_for_codex(BASE, "sk-test", r"C:\models\foo-Q4_K_M.gguf")
+
+
+def test_codex_attach_check_honors_a_negative_verdict_without_an_allow_list(monkeypatch, capsys):
+    # No loadable_variants means the identifier is a direct file, which from_identifier loads
+    # as itself whatever the quant, so the variantless verdict decides for a variant too. The
+    # shapes differ (the row scan judges the immediate parent, the resolver the model root),
+    # so a synthesized row can outlive a false verdict and wave the load through.
+    negative = {
+        "variants": [{"quant": "Q8_0", "partial": False}],
+        "resolved_locally": True,
+        "loadable": False,
+    }
+    _fake_variants(monkeypatch, negative)
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/MTP/sub/foo-Q8_0.gguf", "Q8_0")
+    assert "Codex needs a GGUF model" in capsys.readouterr().err
+    # A positive verdict still passes, and a server too old to send the flag still falls
+    # through to the rows as before.
+    _fake_variants(monkeypatch, {**negative, "loadable": True})
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/sub/foo-Q8_0.gguf", "Q8_0")
+    _fake_variants(monkeypatch, {k: v for k, v in negative.items() if k != "loadable"})
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/sub/foo-Q8_0.gguf", "Q8_0")
+
+
 def test_codex_attach_check_refuses_companion_paths_with_a_variant(monkeypatch, capsys):
     # The loader consults gguf_variant only for a directory, so a direct file is always
     # evaluated as itself: a refused name can't be rescued by naming a sibling quant.
