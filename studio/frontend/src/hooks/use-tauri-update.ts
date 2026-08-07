@@ -387,10 +387,10 @@ export function useTauriUpdate(isExternalServer = false) {
       }
 
       // relaunch() re-execs with the original argv, so tell the restarted app that its
-      // inherited --hidden is not a login start and it should show its window.
-      await invoke("mark_in_app_relaunch").catch((e) => {
-        console.error("Could not mark the in-app relaunch:", e);
-      });
+      // inherited --hidden is not a login start and it should show its window. This only
+      // fails when there is a --hidden to suppress, and restarting then would hide the
+      // updated app, so let it stop the restart rather than swallowing it.
+      await invoke("mark_in_app_relaunch");
       const { relaunch } = await import("@tauri-apps/plugin-process");
       try {
         await relaunch();

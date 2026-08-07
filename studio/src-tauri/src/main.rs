@@ -48,6 +48,11 @@ static LAUNCHED_HIDDEN: OnceLock<bool> = OnceLock::new();
 /// would survive into the restarted app and hide it. Written before that restart.
 #[tauri::command]
 fn mark_in_app_relaunch(app: tauri::AppHandle) -> Result<(), String> {
+    // Without a `--hidden` to inherit there is nothing to suppress, so an unwritable config
+    // directory must not stop the restart. The caller skips the restart when this fails.
+    if !argv_has_hidden_flag() {
+        return Ok(());
+    }
     let dir = in_app_relaunch_config_dir(&app)?;
     fs::create_dir_all(&dir).map_err(|error| {
         format!(
@@ -103,16 +108,19 @@ fn take_in_app_relaunch_marker(config_dir: &Path) -> bool {
     true
 }
 
+/// args_os, not args: the latter panics on an argument that is not valid Unicode, which argv[0]
+/// is whenever the binary sits under a non-UTF-8 path.
+fn argv_has_hidden_flag() -> bool {
+    std::env::args_os().any(|arg| arg == *OsStr::new("--hidden"))
+}
+
 fn resolve_launched_hidden(app: &tauri::AppHandle) -> bool {
     // Consume unconditionally, so a marker left by a relaunch that never happened cannot
     // outlive a start that carries no `--hidden` anyway.
     let relaunched = in_app_relaunch_config_dir(app)
         .map(|dir| take_in_app_relaunch_marker(&dir))
         .unwrap_or(false);
-    // args_os, not args: the latter panics on an argument that is not valid Unicode,
-    // which argv[0] is whenever the binary sits under a non-UTF-8 path.
-    let hidden = std::env::args_os().any(|arg| arg == *OsStr::new("--hidden"));
-    hidden && !relaunched
+    argv_has_hidden_flag() && !relaunched
 }
 
 /// Started by the OS login autostart entry, so the frontend keeps the window hidden in the tray.
