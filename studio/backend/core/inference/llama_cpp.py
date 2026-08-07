@@ -3118,6 +3118,10 @@ class LlamaCppBackend:
         # False when a launch is fully offloaded to a discrete GPU, where
         # page-locking host RAM is skipped on purpose.
         self._memory_mlock_applicable: bool = True
+        # True between recording a launch's placement and the child being
+        # spawned, so a save landing in that window still has a launch to
+        # compare against.
+        self._memory_launch_pending: bool = False
         self._mlock_enabled: bool = False
         self._n_ubatch: int = self._DEFAULT_N_UBATCH
         self._flash_attn_enabled: bool = True
@@ -4479,6 +4483,62 @@ class LlamaCppBackend:
         )
         LlamaCppBackend._emit_child_gpu_visibility(
             env, ",".join(str(i) for i in order), prefer_rocr = prefer_rocr
+        )
+
+    @staticmethod
+    def _vulkan_targets_are_igpus(binary: Optional[str], gpu_indices = None) -> bool:
+        """True when every Vulkan device in play is integrated.
+
+        An iGPU's reported "VRAM" is shared system RAM (see
+        ``_apply_igpu_host_reserve_mib``), so a model "fully offloaded" onto one
+        is still backed by pageable host memory and is worth page-locking. Any
+        discrete device in the set, or an unreadable probe, answers False.
+        """
+        try:
+            rows = LlamaCppBackend._run_vulkan_probe(binary)
+        except Exception:
+            return False
+        if not rows:
+            return False
+        wanted = set(gpu_indices) if gpu_indices else None
+        selected = [r for r in rows if wanted is None or r["index"] in wanted]
+        return bool(selected) and all(r["is_igpu"] for r in selected)
+
+    def _weights_in_host_memory(
+        self,
+        *,
+        fully_gpu_offloaded: bool,
+        gpu_memory_mode: Optional[str],
+        gpu_layers: Optional[int],
+        extra_args: Optional[Iterable[str]],
+        gpu_indices = None,
+        is_vulkan_backend: bool = False,
+        binary: Optional[str] = None,
+    ) -> bool:
+        """True when the weights will sit in pageable host RAM, so mlock helps.
+
+        Only the Model Memory gate uses this, and only to SKIP page-locking, so
+        it errs towards True: that is the pre-existing behaviour.
+        """
+        from utils.hardware import is_apple_silicon
+
+        # A CPU placement extra keeps weights in RAM whatever the layer count,
+        # so it applies to the auto path too and cannot be short-circuited past.
+        if _extra_args_set_any_flag(extra_args, _CPU_PLACEMENT_FLAGS):
+            return True
+        all_on_gpu = fully_gpu_offloaded or self._offloads_every_layer(
+            gpu_memory_mode = gpu_memory_mode,
+            gpu_layers = gpu_layers,
+            extra_args = extra_args,
+        )
+        if not all_on_gpu:
+            return True
+        # Unified memory: the "VRAM" is host RAM, so the weights stay pageable
+        # however fully they are offloaded.
+        return (
+            is_apple_silicon()
+            or self._amd_apu_wants_unified_memory(gpu_indices)
+            or (is_vulkan_backend and self._vulkan_targets_are_igpus(binary, gpu_indices))
         )
 
     def _offloads_every_layer(
@@ -6938,6 +6998,7 @@ class LlamaCppBackend:
         self._memory_state = None
         self._memory_policy_active = False
         self._memory_mlock_applicable = True
+        self._memory_launch_pending = False
         self._n_ubatch = self._DEFAULT_N_UBATCH
         self._flash_attn_enabled = True
         self._effective_cache_types = ("f16", "f16")
@@ -10727,21 +10788,25 @@ class LlamaCppBackend:
                 # GPU with full offload it would hold a second copy of the model
                 # in system RAM and do nothing for VRAM, so it is not emitted
                 # and the idle-unload veto carries residency by itself.
-                from utils.hardware import is_apple_silicon
                 from utils.model_memory_settings import should_mlock
 
                 # fully_gpu_offloaded is only set by the auto branch. Manual mode
                 # and a user -ngl reach the same placement by their own routes,
-                # so derive those too or they would still be pinned.
-                _mem_all_on_gpu = fully_gpu_offloaded or self._offloads_every_layer(
+                # so derive those too or they would still be pinned. The CPU
+                # placement guard applies to BOTH: an auto fit that offloads
+                # every layer still leaves weights in RAM if an extra pins them
+                # there, so it cannot short-circuit past the check.
+                # Only asked when page-locking is on the table: the Vulkan probe
+                # inside spawns a subprocess, and the default (both toggles off)
+                # must stay free.
+                _mem_host_resident = not should_mlock() or self._weights_in_host_memory(
+                    fully_gpu_offloaded = fully_gpu_offloaded,
                     gpu_memory_mode = gpu_memory_mode,
                     gpu_layers = gpu_layers,
                     extra_args = extra_args,
-                )
-                _mem_host_resident = (
-                    not _mem_all_on_gpu
-                    or is_apple_silicon()
-                    or self._amd_apu_wants_unified_memory(gpu_indices)
+                    gpu_indices = gpu_indices,
+                    is_vulkan_backend = is_vulkan_backend,
+                    binary = binary,
                 )
                 _mem_managed, _mem_extras = apply_model_memory_policy(
                     extra_args,
@@ -11040,6 +11105,8 @@ class LlamaCppBackend:
                             **_child_popen_kwargs(),
                         )
                         self._record_server_pid(self._process.pid)
+                        # is_active covers it from here, so drop the pre-spawn flag.
+                        self._memory_launch_pending = False
 
                         # Background thread to drain stdout (prevents pipe deadlock)
                         self._stdout_thread = threading.Thread(
@@ -11083,7 +11150,27 @@ class LlamaCppBackend:
                             _run = list(run_cmd)
                             if "--fit" in _run:
                                 _run[_run.index("--fit") + 1] = "on"
+                            # The full-offload prediction that suppressed the
+                            # page-lock was the very thing that just proved
+                            # wrong, so llama.cpp may now leave weights in host
+                            # RAM. Re-arm residency for the retry (last-wins, so
+                            # appending is enough) and re-record the state.
+                            if should_mlock() and not _mem_host_resident:
+                                _run.extend(
+                                    ["--load-mode", "mmap+mlock"]
+                                    if server_caps.get("supports_load_mode")
+                                    else ["--mlock"]
+                                )
+                                _mem_host_resident = True
+                                self._memory_mlock_applicable = True
+                                self._memory_policy_active = True
+                                logger.info(
+                                    "Model Memory: re-applying the page-lock for "
+                                    "the --fit on retry; the full-offload "
+                                    "prediction did not hold."
+                                )
                             run_cmd = _run
+                            self._memory_state = resolve_effective_memory_state(_run, env)
                             continue
                         if (
                             _spawn_attempt == 0
@@ -11135,7 +11222,16 @@ class LlamaCppBackend:
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
 
-                healthy = _spawn_and_wait(cmd)
+                # The placement above is now fixed for this child, but _process
+                # is not set until Popen. Without this, a save landing in that
+                # window sees no active backend and reports no reload while the
+                # child is already committed. Popen clears it, and so does every
+                # exit below, so a failed spawn cannot leave it stuck on.
+                self._memory_launch_pending = True
+                try:
+                    healthy = _spawn_and_wait(cmd)
+                finally:
+                    self._memory_launch_pending = False
                 # #6415 split-mode tensor warmup abort. Latch it on THIS first spawn:
                 # the flash-attn-off retry below can't run tensor (needs flash_attn),
                 # so its output drops the marker and recording later would miss it,
@@ -12161,6 +12257,7 @@ class LlamaCppBackend:
             self._memory_state = None
             self._memory_policy_active = False
             self._memory_mlock_applicable = True
+            self._memory_launch_pending = False
             self._n_ubatch = self._DEFAULT_N_UBATCH
             self._flash_attn_enabled = True
             self._effective_cache_types = ("f16", "f16")

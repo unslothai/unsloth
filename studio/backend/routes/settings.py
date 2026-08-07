@@ -281,6 +281,32 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
     )
 
 
+# Distinct from None, which is a real launch this policy does not govern.
+_NO_LAUNCH = object()
+
+
+def _active_launch_placement():
+    """``(state, policy_active, mlock_applicable)`` for the running child.
+
+    ``state`` is ``_NO_LAUNCH`` when nothing is running or coming up, so the
+    caller can tell "no process" apart from "a process with no load-mode".
+    """
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        backend = get_llama_cpp_backend()
+        pending = bool(getattr(backend, "_memory_launch_pending", False))
+        if not backend.is_active and not pending:
+            return _NO_LAUNCH, False, True
+        return (
+            getattr(backend, "_memory_state", None),
+            bool(getattr(backend, "_memory_policy_active", False)),
+            bool(getattr(backend, "_memory_mlock_applicable", True)),
+        )
+    except Exception:
+        return _NO_LAUNCH, False, True
+
+
 def _model_memory_reload_required() -> bool:
     """True when the loaded process's memory placement contradicts the settings.
 
@@ -290,19 +316,13 @@ def _model_memory_reload_required() -> bool:
     immediately (the loop re-reads each poll), so only placement can be stale.
 
     Keyed on is_active, not is_loaded: a save that lands while a load is still
-    passing its health check would otherwise report no reload while the child
-    is already committed to the pre-save flags.
+    passing its health check would otherwise report no reload while the child is
+    already committed to the pre-save flags. _memory_launch_pending covers the
+    same window before Popen, where the placement is decided but _process is
+    still None.
     """
-    try:
-        from routes.inference import get_llama_cpp_backend
-
-        backend = get_llama_cpp_backend()
-        if not backend.is_active:
-            return False
-        state = getattr(backend, "_memory_state", None)
-        policy_active = bool(getattr(backend, "_memory_policy_active", False))
-        mlock_applicable = bool(getattr(backend, "_memory_mlock_applicable", True))
-    except Exception:
+    state, policy_active, mlock_applicable = _active_launch_placement()
+    if state is _NO_LAUNCH:
         return False
 
     # Same predicate the duplicate-load comparator uses, so the reload hint and
@@ -312,33 +332,34 @@ def _model_memory_reload_required() -> bool:
     return not memory_state_satisfies_settings(state, policy_active, mlock_applicable)
 
 
-def _model_memory_lock_is_gated_off() -> bool:
-    """True when the running model is one this policy deliberately does not pin.
+def _model_memory_mlock_active(want_mlock: bool) -> bool:
+    """Whether page-locking is actually in force, not merely asked for.
 
-    mlock_active drives the locked-memory cap warning, so taking it from the
-    toggles alone tells a discrete-GPU user to raise a limit nothing consults.
-    With nothing running there is no launch to read, so intent is reported.
+    This drives the locked-memory cap warning, so taking it from the toggles
+    alone would tell a discrete-GPU user to raise a limit nothing consults.
+    With nothing running this is the intent, so the UI reflects the toggle. Once
+    a child exists it is what that child got: a full offload to a discrete GPU
+    skips the lock, and a diffusion runner has no load-mode at all, so claiming
+    otherwise would warn about ulimit -l for a lock nobody took. A user's own
+    --mlock counts, since the resolver reads the launched argv.
     """
-    try:
-        from routes.inference import get_llama_cpp_backend
-
-        backend = get_llama_cpp_backend()
-        if not backend.is_active:
-            return False
-        return not bool(getattr(backend, "_memory_mlock_applicable", True))
-    except Exception:
+    if not want_mlock:
         return False
+    state, _policy_active, _applicable = _active_launch_placement()
+    if state is _NO_LAUNCH:
+        return True
+    return bool(state and state[0])
 
 
 def _model_memory_response() -> ModelMemoryResponse:
     keep_resident, no_ram_reserve = get_model_memory_settings()
-    want_mlock = should_mlock() and not _model_memory_lock_is_gated_off()
+    mlock_active = _model_memory_mlock_active(should_mlock())
     return ModelMemoryResponse(
         keep_resident = keep_resident,
         no_ram_reserve = no_ram_reserve,
-        mlock_active = want_mlock,
+        mlock_active = mlock_active,
         reload_required = _model_memory_reload_required(),
-        memlock_limit_bytes = memlock_limit_bytes() if want_mlock else None,
+        memlock_limit_bytes = memlock_limit_bytes() if mlock_active else None,
     )
 
 

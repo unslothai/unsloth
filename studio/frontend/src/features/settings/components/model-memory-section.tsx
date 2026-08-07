@@ -59,8 +59,11 @@ export function ModelMemorySection() {
   };
 
   // Both on suppresses --mlock. Say so, rather than looking like a no-op.
+  // Keyed on the toggles, not mlockActive: that now also reads false when the
+  // running model simply had nothing in host RAM to lock, which is a different
+  // reason than the one this line gives.
   const mlockVetoed =
-    settings?.keepResident === true && settings.mlockActive === false;
+    settings?.keepResident === true && settings.noRamReserve === true;
   // A finite locked-memory cap means llama.cpp logs "failed to mlock" and
   // carries on, so residency would look enabled but do nothing.
   const memlockCap =

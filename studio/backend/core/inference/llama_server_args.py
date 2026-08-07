@@ -240,6 +240,9 @@ MEMORY_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_MMAP",
     "LLAMA_ARG_LOAD_MODE",
     "LLAMA_ARG_DIO",
+    # Legacy negative aliases, honoured by PRESENCE whatever the value.
+    "LLAMA_ARG_NO_MMAP",
+    "LLAMA_ARG_NO_DIO",
 )
 
 _SHADOWING_FLAGS: frozenset[str] = (
@@ -651,8 +654,8 @@ def apply_model_memory_policy(
             strip_split_mode = False,
             strip_mlock = True,
             strip_no_mmap = True,
-            strip_load_mode = True,
         )
+        tokens = _strip_reserving_load_modes(tokens)
 
     managed: list[str] = []
     if should_mlock() and weights_in_host_memory:
@@ -671,6 +674,36 @@ def apply_model_memory_policy(
             strip_load_mode = True,
         )
     return managed, tokens
+
+
+def _strip_reserving_load_modes(tokens: list[str]) -> list[str]:
+    """Drop only ``--load-mode`` values that lock or reserve host RAM.
+
+    No-reserve vetoes the reservation, not the loader. ``mmap`` and ``dio``
+    hold no full host copy, so a DirectIO preset survives instead of silently
+    falling back to mmap. Unknown values are left alone rather than rewritten.
+    """
+    out: list[str] = []
+    i, n = 0, len(tokens)
+    while i < n:
+        token = tokens[i]
+        if _flag_name(token) not in _LOAD_MODE_FLAGS:
+            out.append(token)
+            i += 1
+            continue
+        if "=" in token:
+            value, step = token.split("=", 1)[1], 1
+        elif i + 1 < n and _flag_name(tokens[i + 1]) is None:
+            value, step = tokens[i + 1], 2
+        else:
+            value, step = "", 1
+        value = value.strip().lower()
+        if value in _LOAD_MODE_MLOCK_VALUES or value in _LOAD_MODE_RESERVING_VALUES:
+            i += step
+            continue
+        out.extend(tokens[i : i + step])
+        i += step
+    return out
 
 
 def model_memory_owns_placement() -> bool:
@@ -724,14 +757,21 @@ def resolve_effective_memory_state(
     # is not observable and changes no decision.
     if str(env.get("LLAMA_ARG_MLOCK", "")).strip().lower() in _ENV_TRUE_VALUES:
         mlock = True
+    # Every option with a negative form also answers to LLAMA_ARG_NO_<NAME>:
+    # upstream rewrites the name and, if that var EXISTS, forces the value
+    # falsey whatever it says, before reading the affirmative one. Measured:
+    # LLAMA_ARG_NO_MMAP=0 still disables mmap, and it beats LLAMA_ARG_MMAP=on.
+    # --mlock has no negative form, so LLAMA_ARG_NO_MLOCK does nothing.
     # LLAMA_ARG_MMAP is whether to mmap, so "off" means mmap disabled ("none").
-    _mmap_env = str(env.get("LLAMA_ARG_MMAP", "")).strip().lower()
+    _mmap_env = "0" if "LLAMA_ARG_NO_MMAP" in env else str(env.get("LLAMA_ARG_MMAP", ""))
+    _mmap_env = _mmap_env.strip().lower()
     if _mmap_env in _ENV_TRUE_VALUES:
         mlock, reserves_ram = False, False
     elif _mmap_env in _ENV_FALSE_VALUES:
         mlock, reserves_ram = False, True
     # LLAMA_ARG_DIO likewise: on selects DirectIO, off selects "none".
-    _dio_env = str(env.get("LLAMA_ARG_DIO", "")).strip().lower()
+    _dio_env = "0" if "LLAMA_ARG_NO_DIO" in env else str(env.get("LLAMA_ARG_DIO", ""))
+    _dio_env = _dio_env.strip().lower()
     if _dio_env in _ENV_TRUE_VALUES:
         mlock, reserves_ram = False, False
     elif _dio_env in _ENV_FALSE_VALUES:
