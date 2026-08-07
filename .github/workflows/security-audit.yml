@@ -49,32 +49,8 @@ name: Security audit
 
 on:
   pull_request:
-    paths:
-      - 'studio/backend/requirements/**'
-      - 'studio/frontend/package.json'
-      - 'studio/frontend/package-lock.json'
-      - 'studio/src-tauri/Cargo.toml'
-      - 'studio/src-tauri/Cargo.lock'
-      - 'pyproject.toml'
-      - 'scripts/scan_packages.py'
-      - 'scripts/scan_packages_baseline.json'
-      - 'scripts/scan_npm_packages.py'
-      - 'scripts/scan_npm_packages_baseline.json'
-      - '.github/workflows/security-audit.yml'
   push:
     branches: [main]
-    paths:
-      - 'studio/backend/requirements/**'
-      - 'studio/frontend/package.json'
-      - 'studio/frontend/package-lock.json'
-      - 'studio/src-tauri/Cargo.toml'
-      - 'studio/src-tauri/Cargo.lock'
-      - 'pyproject.toml'
-      - 'scripts/scan_packages.py'
-      - 'scripts/scan_packages_baseline.json'
-      - 'scripts/scan_npm_packages.py'
-      - 'scripts/scan_npm_packages_baseline.json'
-      - '.github/workflows/security-audit.yml'
   schedule:
     - cron: '13 4 * * *'   # 04:13 UTC daily, off the cron rush
   workflow_dispatch:
