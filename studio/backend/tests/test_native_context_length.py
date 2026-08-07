@@ -641,19 +641,20 @@ class TestRouteCompleteness:
         # Nested scopes ARE walked here, unlike the allow-scan above. A closure that
         # names the dict can do anything to it, and its call site reads nothing
         # syntactically: `def scrub(): fields.pop("native_context_length")` followed by
-        # `scrub()` is invisible to both a mutation list and a call-site check. Reading
-        # the name inside a closure is therefore itself the disqualifier.
-        def check_reads(node) -> None:
+        # `scrub()` is invisible to both a mutation list and a call-site check. Naming it
+        # inside a closure is therefore itself the disqualifier -- including a STORE, since
+        # `nonlocal fields` then `fields = {}` replaces the dict outright while the
+        # bindings walk, which stops at the scope boundary, never sees it.
+        def check_reads(node, nested: bool = False) -> None:
             nonlocal ok
             for child in ast.iter_child_nodes(node):
-                if (
-                    isinstance(child, ast.Name)
-                    and child.id == name
-                    and not isinstance(child.ctx, ast.Store)
-                    and id(child) not in allowed_reads
-                ):
+                if isinstance(child, ast.Name) and child.id == name:
+                    store = isinstance(child.ctx, ast.Store)
+                    if (nested or not store) and id(child) not in allowed_reads:
+                        ok = False
+                elif isinstance(child, (ast.Global, ast.Nonlocal)) and name in child.names:
                     ok = False
-                check_reads(child)
+                check_reads(child, nested or isinstance(child, self._NESTED_SCOPES))
 
         check_reads(scope)
         return ok
@@ -672,7 +673,15 @@ class TestRouteCompleteness:
                 if not (isinstance(decorator, ast.Call) and decorator.args):
                     continue
                 func = decorator.func
-                if not (isinstance(func, ast.Attribute) and func.attr in _HTTP_METHODS):
+                # GET on `router`, not any verb on any object. A `@router.post("/status")`
+                # or a handler on some other router is a different endpoint, and accepting
+                # it would certify the wrong one.
+                if not (
+                    isinstance(func, ast.Attribute)
+                    and func.attr == "get"
+                    and isinstance(func.value, ast.Name)
+                    and func.value.id == "router"
+                ):
                     continue
                 first = decorator.args[0]
                 if isinstance(first, ast.Constant) and first.value == path:
@@ -702,6 +711,29 @@ class TestRouteCompleteness:
 
         walk(scope)
         return calls
+
+    # How the handler is allowed to obtain each name the helper call is spelled with. The
+    # helper itself is module level, so any local binding of it is a substitution.
+    _DEPENDENCY_SOURCES = {"_llama_runtime_fields": (), "llama_backend": ("get_llama_cpp_backend",)}
+
+    def _dependencies_are_intact(self, scope) -> bool:
+        """True when nothing in ``scope`` replaces the helper or the backend it is called on.
+
+        ``_is_runtime_fields_call`` only checks spelling, so without this
+        ``_llama_runtime_fields = lambda _: {}`` above the hoist passes while the real helper
+        is never called, and the response defaults every runtime field to None.
+        """
+        for dependency, allowed in self._DEPENDENCY_SOURCES.items():
+            for _node, value in self._bindings_in_own_scope(scope, dependency):
+                if not (
+                    isinstance(value, ast.Call)
+                    and isinstance(value.func, ast.Name)
+                    and value.func.id in allowed
+                    and not value.args
+                    and not value.keywords
+                ):
+                    return False
+        return True
 
     def _status_calls_getting_runtime_fields(self) -> list:
         """``InferenceStatusResponse(...)`` calls that actually receive the llama runtime fields.
@@ -742,6 +774,12 @@ class TestRouteCompleteness:
                 if kw.arg is not None:
                     continue
                 if self._is_runtime_fields_call(kw.value):
+                    if any(
+                        other is not kw
+                        and (other.arg in self._PROTECTED_RUNTIME_KEYS or other.arg is None)
+                        for other in call.keywords
+                    ):
+                        continue
                     found.append(call)
                     break
                 if not isinstance(kw.value, ast.Name):
@@ -754,6 +792,22 @@ class TestRouteCompleteness:
                     continue
                 scope = max(enclosing, key = lambda f: f.lineno)
                 name = kw.value.id
+                # `f(**fields, native_context_length = None)` is a duplicate keyword, so the
+                # route raises the moment it runs, and a second `**` can overwrite the field
+                # with anything. Either way the response this certifies is not the one that
+                # goes out.
+                if any(
+                    other is not kw
+                    and (other.arg in self._PROTECTED_RUNTIME_KEYS or other.arg is None)
+                    for other in call.keywords
+                ):
+                    continue
+                # The helper and the backend are read by NAME, so a local rebinding of
+                # either -- `_llama_runtime_fields = lambda _: {}` -- satisfies the spelling
+                # check while calling something else entirely. The helper is module level and
+                # must not be bound here at all; the backend is obtained exactly one way.
+                if not self._dependencies_are_intact(scope):
+                    continue
                 if name in self._parameter_names(scope):
                     continue
                 bindings = self._bindings_in_own_scope(scope, name)
@@ -1042,6 +1096,90 @@ class TestRouteCompleteness:
                 return InferenceStatusResponse(is_gguf = True, **fields)
                 """
             ), f"{shadow!r} left the /status contract green"
+
+    def test_the_hoist_analysis_rejects_a_nonlocal_rebinding(self):
+        """`nonlocal fields` then `fields = {}` replaces the dict from inside a closure.
+
+        The bindings walk stops at the scope boundary and a Store is not a read, so the
+        rebind was invisible to every check while the response lost the fields entirely.
+        """
+        assert not self._accepts(
+            """
+            fields = _llama_runtime_fields(llama_backend)
+            def _replace():
+                nonlocal fields
+                fields = {}
+            _replace()
+            return InferenceStatusResponse(is_gguf = True, **fields)
+            """
+        )
+
+    def test_the_hoist_analysis_rejects_a_keyword_colliding_with_the_splat(self):
+        """A duplicate keyword is a TypeError, and a second splat can overwrite the field.
+
+        Either way the response this would certify is not the one the route produces, and
+        in the duplicate-keyword case the route does not produce one at all.
+        """
+        assert not self._accepts(
+            """
+            fields = _llama_runtime_fields(llama_backend)
+            return InferenceStatusResponse(**fields, native_context_length = None)
+            """
+        )
+        assert not self._accepts(
+            """
+            fields = _llama_runtime_fields(llama_backend)
+            return InferenceStatusResponse(**fields, **_overrides)
+            """
+        )
+        # The unhoisted form is held to the same rule.
+        assert not self._accepts(
+            "return InferenceStatusResponse("
+            "**_llama_runtime_fields(llama_backend), native_context_length = None)"
+        )
+
+    def test_the_hoist_analysis_rejects_a_substituted_helper_or_backend(self):
+        """The call is matched by spelling, so the names it is spelled with matter.
+
+        `_llama_runtime_fields = lambda _: {}` above the hoist passes every structural check
+        while the real helper is never called. The backend has exactly one legitimate source
+        in the handler, and that one still passes.
+        """
+        for substitution in (
+            "_llama_runtime_fields = lambda _: {}",
+            "llama_backend = _some_other_backend()",
+        ):
+            assert not self._accepts(
+                f"""
+                {substitution}
+                fields = _llama_runtime_fields(llama_backend)
+                return InferenceStatusResponse(is_gguf = True, **fields)
+                """
+            ), f"{substitution!r} left the /status contract green"
+
+        # The way the real handler gets it.
+        assert self._accepts(
+            """
+            llama_backend = get_llama_cpp_backend()
+            fields = _llama_runtime_fields(llama_backend)
+            return InferenceStatusResponse(is_gguf = True, **fields)
+            """
+        )
+
+    def test_the_status_handler_is_the_get_route_on_the_module_router(self):
+        """A `post("/status")` or a handler on some other router is a different endpoint."""
+        import textwrap
+
+        for decorator in ('@router.post("/status")', '@other_router.get("/status")'):
+            self._source = textwrap.dedent(
+                f"""
+                {decorator}
+                async def not_the_status_route(llama_backend):
+                    fields = _llama_runtime_fields(llama_backend)
+                    return InferenceStatusResponse(is_gguf = True, **fields)
+                """
+            )
+            assert not self._status_calls_getting_runtime_fields(), decorator
 
     def test_non_gguf_status_path_reports_runtime_context_length(self):
         """Non-GGUF InferenceStatusResponse reports context_length from model_info."""
