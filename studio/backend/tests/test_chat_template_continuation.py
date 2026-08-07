@@ -326,7 +326,13 @@ def test_mlx_registered_vlm_recovery_preserves_the_continuation(monkeypatch):
     prompt_utils = types.ModuleType("mlx_vlm.prompt_utils")
     prompt_utils.MODEL_CONFIG = {"fake_vlm": object()}
 
-    def _apply(processor, config, messages, add_generation_prompt = True, **kw):
+    def _apply(
+        processor,
+        config,
+        messages,
+        add_generation_prompt = True,
+        **kw,
+    ):
         rendered = "".join(f"<{m['role']}>{m['content']}" for m in messages)
         return rendered + ("<assistant>" if add_generation_prompt else "")
 

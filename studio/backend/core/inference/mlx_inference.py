@@ -1189,9 +1189,7 @@ class MLXInferenceBackend:
                     messages,
                     len(images),
                     continue_partial = (
-                        trailing_assistant_text(messages)
-                        if continue_final_message
-                        else None
+                        trailing_assistant_text(messages) if continue_final_message else None
                     ),
                 )
             except Exception as recovery_error:
