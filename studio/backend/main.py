@@ -780,6 +780,8 @@ from starlette.datastructures import MutableHeaders  # noqa: E402
 _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
 _ARTIFACT_PREVIEW_FRAME_PATH = "/api/inference/artifact-preview-frame"
 _DOCS_CDN = "https://cdn.jsdelivr.net"
+_DOCS_FONT_CSS = "https://fonts.googleapis.com"
+_DOCS_FONT_FILES = "https://fonts.gstatic.com"
 _DOCS_PATHS = frozenset({"/docs", "/docs/oauth2-redirect", "/redoc"})
 
 
@@ -797,9 +799,13 @@ def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     script_src = "script-src 'self'"
     style_src = "style-src 'self' 'unsafe-inline'"
     worker_src = "worker-src 'self'"
+    font_src = "font-src 'self' data:"
     if docs:
         script_src += f" 'unsafe-inline' {_DOCS_CDN}"
-        style_src += f" {_DOCS_CDN}"
+        # ReDoc pulls a Google Fonts stylesheet, which 'unsafe-inline' does not
+        # cover, and that sheet then fetches the faces from gstatic.
+        style_src += f" {_DOCS_CDN} {_DOCS_FONT_CSS}"
+        font_src += f" {_DOCS_FONT_FILES}"
         worker_src += " blob:"
     if script_nonce:
         script_src += f" 'nonce-{script_nonce}'"
@@ -828,7 +834,7 @@ def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
         f"{style_src}; "
         f"{script_src}; "
         f"{worker_src}; "
-        "font-src 'self' data:; "
+        f"{font_src}; "
         "frame-src 'self'; "
         f"frame-ancestors {frame_ancestors}; "
         "form-action 'self'; "
