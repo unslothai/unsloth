@@ -5449,7 +5449,7 @@ def test_download_plan_omits_a_gguf_that_is_already_cached(monkeypatch):
     _no_cache(monkeypatch)
     monkeypatch.setattr(
         "core.inference.diffusion._hub_file_cached",
-        lambda repo_id, filename, revision = None: True,
+        lambda repo_id, filename, revision = None, blob_id = None: True,
     )
 
     plan = DiffusionBackend().download_plan(
@@ -5541,6 +5541,23 @@ def test_the_cached_gguf_check_follows_the_loaders_root_selection(monkeypatch):
     )
     assert diff._hub_file_cached("unsloth/X-GGUF", "x.gguf", revision = "sha1") is False
 
+    # 7. Neither root answers unpinned, because the file was fetched by explicit commit and that
+    #    never writes refs/main. The helper only leaves the live root on a HIT elsewhere, so the
+    #    load stays there, HEADs main, and finds the pinned pointer already sitting in it.
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        _probe({(live, "sha1"): "/blobs/a"}),
+    )
+    assert diff._hub_file_cached("unsloth/X-GGUF", "x.gguf", revision = "sha1") is True
+
+    # 8. Same shape, but the pinned snapshot is only in the OTHER root. With no unpinned hit to
+    #    redirect it the load stays in the live root and really does fetch.
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        _probe({(None, "sha1"): "/old/blobs/a"}),
+    )
+    assert diff._hub_file_cached("unsloth/X-GGUF", "x.gguf", revision = "sha1") is False
+
     # Not-cached on error only re-adds an entry that fetches nothing; the other way hides a
     # real download.
     monkeypatch.setattr(
@@ -5548,6 +5565,49 @@ def test_the_cached_gguf_check_follows_the_loaders_root_selection(monkeypatch):
         lambda *a, **k: (_ for _ in ()).throw(OSError("cache unreadable")),
     )
     assert diff._hub_file_cached("unsloth/X-GGUF", "x.gguf", revision = "sha1") is False
+
+
+def test_a_metadata_only_republish_does_not_re_advertise_the_gguf(monkeypatch, tmp_path):
+    """A README edit moves the repo sha and leaves the checkpoint blob alone.
+
+    The pinned pointer for the new commit does not exist yet, so a pinned-miss verdict would put
+    the whole multi-GB checkpoint back on the plan. hf_hub_download finds blobs/<etag> already
+    present and only creates the symlink ("Blob exists but pointer must be (safely) created",
+    huggingface_hub/file_download.py), transferring nothing, so the blob id decides.
+    """
+    from core.inference import diffusion as diff
+
+    live = str(tmp_path)
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: live)
+
+    blobs = tmp_path / "blobs"
+    blobs.mkdir()
+    content = "d9a1e25e0751e0d889893ad6494e0f0f1c4245c8e1afe248ee93b5641ac69066"
+    (blobs / content).write_bytes(b"gguf")
+    snapshot = tmp_path / "snapshots" / "old-sha"
+    snapshot.mkdir(parents = True)
+    pointer = snapshot / "x.gguf"
+    pointer.symlink_to(blobs / content)
+
+    def probe(repo_id, filename, cache_dir = None, revision = None, repo_type = None):
+        # Unpinned resolves to the pre-republish snapshot; the new sha has no pointer yet.
+        if cache_dir == live and revision is None:
+            return str(pointer)
+        return None
+
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", probe)
+
+    assert (
+        diff._hub_file_cached("unsloth/X-GGUF", "x.gguf", revision = "new-sha", blob_id = content)
+        is True
+    )
+    # A genuinely republished checkpoint has a different blob, and that download is real.
+    assert (
+        diff._hub_file_cached("unsloth/X-GGUF", "x.gguf", revision = "new-sha", blob_id = "other")
+        is False
+    )
+    # Without a blob id there is nothing to compare, so the job stays, as every unknown does here.
+    assert diff._hub_file_cached("unsloth/X-GGUF", "x.gguf", revision = "new-sha") is False
 
 
 def test_the_plan_pins_the_cache_probe_to_the_revision_model_info_reported(monkeypatch):
@@ -5571,7 +5631,7 @@ def test_the_plan_pins_the_cache_probe_to_the_revision_model_info_reported(monke
     seen = []
     monkeypatch.setattr(
         "core.inference.diffusion._hub_file_cached",
-        lambda repo_id, filename, revision = None: seen.append(revision) or True,
+        lambda repo_id, filename, revision = None, blob_id = None: seen.append(revision) or True,
     )
 
     DiffusionBackend().download_plan(
@@ -5619,7 +5679,7 @@ def test_a_shared_checkpoint_and_base_repo_keep_separate_byte_counts(monkeypatch
     _no_cache(monkeypatch)
     monkeypatch.setattr(
         "core.inference.diffusion._hub_file_cached",
-        lambda repo_id, filename, revision = None: True,
+        lambda repo_id, filename, revision = None, blob_id = None: True,
     )
 
     plan = DiffusionBackend().download_plan(

@@ -734,10 +734,26 @@ def _has_active_lora(loras: Any) -> bool:
     return False
 
 
+def _cached_blob_id(pointer: str) -> Optional[str]:
+    """The blob a cache pointer resolves to, which huggingface_hub names after the file's etag.
+
+    ``hf_hub_download`` writes ``blobs/<etag>`` and symlinks each snapshot pointer at it
+    (``file_download.py``), and for an LFS file the etag is the sha256 ``model_info`` reports as
+    ``lfs.sha256``. So the basename on the other side of the link identifies the CONTENT, across
+    every commit that shipped it."""
+    import os
+
+    try:
+        return os.path.basename(os.path.realpath(pointer)) or None
+    except Exception:  # noqa: BLE001 -- an unreadable link is simply unknown
+        return None
+
+
 def _hub_file_cached(
     repo_id: str,
     filename: str,
     revision: Optional[str] = None,
+    blob_id: Optional[str] = None,
 ) -> bool:
     """Whether the loader would resolve ``filename`` of ``repo_id`` at ``revision`` with no download.
 
@@ -768,6 +784,18 @@ def _hub_file_cached(
     manager's disk preflight and progress: the loader commits to ONE root by the unpinned probe, so
     a pinned hit in a root it never selects saves nothing.
 
+    A pinned MISS after an unpinned hit is not proof of a transfer either. A repo whose README
+    changed gets a new sha while the GGUF blob is untouched, and ``hf_hub_download`` then finds
+    ``blobs/<etag>`` already there and only symlinks the new pointer ("Blob exists but pointer must
+    be (safely) created", same file). So compare the cached blob against ``blob_id``, the sha256
+    ``model_info`` reported for THIS file, and treat a match as cached: otherwise every
+    metadata-only republish puts multi-GB back on the plan.
+
+    Both roots missing unpinned is likewise not a miss. The helper only redirects to the
+    import-time root on a hit there, so with neither hit the load stays in the live root, whose
+    pinned snapshot may well exist: an earlier download that named an explicit commit creates the
+    snapshot without ever writing ``refs/main``. Check that before answering.
+
     ``revision`` must be the sha the caller means to load; without one the answer is False. This
     probe only ever licenses skipping work, so every unknown resolves to doing the work. Never
     raises, for the same reason."""
@@ -776,8 +804,9 @@ def _hub_file_cached(
     try:
         from huggingface_hub import try_to_load_from_cache
 
+        live = hub_cache_dir()
         # None is huggingface_hub's import-time root, the fallback the helper tries second.
-        for cache_dir in (hub_cache_dir(), None):
+        for cache_dir in (live, None):
             current = try_to_load_from_cache(repo_id, filename, cache_dir = cache_dir)
             if not isinstance(current, str):
                 continue  # this root misses unpinned, exactly as the load asks: try the next
@@ -786,8 +815,14 @@ def _hub_file_cached(
             pinned = try_to_load_from_cache(
                 repo_id, filename, cache_dir = cache_dir, revision = revision
             )
-            return isinstance(pinned, str)
-        return False
+            if isinstance(pinned, str):
+                return True
+            return bool(blob_id) and _cached_blob_id(current) == blob_id
+        # Neither root answers unpinned, so the load stays in the live root: ask it directly.
+        pinned = try_to_load_from_cache(
+            repo_id, filename, cache_dir = live, revision = revision
+        )
+        return isinstance(pinned, str)
     except Exception:  # noqa: BLE001 -- a cache we cannot read is not evidence of a hit
         return False
 
@@ -1445,6 +1480,7 @@ class DiffusionBackend:
         include_transformer: bool = False,
         sizes_out: Optional[dict[str, int]] = None,
         revisions_out: Optional[dict[str, str]] = None,
+        blobs_out: Optional[dict[str, str]] = None,
         skip_te_components: tuple[str, ...] = (),
     ) -> tuple[int, list[str]]:
         """Total download size for the progress bar, plus the base-repo files to
@@ -1521,6 +1557,17 @@ class DiffusionBackend:
                 sha = getattr(info, "sha", None)
                 if revisions_out is not None and sha:
                     revisions_out["checkpoint"] = str(sha)
+                if blobs_out is not None:
+                    # The file's content id, which outlives the commit that shipped it: a
+                    # metadata-only republish moves the sha and leaves this alone.
+                    for sib in info.siblings:
+                        if sib.rfilename != gguf_filename:
+                            continue
+                        lfs = getattr(sib, "lfs", None)
+                        content = getattr(lfs, "sha256", None) or getattr(sib, "blob_id", None)
+                        if content:
+                            blobs_out["checkpoint"] = str(content)
+                        break
             # A whole-pipeline single file (SDXL) needs only the base's config/tokenizer, not its weights.
             if kind == "single_file" and single_file_is_pipeline:
                 base_filter = _base_config_file_downloaded
@@ -1577,6 +1624,7 @@ class DiffusionBackend:
         te_files = self._te_prequant_plan_files(fam, text_encoder_quant, hf_token)
         sizes: dict[str, int] = {}
         revisions: dict[str, str] = {}
+        blobs: dict[str, str] = {}
         total, base_files = self._estimate_download_bytes(
             repo_id,
             gguf_filename,
@@ -1589,6 +1637,7 @@ class DiffusionBackend:
             and self._dense_quant_prefetch_needed(fam, {**load_kwargs, "base_repo": base}),
             sizes_out = sizes,
             revisions_out = revisions,
+            blobs_out = blobs,
             skip_te_components = tuple(te_files),
         )
         # Decided once, from the staged file list, and both probed and reported: a gated base
@@ -1614,9 +1663,14 @@ class DiffusionBackend:
         # Pinned to the revision model_info just reported, because try_to_load_from_cache reads the
         # LOCAL refs/main: an unpinned hit also matches a pre-republish snapshot, and the load would
         # then revalidate and pull the new checkpoint inline, outside the manager's progress,
-        # cancellation and disk preflight. No sha means the lookup failed, so keep the job.
+        # cancellation and disk preflight. The blob id lets a metadata-only republish, which moves
+        # the sha without touching the GGUF, still read as cached. No sha means the lookup failed,
+        # so keep the job.
         if gguf_entry_wanted and _hub_file_cached(
-            repo_id, gguf_filename, revision = revisions.get("checkpoint")
+            repo_id,
+            gguf_filename,
+            revision = revisions.get("checkpoint"),
+            blob_id = blobs.get("checkpoint"),
         ):
             # Drop its bytes from the headline total too, else the entries and the number disagree.
             total -= int(sizes.get("checkpoint", 0))
