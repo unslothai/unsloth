@@ -66,6 +66,7 @@ export async function finalizeAppWindowLayout<Monitor extends WorkAreaMonitor>({
   enforceBounds,
   isCurrent,
 }: FinalizeAppWindowLayoutOptions<Monitor>): Promise<void> {
+  if (!isCurrent()) return;
   await show();
   if (!isCurrent()) return;
 

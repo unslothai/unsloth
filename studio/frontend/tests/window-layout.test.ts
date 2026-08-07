@@ -251,3 +251,32 @@ test("remeasures a restored window after show on its compact secondary", async (
   });
   assert.deepEqual(savedSize, { width: 900, height: 556 });
 });
+
+test("stale layouts do not show the window", async () => {
+  let shown = false;
+
+  await finalizeAppWindowLayout({
+    restored: false,
+    measured: {
+      bounds: {
+        minimum: { width: 900, height: 600 },
+      },
+      monitor: null,
+    },
+    show: async () => {
+      shown = true;
+    },
+    measure: async () => {
+      throw new Error("stale layouts must not remeasure");
+    },
+    setMinimumConstraints: async () => {
+      throw new Error("stale layouts must not set constraints");
+    },
+    enforceBounds: async () => {
+      throw new Error("stale layouts must not enforce bounds");
+    },
+    isCurrent: () => false,
+  });
+
+  assert.equal(shown, false);
+});
