@@ -446,3 +446,15 @@ test("labels a model id with the repo leaf, never the raw path", () => {
   assert.equal(modelDisplayName("Qwen3-30B-A3B"), "Qwen3-30B-A3B");
   assert.equal(modelDisplayName(""), "");
 });
+
+test("keeps .gguf on Hub repo ids, which are not file paths", () => {
+  // lex-au/Orpheus-3b-FT-Q8_0.gguf and friends are real repos; the suffix is part of
+  // the leaf. Only a >= 2-slash id names a file inside a repo.
+  assert.equal(
+    modelDisplayName("lex-au/Orpheus-3b-FT-Q8_0.gguf"),
+    "Orpheus-3b-FT-Q8_0.gguf",
+  );
+  assert.equal(modelDisplayName("lex-au/Orpheus-3b-FT/Q8_0.gguf"), "Q8_0");
+  assert.equal(modelDisplayName("/srv/Qwen3-Q4.gguf"), "Qwen3-Q4");
+  assert.equal(modelDisplayName(String.raw`C:\models\Qwen3-Q4.gguf`), "Qwen3-Q4");
+});

@@ -73,9 +73,10 @@ def test_standalone_gguf_is_labelled_by_its_file_stem(monkeypatch):
     assert entries[0].name == "Qwen3-30B-A3B-Q4_K_M"
 
 
-def test_native_lease_load_reports_its_label_and_never_the_leased_path(monkeypatch):
-    # A native-lease load withholds the host path from /api/inference/status, so the
-    # client's checkpoint is the display label; /list has to agree or the picker misses.
+def test_native_lease_keeps_the_path_shaped_id_agents_tab_filters_on(monkeypatch):
+    # agents-tab's discoverGgufModels drops path-shaped ids so a native lease's label,
+    # which cannot reload the file, never becomes a named model in a --model command.
+    # Only the label is cleaned here.
     entries = _list_models(
         monkeypatch,
         _FakeLlama(
@@ -85,9 +86,8 @@ def test_native_lease_load_reports_its_label_and_never_the_leased_path(monkeypat
         ),
     )
 
-    assert entries[0].id == "Qwen3-4B-Q4_K_M.gguf"
+    assert entries[0].id == "/private/var/leases/xyz/Qwen3-4B-Q4_K_M.gguf"
     assert entries[0].name == "Qwen3-4B-Q4_K_M"
-    assert "/private/var/leases" not in entries[0].id
 
 
 def test_plain_repo_ids_are_unchanged(monkeypatch):
@@ -142,3 +142,17 @@ def test_an_explicit_display_name_still_wins(monkeypatch):
     )
 
     assert resp.display_name == "DeepSeek-V4-Flash-0731 (UD-IQ2_M)"
+
+
+def test_a_hub_repo_id_ending_in_gguf_keeps_its_suffix(monkeypatch):
+    # lex-au/Orpheus-3b-FT-Q8_0.gguf and friends are real repo ids, not file paths, so
+    # the label is the repo leaf whole; only a >= 2-slash id names a file inside a repo.
+    class _Backend(_FakeUnsloth):
+        default_models = ["lex-au/Orpheus-3b-FT-Q8_0.gguf"]
+
+    monkeypatch.setattr(models_route, "get_inference_backend", lambda: _Backend())
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama(None))
+
+    entries = asyncio.run(models_route.list_models(current_subject = "unsloth")).models
+
+    assert entries[0].name == "Orpheus-3b-FT-Q8_0.gguf"

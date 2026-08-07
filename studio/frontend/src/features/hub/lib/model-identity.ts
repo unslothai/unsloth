@@ -128,6 +128,15 @@ export function publicModelId(identifier: string): string {
   return name.replace(GGUF_SUFFIX_RE, "") || trimmed;
 }
 
+/** `org/name`, including the `org/name.gguf` repos that exist on the Hub. A file
+* reference carries a repo id plus a filename, so two or more slashes. */
+function isHubRepoId(identifier: string): boolean {
+  if (identifier.split("/").length - 1 !== 1) {
+    return false;
+  }
+  return !looksLikeModelPath(identifier.replace(GGUF_SUFFIX_RE, ""));
+}
+
 /**
 * The short label to show for a model id, for ids with no catalog entry to take a name
 * from. Mirrors ``display_model_name`` in core/inference/model_ids.py: the public id's
@@ -136,7 +145,11 @@ export function publicModelId(identifier: string): string {
 * where ``C:\\Users\\...`` holds no ``/`` to split on.
 */
 export function modelDisplayName(identifier: string): string {
-  const clean = publicModelId(identifier);
+  const trimmed = identifier.trim();
+  if (isHubRepoId(trimmed)) {
+    return trimmed.slice(trimmed.indexOf("/") + 1);
+  }
+  const clean = publicModelId(trimmed);
   return clean.slice(clean.lastIndexOf("/") + 1) || clean;
 }
 

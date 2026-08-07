@@ -107,3 +107,16 @@ def test_display_model_name_leaves_ordinary_ids_alone():
     )
     assert display_model_name(None) is None
     assert display_model_name("") == ""
+
+
+def test_display_model_name_keeps_gguf_on_hub_repo_ids():
+    from core.inference.model_ids import display_model_name
+
+    # Real Hub repos are named this way (lex-au/Orpheus-3b-FT-Q8_0.gguf); the suffix is
+    # part of the repo leaf, not a file extension to strip.
+    assert display_model_name("lex-au/Orpheus-3b-FT-Q8_0.gguf") == "Orpheus-3b-FT-Q8_0.gguf"
+    # A file inside a repo (>= 2 slashes) is still a file reference.
+    assert display_model_name("lex-au/Orpheus-3b-FT/Q8_0.gguf") == "Q8_0"
+    # And an anchored one-slash path is a path, not a repo id.
+    assert display_model_name("/srv/Qwen3-Q4.gguf") == "Qwen3-Q4"
+    assert display_model_name("C:\\models\\Qwen3-Q4.gguf") == "Qwen3-Q4"
