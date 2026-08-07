@@ -1077,6 +1077,7 @@ class InferenceBackend:
                     repetition_penalty,
                     cancel_event = cancel_event,
                     presence_penalty = presence_penalty,
+                    continue_final_message = continue_final_message,
                 )
                 return
             else:
@@ -1217,6 +1218,7 @@ class InferenceBackend:
         repetition_penalty,
         cancel_event = None,
         presence_penalty: float = 0.0,
+        continue_final_message: bool = False,
     ) -> Generator[str, None, None]:
         """Handle vision model generation with true token-by-token streaming."""
         model_info = self.models[self.active_model_name]
@@ -1226,12 +1228,18 @@ class InferenceBackend:
         # for some models. Safe unwrap for tokenize-only ops.
         raw_tokenizer = getattr(processor, "tokenizer", processor)
 
-        # Extract user message
-        user_message = ""
-        if messages and messages[-1]["role"] == "user":
-            import re
-            user_message = content_to_text(messages[-1]["content"])
-            user_message = re.sub(r"<img[^>]*>", "", user_message).strip()
+        # Extract user message. Scans back, so a continuation (which ends on the
+        # assistant partial) still prompts from the turn that asked the question.
+        from core.inference.chat_template_helpers import (
+            last_user_text,
+            render_vision_prompt,
+            trailing_assistant_text,
+        )
+
+        user_message = last_user_text(messages)
+        continue_partial = (
+            trailing_assistant_text(messages) if continue_final_message else None
+        )
 
         if not user_message:
             user_message = "Describe this image." if image else "Hello"
@@ -1256,6 +1264,15 @@ class InferenceBackend:
             else:
                 vision_messages = [user_msg]
 
+            # Resume the partial answer instead of opening a new turn.
+            if continue_partial:
+                vision_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": continue_partial}],
+                    }
+                )
+
             # Processor's own template skips the choke point (#7066). Rebind user_msg
             # so the no-system retry keeps the copy. Profiled from the processor, so a
             # vision request is gated on the loaded model exactly as the text path is.
@@ -1264,22 +1281,25 @@ class InferenceBackend:
             vision_messages = neutralize_control_markup_in_messages(
                 vision_messages, None, markup_for_tokenizer(processor)
             )
-            user_msg = vision_messages[-1]
+            user_msg = next(
+                m for m in reversed(vision_messages) if m.get("role") == "user"
+            )
+
+            def _render_vision(msgs):
+                return render_vision_prompt(processor, msgs, continue_partial)
 
             try:
-                input_text = processor.apply_chat_template(
-                    vision_messages, add_generation_prompt = True, tokenize = False
-                )
+                input_text = _render_vision(vision_messages)
             except Exception as e:
                 if system_prompt:
                     logger.warning(
                         f"Vision processor for '{self.active_model_name}' may not support "
                         f"system messages; retrying without. Original error: {e}"
                     )
-                    vision_messages = [user_msg]
-                    input_text = processor.apply_chat_template(
-                        vision_messages, add_generation_prompt = True, tokenize = False
-                    )
+                    vision_messages = [
+                        m for m in vision_messages if m.get("role") != "system"
+                    ]
+                    input_text = _render_vision(vision_messages)
                 else:
                     raise
             inputs = processor(

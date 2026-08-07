@@ -24,6 +24,8 @@ if str(_BACKEND) not in sys.path:
 
 from core.inference.chat_template_helpers import (  # noqa: E402
     apply_chat_template_for_generation,
+    last_user_text,
+    render_vision_prompt,
     trailing_assistant_text,
 )
 
@@ -173,3 +175,86 @@ def test_trailing_assistant_text_joins_text_parts_and_rejects_the_rest():
         is None
     )
     assert trailing_assistant_text([]) is None
+
+
+class _VisionProcessor:
+    """Processor template that supports both boundary kwargs."""
+
+    def apply_chat_template(
+        self,
+        messages,
+        *,
+        tokenize = False,
+        add_generation_prompt = True,
+        continue_final_message = False,
+    ):
+        out = []
+        for index, message in enumerate(messages):
+            body = message["content"]
+            if isinstance(body, list):
+                body = "".join(
+                    p.get("text", "<image>") for p in body
+                )
+            if continue_final_message and index == len(messages) - 1:
+                out.append(f"<{message['role']}>{body}")
+            else:
+                out.append(f"<{message['role']}>{body}</{message['role']}>")
+        if add_generation_prompt:
+            out.append("<assistant>")
+        return "".join(out)
+
+
+class _LegacyVisionProcessor(_VisionProcessor):
+    """A processor predating ``continue_final_message``."""
+
+    def apply_chat_template(self, messages, *, tokenize = False, **kw):
+        if "continue_final_message" in kw:
+            raise TypeError("unexpected keyword argument 'continue_final_message'")
+        return super().apply_chat_template(messages, tokenize = tokenize, **kw)
+
+
+_VISION_MESSAGES = [
+    {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "What is this?"}]},
+    {"role": "assistant", "content": [{"type": "text", "text": "It is a bar chart showing"}]},
+]
+
+
+def test_vision_continuation_ends_inside_the_partial():
+    prompt = render_vision_prompt(
+        _VisionProcessor(), _VISION_MESSAGES, "It is a bar chart showing"
+    )
+    assert prompt.endswith("It is a bar chart showing")
+    assert not prompt.endswith("<assistant>")
+
+
+def test_vision_without_continuation_opens_a_new_turn():
+    prompt = render_vision_prompt(_VisionProcessor(), _VISION_MESSAGES[:1], None)
+    assert prompt.endswith("<assistant>")
+
+
+def test_vision_legacy_processor_falls_back_to_a_splice():
+    partial = "It is a bar chart showing"
+    legacy = render_vision_prompt(_LegacyVisionProcessor(), _VISION_MESSAGES, partial)
+    native = render_vision_prompt(_VisionProcessor(), _VISION_MESSAGES, partial)
+    assert legacy == native
+
+
+def test_last_user_text_scans_back_past_the_partial():
+    # messages[-1] is the assistant partial, so reading it directly would lose the
+    # question and fall back to the generic "Describe this image" prompt.
+    assert last_user_text(
+        [
+            {"role": "user", "content": "<img src=x>What is this?"},
+            {"role": "assistant", "content": "It is a bar chart showing"},
+        ]
+    ) == "What is this?"
+    assert last_user_text([{"role": "assistant", "content": "hi"}]) == ""
+    # An image-only newest turn stops the scan: the older question must not become
+    # the prompt for a new image.
+    assert last_user_text(
+        [
+            {"role": "user", "content": "What is this?"},
+            {"role": "assistant", "content": "A chart."},
+            {"role": "user", "content": ""},
+        ]
+    ) == ""

@@ -117,9 +117,11 @@ import {
 } from "../utils/reasoning-duration";
 import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import {
+  CONTINUE_INSTRUCTION,
   type IncompleteReason,
   joinContinuation,
   readContinuationRequest,
+  rejectsAssistantPrefill,
 } from "../utils/continuation";
 import {
   generateAudio,
@@ -3458,6 +3460,14 @@ export function createOpenAIStreamAdapter(
           role: "assistant",
           content: continuation.partial,
         });
+        // Anthropic 400s when the last message is an assistant turn, so it gets an
+        // instruction turn after the partial instead of a prefill.
+        if (rejectsAssistantPrefill(externalProvider?.providerType)) {
+          outboundMessages.push({
+            role: "user",
+            content: CONTINUE_INSTRUCTION,
+          });
+        }
       }
 
       const combinedSystemPrompt = await resolveChatInstructions(
@@ -5300,10 +5310,13 @@ export function createOpenAIStreamAdapter(
           }
         }
 
-        // Checked after the explicit finish_reason, which backends that report it
-        // honestly (llama.cpp, external providers) have already settled.
+        // Local routes only: they report "stop" whether the model finished or hit the
+        // cap, so the budget is the sole signal there. External providers report the
+        // reason honestly, and inferring over their explicit "stop" would offer
+        // Continue on a complete answer that happened to use the whole budget.
         if (
           incompleteReason === null &&
+          !isExternalRequest &&
           typeof requestedMaxTokens === "number" &&
           typeof meta?.usage?.completion_tokens === "number" &&
           meta.usage.completion_tokens >= requestedMaxTokens

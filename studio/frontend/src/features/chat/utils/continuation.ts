@@ -117,6 +117,54 @@ export function joinContinuation(
   return `${partial}${stripContinuationOverlap(partial, continuation)}`;
 }
 
+/**
+ * Whether an assistant turn can be resumed at all.
+ *
+ * A turn that called a tool cannot: the continuation runs as a sibling, so the tool
+ * call and its result are not in the outbound history, and resuming only the text
+ * would ask the model to carry on from an answer whose evidence is missing. Matches
+ * the backend guard, which also refuses a trailing turn holding tool calls.
+ */
+export function isContinuableContent(
+  content: readonly unknown[] | undefined,
+): boolean {
+  if (!content) {
+    return false;
+  }
+  let hasText = false;
+  for (const part of content) {
+    const type = (part as { type?: string })?.type;
+    if (type === "text") {
+      hasText = hasText || ((part as { text?: string }).text ?? "").length > 0;
+      continue;
+    }
+    // Reasoning is not replayed either way, so it neither blocks nor enables.
+    if (type === "reasoning") {
+      continue;
+    }
+    return false;
+  }
+  return hasText;
+}
+
+/**
+ * Providers that reject a trailing assistant turn.
+ *
+ * Anthropic removed assistant prefill in Claude 4.6 (400 on the last message being
+ * assistant) and never allowed it with extended thinking, so a prefilled request
+ * fails outright. Those get the partial plus an instruction turn instead.
+ */
+export function rejectsAssistantPrefill(
+  providerType: string | undefined,
+): boolean {
+  return providerType === "anthropic";
+}
+
+/** Asks for a continuation when the partial cannot be sent as a prefill. */
+export const CONTINUE_INSTRUCTION =
+  "Continue your previous response from exactly where it stopped. " +
+  "Do not repeat any text you already wrote and do not restate the answer.";
+
 /** The `runConfig.custom` key carrying a continuation request to the chat adapter. */
 export const CONTINUATION_RUN_CONFIG_KEY = "unslothContinuation";
 

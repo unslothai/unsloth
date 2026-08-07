@@ -2325,6 +2325,49 @@ def trailing_assistant_text(messages: list) -> Optional[str]:
     return None
 
 
+def last_user_text(messages: list) -> str:
+    """Text of the newest user turn, with any ``<img>`` markup stripped.
+
+    The vision path builds its prompt from that turn, so it must scan back rather
+    than read ``messages[-1]``: a continuation ends on the assistant partial. Stops
+    at the newest user turn even when it is empty (an image-only message), so an
+    older question is never resurrected as the prompt for a new image.
+    """
+    from core.inference.message_content import content_to_text
+
+    for message in reversed(messages or []):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        return re.sub(
+            r"<img[^>]*>", "", content_to_text(message.get("content"))
+        ).strip()
+    return ""
+
+
+def render_vision_prompt(processor, messages: list, continue_partial: Optional[str]) -> str:
+    """Render a vision turn through the processor's own template.
+
+    With *continue_partial* the prompt ends inside the trailing assistant turn, so
+    the model resumes it. Processors predating the kwarg get a manual splice.
+    """
+    if not continue_partial:
+        return processor.apply_chat_template(
+            messages, add_generation_prompt = True, tokenize = False
+        )
+    try:
+        return processor.apply_chat_template(
+            messages,
+            add_generation_prompt = False,
+            continue_final_message = True,
+            tokenize = False,
+        )
+    except TypeError:
+        prefix = processor.apply_chat_template(
+            messages[:-1], add_generation_prompt = True, tokenize = False
+        )
+        return f"{prefix}{continue_partial}"
+
+
 def apply_chat_template_for_generation(
     tokenizer,
     messages: list,

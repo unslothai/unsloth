@@ -11775,10 +11775,20 @@ async def openai_chat_completions(
         _sf_template_tools
     )
 
+    # A continued turn renders no generation prompt, so no <think> is prefilled and the
+    # resumed text is the visible answer. Only the first turn continues; later tool-loop
+    # turns render a fresh generation prompt and prefill as usual.
+    _sf_continue = _continue_final_message(payload)
+    _sf_continued_turn = [_sf_continue]
+
     def _new_sf_reasoning_extractor():
+        prefilled = _sf_reasoning_prefilled
+        if _sf_continued_turn[0]:
+            _sf_continued_turn[0] = False
+            prefilled = False
         return _ResponsesReasoningExtractor(
             parse_think_markers = _sf_parse_think,
-            reasoning_prefilled = _sf_reasoning_prefilled,
+            reasoning_prefilled = prefilled,
         )
 
     cancel_event = threading.Event()
@@ -12158,7 +12168,7 @@ async def openai_chat_completions(
             _reasoning_text, _visible_text = _extract_responses_reasoning(
                 content_text,
                 parse_think_markers = _sf_parse_think,
-                reasoning_prefilled = _sf_reasoning_prefilled,
+                reasoning_prefilled = _sf_reasoning_prefilled and not _sf_continue,
             )
             api_monitor.set_reply(monitor_id, _visible_text)
             _stats = _sf_stats_holder.get("stats")
@@ -12593,7 +12603,7 @@ async def openai_chat_completions(
             _reasoning_text, _visible_text = _extract_responses_reasoning(
                 full_text,
                 parse_think_markers = _sf_parse_think,
-                reasoning_prefilled = _sf_reasoning_prefilled,
+                reasoning_prefilled = _sf_reasoning_prefilled and not _sf_continue,
             )
             # Client-tool passthrough: promote text-form calls; opt-in single
             # nudge retry on unparseable tool markup.
@@ -12622,6 +12632,8 @@ async def openai_chat_completions(
                                 retry_text = token
                             # Re-split reasoning on the retry so its visible text is
                             # what heals into a call (and reaches the monitor).
+                            # The nudge retry appends messages, so it is not a
+                            # continuation: normal prefill detection applies.
                             _retry_reasoning, _retry_visible = _extract_responses_reasoning(
                                 retry_text,
                                 parse_think_markers = _sf_parse_think,
@@ -17888,7 +17900,7 @@ def _build_openai_passthrough_body(
         if llama_backend is not None
         else None
     )
-    return _build_passthrough_payload(
+    body = _build_passthrough_payload(
         messages,
         tools,
         payload.temperature,
@@ -17909,6 +17921,11 @@ def _build_openai_passthrough_body(
         stream_options = payload.stream_options,
         markup = getattr(llama_backend, "markup_profile", None),
     )
+    if _continue_final_message(payload):
+        # llama-server rejects both flags set true.
+        body["continue_final_message"] = True
+        body["add_generation_prompt"] = False
+    return body
 
 
 async def _openai_passthrough_stream(

@@ -10,10 +10,12 @@ registerBundlerResolver();
 
 const {
   incompleteLabel,
+  isContinuableContent,
   isRestart,
   joinContinuation,
   readContinuationRequest,
   readIncompleteInfo,
+  rejectsAssistantPrefill,
   stripContinuationOverlap,
 } = await import("../src/features/chat/utils/continuation.ts");
 
@@ -107,4 +109,39 @@ test("a continuation request is read only when it carries text", () => {
   );
   assert.equal(readContinuationRequest({}), null);
   assert.equal(readContinuationRequest(undefined), null);
+});
+
+test("a turn that called a tool cannot be continued", () => {
+  // The continuation runs as a sibling, so the call and its result are not in the
+  // outbound history and the resumed text would have lost its evidence.
+  assert.equal(
+    isContinuableContent([
+      { type: "text", text: "Looking that up." },
+      { type: "tool-call", toolCallId: "c1", toolName: "web_search" },
+    ]),
+    false,
+  );
+});
+
+test("text and reasoning parts are continuable, empty text is not", () => {
+  assert.equal(
+    isContinuableContent([
+      { type: "reasoning", text: "hmm" },
+      { type: "text", text: "The answer is" },
+    ]),
+    true,
+  );
+  // Reasoning alone leaves nothing to resume from: it is never replayed.
+  assert.equal(
+    isContinuableContent([{ type: "reasoning", text: "hmm" }]),
+    false,
+  );
+  assert.equal(isContinuableContent([{ type: "text", text: "" }]), false);
+  assert.equal(isContinuableContent(undefined), false);
+});
+
+test("Anthropic is the provider that rejects a trailing assistant turn", () => {
+  assert.equal(rejectsAssistantPrefill("anthropic"), true);
+  assert.equal(rejectsAssistantPrefill("openai"), false);
+  assert.equal(rejectsAssistantPrefill(undefined), false);
 });

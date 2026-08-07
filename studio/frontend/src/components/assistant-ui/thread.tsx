@@ -95,6 +95,7 @@ import { toolStatusKind } from "@/features/chat/utils/tool-status";
 import {
   CONTINUATION_RUN_CONFIG_KEY,
   incompleteLabel,
+  isContinuableContent,
   readIncompleteInfo,
 } from "@/features/chat/utils/continuation";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
@@ -4928,6 +4929,11 @@ const ContinueMessageBar: FC = () => {
   const partial = useAuiState(({ message }) =>
     assistantMessageText(message.content),
   );
+  // A turn that called a tool cannot be resumed: the continuation runs as a sibling,
+  // so the call and its result would be missing from the outbound history.
+  const continuable = useAuiState(({ message }) =>
+    isContinuableContent(message.content),
+  );
 
   // Cancelled comes through status (the adapter yields nothing after an abort);
   // the other two are stamped on metadata so they survive a reload.
@@ -4944,6 +4950,7 @@ const ContinueMessageBar: FC = () => {
     isRunning ||
     researchRunId ||
     researchActive ||
+    !continuable ||
     !partial.trim()
   ) {
     return null;
