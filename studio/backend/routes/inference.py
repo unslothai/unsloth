@@ -1010,6 +1010,7 @@ try:
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
+        _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
         _hf_offline_if_unreachable,
@@ -1061,6 +1062,7 @@ except ImportError:
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
+        _emitted_n_batch,
         _extra_args_draft_device_pin,
         _extra_args_n_ubatch,
         _hf_offline_if_unreachable,
@@ -5078,8 +5080,13 @@ def _estimate_gguf_kv_gb(
                 planned_cache_types,
                 key = _kv_bytes_per_elem,
             )
+        # the loader raises --batch-size to max(slots, 2) before launch, and llama.cpp
+        # caps the micro-batch against it, so budget from the emitted value
         effective_ubatch = _extra_args_n_ubatch(
-            llama_extra_args, n_ctx = ctx, n_batch = n_batch, n_ubatch = n_ubatch
+            llama_extra_args,
+            n_ctx = ctx,
+            n_batch = _emitted_n_batch(n_batch, slots),
+            n_ubatch = n_ubatch,
         )
         kv = probe._estimate_kv_cache_bytes(
             ctx,
@@ -5288,7 +5295,8 @@ def _estimate_gguf_required_gb(
                 else _extra_args_n_ubatch(
                     llama_extra_args,
                     n_ctx = ctx if ctx > 0 else None,
-                    n_batch = n_batch,
+                    # same floor raise the loader applies at launch
+                    n_batch = _emitted_n_batch(n_batch, n_parallel),
                     n_ubatch = n_ubatch,
                 )
             )
@@ -5338,9 +5346,14 @@ def _guard_device_count(
 
     Tensor mode replicates them on every usable device, so it takes the pool: a pin,
     else ggml's Vulkan probe (_effective_gpu_count sees CUDA only), else CUDA. A layer
-    split lands on the fewest GPUs that hold the model (_select_gpus returns [1]
-    whenever one fits), so automatic placement is one device and a pin is charged for
-    what it names; sizing it per candidate would 409 a load that launches on one.
+    split lands on the fewest GPUs that hold the model, so a pin is charged for what it
+    names and automatic placement for one. That last one is an approximation, not an
+    identity: _select_gpus returns [1] only when the model FITS on one card and
+    accumulates otherwise, so a model too big for one is under-charged by the same margin
+    that charging the whole candidate pool would over-charge one that fits. Resolving it
+    needs the free-VRAM map, which only arrives downstream in
+    can_load_chat_during_training; one device is the side that does not 409 a load that
+    launches on one.
     """
     if not tensor_parallel:
         return max(1, len(requested_gpu_ids or ()))

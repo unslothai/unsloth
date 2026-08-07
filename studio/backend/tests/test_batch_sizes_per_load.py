@@ -33,6 +33,7 @@ import httpx  # noqa: F401
 from core.inference.llama_cpp import (
     GgufLoadIntent,
     LlamaCppBackend,
+    _emitted_n_batch,
     _extra_args_n_ubatch,
 )
 from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, strip_shadowing_flags
@@ -396,7 +397,84 @@ def test_emitted_batch_clears_both_llama_server_floors(n_batch, n_parallel, expe
     """Measured against the bundled binary: b1/p1 and b1/p2 abort, b2/p1 and b2/p2 load,
     b4/p8 aborts, b8/p8 loads, b32/p64 aborts, b64/p64 loads. So the floor is
     max(slots, 2). The per-field bounds cannot express it, so the loader raises instead."""
-    assert max(int(n_batch), max(2, int(n_parallel))) == expected
+    assert _emitted_n_batch(n_batch, n_parallel) == expected
+    # llama.cpp defaults emit no flag, so there is nothing to raise
+    assert _emitted_n_batch(None, n_parallel) is None
+
+
+def test_budgets_use_the_raised_batch_not_the_requested_one():
+    """llama.cpp caps the micro-batch against the batch it is GIVEN
+    (cparams.n_ubatch = min(cparams.n_batch, n_ubatch or n_batch)), and the loader
+    raises --batch-size to max(slots, 2) before launch. Budgeting from the requested
+    value instead planned n_batch=1 / n_ubatch=64 / 64 slots at a micro-batch of 1
+    and launched it at 64: ~2.2 GB of compute buffer the training guard never
+    charged, and an auto-fit sized for a graph the server does not build."""
+    from unittest.mock import patch
+
+    from routes import inference as route
+
+    # what the launch actually runs: the raise is the only difference
+    assert _emitted_n_batch(1, 64) == 64
+    assert _extra_args_n_ubatch(None, env = {}, n_ctx = 32768, n_batch = 1, n_ubatch = 64) == 1
+    assert _extra_args_n_ubatch(None, env = {}, n_ctx = 32768, n_batch = 64, n_ubatch = 64) == 64
+
+    with patch.object(LlamaCppBackend, "_read_gguf_metadata", _header_reader(**_QWEN3_8B)):
+        raised = route._estimate_gguf_kv_gb("/x.gguf", 32768, n_parallel = 64, n_batch = 1, n_ubatch = 64)
+        # the value the loader emits, asked for directly: the guard must match it
+        explicit = route._estimate_gguf_kv_gb(
+            "/x.gguf", 32768, n_parallel = 64, n_batch = 64, n_ubatch = 64
+        )
+        # and the un-raised micro-batch of 1, which is what a requested-value budget gave
+        unraised = route._estimate_gguf_kv_gb(
+            "/x.gguf", 32768, n_parallel = 64, n_batch = 1, n_ubatch = 1
+        )
+    assert raised == pytest.approx(explicit, abs = 0.01)
+    assert raised > unraised + 2.0
+
+    # the remote branch shares the floor: no dims, but the kq mask still grows
+    from types import SimpleNamespace
+
+    config = SimpleNamespace(
+        gguf_file = None,
+        gguf_mmproj_file = None,
+        gguf_mtp_file = None,
+        gguf_hf_repo = "owner/repo",
+        gguf_variant = "Q4_K_M",
+    )
+    remote_variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 1024**3)
+    with (
+        patch(
+            "utils.models.model_config.list_gguf_variants",
+            return_value = ([remote_variant], False),
+        ),
+        patch.object(route, "_remote_gguf_companion_bytes", return_value = 0),
+    ):
+        remote_raised = route._estimate_gguf_required_gb(
+            config, max_seq_length = 262144, n_parallel = 64, n_batch = 1, n_ubatch = 65536
+        )
+        remote_explicit = route._estimate_gguf_required_gb(
+            config, max_seq_length = 262144, n_parallel = 64, n_batch = 64, n_ubatch = 65536
+        )
+        remote_unraised = route._estimate_gguf_required_gb(
+            config, max_seq_length = 262144, n_parallel = 64, n_batch = 1, n_ubatch = 1
+        )
+    assert remote_raised == pytest.approx(remote_explicit, abs = 0.01)
+    # 1 GiB of weights plus a kq mask that is 64x the one a requested-value budget charged
+    assert remote_raised > remote_unraised + 0.04
+
+    # A batch already above both floors is untouched, so the ordinary case is unchanged,
+    # and llama.cpp defaults stay defaults however many slots are asked for: the raise
+    # must not turn an unset field into an emitted one.
+    assert _emitted_n_batch(4096, 8) == 4096
+    with patch.object(LlamaCppBackend, "_read_gguf_metadata", _header_reader(**_QWEN3_8B)):
+        above_floor = route._estimate_gguf_kv_gb(
+            "/x.gguf", 32768, n_parallel = 8, n_batch = 4096, n_ubatch = 512
+        )
+        defaults = route._estimate_gguf_kv_gb("/x.gguf", 32768, n_parallel = 8)
+        ubatch_only = route._estimate_gguf_kv_gb("/x.gguf", 32768, n_parallel = 8, n_ubatch = 512)
+    # -ub 512 is the llama.cpp default, so pinning it must not move the budget
+    assert above_floor == pytest.approx(ubatch_only, abs = 0.01)
+    assert defaults == pytest.approx(ubatch_only, abs = 0.01)
 
 
 def test_remote_guard_drops_the_split_mask_when_pipelining_is_disabled():

@@ -235,12 +235,14 @@ export function applyActiveModelStatusToStore(
     isGguf: status.is_gguf ?? true,
     previous: { value: prevState.nBatch, loaded: prevState.loadedNBatch },
     seedLoadParams,
+    modelChanged: slotsModelChanged,
   });
   const nUbatchSeed = resolveBatchSizeSeed({
     incoming: status.requested_n_ubatch,
     isGguf: status.is_gguf ?? true,
     previous: { value: prevState.nUbatch, loaded: prevState.loadedNUbatch },
     seedLoadParams,
+    modelChanged: slotsModelChanged,
   });
   // A Manual + Auto-layers load sent its positive context pin as max_seq_length,
   // and status only exposes the RESOLVED context; re-seed the pin from the
@@ -452,7 +454,12 @@ export function applyActiveModelStatusToStore(
       loadedNUbatch: nUbatchSeed.loaded ?? null,
     }),
     ...("value" in nUbatchSeed && { nUbatch: nUbatchSeed.value ?? null }),
-    ...(seedLoadParams && slotsModelChanged && { nBatch: null, nUbatch: null }),
+    // A swap under this tab resets the controls too, but that clear belongs INSIDE
+    // resolveBatchSizeSeed (modelChanged), not after it: unlike the slot count above,
+    // the batch echo is the REQUESTED size, so a blanket null here would also discard
+    // the value the seed just adopted from the new model's own echo. The control would
+    // then read "default" while the server runs an explicit -b / -ub, and the next
+    // Reload or Apply, which omits a blank field, would silently revert it.
     ...(seedLoadParams &&
       (batchesUnseeded || slotsModelChanged) &&
       rememberedNBatch != null &&

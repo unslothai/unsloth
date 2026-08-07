@@ -2656,6 +2656,21 @@ def _extra_args_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optiona
     return last_dev
 
 
+def _emitted_n_batch(n_batch: Optional[int], n_parallel: int) -> Optional[int]:
+    """--batch-size the launch actually emits for a requested ``n_batch``.
+
+    llama-server aborts below 2 and below the slot count, so the loader raises the
+    flag to ``max(slots, 2)``. llama.cpp then derives the micro-batch from the
+    raised value (``cparams.n_ubatch = min(cparams.n_batch, n_ubatch or n_batch)``),
+    so every VRAM budget must be sized from it, not from the requested number, or a
+    small batch with many slots is budgeted at a micro-batch the launch never uses.
+    None (llama.cpp defaults) stays None: nothing is emitted, so nothing is raised.
+    """
+    if n_batch is None:
+        return None
+    return max(int(n_batch), max(2, int(n_parallel or 1)))
+
+
 def _extra_args_n_ubatch(
     extra_args: Optional[Iterable[str]],
     env: Optional[Mapping[str, str]] = None,
@@ -8888,10 +8903,13 @@ class LlamaCppBackend:
                 ctx_override = parse_ctx_override(extra_args)
                 requested_ctx = resolve_requested_ctx(extra_args, n_ctx)
                 swa_full = _swa_full_from_args_or_env(extra_args)
+                # The emitted batch, not the requested one: the floor raise below is what
+                # llama.cpp caps the micro-batch against, so the fit, the slot search and
+                # every compute-buffer reserve must be sized from the value that launches.
                 _effective_ubatch = _extra_args_n_ubatch(
                     extra_args,
                     n_ctx = (requested_ctx if requested_ctx > 0 else self._context_length),
-                    n_batch = n_batch,
+                    n_batch = _emitted_n_batch(n_batch, n_parallel),
                     n_ubatch = n_ubatch,
                 )
                 planned_kv_unified = _kv_unified_from_args(
@@ -10156,7 +10174,7 @@ class LlamaCppBackend:
                     # b8/p8 loads. So the floor is max(slots, 2), not slots alone. The
                     # bounds are per-field and cannot express it, so raise here instead of
                     # failing the load.
-                    _emit_batch = max(int(n_batch), max(2, int(n_parallel)))
+                    _emit_batch = _emitted_n_batch(n_batch, n_parallel)
                     if _emit_batch != n_batch:
                         logger.warning(
                             "Raising --batch-size from %s to %s: llama-server aborts below "

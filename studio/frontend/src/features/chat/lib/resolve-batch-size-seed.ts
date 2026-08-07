@@ -21,8 +21,19 @@ export function resolveBatchSizeSeed(options: {
   previous: BatchSizeSeedState;
   /** No load of this tab's own is in flight (``!modelLoading``). */
   seedLoadParams: boolean;
+  /** The model/variant changed underneath this tab. Nothing staged against the
+   *  previous model may survive it, so the new model's echo is the whole truth:
+   *  the control adopts it even when a pending edit would otherwise hold, and
+   *  even when the new model happens to report the count the old one ran. */
+  modelChanged?: boolean;
 }): BatchSizeSeed {
-  const { incoming, isGguf, previous, seedLoadParams } = options;
+  const {
+    incoming,
+    isGguf,
+    previous,
+    seedLoadParams,
+    modelChanged = false,
+  } = options;
   // while a load is in flight performLoad owns the load params
   if (!seedLoadParams) {
     return {};
@@ -30,14 +41,16 @@ export function resolveBatchSizeSeed(options: {
   // a non-gguf has no batch flags; an absent field is an older backend saying nothing
   const effective = isGguf ? incoming : null;
   if (effective === undefined) {
-    return {};
+    // Nothing to adopt, but a control staged against the model that just left must
+    // still go, or the old model's edit follows onto the new one.
+    return modelChanged ? { value: null } : {};
   }
   // steady echo: an ordinary poll must not touch anything
-  if (previous.loaded === effective) {
+  if (previous.loaded === effective && !modelChanged) {
     return {};
   }
   // the baseline is a fact about the running server; the control follows it only while clean
-  const controlIsClean = previous.value === previous.loaded;
+  const controlIsClean = modelChanged || previous.value === previous.loaded;
   return {
     loaded: effective,
     ...(controlIsClean ? { value: effective } : {}),
