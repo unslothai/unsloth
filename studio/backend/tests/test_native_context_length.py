@@ -463,22 +463,153 @@ class TestRouteCompleteness:
         walk(scope)
         return found
 
+    @staticmethod
+    def _parameter_names(scope) -> set:
+        """Every name ``scope`` binds through its signature.
+
+        A parameter is a binding that no assignment statement records, so without this a function
+        taking ``fields`` and reassigning it to the helper AFTER the constructor would look like a
+        single clean hoist while the call actually splatted the incoming argument.
+        """
+        args = getattr(scope, "args", None)
+        if args is None:
+            return set()
+        names = {
+            a.arg
+            for a in (
+                list(getattr(args, "posonlyargs", []) or [])
+                + list(args.args or [])
+                + list(args.kwonlyargs or [])
+            )
+        }
+        for extra in (args.vararg, args.kwarg):
+            if extra is not None:
+                names.add(extra.arg)
+        return names
+
+    @staticmethod
+    def _statement_chain(scope, call) -> list:
+        """``[(block, index), ...]`` from ``scope``'s body down to the statement holding ``call``.
+
+        Each entry is a statement list and the position within it of the statement containing the
+        call, which is what lets the caller ask "did a binding run before this" without a real
+        control-flow graph: an earlier sibling in a shared block always executes first.
+        """
+        chain: list = []
+
+        def contains(node) -> bool:
+            return any(n is call for n in ast.walk(node))
+
+        def descend(block) -> None:
+            for i, stmt in enumerate(block):
+                if not contains(stmt):
+                    continue
+                chain.append((block, i))
+                for _field, value in ast.iter_fields(stmt):
+                    if (
+                        isinstance(value, list)
+                        and value
+                        and isinstance(value[0], ast.stmt)
+                        and any(contains(s) for s in value)
+                    ):
+                        descend(value)
+                        break
+                return
+
+        descend(scope.body)
+        return chain
+
+    def _binding_dominates(self, scope, name: str, call) -> bool:
+        """True when a helper binding of ``name`` provably runs before ``call``.
+
+        Sibling order in one statement list is the only ordering Python guarantees without
+        modelling control flow, so that is all this claims: the binding has to be an earlier
+        statement in a block that also (transitively) contains the call. A binding tucked inside an
+        earlier ``if`` is not a sibling and does not count, which is the point -- a conditional
+        hoist can be skipped, leaving the constructor to splat a stale or unbound name.
+        """
+        for block, index in self._statement_chain(scope, call):
+            for stmt in block[:index]:
+                if isinstance(stmt, ast.Assign):
+                    targets = stmt.targets
+                elif isinstance(stmt, ast.AnnAssign):
+                    targets = [stmt.target]
+                else:
+                    continue
+                if not any(isinstance(t, ast.Name) and t.id == name for t in targets):
+                    continue
+                if self._is_runtime_fields_call(stmt.value):
+                    return True
+        return False
+
+    # The fields this contract asserts reach the response. Overwriting one is as fatal as deleting
+    # it: the route answers, so nothing raises, and /status quietly reports a value the backend
+    # never produced.
+    _PROTECTED_RUNTIME_KEYS = frozenset({"native_context_length"})
+
+    def _mutations_are_safe(self, scope, name: str) -> bool:
+        """True when nothing in ``scope`` can remove a protected key from ``name``.
+
+        The real call site edits one entry of the hoisted dict before splatting it, so mutation has
+        to be allowed -- but only the additive kind. A subscript write to an unprotected key adds or
+        replaces something this contract makes no claim about. Anything else fails closed: ``del``,
+        a computed subscript key we cannot read, and every method call, because ``pop``, ``clear``
+        and ``popitem`` all drop keys and ``update`` can overwrite them. A legitimate new pattern
+        will trip this and get a human to re-read the contract, which is the cheaper mistake.
+        """
+        ok = True
+
+        def walk(node) -> None:
+            nonlocal ok
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, self._NESTED_SCOPES):
+                    continue
+                if isinstance(child, ast.Delete):
+                    for target in child.targets:
+                        value = getattr(target, "value", None)
+                        if isinstance(value, ast.Name) and value.id == name:
+                            ok = False
+                elif isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute):
+                    obj = child.func.value
+                    if isinstance(obj, ast.Name) and obj.id == name:
+                        ok = False
+                elif isinstance(child, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+                    targets = child.targets if isinstance(child, ast.Assign) else [child.target]
+                    for target in targets:
+                        if not isinstance(target, ast.Subscript):
+                            continue
+                        obj = target.value
+                        if not (isinstance(obj, ast.Name) and obj.id == name):
+                            continue
+                        key = target.slice
+                        if not isinstance(key, ast.Constant) or not isinstance(key.value, str):
+                            ok = False  # a computed key could be any of the protected ones
+                        elif key.value in self._PROTECTED_RUNTIME_KEYS:
+                            ok = False
+                walk(child)
+
+        walk(scope)
+        return ok
+
     def _status_calls_getting_runtime_fields(self) -> list:
         """``InferenceStatusResponse(...)`` calls that actually receive the llama runtime fields.
 
         A call site may hoist the helper call to overwrite one entry before splatting, since
         passing an overriding keyword alongside ``**fields`` is a TypeError. That is a valid way
-        to receive the fields, so accept it.
+        to receive the fields, so accept it -- under three conditions, because a hoist turns one
+        expression into a name whose value depends on everything the function does to it:
 
-        Accepting a hoist means deciding which assignment reaches the call, and "the last one by
-        line number" is not that: a conditional rebind, an annotated rebind, or a binding inside a
-        nested function all defeat it. Rather than model control flow, require that EVERY binding
-        of the splatted name in the function's own scope is the helper call. That is stricter than
-        a reaching-definition check and needs no flow analysis: one hoisted assignment passes, and
-        any rebind to anything else fails, whether conditional or not.
-
-        Subscript writes such as ``fields["x"] = y`` mutate rather than rebind, so they are not
-        bindings and correctly do not count.
+        1. EVERY binding of the name in the function's own scope is the helper call. Stricter than
+           reaching definitions and needs no flow analysis: one hoist passes, any rebind to
+           anything else fails, conditional or not. Parameters count as bindings, so a name that
+           arrives as an argument and is reassigned later cannot pass on the later assignment.
+        2. One of those bindings DOMINATES the call, as an earlier sibling statement. Condition 1
+           alone accepts a binding that is conditional or sits after the constructor, where some
+           executions reach the splat with a different dict or an unbound name.
+        3. No mutation between them can remove a protected key. The splatted dict is deliberately
+           edited at the real call site, and a future ``pop`` or ``del`` of
+           ``native_context_length`` would leave this contract green while /status stopped
+           reporting the field.
         """
         tree = ast.parse(self._source)
         funcs = [
@@ -507,12 +638,20 @@ class TestRouteCompleteness:
                 if not enclosing:
                     continue
                 scope = max(enclosing, key = lambda f: f.lineno)
-                bindings = self._bindings_in_own_scope(scope, kw.value.id)
-                if bindings and all(
+                name = kw.value.id
+                if name in self._parameter_names(scope):
+                    continue
+                bindings = self._bindings_in_own_scope(scope, name)
+                if not bindings or not all(
                     self._is_runtime_fields_call(value) for _node, value in bindings
                 ):
-                    found.append(call)
-                    break
+                    continue
+                if not self._binding_dominates(scope, name, call):
+                    continue
+                if not self._mutations_are_safe(scope, name):
+                    continue
+                found.append(call)
+                break
         return found
 
     def test_gguf_load_responses_have_field(self):
@@ -554,6 +693,78 @@ class TestRouteCompleteness:
         calls = self._status_calls_getting_runtime_fields()
         assert calls, "No InferenceStatusResponse block with llama_backend has runtime fields"
         assert "for name in _InferenceRuntimeFields.model_fields" in self._source
+
+    # ── the hoist analysis itself, on synthetic sources ──────────────────────
+    def _accepts(self, body: str) -> bool:
+        """Run the analyser over a synthetic route function instead of the real file."""
+        import textwrap
+
+        self._source = "async def status(llama_backend):\n" + textwrap.indent(
+            textwrap.dedent(body).strip("\n"), "    "
+        )
+        return bool(self._status_calls_getting_runtime_fields())
+
+    def test_the_hoist_analysis_accepts_the_shape_the_route_actually_uses(self):
+        # Sibling hoist, then one edit to a field this contract makes no claim about. The three
+        # rejection tests below are only meaningful if this stays accepted.
+        assert self._accepts(
+            """
+            if llama_backend is not None:
+                fields = _llama_runtime_fields(llama_backend)
+                fields["chat_template_override"] = None
+                return InferenceStatusResponse(is_gguf = True, **fields)
+            """
+        )
+        # The unhoisted form needs no analysis at all.
+        assert self._accepts(
+            "return InferenceStatusResponse(**_llama_runtime_fields(llama_backend))"
+        )
+
+    def test_the_hoist_analysis_rejects_a_binding_that_can_be_skipped(self):
+        """A conditional hoist is not a hoist: the constructor can run without it.
+
+        Every binding is the helper call, so a bindings-only check passes this, and the route
+        raises UnboundLocalError on the branch that skipped the assignment. Requiring the binding
+        to be an earlier sibling of the call rejects it.
+        """
+        assert not self._accepts(
+            """
+            if llama_backend.is_gguf:
+                fields = _llama_runtime_fields(llama_backend)
+            return InferenceStatusResponse(is_gguf = True, **fields)
+            """
+        )
+
+    def test_the_hoist_analysis_rejects_a_binding_that_lands_after_the_call(self):
+        """A name that arrives as an argument and is rebound later never reaches the splat."""
+        import textwrap
+
+        self._source = textwrap.dedent(
+            """
+            async def status(llama_backend, fields):
+                response = InferenceStatusResponse(is_gguf = True, **fields)
+                fields = _llama_runtime_fields(llama_backend)
+                return response
+            """
+        )
+        assert not self._status_calls_getting_runtime_fields()
+
+    def test_the_hoist_analysis_rejects_dropping_a_protected_field(self):
+        """The dict is edited before the splat, so removal has to be checked, not just binding."""
+        for destructive in (
+            'del fields["native_context_length"]',
+            'fields.pop("native_context_length", None)',
+            "fields.clear()",
+            'fields[_key] = None',  # a computed key could be the protected one
+            'fields["native_context_length"] = None',
+        ):
+            assert not self._accepts(
+                f"""
+                fields = _llama_runtime_fields(llama_backend)
+                {destructive}
+                return InferenceStatusResponse(is_gguf = True, **fields)
+                """
+            ), f"{destructive} left the /status contract green"
 
     def test_non_gguf_status_path_reports_runtime_context_length(self):
         """Non-GGUF InferenceStatusResponse reports context_length from model_info."""
