@@ -1343,3 +1343,46 @@ def test_non_streaming_stop_reason_survives_the_finish(monkeypatch):
     monitor.set_perf(entry_id, stop_reason = "stop")
     monitor.finish(entry_id)
     assert next(r for r in monitor.snapshot() if r["id"] == entry_id)["stop_reason"] == "stop"
+
+
+@pytest.mark.parametrize(
+    "queue, expected",
+    [
+        ({"capacity": 4, "active": 1, "queued": 0, "free": 3}, "generating"),
+        ({"capacity": 4, "active": 0, "queued": 2, "free": 0}, "generating"),
+        ({"capacity": 4, "active": 0, "queued": 0, "free": 4}, "ready"),
+        (None, "ready"),
+    ],
+)
+def test_monitor_status_counts_slots_no_row_can_see(monkeypatch, queue, expected):
+    # A direct llama call (RAG caption/OCR) opens no row, logging may be off, and another
+    # subject's work is not counted here, so rows alone would report Ready beside a busy
+    # slot readout the same response carries.
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 3))
+    monkeypatch.setattr(inf, "_monitor_active_model", lambda: "org/M-GGUF")
+    monkeypatch.setattr(inf, "_monitor_context_length", lambda: 4096)
+    monkeypatch.setattr(inf, "_monitor_queue_state", lambda: queue)
+
+    app = FastAPI()
+    app.include_router(inf.studio_router)
+    app.dependency_overrides = {get_current_subject: lambda: "alice"}
+    body = TestClient(app).get("/monitor").json()
+
+    assert body["active_requests"] == 0
+    assert body["status"] == expected
+
+
+def test_monitor_status_is_idle_without_a_model(monkeypatch):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 3))
+    monkeypatch.setattr(inf, "_monitor_active_model", lambda: None)
+    monkeypatch.setattr(inf, "_monitor_context_length", lambda: None)
+    monkeypatch.setattr(inf, "_monitor_queue_state", lambda: None)
+
+    app = FastAPI()
+    app.include_router(inf.studio_router)
+    app.dependency_overrides = {get_current_subject: lambda: "alice"}
+    assert TestClient(app).get("/monitor").json()["status"] == "idle"

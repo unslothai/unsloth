@@ -7733,7 +7733,11 @@ async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
         lambda: (_monitor_active_model(), _monitor_context_length(), _monitor_queue_state())
     )
     active_requests = api_monitor.active_count(subject = current_subject)
-    if active_requests:
+    # Slots the rows cannot see: direct llama calls (RAG caption/OCR) open no row, logging
+    # may be off, and another subject's work is not counted here. The queue readout beside
+    # this is already server-wide, so deriving from rows alone reports Ready next to busy.
+    queue_busy = bool(queue) and bool(queue.get("active") or queue.get("queued"))
+    if active_requests or queue_busy:
         operating_status = "generating"
     elif active_model:
         operating_status = "ready"
