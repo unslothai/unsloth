@@ -142,6 +142,7 @@ import {
 } from "@/features/settings";
 import type { SidebarNavItemId } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
+import { resolveNavRowState } from "@/components/nav-row-state";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { clearAuthTokens, logout } from "@/features/auth";
 import { TOUR_OPEN_EVENT } from "@/features/tour";
@@ -223,6 +224,9 @@ type NavRowDef = {
   disabled?: boolean;
   tooltip?: string;
   spinner?: boolean;
+  // The capability that decides `disabled` has not been measured yet. A row in this state is
+  // neither enabled-looking nor blacked out: resolveNavRowState renders it with the spinner.
+  pending?: boolean;
   badge?: string;
   onClick: () => void;
   onIntent?: () => void;
@@ -330,6 +334,7 @@ function NavItem({
   onIntent,
   badge,
   overlay,
+  testId,
 }: {
   icon: typeof ZapIcon;
   label: string;
@@ -341,6 +346,9 @@ function NavItem({
   className?: string;
   spinner?: boolean;
   onIntent?: () => void;
+  // Stable hook for the UI smokes, which assert a row spins rather than greys out
+  // while its capability verdict is still unmeasured.
+  testId?: string;
   // Overrides the hover tooltip; explains why a disabled item is greyed out.
   tooltip?: string;
   // Trailing "New" pill text.
@@ -359,6 +367,8 @@ function NavItem({
           onFocus={disabled ? undefined : onIntent}
           isActive={active}
           data-tour={dataTour}
+          data-testid={testId}
+          data-spinner={spinner ? "true" : undefined}
           className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
         >
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 translate-x-0.5 group-hover/menu-button:animate-icon-pop" />
@@ -576,9 +586,15 @@ export function AppSidebar() {
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const detectionDeferred = usePlatformStore((s) => s.detectionDeferred);
+  const platformDeviceType = usePlatformStore((s) => s.deviceType);
+  // Until /api/health answers, `chatOnly` is the browser-platform guess, so every Mac painted
+  // Train and Video blacked out on load and only recovered once the backend reported. Gate the
+  // rows on a measured verdict and let them spin until it lands.
+  const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
+  const chatOnlyMeasured = chatOnly && !capabilitiesUnknown;
   // Explain a greyed-out Train (chat-only host) on hover. Export stays navigable so its page
   // can show a precise reason.
-  const trainDisabledHint: string | undefined = !chatOnly
+  const trainDisabledHint: string | undefined = !chatOnlyMeasured
     ? undefined
     : chatOnlyReason === "mlx_unavailable"
       ? "Training needs MLX. Run `unsloth studio update` to enable Train."
@@ -587,6 +603,16 @@ export function AppSidebar() {
         : chatOnlyReason === "no_gpu"
           ? "Training needs an NVIDIA or AMD GPU."
           : undefined;
+  // Video's hint is derived the same way. It used to be hardcoded to "needs an NVIDIA or AMD
+  // GPU", which is wrong on an Apple Silicon host: video has no Apple path at all, so the row
+  // says so rather than pointing at hardware the user cannot add.
+  const videoDisabledHint: string | undefined = !chatOnlyMeasured
+    ? undefined
+    : platformDeviceType === "mac"
+      ? "Video generation on macOS is coming soon."
+      : chatOnlyReason === "no_gpu"
+        ? "Video generation needs an NVIDIA or AMD GPU."
+        : undefined;
 
   // The backend MLX self-heal (utils/mlx_repair) can reinstall MLX and flip chat_only false
   // without a restart. The platform store cached the initial /api/health, so re-poll while
@@ -968,11 +994,12 @@ export function AppSidebar() {
       icon: TestTubeOutlineIcon,
       label: t("shell.navigation.train"),
       active: pathname === "/studio" || pathname.startsWith("/studio/"),
-      disabled: chatOnly,
+      disabled: chatOnlyMeasured,
       tooltip: trainDisabledHint,
       spinner: trainingInProgress,
+      pending: capabilitiesUnknown,
       onClick: () => {
-        if (chatOnly) return;
+        if (chatOnlyMeasured) return;
         navigate({ to: "/studio" });
         closeMobileIfOpen();
       },
@@ -985,10 +1012,9 @@ export function AppSidebar() {
       icon: FlimSlateIcon,
       label: t("shell.navigation.video"),
       active: pathname === "/video" || pathname.startsWith("/video/"),
-      disabled: chatOnly,
-      tooltip: chatOnly
-        ? "Video generation needs an NVIDIA or AMD GPU."
-        : undefined,
+      disabled: chatOnlyMeasured,
+      tooltip: videoDisabledHint,
+      pending: capabilitiesUnknown,
       onClick: () => {
         navigate({ to: "/video" });
         closeMobileIfOpen();
@@ -1930,6 +1956,8 @@ export function AppSidebar() {
                   Sidebar navigation. */}
               {inlineNavIds.map((id) => {
                 const row = navRows[id];
+                // A row whose capability is still unmeasured spins instead of blacking out.
+                const rowState = resolveNavRowState(row);
                 return (
                   <NavItem
                     key={id}
@@ -1940,9 +1968,10 @@ export function AppSidebar() {
                     active={
                       id === "images" && imagesWorkflowsListed ? false : row.active
                     }
-                    disabled={row.disabled}
-                    tooltip={row.tooltip}
-                    spinner={row.spinner}
+                    disabled={rowState.disabled}
+                    tooltip={rowState.tooltip}
+                    spinner={rowState.spinner}
+                    testId={`nav-row-${id}`}
                     onClick={row.onClick}
                     onIntent={row.onIntent}
                     className={cn(
@@ -2030,6 +2059,8 @@ export function AppSidebar() {
                     >
                       {overflowNavIds.map((id) => {
                         const row = navRows[id];
+                        // Same pending handling as the inline rows above.
+                        const rowState = resolveNavRowState(row);
                         return (
                           <MoreMenuItem
                             key={id}
@@ -2037,9 +2068,9 @@ export function AppSidebar() {
                             label={row.label}
                             badge={row.badge}
                             active={row.active}
-                            disabled={row.disabled}
-                            tooltip={row.tooltip}
-                            spinner={row.spinner}
+                            disabled={rowState.disabled}
+                            tooltip={rowState.tooltip}
+                            spinner={rowState.spinner}
                             onSelect={row.onClick}
                             onIntent={row.onIntent}
                           />

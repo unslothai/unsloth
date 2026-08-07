@@ -34,6 +34,12 @@ export interface HardwareInfo {
     exportSupported: boolean | null;
     exportUnsupportedReason: string | null;
     exportUnsupportedMessage: string | null;
+    // Whether video generation can run here. Same tri-state as export: `null` until the
+    // authoritative response lands, and `null` too against a backend that predates the field,
+    // so only an explicit `false` hides the generator.
+    videoSupported: boolean | null;
+    videoUnsupportedReason: string | null;
+    videoUnsupportedMessage: string | null;
     loaded: boolean;
 }
 
@@ -52,8 +58,14 @@ const DEFAULT: HardwareInfo = {
     exportSupported: null,
     exportUnsupportedReason: null,
     exportUnsupportedMessage: null,
+    videoSupported: null,
+    videoUnsupportedReason: null,
+    videoUnsupportedMessage: null,
     loaded: false,
 };
+
+// How long a caller waits before re-probing after a failed read. See useHardwareInfo.
+const RETRY_MS = 3000;
 
 // Module-level cache so multiple components share one fetch.
 let cached: HardwareInfo | null = null;
@@ -106,6 +118,9 @@ async function fetchOnce(): Promise<HardwareInfo> {
                 exportSupported: data?.export_supported ?? null,
                 exportUnsupportedReason: data?.export_unsupported_reason ?? null,
                 exportUnsupportedMessage: data?.export_unsupported_message ?? null,
+                videoSupported: data?.video_supported ?? null,
+                videoUnsupportedReason: data?.video_unsupported_reason ?? null,
+                videoUnsupportedMessage: data?.video_unsupported_message ?? null,
                 loaded: true,
             };
             if (generation === cacheGeneration) {
@@ -138,10 +153,21 @@ export function useHardwareInfo(): HardwareInfo {
         };
 
         listeners.add(listener);
-        if (!cached) fetchOnce().then(listener);
+        // A failed probe resolves to DEFAULT (loaded false) and clears the in-flight promise,
+        // but nothing re-ran it, so the only retry was another component happening to mount.
+        // Callers that gate a whole page on `loaded` would wait out the session on one blip.
+        let retry: ReturnType<typeof setTimeout> | undefined;
+        const load = () => {
+            fetchOnce().then((hw) => {
+                listener(hw);
+                if (!cancelled && !hw.loaded) retry = setTimeout(load, RETRY_MS);
+            });
+        };
+        if (!cached) load();
         return () => {
             cancelled = true;
             listeners.delete(listener);
+            if (retry !== undefined) clearTimeout(retry);
         };
     }, []);
 
