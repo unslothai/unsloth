@@ -6518,16 +6518,19 @@ def test_codex_attach_check_strict_rejects_nested_basename_labels(monkeypatch):
         start._attach_gguf_check_for_codex(BASE, "sk-test", "./m", "model")
 
 
-def test_codex_attach_check_sibling_variant_skips_named_file_readiness(tmp_path, monkeypatch):
-    # A variant naming a sibling means the load will not use the named file, so
-    # its torn bytes must not fail the attach; the probe judges the sibling.
+def test_codex_attach_check_rejects_torn_named_file_despite_sibling_variant(tmp_path, monkeypatch):
+    # A variant does not redirect a DIRECT FILE: from_identifier only consults
+    # gguf_variant when the path is a directory, so the torn file named here is what
+    # gets loaded, and a ready sibling row must not vouch for it.
     shard = tmp_path / "model-Q4_K_M-00001-of-00002.gguf"
     shard.write_bytes(b"GGUF")
+    (tmp_path / "model-Q8_0.gguf").write_bytes(b"GGUF")
     _fake_variants(
         monkeypatch,
         {"variants": [{"quant": "Q8_0", "partial": False}], "resolved_locally": True},
     )
-    start._attach_gguf_check_for_codex(BASE, "sk-test", os.fspath(shard), "Q8_0")
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", os.fspath(shard), "Q8_0")
 
 
 def test_codex_attach_check_rejects_a_requested_torn_local_variant(monkeypatch):

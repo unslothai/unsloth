@@ -2115,16 +2115,18 @@ def _attach_gguf_check_for_codex(
         # failing. Settled by name, not by probing: the probe's own empty answer defers
         # whenever the path exists here, which on this loopback attach is exactly when it does.
         #
-        # But only when the load would use THIS file: with an explicit variant the resolver
-        # scans the file's marked parent and may serve a different sibling instead, so those
-        # requests go to the probe below. Refused is refused regardless of quant, though --
-        # the loader only consults gguf_variant for a DIRECTORY, never swapping a direct file.
+        # The quant never redirects a direct file: from_identifier consults gguf_variant only
+        # for a DIRECTORY, so this very file is what loads. An explicit variant still reaches
+        # the probe below, which judges the marked parent.
         refused = _direct_gguf_is_companion(repo) or _direct_gguf_is_big_endian(repo)
         if refused:
             _fail_codex_needs_gguf(repo)
         # A drafter folder further up is the server's call; ask it rather than deciding here.
         uncertain = _direct_gguf_companion_is_uncertain(repo)
-        if not refused and not uncertain and not variant:
+        # The variant does not exempt this: from_identifier only consults gguf_variant when
+        # the path is a DIRECTORY, so a direct file is loaded as itself and a complete
+        # sibling matching the quant never gets substituted for it.
+        if not refused and not uncertain:
             # On loopback this process sees the server's filesystem, so an incomplete file
             # fails here: the .gguf extension alone gets it loaded, and llama-server only
             # finds the missing bytes/shards after the resident model is torn down.
@@ -2160,7 +2162,10 @@ def _attach_gguf_check_for_codex(
                             f"{repo} is incomplete (zero bytes or a split missing shards); "
                             "re-download or re-copy it before pointing Codex at it."
                         )
-                    return
+                    # An explicit variant still goes to the probe, which judges the marked
+                    # parent; the checks above already covered this file itself.
+                    if not variant:
+                        return
             # A remote server's filesystem isn't ours to read, and the load takes the .gguf
             # suffix as authoritative without checking existence, so ask the server instead.
             # Its error paths defer as always.
