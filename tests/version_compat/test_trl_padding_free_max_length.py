@@ -923,15 +923,13 @@ def _assistant_mask_dataset(tok):
     mask = [0] * len(prompt) + [1] * len(completion)
     return Dataset.from_list(
         [
-            {"input_ids": ids, "attention_mask": [1] * len(ids),
-             "assistant_masks": mask}
+            {"input_ids": ids, "attention_mask": [1] * len(ids), "assistant_masks": mask}
             for _ in range(4)
         ]
     )
 
 
-def test_assistant_masks_are_filtered_even_with_the_loss_mode_off(
-        tmp_path, trl_has_guard):
+def test_assistant_masks_are_filtered_even_with_the_loss_mode_off(tmp_path, trl_has_guard):
     """The two masks are not gated alike, and gating both on their flag was
     wrong. DataCollatorForLanguageModeling applies `assistant_masks` on presence
     alone -- only `completion_mask` is behind `completion_only_loss` -- so with
@@ -939,8 +937,7 @@ def test_assistant_masks_are_filtered_even_with_the_loss_mode_off(
     all -100 and the row carries no supervised token."""
     if not trl_has_guard:
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
-    trainer = _build(tmp_path, dataset = _assistant_mask_dataset,
-                     assistant_only_loss = False)
+    trainer = _build(tmp_path, dataset = _assistant_mask_dataset, assistant_only_loss = False)
     for row in trainer.train_dataset:
         assert any(
             m != 0 for m in row["assistant_masks"]
