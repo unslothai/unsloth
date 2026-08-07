@@ -2730,9 +2730,7 @@ def test_the_default_is_preflighted_before_the_managed_download():
     src = _read("features/chat/api/chat-adapter.ts")
     fallback = src.split("// Nothing on the device:", 1)[1]
     fallback = fallback.split("export function createOpenAIStreamAdapter", 1)[0]
-    assert fallback.index("canAutoLoad({") < fallback.index(
-        "ensureDefaultModelDownloaded("
-    )
+    assert fallback.index("canAutoLoad({") < fallback.index("ensureDefaultModelDownloaded(")
     # One GPU snapshot feeds both, so the load sends what was cleared.
     assert fallback.index("const rt = useChatRuntimeStore.getState();") < fallback.index(
         "canAutoLoad({"
