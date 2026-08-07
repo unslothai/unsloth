@@ -1386,3 +1386,74 @@ def test_monitor_status_is_idle_without_a_model(monkeypatch):
     app.include_router(inf.studio_router)
     app.dependency_overrides = {get_current_subject: lambda: "alice"}
     assert TestClient(app).get("/monitor").json()["status"] == "idle"
+
+
+def test_tool_card_starts_ttft_but_not_the_token_rate_clock(monkeypatch):
+    # A tool card is client output, so it starts TTFT. It is not decoded output, so the
+    # tool run (or a human confirming one) after it must not count as decoding time --
+    # dividing by that wait reports a rate near zero.
+    import core.inference.api_monitor as m
+
+    clock = [100.0]
+    monkeypatch.setattr(m.time, "monotonic", lambda: clock[0])
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+    )
+
+    monitor.mark_first_token(entry_id, decoded = False)
+    clock[0] = 160.0                      # a minute of tool run / human confirmation
+    monitor.append_reply(entry_id, "first real token")
+    clock[0] = 162.0                      # two seconds of decoding
+    monitor.set_usage(entry_id, completion_tokens = 21)
+    monitor.finish(entry_id)
+
+    row = next(r for r in monitor.snapshot() if r["id"] == entry_id)
+    # TTFT still measures from the card the user actually saw.
+    assert row["ttft_ms"] == 0
+    # 20 gaps over 2s, not over 62s.
+    assert row["tok_per_sec"] == 10.0
+
+
+def test_a_decoded_first_token_starts_both_clocks(monkeypatch):
+    import core.inference.api_monitor as m
+
+    clock = [100.0]
+    monkeypatch.setattr(m.time, "monotonic", lambda: clock[0])
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+    )
+
+    # Reasoning tokens are decoded output, so they start the rate clock as before.
+    monitor.mark_first_token(entry_id)
+    clock[0] = 102.0
+    monitor.set_usage(entry_id, completion_tokens = 21)
+    monitor.finish(entry_id)
+
+    assert next(r for r in monitor.snapshot() if r["id"] == entry_id)["tok_per_sec"] == 10.0
+
+
+def test_a_stop_reason_written_after_finish_escapes_the_clearing():
+    # Why every route records the reason before finish(): the settle runs once, at the
+    # terminal transition, so a later write would put a natural stop reason back onto a
+    # cancelled row.
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+    )
+    monitor.set_perf(entry_id, stop_reason = "stop")
+    monitor.finish(entry_id, "cancelled")
+    assert next(r for r in monitor.snapshot() if r["id"] == entry_id)["stop_reason"] is None
+
+    monitor.set_perf(entry_id, stop_reason = "stop")
+    assert next(r for r in monitor.snapshot() if r["id"] == entry_id)["stop_reason"] == "stop"

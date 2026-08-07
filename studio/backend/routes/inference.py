@@ -3191,7 +3191,9 @@ def _monitor_openai_chunk(
         return
     if isinstance(data, dict) and data.get("_toolEvent"):
         # Tool cards ride the chunk beside choices with an empty delta; already seen.
-        api_monitor.mark_first_token(monitor_id)
+        # Not decoded output though: a tool run (or a human confirming one) between the
+        # card and the first token would otherwise be counted as decoding time.
+        api_monitor.mark_first_token(monitor_id, decoded = False)
     reply_parts: list[tuple[int, str]] = []
     for idx, choice in enumerate(choices):
         if not isinstance(choice, dict):
@@ -10595,14 +10597,17 @@ async def openai_chat_completions(
                                     completion_id, created, model_name, chunk_text
                                 )
 
-                        api_monitor.finish(monitor_id, "cancelled" if cancelled else "completed")
-                        yield _chat_final_chunk(
-                            completion_id,
-                            created,
-                            model_name,
+                        _audio_finish = (
                             "stop"
                             if cancelled
-                            else _stats_finish_reason(_audio_stats_holder.get("stats")),
+                            else _stats_finish_reason(_audio_stats_holder.get("stats"))
+                        )
+                        # Before finish(): that is where the reason is settled, and a
+                        # later write would escape the clearing a cancelled row gets.
+                        api_monitor.set_perf(monitor_id, stop_reason = _audio_finish)
+                        api_monitor.finish(monitor_id, "cancelled" if cancelled else "completed")
+                        yield _chat_final_chunk(
+                            completion_id, created, model_name, _audio_finish
                         )
                         yield "data: [DONE]\n\n"
                     except asyncio.CancelledError:
@@ -10654,6 +10659,12 @@ async def openai_chat_completions(
                     # Nested under the except arms too: api_monitor.fail() can throw, and a leaked entry 409s swaps.
                     _tracker.__exit__(None, None, None)
                 api_monitor.set_reply(monitor_id, full_text)
+                _audio_json_finish = (
+                    "stop"
+                    if cancel_event.is_set()
+                    else _stats_finish_reason(_audio_stats_holder.get("stats"))
+                )
+                api_monitor.set_perf(monitor_id, stop_reason = _audio_json_finish)
                 api_monitor.finish(monitor_id)
                 response = ChatCompletion(
                     id = completion_id,
@@ -10662,11 +10673,7 @@ async def openai_chat_completions(
                     choices = [
                         CompletionChoice(
                             message = CompletionMessage(content = full_text),
-                            finish_reason = (
-                                "stop"
-                                if cancel_event.is_set()
-                                else _stats_finish_reason(_audio_stats_holder.get("stats"))
-                            ),
+                            finish_reason = _audio_json_finish,
                         )
                     ],
                 )

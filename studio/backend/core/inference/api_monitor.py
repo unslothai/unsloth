@@ -96,6 +96,10 @@ class ApiMonitorEntry:
     progress: Optional[float] = None
     # Stamped on the first reply text; snapshot() prefers it over engine timings.
     first_token_monotonic: Optional[float] = None
+    # The same instant, but only for output the model decoded. A tool card is client
+    # output that TTFT should count and the token-rate clock must not: the tool run
+    # between it and the first token is not decoding.
+    first_decode_monotonic: Optional[float] = None
     prompt_ms: Optional[float] = None
     tok_per_sec: Optional[float] = None
     stop_reason: Optional[str] = None
@@ -135,9 +139,9 @@ class ApiMonitorEntry:
             # followed it: one token has no gap to measure, hence no rate at all.
             and self.completion_tokens > 1
             and self.finished_monotonic is not None
-            and self.first_token_monotonic is not None
+            and self.first_decode_monotonic is not None
         ):
-            gen_s = self.finished_monotonic - self.first_token_monotonic
+            gen_s = self.finished_monotonic - self.first_decode_monotonic
             if gen_s > 0.05:
                 tok_per_sec = (self.completion_tokens - 1) / gen_s
         payload = {
@@ -326,8 +330,12 @@ class ApiMonitor:
             if entry is None:
                 return
             # Only a streaming delta stamps TTFT; a full-response append is end-to-end latency.
-            if stamp_first_token and entry.first_token_monotonic is None:
-                entry.first_token_monotonic = time.monotonic()
+            if stamp_first_token:
+                now = time.monotonic()
+                if entry.first_token_monotonic is None:
+                    entry.first_token_monotonic = now
+                if entry.first_decode_monotonic is None:
+                    entry.first_decode_monotonic = now
             # Preview is capped: once the "..." marker is present the head is
             # frozen, so skip the per-chunk re-concat (avoids O(n^2) on long
             # generations). A reply that landed exactly on the cap has no marker
@@ -340,15 +348,23 @@ class ApiMonitor:
             entry.reply = _trim(entry.reply + text, _MAX_REPLY_CHARS)
             entry.updated_at = time.time()
 
-    def mark_first_token(self, entry_id: Optional[str]) -> None:
-        """Stamp TTFT for deltas with no reply text, e.g. reasoning tokens."""
+    def mark_first_token(self, entry_id: Optional[str], *, decoded: bool = True) -> None:
+        """Stamp TTFT for deltas with no reply text, e.g. reasoning tokens.
+
+        ``decoded = False`` for output the model did not generate (a tool card), which
+        starts the clock the user sees but must not start the token-rate clock.
+        """
         if not entry_id:
             return
+        now = time.monotonic()
         with self._lock:
             entry = self._find_locked(entry_id)
-            if entry is None or entry.first_token_monotonic is not None:
+            if entry is None:
                 return
-            entry.first_token_monotonic = time.monotonic()
+            if entry.first_token_monotonic is None:
+                entry.first_token_monotonic = now
+            if decoded and entry.first_decode_monotonic is None:
+                entry.first_decode_monotonic = now
 
     def set_reply(self, entry_id: Optional[str], text: str) -> None:
         if not entry_id:
