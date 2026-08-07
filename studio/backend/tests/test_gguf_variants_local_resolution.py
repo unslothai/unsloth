@@ -632,3 +632,32 @@ def test_wsl_drive_path_is_normalized_like_the_load(in_tmp_cwd, monkeypatch):
     assert [v.quant for v in response.variants] == ["Q4_K_M"]
     assert "Q4_K_M" in (response.loadable_variants or [])
     assert response.loadable is True
+
+
+@pytest.mark.parametrize(
+    "error, serves",
+    [
+        (FileNotFoundError(2, "No such file"), False),
+        (PermissionError(13, "Permission denied"), True),
+        (OSError(11, "Resource temporarily unavailable"), True),
+    ],
+)
+def test_will_serve_only_treats_definite_absence_as_unloadable(
+    in_tmp_cwd, monkeypatch, error, serves
+):
+    # Only "no such file" is definite. A read error (the Windows sharing violation in the
+    # lock window) must stay unknown and serve, which exists() cannot express: on 3.14 it
+    # swallows every OSError and would report the file as absent.
+    from hub.services.models import gguf_variants
+
+    gguf = in_tmp_cwd / "foo-Q4_K_M.gguf"
+    gguf.write_bytes(b"GGUF")
+
+    def raising_stat(self, *args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(gguf_variants.Path, "stat", raising_stat)
+    # Stand in for 3.14, where exists() swallows the error and answers False. Judging by
+    # exists() would call every one of these a definite absence.
+    monkeypatch.setattr(gguf_variants.Path, "exists", lambda self: False)
+    assert gguf_variants._will_serve(os.fspath(gguf)) is serves

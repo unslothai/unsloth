@@ -659,10 +659,13 @@ def _will_serve(resolved: Optional[str]) -> bool:
         path = Path(resolved)
         # Absence must be caught here since the resolver answers for nonexistent paths too:
         # "no such file" is definite, but an error reading it (Windows lock window after
-        # llama-server is killed) stays unknown and serves.
-        if not path.exists():
+        # llama-server is killed) stays unknown and serves. stat() rather than exists(),
+        # which swallows every OSError on 3.14 and would read a sharing violation as absence.
+        try:
+            size = path.stat().st_size
+        except (FileNotFoundError, NotADirectoryError):
             return False
-        return path.stat().st_size > 0 and _direct_gguf_split_is_whole(path)
+        return size > 0 and _direct_gguf_split_is_whole(path)
     except OSError:
         return True
 
