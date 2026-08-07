@@ -959,7 +959,8 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             stored = getattr(trainer, "eval_dataset", None)
             if isinstance(stored, dict) and given in stored:
                 capped = _cap_cached(trainer, stored[given], cap, drop_unsupervised)
-                if capped is not stored[given]: stored[given] = capped
+                if capped is not stored[given]:
+                    stored[given] = capped
             return given
         if isinstance(given, dict):
             capped = {k: _cap_cached(trainer, v, cap, drop_unsupervised) for k, v in given.items()}

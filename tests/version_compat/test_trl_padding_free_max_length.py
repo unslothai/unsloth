@@ -2203,10 +2203,12 @@ def _transformed_tokenized_dataset(tok):
 
     ids = tok("The quick brown fox. " * 200)["input_ids"]
     ds = Dataset.from_list([{"text": "x"}] * 4)
-    return ds.with_transform(lambda batch: {
-        "input_ids": [list(ids)] * len(batch["text"]),
-        "attention_mask": [[1] * len(ids)] * len(batch["text"]),
-    })
+    return ds.with_transform(
+        lambda batch: {
+            "input_ids": [list(ids)] * len(batch["text"]),
+            "attention_mask": [[1] * len(ids)] * len(batch["text"]),
+        }
+    )
 
 
 class _SharedIteratorStream:
@@ -2261,11 +2263,11 @@ def test_the_schema_read_distrusts_a_transform_and_an_unprobeable_stream():
     block = _padding_free_codegen_block()
     assert "_unsloth_transformed" in block, "the transform is not detected at all"
     assert (
-        "None if _unsloth_transformed else getattr(train_dataset, 'column_names', None)"
-        in block
+        "None if _unsloth_transformed else getattr(train_dataset, 'column_names', None)" in block
     ), "a transformed split is still read off its backing columns"
     guard = "if _unsloth_probe_cols is train_dataset or _unsloth_probe_cols is iter(train_dataset):"
     assert guard in block
     refusal = block.index("_unsloth_prep_truncates = False", block.index(guard))
-    assert refusal - block.index(guard) < 200, (
-        "an unprobeable stream still claims preparation will truncate it")
+    assert (
+        refusal - block.index(guard) < 200
+    ), "an unprobeable stream still claims preparation will truncate it"
