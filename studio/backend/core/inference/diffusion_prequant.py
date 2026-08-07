@@ -175,7 +175,6 @@ def local_prequant_scheme(path: str) -> Optional[str]:
     scheme: Optional[str] = None
     try:
         import torch
-
         obj = torch.load(real, map_location = "meta", weights_only = False, mmap = True)
         if isinstance(obj, dict) and obj.get("format") == PREQUANT_FORMAT:
             recorded = (obj.get("metadata") or {}).get("scheme")
