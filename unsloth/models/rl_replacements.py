@@ -512,6 +512,17 @@ _ZOO_MAX_LENGTH_SEED = re.compile(
 )
 
 
+def _same_source(text):
+    """`text` with quote style normalised, for comparing two spellings of a line.
+
+    The narrow regexes here already accept either quote, so the idempotence check
+    has to as well: a Zoo carrying the replacement with single quotes matched
+    neither the literal nor the `$`-anchored regex, and `required = True` then
+    raised on every SFT trainer over behaviour already present.
+    """
+    return text.replace("'", '"')
+
+
 def _replace_or_fallback(
     function,
     old,
@@ -551,7 +562,7 @@ def _replace_or_fallback(
     # differently spelled upstream form matches no anchor at all and used to
     # raise under `required = True` -- failing every SFT trainer over behaviour
     # that is already present.
-    if new in function:
+    if _same_source(new) in _same_source(function):
         return function
     if old in function:
         return function.replace(old, new, 1)

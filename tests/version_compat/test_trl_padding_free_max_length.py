@@ -3102,3 +3102,85 @@ def test_a_zoo_that_already_normalizes_the_seed_is_left_alone():
         )
         == done
     )
+
+
+# ── round twenty ─────────────────────────────────────────────────────────────
+def test_a_single_quoted_normalized_seed_is_recognised():
+    """The narrow regex accepts either quote style, so the idempotence check has
+    to as well. A Zoo carrying the replacement single-quoted matched neither the
+    literal nor the `$`-anchored regex, and `required = True` then raised on
+    every SFT trainer over behaviour already present."""
+    from unsloth.models import rl_replacements as R
+
+    old = '    max_seq_length = getattr(args, "max_length", 0)'
+    new = '    max_seq_length = getattr(args, "max_length", 0) or 0'
+    kwargs = dict(
+        fallback_pattern = R._ZOO_MAX_LENGTH_SEED,
+        fallback_new = r'\g<indent>max_seq_length = getattr(args, "max_length", 0) or 0',
+        where = "test", required = True,
+    )
+    single = "def f():\n    max_seq_length = getattr(args, 'max_length', 0) or 0\n"
+    assert R._replace_or_fallback(single, old, new, **kwargs) == single
+    # Premise: neither anchor sees it on its own.
+    assert new not in single and not R._ZOO_MAX_LENGTH_SEED.search(single)
+
+
+def test_the_late_cap_prefers_the_trainers_resolved_completion_mode():
+    """The generated block does not always run -- a TRL whose guard did not
+    match, or padding-free off from the start -- but TRL has still resolved
+    `completion_only_loss` from the training sample. Falling through to the late
+    split's own schema read False off one carrying only `input_ids` and
+    `completion_mask`, kept rows whose completion was cut away entirely, and the
+    collator turned them into all -100."""
+    _, tok = _load_plain()
+    Stub, seen = _late_cap_helpers()
+    stub = Stub()
+    stub.args = _EvalArgs(_MODEL_MAX_SEQ_LENGTH)
+    # Exactly the state the generated block would have left empty.
+    for name in ("_unsloth_completion_only_loss", "completion_only_loss"):
+        if hasattr(stub.args, name):
+            setattr(stub.args, name, None)
+    stub.completion_only_loss = True
+
+    stub.evaluate(eval_dataset = _tokenized_dataset(tok))
+    assert getattr(stub.args, "_unsloth_resolved_completion_only") is True
+
+    # And False is an answer too, not an absence.
+    stub.completion_only_loss = False
+    stub.evaluate(eval_dataset = _tokenized_dataset(tok))
+    assert getattr(stub.args, "_unsloth_resolved_completion_only") is False
+
+
+def test_the_pre_truncation_rewrite_runs_under_the_rank_window():
+    """Every rank reaches this before TRL's `_prepare_dataset`, and TRL runs its
+    own preparation maps under `main_process_first`. Without it, eight ranks each
+    start `num_proc` workers against one Arrow cache."""
+    block = _padding_free_codegen_block()
+    for fragment in (
+        "def _unsloth_rank_first():",
+        "from accelerate import PartialState",
+        "return PartialState().main_process_first()",
+        "with _unsloth_rank_first():",
+        "return _unsloth_cap_one(_ds)",
+    ):
+        assert fragment in block, fragment
+    # The map AND the filter have to be inside it, so the whole body moved.
+    assert "def _unsloth_cap_one(_ds):" in block
+    assert block.index("def _unsloth_cap_split(_ds):") < block.index("def _unsloth_cap_one(_ds):")
+
+
+def test_the_rank_window_degrades_to_a_no_op():
+    """A single process, or an accelerate that cannot build a PartialState, must
+    still cap. The helper is executed as written."""
+    import inspect as _inspect
+    import re
+    from unsloth.models import rl
+
+    source = _inspect.getsource(rl)
+    start = source.index('"        def _unsloth_rank_first():\\n"')
+    end = source.index('"        def _unsloth_cap_split(_ds):\\n"')
+    lines = re.findall(r'^\s*"(.*?)\\n"\s*$', source[start:end], re.M)
+    scope = {}
+    exec("\n".join(line[8:] for line in lines), scope)
+    with scope["_unsloth_rank_first"]():
+        pass  # must not raise, whatever accelerate is or is not here

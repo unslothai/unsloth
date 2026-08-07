@@ -1019,7 +1019,17 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         does the same and the two must agree.
         """
         columns = ["labels"] if "labels" in names else []
-        only = getattr(args, "_unsloth_completion_only_loss", None)
+        # The TRAINER's resolved value first. It is the one the collator uses,
+        # and it is present whenever TRL resolved it -- including the cases the
+        # generated block never runs in: a TRL whose guard did not match, or
+        # padding-free off from the start. Falling straight through to this
+        # split's own schema then read False off a late pre-tokenized split
+        # carrying only `input_ids` and `completion_mask`, kept the rows whose
+        # completion was cut away entirely, and the collator turned them into
+        # all -100, i.e. a NaN eval loss.
+        only = getattr(args, "_unsloth_resolved_completion_only", None)
+        if only is None:
+            only = getattr(args, "_unsloth_completion_only_loss", None)
         if only is None:
             only = getattr(args, "completion_only_loss", None)
         if only is None:
@@ -1223,6 +1233,14 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         column each time. Keep the answer, keyed on the split object and holding a
         reference to it, so a later split cannot inherit its `id()`.
         """
+        # Carried onto args because `_cap` only ever sees those. `is not None`
+        # rather than truthiness: False is TRL's answer just as much as True.
+        resolved = getattr(trainer, "completion_only_loss", None)
+        if resolved is not None:
+            try:
+                trainer.args._unsloth_resolved_completion_only = resolved
+            except Exception:
+                pass
         token = _memo_token(dataset)
         if token is None:
             return _cap(dataset, cap, trainer.args, drop_unsupervised)
@@ -2353,7 +2371,24 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "                _row = next(_probe, None)\n"
                     "            except Exception: return True\n"
                     "            return isinstance(_row, dict) and 'input_ids' in _row\n"
+                    # Every rank reaches this before TRL's `_prepare_dataset`, and
+                    # TRL runs its own preparation maps under `main_process_first`.
+                    # Without the same window, eight ranks each start `num_proc`
+                    # workers against one Arrow cache -- 64 processes doing the same
+                    # work, and writing the same cache files at the same time. One
+                    # rank materialises, the rest read what it wrote. A single
+                    # process gets a no-op context manager, so nothing changes there.
+                    "        def _unsloth_rank_first():\n"
+                    "            try:\n"
+                    "                from accelerate import PartialState\n"
+                    "                return PartialState().main_process_first()\n"
+                    "            except Exception:\n"
+                    "                import contextlib\n"
+                    "                return contextlib.nullcontext()\n"
                     "        def _unsloth_cap_split(_ds):\n"
+                    "            with _unsloth_rank_first():\n"
+                    "                return _unsloth_cap_one(_ds)\n"
+                    "        def _unsloth_cap_one(_ds):\n"
                     "            if _ds is None: return _ds, True\n"
                     "            if not _unsloth_truncatable(_ds): return _ds, not _unsloth_pretokenized(_ds)\n"
                     "            _kw = {} if _unsloth_is_stream(_ds) else _unsloth_map_kw\n"
