@@ -23,6 +23,7 @@ import {
   removeChatThreadTombstones,
 } from "../utils/chat-thread-tombstones";
 import { requestPromptQueueStop } from "../utils/prompt-queue-boundary";
+import { repairLegacyChatTitles } from "../utils/repair-legacy-chat-titles";
 
 export interface SidebarItem {
   type: "single" | "compare";
@@ -131,6 +132,9 @@ export function useChatSidebarItems(options?: {
         if (cancelled || seq !== requestSeq) return;
         setAllThreads(threads);
         setLoaded(true);
+        // Older pre-cut titles cannot grow with the sidebar. Each patch fires
+        // a history update, which reloads the list.
+        void repairLegacyChatTitles(threads).catch(() => undefined);
       } catch (error) {
         if (isExpectedBackgroundChatStorageError(error)) {
           return;
