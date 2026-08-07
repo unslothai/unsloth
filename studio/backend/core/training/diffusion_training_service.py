@@ -65,6 +65,7 @@ def _default_target(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
 
     # Self-bind to parent death and scrub the native path secret, like the other workers.
     from utils.native_path_leases import run_without_native_path_secret
+
     run_without_native_path_secret(
         _run_diffusion_child, event_queue = event_queue, stop_queue = stop_queue, config = config
     )

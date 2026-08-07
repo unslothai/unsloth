@@ -130,9 +130,7 @@ def test_default_target_activates_native_tls_before_diffusion_trainer(monkeypatc
     import core.training.diffusion_training_service as service
 
     calls = []
-    monkeypatch.setattr(
-        "utils.native_tls.activate_native_tls", lambda: calls.append("native_tls")
-    )
+    monkeypatch.setattr("utils.native_tls.activate_native_tls", lambda: calls.append("native_tls"))
 
     def _run_without_native_path_secret(target, **kwargs):
         calls.append("native_path_secret")
