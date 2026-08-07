@@ -162,7 +162,31 @@ def test_a_legacy_equal_override_names_its_parent():
         block = src[idx : idx + 1200]
         assert '"studio"' in block, f"{path.name} does not compare against the legacy root"
         assert "-ieq" in block, f"{path.name} must compare case-insensitively"
-        assert "TrimEnd" in block, f"{path.name} must ignore a trailing separator"
+        assert (
+            block.count("Get-CanonicalRootPath") >= 2
+        ), f"{path.name} must canonicalize both sides before comparing"
+
+
+def test_the_legacy_root_comparison_is_canonical():
+    """A raw string compare misses the spellings a user actually types. The env
+    override reaches this unresolved: `~/.unsloth/studio`, a trailing separator,
+    forward slashes, or a `..` segment all name the legacy root but compare
+    unequal, and the notice then sends the user past the admin-owned llama.cpp."""
+    for path in (INSTALL_PS1, SETUP_PS1):
+        src = _code_only(_read(path))
+        idx = src.index("function Get-CanonicalRootPath")
+        body = src[idx : src.index("\n    }\n", idx)]
+        # GetFullPath alone keeps a literal ~ and resolves it against the cwd.
+        assert '-eq "~"' in body and '"~/*"' in body, f"{path.name} must expand a leading ~"
+        assert "$env:USERPROFILE" in body, f"{path.name} must expand ~ to the profile"
+        assert (
+            "[System.IO.Path]::GetFullPath" in body
+        ), f"{path.name} must normalize separators and .. segments"
+        assert "TrimEnd" in body, f"{path.name} must ignore a trailing separator"
+        # A bare "~" leaves an empty child path, which Join-Path rejects on PS 5.1.
+        assert "Substring(1)" in body, f"{path.name} must handle a bare ~"
+        # An unresolvable path must not take the install down.
+        assert "catch { }" in body, f"{path.name} must survive an unresolvable path"
 
 
 def test_installer_restores_skip_studio_base():
@@ -181,6 +205,29 @@ def test_installer_restores_skip_studio_base():
     assert (
         "Remove-Item Env:SKIP_STUDIO_BASE" in restore
     ), "an unset value must be removed again, not left as an empty string"
+
+
+def test_the_early_bail_restores_the_environment_too():
+    """--with-llama-cpp-dir with a missing path returns before `& $UnslothExe`.
+    That return used to sit between the env mutations and the `try`, so the bail
+    leaked SKIP_STUDIO_BASE, UNSLOTH_STUDIO_HOME and UNSLOTH_TAURI_MODE into the
+    caller's shell. The try has to open before the first mutation."""
+    src = _code_only(_read(INSTALL_PS1))
+    try_idx = src.index("    try {\n        $env:SKIP_STUDIO_BASE")
+    finally_idx = src.index("    } finally {", try_idx)
+    body = src[try_idx:finally_idx]
+    assert (
+        "--with-llama-cpp-dir path does not exist." in body
+    ), "the early bail must sit inside the try that the finally covers"
+    for var in ("SKIP_STUDIO_BASE", "UNSLOTH_STUDIO_HOME", "UNSLOTH_TAURI_MODE"):
+        assert f"$env:{var} =" in body, f"{var} is mutated outside the try"
+    # The saves read the previous value, so they must stay outside and before it.
+    for save in (
+        "$previousSkipStudioBase = $env:SKIP_STUDIO_BASE",
+        "$previousUnslothStudioHome = $env:UNSLOTH_STUDIO_HOME",
+        "$previousTauriMode = $env:UNSLOTH_TAURI_MODE",
+    ):
+        assert src.index(save) < try_idx, f"'{save}' must be captured before the try opens"
 
 
 def test_both_scripts_resolve_the_warning_root_the_same_way():

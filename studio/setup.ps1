@@ -1640,6 +1640,23 @@ if ($env:SKIP_STUDIO_BASE -ne "1") {
         [Console]::Out.WriteLine("[TAURI:DIAG] elevated=$ElevationState")
         [Console]::Out.Flush()
     }
+    # Expand a leading ~ and normalize separators and .. segments, so an override
+    # spelled differently still compares equal to the legacy default. GetFullPath
+    # alone keeps a literal ~ and resolves it against the cwd.
+    function Get-CanonicalRootPath {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+        $_p = $Path.Trim()
+        if (($_p -eq "~" -or $_p -like "~/*" -or $_p -like "~\*") -and
+            -not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+            # A bare "~" leaves an empty child path, which Join-Path rejects on PS 5.1.
+            $_rest = $_p.Substring(1).TrimStart('/', '\')
+            $_p = if ($_rest) { Join-Path $env:USERPROFILE $_rest } else { $env:USERPROFILE }
+        }
+        try { $_p = [System.IO.Path]::GetFullPath($_p) } catch { }
+        return $_p.TrimEnd('\', '/')
+    }
+
     if ($ElevationState -eq "true") {
         # $StudioHome is resolved much later, so mirror its override precedence
         # here for the message only. llama.cpp is a sibling of studio under
@@ -1654,7 +1671,8 @@ if ($env:SKIP_STUDIO_BASE -ne "1") {
         }
         # An override equal to the legacy default is not a custom root downstream:
         # llama.cpp and node stay siblings under ~/.unsloth, so name that parent.
-        if ($_elevRoot.TrimEnd('\', '/') -ieq (Join-Path $_unslothRoot "studio").TrimEnd('\', '/')) {
+        if ((Get-CanonicalRootPath $_elevRoot) -ieq
+            (Get-CanonicalRootPath (Join-Path $_unslothRoot "studio"))) {
             $_elevRoot = $_unslothRoot
         }
         Write-Host ""
