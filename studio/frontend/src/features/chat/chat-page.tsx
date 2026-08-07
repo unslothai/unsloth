@@ -154,6 +154,7 @@ import {
   getProviderCapabilities,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
+  providerSupportsStudioTools,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
 } from "./provider-capabilities";
@@ -2128,7 +2129,12 @@ export function ChatPage({
       selection.modelId,
       provider?.baseUrl,
     );
-    const supportsStudioTools = provider?.studioToolExecution === true;
+    const supportsStudioTools = providerSupportsStudioTools(
+      provider?.providerType,
+      selection.modelId,
+      provider?.baseUrl,
+      provider?.studioToolExecution === true,
+    );
     const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
       provider?.providerType,
       selection.modelId,
@@ -2655,8 +2661,12 @@ export function ChatPage({
           selectedExternal?.modelId,
           selectedProvider?.baseUrl,
         );
-        const supportsStudioTools =
-          selectedProvider?.studioToolExecution === true;
+        const supportsStudioTools = providerSupportsStudioTools(
+          selectedProvider?.providerType,
+          selectedExternal?.modelId,
+          selectedProvider?.baseUrl,
+          selectedProvider?.studioToolExecution === true,
+        );
         const supportsBuiltinCodeExecution =
           providerSupportsBuiltinCodeExecution(
             selectedProvider?.providerType,

@@ -395,6 +395,19 @@ export function providerSupportsBuiltinImageGeneration(
   return false;
 }
 
+export function providerSupportsStudioTools(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+  baseUrl: string | null | undefined,
+  studioToolExecution: boolean,
+): boolean {
+  if (!studioToolExecution) return false;
+  return !(
+    providerType === "gemini" &&
+    providerSupportsBuiltinImageGeneration(providerType, modelId, baseUrl)
+  );
+}
+
 /**
  * Whether `modelId` is a Gemini image-output id (Nano Banana family).
  * Mirrors the backend's `is_image_picker_model` guard so the frontend

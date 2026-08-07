@@ -8562,6 +8562,17 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
 _INPUT_DOCUMENT_PROVIDERS = frozenset({"anthropic", "openai"})
 
 
+def _is_native_gemini_base(provider_type: str, base_url: Optional[str]) -> bool:
+    if provider_type != "gemini" or not base_url:
+        return False
+    try:
+        from urllib.parse import urlparse
+
+        return (urlparse(base_url).hostname or "").lower() == "generativelanguage.googleapis.com"
+    except Exception:
+        return False
+
+
 def _build_external_messages(
     messages: list,
     supports_vision: bool,
@@ -8598,14 +8609,7 @@ def _build_external_messages(
     # Gemini OpenAI-compat gateways (LiteLLM etc.) route through
     # /chat/completions where the field is unknown and can be rejected -- gate
     # strictly on the Google-hosted Gemini base.
-    _native_gemini = False
-    if provider_type == "gemini" and base_url:
-        try:
-            from urllib.parse import urlparse as _urlparse
-            _host = (_urlparse(base_url).hostname or "").lower()
-            _native_gemini = _host == "generativelanguage.googleapis.com"
-        except Exception:
-            _native_gemini = False
+    _native_gemini = _is_native_gemini_base(provider_type, base_url)
     emit_extra_content = _native_gemini
 
     def _provider_extra_content(extra_content: Any) -> Optional[dict]:
@@ -8976,13 +8980,17 @@ async def _proxy_to_external_provider(
     from state.tool_policy import get_tool_policy as _get_external_tool_policy
 
     _external_tool_policy = _get_external_tool_policy()
-    _external_tools_on = payload.enable_tools is True and _external_tool_policy is not False
+    _external_tools_on = _effective_enable_tools(payload) is True
     _external_mcp_allowed = bool(payload.mcp_enabled) and _external_tool_policy is not False
     _external_tool_choice_disabled = (
         isinstance(payload.tool_choice, str) and payload.tool_choice.strip().lower() == "none"
     )
     _external_studio_tool_intent = (
         studio_tool_execution
+        and not (
+            _is_native_gemini_base(provider_type, base_url)
+            and ("-image" in model.lower() or "nano-banana" in model.lower())
+        )
         and not _external_tool_choice_disabled
         and (_external_tools_on or _external_mcp_allowed)
     )

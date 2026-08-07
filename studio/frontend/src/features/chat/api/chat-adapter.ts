@@ -37,6 +37,7 @@ import {
   isGeminiCustomOpenAICompatBase,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
+  providerSupportsStudioTools,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
@@ -2815,8 +2816,12 @@ export function createOpenAIStreamAdapter(
             (provider) => provider.id === externalSelection.providerId,
           )
         : null;
-      const externalUsesStudioTools =
-        externalProvider?.studioToolExecution === true;
+      const externalUsesStudioTools = providerSupportsStudioTools(
+        externalProvider?.providerType,
+        externalSelection?.modelId,
+        externalProvider?.baseUrl,
+        externalProvider?.studioToolExecution === true,
+      );
       const selectedModelSummary = runtime.models.find(
         (model) => model.id === params.checkpoint,
       );

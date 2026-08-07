@@ -9,6 +9,7 @@ import {
   type ExternalProviderConfig,
   normalizeProvider,
 } from "../src/features/chat/external-providers.ts";
+import { providerSupportsStudioTools } from "../src/features/chat/provider-capabilities.ts";
 
 function provider(studioToolExecution?: boolean): ExternalProviderConfig {
   return {
@@ -41,6 +42,16 @@ test("Studio tool execution opt-in is independent of provider type", () => {
     const configured = provider(true);
     configured.providerType = providerType;
     assert.equal(normalizeProvider(configured).studioToolExecution, true);
+  }
+});
+
+test("Gemini image-tier models exclude Studio-managed tools", () => {
+  for (const [model, baseUrl, expected] of [
+    ["gemini-3-pro-image", undefined, false],
+    ["gemini-3-pro", undefined, true],
+    ["gemini-3-pro-image", "https://proxy.example/v1", true],
+  ] as const) {
+    assert.equal(providerSupportsStudioTools("gemini", model, baseUrl, true), expected);
   }
 });
 
