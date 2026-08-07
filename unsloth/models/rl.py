@@ -692,15 +692,17 @@ class _CappedRows(_CappedBase):
         # transformed every item, which for a `with_transform` split is a whole
         # extra tokenization pass before the dataloader can even start, plus an
         # O(n) list. Stay lazy and let `__getitem__` map straight through.
-        self._index = None if not self._supervision else [
-            i for i in range(len(inner)) if self._keep(self._slice(inner[i]))]
+        self._index = (
+            None
+            if not self._supervision
+            else [i for i in range(len(inner)) if self._keep(self._slice(inner[i]))]
+        )
 
     def __len__(self):
         return len(self._inner) if self._index is None else len(self._index)
 
     def __getitem__(self, i):
-        return self._slice(
-            self._inner[i if self._index is None else self._index[i]])
+        return self._slice(self._inner[i if self._index is None else self._index[i]])
 
     def __iter__(self):
         for i in range(len(self)):
@@ -780,7 +782,12 @@ def _first_row_without_consuming(dataset):
     return next(probe, None)
 
 
-def _sliceable_per_token(dataset, names, cap, probed = None):
+def _sliceable_per_token(
+    dataset,
+    names,
+    cap,
+    probed = None,
+):
     """The token columns whose VALUES can be sliced alongside `input_ids`.
 
     Presence is not enough. An optional column stored as `token_type_ids = None`
@@ -919,8 +926,10 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             # path already refuses those; this one has to as well, and refusing
             # means handing the split back untouched so the caller still has it.
             if mode not in ("keep_start", "keep_end"):
-                print(f"Unsloth: `truncation_mode = {mode}` is not one of "
-                      "keep_start / keep_end, so this split is left uncapped.")
+                print(
+                    f"Unsloth: `truncation_mode = {mode}` is not one of "
+                    "keep_start / keep_end, so this split is left uncapped."
+                )
                 return dataset
             cut = slice(-cap, None) if mode == "keep_end" else slice(None, cap)
             per_token = _sliceable_per_token(dataset, names, cap, probed)
@@ -1057,8 +1066,11 @@ def _wrap_sft_evaluate_cap(trainer_cls):
         # `truncation_mode` shapes the SLICE, so it belongs in the key: without
         # it, evaluating once with keep_start and again with keep_end handed
         # back the cached prefixes for both.
-        key = (id(dataset), drop_unsupervised,
-               getattr(trainer.args, "truncation_mode", "keep_start"))
+        key = (
+            id(dataset),
+            drop_unsupervised,
+            getattr(trainer.args, "truncation_mode", "keep_start"),
+        )
         seen = memo.get(key)
         if seen is not None and seen[0] is dataset and seen[1] == cap and seen[3] == token:
             return seen[2]

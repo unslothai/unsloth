@@ -2510,12 +2510,18 @@ def test_a_one_shot_stream_slices_every_aligned_column():
 
     _, tok = _load_plain()
     ids = tok("The quick brown fox. " * 200)["input_ids"]
-    rows = [{"input_ids": list(ids), "attention_mask": [1] * len(ids),
-             "labels": list(ids)} for _ in range(3)]
+    rows = [
+        {"input_ids": list(ids), "attention_mask": [1] * len(ids), "labels": list(ids)}
+        for _ in range(3)
+    ]
     seen = {}
 
     class Stub:
-        def evaluate(self, eval_dataset = None, **kw):
+        def evaluate(
+            self,
+            eval_dataset = None,
+            **kw,
+        ):
             seen["rows"] = list(eval_dataset)
 
     _wrap_sft_evaluate_cap(Stub)
@@ -2540,7 +2546,9 @@ def test_an_unfiltered_map_style_split_is_not_scanned_up_front():
     reads = []
 
     class Split:
-        def __len__(self): return 500
+        def __len__(self):
+            return 500
+
         def __getitem__(self, i):
             reads.append(i)
             return {"input_ids": list(range(40))}
@@ -2557,12 +2565,17 @@ def test_a_filtered_split_still_drops_its_unsupervised_rows():
     with no supervised token still go."""
     from unsloth.models.rl import _CappedRows
 
-    rows = [{"input_ids": [1, 2, 3], "labels": [-100, -100, -100]},
-            {"input_ids": [4, 5, 6], "labels": [4, 5, 6]}]
+    rows = [
+        {"input_ids": [1, 2, 3], "labels": [-100, -100, -100]},
+        {"input_ids": [4, 5, 6], "labels": [4, 5, 6]},
+    ]
 
     class Split:
-        def __len__(self): return len(rows)
-        def __getitem__(self, i): return rows[i]
+        def __len__(self):
+            return len(rows)
+
+        def __getitem__(self, i):
+            return rows[i]
 
     capped = _CappedRows(Split(), slice(None, 3), ("labels",), ("input_ids", "labels"))
     assert len(capped) == 1
