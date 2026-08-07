@@ -1744,7 +1744,8 @@
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
       "evidence": "Env: L317:         token = os.environ.get(\"HF_TOKEN\")\nNetwork: L313:         import urllib.request | L316:         request = urllib.request.Request(url, headers = {\"User-Agent\": \"unsloth-xet-probe\"}) | L329:         with urllib.request.urlopen(request, timeout = PROBE_TIMEOUT_SECONDS) as response: | L342:         head = urllib.request.Request(cas, method = \"HEAD\", headers = {\"User-Agent\": \"unsloth-xet-probe\"}) | L344:             urllib.request.urlopen(head, timeout = remaining)",
-      "evidence_hash": "674a558cd1bdfa1470dc2a9a2cd44be98ecc27c0beb37497757c656674e71654"
+      "evidence_hash": "674a558cd1bdfa1470dc2a9a2cd44be98ecc27c0beb37497757c656674e71654",
+      "file_sha256": "e0b53dbc7749ab7528211ccc87e56a56093b488c5e6efc1445c84c06ff5243db"
     },
     {
       "package": "unsloth-zoo",
