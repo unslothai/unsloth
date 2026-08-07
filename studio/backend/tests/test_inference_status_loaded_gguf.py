@@ -127,9 +127,7 @@ def test_the_users_chat_template_override_wins_over_the_runtime_projection(statu
     assert status.chat_template_override == "user-template"
 
 
-def test_an_auto_applied_chat_template_is_not_reported_as_the_users(
-    status_route, monkeypatch
-):
+def test_an_auto_applied_chat_template_is_not_reported_as_the_users(status_route, monkeypatch):
     # A bundled family template is not a user override; re-sending it would pin
     # it onto the next, unrelated model.
     monkeypatch.setattr(
