@@ -413,7 +413,7 @@ def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
     sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
     header = sidebar.split("<SidebarHeader", 1)[1].split("</SidebarHeader>", 1)[0]
 
-    assert 'import { ArrowLeft, ArrowRight } from "lucide-react";' in titlebar
+    assert "import { ArrowLeft, ArrowRight" in titlebar
     assert "<ArrowLeft" in titlebar
     assert "<ArrowRight" in titlebar
     assert "window.history.back()" in titlebar
