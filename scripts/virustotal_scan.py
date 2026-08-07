@@ -270,9 +270,7 @@ class VirusTotalClient:
         last_error = ""
         for attempt in range(1, max_attempts + 1):
             if deadline is not None and self._clock() >= deadline:
-                raise TimeoutError(
-                    f"deadline reached before {method} {_redact_url(url)}"
-                )
+                raise TimeoutError(f"deadline reached before {method} {_redact_url(url)}")
             self._throttle()
             try:
                 status, payload = self._transport(method, url, headers, body)
@@ -307,7 +305,11 @@ class VirusTotalClient:
             f"VirusTotal request failed after {max_attempts} attempt(s): {last_error}"
         )
 
-    def lookup_hash(self, sha256: str, deadline: float | None = None) -> object | None:
+    def lookup_hash(
+        self,
+        sha256: str,
+        deadline: float | None = None,
+    ) -> object | None:
         """Return the existing file report, or None when VirusTotal has never seen it.
 
         Doing this first is both a quota saving and a disclosure saving: a bundle that
@@ -323,7 +325,11 @@ class VirusTotalClient:
             return None
         return payload
 
-    def upload(self, path: Path, deadline: float | None = None) -> str:
+    def upload(
+        self,
+        path: Path,
+        deadline: float | None = None,
+    ) -> str:
         """Upload via the large-file flow and return the analysis id.
 
         Every desktop bundle is 41-46 MB, which is over the 32 MB cap on

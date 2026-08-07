@@ -347,8 +347,11 @@ class TestDeadlineEnforcement:
             return 200, b"{}"
 
         client = vt.VirusTotalClient(
-            "k", transport = transport, request_interval = 0.0,
-            sleep = lambda _s: None, clock = lambda: 1000.0,
+            "k",
+            transport = transport,
+            request_interval = 0.0,
+            sleep = lambda _s: None,
+            clock = lambda: 1000.0,
         )
         with pytest.raises(TimeoutError):
             client.request("GET", "https://api.example/x", deadline = 999.0)
@@ -360,8 +363,11 @@ class TestDeadlineEnforcement:
 
         now = [0.0]
         client = vt.VirusTotalClient(
-            "k", transport = transport, request_interval = 0.0,
-            sleep = lambda _s: None, clock = lambda: now[0],
+            "k",
+            transport = transport,
+            request_interval = 0.0,
+            sleep = lambda _s: None,
+            clock = lambda: now[0],
         )
         with pytest.raises(TimeoutError):
             now[0] = 100.0
@@ -371,8 +377,11 @@ class TestDeadlineEnforcement:
         bundle = tmp_path / "a.exe"
         bundle.write_bytes(b"payload")
         client = vt.VirusTotalClient(
-            "k", transport = lambda *a: (200, b"{}"), request_interval = 0.0,
-            sleep = lambda _s: None, clock = lambda: 1000.0,
+            "k",
+            transport = lambda *a: (200, b"{}"),
+            request_interval = 0.0,
+            sleep = lambda _s: None,
+            clock = lambda: 1000.0,
         )
         report = vt.scan_file(client, bundle, deadline = 0.0)
         assert report.source == "timed out"
@@ -382,10 +391,17 @@ class TestDeadlineEnforcement:
         monkeypatch.setenv(vt.API_KEY_ENV, "k")
         (tmp_path / "a.exe").write_bytes(b"x")
         summary = tmp_path / "s.md"
-        rc = vt.main([
-            str(tmp_path), "--output-markdown", str(summary),
-            "--timeout-seconds", "0", "--request-interval", "0",
-        ])
+        rc = vt.main(
+            [
+                str(tmp_path),
+                "--output-markdown",
+                str(summary),
+                "--timeout-seconds",
+                "0",
+                "--request-interval",
+                "0",
+            ]
+        )
         assert rc == 0
         assert "VirusTotal pre-flight scan" in summary.read_text()
 
