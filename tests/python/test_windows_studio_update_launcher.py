@@ -536,7 +536,9 @@ def test_the_update_lock_lives_outside_the_replaceable_venv(monkeypatch, studio,
     assert len(seen["home_locks"]) == 1
 
 
-def test_a_failed_move_aside_warns_that_unsloth_may_not_upgrade(monkeypatch, studio, tmp_path, capsys):
+def test_a_failed_move_aside_warns_that_unsloth_may_not_upgrade(
+    monkeypatch, studio, tmp_path, capsys
+):
     # Aborting here would make an antivirus hold enough to render the
     # environment unupdatable, which main did not do either. But the cost has to
     # be visible: uv cannot replace a launcher it could not move, and the pip
