@@ -452,7 +452,7 @@ function loadToastDescription(p: DiffusionLoadProgress) {
   // "Downloading" only when bytes actually remain: a cached model (or the pre-estimate window) must not claim a download.
   const downloading = p.bytes_total > 0 && p.bytes_downloaded < p.bytes_total * 0.999;
   const title = downloading
-    ? "Downloading model…"
+    ? "Downloading model requirements…"
     : p.phase === "finalizing"
       ? "Loading to GPU…"
       : "Starting model…";
@@ -460,7 +460,11 @@ function loadToastDescription(p: DiffusionLoadProgress) {
   return (
     <ModelLoadDescription
       title={title}
-      message="Loading the model. This may include downloading its base model."
+      message={
+        downloading
+          ? "Downloading the files required to load this model."
+          : "Loading the model."
+      }
       progressPercent={hasTotal ? p.fraction * 100 : null}
       progressLabel={
         hasTotal

@@ -1085,9 +1085,9 @@ def test_diffusion_pages_never_drop_a_gguf_pick_silently():
 
 
 def test_diffusion_pages_stage_downloads_through_the_manager():
-    """Images/Video must not download inside the load: an undownloaded hub pick goes to
-    the Hub download manager first, so it shares the panel, progress, cancel/resume,
-    disk preflight and manifest verification with every other model."""
+    """Images/Video must not download inside the load: a Hub pick with missing files goes
+    to the download manager first, so it shares progress, cancel/resume, disk preflight,
+    and manifest verification with every other model."""
     for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(rel)
         assert "useStagedDownload" in src, f"{rel}: not wired to the download manager"
@@ -1096,10 +1096,30 @@ def test_diffusion_pages_stage_downloads_through_the_manager():
         stage_fn = re.search(r"const loadOrStage = useCallback\(.*?\n  \);", src, re.S)
         assert stage_fn, f"{rel}: loadOrStage not found"
         body = stage_fn.group(0)
-        # Already-downloaded (and local) picks must skip staging and load straight away.
-        assert "isDownloaded !== false" in body, f"{rel}: cached picks would re-stage"
+        if rel == "features/images/images-page.tsx":
+            # A cached GGUF can still be missing a separate text encoder or VAE. Every Hub
+            # image pick therefore needs the backend's cache-aware plan; only local picks
+            # can bypass it. The plan returns no entries when the full load is cached.
+            assert 'source !== "hub"' in body, f"{rel}: local picks would be planned"
+            assert "isDownloaded !== false" not in body, (
+                f"{rel}: cached checkpoint would hide missing companion assets"
+            )
+        else:
+            # Video currently has no independent companion-footprint resolver, so a fully
+            # cached selection can still take the direct path.
+            assert "isDownloaded !== false" in body, f"{rel}: cached picks would re-stage"
         # A missing plan must still load rather than dead-end.
         assert "catch" in body, f"{rel}: no fallback when the plan is unavailable"
+
+
+def test_image_load_fallback_names_requirements_instead_of_only_the_model():
+    """If planning fails and the backend has to fetch files inside the load, its toast must
+    not call companion text encoders and VAEs the selected model. The normal path stages
+    them through Downloads; this wording keeps the defensive fallback honest too."""
+    src = _read("features/images/images-page.tsx")
+    assert '"Downloading model requirements…"' in src
+    assert '"Downloading model…"' not in src
+    assert '"Downloading the files required to load this model."' in src
 
 
 def test_a_hidden_diffusion_page_does_not_load_when_its_download_lands():
@@ -1135,6 +1155,23 @@ def test_staged_downloads_always_scope_their_files():
     assert "scopeId," in body and "files: current.files," in body
     assert "? null" not in body and "? undefined" not in body
     assert "const activeVariant = current ? scopedVariant(scopeId) : null;" in src
+
+
+def test_staged_downloads_use_one_actionable_download_surface():
+    """The Downloads panel owns progress and cancellation. A second informational toast
+    duplicates the same state and gives users another X that only dismisses copy."""
+    staged = _read("features/hub/download-manager/use-staged-download.ts")
+    stage_fn = re.search(
+        r"const stage = useCallback\(\(entries: StagedDownloadEntry\[\]\) => \{.*?\n  \}, \[\]\);",
+        staged,
+        re.S,
+    )
+    assert stage_fn, "staged-download stage callback not found"
+    assert "toast.info" not in stage_fn.group(0)
+
+    panel = _read("features/hub/download-manager/download-manager-panel.tsx")
+    assert 'job.variant?.startsWith("@")' in panel
+    assert '"Model file" : "Required assets"' in panel
 
 
 def test_local_model_sections_respect_the_task_filter():

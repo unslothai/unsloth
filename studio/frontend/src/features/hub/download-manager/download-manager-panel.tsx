@@ -73,6 +73,12 @@ function canUseDownloadManager(pathname: string): boolean {
 }
 
 function variantSuffix(job: ManagedDownload): string {
+  if (job.variant?.startsWith("@")) {
+    const isModelFile = job.scopedFiles?.some((file) =>
+      file.toLowerCase().endsWith(".gguf"),
+    );
+    return ` · ${isModelFile ? "Model file" : "Required assets"}`;
+  }
   return job.variant ? ` · ${job.variant}` : "";
 }
 

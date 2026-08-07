@@ -5,7 +5,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { toast } from "@/lib/toast";
 
-import { formatBytes } from "../lib/format";
 import { DOWNLOAD_KIND } from "./constants";
 import { downloadManager } from "./download-manager-controller";
 import { scopedVariant } from "./download-manager-types";
@@ -96,10 +95,6 @@ export function useStagedDownload({
   // restart a live download.
   const onCancelledRef = useRef(onCancelled);
   onCancelledRef.current = onCancelled;
-  // Announced on the first entry that actually starts, not on stage(): a plan whose start is
-  // refused would otherwise promise a download and then immediately contradict itself.
-  const planToast = useRef<string | null>(null);
-
   useEffect(() => {
     if (!current) return;
     let active = true;
@@ -118,15 +113,7 @@ export function useStagedDownload({
         files: current.files,
       });
       if (!active) return;
-      if (outcome === "started") {
-        if (planToast.current) {
-          toast.info("Downloading model requirements", {
-            description: planToast.current,
-          });
-          planToast.current = null;
-        }
-        return;
-      }
+      if (outcome === "started") return;
       if (inFlight.current === started) inFlight.current = null;
       // A start that never got off the ground (network failure, rejected scoped request, worker refused) will never complete, so
       // clear the queue instead of leaving the head in place, where the effect never re-runs and onReady never fires.
@@ -146,7 +133,6 @@ export function useStagedDownload({
             "Reselect this model once the running download finishes to load it.",
         });
       }
-      planToast.current = null;
       setQueue(null);
       onCancelledRef.current?.();
     })();
@@ -160,18 +146,9 @@ export function useStagedDownload({
     // A fresh plan supersedes whatever was staged, so bump the generation: a callback for the previous plan's job is no longer ours.
     generation.current += 1;
     inFlight.current = null;
-    planToast.current = null;
-    if (entries.length > 0) {
-      const bytes = entries.reduce(
-        (total, entry) => total + Math.max(entry.bytes, 0),
-        0,
-      );
-      const components = entries
-        .map((entry) => entry.ggufFilename || entry.repoId)
-        .join(" + ");
-      const size = bytes > 0 ? `${formatBytes(bytes)} remaining across ` : "";
-      planToast.current = `${size}${entries.length} required ${entries.length === 1 ? "component" : "components"} (${components}). It'll load automatically once all are ready.`;
-    }
+    // The Downloads panel is the sole download surface. A second toast duplicated its
+    // progress and exposed another X that looked like cancellation but only dismissed copy.
+    // `onReady` owns the later GPU-load toast, after every queued entry is complete.
     setQueue(entries.length > 0 ? entries : null);
   }, []);
 
