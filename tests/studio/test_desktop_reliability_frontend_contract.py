@@ -407,6 +407,21 @@ def test_hidden_desktop_routes_scroll_without_moving_custom_titlebar():
     assert "${contentOverflowClass}" in content_wrapper
 
 
+def test_desktop_update_screen_clips_the_underlying_route_content():
+    source = APP_PROVIDER.read_text(encoding = "utf-8")
+    update_layer = source.split("function TauriUpdateLayer", 1)[1].split(
+        "const HIDDEN_TITLEBAR_SIDEBAR_ROUTES", 1
+    )[0]
+    updating_branch = update_layer.split("{isUpdating ? (", 1)[1].split(
+        ") : (", 1
+    )[0]
+
+    # The hidden-route wrapper may scroll, but the full-height update state must
+    # keep the still-mounted route below the update screen clipped.
+    assert 'className="h-full min-h-0 overflow-hidden"' in updating_branch
+    assert updating_branch.index("{content}") < updating_branch.index("{appContent}")
+
+
 def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     source = TITLEBAR.read_text(encoding = "utf-8")
 

@@ -278,8 +278,17 @@ function TauriUpdateLayer({
 
   return (
     <TauriUpdateContext.Provider value={update}>
-      {content}
-      {appContent}
+      {isUpdating ? (
+        <div className="h-full min-h-0 overflow-hidden">
+          {content}
+          {appContent}
+        </div>
+      ) : (
+        <>
+          {content}
+          {appContent}
+        </>
+      )}
     </TauriUpdateContext.Provider>
   );
 }
