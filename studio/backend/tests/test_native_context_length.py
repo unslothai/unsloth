@@ -400,24 +400,81 @@ class TestRouteCompleteness:
             idx = end
         return blocks
 
+    _NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+
     @staticmethod
     def _is_runtime_fields_call(node) -> bool:
+        """``_llama_runtime_fields(llama_backend)``, argument included.
+
+        The argument is half the contract: a same-named helper called on something else does not
+        prove the GGUF ``/status`` response is fed from the llama backend.
+        """
         return (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
             and node.func.id == "_llama_runtime_fields"
+            and len(node.args) == 1
+            and not node.keywords
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id == "llama_backend"
         )
+
+    def _bindings_in_own_scope(self, scope, name: str) -> list:
+        """Every rebinding of ``name`` in ``scope``'s OWN body, as (node, value) pairs.
+
+        Nested functions, lambdas and classes are separate scopes, so a binding inside one says
+        nothing about the outer name and is skipped. A binding form this does not model (a for
+        target, a ``with ... as``) yields a None value, which the caller reads as "not the helper"
+        so an unrecognised rebind fails closed rather than passing silently.
+        """
+        found: list = []
+        handled: set = set()
+
+        def walk(node) -> None:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, self._NESTED_SCOPES):
+                    continue
+                if isinstance(child, ast.Assign):
+                    for target in child.targets:
+                        if isinstance(target, ast.Name) and target.id == name:
+                            found.append((child, child.value))
+                            handled.add(id(target))
+                elif isinstance(child, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+                    target = child.target
+                    if isinstance(target, ast.Name) and target.id == name:
+                        # AnnAssign may be a bare declaration with no value; AugAssign rebinds to
+                        # something derived, never the helper call itself.
+                        value = child.value if isinstance(child, (ast.AnnAssign, ast.NamedExpr)) else None
+                        found.append((child, value))
+                        handled.add(id(target))
+                elif (
+                    isinstance(child, ast.Name)
+                    and child.id == name
+                    and isinstance(child.ctx, ast.Store)
+                    and id(child) not in handled
+                ):
+                    found.append((child, None))
+                walk(child)
+
+        walk(scope)
+        return found
 
     def _status_calls_getting_runtime_fields(self) -> list:
         """``InferenceStatusResponse(...)`` calls that actually receive the llama runtime fields.
 
         A call site may hoist the helper call to overwrite one entry before splatting, since
         passing an overriding keyword alongside ``**fields`` is a TypeError. That is a valid way
-        to receive the fields, so accept it, but only when the assignment that REACHES the call
-        supplies them: a later ``name = {}`` in the same function rebinds the name and the
-        response gets nothing, and a same-named assignment in some other function is irrelevant.
-        Subscript writes such as ``fields["x"] = y`` mutate rather than rebind, so they do not
-        count as a reassignment.
+        to receive the fields, so accept it.
+
+        Accepting a hoist means deciding which assignment reaches the call, and "the last one by
+        line number" is not that: a conditional rebind, an annotated rebind, or a binding inside a
+        nested function all defeat it. Rather than model control flow, require that EVERY binding
+        of the splatted name in the function's own scope is the helper call. That is stricter than
+        a reaching-definition check and needs no flow analysis: one hoisted assignment passes, and
+        any rebind to anything else fails, whether conditional or not.
+
+        Subscript writes such as ``fields["x"] = y`` mutate rather than rebind, so they are not
+        bindings and correctly do not count.
         """
         tree = ast.parse(self._source)
         funcs = [
@@ -446,14 +503,10 @@ class TestRouteCompleteness:
                 if not enclosing:
                     continue
                 scope = max(enclosing, key = lambda f: f.lineno)
-                reaching = None
-                for node in ast.walk(scope):
-                    if not isinstance(node, ast.Assign) or node.lineno >= call.lineno:
-                        continue
-                    if any(isinstance(t, ast.Name) and t.id == kw.value.id for t in node.targets):
-                        if reaching is None or node.lineno > reaching.lineno:
-                            reaching = node
-                if reaching is not None and self._is_runtime_fields_call(reaching.value):
+                bindings = self._bindings_in_own_scope(scope, kw.value.id)
+                if bindings and all(
+                    self._is_runtime_fields_call(value) for _node, value in bindings
+                ):
                     found.append(call)
                     break
         return found
