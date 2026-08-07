@@ -44,8 +44,7 @@ def _memory_tuples(path):
             values = [node.value]
         elif isinstance(node, ast.FunctionDef):
             name = node.name
-            values = [n.value for n in ast.walk(node)
-                      if isinstance(n, ast.Return) and n.value]
+            values = [n.value for n in ast.walk(node) if isinstance(n, ast.Return) and n.value]
         else:
             continue
         if "memgetinfo" not in name.lower().replace("_", ""):
@@ -59,9 +58,9 @@ def _memory_tuples(path):
                 # `ast.literal_eval` cannot fold `60 * 1024**3`, which is how
                 # every one of these is written. Evaluate the arithmetic with
                 # nothing in scope instead.
-                found.append(tuple(
-                    eval(ast.unparse(e), {"__builtins__": {}}, {}) for e in value.elts
-                ))
+                found.append(
+                    tuple(eval(ast.unparse(e), {"__builtins__": {}}, {}) for e in value.elts)
+                )
             except Exception:
                 pass
     return found
@@ -76,4 +75,4 @@ def test_a_spoofed_card_is_not_reported_as_full(filename):
         assert free <= total, f"{filename} reports more free ({free}) than total ({total})"
         # Half the free pool is the fused loss's chunk target, capped at 4GB.
         # Under 8GB free changes the sizing the rest of the suite assumes.
-        assert free >= 8 * 1024 ** 3, f"{filename} reports only {free} bytes free"
+        assert free >= 8 * 1024**3, f"{filename} reports only {free} bytes free"
