@@ -76,8 +76,15 @@ _POSIX_READ = re.compile(
 # and pipeline reads are fed by the `done < ...` or the pipe: data, not questions.
 # Options then variable names to end of line, in command position, so the word
 # `read` in a heredoc of prose is not a prompt.
-_BARE_READ = re.compile(r"(?:^|[;&(])\s*read(?:\s+-[a-zA-Z]+)*(?:\s+[A-Za-z_][A-Za-z0-9_]*)+\s*$")
+_BARE_READ = re.compile(
+    r"(?:^|[;&(])\s*read(?:\s+-[a-zA-Z]+)*(?:\s+[A-Za-z_][A-Za-z0-9_]*)+"
+    r"(?:\s*(?:\|\||&&).*)?\s*$"
+)
 _LOOP = re.compile(r"\b(?:while|until|for)\b")
+
+# `select reply in Yes No` is the other builtin that blocks for an answer; its
+# question is the PS3 assignment above it, which the nearby scan already reads.
+_SELECT = re.compile(r"(?:^|[;&(])\s*select\s+[A-Za-z_][A-Za-z0-9_]*\s+in\s")
 
 _PWSH_READ = re.compile(
     r"Read-Host|PromptForChoice|Console\]::(?:In\.)?Read(?:Line|Key)?\b|ReadKey\s*\(",
@@ -91,13 +98,18 @@ _HELPER_REF = re.compile(r"([A-Za-z0-9_.-]+\.(?:sh|ps1))")
 
 _QUOTED = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"' r"|'([^']*)'")
 
+# `<# ... #>` opened and closed on one line.
+_INLINE_BLOCK = re.compile(r"<#.*?#>", re.DOTALL)
+
 # Regex/glob syntax: a `sed` pattern next to a prompt also contains a `?`.
 _REGEXY = re.compile(r"\\|\(\?|\^|\$\(|\[0|\{[0-9]|\.\*|\|")
 
-# Stripped so a question built from a format string keys the same as a literal.
-_FORMAT_NOISE = re.compile(
-    r"%[-#0 +]*\d*(?:\.\d+)*[sdfxbq%]|\\[nrte]|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"
-)
+_ESCAPE = re.compile(r"\\[nrte]")
+
+# A conversion or variable becomes a placeholder rather than vanishing, so wording
+# spliced into the middle of an approved question cannot normalise back onto it.
+_SUBSTITUTION = re.compile(r"%[-#0 +]*\d*(?:\.\d+)*[sdfxbq%]|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?")
+_TRAILING_SUBSTITUTION = re.compile(r"(?:\s*<var>)+$")
 
 
 def _is_comment(line: str) -> bool:
@@ -107,13 +119,17 @@ def _is_comment(line: str) -> bool:
 
 
 def _is_interactive_read(line: str, powershell: bool) -> bool:
-    """A read that waits on a person, by prompt option, /dev/tty, or plain inherited
-    stdin. Redirected and loop reads are excluded: they consume a file."""
+    """A read that waits on a person: a prompt option, /dev/tty, `select`, or plain
+    inherited stdin. Redirected and loop reads consume a file, not a person. Quoted
+    text is blanked first, so a message naming `Read-Host` is not one."""
+    code = _QUOTED.sub('""', line)
     if powershell:
-        return bool(_PWSH_READ.search(line))
-    if _POSIX_READ.search(line):
+        return bool(_PWSH_READ.search(code))
+    if _POSIX_READ.search(code) or _SELECT.search(code):
         return True
-    return "<" not in line and "|" not in line and bool(_BARE_READ.search(line))
+    # `||` is a fallback, not a pipeline: `read -r reply || reply=n` still blocks.
+    piped = "|" in code.replace("||", "")
+    return "<" not in code and not piped and bool(_BARE_READ.search(code))
 
 
 def blank_comments(source: str, powershell: bool) -> str:
@@ -127,10 +143,12 @@ def blank_comments(source: str, powershell: bool) -> str:
             lines.append("")
             in_block = "#>" not in line
             continue
-        if powershell and "<#" in line and "#>" not in line.split("<#", 1)[1]:
-            lines.append(line.split("<#", 1)[0])
-            in_block = True
-            continue
+        if powershell:
+            line = _INLINE_BLOCK.sub("", line)
+            if "<#" in line:
+                lines.append(line.split("<#", 1)[0])
+                in_block = True
+                continue
         lines.append("" if _is_comment(line) else line)
     return "\n".join(lines)
 
@@ -140,11 +158,14 @@ def _quoted_strings(line: str) -> list[str]:
 
 
 def normalise_question(text: str) -> str:
-    """Reduce a prompt string to a stable allowlist key: drop the marker, format
-    conversions, variable references and edge punctuation, then lowercase."""
+    """Reduce a prompt string to a stable allowlist key: drop the marker and edge
+    punctuation, placeholder the substitutions, then lowercase."""
     text = _MARKER.sub(" ", text)
-    text = _FORMAT_NOISE.sub(" ", text)
+    text = _ESCAPE.sub(" ", text)
+    text = _SUBSTITUTION.sub("<var>", text)
     text = re.sub(r"\s+", " ", text).strip()
+    # A trailing one is the `[Y/n]` hint the marker pass already read.
+    text = _TRAILING_SUBSTITUTION.sub("", text)
     return text.strip(" -:>*_=").lower()
 
 
@@ -418,6 +439,42 @@ def test_detects_a_bare_read_from_inherited_stdin(read_line: str):
     assert [question for _, _, question in find_prompts("install.sh", source)] == [
         "continue with installation?",
     ]
+
+
+def test_detects_a_bare_read_with_a_fallback():
+    """`|| reply=n` is the house style for an EOF default, and a fallback is not a
+    pipeline: the read still takes the terminal."""
+    source = 'printf "  Continue with installation? "\nread -r _reply || _reply=n\n'
+    assert [question for _, _, question in find_prompts("install.sh", source)] == [
+        "continue with installation?",
+    ]
+
+
+def test_detects_a_select_loop():
+    """The other builtin that blocks for an answer. PS3 holds the question."""
+    source = 'PS3="  Continue with installation? "\nselect _reply in Yes No; do break; done\n'
+    assert [question for _, _, question in find_prompts("install.sh", source)] == [
+        "continue with installation?",
+    ]
+
+
+def test_interpolation_cannot_rewrite_an_approved_question():
+    """Splicing new wording into an approved prompt is a new question. A substitution
+    at the end is only the marker hint, so that one still normalises away."""
+    assert normalise_question("Start Unsloth Studio %s now? [Y/n]") == (
+        "start unsloth studio <var> now?"
+    )
+    assert normalise_question("  Start Unsloth Studio now? %s ") == "start unsloth studio now?"
+
+
+def test_ignores_an_input_api_named_in_a_message():
+    source = 'Write-Host "Read-Host is unavailable on this terminal"\n'
+    assert find_prompts("install.ps1", source) == []
+
+
+def test_ignores_a_single_line_powershell_block_comment():
+    source = '<# Read-Host "Enable telemetry? [Y/n]" #>\nWrite-Host "done"\n'
+    assert find_prompts("install.ps1", source) == []
 
 
 def test_detects_powershell_console_read():
