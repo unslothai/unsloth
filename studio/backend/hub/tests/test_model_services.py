@@ -977,7 +977,7 @@ def test_cached_models_scan_hides_non_gguf_embedder(monkeypatch, tmp_path):
     assert [row["repo_id"] for row in result["cached"]] == ["Org/Chat"]
 
 
-def test_cached_models_scan_emits_curated_whisper_but_not_custom_whisper(monkeypatch, tmp_path):
+def test_cached_models_scan_emits_curated_and_custom_whisper_as_stt(monkeypatch, tmp_path):
     curated_path = tmp_path / "hub" / "models--unsloth--whisper-tiny"
     curated_path.mkdir(parents = True)
     curated = _repo(
@@ -1008,10 +1008,12 @@ def test_cached_models_scan_emits_curated_whisper_but_not_custom_whisper(monkeyp
         lambda repo_path, _snapshot = None: {"_hidden_stt": "custom-whisper" in str(repo_path)},
     )
 
-    [row] = cache_inventory._scan_cached_models()
+    rows = cache_inventory._scan_cached_models()
 
-    assert row["repo_id"] == "unsloth/whisper-tiny"
-    assert row["capabilities"]["can_chat"] is False
+    rows_by_repo = {row["repo_id"]: row for row in rows}
+    assert set(rows_by_repo) == {"unsloth/whisper-tiny", "Org/custom-whisper"}
+    assert rows_by_repo["Org/custom-whisper"]["task"] == "automatic-speech-recognition"
+    assert all(row["capabilities"]["can_chat"] is False for row in rows_by_repo.values())
 
 
 _SNAPSHOT_SHA = "a" * 40
