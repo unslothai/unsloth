@@ -496,7 +496,7 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
     assert "translate-y-[var(--studio-titlebar-navigation-offset-y,0px)]" in TITLEBAR.read_text(
         encoding = "utf-8"
     )
-    assert '"--studio-titlebar-navigation-offset-y": "2px"' in APP_PROVIDER.read_text(
+    assert '"--studio-titlebar-navigation-offset-y": "4px"' in APP_PROVIDER.read_text(
         encoding = "utf-8"
     )
     assert "aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
@@ -549,7 +549,7 @@ def test_mac_chat_header_controls_share_the_titlebar_row():
     assert "shouldUseNativeMacWindowTitlebar" not in source
     assert "[--studio-content-top-inset:var(--studio-mac-titlebar-height" not in source
     assert source.count("var(--studio-mac-traffic-light-inset") == 2
-    assert '"--studio-chat-header-padding-top": "7px"' in provider
+    assert '"--studio-chat-header-padding-top": "9px"' in provider
     assert "pt-[var(--studio-content-top-inset,0px)] md:flex-row" in source
     assert "absolute top-[var(--studio-content-top-inset,0px)]" in source
 

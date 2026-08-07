@@ -85,6 +85,23 @@ def _resolve_cached_model_load_name(config: dict) -> str:
     return config.get("model_snapshot_path") or config["model_name"]
 
 
+def _training_use_exact_model_name(config: dict) -> bool:
+    """Keep Studio's selected model version when loading from cache or after a pin.
+
+    Without this, Unsloth's mapper can rewrite a user-selected base repo (e.g.
+    ``unsloth/Qwen3-4B-Instruct-2507``) to its ``-unsloth-bnb-4bit`` sibling when
+    ``load_in_4bit`` is enabled, even though the user explicitly picked the local
+    cache for the base repo.
+    """
+    if config.get("model_revision"):
+        return True
+    if config.get("model_snapshot_path"):
+        return True
+    if config.get("model_known_cached") or config.get("model_local_path"):
+        return True
+    return False
+
+
 def _effective_training_load_in_4bit(
     config: dict, model_load_target: str, hf_token: str | None
 ) -> bool:
@@ -2288,6 +2305,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     model_load_name = _resolve_cached_model_load_name(config)
     model_local_only = _model_local_files_only(config)
     model_revision = None if model_local_only else config.get("model_revision")
+    use_exact_model_name = _training_use_exact_model_name(config)
 
     if config.get("use_loftq"):
         message = "LoftQ is not supported for MLX training yet."
@@ -3675,6 +3693,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         model_load_name = _resolve_cached_model_load_name(config)
         model_local_only = _model_local_files_only(config)
         model_revision = None if model_local_only else config.get("model_revision")
+        use_exact_model_name = _training_use_exact_model_name(config)
         dataset_local_only = _dataset_local_files_only(config)
         eval_steps = config.get("eval_steps", 0.00)
 
@@ -3848,6 +3867,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 local_files_only = model_local_only,
                 actual_model_repo_id = config.get("actual_model_repo_id"),
                 model_revision = model_revision,
+                use_exact_model_name = use_exact_model_name,
             )
             fallback_error = (
                 _model_cache_fallback_error(config, trainer.model_load_error)
@@ -3912,6 +3932,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         local_files_only = model_local_only,
                         actual_model_repo_id = config.get("actual_model_repo_id"),
                         model_revision = model_revision,
+                        use_exact_model_name = use_exact_model_name,
                     )
         finally:
             _load_watchdog_stop.set()
@@ -4386,6 +4407,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     model_load_name = _resolve_cached_model_load_name(config)
     model_local_only = _model_local_files_only(config)
     model_revision = None if model_local_only else config.get("model_revision")
+    use_exact_model_name = _training_use_exact_model_name(config)
     training_start_time = time.time()
 
     # ── 1. Import embedding-specific libraries ──
@@ -4453,7 +4475,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 full_finetuning = not use_lora,
                 token = hf_token,
                 revision = model_revision,
-                use_exact_model_name = model_revision is not None,
+                use_exact_model_name = use_exact_model_name,
             )
         except Exception as error:
             if not model_local_only:
@@ -4481,7 +4503,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 full_finetuning = not use_lora,
                 token = hf_token,
                 revision = model_revision,
-                use_exact_model_name = model_revision is not None,
+                use_exact_model_name = use_exact_model_name,
             )
     except Exception as e:
         event_queue.put(

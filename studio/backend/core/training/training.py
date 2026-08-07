@@ -317,6 +317,40 @@ _MODEL_SNAPSHOT_WEIGHTS = (
 )
 
 
+def _repo_id_from_cache_local_path(local_path: str) -> Optional[str]:
+    """Recover the Hugging Face repo id encoded in a cache directory or snapshot path."""
+    from core.inference.model_ids import hf_cache_repo_id
+
+    repo_id = hf_cache_repo_id(local_path)
+    if repo_id:
+        return repo_id
+    try:
+        resolved = Path(local_path).expanduser().resolve(strict = True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    for candidate in (resolved, *resolved.parents):
+        name = candidate.name
+        if name.startswith("models--") and name.count("--") >= 2:
+            return name.removeprefix("models--").replace("--", "/")
+    return None
+
+
+def _model_snapshot_repo_candidates(model_name: str, local_path: Optional[str]) -> tuple[str, ...]:
+    """Repo ids to try when resolving a user-selected cache path for training."""
+    from utils.paths.path_utils import resolve_cached_repo_id_case
+
+    candidates: list[str] = []
+    if not is_local_path(model_name):
+        resolved_name = resolve_cached_repo_id_case(canonical_model_repo_id(model_name))
+        if resolved_name:
+            candidates.append(resolved_name)
+    if local_path:
+        path_repo_id = _repo_id_from_cache_local_path(local_path)
+        if path_repo_id and path_repo_id not in candidates:
+            candidates.append(path_repo_id)
+    return tuple(candidates)
+
+
 def _with_load_subdirs(model_name: str, names: tuple[str, ...]) -> tuple[str, ...]:
     """Extend snapshot filenames with the subdirectories a load actually reads.
 
@@ -336,7 +370,9 @@ def _resolve_model_snapshot(model_name: str, local_path: Optional[str]) -> Optio
         latest_snapshot_from_cache_path,
     )
 
-    repo_id = canonical_model_repo_id(model_name)
+    repo_ids = _model_snapshot_repo_candidates(model_name, local_path)
+    if not repo_ids and not is_local_path(model_name):
+        repo_ids = (canonical_model_repo_id(model_name),)
     metadata_names = _with_load_subdirs(model_name, _MODEL_SNAPSHOT_METADATA)
     weight_names = _with_load_subdirs(model_name, _MODEL_SNAPSHOT_WEIGHTS)
     # Pass 1 demands metadata AND weights, so neither a metadata-only refs/main nor a
@@ -346,21 +382,28 @@ def _resolve_model_snapshot(model_name: str, local_path: Optional[str]) -> Optio
         {"metadata_filenames": metadata_names},
     )
     if local_path:
-        for kwargs in passes:
-            snapshot = latest_snapshot_from_cache_path(local_path, "model", repo_id, **kwargs)
-            if snapshot:
-                return snapshot
+        for repo_id in repo_ids:
+            for kwargs in passes:
+                snapshot = latest_snapshot_from_cache_path(
+                    local_path,
+                    "model",
+                    repo_id,
+                    **kwargs,
+                )
+                if snapshot:
+                    return snapshot
         return None
-    for kwargs in passes:
-        for repo_dir in iter_repo_cache_dirs("model", repo_id):
-            snapshot = latest_snapshot_from_cache_path(
-                str(repo_dir),
-                "model",
-                repo_id,
-                **kwargs,
-            )
-            if snapshot:
-                return snapshot
+    for repo_id in repo_ids:
+        for kwargs in passes:
+            for repo_dir in iter_repo_cache_dirs("model", repo_id):
+                snapshot = latest_snapshot_from_cache_path(
+                    str(repo_dir),
+                    "model",
+                    repo_id,
+                    **kwargs,
+                )
+                if snapshot:
+                    return snapshot
     return None
 
 
@@ -432,8 +475,13 @@ def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
         else:
             config["model_revision"] = Path(pin).name
     elif model_claimed:
+        local_path = config.get("model_local_path")
         pinned_repo_id = canonical_model_repo_id(model_name)
-        pin = _resolve_model_snapshot(model_name, config.get("model_local_path"))
+        if local_path:
+            path_repo_id = _repo_id_from_cache_local_path(str(local_path))
+            if path_repo_id:
+                pinned_repo_id = path_repo_id
+        pin = _resolve_model_snapshot(model_name, local_path)
         if pin is None:
             warnings.append(
                 f"Cached copy of {model_name} not found on disk; downloading from Hugging Face."

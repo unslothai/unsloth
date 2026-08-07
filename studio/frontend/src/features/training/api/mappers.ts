@@ -74,13 +74,16 @@ export function buildTrainingStartPayload(
     }
   }
 
+  const preferLocalModelCache =
+    config.modelKnownCached || Boolean(config.modelLocalPath?.trim());
+
   return {
     model_name: config.selectedModel ?? "",
     project_name: (config.projectName || "").trim() || null,
     training_type: toBackendTrainingType(config.trainingMethod),
     hf_token: hfToken,
-    model_known_cached: config.modelKnownCached,
-    model_local_path: config.modelKnownCached ? config.modelLocalPath : null,
+    model_known_cached: preferLocalModelCache,
+    model_local_path: preferLocalModelCache ? config.modelLocalPath : null,
     model_format: config.modelFormat,
     load_in_4bit: (adapterMethod && isQloraMethod) || (isCpt && isFourBitModel),
     max_seq_length: config.contextLength,
