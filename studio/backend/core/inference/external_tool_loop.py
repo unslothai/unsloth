@@ -121,10 +121,11 @@ def _collect_round_delta(
         anthropic_extra = (
             extra_content.get("anthropic") if isinstance(extra_content, Mapping) else None
         )
-        is_anthropic_thinking = isinstance(anthropic_extra, Mapping) and bool(
-            anthropic_extra.get("thinking_display")
-        )
-        if isinstance(content, str) and not is_anthropic_thinking:
+        openai_extra = extra_content.get("openai") if isinstance(extra_content, Mapping) else None
+        is_provider_reasoning_display = (
+            isinstance(anthropic_extra, Mapping) and bool(anthropic_extra.get("thinking_display"))
+        ) or (isinstance(openai_extra, Mapping) and bool(openai_extra.get("reasoning_display")))
+        if isinstance(content, str) and not is_provider_reasoning_display:
             assistant_text.append(content)
         raw_calls = delta.get("tool_calls")
         if isinstance(raw_calls, list):
@@ -133,7 +134,12 @@ def _collect_round_delta(
                     _merge_tool_call_delta(tool_calls, raw_call)
 
 
-def _without_tool_transport(payload: object, *, has_tool_calls: bool) -> Optional[str]:
+def _without_tool_transport(
+    payload: object,
+    *,
+    has_tool_calls: bool,
+    strip_usage: bool = False,
+) -> Optional[str]:
     """Return a forwardable SSE line with raw function-call deltas removed.
 
     Studio renders its authoritative ``tool_start``/``tool_end`` events instead
@@ -145,6 +151,8 @@ def _without_tool_transport(payload: object, *, has_tool_calls: bool) -> Optiona
     if not isinstance(payload, Mapping):
         return None
     cloned = copy.deepcopy(dict(payload))
+    if strip_usage:
+        cloned.pop("usage", None)
     choices = cloned.get("choices")
     if not isinstance(choices, list):
         return "data: " + json.dumps(cloned, ensure_ascii = False)
@@ -167,9 +175,40 @@ def _without_tool_transport(payload: object, *, has_tool_calls: bool) -> Optiona
     if has_tool_calls and not kept_choices and "error" not in cloned:
         return None
     # Final-pass usage-only chunks remain useful. Stripped fragments do not.
-    if not kept_choices and "usage" not in cloned and "error" not in cloned:
+    if (
+        not kept_choices
+        and "usage" not in cloned
+        and "error" not in cloned
+        and "_toolEvent" not in cloned
+    ):
         return None
     return "data: " + json.dumps(cloned, ensure_ascii = False)
+
+
+def _accumulate_usage(total: dict[str, Any], usage: Mapping[str, Any]) -> None:
+    """Add normalized usage counters from one billed provider request."""
+
+    for key, value in usage.items():
+        if isinstance(value, bool):
+            total.setdefault(key, value)
+        elif isinstance(value, (int, float)):
+            current = total.get(key)
+            total[key] = (current if isinstance(current, (int, float)) else 0) + value
+        elif isinstance(value, Mapping):
+            nested = total.get(key)
+            if not isinstance(nested, dict):
+                nested = {}
+                total[key] = nested
+            _accumulate_usage(nested, value)
+        else:
+            total.setdefault(key, copy.deepcopy(value))
+
+
+def _combined_usage_line(template: Mapping[str, Any], usage: Mapping[str, Any]) -> str:
+    payload = copy.deepcopy(dict(template))
+    payload["choices"] = []
+    payload["usage"] = copy.deepcopy(dict(usage))
+    return "data: " + json.dumps(payload, ensure_ascii = False)
 
 
 def _next_sync(generator) -> tuple[bool, Any]:
@@ -230,6 +269,9 @@ async def stream_external_chat_with_tools(
     cancel = cancel_event or threading.Event()
     rounds_with_calls = 0
     observed_call_rounds = 0
+    aggregate_usage: dict[str, Any] = {}
+    usage_template: dict[str, Any] | None = None
+    usage_emitted = False
     next_tool_choice = tool_choice
 
     while True:
@@ -269,10 +311,24 @@ async def stream_external_chat_with_tools(
                 payload = _sse_data(line)
                 if payload is _DONE:
                     if not round_calls:
+                        if aggregate_usage and usage_template is not None and not usage_emitted:
+                            yield _combined_usage_line(usage_template, aggregate_usage)
+                            usage_emitted = True
                         yield line
                     continue
+                has_usage = False
+                if isinstance(payload, Mapping):
+                    usage = payload.get("usage")
+                    if isinstance(usage, Mapping):
+                        _accumulate_usage(aggregate_usage, usage)
+                        usage_template = copy.deepcopy(dict(payload))
+                        has_usage = True
                 _collect_round_delta(payload, round_calls, assistant_text)
-                forward = _without_tool_transport(payload, has_tool_calls = bool(round_calls))
+                forward = _without_tool_transport(
+                    payload,
+                    has_tool_calls = bool(round_calls),
+                    strip_usage = has_usage,
+                )
                 if forward is not None:
                     yield forward
         finally:
@@ -287,10 +343,16 @@ async def stream_external_chat_with_tools(
                 pass
 
         if not round_calls:
+            if aggregate_usage and usage_template is not None and not usage_emitted:
+                yield _combined_usage_line(usage_template, aggregate_usage)
+                usage_emitted = True
             return
         # The no-tools final pass should not contain calls, but a non-conforming
         # proxy must not turn that response into an unbounded loop.
         if final_pass:
+            if aggregate_usage and usage_template is not None and not usage_emitted:
+                yield _combined_usage_line(usage_template, aggregate_usage)
+                usage_emitted = True
             return
 
         observed_call_rounds += 1

@@ -225,6 +225,15 @@ def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypat
             {
                 "type": "response.output_item.done",
                 "item": {
+                    "type": "reasoning",
+                    "id": "rs_abc",
+                    "status": "completed",
+                    "summary": [{"type": "summary_text", "text": "Check weather."}],
+                },
+            },
+            {
+                "type": "response.output_item.done",
+                "item": {
                     "type": "function_call",
                     "id": "fc_abc",
                     "call_id": "call_xyz",
@@ -288,6 +297,14 @@ def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypat
     assert tc["id"] == "call_xyz"
     assert tc["function"]["name"] == "get_weather"
     assert tc["function"]["arguments"] == '{"city":"SF"}'
+    assert tc["extra_content"]["openai"]["reasoning_items"] == [
+        {
+            "type": "reasoning",
+            "id": "rs_abc",
+            "status": "completed",
+            "summary": [{"type": "summary_text", "text": "Check weather."}],
+        }
+    ]
     # Final chunk reports tool_calls, not stop.
     terminal = next(
         p
@@ -426,6 +443,23 @@ def test_responses_follow_up_tool_result_uses_function_call_output_items(monkeyp
                                     "name": "get_weather",
                                     "arguments": '{"city":"SF"}',
                                 },
+                                "extra_content": {
+                                    "openai": {
+                                        "reasoning_items": [
+                                            {
+                                                "type": "reasoning",
+                                                "id": "rs_abc",
+                                                "status": "completed",
+                                                "summary": [
+                                                    {
+                                                        "type": "summary_text",
+                                                        "text": "Check weather.",
+                                                    }
+                                                ],
+                                            }
+                                        ]
+                                    }
+                                },
                             }
                         ],
                     },
@@ -451,6 +485,14 @@ def test_responses_follow_up_tool_result_uses_function_call_output_items(monkeyp
     types = [it.get("type") or it.get("role") for it in items]
     assert "function_call" in types, items
     assert "function_call_output" in types, items
+    assert types.index("reasoning") < types.index("function_call")
+    reasoning = next(it for it in items if it.get("type") == "reasoning")
+    assert reasoning == {
+        "type": "reasoning",
+        "id": "rs_abc",
+        "status": "completed",
+        "summary": [{"type": "summary_text", "text": "Check weather."}],
+    }
     fc = next(it for it in items if it.get("type") == "function_call")
     assert fc["call_id"] == "call_xyz"
     assert fc["name"] == "get_weather"

@@ -158,7 +158,16 @@ def test_ollama_tool_call_executes_and_continues(monkeypatch):
     assert any("It is 24 C and sunny." in line for line in output)
     assert sum(line == "data: [DONE]" for line in output) == 1
     assert not any('"tool_calls"' in line for line in output)
-    assert not any('"usage"' in line and '"prompt_tokens": 12' in line for line in output)
+    usage_payloads = [
+        json.loads(line[len("data:") :])
+        for line in output
+        if line.startswith("data:")
+        and line[len("data:") :].strip() != "[DONE]"
+        and json.loads(line[len("data:") :]).get("usage")
+    ]
+    assert [payload["usage"] for payload in usage_payloads] == [
+        {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}
+    ]
 
 
 def test_tool_failure_becomes_a_tool_result_and_does_not_break_stream(monkeypatch):
@@ -213,6 +222,70 @@ def test_provider_hosted_tools_survive_every_studio_round(monkeypatch):
         ["web_fetch", "image_generation"],
         ["web_fetch", "image_generation"],
     ]
+
+
+def test_provider_tool_events_survive_managed_round(monkeypatch):
+    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
+    hosted_event = {
+        "id": "chatcmpl-hosted",
+        "object": "chat.completion.chunk",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
+        "_toolEvent": {
+            "type": "tool_end",
+            "tool_name": "image_generation",
+            "tool_call_id": "image_1",
+            "image_b64": "encoded-image",
+        },
+    }
+    first_round = [
+        "data: " + json.dumps(hosted_event),
+        *_tool_round(),
+    ]
+    client = _FakeClient([first_round, [_chunk(delta = {"content": "done"}), "data: [DONE]"]])
+
+    output = asyncio.run(_collect(client))
+
+    forwarded = [json.loads(line[len("data:") :]) for line in output if "_toolEvent" in line]
+    assert len(forwarded) == 1
+    assert forwarded[0]["_toolEvent"] == hosted_event["_toolEvent"]
+    assert forwarded[0]["choices"] == []
+
+
+def test_usage_is_aggregated_across_provider_rounds(monkeypatch):
+    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
+    client = _FakeClient(
+        [
+            _tool_round(),
+            [
+                _chunk(delta = {"content": "done"}),
+                _chunk(
+                    usage = {
+                        "prompt_tokens": 7,
+                        "completion_tokens": 4,
+                        "total_tokens": 11,
+                        "completion_tokens_details": {"reasoning_tokens": 2},
+                    }
+                ),
+                "data: [DONE]",
+            ],
+        ]
+    )
+
+    output = asyncio.run(_collect(client))
+
+    usage_payloads = [
+        json.loads(line[len("data:") :])
+        for line in output
+        if line.startswith("data:")
+        and line[len("data:") :].strip() != "[DONE]"
+        and json.loads(line[len("data:") :]).get("usage")
+    ]
+    assert len(usage_payloads) == 1
+    usage = usage_payloads[0]["usage"]
+    assert usage["prompt_tokens"] == 19
+    assert usage["completion_tokens"] == 7
+    assert usage["total_tokens"] == 26
+    assert usage["completion_tokens_details"]["reasoning_tokens"] == 2
 
 
 def test_gemini_thought_signature_survives_tool_continuation(monkeypatch):
@@ -291,6 +364,52 @@ def test_anthropic_thinking_metadata_is_private_and_replayed(monkeypatch):
     assert assistant["extra_content"]["anthropic"]["thinking_blocks"] == [thinking_block]
     assert any("<think>I should search." in line for line in output)
     assert not any("signed-thinking" in line for line in output)
+
+
+def test_openai_reasoning_item_survives_tool_continuation(monkeypatch):
+    monkeypatch.setattr(loop_mod, "execute_tool", lambda *_args, **_kwargs: "ok")
+    reasoning_item = {
+        "type": "reasoning",
+        "id": "rs_abc",
+        "status": "completed",
+        "summary": [{"type": "summary_text", "text": "Use the tool."}],
+    }
+    tool_round = [
+        _chunk(
+            delta = {
+                "content": "<think>Use the tool.</think>",
+                "extra_content": {"openai": {"reasoning_display": True}},
+            }
+        ),
+        _chunk(
+            delta = {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_search",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"query":"Cairo"}',
+                        },
+                        "extra_content": {"openai": {"reasoning_items": [reasoning_item]}},
+                    }
+                ]
+            }
+        ),
+        _chunk(delta = {}, finish_reason = "tool_calls"),
+        "data: [DONE]",
+    ]
+    client = _FakeClient([tool_round, [_chunk(delta = {"content": "done"}), "data: [DONE]"]])
+
+    output = asyncio.run(_collect(client))
+
+    assistant = client.calls[1]["messages"][-2]
+    assert assistant["content"] == ""
+    assert assistant["tool_calls"][0]["extra_content"] == {
+        "openai": {"reasoning_items": [reasoning_item]}
+    }
+    assert any("<think>Use the tool.</think>" in line for line in output)
 
 
 def test_parallel_tool_calls_false_executes_only_the_first_call(monkeypatch):

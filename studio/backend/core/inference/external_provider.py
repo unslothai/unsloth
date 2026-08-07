@@ -4773,6 +4773,28 @@ class ExternalProviderClient:
             # server-side builtin cards (builtin name + `_server_tool` marker).
             _tool_calls = msg.get("tool_calls") if isinstance(msg, dict) else None
             if role == "assistant" and isinstance(_tool_calls, list):
+                # A manually managed Responses continuation must replay the
+                # native reasoning items that preceded its function calls.
+                replayed_reasoning_ids: set[str] = set()
+                for _tc in _tool_calls:
+                    if not isinstance(_tc, dict):
+                        continue
+                    _extra = _tc.get("extra_content")
+                    _openai_extra = _extra.get("openai") if isinstance(_extra, dict) else None
+                    _reasoning_items = (
+                        _openai_extra.get("reasoning_items")
+                        if isinstance(_openai_extra, dict)
+                        else None
+                    )
+                    if not isinstance(_reasoning_items, list):
+                        continue
+                    for _reasoning_item in _reasoning_items:
+                        _replay_item = _sanitize_openai_reasoning_replay_item(_reasoning_item)
+                        if not _replay_item or _replay_item["id"] in replayed_reasoning_ids:
+                            continue
+                        replayed_reasoning_ids.add(_replay_item["id"])
+                        input_items.append(_replay_item)
+
                 # Emit assistant text before its function_call items to preserve
                 # the original response.output ordering.
                 if isinstance(content, str) and content:
@@ -5479,14 +5501,17 @@ class ExternalProviderClient:
                                 return _extract_reasoning_text(payload.get("text"))
                         return ""
 
-                    def _chunk_with_text(text: str) -> str:
+                    def _chunk_with_text(text: str, *, reasoning_display: bool = False) -> str:
+                        delta: dict[str, Any] = {"content": text}
+                        if reasoning_display:
+                            delta["extra_content"] = {"openai": {"reasoning_display": True}}
                         chunk = {
                             "id": completion_id,
                             "object": "chat.completion.chunk",
                             "choices": [
                                 {
                                     "index": 0,
-                                    "delta": {"content": text},
+                                    "delta": delta,
                                     "finish_reason": None,
                                 }
                             ],
@@ -5515,7 +5540,9 @@ class ExternalProviderClient:
                                     pending_marker_tail = ""
                                     if flushed:
                                         if reasoning_open:
-                                            yield _chunk_with_text("</think>")
+                                            yield _chunk_with_text(
+                                                "</think>", reasoning_display = True
+                                            )
                                             reasoning_open = False
                                         yield _chunk_with_text(flushed)
                                 # Force-drain any segment still awaiting an
@@ -5525,7 +5552,7 @@ class ExternalProviderClient:
                                 )
                                 if tail_flushed:
                                     if reasoning_open:
-                                        yield _chunk_with_text("</think>")
+                                        yield _chunk_with_text("</think>", reasoning_display = True)
                                         reasoning_open = False
                                     yield _chunk_with_text(tail_flushed)
                                 if not done_emitted:
@@ -5559,7 +5586,9 @@ class ExternalProviderClient:
                                     )
                                     if head:
                                         if reasoning_open:
-                                            yield _chunk_with_text("</think>")
+                                            yield _chunk_with_text(
+                                                "</think>", reasoning_display = True
+                                            )
                                             reasoning_open = False
                                         # Re-attempt earlier deferred segments
                                         # first so output stays in order; the
@@ -5590,7 +5619,7 @@ class ExternalProviderClient:
                                 )
                                 if flushed:
                                     if reasoning_open:
-                                        yield _chunk_with_text("</think>")
+                                        yield _chunk_with_text("</think>", reasoning_display = True)
                                         reasoning_open = False
                                     yield _chunk_with_text(flushed)
 
@@ -5650,7 +5679,10 @@ class ExternalProviderClient:
                                         if not reasoning_open:
                                             summary_text = f"<think>{summary_text}"
                                             reasoning_open = True
-                                        yield _chunk_with_text(summary_text)
+                                        yield _chunk_with_text(
+                                            summary_text,
+                                            reasoning_display = True,
+                                        )
                                         reasoning_emitted = True
                                 elif item.get("type") == "web_search_call":
                                     # done carries the query; emit tool_start +
@@ -5808,6 +5840,27 @@ class ExternalProviderClient:
                                             fn_args = ""
                                     _tc_index = function_call_index
                                     function_call_index += 1
+                                    tool_call: dict[str, Any] = {
+                                        "index": _tc_index,
+                                        "id": fn_call_id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": fn_name,
+                                            "arguments": fn_args,
+                                        },
+                                    }
+                                    reasoning_items = [
+                                        replay_item
+                                        for replay_item in (
+                                            _sanitize_openai_reasoning_replay_item(raw_item)
+                                            for raw_item in openai_reasoning_replay_items.values()
+                                        )
+                                        if replay_item is not None
+                                    ]
+                                    if reasoning_items:
+                                        tool_call["extra_content"] = {
+                                            "openai": {"reasoning_items": reasoning_items}
+                                        }
                                     yield (
                                         "data: "
                                         + _json.dumps(
@@ -5818,17 +5871,7 @@ class ExternalProviderClient:
                                                     {
                                                         "index": 0,
                                                         "delta": {
-                                                            "tool_calls": [
-                                                                {
-                                                                    "index": _tc_index,
-                                                                    "id": fn_call_id,
-                                                                    "type": "function",
-                                                                    "function": {
-                                                                        "name": fn_name,
-                                                                        "arguments": (fn_args),
-                                                                    },
-                                                                }
-                                                            ],
+                                                            "tool_calls": [tool_call],
                                                         },
                                                         "finish_reason": None,
                                                     }
@@ -5847,7 +5890,10 @@ class ExternalProviderClient:
                                     if not reasoning_open:
                                         reasoning_delta = f"<think>{reasoning_delta}"
                                         reasoning_open = True
-                                    yield _chunk_with_text(reasoning_delta)
+                                    yield _chunk_with_text(
+                                        reasoning_delta,
+                                        reasoning_display = True,
+                                    )
                                     reasoning_emitted = True
 
                             elif event_type == "response.completed":
@@ -5862,7 +5908,9 @@ class ExternalProviderClient:
                                     pending_marker_tail = ""
                                     if flushed:
                                         if reasoning_open:
-                                            yield _chunk_with_text("</think>")
+                                            yield _chunk_with_text(
+                                                "</think>", reasoning_display = True
+                                            )
                                             reasoning_open = False
                                         yield _chunk_with_text(flushed)
                                 # Force-drain segments still awaiting an annotation.
@@ -5871,11 +5919,11 @@ class ExternalProviderClient:
                                 )
                                 if tail_flushed:
                                     if reasoning_open:
-                                        yield _chunk_with_text("</think>")
+                                        yield _chunk_with_text("</think>", reasoning_display = True)
                                         reasoning_open = False
                                     yield _chunk_with_text(tail_flushed)
                                 if reasoning_open:
-                                    yield _chunk_with_text("</think>")
+                                    yield _chunk_with_text("</think>", reasoning_display = True)
                                     reasoning_open = False
                                 # Scan response.container_id and response.container.id
                                 # (docs don't pin the field); emit container_ready
@@ -5973,7 +6021,9 @@ class ExternalProviderClient:
                                     pending_marker_tail = ""
                                     if flushed:
                                         if reasoning_open:
-                                            yield _chunk_with_text("</think>")
+                                            yield _chunk_with_text(
+                                                "</think>", reasoning_display = True
+                                            )
                                             reasoning_open = False
                                         yield _chunk_with_text(flushed)
                                 # Force-drain any segment still awaiting an
@@ -5983,11 +6033,11 @@ class ExternalProviderClient:
                                 )
                                 if tail_flushed:
                                     if reasoning_open:
-                                        yield _chunk_with_text("</think>")
+                                        yield _chunk_with_text("</think>", reasoning_display = True)
                                         reasoning_open = False
                                     yield _chunk_with_text(tail_flushed)
                                 if reasoning_open:
-                                    yield _chunk_with_text("</think>")
+                                    yield _chunk_with_text("</think>", reasoning_display = True)
                                     reasoning_open = False
                                 # Same citation backfill as response.completed.
                                 if web_search_calls and all_url_citations:

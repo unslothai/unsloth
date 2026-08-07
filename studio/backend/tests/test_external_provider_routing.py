@@ -6,6 +6,8 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from models.inference import ChatCompletionRequest
 from routes import inference as inference_mod
 
@@ -115,3 +117,59 @@ def test_saved_provider_owns_routing_and_keeps_unrelated_hosted_tools(monkeypatc
     assert any(
         "[DONE]" in (chunk.decode() if isinstance(chunk, bytes) else chunk) for chunk in chunks
     )
+
+
+def test_managed_studio_tools_reject_caller_defined_functions(monkeypatch):
+    monkeypatch.setattr(
+        inference_mod.providers_db,
+        "get_provider",
+        lambda _provider_id: {
+            "id": "saved-provider",
+            "display_name": "Saved Ollama",
+            "provider_type": "ollama",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "is_enabled": 1,
+            "studio_tool_execution": 1,
+        },
+    )
+
+    async def select_tools(*_args, **_kwargs):
+        return [TOOL_SCHEMA]
+
+    monkeypatch.setattr(inference_mod, "_select_request_tools", select_tools)
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+    monkeypatch.setattr(inference_mod, "ExternalProviderClient", FakeClient)
+    request = SimpleNamespace(
+        state = SimpleNamespace(skip_api_monitor = True),
+        url = SimpleNamespace(path = "/v1/chat/completions"),
+        method = "POST",
+    )
+    payload = ChatCompletionRequest(
+        model = "default",
+        external_model = "qwen3",
+        messages = [{"role": "user", "content": "search"}],
+        stream = True,
+        provider_id = "saved-provider",
+        enable_tools = True,
+        enabled_tools = ["web_search"],
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "caller_function",
+                    "description": "Handled by the API caller.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+    )
+
+    with pytest.raises(inference_mod.HTTPException) as caught:
+        asyncio.run(inference_mod._proxy_to_external_provider(payload, request))
+
+    assert caught.value.status_code == 400
+    assert caught.value.detail["error"]["param"] == "tools"

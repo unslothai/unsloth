@@ -9006,6 +9006,17 @@ async def _proxy_to_external_provider(
         name for name in (payload.enabled_tools or []) if name not in _external_studio_tool_names
     ]
 
+    if _use_external_studio_tools and payload.tools:
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(
+                "Caller-defined functions cannot be combined with managed Studio tool execution.",
+                status = 400,
+                code = "invalid_request_error",
+                param = "tools",
+            ),
+        )
+
     if (
         payload.confirm_tool_calls
         and not studio_tool_execution
