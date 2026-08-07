@@ -1722,6 +1722,12 @@ def _stub_with_stored_eval():
             **kw,
         ):
             seen["ds"] = self.eval_dataset if eval_dataset is None else eval_dataset
+            # What `get_eval_dataloader` resolves a string key to, read DURING
+            # the call. A named split is capped for the call and restored after,
+            # so the stored dict alone cannot show whether the cap was applied.
+            stored = getattr(self, "eval_dataset", None)
+            if isinstance(eval_dataset, str) and isinstance(stored, dict):
+                seen["resolved"] = stored.get(eval_dataset)
 
     _wrap_sft_evaluate_cap(Stub)
     return Stub, seen
@@ -2192,17 +2198,50 @@ def test_evaluate_caps_the_split_a_string_key_names():
     split out of a stored dict: `get_eval_dataloader` resolves it as
     `self.eval_dataset[eval_dataset]`. Capping the KEY is a no-op, so the split
     it names reached the collator over `max_seq_length` with `max_length = None`.
+
+    Swapped in for the call and back out again, never written through: the
+    caller keeps its uncapped original, so a later `truncation_mode` change can
+    still take the suffix instead of re-capping a saved prefix.
     """
     _, tok = _load_plain()
     Stub, seen = _stub_with_stored_eval()
     stub = Stub()
     stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
-    stub.eval_dataset = {"validation": _tokenized_dataset(tok)}
+    original = _tokenized_dataset(tok)
+    assert max(len(r) for r in original["input_ids"]) > _MODEL_MAX_SEQ_LENGTH
+    stub.eval_dataset = {"validation": original}
     stub.evaluate("validation")
 
     assert seen["ds"] == "validation", "the key itself must still be handed down"
-    stored = stub.eval_dataset["validation"]
-    assert max(len(r) for r in stored["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
+    during = seen["resolved"]
+    assert max(len(r) for r in during["input_ids"]) <= _MODEL_MAX_SEQ_LENGTH
+    assert stub.eval_dataset["validation"] is original, "the original must survive"
+
+
+def test_a_named_split_can_still_be_capped_from_the_other_end():
+    """The whole point of restoring the original. `keep_end` after `keep_start`
+    on the same key must produce the SUFFIX, which is impossible if the first
+    call left its prefix behind in the stored dict.
+    """
+    _, tok = _load_plain()
+    Stub, seen = _stub_with_stored_eval()
+    stub = Stub()
+    stub.args = _Args(_MODEL_MAX_SEQ_LENGTH, None)
+    original = _tokenized_dataset(tok)
+    stub.eval_dataset = {"validation": original}
+
+    stub.evaluate("validation")
+    head = list(seen["resolved"]["input_ids"])
+
+    stub.args.truncation_mode = "keep_end"
+    stub.evaluate("validation")
+    tail = list(seen["resolved"]["input_ids"])
+
+    assert max(len(r) for r in tail) <= _MODEL_MAX_SEQ_LENGTH
+    assert any(
+        len(row) > _MODEL_MAX_SEQ_LENGTH and h != t
+        for row, h, t in zip(original["input_ids"], head, tail)
+    ), "an overlength row must give a different suffix than prefix"
 
 
 def test_an_unknown_string_key_is_handed_straight_back():
@@ -2617,3 +2656,148 @@ def test_the_late_cap_refuses_a_truncation_mode_it_cannot_honour():
     stub.args.truncation_mode = "keep_middle"
     stub.evaluate(eval_dataset = late)
     assert seen["ds"] is late, "the split was cut under a mode we cannot honour"
+
+
+def _cap_scan_shapes():
+    """Split shapes whose verdict the two cap scans must agree on.
+
+    The generated `__init__` inlines its own copy of the scan because that module
+    is standalone; `rl.pretokenized_within_cap` is the importable twin. A drift
+    between them is invisible until a real run goes uncapped, so pin them here.
+    """
+    from datasets import Dataset
+
+    fits = Dataset.from_dict({"input_ids": [[1, 2], [3, 4]]})
+    over = Dataset.from_dict({"input_ids": [[1, 2], [3, 4, 5, 6]]})
+    raw = Dataset.from_dict({"text": ["a", "b"]})
+
+    def one_shot():
+        yield {"input_ids": [1, 2]}
+
+    return [
+        (None, True),
+        (fits, True),
+        (over, False),
+        (raw, True),                     # not tokenized: prep still truncates it
+        ([{"input_ids": [1, 2]}], True),
+        ([{"input_ids": [1, 2, 3, 4]}], False),
+        (one_shot(), False),             # single-pass: unverifiable reads False
+    ]
+
+
+@pytest.mark.parametrize("dataset, expected", _cap_scan_shapes())
+def test_the_importable_cap_scan_matches_the_generated_one(dataset, expected):
+    from unsloth.models.rl import pretokenized_within_cap
+    assert pretokenized_within_cap(dataset, 3) is expected
+
+
+@pytest.mark.parametrize("dataset, expected", _cap_scan_shapes())
+def test_the_generated_cap_scan_matches_the_importable_one(dataset, expected):
+    """The inline copy, extracted from the generator and executed as written."""
+    import inspect as _inspect
+    import re
+    from unsloth.models import rl
+
+    source = _inspect.getsource(rl)
+    start = source.index('"    def _unsloth_within_cap(_ds):\\n"')
+    end = source.index('"    def _unsloth_splits_within_cap(_ev):\\n"')
+    lines = re.findall(r'^\s*"(.*?)\\n"\s*$', source[start:end], re.M)
+    namespace = {"_unsloth_cap": 3, "_UNSLOTH_SCAN_ROWS": 1024}
+    exec("\n".join(line[4:] for line in lines), namespace)
+    assert namespace["_unsloth_within_cap"](dataset) is expected
+
+
+def test_an_unscannable_split_never_reads_as_capped():
+    """A split that raises mid-scan has proven nothing, and the caller is about
+    to decide whether anything downstream enforces the cap."""
+    from unsloth.models.rl import pretokenized_within_cap, splits_within_cap
+
+    class Angry:
+        def __len__(self): return 2
+        def __iter__(self):
+            yield {"input_ids": [1]}
+            raise RuntimeError("no")
+
+    assert pretokenized_within_cap(Angry(), 3) is False
+    assert splits_within_cap({"a": Angry()}, 3) is False
+
+
+def test_every_eval_split_counts_towards_the_cap():
+    from datasets import Dataset
+    from unsloth.models.rl import splits_within_cap
+
+    fits = Dataset.from_dict({"input_ids": [[1, 2]]})
+    over = Dataset.from_dict({"input_ids": [[1, 2, 3, 4]]})
+    assert splits_within_cap({"a": fits}, 3) is True
+    assert splits_within_cap({"a": fits, "b": over}, 3) is False
+
+
+def _padding_free_fallback(train = None, evals = None, max_length = 3):
+    """Run the auto-padding-free retry with an init that rejects padding-free.
+
+    Returns the number of `original_init` calls, or the propagated error.
+    """
+    from types import SimpleNamespace
+    from unsloth.trainer import (
+        _bound_splits, _cap_is_enforceable_without_padding_free,
+    )
+
+    def original_init(self, model = None, args = None, data_collator = None,
+                      train_dataset = None, eval_dataset = None, **kw):
+        pass
+
+    config = SimpleNamespace(max_length = max_length, padding_free = True)
+    kwargs = {"train_dataset": train, "eval_dataset": evals}
+    bound_train, bound_evals = _bound_splits(original_init, (None, config), kwargs)
+    assert bound_train is train and bound_evals is evals
+    return _cap_is_enforceable_without_padding_free(config, bound_train, bound_evals)
+
+
+def test_the_padding_free_fallback_refuses_a_split_it_cannot_cap():
+    """The retry only runs when the exact source match in `rl.py` missed TRL's
+    guard, which means the truncation block was never generated either. Turning
+    padding-free off keeps `max_length` for a collator that does not truncate, so
+    retrying would turn a hard error into a silently uncapped run."""
+    from datasets import Dataset
+    over = Dataset.from_dict({"input_ids": [[1, 2], [3, 4, 5, 6]]})
+    assert _padding_free_fallback(train = over) is False
+    assert _padding_free_fallback(evals = {"validation": over}) is False
+
+
+def test_the_padding_free_fallback_still_runs_when_the_cap_holds():
+    """Raw text and already-short rows are both fine: prep truncates the first
+    and the second needs no truncating. The fallback must not become a wall."""
+    from datasets import Dataset
+    assert _padding_free_fallback(
+        train = Dataset.from_dict({"input_ids": [[1, 2]]})) is True
+    assert _padding_free_fallback(
+        train = Dataset.from_dict({"text": ["hello"]})) is True
+    assert _padding_free_fallback(train = None, max_length = None) is True
+
+
+def test_the_fallback_reads_splits_through_the_signature():
+    """TRL has moved these parameters between releases; a positional index reads
+    the data collator on the version that did."""
+    from unsloth.trainer import _bound_splits
+
+    def moved(self, model = None, processing_class = None, args = None,
+              train_dataset = None, eval_dataset = None):
+        pass
+
+    train, evals = _bound_splits(moved, (None, "tok", "args", "TRAIN", "EVAL"), {})
+    assert (train, evals) == ("TRAIN", "EVAL")
+
+
+def test_completion_only_ignores_the_columns_of_a_transformed_split():
+    """`with_transform` reports its BACKING table. A transform storing `text` but
+    yielding `prompt`/`completion` resolved False here while TRL, reading a
+    yielded row, resolved True and applied `completion_mask` -- so the cap
+    filters kept rows whose completion had been truncated away entirely."""
+    import inspect as _inspect
+    from unsloth.models import rl
+
+    source = _inspect.getsource(rl)
+    guard = "_unsloth_train_sample = {} if _unsloth_is_transformed(train_dataset) else dict.fromkeys("
+    assert guard in source
+    # And the probe it falls through to still reads a row rather than giving up.
+    assert "_unsloth_train_sample = next(_unsloth_probe, None) or {}" in source

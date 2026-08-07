@@ -742,6 +742,47 @@ def _is_stream(dataset):
     return not hasattr(dataset, "__len__") or not hasattr(dataset, "__getitem__")
 
 
+_SCAN_ROWS = 1024
+
+
+def pretokenized_within_cap(dataset, cap):
+    """Whether every pre-tokenized row in `dataset` already fits `cap`.
+
+    The generated `__init__` carries its own copy of this, inlined, because that
+    module is standalone and cannot import from here. This one is for callers
+    that need the same answer when the generated block was never inserted -- see
+    `trainer.py`'s padding-free fallback. The two must agree, and a test pins
+    them to the same verdict on the shapes below.
+
+    Unverifiable reads FALSE, never true. A single-pass stream cannot be scanned
+    without consuming it, an unexhausted one is only proof about its prefix, and
+    a split that raises mid-scan has told us nothing: in every one of those cases
+    the caller is about to decide whether anything downstream enforces the cap,
+    and guessing yes is the silently-uncapped run.
+    """
+    if dataset is None: return True
+    try:
+        try:    n = len(dataset)
+        except Exception: n = None
+        rows = iter(dataset)
+        if rows is iter(dataset): return False
+        seen = 0
+        for row in rows:
+            if "input_ids" not in row: return True
+            if len(row["input_ids"]) > cap: return False
+            seen += 1
+            if n is None and seen >= _SCAN_ROWS: return False
+    except Exception:
+        return False
+    return True
+
+
+def splits_within_cap(splits, cap):
+    """`pretokenized_within_cap` over a split or a dict of them. Each one counts."""
+    every = splits.values() if isinstance(splits, dict) else [splits]
+    return all(pretokenized_within_cap(s, cap) for s in every)
+
+
 _CAP_SIGNATURE_ATTR = "_unsloth_cap_signature"
 
 
@@ -979,11 +1020,29 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                 return _mark_capped(
                     _CappedRows(dataset, cut, supervision, per_token), cap, drop_unsupervised
                 )
-            new = (
-                dataset
-                if not overlength
-                else dataset.map(lambda e: {c: e[c][cut] for c in per_token})
-            )
+            def _slice_row(example, _cut = cut, _cols = tuple(per_token)):
+                # Per value, not per column. `_sliceable_per_token` judges by ONE
+                # row, so an optional column that is a list there and None (or a
+                # different width) three rows later raised inside `map` -- and
+                # the broad catch below then returned the UNCAPPED split, losing
+                # the `input_ids` truncation too. `input_ids` is always cut; an
+                # auxiliary value that cannot take the same slice is left alone.
+                out = {}
+                width = None
+                for name in _cols:
+                    value = example[name]
+                    try:
+                        length = len(value)
+                    except Exception:
+                        continue                       # not sliceable: leave it
+                    if name == "input_ids":
+                        width = length
+                    elif width is not None and length != width:
+                        continue                       # not aligned: leave it
+                    out[name] = value[_cut]
+                return out
+
+            new = dataset if not overlength else dataset.map(_slice_row)
             # Truncating can leave a row with every label at -100, or a mask that is
             # now all zeros, which the collator turns into all -100. A batch of
             # those has no supervised token and reports a NaN loss. TRL filters them
@@ -1093,8 +1152,13 @@ def _wrap_sft_evaluate_cap(trainer_cls):
             stored = getattr(trainer, "eval_dataset", None)
             if isinstance(stored, dict) and given in stored:
                 capped = _cap_cached(trainer, stored[given], cap, drop_unsupervised)
+                # Staged for the caller to swap in and OUT, never written
+                # through. Overwriting `stored[given]` destroyed the uncapped
+                # original, so a later `truncation_mode = "keep_end"` -- which
+                # the memo key now distinguishes on purpose -- could only re-cap
+                # the saved prefix and never produce the suffix asked for.
                 if capped is not stored[given]:
-                    stored[given] = capped
+                    trainer._unsloth_pending_split_swap = (stored, given, capped)
             return given
         if isinstance(given, dict):
             capped = {k: _cap_cached(trainer, v, cap, drop_unsupervised) for k, v in given.items()}
@@ -1121,12 +1185,25 @@ def _wrap_sft_evaluate_cap(trainer_cls):
                 return original(self, *args, **kwargs)
             given = kwargs.get(keyword, args[0] if args else None)
             if given is not None:
+                self._unsloth_pending_split_swap = None
                 capped = _cap_splits(self, given, cap, drop_unsupervised)
                 if keyword in kwargs:
                     kwargs[keyword] = capped
                 else:
                     args = (capped,) + tuple(args[1:])
-                return original(self, *args, **kwargs)
+                swap = getattr(self, "_unsloth_pending_split_swap", None)
+                if swap is None:
+                    return original(self, *args, **kwargs)
+                # A named split: swap the capped copy in for this call only, so
+                # the caller keeps the uncapped original for the next mode.
+                container, key, replacement = swap
+                self._unsloth_pending_split_swap = None
+                previous = container[key]
+                container[key] = replacement
+                try:
+                    return original(self, *args, **kwargs)
+                finally:
+                    container[key] = previous
             # `evaluate()` with no split passed falls back to the one stored on
             # the trainer, and a caller can install or replace that after
             # construction -- which is exactly where the constructor's cap can no
@@ -1965,9 +2042,17 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # same `iter(x) is iter(x)` signal the cap scan uses marks those,
                     # and an unreadable schema resolves to False, which is what TRL
                     # itself answers for a split with no `prompt`/`completion`.
+                    # A `with_transform` split answers `column_names` with its BACKING
+                    # table, so a transform storing `text` but yielding `prompt` /
+                    # `completion` resolved to False here while TRL, which reads a
+                    # yielded row, resolved True and applied `completion_mask`. The
+                    # cap filters then kept rows whose completion was cut away
+                    # entirely, and the collator turned those into all -100.
+                    # Same rule as the two schema probes above: transformed columns
+                    # are not evidence, so ignore them and read a row instead.
                     "    if _unsloth_completion_only is None:\n"
                     "        try:\n"
-                    "            _unsloth_train_sample = dict.fromkeys(\n"
+                    "            _unsloth_train_sample = {} if _unsloth_is_transformed(train_dataset) else dict.fromkeys(\n"
                     "                getattr(train_dataset, 'column_names', None) or [])\n"
                     "            if not _unsloth_train_sample:\n"
                     "                _unsloth_probe = iter(train_dataset)\n"

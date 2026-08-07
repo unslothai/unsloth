@@ -154,6 +154,44 @@ def _should_skip_auto_padding_free_error(exc: Exception) -> bool:
     return "padding_free" in message and "max_length" in message
 
 
+def _bound_splits(original_init, args, kwargs):
+    """`(train_dataset, eval_dataset)` as the wrapped `__init__` will see them.
+
+    Bound through the signature rather than indexed positionally: TRL has moved
+    these parameters between releases, and a hardcoded index silently reads the
+    data collator on the version that did.
+    """
+    try:
+        bound = inspect.signature(original_init).bind_partial(None, *args, **kwargs)
+    except Exception:
+        return kwargs.get("train_dataset"), kwargs.get("eval_dataset")
+    return bound.arguments.get("train_dataset"), bound.arguments.get("eval_dataset")
+
+
+def _cap_is_enforceable_without_padding_free(config, train, evals) -> bool:
+    """Whether dropping padding-free actually leaves something enforcing the cap.
+
+    This fallback only runs when the exact source-text match in `rl.py` missed
+    TRL's guard, which means the generated pre-tokenized truncation block was
+    never inserted either. Turning `padding_free` off keeps `max_length` for
+    TRL's collator, and that collator does not truncate: rows that already carry
+    `input_ids` reach the model at full length. So the retry would convert a
+    hard error into a silently uncapped run, which is strictly worse.
+
+    Raw splits are fine -- prep tokenizes them under `max_length`. Only rows that
+    are already tokenized are at risk, so scan for those and let the original
+    error propagate when any is over.
+    """
+    cap = getattr(config, "max_length", None)
+    if not cap:
+        return True
+    try:
+        from unsloth.models.rl import pretokenized_within_cap, splits_within_cap
+    except Exception:
+        return True  # nothing to check against; do not invent a failure
+    return pretokenized_within_cap(train, cap) and splits_within_cap(evals, cap)
+
+
 def _disable_padding_free(config):
     if config is None:
         return
@@ -867,6 +905,9 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 packing_active = False
                 original_init(self, *args, **kwargs)
             elif auto_padding_free_active and _should_skip_auto_padding_free_error(exc):
+                train, evals = _bound_splits(original_init, args, kwargs)
+                if not _cap_is_enforceable_without_padding_free(config_arg, train, evals):
+                    raise
                 logger.info(
                     "Unsloth: Auto padding-free disabled because the trainer rejected it (%s).",
                     exc,
