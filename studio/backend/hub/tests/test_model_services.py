@@ -1216,6 +1216,52 @@ def test_legacy_unscoped_download_state_falls_back_only_for_selected_cache(monke
     assert not marker.exists()
 
 
+def test_cached_gguf_scan_degrades_when_the_shared_index_cannot_be_built(monkeypatch, tmp_path):
+    """A malformed repo identity must not take every valid row down with it.
+
+    The index is built once per scan and outside the per-repository ``try``, so an
+    exception there reaches the endpoint as a 500 and hides the whole inventory.
+    ``_scan_cached_models`` already degraded to per-repo reads; the GGUF path did
+    not, which is the asymmetry this covers.
+    """
+    hub_cache = tmp_path / "cache-a"
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "studio-cache")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = hub_cache),
+    )
+    # An undecodable byte in a cache directory name reaches us as a lone surrogate,
+    # and the repo key cannot be hashed from it.
+    bad_repo = os.fsdecode(b"Org/Re\xffpo")
+    repos = [
+        SimpleNamespace(
+            repo_id = repo_id,
+            repo_type = "model",
+            repo_path = hub_cache / f"models--{repo_id.replace('/', '--')}",
+        )
+        for repo_id in ("Org/Good", bad_repo)
+    ]
+    monkeypatch.setattr(
+        cache_inventory, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = repos)]
+    )
+    monkeypatch.setattr(cache_inventory, "_cached_model_snapshot_path", lambda _path: None)
+    monkeypatch.setattr(cache_inventory, "_repo_gguf_size_bytes", lambda _repo: 1)
+    monkeypatch.setattr(cache_inventory, "_repo_gguf_last_modified", lambda _repo: 0)
+    monkeypatch.setattr(cache_inventory, "_is_hidden_infra_repo", lambda *_args: False)
+    monkeypatch.setattr(cache_inventory, "_repo_gguf_payload_snapshots", lambda _repo: (None, ()))
+    monkeypatch.setattr(cache_inventory, "_cache_inventory_fields", lambda *_a, **_kw: {})
+
+    with pytest.raises(UnicodeEncodeError):
+        download_manifest.build_variant_state_index(
+            [("model", bad_repo, hub_cache)], active_hub_cache = hub_cache
+        )
+
+    rows = cache_inventory._scan_cached_gguf()
+    assert "Org/Good" in {row["repo_id"] for row in rows}, (
+        "one unhashable repo identity emptied the whole GGUF inventory"
+    )
+
+
 def test_state_scan_survives_a_state_filename_with_an_undecodable_byte(monkeypatch, tmp_path):
     """One corrupt filename must not take the whole inventory down with it.
 

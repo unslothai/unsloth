@@ -288,15 +288,26 @@ def _scan_hf_cache(
     if not discovered:
         return []
     if variant_states is None:
-        variant_states = download_manifest.build_variant_state_index(
-            [("model", model_id, cache_dir) for _repo, model_id, _updated in discovered],
-            active_hub_cache = active_hub_cache
-            or (cache_dir if active_cache else _resolve_hf_cache_dir()),
-        )
+        # Reached precisely when the caller's own guarded build already failed, so
+        # leaving this one bare handed the same exception straight back and undid
+        # that guard. Degrade to the per-repo reads instead, as the callers do.
+        try:
+            variant_states = download_manifest.build_variant_state_index(
+                [("model", model_id, cache_dir) for _repo, model_id, _updated in discovered],
+                active_hub_cache = active_hub_cache
+                or (cache_dir if active_cache else _resolve_hf_cache_dir()),
+            )
+        except Exception as e:
+            logger.warning("Could not build Hub-state index for %s: %s", cache_dir, e)
+            variant_states = None
 
     found: list[LocalModelInfo] = []
     for repo_dir, model_id, updated_at in discovered:
-        variant_state = variant_states.for_repo("model", model_id, hub_cache = cache_dir)
+        variant_state = (
+            variant_states.for_repo("model", model_id, hub_cache = cache_dir)
+            if variant_states is not None
+            else None
+        )
         snapshot_partial = hf_cache_scan.is_snapshot_partial(
             "model",
             model_id,

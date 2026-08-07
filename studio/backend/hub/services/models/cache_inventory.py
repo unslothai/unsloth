@@ -466,10 +466,22 @@ def _scan_cached_gguf(
     if active_hub_cache is None:
         from utils.hf_cache_settings import get_hf_cache_paths
         active_hub_cache = get_hf_cache_paths().hub_cache
-    variant_states = download_manifest.build_variant_state_index(
-        _variant_state_repositories(cache_scans),
-        active_hub_cache = active_hub_cache,
-    )
+    try:
+        variant_states = download_manifest.build_variant_state_index(
+            _variant_state_repositories(cache_scans),
+            active_hub_cache = active_hub_cache,
+        )
+    except Exception as e:
+        # Symmetric with _scan_cached_models below. The index is built once for the
+        # whole scan and outside the per-repository try, so one malformed repo
+        # identity anywhere in the cache took the endpoint with it: a cache
+        # directory name holding a byte the filesystem encoding cannot decode
+        # arrives as a lone surrogate, hashing it for the repo key raises, and
+        # /api/hub/cached-gguf answers 500 with every valid row hidden. Falling
+        # back to the per-repo reads this replaced costs speed on a broken cache
+        # and nothing else.
+        logger.warning("Could not build shared cached-GGUF state index: %s", e)
+        variant_states = None
 
     seen_lower: dict[str, dict] = {}
     for hf_cache in cache_scans:
@@ -479,10 +491,14 @@ def _scan_cached_gguf(
                     continue
                 repo_id = repo_info.repo_id
                 repo_path = Path(repo_info.repo_path)
-                variant_state = variant_states.for_repo(
-                    "model",
-                    repo_id,
-                    hub_cache = repo_path.parent,
+                variant_state = (
+                    variant_states.for_repo(
+                        "model",
+                        repo_id,
+                        hub_cache = repo_path.parent,
+                    )
+                    if variant_states is not None
+                    else None
                 )
                 snapshot_path = _cached_model_snapshot_path(repo_path)
                 total_size = _repo_gguf_size_bytes(repo_info)
