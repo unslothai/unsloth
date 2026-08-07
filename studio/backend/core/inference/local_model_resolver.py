@@ -36,9 +36,8 @@ _lock = threading.Lock()
 _scan: tuple[float, dict[str, _LocalGgufEntry]] = (0.0, {})
 # Not _lock: that is held for the whole scan, so the request path would wait on it.
 _warm_lock = threading.Lock()
-# Repos that finished downloading but are not in the published index yet. The
-# retained index covers what was already known; nothing covers the one that just
-# landed until the next scan, and the request path must not call it absent.
+# Repos that finished downloading but are not in the published index yet: nothing
+# else covers them until the next scan, and the request path must not call them absent.
 _just_downloaded: set[str] = set()
 _warming = False
 _last_scan_s = 0.0
@@ -48,10 +47,18 @@ _WARM_DUTY = 10.0
 
 def _is_abs_path_id(value: str) -> bool:
     """True when an id is an absolute filesystem path (the ./models and LM Studio
-    scanners use the on-disk path as the id) rather than a repo id like org/name."""
-    from pathlib import Path
+    scanners use the on-disk path as the id) rather than a repo id like org/name.
+
+    Both spellings count on every host. Path() follows the running OS, so a
+    Windows backend read "/home/me/x.gguf" as relative and a POSIX one read
+    "C:\\models\\x.gguf" the same way, and either then reached /v1/models as a
+    published id. Ids outlive the machine that wrote them: settings sync, a WSL
+    session and a copied config all carry the other platform's spelling, and the
+    model-override identity already folds both. Neither reading can misfire on a
+    repo id, which has no leading separator, drive or UNC prefix."""
+    from pathlib import PurePosixPath, PureWindowsPath
     try:
-        return Path(value).is_absolute()
+        return PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute()
     except Exception:
         return False
 
@@ -92,7 +99,7 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
     safetensors), listing only on-disk quants. ``load_path`` is a concrete local
     path so /load resolves the variant locally and never fetches a remote one."""
     from pathlib import Path
-    from utils.models.model_config import _is_mmproj, list_local_gguf_variants
+    from utils.models.model_config import detect_gguf_model, list_local_gguf_variants
 
     path = getattr(info, "path", None)
     if not isinstance(path, str):
@@ -107,7 +114,7 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
             # advertise a projector and a switch could load it instead of the weights,
             # evicting the loaded model. The directory branch below is already mmproj
             # free (list_local_gguf_variants drops mmproj quants).
-            if p.suffix.lower() != ".gguf" or _is_mmproj(p.name):
+            if p.suffix.lower() != ".gguf" or detect_gguf_model(str(p)) is None:
                 return None
             return _LocalGgufEntry(loader_id, str(p), ())
         load_dir = _resolve_load_dir(p)
@@ -115,10 +122,9 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         quants = tuple(v.quant for v in variants if getattr(v, "quant", None))
         if not quants:
             return None
-        # That call orders by descending size, so the head is the biggest quant,
-        # often F16. A bare id means whichever quant a plain load would take, so put
-        # that first: everything downstream reads [0], and answering with the
-        # largest can evict a working model and then OOM starting it.
+        # That call orders by descending size, so the head is the biggest quant (often
+        # F16). Downstream reads [0], and a bare id must mean whichever quant a plain
+        # load would take: answering with the largest can evict a model and then OOM.
         from core.inference.openai_auto_download import preferred_quant
 
         best = preferred_quant(quants)
@@ -132,9 +138,8 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
 def local_gguf_quants(info) -> Optional[tuple[str, ...]]:
     """On-disk quant labels for *info*, or None when it is not a servable local
     GGUF. Read from the files, not ``info.model_format``: the HF-cache scanner
-    leaves model_format unset for GGUF snapshots, so a model_format filter would
-    drop every cached GGUF. Lets /v1/models advertise exactly what /v1 can serve,
-    and which quant to name, from a single scan."""
+    leaves that unset for GGUF snapshots, so filtering on it drops every cached
+    GGUF. One scan tells /v1/models what it can serve and which quant to name."""
     from pathlib import Path
 
     path = getattr(info, "path", None)
@@ -330,14 +335,14 @@ def recently_downloaded(repo_id: str) -> bool:
 
 
 def invalidate_index() -> None:
-    """Mark the cached scan stale so the next resolve sees a just-finished
-    download, rather than waiting out the TTL.
+    """Mark the cached scan stale so the next resolve sees a just-finished download
+    instead of waiting out the TTL.
 
-    Keeps the entries. Callers on the request path read this cache without
-    scanning, so emptying it would leave them with no evidence about any local
-    model until the rebuild lands, and a bare request for one of them would be
-    answered by whatever is resident. Only a completed download invalidates, and
-    that only ever adds models, so the retained entries stay true.
+    Keeps the entries: the request path reads this cache without scanning, so
+    emptying it would leave it with no evidence about any local model until the
+    rebuild lands, and a bare request for one would be answered by whatever is
+    resident. Only a completed download invalidates, and that only adds, so the
+    retained entries stay true.
     """
     global _scan
     with _lock:
@@ -366,9 +371,9 @@ def _index() -> dict[str, _LocalGgufEntry]:
 def index_is_built() -> bool:
     """Whether a scan has ever completed, freshness aside.
 
-    Lock-free on purpose: ``_lock`` is held for the whole scan, so taking it here
-    would park the request path on the very scan it is trying to stay off. Reading
-    ``_scan[0]`` is safe because ``_scan`` is only ever rebound, never mutated.
+    Lock-free on purpose: ``_lock`` is held for the whole scan, so taking it would
+    park the request path on the scan it is trying to stay off. Safe because
+    ``_scan`` is only ever rebound, never mutated.
     """
     return bool(_scan[0])
 
@@ -376,13 +381,10 @@ def index_is_built() -> bool:
 def warm_index_soon() -> None:
     """(Re)build the index off the request path when it is missing or past its TTL.
 
-    Callers that cannot afford the scan use this plus ``allow_scan=False``, so this
-    is the only thing that ever refreshes the index for them. It has to cover a
-    stale index and not just an absent one: a model downloaded through the Hub UI
-    or dropped into a scan folder has no invalidation hook, and would otherwise stay
-    invisible to those callers for the life of the process.
-
-    Never touches ``_lock``, which the scan holds throughout, and never blocks.
+    The only refresh for callers using ``allow_scan=False``. Covers a stale index,
+    not just an absent one: a model downloaded through the Hub UI or dropped into a
+    scan folder has no invalidation hook and would otherwise stay invisible to them
+    for the life of the process. Never blocks, and never touches ``_lock``.
     """
     global _warming
     if time.monotonic() - _scan[0] < max(_CACHE_TTL_S, _last_scan_s * _WARM_DUTY):
@@ -419,11 +421,10 @@ def resolve_local_gguf(
     off and resolves only when that quant is on disk, unless it names no quant at
     all (an Ollama-style ":latest"), which means the repo.
 
-    ``allow_scan=False`` answers from the last built index and never rebuilds,
-    for callers on the request path: the scan walks several model dirs and HF
-    caches, takes seconds on a large install, and holds a lock every other
-    caller queues behind. A stale answer is fine there, since what is on disk
-    barely moves and a finished download calls :func:`invalidate_index`.
+    ``allow_scan=False`` answers from the last built index and never rebuilds, for
+    the request path: the scan walks several model dirs and HF caches, takes seconds
+    on a large install, and holds a lock everyone queues behind. Stale is fine there,
+    since disk barely moves and a finished download calls :func:`invalidate_index`.
     """
     if not isinstance(requested, str) or not requested.strip():
         return None
@@ -466,10 +467,9 @@ def describe_local_miss(requested: str) -> tuple[str, tuple[str, ...]]:
     """Why :func:`resolve_local_gguf` missed, so an error can say "wrong quant"
     instead of "no such model".
 
-    ``(MISS_VARIANT_NOT_FOUND, <local quants>)`` when the repo is downloaded but
-    the requested ``:VARIANT`` is not, else ``(MISS_MODEL_NOT_FOUND, ())``. Splits
-    the name like the resolver so the two agree. Fail-safe: a scan failure reports
-    the generic miss rather than raising into the handler.
+    ``(MISS_VARIANT_NOT_FOUND, <local quants>)`` when the repo is downloaded but the
+    requested ``:VARIANT`` is not, else ``(MISS_MODEL_NOT_FOUND, ())``. Fail-safe: a
+    scan failure reports the generic miss rather than raising into the handler.
     """
     if not isinstance(requested, str) or not requested.strip():
         return MISS_MODEL_NOT_FOUND, ()

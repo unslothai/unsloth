@@ -16,11 +16,18 @@ from __future__ import annotations
 import os
 from typing import Iterable, Mapping, Optional
 
+# Valid llama-server --parallel range, shared with LoadRequest.n_parallel.
+# Mirrored by callers that cannot import this: run.py and unsloth_cli/commands/
+# studio.py (_PARALLEL_MIN/MAX), per-model-config.ts (N_PARALLEL_MIN/MAX);
+# test_parallel_slots_per_load.py pins them together.
+PARALLEL_MIN = 1
+PARALLEL_MAX = 64
+
 # Each group = every alias (short + long) of one hard-denied flag.
 # Extend the matching group when llama.cpp adds a new alias.
 _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
-    # Parallel slots: owned by typer --parallel; a pass-through would desync
-    # app.state.llama_parallel_slots from llama-server.
+    # Parallel slots: owned by typer --parallel and LoadRequest.n_parallel; a
+    # pass-through would desync the slot bookkeeping from llama-server.
     frozenset({"-np", "--parallel", "--n-parallel"}),
     # Model identity: Unsloth resolves it from LoadRequest; a second -m would
     # load a different model than Unsloth thinks it loaded.
@@ -80,9 +87,10 @@ _DENYLIST: frozenset[str] = frozenset().union(*_DENYLIST_GROUPS)
 def _flag_name(token: str) -> Optional[str]:
     """Flag name for ``token``, or None if it isn't a flag.
 
-    Peels `--key=value` to `--key`, treats `-1`/`-0.5` as values (shorts
-    always start with a letter), and normalises attached `-np8` / `-np-1` /
-    `-np8x` to `-np`. Mirrors the CLI's `_expand_attached_np_short`.
+    Peels `--key=value` to `--key`, normalises long-option underscores like
+    llama.cpp, treats `-1`/`-0.5` as values (shorts always start with a letter),
+    and normalises attached `-np8` / `-np-1` / `-np8x` to `-np`. Mirrors the
+    CLI's `_expand_attached_np_short`.
     """
     token = token.strip()
     if not token.startswith("-") or token in {"-", "--"}:
@@ -90,6 +98,8 @@ def _flag_name(token: str) -> Optional[str]:
     if len(token) >= 2 and (token[1].isdigit() or token[1] == "."):
         return None
     name = token.split("=", 1)[0]
+    if name.startswith("--"):
+        name = name.replace("_", "-")
     if len(name) > 3 and name.startswith("-np"):
         suffix = name[3:]
         if suffix[0].isdigit() or (
@@ -118,6 +128,7 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
     parse_ctx_override(out)
     parse_cache_override(out)
     parse_split_mode_override(out)
+    parse_gpu_layers_override(out)
     return out
 
 
@@ -187,15 +198,19 @@ _TEMPLATE_FLAGS: frozenset[str] = frozenset(
 _SPLIT_MODE_FLAGS: frozenset[str] = frozenset({"-sm", "--split-mode"})
 _TENSOR_SPLIT_FLAGS: frozenset[str] = frozenset({"-ts", "--tensor-split"})
 _SPLIT_SHADOWING_FLAGS: frozenset[str] = _SPLIT_MODE_FLAGS | _TENSOR_SPLIT_FLAGS
+# llama.cpp placement flags. Opt-in (users may pass them under auto-select):
+# stripped only when gpu_ids is set, so they cannot override the selected pool
+# or choose a main GPU outside it (#7188).
+_DEVICE_FLAGS: frozenset[str] = frozenset({"--device", "-dev", "--main-gpu", "-mg"})
 
 # GPU-offload flags. Stripped only when the GPU Memory mode owns offload
 # (manual emits --fit / --gpu-layers / --n-cpu-moe); in auto, a user's
 # inherited -ngl is respected (the offload_overridden path), so this group is
 # opt-in, not default. Layer flags are shared with llama_cpp's override
 # detection; the MoE flags are strip-only (manual's --n-cpu-moe slider owns them).
-_LAYER_OFFLOAD_FLAGS: frozenset[str] = frozenset(
-    {"-ngl", "--gpu-layers", "--n-gpu-layers", "-fit", "--fit"}
-)
+_GPU_LAYER_FLAGS: frozenset[str] = frozenset({"-ngl", "--gpu-layers", "--n-gpu-layers"})
+_FIT_FLAGS: frozenset[str] = frozenset({"-fit", "--fit"})
+_LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | _FIT_FLAGS
 _MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
 _OFFLOAD_SHADOWING_FLAGS: frozenset[str] = _LAYER_OFFLOAD_FLAGS | _MOE_OFFLOAD_FLAGS
 
@@ -205,7 +220,13 @@ _SHADOWING_FLAGS: frozenset[str] = (
 
 # Shadowing flags that take no value -- strip the flag only, not the next token.
 _BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
-    {"--spec-default", "--jinja", "--no-jinja", "-cmoe", "--cpu-moe"}
+    {
+        "--spec-default",
+        "--jinja",
+        "--no-jinja",
+        "-cmoe",
+        "--cpu-moe",
+    }
 )
 
 
@@ -304,6 +325,26 @@ def parse_cache_override(args: Optional[Iterable[str]]) -> Optional[str]:
     Unsloth's KV estimate has a single cache_type_kv knob.
     """
     return _last_flag_value(args, _CACHE_FLAGS)
+
+
+def parse_gpu_layers_override(args: Optional[Iterable[str]]) -> Optional[int]:
+    """Return the last user-supplied GPU layer count from extras.
+
+    Manual GPU memory mode strips llama.cpp offload flags because the
+    first-class load fields own them. Callers use this parser first to preserve
+    an explicit ``-ngl`` / ``--gpu-layers`` / ``--n-gpu-layers`` value when
+    translating the extras into those fields.
+    """
+    raw_value = _last_flag_value(args, _GPU_LAYER_FLAGS)
+    if raw_value is None:
+        return None
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("llama-server GPU layers flag requires an integer value") from exc
+    if value < -1:
+        raise ValueError("llama-server GPU layers flag requires an integer value of at least -1")
+    return value
 
 
 def parse_cache_override_per_axis(
@@ -441,6 +482,7 @@ def strip_shadowing_flags(
     strip_split_mode: bool = True,
     strip_tensor_split: bool = False,
     strip_offload: bool = False,
+    strip_device: bool = False,
 ) -> list[str]:
     """Strip flags that shadow first-class Unsloth settings.
 
@@ -454,7 +496,8 @@ def strip_shadowing_flags(
     ``--tensor-split`` (the Tensor Parallelism toggle owns the whole split).
     ``strip_tensor_split`` removes ``--tensor-split`` *alone*, so manual mode can
     replace an inherited per-GPU ratio while leaving the user's ``--split-mode``
-    row/none/layer choice intact.
+    row/none/layer choice intact. ``strip_device`` is enabled when ``gpu_ids``
+    owns placement.
     """
     shadowing: set[str] = set()
     if strip_context:
@@ -471,6 +514,8 @@ def strip_shadowing_flags(
         shadowing |= _TENSOR_SPLIT_FLAGS
     if strip_offload:
         shadowing |= _OFFLOAD_SHADOWING_FLAGS
+    if strip_device:
+        shadowing |= _DEVICE_FLAGS
 
     tokens = [str(a) for a in (args or [])]
     out: list[str] = []

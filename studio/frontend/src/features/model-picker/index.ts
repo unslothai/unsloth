@@ -15,10 +15,18 @@ export {
   type NumericValueInputHandle,
   snapToStep,
 } from "./components/numeric-value-input";
+export { ModelConfigPage } from "./components/model-config-page";
 export { SidebarModelConfig } from "./components/sidebar-model-config";
+export type { ModelPickTarget } from "./components/model-selector/types";
 export {
-  useActiveModelConfig,
-} from "./hooks/use-active-model-config";
+  fetchModelOverrides,
+  modelOverrideKey,
+  putModelOverride,
+  syncModelOverride,
+  type ApiModelOverride,
+  type ApiModelOverrides,
+} from "./api/model-overrides";
+export { useActiveModelConfig } from "./hooks/use-active-model-config";
 export type {
   DeletedModelRef,
   ExternalModelOption,
@@ -26,6 +34,7 @@ export type {
   ModelOption,
   ModelSelectorChangeMeta,
 } from "./components/model-selector";
+export { modelConfigInstanceKey } from "./model-config/config-signature";
 export {
   applyModelLoadConfigToRuntime,
   applyPerModelConfigToRuntime,
@@ -36,5 +45,7 @@ export {
   DEFAULT_MAX_SEQ_LENGTH,
   normalizeMaxSeqLength,
   type PerModelConfig,
+  adoptLegacyConfigKey,
   resolveInitialConfig,
+  resolveResidentInitialConfig,
 } from "./model-config/per-model-config";

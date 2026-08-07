@@ -37,6 +37,8 @@ from core.inference.chat_template_helpers import (
     ReasoningChannelNormalizer,
     detect_reasoning_channel_markers,
     detect_think_prefill,
+    neutralize_control_markup_in_messages,
+    neutralize_tts_prompt_text,
 )
 from core.inference.presence_penalty import _make_presence_penalty_processor
 from io import StringIO
@@ -322,7 +324,6 @@ class InferenceBackend:
         hf_token: Optional[str] = None,
         trust_remote_code: bool = False,
         gpu_ids: Optional[list[int]] = None,
-        local_files_only: bool = False,
     ) -> bool:
         """Load any model: base, LoRA adapter, text, or vision."""
         # Keep the token so the native-template fallback can fetch a
@@ -365,9 +366,6 @@ class InferenceBackend:
                 "trust_remote_code": trust_remote_code,
                 "is_vision": config.is_vision,
                 "is_lora": config.is_lora,
-                # Local-only loads: generation-time repo fallbacks (native
-                # template reload) must also resolve from cache, not the Hub.
-                "local_files_only": local_files_only,
                 "is_audio": config.is_audio,
                 "audio_type": config.audio_type,
                 "has_audio_input": config.has_audio_input,
@@ -566,16 +564,12 @@ class InferenceBackend:
                     isinstance(processor, ProcessorMixin) or hasattr(processor, "image_processor")
                 ):
                     # LoRA adapters: use base model. Local merged exports: read base from export_metadata.json.
-                    # Non-LoRA: config.path, not config.identifier. They are the
-                    # same for ordinary loads, but a local-only load rewrites
-                    # path to the cached snapshot and this fallback must stay
-                    # on those local files instead of refetching by repo id.
-                    processor_source = config.base_model if config.is_lora else config.path
+                    processor_source = config.base_model if config.is_lora else config.identifier
                     if not config.is_lora and config.is_local:
                         _meta_path = Path(config.path) / "export_metadata.json"
                         try:
                             if _meta_path.exists():
-                                _meta = json.loads(_meta_path.read_text(encoding = "utf-8"))
+                                _meta = json.loads(_meta_path.read_text(encoding = "utf-8-sig"))
                                 if _meta.get("base_model"):
                                     processor_source = _meta["base_model"]
                         except Exception:
@@ -586,14 +580,10 @@ class InferenceBackend:
                     )
                     from transformers import AutoProcessor
 
-                    # Local-only loads: a LoRA base or export_metadata base_model
-                    # is a Hub repo id; resolve it from cache or fail the load
-                    # (candidate failover) instead of downloading the processor.
                     processor = AutoProcessor.from_pretrained(
                         processor_source,
                         token = hf_token if hf_token and hf_token.strip() else None,
                         trust_remote_code = trust_remote_code,
-                        local_files_only = local_files_only,
                     )
                     logger.info(f"Loaded {type(processor).__name__} from {processor_source}")
 
@@ -942,7 +932,29 @@ class InferenceBackend:
         if system_prompt:
             initial = [{"role": "system", "content": system_prompt}] + initial
 
+        # Same profile the renderer uses, so the controller never drops a tool over a
+        # marker this model does not treat as structure. The controller is also given the
+        # catalog safe under every template this turn could select, because the
+        # native-template fallback renders with a different profile (#7066).
+        from core.inference.chat_template_helpers import (
+            mapped_chat_template,
+            markup_for_tokenizer,
+            renderable_tool_catalog,
+        )
+
+        _model_info = self.models.get(self.active_model_name) or {}
+        # Resolved BEFORE the profile: the mapper installs its template during the render.
+        _mapped_tpl = mapped_chat_template(_model_info, self.active_model_name)
+
         yield from run_safetensors_tool_loop(
+            markup = markup_for_tokenizer(_model_info.get("tokenizer"), tools, _mapped_tpl),
+            renderable_tools = renderable_tool_catalog(
+                tools,
+                _model_info.get("tokenizer"),
+                _model_info,
+                active_model_name = self.active_model_name,
+                template = _mapped_tpl,
+            ),
             single_turn = _single_turn,
             messages = initial,
             tools = tools,
@@ -1235,6 +1247,16 @@ class InferenceBackend:
             else:
                 vision_messages = [user_msg]
 
+            # Processor's own template skips the choke point (#7066). Rebind user_msg
+            # so the no-system retry keeps the copy. Profiled from the processor, so a
+            # vision request is gated on the loaded model exactly as the text path is.
+            from core.inference.chat_template_helpers import markup_for_tokenizer
+
+            vision_messages = neutralize_control_markup_in_messages(
+                vision_messages, None, markup_for_tokenizer(processor)
+            )
+            user_msg = vision_messages[-1]
+
             try:
                 input_text = processor.apply_chat_template(
                     vision_messages, add_generation_prompt = True, tokenize = False
@@ -1412,11 +1434,13 @@ class InferenceBackend:
         min_p,
         max_new_tokens,
         repetition_penalty,
+        use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
     ) -> Generator[str, None, None]:
         """Audio-input (ASR) generation: takes an audio numpy array, streams text.
 
         Uses processor.apply_chat_template with audio embedded in messages (Gemma 3n pattern).
+        use_adapter: see _apply_adapter_state; None leaves the loaded state alone.
         """
         import threading
         import numpy as np
@@ -1449,6 +1473,14 @@ class InferenceBackend:
                 ],
             },
         ]
+
+        # Direct processor render like the vision path, so neutralize here too, with
+        # this processor's own profile so another family's marker stays untouched (#7066).
+        from core.inference.chat_template_helpers import markup_for_tokenizer
+
+        audio_messages = neutralize_control_markup_in_messages(
+            audio_messages, None, markup_for_tokenizer(processor)
+        )
 
         # apply_chat_template does audio embedding + tokenization in one step
         inputs = processor.apply_chat_template(
@@ -1485,6 +1517,9 @@ class InferenceBackend:
             def generate_fn():
                 with self._generation_lock:
                     try:
+                        # As in the text path: apply under the lock so Base-vs-LoRA
+                        # compare doesn't run the adapter on both sides (None = no-op).
+                        self._apply_adapter_state(use_adapter)
                         model.generate(**generation_kwargs)
                     except Exception as e:
                         err["msg"] = str(e)
@@ -1846,6 +1881,9 @@ class InferenceBackend:
             raise RuntimeError(f"Model {self.active_model_name} is not an audio model")
 
         top_k = self._normalize_top_k(top_k)
+        # Every codec below concatenates its prompt instead of templating it, so this
+        # is the one choke point for all four (#7066).
+        text = neutralize_tts_prompt_text(text, audio_type)
 
         with self._generation_lock:
             if use_adapter is not None:
@@ -2115,6 +2153,15 @@ class InferenceBackend:
             logger.debug("Removing final assistant message to ensure proper alternation")
             chat_messages.pop()
 
+        # Direct tokenizer render bypasses the choke point, and the user sub above
+        # leaves system_prompt and replayed assistant text raw. Profiled off this same
+        # tokenizer, so the sweep matches what the text path would do (#7066).
+        from core.inference.chat_template_helpers import markup_for_tokenizer
+
+        chat_messages = neutralize_control_markup_in_messages(
+            chat_messages, None, markup_for_tokenizer(tokenizer)
+        )
+
         logger.info(f"Sending {len(chat_messages)} messages to tokenizer:")
         for i, msg in enumerate(chat_messages):
             logger.info(f"  {i}: {msg['role']} - {msg['content'][:50]}...")
@@ -2293,8 +2340,13 @@ class InferenceBackend:
         except Exception as e:
             logger.warning(f"Could not fully reset model state for {model_name}: {e}")
 
-    def reset_generation_state(self):
-        """Reset any cached generation state to prevent hanging after errors"""
+    def reset_generation_state(self, caller_cancel_event = None):
+        """Reset any cached generation state to prevent hanging after errors
+
+        ``caller_cancel_event`` is accepted for signature parity with the
+        orchestrator, which uses it to drop a reset from a request that never
+        started. Nothing here cancels a live generation, so it is unused.
+        """
         try:
             # Clear cached state for ALL loaded models
             for model_name in self.models.keys():

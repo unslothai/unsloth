@@ -8,7 +8,9 @@ tests/test_gguf_completion_usage.py.
 """
 
 import asyncio
+import json
 import os
+import threading
 
 import pytest
 from fastapi import HTTPException
@@ -23,9 +25,8 @@ from utils import openai_auto_switch_settings as settings
 def _clean_resolver_index():
     """Drop the scan cache around every test.
 
-    The /v1 admission hook warms the index in the background, so without this a
-    test that exercises the hook can publish its own fixture's scan and, inside the
-    TTL, hand it to the next test that expects a fresh one.
+    The /v1 admission hook warms the index in the background, so a test exercising it
+    can publish its fixture's scan and, inside the TTL, hand it to the next test.
     """
     resolver.invalidate_index()
     yield
@@ -342,7 +343,7 @@ def test_local_gguf_entry_filters_non_gguf_and_recurses(tmp_path):
     assert e2 is not None and e2.variants
 
 
-def test_local_gguf_entry_rejects_standalone_mmproj(tmp_path):
+def test_local_gguf_entry_rejects_standalone_companions(tmp_path, monkeypatch):
     # Codex P2: _scan_models_dir's standalone-.gguf pass emits an entry for a
     # bare mmproj projector (it only filters mmproj inside directory scans). A
     # projector is not a servable model, so the resolver must reject it or
@@ -353,6 +354,17 @@ def test_local_gguf_entry_rejects_standalone_mmproj(tmp_path):
     proj.write_text("x")
     assert resolver._local_gguf_entry("p", SimpleNamespace(path = str(proj))) is None
     assert resolver.info_has_local_gguf(SimpleNamespace(id = str(proj), path = str(proj))) is False
+    root = tmp_path / "MTP"
+    root.mkdir()
+    main = root / "Qwen3.6-27B-MTP-Q6_K.gguf"
+    terminal = root / "gemma-4-12b-it-Q8_0-MTP.gguf"
+    prefixed = root / "mtp-gemma-4-12b-it.gguf"
+    for file in (main, terminal, prefixed):
+        file.write_text("x")
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(root)}])
+    assert resolver._local_gguf_entry("main", SimpleNamespace(path = str(main))) is not None
+    assert resolver._local_gguf_entry("terminal", SimpleNamespace(path = str(terminal))) is None
+    assert resolver._local_gguf_entry("prefixed", SimpleNamespace(path = str(prefixed))) is None
 
 
 def _entry(loader_id, *variants):
@@ -567,7 +579,9 @@ def test_idle_loop_deletes_saved_kv_when_unload_fails(monkeypatch, tmp_path):
 
     async def _drive():
         task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = 0.01))
-        for _ in range(200):
+        # Wall clock, not an iteration count: Windows rounds a 10 ms sleep to its ~15.6 ms tick.
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
             await asyncio.sleep(0.01)
             if manifests and not saved.exists():
                 break
@@ -699,9 +713,24 @@ def _mock_override_store(monkeypatch):
 
     store = {}
 
-    def _merge_entry(key, entry_key, entry_value):
+    def _merge_entry(
+        key,
+        entry_key,
+        entry_value,
+        *,
+        fill_absent_fields = False,
+    ):
         current = dict(store.get(key) or {})
-        if entry_value:
+        if fill_absent_fields:
+            # Fill only: every stored value wins, nothing is deleted.
+            if not entry_value:
+                return current
+            stored = current.get(entry_key)
+            if isinstance(stored, dict):
+                current[entry_key] = {**entry_value, **stored}
+            else:
+                current[entry_key] = entry_value
+        elif entry_value:
             current[entry_key] = entry_value
         else:
             current.pop(entry_key, None)
@@ -712,6 +741,21 @@ def _mock_override_store(monkeypatch):
     monkeypatch.setattr(db, "get_app_setting", lambda k, default = None: store.get(k, default))
     settings._cache.clear()
     return store
+
+
+@pytest.fixture
+def override_store(monkeypatch):
+    """The in-memory override store, for a test that needs nothing else mocked."""
+    _mock_override_store(monkeypatch)
+
+
+def _put(model_id, **fields):
+    """One override PUT through the route, spelled the way the UI sends it."""
+    import routes.settings as settings_route
+    return settings_route.update_openai_auto_switch_override(
+        settings_route.ModelOverridePayload(model_id = model_id, **fields),
+        "tester",
+    )
 
 
 def test_model_override_roundtrip(monkeypatch):
@@ -916,6 +960,7 @@ def test_count_tokens_is_tracked_as_inference_path():
 
     assert _is_inference_path("/v1/messages/count_tokens") is True
     assert _is_inference_path("/api/inference/messages/count_tokens") is True
+    assert _is_inference_path("/api/inference/chat/count_tokens") is True
     assert _is_inference_path("/v1/messages") is True
 
 
@@ -1599,30 +1644,39 @@ def test_idle_alias_reload_preserves_override_via_advertised_id(monkeypatch):
 def test_load_route_holds_lifecycle_gate(monkeypatch):
     # Lock the manual /load gate against silent revert: the route must wrap the
     # load in inference_lifecycle_gate so idle-unload can't fire mid-load.
+    # Asserted on the gated coroutine: the route only adds the padded response.
     import inspect
 
-    src = inspect.getsource(inference_route.load_model)
+    src = inspect.getsource(inference_route.load_model_gated)
     assert "inference_lifecycle_gate" in src
     assert "_load_model_impl" in src
 
 
 def test_model_replacements_recheck_sidecar_swap_before_either_backend_is_unloaded():
-    # Both replacement directions drain active inference, then recheck whether a
-    # sidecar install reserved the lifecycle gate during that wait. Exact-model
-    # reuse exits earlier, so an already-loaded model never waits on unrelated inference.
+    # Both replacement directions drain, then recheck whether a sidecar install reserved the
+    # gate meanwhile. That recheck is the last thing that can reject the load, so the
+    # destructive cancel must follow it. Exact-model reuse exits earlier and never waits.
     import inspect
 
     src = inspect.getsource(inference_route._load_model_impl)
+    already_loaded = src.index('status = "already_loaded"')
+    standard_branch = src.index("# ── Standard path")
+
     gguf_wait = src.index("await _wait_for_model_switch_idle", src.index("if config.is_gguf:"))
     gguf_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", gguf_wait)
+    gguf_cancel = src.index("on_reload_confirmed(cancel = True)", gguf_wait)
     unload_unsloth = src.index("unsloth_backend.unload_model", gguf_wait)
-    standard_wait = src.index("await _wait_for_model_switch_idle", gguf_wait + 1)
-    standard_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", standard_wait)
-    unload_gguf = src.index("llama_backend.unload_model()", standard_wait)
-    already_loaded = src.index('status = "already_loaded"')
 
-    assert already_loaded < gguf_wait < gguf_sidecar_check < unload_unsloth
-    assert standard_wait < standard_sidecar_check < unload_gguf
+    standard_wait = src.index("await _wait_for_model_switch_idle", standard_branch)
+    standard_sidecar_check = src.index("_raise_if_sidecar_swap_in_progress()", standard_wait)
+    standard_cancel = src.index("on_reload_confirmed(cancel = True)", standard_wait)
+    # No parens: both teardowns are asyncio.to_thread args (on-loop a 160s one would
+    # block /load's tunnel padding).
+    unload_gguf = src.index("llama_backend.unload_model", standard_wait)
+
+    assert already_loaded < gguf_wait < gguf_sidecar_check < gguf_cancel < unload_unsloth
+    assert standard_branch < standard_wait < standard_sidecar_check
+    assert standard_sidecar_check < standard_cancel < unload_gguf
 
 
 def test_switch_waiter_deregisters_before_swap_gate_release():
@@ -3131,6 +3185,1035 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
     assert captured["require_vision"] is True
 
 
+# ── /chat/count_tokens: what the recount prices ───────────────────
+
+
+def _count_tokens_backend(
+    monkeypatch,
+    loaded_id = "org/A-GGUF",
+    count = 10,
+    *,
+    supports_tools = False,
+    reasoning_style = "enable_thinking",
+):
+    """A loaded GGUF backend wired into the count endpoint, as ``(switched, counted)``: auto-switch
+    attempts, and the messages/system/tools/template kwargs the route hands to the tokenizer."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = _FakeBackend(loaded_id)
+    backend.supports_tools = supports_tools
+    # The real kwargs builder, so this pins the route against the completion path's mapping.
+    backend._supports_reasoning = True
+    backend._reasoning_always_on = False
+    backend._reasoning_style = reasoning_style
+    backend._reasoning_effort_levels = ["high", "max"]
+    backend._supports_preserve_thinking = True
+    backend._architecture = None
+    backend._request_reasoning_kwargs = LlamaCppBackend._request_reasoning_kwargs.__get__(
+        backend, type(backend)
+    )
+    switched: list = []
+    counted: dict = {}
+
+    def _count(
+        messages,
+        system,
+        tools,
+        strict = False,
+        chat_template_kwargs = None,
+        should_abort = None,
+    ):
+        counted.update(
+            messages = messages,
+            system = system,
+            tools = tools,
+            strict = strict,
+            chat_template_kwargs = chat_template_kwargs,
+        )
+        return count
+
+    async def _switch(*args, **kwargs):
+        switched.append(True)
+        return None
+
+    backend.count_chat_tokens = _count
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _switch)
+    return switched, counted
+
+
+def _count_request(
+    messages,
+    model = "org/A-GGUF",
+    **fields,
+):
+    """A /chat/count_tokens payload built from plain message dicts."""
+    from models.inference import ChatCountTokensRequest, ChatMessage
+    return ChatCountTokensRequest(
+        model = model,
+        messages = [ChatMessage(**message) for message in messages],
+        **fields,
+    )
+
+
+def _counted_body(payload):
+    """Run the count endpoint and return its decoded JSON body."""
+    response = asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    return json.loads(response.body)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param("hello", id = "plain_string"),
+        # Control for the image guard below: a text-only parts array is unaffected.
+        pytest.param([{"type": "text", "text": "hello"}], id = "text_parts"),
+    ],
+)
+def test_chat_count_tokens_prices_the_loaded_model_without_switching(monkeypatch, content):
+    # The recount has no abort signal, so a stale payload naming A must not drag the backend back.
+    switched, _counted = _count_tokens_backend(monkeypatch, "org/B-GGUF", count = 42)
+    payload = _count_request([{"role": "user", "content": content}])
+    # The reply names B, the tokenizer that produced the total, not the A asked for.
+    assert _counted_body(payload) == {"input_tokens": 42, "model": "org/B-GGUF"}
+    assert switched == []
+
+
+def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
+    # Schemas and the nudge are a large share of the prompt: price the completion's own selection.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
+    gate = {}
+
+    async def _select(payload, *, tools_on, mcp_allowed):
+        gate.update(tools_on = tools_on, mcp_allowed = mcp_allowed)
+        return [{"type": "function", "function": {"name": "web_search"}}]
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
+    payload = _count_request(
+        [{"role": "user", "content": "hello"}],
+        enable_tools = True,
+        enabled_tools = ["web_search"],
+    )
+    assert _counted_body(payload) == {"input_tokens": 99, "model": "org/A-GGUF"}
+    assert gate.get("tools_on") is True
+    assert [t.get("function", {}).get("name") for t in counted.get("tools") or []] == ["web_search"]
+    assert any(
+        message.get("role") == "system" and "web_search" in str(message.get("content", ""))
+        for message in counted.get("messages") or []
+    )
+
+
+# A leaked tool call in a replayed turn, plus an example naming a NOT-enabled tool the gate keeps.
+_LEAKED_TOOL_HISTORY = [
+    {"role": "user", "content": "weather?"},
+    {
+        "role": "assistant",
+        "content": 'sunny <tool_call>{"name": "web_search", "arguments": {"q": "weather"}}'
+        "</tool_call> and call it as offline_tool[ARGS]{}",
+    },
+    {"role": "user", "content": "and tomorrow?"},
+]
+
+
+@pytest.mark.parametrize(
+    ("fields", "expect_markup"),
+    [
+        # Auto-Heal on (default): the tool path strips before rendering, so raw markup reads high.
+        pytest.param({}, False, id = "auto_heal_default_on"),
+        pytest.param({"auto_heal_tool_calls": True}, False, id = "auto_heal_on"),
+        # Off leaves the markup in the real prompt, so the count has to keep it as well.
+        pytest.param({"auto_heal_tool_calls": False}, True, id = "auto_heal_off"),
+    ],
+)
+def test_chat_count_tokens_strips_replayed_tool_markup(monkeypatch, fields, expect_markup):
+    """The GGUF tool path strips stale tool-call XML out of replayed assistant turns before
+    rendering, so a count that keeps it prices text the completion removes."""
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
+
+    async def _select(_payload, *, tools_on, mcp_allowed):
+        return [{"type": "function", "function": {"name": "web_search"}}]
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
+    payload = _count_request(
+        _LEAKED_TOOL_HISTORY,
+        enable_tools = True,
+        enabled_tools = ["web_search"],
+        **fields,
+    )
+    assert _counted_body(payload)["input_tokens"] == 99
+    assistant = [m for m in counted["messages"] if m.get("role") == "assistant"]
+    assert len(assistant) == 1
+    content = str(assistant[0].get("content", ""))
+    assert (
+        "<tool_call>" in content
+    ) is expect_markup, "the count must render the same replayed history the completion does"
+    assert (
+        "offline_tool[ARGS]" in content
+    ), "an inactive tool name is prose in the real prompt, so the count keeps it too"
+
+
+_PASSTHROUGH_CATALOG = [
+    {"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}
+]
+_PASSTHROUGH_TOOL_HISTORY = [
+    {"role": "user", "content": "weather?"},
+    {
+        "role": "assistant",
+        "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "get_weather", "arguments": "{}"}}
+        ],
+    },
+    {"role": "tool", "tool_call_id": "c1", "content": "sunny"},
+]
+_PASSTHROUGH_PLAIN = [{"role": "user", "content": "hi"}]
+
+
+@pytest.mark.parametrize(
+    ("cli_policy", "messages", "fields", "priced_tools"),
+    [
+        # The reported shape: `unsloth run --enable-tools` sets the process policy without asking
+        # for the tool loop, so tool history still goes to llama-server verbatim, bare.
+        pytest.param(
+            True,
+            _PASSTHROUGH_TOOL_HISTORY,
+            {},
+            None,
+            id = "cli_policy_does_not_price_a_passthrough_prompt",
+        ),
+        # Negative control: with no tool history the same policy takes the ordinary GGUF loop.
+        pytest.param(
+            True,
+            _PASSTHROUGH_PLAIN,
+            {},
+            ["web_search"],
+            id = "cli_policy_prices_an_ordinary_chat",
+        ),
+        # The passthrough is the one route that forwards the caller's own catalog.
+        pytest.param(
+            None,
+            _PASSTHROUGH_PLAIN,
+            {"tools": _PASSTHROUGH_CATALOG},
+            ["get_weather"],
+            id = "client_catalog_is_priced_verbatim",
+        ),
+        # tool_choice "none" withdraws the catalog, leaving the request on the ordinary path.
+        pytest.param(
+            None,
+            _PASSTHROUGH_PLAIN,
+            {"tools": _PASSTHROUGH_CATALOG, "tool_choice": "none"},
+            None,
+            id = "withdrawn_catalog_is_not_priced",
+        ),
+        # ... unless tool history needs those schemas to replay, keeping it on the passthrough.
+        pytest.param(
+            None,
+            _PASSTHROUGH_TOOL_HISTORY,
+            {"tools": _PASSTHROUGH_CATALOG, "tool_choice": "none"},
+            ["get_weather"],
+            id = "withdrawn_catalog_with_tool_history_is_priced",
+        ),
+        # It withdraws the process policy's own catalog too, as _client_disabled_tool_calls does.
+        pytest.param(
+            True,
+            _PASSTHROUGH_PLAIN,
+            {"tool_choice": "none"},
+            None,
+            id = "withdrawn_catalog_beats_the_cli_policy",
+        ),
+    ],
+)
+def test_chat_count_tokens_prices_the_route_the_completion_takes(
+    monkeypatch, cli_policy, messages, fields, priced_tools
+):
+    """The count must describe the request the completion actually sends (#7453).
+
+    Applying the process tool policy without first asking which route the request takes prices a
+    built-in catalog plus the action nudge, while the completion forwards verbatim and sends neither.
+    """
+    import state.tool_policy as _tp
+
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
+
+    async def _select(payload, *, tools_on, mcp_allowed):
+        return [{"type": "function", "function": {"name": "web_search"}}]
+
+    monkeypatch.setattr(inference_route, "_select_request_tools", _select)
+    monkeypatch.setattr(_tp, "get_tool_policy", lambda: cli_policy)
+
+    assert _counted_body(_count_request(messages, **fields))["input_tokens"] == 99
+    assert [(tool.get("function") or {}).get("name") for tool in counted.get("tools") or []] == (
+        priced_tools or []
+    )
+    # The nudge rides with the built-in selection, so it must follow the same verdict.
+    nudged = any(
+        message.get("role") == "system" and "web_search" in str(message.get("content", ""))
+        for message in counted.get("messages") or []
+    )
+    assert nudged is (priced_tools == ["web_search"])
+
+
+def test_chat_count_tokens_keeps_adjacent_user_turns_on_the_passthrough(monkeypatch):
+    """Coalescing is an ordinary-GGUF-path step, so it has to follow the routing.
+
+    ``_openai_messages_for_passthrough`` drops the empty assistant sentinel but keeps the two user
+    turns around it (a stopped response's shape), so merging prices a prompt that route never sends.
+    """
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
+    sentinel_thread = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": ""},
+        {"role": "user", "content": "second"},
+    ]
+
+    _counted_body(_count_request(sentinel_thread, tools = _PASSTHROUGH_CATALOG))
+    assert [message.get("content") for message in counted.get("messages") or []] == [
+        "first",
+        "second",
+    ]
+
+    # Negative control: off the passthrough the same thread merges, so no two user turns in a row.
+    _counted_body(_count_request(sentinel_thread))
+    assert [message.get("content") for message in counted.get("messages") or []] == [
+        "first\n\nsecond"
+    ]
+
+
+def _in_flight_generation():
+    """One registered generation, as the completion path registers it."""
+    from state import active_generations
+    return active_generations.ActiveGeneration(threading.Event(), thread_id = "t1")
+
+
+def test_chat_count_tokens_refuses_while_a_generation_is_in_flight(monkeypatch):
+    # The whole point of the endpoint's cost budget: a count must never share llama-server with a
+    # decode. The frontend gate only covers our own tab, so the refusal has to live here too.
+    switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    # Reached only after the tool selection and message rewriting, so it doubles as proof that the
+    # refusal happens on entry rather than after the handler has already done that work.
+    reached: list = []
+    real = inference_route._llama_status_checkpoint_id
+    monkeypatch.setattr(
+        inference_route,
+        "_llama_status_checkpoint_id",
+        lambda backend: (reached.append(1), real(backend))[1],
+    )
+    payload = _count_request([{"role": "user", "content": "hello"}])
+    with _in_flight_generation():
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert excinfo.value.status_code == 503
+    assert "generation" in str(excinfo.value.detail).lower()
+    assert reached == [], "the handler must decline before doing any of the count's work"
+    assert counted == {}, "the tokenizer must not be reached"
+    assert switched == [], "and neither must the auto-switch hook"
+
+
+def test_chat_count_tokens_counts_again_once_the_generation_ends(monkeypatch):
+    # Control: the refusal keys on a live generation, not on the request, and it does not latch.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    payload = _count_request([{"role": "user", "content": "hello"}])
+    with _in_flight_generation():
+        with pytest.raises(HTTPException):
+            asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    body = _counted_body(payload)
+    assert body["input_tokens"] == 1234
+    assert counted != {}, "the tokenizer must be reached once nothing is decoding"
+
+
+def test_chat_count_tokens_refuses_a_generation_that_starts_mid_count(monkeypatch):
+    # Everything between the entry guard and the tokenizer awaits, so a run can begin in the gap.
+    # _llama_status_checkpoint_id is the last call before the second guard: start a generation
+    # from inside it and the count must abandon rather than proceed with what it already built.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    started: list = []
+    real = inference_route._llama_status_checkpoint_id
+
+    def _start_a_run(backend):
+        if not started:
+            handle = _in_flight_generation()
+            handle.__enter__()
+            started.append(handle)
+        return real(backend)
+
+    monkeypatch.setattr(inference_route, "_llama_status_checkpoint_id", _start_a_run)
+    payload = _count_request([{"role": "user", "content": "hello"}])
+    try:
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    finally:
+        for handle in started:
+            handle.__exit__(None, None, None)
+    assert started, "the hook must have fired, or the test proves nothing"
+    assert excinfo.value.status_code == 503
+    assert "generation" in str(excinfo.value.detail).lower()
+    assert counted == {}, "the tokenizer must not be reached"
+
+
+def _enabled_mcp_server(
+    tmp_path,
+    monkeypatch,
+    *,
+    cached = None,
+    cooloff = False,
+):
+    """One enabled MCP server, with its discovery cache in a known state.
+
+    Both cache dicts are module globals shared across the whole test session, so they are
+    replaced rather than mutated: a leftover entry would make an "undiscovered" case look
+    discovered and quietly pass.
+    """
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+    from storage import mcp_servers_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(tools_mod, "stdio_mcp_enabled", lambda: True)
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
+    mcp_servers_db.create_server(
+        id = "s1", display_name = "S", url = "http://mcp.test/sse", is_enabled = True
+    )
+    if cached is not None:
+        mcp_client.cache_tools("s1", cached)
+    if cooloff:
+        mcp_client.record_probe_failure("s1")
+
+    # Any probe at all is a failure of the whole design: a count must not reach the network.
+    async def _no_probes(**_kwargs):
+        raise AssertionError("a count must never probe an MCP server")
+
+    monkeypatch.setattr(tools_mod, "list_tools_async", _no_probes)
+
+
+MCP_TOOL_PAYLOAD = [{"name": "lookup", "description": "d", "inputSchema": {"type": "object"}}]
+
+
+def test_cached_mcp_tools_reads_the_cache_without_probing(tmp_path, monkeypatch):
+    from core.inference.tools import cached_mcp_tools
+
+    _enabled_mcp_server(tmp_path, monkeypatch, cached = MCP_TOOL_PAYLOAD)
+    specs, complete = cached_mcp_tools()
+    assert complete is True
+    assert [spec["function"]["name"] for spec in specs] == ["mcp__s1__lookup"]
+
+
+def test_cached_mcp_tools_reports_an_undiscovered_server_as_incomplete(tmp_path, monkeypatch):
+    from core.inference.tools import cached_mcp_tools
+
+    _enabled_mcp_server(tmp_path, monkeypatch)
+    specs, complete = cached_mcp_tools()
+    assert specs == []
+    assert complete is False, (
+        "a completion would probe this server and render its schemas, so a count that skips "
+        "them is short, not exact"
+    )
+
+
+def test_cached_mcp_tools_counts_a_cooloff_server_as_complete(tmp_path, monkeypatch):
+    # The completion renders nothing for a cool-off server either, so skipping it is exact rather
+    # than short. Declining here would blank the bar over an agreement.
+    from core.inference.tools import cached_mcp_tools
+
+    _enabled_mcp_server(tmp_path, monkeypatch, cooloff = True)
+    specs, complete = cached_mcp_tools()
+    assert specs == []
+    assert complete is True
+
+
+def test_chat_count_tokens_declines_an_undiscovered_mcp_server(tmp_path, monkeypatch):
+    # Undercounting is the dangerous direction: it tells the user room exists that the next
+    # request will not find. Discovery is not an option on this path, so decline instead.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234, supports_tools = True)
+    _enabled_mcp_server(tmp_path, monkeypatch)
+    payload = _count_request([{"role": "user", "content": "hello"}], mcp_enabled = True)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert excinfo.value.status_code == 503
+    assert "mcp" in str(excinfo.value.detail).lower()
+    assert counted == {}, "the tokenizer must not be reached with a short tool list"
+
+
+def test_chat_count_tokens_prices_cached_mcp_schemas(tmp_path, monkeypatch):
+    # MCP alone turns tools on for the completion, so the count has to render them even with the
+    # built-in tools off, or the bar is short by a whole catalog.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234, supports_tools = True)
+    _enabled_mcp_server(tmp_path, monkeypatch, cached = MCP_TOOL_PAYLOAD)
+    payload = _count_request(
+        [{"role": "user", "content": "hello"}], mcp_enabled = True, enabled_tools = []
+    )
+    body = _counted_body(payload)
+    assert body["input_tokens"] == 1234
+    names = [tool["function"]["name"] for tool in (counted.get("tools") or [])]
+    assert (
+        "mcp__s1__lookup" in names
+    ), "a cached MCP schema is in the completion's prompt, so it must be in the count"
+
+
+def test_chat_count_tokens_ignores_an_mcp_server_the_request_did_not_enable(tmp_path, monkeypatch):
+    # Control: the decline keys on the request asking for MCP, not on a server merely existing.
+    # tool_choice "none" would NOT be a control here: _explicit_studio_tool_loop_requested treats
+    # mcp_enabled as an explicit ask, so the completion still renders the catalog.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234, supports_tools = True)
+    _enabled_mcp_server(tmp_path, monkeypatch)
+    body = _counted_body(_count_request([{"role": "user", "content": "hello"}]))
+    assert body["input_tokens"] == 1234
+    assert counted != {}, "the tokenizer must still be reached"
+
+
+def test_a_count_admitted_while_idle_stands_down_if_a_run_starts(monkeypatch):
+    """Admission and the work are separate steps. A run that registers in between cannot be
+    prevented without a lock in front of generation startup, so the count abandons at the
+    checkpoint between /apply-template and /tokenize instead of spending the second trip."""
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    payload = _count_request([{"role": "user", "content": "hello"}])
+    started: list = []
+
+    def _count(
+        messages,
+        system,
+        tools,
+        strict = False,
+        chat_template_kwargs = None,
+        should_abort = None,
+    ):
+        # Stand in for /apply-template returning: the run lands, then the checkpoint is polled.
+        handle = _in_flight_generation()
+        handle.__enter__()
+        started.append(handle)
+        assert should_abort is not None, "the route must give the tokenizer a way to stand down"
+        if should_abort():
+            from core.inference.llama_cpp import CountAborted
+            raise CountAborted()
+        counted.update(messages = messages)
+        return 1234
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = inference_route.get_llama_cpp_backend()
+    monkeypatch.setattr(backend, "count_chat_tokens", _count)
+    assert LlamaCppBackend is not None
+    try:
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    finally:
+        for handle in started:
+            handle.__exit__(None, None, None)
+    assert started, "the hook must have fired, or the test proves nothing"
+    assert excinfo.value.status_code == 503
+    assert "generation" in str(excinfo.value.detail).lower()
+    assert counted == {}, "the second round trip must not happen"
+
+
+def test_a_count_that_stays_idle_is_not_aborted(monkeypatch):
+    # Control: the checkpoint fires on a live run, not on every count.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    seen: list = []
+
+    def _count(
+        messages,
+        system,
+        tools,
+        strict = False,
+        chat_template_kwargs = None,
+        should_abort = None,
+    ):
+        seen.append(should_abort() if should_abort else None)
+        counted.update(messages = messages)
+        return 1234
+
+    backend = inference_route.get_llama_cpp_backend()
+    monkeypatch.setattr(backend, "count_chat_tokens", _count)
+    body = _counted_body(_count_request([{"role": "user", "content": "hello"}]))
+    assert body["input_tokens"] == 1234
+    assert seen == [False], "an idle server must report nothing to stand down for"
+
+
+@pytest.mark.parametrize(
+    ("abort", "expect_tokenize"),
+    [(True, False), (False, True)],
+    ids = ["run_started", "still_idle"],
+)
+def test_count_chat_tokens_stands_down_before_tokenizing(monkeypatch, abort, expect_tokenize):
+    """The abort has to escape the template except-block. Swallowed, it would set
+    apply_template_failed and the text fallback would tokenize anyway, which is the work
+    being declined. The control shows the poll alone does not stop an idle count."""
+    from core.inference import llama_cpp as llama_cpp_mod
+    from core.inference.llama_cpp import CountAborted, LlamaCppBackend
+
+    posted: list = []
+
+    class _FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def post(
+            self,
+            url,
+            json = None,
+        ):
+            posted.append(url)
+            if url.endswith("/apply-template"):
+                return _FakeResponse({"prompt": "user hi"})
+            return _FakeResponse({"tokens": [1, 2]})
+
+    class _CountBackend(LlamaCppBackend):
+        is_loaded = True
+        base_url = "http://127.0.0.1:1"
+        _auth_headers = None
+
+        def __init__(self):
+            pass
+
+    monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _FakeClient)
+    call = lambda: _CountBackend().count_chat_tokens(
+        [{"role": "user", "content": "hi"}],
+        strict = True,
+        should_abort = lambda: abort,
+    )
+    if abort:
+        with pytest.raises(CountAborted):
+            call()
+    else:
+        assert call() == 2
+    assert any(u.endswith("/tokenize") for u in posted) is expect_tokenize
+
+
+def test_chat_count_tokens_refuses_image_messages(monkeypatch):
+    # Images become a short /apply-template marker: refuse rather than undercount, before the switch.
+    switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    payload = _count_request(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="},
+                    },
+                ],
+            }
+        ]
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert excinfo.value.status_code == 503
+    assert counted == {}, "the tokenizer must not be reached"
+    assert switched == [], "and neither must the auto-switch hook"
+
+
+def test_chat_count_tokens_refuses_audio_messages(monkeypatch):
+    # extra = "allow", so without this guard audio_base64 is accepted, dropped and undercounted.
+    switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    payload = _count_request(
+        [{"role": "user", "content": "what did I just say"}],
+        audio_base64 = "UklGRiQAAABXQVZF",
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    assert excinfo.value.status_code == 503
+    assert "audio" in str(excinfo.value.detail).lower()
+    assert counted == {}, "the tokenizer must not be reached"
+    assert switched == [], "and neither must the auto-switch hook"
+
+
+def test_chat_count_tokens_still_counts_without_audio(monkeypatch):
+    # Control: the refusal keys on the audio, not on the shape of the request.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234)
+    body = _counted_body(_count_request([{"role": "user", "content": "what did I just say"}]))
+    assert body["input_tokens"] == 1234
+    assert counted != {}, "the tokenizer must be reached"
+
+
+# Shapes the recount sends for a thread with documents in scope. Only a PENDING turn is answered
+# from these exact messages, and the tool loop opens it by splicing in what RAG retrieves.
+_PENDING_USER_TURN = [{"role": "user", "content": "what does the contract say"}]
+_PENDING_TOOL_TURN = [
+    {"role": "user", "content": "what does the contract say"},
+    {"role": "assistant", "content": "checking"},
+    {"role": "tool", "content": "{}", "tool_call_id": "call_1"},
+]
+_SETTLED_TURN = [
+    {"role": "user", "content": "what does the contract say"},
+    {"role": "assistant", "content": "it renews yearly"},
+]
+
+
+@pytest.mark.parametrize(
+    ("messages", "rag_scope", "expected_total"),
+    [
+        # Retrieval splices passages in front of this turn, so counting alone says it fits.
+        pytest.param(_PENDING_USER_TURN, {"thread_id": "t1"}, None, id = "pending_user_turn"),
+        # An interrupted loop's unanswered tool result is the same pending shape.
+        pytest.param(_PENDING_TOOL_TURN, {"project_id": "p1"}, None, id = "pending_tool_turn"),
+        # Ends on an assistant turn: retrieval has no user message yet, so nothing is omitted.
+        pytest.param(_SETTLED_TURN, {"thread_id": "t1"}, 4242, id = "settled_turn_still_counts"),
+        # No documents in scope means no injection to miss, pending turn or not.
+        pytest.param(_PENDING_USER_TURN, None, 4242, id = "no_rag_scope_still_counts"),
+    ],
+)
+def test_chat_count_tokens_declines_a_pending_turn_that_would_retrieve(
+    monkeypatch, messages, rag_scope, expected_total
+):
+    """A recount that omits RAG injection under-reports, the one direction the context bar must
+    never be wrong in. Decline as the image case does and leave the usage the bar already had."""
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 4242)
+    payload = _count_request(
+        messages,
+        **({"rag_scope": rag_scope} if rag_scope else {}),
+    )
+    try:
+        total = _counted_body(payload).get("input_tokens")
+    except HTTPException as exc:
+        if exc.status_code != 503:
+            raise
+        total = None
+
+    assert total == expected_total, (
+        "a pending turn whose generation would retrieve documents must be declined, "
+        "not priced without them"
+    )
+    if expected_total is None:
+        assert counted == {}, "the tokenizer must not be reached for a declined count"
+
+
+def test_chat_count_tokens_declines_when_the_model_changes_mid_count(monkeypatch):
+    """A load landing while the tokenizer runs leaves a total attributable to neither model, and
+    the caller's checkpoint guard never moved, so either identity would have it trust the number."""
+    _switched, counted = _count_tokens_backend(monkeypatch, "org/A-GGUF", count = 555)
+    backend = inference_route.get_llama_cpp_backend()
+    inner = backend.count_chat_tokens
+
+    def _count_then_swap(*args, **kwargs):
+        result = inner(*args, **kwargs)
+        # Another tab finishes loading B while this count is in the worker thread.
+        backend.model_identifier = "org/B-GGUF"
+        return result
+
+    backend.count_chat_tokens = _count_then_swap
+    payload = _count_request([{"role": "user", "content": "hello"}])
+    try:
+        total = _counted_body(payload).get("input_tokens")
+    except HTTPException as exc:
+        if exc.status_code != 503:
+            raise
+        total = None
+
+    assert (
+        total is None
+    ), "a total counted across a model change must not be published as either model's"
+    assert counted.get("messages"), "the tokenizer still ran; only its result is dropped"
+
+
+def test_chat_count_tokens_collapses_system_turns(monkeypatch):
+    # The completion path joins every system/developer turn into one; the count renders that.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 13)
+    payload = _count_request(
+        [
+            {"role": "system", "content": "Runtime rules."},
+            {"role": "system", "content": "Studio prompt."},
+            {"role": "user", "content": "hello"},
+        ]
+    )
+    asyncio.run(inference_route.chat_count_tokens(payload, "tester"))
+    messages = counted.get("messages") or []
+    systems = [m for m in messages if m.get("role") in ("system", "developer")]
+    assert len(systems) == 1, messages
+    assert "Runtime rules." in systems[0].get("content", "")
+    assert "Studio prompt." in systems[0].get("content", "")
+
+
+@pytest.mark.parametrize(
+    ("reasoning_style", "fields", "expected"),
+    [
+        # Qwen3-style gate: with Thinking off the completion sends enable_thinking=false and the
+        # template prefills an empty <think> block; without it, the LOADED mode renders.
+        pytest.param(
+            "enable_thinking",
+            {"enable_thinking": False},
+            {"enable_thinking": False},
+            id = "thinking_turned_off",
+        ),
+        # gpt-oss-style: the effort level is rendered into the system turn.
+        pytest.param(
+            "reasoning_effort",
+            {"reasoning_effort": "low"},
+            {"reasoning_effort": "low"},
+            id = "effort_level",
+        ),
+        # preserve_thinking decides whether past <think> blocks stay: a short count or the history.
+        pytest.param(
+            "enable_thinking",
+            {"enable_thinking": True, "preserve_thinking": True},
+            {"enable_thinking": True, "preserve_thinking": True},
+            id = "preserve_thinking",
+        ),
+        # Nothing selected: send nothing, so llama-server keeps its load-time defaults.
+        pytest.param("enable_thinking", {}, None, id = "template_default"),
+    ],
+)
+def test_chat_count_tokens_renders_the_requested_reasoning_mode(
+    monkeypatch, reasoning_style, fields, expected
+):
+    # llama-server layers request kwargs over the load-time ones: omitting them prices LOAD mode.
+    _switched, counted = _count_tokens_backend(
+        monkeypatch, count = 7, reasoning_style = reasoning_style
+    )
+    payload = _count_request([{"role": "user", "content": "hello"}], **fields)
+    assert _counted_body(payload) == {"input_tokens": 7, "model": "org/A-GGUF"}
+    assert counted.get("chat_template_kwargs") == expected
+
+
+@pytest.mark.parametrize(
+    ("template_kwargs", "expected_tokens"),
+    [
+        # Thinking off: the template prefills an empty <think></think> pair the completion pays for.
+        pytest.param({"enable_thinking": False}, 5, id = "thinking_off"),
+        pytest.param(None, 3, id = "template_default"),
+    ],
+)
+def test_count_chat_tokens_renders_with_the_requested_template_kwargs(
+    monkeypatch, template_kwargs, expected_tokens
+):
+    """The kwargs have to reach llama-server itself: /apply-template runs the same parser
+    as /v1/chat/completions, so the rendered prompt only moves when they are in the body."""
+    from core.inference import llama_cpp as llama_cpp_mod
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    class _FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def post(
+            self,
+            url,
+            json = None,
+        ):
+            body = json or {}
+            if not url.endswith("/apply-template"):
+                return _FakeResponse({"tokens": str(body.get("content", "")).split()})
+            # A Qwen3-style template: thinking off prefills an empty reasoning block.
+            kwargs = body.get("chat_template_kwargs") or {}
+            prefill = "" if kwargs.get("enable_thinking", True) else " <think> </think>"
+            return _FakeResponse({"prompt": "user hi assistant" + prefill})
+
+    class _CountBackend(LlamaCppBackend):
+        is_loaded = True
+        base_url = "http://127.0.0.1:1"
+        _auth_headers = None
+
+        def __init__(self):
+            pass
+
+    monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _FakeClient)
+    assert (
+        _CountBackend().count_chat_tokens(
+            [{"role": "user", "content": "hi"}],
+            strict = True,
+            chat_template_kwargs = template_kwargs,
+        )
+        == expected_tokens
+    )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        # A minja template that cannot render this history, or a build without the endpoint.
+        pytest.param("status", id = "apply_template_rejects"),
+        # The template call times out while the tokenizer answers.
+        pytest.param("raise", id = "apply_template_unreachable"),
+    ],
+)
+def test_strict_count_refuses_a_text_only_template_fallback(monkeypatch, failure):
+    """/apply-template failing on a TEXT-ONLY prompt used to fall through to concatenating message
+    text, dropping every role marker, special token and tool schema (~30% of a six-turn two-tool
+    prompt). Strict callers publish what they get, so it must be an error, not an estimate."""
+    from core.inference import llama_cpp as llama_cpp_mod
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    class _FakeResponse:
+        def __init__(
+            self,
+            payload,
+            status_code = 200,
+        ):
+            self._payload = payload
+            self.status_code = status_code
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def post(
+            self,
+            url,
+            json = None,
+        ):
+            body = json or {}
+            if url.endswith("/apply-template"):
+                if failure == "raise":
+                    raise RuntimeError("timed out")
+                return _FakeResponse({"error": "template error"}, status_code = 500)
+            return _FakeResponse({"tokens": str(body.get("content", "")).split()})
+
+    class _CountBackend(LlamaCppBackend):
+        is_loaded = True
+        base_url = "http://127.0.0.1:1"
+        _auth_headers = None
+
+        def __init__(self):
+            pass
+
+    monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _FakeClient)
+    messages = [{"role": "user", "content": "hi there"}]
+    tools = [{"type": "function", "function": {"name": "web_search"}}]
+    with pytest.raises(RuntimeError):
+        _CountBackend().count_chat_tokens(messages, None, tools, strict = True)
+    # Non-strict callers keep the best-effort approximation they have always had.
+    assert _CountBackend().count_chat_tokens(messages, None, tools) > 0
+
+
+def test_an_empty_chat_sends_the_empty_list_unchanged(monkeypatch):
+    """A fresh New Chat has no messages and, by default, no system prompt. The count must
+    forward that empty list as-is rather than inventing a turn to make the template happy.
+
+    Templates that index ``messages[0]`` look like they must reject an empty list, and under
+    python jinja2 they do. llama-server renders through minja, where that yields undefined
+    instead of raising, so the real engine returns the bare preamble. Checked against the
+    shipped templates for Llama-3.2-1B-Instruct, Qwen3-8B, Phi-4, gemma-3-270m-it and
+    mistral-7b-instruct-v0.3 driven through llama-server with --jinja: all five render.
+    Injecting a placeholder system turn would add a system block to the count for Qwen3
+    (+30 chars) and Phi-4 (+38), overcounting the empty chat the bar exists to show."""
+    from core.inference import llama_cpp as llama_cpp_mod
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    seen = {}
+
+    class _FakeResponse:
+        def __init__(
+            self,
+            payload,
+            status_code = 200,
+        ):
+            self._payload = payload
+            self.status_code = status_code
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def post(
+            self,
+            url,
+            json = None,
+        ):
+            body = json or {}
+            if url.endswith("/apply-template"):
+                seen["messages"] = body.get("messages")
+                # What minja does: no messages renders the preamble, it does not raise.
+                return _FakeResponse({"prompt": "<start_of_turn>model\n"})
+            return _FakeResponse({"tokens": str(body.get("content", "")).split()})
+
+    class _CountBackend(LlamaCppBackend):
+        is_loaded = True
+        base_url = "http://127.0.0.1:1"
+        _auth_headers = None
+
+        def __init__(self):
+            pass
+
+    monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _FakeClient)
+    count = _CountBackend().count_chat_tokens([], None, None, strict = True)
+    assert seen["messages"] == [], "the count must not invent a turn the caller never sent"
+    assert count > 0, "a fresh chat still prices the template preamble"
+
+
+def test_a_count_never_spawns_mcp_servers():
+    """get_enabled_mcp_tools starts stdio MCP server processes, writes cache and cooloff state,
+    and blocks for a whole probe timeout against a server that is down. A background recount
+    must not do host work the user's completion never asked for, so the count path pins
+    mcp_allowed False rather than deriving it from payload.mcp_enabled."""
+    import ast
+    import pathlib
+
+    src = pathlib.Path(__file__).resolve().parents[1] / "routes" / "inference.py"
+    tree = ast.parse(src.read_text(encoding = "utf-8"))
+    handler = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "chat_count_tokens"
+    )
+
+    # The only assignment to _mcp_allowed in the handler must be the constant False.
+    assigned = [
+        node.value
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "_mcp_allowed" for t in node.targets)
+    ]
+    assert assigned, "the count handler no longer pins _mcp_allowed; this test is stale"
+    assert all(
+        isinstance(v, ast.Constant) and v.value is False for v in assigned
+    ), "a count must never enable MCP discovery"
+
+    called = {
+        node.func.id
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "get_enabled_mcp_tools" not in called
+
+
 def test_audio_generate_is_reload_only(monkeypatch):
     # Codex P2: /audio/generate must not switch to a client-named GGUF. A local
     # GGUF's audio-input capability is not a cheap pre-load probe (the mmproj signal
@@ -3177,8 +4260,9 @@ def test_note_model_unloaded_clears_reload_stash(monkeypatch):
 
 def test_unload_route_clears_reload_stash(monkeypatch):
     # The /unload route must clear the stash on both the GGUF and non-GGUF branches.
+    # Asserted on the impl: the route only adds the padded response.
     import inspect
-    src = inspect.getsource(inference_route.unload_model)
+    src = inspect.getsource(inference_route._unload_model_impl)
     assert src.count("note_model_unloaded()") >= 2
 
 
@@ -4145,12 +5229,924 @@ def test_env_idle_below_floor_is_clamped(monkeypatch):
     assert settings.get_auto_unload_idle_seconds() == 0
 
 
+# Per-model launch config: normalization, LoadRequest mapping, key resolution.
+
+
+def test_normalize_model_override_drops_unusable_fields_and_keeps_the_rest():
+    # A stale field must not cost the user the whole config, so bad values are
+    # dropped one by one rather than rejecting the payload.
+    entry = settings.normalize_model_override(
+        {
+            "max_seq_length": 8192,
+            "kv_cache_dtype": "not_a_dtype",
+            "speculative_type": "mtp",
+            "spec_draft_n_max": 999,  # out of range for the MTP draft count
+            "gpu_memory_mode": "auto",  # only "manual" is a real override
+            "gpu_layers": -1,  # -1 is Auto, which is already the default
+            "n_cpu_moe": 0,
+            "gpu_ids": [1, 1, 0, "2", -5],
+            "tensor_parallel": False,
+            "llama_extra_args": [],
+        }
+    )
+    assert entry == {"max_seq_length": 8192, "speculative_type": "mtp", "gpu_ids": [1, 0, 2]}
+
+
+def test_normalize_model_override_rejects_oversized_chat_template():
+    small = settings.normalize_model_override({"chat_template_override": "{{ bos }}"})
+    assert small["chat_template_override"] == "{{ bos }}"
+    # The limit is bytes, not characters, so a multi-byte template just under the
+    # character limit can still be over.
+    huge = "é" * settings.MAX_CHAT_TEMPLATE_OVERRIDE_BYTES
+    assert "chat_template_override" not in settings.normalize_model_override(
+        {"chat_template_override": huge}
+    )
+
+
+def test_spec_draft_n_max_only_stored_for_mtp_modes():
+    mtp = settings.normalize_model_override({"speculative_type": "mtp", "spec_draft_n_max": 4})
+    assert mtp["spec_draft_n_max"] == 4
+    # A non-MTP mode ignores the draft count, so storing it shows an edit that
+    # never takes effect.
+    ngram = settings.normalize_model_override({"speculative_type": "ngram", "spec_draft_n_max": 4})
+    assert "spec_draft_n_max" not in ngram
+
+
+def test_resolve_fit_max_seq_length_hands_sizing_to_fit_under_manual_auto_layers():
+    # Manual GPU memory with Auto layers hands the context to llama.cpp --fit, so
+    # the load sends the context pin (or 0), not the stored max seq length.
+    override = {"gpu_memory_mode": "manual", "max_seq_length": 8192}
+    assert settings.resolve_fit_max_seq_length(override, is_gguf = True) == 0
+    assert (
+        settings.resolve_fit_max_seq_length(
+            {**override, "custom_context_length": 4096}, is_gguf = True
+        )
+        == 4096
+    )
+    # Pinning the layer count takes --fit back out of the picture.
+    assert settings.resolve_fit_max_seq_length({**override, "gpu_layers": 20}, is_gguf = True) == 8192
+    # Not a GGUF, so none of this applies.
+    assert settings.resolve_fit_max_seq_length(override, is_gguf = False) == 8192
+
+
+def test_model_override_load_kwargs_gates_gpu_placement_on_gguf():
+    override = {
+        "max_seq_length": 4096,
+        "kv_cache_dtype": "q8_0",
+        "tensor_parallel": True,
+        "gpu_memory_mode": "manual",
+        "gpu_layers": 20,
+        "n_cpu_moe": 3,
+        "gpu_ids": [0, 1],
+    }
+    gguf = settings.model_override_load_kwargs(override, is_gguf = True)
+    assert gguf["cache_type_kv"] == "q8_0"
+    assert gguf["tensor_parallel"] is True
+    assert gguf["gpu_layers"] == 20
+    assert gguf["gpu_ids"] == [0, 1]
+
+    # A safetensors model loads through HF auto-placement, so a GGUF GPU pin would
+    # silently change where the weights land.
+    safetensors = settings.model_override_load_kwargs(override, is_gguf = False)
+    assert safetensors["max_seq_length"] == 4096
+    assert "gpu_layers" not in safetensors
+    assert "gpu_ids" not in safetensors
+    assert "n_cpu_moe" not in safetensors
+    assert "gpu_memory_mode" not in safetensors
+
+    # Every key must be a real LoadRequest field, or the load raises TypeError when
+    # the user's request arrives.
+    LoadRequest(model_path = "unsloth/B-GGUF", **gguf)
+
+
+def test_a_carried_ctx_flag_cannot_outrank_a_freshly_saved_context(monkeypatch):
+    # The settings page has no control for pass-through flags, so a save carries over the
+    # ones already stored while writing the field the user just edited, leaving one entry
+    # holding both. Sent together they reach llama-server with the extras appended last,
+    # and its parser takes the final -c, so the stale flag would pin the old context.
+    _mock_override_store(monkeypatch)
+    _put("unsloth/B-GGUF:Q4_K_M", llama_extra_args = ["--ctx-size", "8192", "--top-k", "40"])
+    saved = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+    entry = saved.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["max_seq_length"] == 32768
+    assert entry["llama_extra_args"] == ["--ctx-size", "8192", "--top-k", "40"]
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+
+    _run_hook("unsloth/B-GGUF")
+    request = rec.calls[0]
+    assert request.max_seq_length == 32768
+    # The shadowing flag goes; the sampling flag beside it is nobody's first-class field.
+    assert request.llama_extra_args == ["--top-k", "40"]
+
+
+def test_load_kwargs_strip_only_the_shadow_groups_the_override_supplies():
+    # Same rule the /load route applies to inherited extras: one group per first-class
+    # field actually being sent, so a flag with nothing to shadow still passes through.
+    override = {
+        "llama_extra_args": [
+            "-c",
+            "8192",
+            "--cache-type-k",
+            "f16",
+            "--spec-type",
+            "ngram",
+            "--jinja",
+            "--split-mode",
+            "row",
+            "--top-p",
+            "0.9",
+        ],
+        "max_seq_length": 32768,
+        "kv_cache_dtype": "q8_0",
+        "speculative_type": "mtp",
+        "chat_template_override": "{{ bos_token }}",
+        "tensor_parallel": True,
+    }
+    stripped = settings.model_override_load_kwargs(override, is_gguf = True)
+    assert stripped["llama_extra_args"] == ["--top-p", "0.9"]
+
+    # Nothing is supplied to shadow them, so every flag survives.
+    kept = settings.model_override_load_kwargs(
+        {"llama_extra_args": override["llama_extra_args"]}, is_gguf = True
+    )
+    assert kept["llama_extra_args"] == override["llama_extra_args"]
+
+    # And one field strips one group.
+    ctx_only = settings.model_override_load_kwargs(
+        {"llama_extra_args": override["llama_extra_args"], "max_seq_length": 32768},
+        is_gguf = True,
+    )
+    assert ctx_only["llama_extra_args"] == override["llama_extra_args"][2:]
+
+
+def test_saved_parallel_slots_reach_an_api_load(monkeypatch):
+    # Parallel decode slots are a per-model setting the picker sends on every GGUF load.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: {"n_parallel": 8})
+
+    _run_hook("unsloth/B-GGUF")
+    assert rec.calls[0].n_parallel == 8
+
+
+def test_parallel_slots_are_stored_and_gated_on_gguf():
+    override = settings.normalize_model_override({"n_parallel": 8})
+    assert override == {"n_parallel": 8}
+    # Blank, out of range and non-integer all mean "follow the server-wide default".
+    for bad in (None, 0, -1, settings.PARALLEL_SLOTS_MAX + 1, "many", True):
+        assert "n_parallel" not in settings.normalize_model_override({"n_parallel": bad})
+
+    gguf = settings.model_override_load_kwargs(override, is_gguf = True)
+    assert gguf["n_parallel"] == 8
+    # A safetensors load has no llama-server slots, exactly as the picker gates it.
+    assert "n_parallel" not in settings.model_override_load_kwargs(override, is_gguf = False)
+    LoadRequest(model_path = "unsloth/B-GGUF", **gguf)
+
+
+def test_override_route_persists_parallel_slots(override_store):
+    # The picker's mirror must carry the field, or a slot-count-only change saves as empty.
+    resp = _put("unsloth/B-GGUF:Q4_K_M", n_parallel = 8)
+    assert resp.overrides["unsloth/B-GGUF:Q4_K_M"] == {"n_parallel": 8}
+
+
+def test_eviction_cleanup_clears_mirrored_fields_but_keeps_launch_flags(override_store):
+    # Evicting a local entry for storage budget is not a forget, so cleanup sends remove=false.
+    settings.set_model_override(
+        "unsloth/B-GGUF:Q4_K_M",
+        llama_extra_args = ["--flash-attn"],
+        custom_context_length = 32768,
+        kv_cache_dtype = "q8_0",
+    )
+    resp = _put("unsloth/B-GGUF:Q4_K_M", remove = False)
+    assert resp.overrides["unsloth/B-GGUF:Q4_K_M"] == {"llama_extra_args": ["--flash-attn"]}
+
+    # Nothing server-owned left, so the row goes rather than lingering empty.
+    settings.set_model_override("unsloth/C-GGUF:Q4_K_M", custom_context_length = 32768)
+    gone = _put("unsloth/C-GGUF:Q4_K_M", remove = False)
+    assert "unsloth/C-GGUF:Q4_K_M" not in gone.overrides
+
+
+def test_auto_switch_prefers_variant_qualified_override(monkeypatch):
+    # Settings are per quant; the bare repo id is only the fallback.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    stored = {
+        "unsloth/B-GGUF": {"max_seq_length": 1024},
+        "unsloth/B-GGUF:Q4_K_M": {"max_seq_length": 8192, "gpu_layers": 20},
+    }
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: stored.get(mid, {}))
+
+    _run_hook("unsloth/B-GGUF")
+    req = rec.calls[0]
+    assert req.max_seq_length == 8192
+    assert req.gpu_layers == 20
+
+
+def test_auto_switch_falls_back_to_bare_repo_override(monkeypatch):
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    stored = {"unsloth/B-GGUF": {"max_seq_length": 1024}}
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: stored.get(mid, {}))
+
+    _run_hook("unsloth/B-GGUF")
+    assert rec.calls[0].max_seq_length == 1024
+
+
+def test_override_route_preserves_launch_flags_across_a_settings_only_update(override_store):
+    # The settings page has no control for llama_extra_args, so it omits the field.
+    _put("unsloth/B-GGUF", llama_extra_args = ["--flash-attn"])
+    resp = _put("unsloth/B-GGUF", max_seq_length = 4096)
+    entry = resp.overrides["unsloth/B-GGUF"]
+    assert entry["llama_extra_args"] == ["--flash-attn"]
+    assert entry["max_seq_length"] == 4096
+
+    # An explicit empty list is the UI's "forget", and with no fields left the entry goes.
+    gone = _put("unsloth/B-GGUF", llama_extra_args = [])
+    assert "unsloth/B-GGUF" not in gone.overrides
+
+
+def test_override_found_under_a_concrete_path_with_variant(monkeypatch):
+    # A local folder resolves to repo id + path; settings saved against the path must be found.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/models/local/Qwen3-8B-Q4_K_M.gguf", "Q4_K_M", "unsloth/Qwen3-8B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    stored = {"/models/local/Qwen3-8B-Q4_K_M.gguf:Q4_K_M": {"max_seq_length": 8192}}
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: stored.get(mid, {}))
+
+    _run_hook("unsloth/Qwen3-8B-GGUF")
+    assert rec.calls[0].max_seq_length == 8192
+
+
+def test_path_qualified_override_beats_repo_qualified(monkeypatch):
+    # Most specific first: the settings page keys a local row by the path being loaded,
+    # while the repo id is only the advertised alias. The row the user edited wins.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/models/local/x.gguf", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    stored = {
+        "unsloth/B-GGUF:Q4_K_M": {"max_seq_length": 8192},
+        "/models/local/x.gguf:Q4_K_M": {"max_seq_length": 1024},
+    }
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: stored.get(mid, {}))
+
+    _run_hook("unsloth/B-GGUF")
+    assert rec.calls[0].max_seq_length == 1024
+
+
+def test_first_quant_save_keeps_legacy_bare_repo_launch_flags(override_store):
+    # Flags predating per-quant settings live under the bare repo id.
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--flash-attn"])
+
+    resp = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096)
+    entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["max_seq_length"] == 4096
+    assert entry["llama_extra_args"] == ["--flash-attn"]
+
+
+def test_bare_repo_carry_over_does_not_split_a_windows_path(override_store):
+    # The colon in "C:\models\x.gguf" is not a variant separator: splitting looks up "C".
+    settings.set_model_override("C", llama_extra_args = ["--flash-attn"])
+
+    resp = _put(r"C:\models\x.gguf", max_seq_length = 4096)
+    assert "llama_extra_args" not in resp.overrides[r"C:\models\x.gguf"]
+
+
+def test_windows_path_with_quant_still_carries_over(override_store):
+    settings.set_model_override(r"C:\models\x.gguf", llama_extra_args = ["--flash-attn"])
+
+    resp = _put(r"C:\models\x.gguf:Q4_K_M", max_seq_length = 4096)
+    assert resp.overrides[r"C:\models\x.gguf:Q4_K_M"]["llama_extra_args"] == ["--flash-attn"]
+
+
+# The snapshot dir a repo cached outside the active HF cache loads from, which is what an
+# older release keyed that row by and what the loader still reads before the repo id.
+_LEGACY_SNAPSHOT = "/home/u/.cache/hub-alt/models--unsloth--B-GGUF/snapshots/2f1c9ab"
+
+
+def test_a_repo_save_retires_the_legacy_snapshot_path_entry(monkeypatch):
+    """The two spellings of one cached repo cannot both be stored, or the older wins.
+
+    The one-time backfill mirrors the pre-upgrade path-qualified key to the server, the
+    Settings page then keys the same row by its repo id, and the loader reads the load
+    path first: without retiring the leftover, every API load applies the settings the
+    user just replaced.
+    """
+    _mock_override_store(monkeypatch)
+    settings.set_model_override(f"{_LEGACY_SNAPSHOT}:Q4_K_M", max_seq_length = 4096)
+
+    resp = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+    assert resp.overrides["unsloth/B-GGUF:Q4_K_M"]["max_seq_length"] == 32768
+    assert f"{_LEGACY_SNAPSHOT}:Q4_K_M" not in resp.overrides
+
+    # End to end: the load the request triggers carries the saved value, not the retired one.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (_LEGACY_SNAPSHOT, "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
+    assert rec.calls[0].max_seq_length == 32768
+
+
+def test_the_retired_snapshot_path_entry_hands_over_its_launch_flags(override_store):
+    # The page can neither show nor restore llama_extra_args, so retiring the entry has to
+    # carry them, exactly as the bare repo id does on a first per-quant save.
+    settings.set_model_override(
+        f"{_LEGACY_SNAPSHOT}:Q4_K_M",
+        llama_extra_args = ["--flash-attn"],
+        max_seq_length = 4096,
+    )
+
+    resp = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+    entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["llama_extra_args"] == ["--flash-attn"]
+    assert entry["max_seq_length"] == 32768
+    assert f"{_LEGACY_SNAPSHOT}:Q4_K_M" not in resp.overrides
+
+
+def test_a_standalone_gguf_save_keeps_its_filename_label_launch_flags(override_store):
+    # An early build keyed a loose .gguf by the quant label from its filename, and the bare
+    # path the picker writes today is read before that key (see
+    # test_the_filename_label_key_no_longer_shadows_the_bare_path), so writing the bare entry
+    # without the legacy flags puts them out of reach of a page that cannot show or restore
+    # them. The forget path already consults the same derived key.
+    path = "/models/Qwen3-8B-Q4_K_M.gguf"
+    settings.set_model_override(
+        f"{path}:q4_k_m",
+        llama_extra_args = ["--flash-attn"],
+        max_seq_length = 4096,
+    )
+
+    resp = _put(path, max_seq_length = 32768)
+    entry = resp.overrides[path]
+    assert entry["llama_extra_args"] == ["--flash-attn"]
+    assert entry["max_seq_length"] == 32768
+
+
+def test_a_snapshot_path_save_retires_the_repo_id_entry(override_store):
+    # The same rule the other way round: a row the picker still keys by its path (an inactive
+    # cache reached as a local row) must not be shadowed, so the last spelling saved survives.
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+
+    resp = _put(f"{_LEGACY_SNAPSHOT}:Q4_K_M", max_seq_length = 4096)
+    assert resp.overrides[f"{_LEGACY_SNAPSHOT}:Q4_K_M"]["max_seq_length"] == 4096
+    assert "unsloth/B-GGUF:Q4_K_M" not in resp.overrides
+
+
+def test_forgetting_a_cached_repo_also_clears_its_snapshot_path_entry(override_store):
+    # Clearing only the repo id would leave the path entry applying what was forgotten.
+    settings.set_model_override(f"{_LEGACY_SNAPSHOT}:Q4_K_M", max_seq_length = 4096)
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+
+    resp = _put("unsloth/B-GGUF:Q4_K_M", remove = True, llama_extra_args = [])
+    assert resp.overrides == {}
+
+
+def test_retiring_a_spelling_leaves_every_other_entry_alone(override_store):
+    # Only the same repo and the same quant fold together: a ./models path is keyed by its path
+    # alone, another quant has its own settings, and a bare entry backs every quant.
+    settings.set_model_override("/models/local/x.gguf:Q4_K_M", max_seq_length = 1024)
+    settings.set_model_override(f"{_LEGACY_SNAPSHOT}:Q8_0", max_seq_length = 2048)
+    settings.set_model_override(_LEGACY_SNAPSHOT, max_seq_length = 4096)
+
+    resp = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+    assert resp.overrides["/models/local/x.gguf:Q4_K_M"]["max_seq_length"] == 1024
+    assert resp.overrides[f"{_LEGACY_SNAPSHOT}:Q8_0"]["max_seq_length"] == 2048
+    assert resp.overrides[_LEGACY_SNAPSHOT]["max_seq_length"] == 4096
+
+
+def test_the_one_time_fill_retires_nothing(override_store):
+    # fill_absent_fields only adds what is missing; the migration mirroring both spellings
+    # of one row must not have its own first write deleted by its second.
+    settings.set_model_override(f"{_LEGACY_SNAPSHOT}:Q4_K_M", max_seq_length = 4096)
+
+    resp = _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768, fill_absent_fields = True)
+    assert resp.overrides[f"{_LEGACY_SNAPSHOT}:Q4_K_M"]["max_seq_length"] == 4096
+    assert resp.overrides["unsloth/B-GGUF:Q4_K_M"]["max_seq_length"] == 32768
+
+
+def test_a_fill_never_creates_a_snapshot_path_key_over_a_repo_id_entry(override_store):
+    # A fill only adds, so it cannot retire the other spelling the way a save does. Creating
+    # the snapshot path key would leave two entries for one quant, and the loader reads the
+    # load path before the advertised repo id, so an upgraded browser's pre-upgrade copy would
+    # shadow the newer server config on every API load. Fill into the entry that is already
+    # there instead: nothing outranks it and the fields it lacks still arrive.
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", max_seq_length = 32768)
+
+    resp = _put(
+        f"{_LEGACY_SNAPSHOT}:Q4_K_M",
+        max_seq_length = 2048,
+        kv_cache_dtype = "q8_0",
+        fill_absent_fields = True,
+    )
+    assert f"{_LEGACY_SNAPSHOT}:Q4_K_M" not in resp.overrides
+    entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["max_seq_length"] == 32768
+    assert entry["kv_cache_dtype"] == "q8_0"
+
+
+def test_stale_gpu_ids_are_dropped_not_fatal(monkeypatch):
+    # A two-GPU pin on a one-GPU box used to 400 the load; one dead field degrades to defaults.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        settings,
+        "get_model_override",
+        lambda mid: {"gpu_ids": [0, 1], "max_seq_length": 4096},
+    )
+
+    async def _unusable(ids):
+        return False
+
+    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _unusable)
+
+    _run_hook("unsloth/B-GGUF")
+    req = rec.calls[0]
+    assert not req.gpu_ids
+    # The rest of the config still applies.
+    assert req.max_seq_length == 4096
+
+
+def test_usable_gpu_ids_are_kept(monkeypatch):
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: {"gpu_ids": [0, 1]})
+
+    async def _usable(ids):
+        return True
+
+    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
+
+    _run_hook("unsloth/B-GGUF")
+    assert rec.calls[0].gpu_ids == [0, 1]
+
+
+def test_override_gpu_ids_probe_never_raises(monkeypatch):
+    # On the load path, so a hardware error must read as "unusable", not a 500.
+    import utils.hardware.hardware as hw
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("driver exploded")
+
+    monkeypatch.setattr(hw, "resolve_requested_gpu_ids", boom)
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0])) is False
+
+
+def test_vulkan_ordinal_absent_from_the_probe_is_unusable(monkeypatch):
+    # resolve_requested_gpu_ids only rejects malformed ordinals; presence needs the ggml probe.
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/bin/llama-server")
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_memory", staticmethod(lambda binary: [(0, 8192)])
+    )
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0])) is True
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([7])) is False
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0, 1])) is False
+
+
+def test_vulkan_probe_without_a_binary_does_not_block_the_load(monkeypatch):
+    # Nothing to probe with, and refusing would drop a valid pin on every load.
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda: True))
+    monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: None))
+    assert asyncio.run(inference_route._override_gpu_ids_still_resolve([0])) is True
+
+
+def test_default_save_preserves_flags_instead_of_removing(override_store):
+    # All-default values send no fields, shape-identical to a removal; guessing wrong wipes flags.
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = ["--flash-attn"])
+
+    resp = _put("unsloth/B-GGUF", remove = False)
+    assert resp.overrides["unsloth/B-GGUF"]["llama_extra_args"] == ["--flash-attn"]
+
+
+def test_explicit_remove_still_clears_everything(override_store):
+    settings.set_model_override(
+        "unsloth/B-GGUF", llama_extra_args = ["--flash-attn"], max_seq_length = 4096
+    )
+    resp = _put("unsloth/B-GGUF", remove = True, llama_extra_args = [])
+    assert "unsloth/B-GGUF" not in resp.overrides
+
+
+def test_bare_payload_without_remove_flag_still_removes(override_store):
+    # The original contract, kept for any caller that predates the flag.
+    settings.set_model_override("unsloth/B-GGUF", max_seq_length = 4096)
+    resp = _put("unsloth/B-GGUF")
+    assert "unsloth/B-GGUF" not in resp.overrides
+
+
+def test_remove_false_with_real_fields_saves_normally(override_store):
+    resp = _put("unsloth/B-GGUF", remove = False, max_seq_length = 8192)
+    assert resp.overrides["unsloth/B-GGUF"]["max_seq_length"] == 8192
+
+
+def test_override_lookup_falls_back_to_case_insensitive(override_store):
+    # The browser lowercases ids while the resolver asks for the repo's real casing.
+    settings.set_model_override("unsloth/qwen3-8b-gguf:q4_k_m", max_seq_length = 8192)
+    got = settings.get_model_override("unsloth/Qwen3-8B-GGUF:Q4_K_M")
+    assert got["max_seq_length"] == 8192
+
+
+def test_exact_override_match_beats_a_case_variant(override_store):
+    settings.set_model_override("/models/foo.gguf", max_seq_length = 1024)
+    settings.set_model_override("/models/Foo.gguf", max_seq_length = 8192)
+    assert settings.get_model_override("/models/Foo.gguf")["max_seq_length"] == 8192
+    assert settings.get_model_override("/models/foo.gguf")["max_seq_length"] == 1024
+
+
+def test_ambiguous_case_fallback_matches_nothing(override_store):
+    # Two POSIX paths differing only in case are two files; guessing applies the wrong settings.
+    settings.set_model_override("/models/foo.gguf", max_seq_length = 1024)
+    settings.set_model_override("/models/FOO.gguf", max_seq_length = 8192)
+    assert settings.get_model_override("/models/Foo.gguf") == {}
+
+
+def test_request_used_api_key_distinguishes_key_from_session():
+    from auth.authentication import API_KEY_PREFIX
+
+    class _Req:
+        def __init__(self, header):
+            self.headers = {"authorization": header} if header else {}
+
+    assert inference_route._request_used_api_key(_Req(f"Bearer {API_KEY_PREFIX}abc")) is True
+    assert inference_route._request_used_api_key(_Req(f"bearer {API_KEY_PREFIX}abc")) is True
+    assert inference_route._request_used_api_key(_Req("Bearer eyJhbGciOiJIUzI1NiJ9.x")) is False
+    assert inference_route._request_used_api_key(_Req("")) is False
+    assert inference_route._request_used_api_key(_Req(None)) is False
+    # Hot path: a malformed request object must read as "not an API key" rather than raise.
+    assert inference_route._request_used_api_key(object()) is False
+    # A stand-in whose headers answer with anything at all, which is how the load
+    # routes are driven in tests: a monitor label must never take a load down.
+    from unittest.mock import MagicMock
+
+    assert inference_route._request_used_api_key(MagicMock()) is False
+
+
+def test_case_fallback_never_applies_to_a_posix_path(override_store):
+    # Two casings are two models on Linux, so a near miss loads defaults, not the other's pin.
+    settings.set_model_override("/models/foo.gguf", max_seq_length = 8192, gpu_ids = [1])
+    assert settings.get_model_override("/models/Foo.gguf") == {}
+    assert settings.get_model_override("/models/foo.gguf")["max_seq_length"] == 8192
+
+
+def test_case_fallback_does_apply_to_a_windows_path(override_store):
+    # NTFS is case-insensitive: these name one file, and the browser folds drive paths.
+    settings.set_model_override(r"c:\models\foo.gguf", max_seq_length = 8192)
+    assert settings.get_model_override(r"C:\models\FOO.gguf")["max_seq_length"] == 8192
+    assert settings.get_model_override("C:/Models/Foo.gguf")["max_seq_length"] == 8192
+
+
+def test_case_fallback_applies_to_unc_and_wsl_drive_paths(override_store):
+    settings.set_model_override(r"\\server\share\foo.gguf", max_seq_length = 4096)
+    settings.set_model_override("/mnt/c/models/bar.gguf", max_seq_length = 2048)
+    assert settings.get_model_override(r"\\Server\Share\FOO.gguf")["max_seq_length"] == 4096
+    assert settings.get_model_override("/mnt/C/Models/Bar.gguf")["max_seq_length"] == 2048
+
+
+def test_a_plain_posix_path_under_mnt_stays_case_sensitive(override_store):
+    # Only /mnt/<letter> is a WSL drive mount; /mnt/data is an ordinary case-sensitive mount.
+    settings.set_model_override("/mnt/data/models/foo.gguf", max_seq_length = 8192)
+    assert settings.get_model_override("/mnt/data/models/Foo.gguf") == {}
+
+
+def test_an_ambiguous_windows_case_fallback_still_matches_nothing(override_store):
+    # Two keys folding to one has no single answer, so the load takes defaults.
+    settings.set_model_override(r"c:\models\foo.gguf", max_seq_length = 1024)
+    settings.set_model_override("C:/models/FOO.gguf", max_seq_length = 8192)
+    assert settings.get_model_override(r"C:\Models\Foo.gguf") == {}
+
+
+def test_case_fallback_still_covers_repo_ids(override_store):
+    # The migration case this fallback exists for.
+    settings.set_model_override("unsloth/qwen3-8b-gguf:q4_k_m", max_seq_length = 8192)
+    assert settings.get_model_override("unsloth/Qwen3-8B-GGUF:Q4_K_M")["max_seq_length"] == 8192
+
+
+def test_explicit_remove_is_not_blocked_by_stale_invalid_flags(override_store):
+    # remove is the operation discriminator: a rejected flag must not turn a forget into a 400.
+    settings.set_model_override("unsloth/B-GGUF", max_seq_length = 4096)
+    resp = _put("unsloth/B-GGUF", remove = True, llama_extra_args = ["--port", "1234"])
+    assert "unsloth/B-GGUF" not in resp.overrides
+
+
+def test_explicit_remove_wins_over_config_fields_in_the_same_payload(override_store):
+    # remove is the operation discriminator: a stale field beside it must not make it an update.
+    settings.set_model_override("unsloth/B-GGUF", max_seq_length = 4096)
+    resp = _put("unsloth/B-GGUF", remove = True, max_seq_length = 8192, tensor_parallel = True)
+    assert "unsloth/B-GGUF" not in resp.overrides
+
+
+def test_posix_colon_in_a_path_is_not_treated_as_a_quant(override_store):
+    # "/models/foo:bar.gguf" is one filename: splitting grafts /models/foo's flags onto it.
+    settings.set_model_override("/models/foo", llama_extra_args = ["--flash-attn"])
+    resp = _put("/models/foo:bar.gguf", max_seq_length = 4096)
+    assert "llama_extra_args" not in resp.overrides["/models/foo:bar.gguf"]
+
+
+def test_unknown_quant_label_on_a_gguf_still_carries_flags_over(override_store):
+    # A .gguf with no quant token is labelled by its stem, so the UI saves ":custom".
+    settings.set_model_override("/models/custom.gguf", llama_extra_args = ["--flash-attn"])
+    resp = _put("/models/custom.gguf:custom", max_seq_length = 4096)
+    assert resp.overrides["/models/custom.gguf:custom"]["llama_extra_args"] == ["--flash-attn"]
+
+
+def test_bpw_qualified_variants_still_carry_flags_over(override_store):
+    # model_config.py keeps a bits-per-weight modifier on the label, and that form reaches keys.
+    settings.set_model_override("unsloth/Repo-GGUF", llama_extra_args = ["--flash-attn"])
+    resp = _put("unsloth/Repo-GGUF:IQ4_XS-3.53bpw", max_seq_length = 4096)
+    assert resp.overrides["unsloth/Repo-GGUF:IQ4_XS-3.53bpw"]["llama_extra_args"] == [
+        "--flash-attn"
+    ]
+
+
+def test_a_posix_path_variant_folds_while_the_path_does_not(override_store):
+    # The browser lowercases the quant but keeps POSIX path casing.
+    settings.set_model_override("/models/Foo:q4_k_m", max_seq_length = 8192)
+    assert settings.get_model_override("/models/Foo:Q4_K_M")["max_seq_length"] == 8192
+    assert settings.get_model_override("/models/foo:Q4_K_M") == {}
+
+
+def test_an_unknown_gguf_label_is_reachable_in_either_casing(override_store):
+    # The stem-derived label is lowercased in storage while the scanner keeps filename casing.
+    settings.set_model_override("/models/CustomModel.gguf:custommodel", max_seq_length = 8192)
+    got = settings.get_model_override("/models/CustomModel.gguf:CustomModel")
+    assert got["max_seq_length"] == 8192
+    # The path itself is still case-sensitive on POSIX.
+    assert settings.get_model_override("/models/custommodel.gguf:CustomModel") == {}
+
+
+def test_a_posix_colon_filename_is_not_folded_as_a_variant(override_store):
+    # "/models/foo:Bar.gguf" is one filename: folding its tail reaches a different file.
+    settings.set_model_override("/models/foo:bar.gguf", max_seq_length = 8192)
+    assert settings.get_model_override("/models/foo:Bar.gguf") == {}
+
+
+def test_a_suffix_the_scanner_would_not_derive_carries_nothing_over(override_store):
+    # Only the scanner's exact label is accepted, so a stray colon suffix reaches nothing.
+    settings.set_model_override("/models/custom.gguf", llama_extra_args = ["--flash-attn"])
+    resp = _put("/models/custom.gguf:something-else", max_seq_length = 4096)
+    assert "llama_extra_args" not in resp.overrides["/models/custom.gguf:something-else"]
+
+
+def test_unknown_quant_label_carries_over_for_a_windows_path(override_store):
+    # Written on Windows, read back where a backslash is an ordinary filename character.
+    settings.set_model_override(r"C:\models\custom.gguf", llama_extra_args = ["--flash-attn"])
+    resp = _put(r"C:\models\custom.gguf:custom", max_seq_length = 4096)
+    assert resp.overrides[r"C:\models\custom.gguf:custom"]["llama_extra_args"] == ["--flash-attn"]
+
+
+def test_real_quant_suffix_on_a_path_still_carries_flags_over(override_store):
+    settings.set_model_override("/models/x.gguf", llama_extra_args = ["--flash-attn"])
+    resp = _put("/models/x.gguf:Q4_K_M", max_seq_length = 4096)
+    assert resp.overrides["/models/x.gguf:Q4_K_M"]["llama_extra_args"] == ["--flash-attn"]
+
+
+def test_load_retries_without_gpu_ids_when_the_loader_rejects_the_pin(monkeypatch):
+    # The pre-flight check can't mirror every loader rule, and a stale pin must not block a load.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        settings, "get_model_override", lambda mid: {"gpu_ids": [0], "max_seq_length": 4096}
+    )
+
+    async def _usable(ids):
+        return True
+
+    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
+
+    calls = {"n": 0}
+
+    async def _load(request, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise HTTPException(
+                status_code = 400,
+                detail = "GPU selection (gpu_ids) is not supported for a DiffusionGemma GGUF",
+            )
+        return await rec(request, *args, **kwargs)
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _load)
+
+    _run_hook("unsloth/B-GGUF")
+    assert calls["n"] == 2
+    served = rec.calls[-1]
+    assert not served.gpu_ids
+    assert served.max_seq_length == 4096
+
+
+def test_a_non_gpu_load_failure_is_not_retried(monkeypatch):
+    from fastapi import HTTPException
+
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: {"gpu_ids": [0]})
+
+    async def _usable(ids):
+        return True
+
+    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
+
+    calls = {"n": 0}
+
+    async def _load(request, *args, **kwargs):
+        calls["n"] += 1
+        raise HTTPException(status_code = 400, detail = "Corrupt GGUF header")
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _load)
+
+    with pytest.raises(HTTPException):
+        _run_hook("unsloth/B-GGUF")
+    assert calls["n"] == 1
+
+
+def test_removal_clears_the_entry_a_load_would_actually_resolve(override_store):
+    # A forget can carry a different casing; removing only the literal key leaves a live entry.
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", max_seq_length = 8192)
+    assert settings.get_model_override("unsloth/b-gguf:q4_k_m")["max_seq_length"] == 8192
+
+    _put("unsloth/b-gguf:q4_k_m", remove = True)
+    assert settings.get_model_overrides() == {}
+    assert settings.get_model_override("unsloth/B-GGUF:Q4_K_M") == {}
+
+
+def test_save_updates_the_existing_case_variant_instead_of_forking_it(override_store):
+    # The backfill stores lowercase keys while a later UI save carries the catalog's casing.
+    settings.set_model_override("unsloth/b-gguf:q4_k_m", max_seq_length = 8192)
+    _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096)
+    assert list(settings.get_model_overrides()) == ["unsloth/b-gguf:q4_k_m"]
+    assert settings.get_model_override("Unsloth/B-GGUF:Q4_K_M")["max_seq_length"] == 4096
+
+
+def test_removal_of_a_path_still_only_touches_the_exact_key(override_store):
+    settings.set_model_override("/models/foo.gguf", max_seq_length = 8192)
+    _put("/models/Foo.gguf", remove = True)
+    # A different file must survive its neighbour being forgotten.
+    assert settings.get_model_override("/models/foo.gguf")["max_seq_length"] == 8192
+
+
+def test_forget_clears_the_filename_derived_key_a_load_still_reads(override_store):
+    # The picker once keyed a standalone .gguf by its filename quant label; backfill carries it.
+    settings.set_model_override(
+        "/models/Qwen3-8B-Q4_K_M.gguf:q4_k_m",
+        max_seq_length = 8192,
+    )
+    _put("/models/Qwen3-8B-Q4_K_M.gguf", remove = True)
+    assert settings.get_model_override("/models/Qwen3-8B-Q4_K_M.gguf:Q4_K_M") == {}
+    assert settings.get_model_overrides() == {}
+
+
+def test_forget_clears_the_bare_repo_entry_the_quant_inherited_from(override_store):
+    # A save under repo:QUANT copies the flags off a legacy bare entry and leaves it in place,
+    # and the loader falls back to it, so clearing only the qualified key hands them back.
+    settings.set_model_override(
+        "unsloth/B-GGUF",
+        llama_extra_args = ["--flash-attn"],
+        max_seq_length = 8192,
+    )
+    _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096)
+    _put("unsloth/B-GGUF:Q4_K_M", remove = True)
+    assert settings.get_model_override("unsloth/B-GGUF") == {}
+    assert settings.get_model_overrides() == {}
+
+
+def test_forget_keeps_a_bare_entry_another_quant_still_has_settings_under(override_store):
+    # The bare entry backs every quant with no entry of its own, so forgetting Q4 must not
+    # strip it while Q8 is still there: this forget is not the last word on the model.
+    settings.set_model_override("unsloth/B-GGUF", max_seq_length = 8192)
+    settings.set_model_override("unsloth/B-GGUF:Q8_0", max_seq_length = 2048)
+    _put("unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096)
+    _put("unsloth/B-GGUF:Q4_K_M", remove = True)
+    assert settings.get_model_override("unsloth/B-GGUF") == {"max_seq_length": 8192}
+    assert settings.get_model_override("unsloth/B-GGUF:Q8_0") == {"max_seq_length": 2048}
+
+
+def test_forget_clears_every_spelling_of_one_model(override_store):
+    # Two spellings of one repo can coexist; clearing only the named one makes the survivor
+    # the sole fold match, so the next load reapplies what was just forgotten.
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", max_seq_length = 8192)
+    settings.set_model_override("unsloth/b-gguf:q4_k_m", max_seq_length = 8192)
+    _put("unsloth/B-GGUF:Q4_K_M", remove = True)
+    assert settings.get_model_overrides() == {}
+    assert settings.get_model_override("unsloth/B-GGUF:Q4_K_M") == {}
+
+
+def test_forget_of_one_windows_spelling_clears_the_other(override_store):
+    # Windows paths fold, so two spellings are one file and both have to go.
+    settings.set_model_override(r"C:\Models\x.gguf", max_seq_length = 8192)
+    settings.set_model_override("c:/models/X.gguf", max_seq_length = 4096)
+    _put(r"C:\Models\x.gguf", remove = True)
+    assert settings.get_model_overrides() == {}
+
+
+def test_forget_of_a_posix_path_still_spares_its_case_sibling(override_store):
+    # POSIX paths do not fold: two casings are two files, so a forget spares the sibling.
+    settings.set_model_override("/models/foo.gguf", max_seq_length = 8192)
+    settings.set_model_override("/models/Foo.gguf", max_seq_length = 4096)
+    _put("/models/foo.gguf", remove = True)
+    assert list(settings.get_model_overrides()) == ["/models/Foo.gguf"]
+
+
+def test_forget_leaves_another_file_own_derived_key_alone(override_store):
+    # The derived key uses the forgotten file's own path, so a quant-sharing neighbour survives.
+    settings.set_model_override("/models/Other-Q4_K_M.gguf:q4_k_m", max_seq_length = 4096)
+    _put("/models/Qwen3-8B-Q4_K_M.gguf", remove = True)
+    assert settings.get_model_override("/models/Other-Q4_K_M.gguf:Q4_K_M")["max_seq_length"] == 4096
+
+
+def test_forget_of_a_repo_quant_key_derives_nothing(override_store):
+    # Only a bare .gguf path derives a label.
+    settings.set_model_override("unsloth/b-gguf:q4_k_m", max_seq_length = 8192)
+    _put("unsloth/B-GGUF", remove = True)
+    assert settings.get_model_override("unsloth/b-gguf:q4_k_m")["max_seq_length"] == 8192
+
+
 def test_a_tag_that_names_no_quant_resolves_to_the_repo(monkeypatch):
-    # A downloaded but unloaded GGUF asked for as org/model:latest missed the
-    # resolver, so the switch path could not load it: with auto-download on it
-    # probed the Hub and 404d on a quant that was never a quant, and with it off it
-    # refused without switching. A real quant that is not on disk must still miss,
-    # or a swap would serve the wrong weights under the right name.
+    # A downloaded but unloaded GGUF asked for as org/model:latest missed the resolver,
+    # so the switch could not load it (404ing on a quant that was never a quant with
+    # auto-download on, refusing with it off). A real quant that is not on disk must
+    # still miss, or a swap would serve the wrong weights under the right name.
     from core.inference.local_model_resolver import _LocalGgufEntry
 
     import time
@@ -4173,9 +6169,9 @@ def test_a_tag_that_names_no_quant_resolves_to_the_repo(monkeypatch):
 
 
 def test_any_finished_download_drops_the_resolver_cache(monkeypatch):
-    # Only the API auto-download watcher invalidated, so a GGUF fetched in the Hub
-    # UI stayed absent to the cache-only request path and the request was answered
-    # by the resident model instead. Every worker exits through here.
+    # Only the API auto-download watcher invalidated, so a GGUF fetched in the Hub UI
+    # stayed absent to the cache-only request path and the resident model answered.
+    # Every worker exits through here.
     import logging
 
     from hub.services import download_lifecycle
@@ -4222,9 +6218,9 @@ def test_any_finished_download_drops_the_resolver_cache(monkeypatch):
 
 
 def test_invalidating_keeps_the_entries_it_already_had(monkeypatch):
-    # The request path reads this cache without scanning, so emptying it leaves it
-    # with no evidence about any local model until the rebuild lands. Only a
-    # completed download invalidates, and that only adds, so the entries stay true.
+    # The request path reads this cache without scanning, so emptying it leaves no
+    # evidence until the rebuild lands. Only a completed download invalidates, and
+    # that only adds, so the entries stay true.
     import time
 
     entry = resolver._LocalGgufEntry("org/old", "/srv/models/org--old", ("Q4_K_M",))
@@ -4240,9 +6236,8 @@ def test_invalidating_keeps_the_entries_it_already_had(monkeypatch):
 
 def test_a_bare_local_id_takes_the_quant_a_plain_load_would(monkeypatch, tmp_path):
     # list_local_gguf_variants orders by descending size, so the head is the biggest
-    # quant. Resolving a bare id to that could evict a working model and then OOM
-    # starting an F16 on a box sized for the Q4 sitting right next to it, and
-    # /v1/models advertised the same head for pinning.
+    # quant. Resolving a bare id to that could evict a working model and then OOM on an
+    # F16 next to a fitting Q4, and /v1/models advertised the same head for pinning.
     from core.inference.local_model_resolver import _local_gguf_entry
 
     for name, size in (("model-F16.gguf", 900), ("model-Q4_K_M.gguf", 100)):
@@ -4263,9 +6258,8 @@ def test_local_and_remote_agree_on_the_preferred_quant():
 
 
 def test_a_just_downloaded_model_is_evidence_before_the_scan_indexes_it(monkeypatch):
-    # Retaining the old index covers what was already known, but nothing covers the
-    # model that just landed until the next scan finishes. A bare request for it in
-    # that window was answered by the unrelated resident model.
+    # The retained index covers what was known, but nothing covers the model that just
+    # landed until the next scan: a bare request for it was answered by the resident one.
     import logging
 
     from hub.services import download_lifecycle
@@ -4312,10 +6306,9 @@ def test_a_just_downloaded_model_is_evidence_before_the_scan_indexes_it(monkeypa
 
 
 def test_a_finished_dataset_is_not_recorded_as_a_local_model(monkeypatch):
-    # finalize_worker_exit is shared with dataset downloads. Noting one as a local
-    # model would refuse a bare /v1 request naming that id while another model is
-    # resident, instead of letting a foreign id fall through, and would kick off a
-    # multi-directory model scan for nothing.
+    # finalize_worker_exit is shared with dataset downloads. Noting one as a local model
+    # would refuse a bare /v1 request naming that id instead of letting a foreign id
+    # fall through, and would kick off a multi-directory scan for nothing.
     import logging
     import time
 
@@ -4359,9 +6352,8 @@ def test_a_finished_dataset_is_not_recorded_as_a_local_model(monkeypatch):
 
 def test_two_local_paths_differing_only_in_case_are_not_the_same_model(monkeypatch):
     # _loaded_satisfies lowercased the request and every backend identifier, so on a
-    # case-sensitive filesystem /srv/models/foo.gguf counted as satisfied by a
-    # resident /srv/models/Foo.gguf and returned before the case-preserving compare
-    # further down ever ran. A repo alias must stay case-insensitive.
+    # case-sensitive filesystem /srv/models/foo.gguf read as satisfied by a resident
+    # /srv/models/Foo.gguf. A repo alias must still stay case-insensitive.
     import os
 
     loaded = _FakeBackend(loaded_id = "/srv/models/Foo.gguf")
@@ -4378,3 +6370,475 @@ def test_two_local_paths_differing_only_in_case_are_not_the_same_model(monkeypat
     alias = _FakeBackend(loaded_id = "unsloth/Qwen3-4B-GGUF")
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: alias)
     assert inference_route._loaded_satisfies("unsloth/qwen3-4b-gguf") is True
+
+
+def test_abs_path_ids_are_recognised_in_either_platform_spelling():
+    """Path() follows the running OS, so a Windows host read "/home/me/x.gguf" as
+    relative and a POSIX host read "C:\\models\\x.gguf" the same way, and either
+    then reached /v1/models as a published host path. Ids outlive the machine
+    that wrote them (settings sync, WSL, a copied config), and the model-override
+    identity already folds both spellings."""
+    from types import SimpleNamespace
+
+    for spelling in ("/home/me/models/x.gguf", "C:\\models\\x.gguf", "//host/share/x.gguf"):
+        assert resolver._is_abs_path_id(spelling) is True, spelling
+        # An alias wins, and with none the path is stripped to a public id.
+        assert (
+            resolver._advertised_loader_id(
+                SimpleNamespace(id = spelling, model_id = "org/X-GGUF", display_name = "X")
+            )
+            == "org/X-GGUF"
+        )
+        advertised = resolver._advertised_loader_id(
+            SimpleNamespace(id = spelling, model_id = None, display_name = None)
+        )
+        assert advertised is not None
+        assert "/" not in advertised and "\\" not in advertised, advertised
+
+    # A repo id has no leading separator, drive or UNC prefix under either reading.
+    for repo_id in ("org/Repo-GGUF", "Repo", "org/Repo-GGUF:Q4_K_M"):
+        assert resolver._is_abs_path_id(repo_id) is False, repo_id
+
+
+def test_fill_absent_fields_put_never_replaces_a_newer_server_value(override_store):
+    """The one-time localStorage backfill reads the override map once and then
+    writes each model in turn, so a save by another tab during that pass was
+    overwritten by this browser's older copy. fill_absent_fields writes only what
+    the entry lacks, so every value already on the server wins."""
+    import routes.settings as settings_route
+
+    # The other tab's save lands first.
+    newer = settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF", max_seq_length = 8192)
+    settings_route.update_openai_auto_switch_override(newer, "tester")
+
+    # The backfill's write, carrying this browser's older localStorage value.
+    backfill = settings_route.ModelOverridePayload(
+        model_id = "unsloth/B-GGUF", max_seq_length = 2048, fill_absent_fields = True
+    )
+    resp = settings_route.update_openai_auto_switch_override(backfill, "tester")
+    assert resp.overrides["unsloth/B-GGUF"]["max_seq_length"] == 8192
+
+    # With nothing stored it still creates, or the migration would never run.
+    fresh = settings_route.ModelOverridePayload(
+        model_id = "unsloth/C-GGUF", max_seq_length = 2048, fill_absent_fields = True
+    )
+    resp2 = settings_route.update_openai_auto_switch_override(fresh, "tester")
+    assert resp2.overrides["unsloth/C-GGUF"]["max_seq_length"] == 2048
+
+
+def test_fill_absent_fields_carries_the_browser_only_settings_into_a_legacy_entry(monkeypatch):
+    """Codex P1: the override map shipped before the browser mirror did, storing only
+    llama_extra_args and max_seq_length. An upgraded install holds such an entry while
+    localStorage holds the context, KV cache, speculative and GPU settings, and an
+    entry-level skip would strand exactly what the migration exists to carry."""
+    import routes.settings as settings_route
+
+    store = _mock_override_store(monkeypatch)
+
+    legacy = settings_route.ModelOverridePayload(
+        model_id = "unsloth/B-GGUF:Q4_K_M",
+        llama_extra_args = ["--flash-attn"],
+        max_seq_length = 8192,
+    )
+    settings_route.update_openai_auto_switch_override(legacy, "tester")
+
+    backfill = settings_route.ModelOverridePayload(
+        model_id = "unsloth/B-GGUF:Q4_K_M",
+        # A field the server already has, plus the ones only the browser holds.
+        max_seq_length = 2048,
+        custom_context_length = 32768,
+        kv_cache_dtype = "q8_0",
+        speculative_type = "ngram",
+        gpu_ids = [0, 1],
+        fill_absent_fields = True,
+    )
+    resp = settings_route.update_openai_auto_switch_override(backfill, "tester")
+    entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+    # The server's own values survive untouched.
+    assert entry["max_seq_length"] == 8192
+    assert entry["llama_extra_args"] == ["--flash-attn"]
+    # The browser-only settings are now there, so an API load applies them.
+    assert entry["custom_context_length"] == 32768
+    assert entry["kv_cache_dtype"] == "q8_0"
+    assert entry["speculative_type"] == "ngram"
+    assert entry["gpu_ids"] == [0, 1]
+    # One entry, not two: the fill resolves onto the key a load reads.
+    assert list(store[settings.MODEL_OVERRIDES_SETTING_KEY]) == ["unsloth/B-GGUF:Q4_K_M"]
+
+    # An ordinary save is still a replacement, or an edit could never clear a field.
+    edit = settings_route.ModelOverridePayload(
+        model_id = "unsloth/B-GGUF:Q4_K_M", max_seq_length = 4096
+    )
+    resp2 = settings_route.update_openai_auto_switch_override(edit, "tester")
+    assert resp2.overrides["unsloth/B-GGUF:Q4_K_M"]["max_seq_length"] == 4096
+    assert "kv_cache_dtype" not in resp2.overrides["unsloth/B-GGUF:Q4_K_M"]
+
+
+def test_fill_absent_fields_matches_a_legacy_casing_and_never_deletes(override_store):
+    """The stored key can carry the casing an older install typed, and it must not
+    be duplicated or emptied by a fill for the folded spelling."""
+    import routes.settings as settings_route
+
+    stored = settings_route.ModelOverridePayload(
+        model_id = "Unsloth/B-GGUF:Q4_K_M", max_seq_length = 8192
+    )
+    settings_route.update_openai_auto_switch_override(stored, "tester")
+
+    folded = settings_route.ModelOverridePayload(
+        model_id = "unsloth/b-gguf:q4_k_m", max_seq_length = 2048, fill_absent_fields = True
+    )
+    resp = settings_route.update_openai_auto_switch_override(folded, "tester")
+    assert list(resp.overrides) == ["Unsloth/B-GGUF:Q4_K_M"]
+    assert resp.overrides["Unsloth/B-GGUF:Q4_K_M"]["max_seq_length"] == 8192
+
+    # An all-default fill is a no-op, not the "empty payload means forget" path.
+    empty = settings_route.ModelOverridePayload(
+        model_id = "Unsloth/B-GGUF:Q4_K_M", fill_absent_fields = True
+    )
+    resp2 = settings_route.update_openai_auto_switch_override(empty, "tester")
+    assert resp2.overrides["Unsloth/B-GGUF:Q4_K_M"]["max_seq_length"] == 8192
+
+    # A fill that is also a delete has no meaning.
+    with pytest.raises(HTTPException) as excinfo:
+        _put("Unsloth/B-GGUF:Q4_K_M", remove = True, fill_absent_fields = True)
+    assert excinfo.value.status_code == 400
+
+
+def test_fill_absent_fields_does_not_break_the_empty_payload_removal(override_store):
+    """fill_absent_fields is a write mode, not a saved field: leaving it in the dumped
+    payload would make every request look non-empty and silently retire the legacy
+    "a payload carrying only model_id forgets this model" contract."""
+    import routes.settings as settings_route
+
+    stored = settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF", max_seq_length = 4096)
+    settings_route.update_openai_auto_switch_override(stored, "tester")
+    empty = settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF")
+    resp = settings_route.update_openai_auto_switch_override(empty, "tester")
+    assert "unsloth/B-GGUF" not in resp.overrides
+
+
+def test_map_entry_fill_reads_and_writes_in_one_transaction(tmp_path, monkeypatch):
+    """The real store, not the in-memory stand-in: the read has to share the write's
+    transaction, or a concurrent writer still slips between them."""
+    import storage.studio_db as db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(db, "_schema_ready", False)
+
+    key = "test_map_entry_create"
+    assert db.upsert_app_setting_map_entry(key, "a", {"v": 1}) == {"a": {"v": 1}}
+    # Present: the stored value stays, and a field it lacks is added.
+    assert db.upsert_app_setting_map_entry(key, "a", {"v": 2}, fill_absent_fields = True) == {
+        "a": {"v": 1}
+    }
+    assert db.get_app_setting(key) == {"a": {"v": 1}}
+    assert db.upsert_app_setting_map_entry(key, "a", {"v": 2, "w": 7}, fill_absent_fields = True) == {
+        "a": {"v": 1, "w": 7}
+    }
+    assert db.get_app_setting(key) == {"a": {"v": 1, "w": 7}}
+    # Absent: created.
+    assert db.upsert_app_setting_map_entry(key, "b", {"v": 3}, fill_absent_fields = True) == {
+        "a": {"v": 1, "w": 7},
+        "b": {"v": 3},
+    }
+    # A fill never deletes, even with nothing to store.
+    assert db.upsert_app_setting_map_entry(key, "a", None, fill_absent_fields = True) == {
+        "a": {"v": 1, "w": 7},
+        "b": {"v": 3},
+    }
+    # The ordinary write still replaces and still removes.
+    db.upsert_app_setting_map_entry(key, "a", {"v": 9})
+    db.upsert_app_setting_map_entry(key, "b", None)
+    assert db.get_app_setting(key) == {"a": {"v": 9}}
+
+
+def test_gpu_ids_dedupe_is_not_a_scan_of_the_list_being_built():
+    """gpu_ids arrives from an authenticated client and normalize_model_override
+    de-duplicates it. Testing membership against the growing list walks up to
+    MAX_GPU_ID entries per element; a set keeps the pass linear. Order, bounds and
+    the bool rejection all have to survive the change."""
+    import time
+
+    from utils.openai_auto_switch_settings import MAX_GPU_ID, normalize_model_override
+
+    assert normalize_model_override({"gpu_ids": [3, 1, 3, 0, 1, 2]})["gpu_ids"] == [3, 1, 0, 2]
+    # bool is an int subclass; [True, False] must not pin GPUs 1 and 0.
+    assert normalize_model_override({"gpu_ids": [True, False]}) == {}
+    assert normalize_model_override({"gpu_ids": [MAX_GPU_ID + 1, -1, 2]})["gpu_ids"] == [2]
+
+    ids = [index % (MAX_GPU_ID + 1) for index in range(200_000)]
+    started = time.perf_counter()
+    normalized = normalize_model_override({"gpu_ids": ids})
+    elapsed = time.perf_counter() - started
+    assert len(normalized["gpu_ids"]) == MAX_GPU_ID + 1
+    # The scan version took ~1s for this input on a dev box; a linear pass is ~50ms.
+    assert elapsed < 0.5, elapsed
+
+
+def test_gpu_ids_payload_is_bounded():
+    """A list longer than the number of ids the normalizer can store adds nothing
+    but work, so it is rejected at the boundary. A real device list is tiny."""
+    import pydantic
+
+    import routes.settings as settings_route
+    from utils.openai_auto_switch_settings import MAX_GPU_ID
+
+    assert settings_route.MAX_GPU_IDS == MAX_GPU_ID + 1
+    at_limit = settings_route.ModelOverridePayload(
+        model_id = "x", gpu_ids = list(range(settings_route.MAX_GPU_IDS))
+    )
+    assert len(at_limit.gpu_ids) == settings_route.MAX_GPU_IDS
+    with pytest.raises(pydantic.ValidationError):
+        settings_route.ModelOverridePayload(
+            model_id = "x", gpu_ids = [0] * (settings_route.MAX_GPU_IDS + 1)
+        )
+    # The ordinary case is untouched.
+    assert settings_route.ModelOverridePayload(model_id = "x", gpu_ids = [0, 1]).gpu_ids == [0, 1]
+
+
+# ── codex round: the concrete key beats the advertised alias ──────────
+
+
+def _switch_with_overrides(monkeypatch, resolves_to, stored, requested):
+    """Run the auto-switch hook against a real override map and return the load."""
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = resolves_to, backend = backend, recorder = rec)
+    _mock_override_store(monkeypatch)
+    for key, max_seq_length in stored.items():
+        settings.set_model_override(key, max_seq_length = max_seq_length)
+    _run_hook(requested)
+    assert len(rec.calls) == 1
+    return rec.calls[0]
+
+
+def test_a_loose_gguf_prefers_its_path_keyed_settings_over_the_alias(monkeypatch):
+    """Codex: the settings UI keys a standalone .gguf by its bare path, while
+    override_id is the filename stem /v1/models advertises and an overrides PUT can
+    be written against. Reading the alias first let it shadow the saved settings for
+    good, so an API load kept applying the old flags."""
+    path = "/srv/models/Qwen3-8B-Q4_K_M.gguf"
+    alias = "Qwen3-8B-Q4_K_M"
+    req = _switch_with_overrides(
+        monkeypatch,
+        resolves_to = (path, None, alias),
+        stored = {alias: 2048, path: 32768},
+        requested = alias,
+    )
+    assert req.max_seq_length == 32768
+
+    # The alias is still read when it is the only key.
+    req2 = _switch_with_overrides(
+        monkeypatch,
+        resolves_to = (path, None, alias),
+        stored = {alias: 2048},
+        requested = alias,
+    )
+    assert req2.max_seq_length == 2048
+
+
+def test_the_filename_label_key_no_longer_shadows_the_bare_path(monkeypatch):
+    """An early build of this feature keyed a standalone .gguf by the quant label
+    derived from its filename. Those entries stay readable, but the bare path the
+    picker writes today comes first."""
+    path = "/srv/models/Qwen3-8B-Q4_K_M.gguf"
+    alias = "Qwen3-8B-Q4_K_M"
+    req = _switch_with_overrides(
+        monkeypatch,
+        resolves_to = (path, None, alias),
+        stored = {f"{path}:Q4_K_M": 2048, path: 32768},
+        requested = alias,
+    )
+    assert req.max_seq_length == 32768
+
+    req2 = _switch_with_overrides(
+        monkeypatch,
+        resolves_to = (path, None, alias),
+        stored = {f"{path}:Q4_K_M": 2048},
+        requested = alias,
+    )
+    assert req2.max_seq_length == 2048
+
+
+def test_a_variant_qualified_path_key_beats_the_same_quant_under_the_alias(monkeypatch):
+    """An LM Studio dir or a non-active HF cache is configured against its path, so
+    a same-quant entry under the repo id (another copy of the same repo, or a
+    hand-written PUT) must not win over the row the user actually edited."""
+    path = "/srv/lmstudio/publisher/Qwen3-8B-GGUF"
+    repo = "publisher/Qwen3-8B-GGUF"
+    req = _switch_with_overrides(
+        monkeypatch,
+        resolves_to = (path, "Q4_K_M", repo),
+        stored = {f"{repo}:Q4_K_M": 2048, f"{path}:Q4_K_M": 32768},
+        requested = f"{repo}:Q4_K_M",
+    )
+    assert req.max_seq_length == 32768
+
+
+def test_a_cached_repo_still_resolves_by_its_repo_id(monkeypatch):
+    """The Hub keys a cached repo row by its repo id, which is the advertised id,
+    and no path entry exists for it, so it still resolves on the second try."""
+    snapshot = "/mnt/old-cache/models--unsloth--Qwen3-8B-GGUF/snapshots/abc123"
+    repo = "unsloth/Qwen3-8B-GGUF"
+    req = _switch_with_overrides(
+        monkeypatch,
+        resolves_to = (snapshot, "Q4_K_M", repo),
+        stored = {f"{repo}:Q4_K_M": 32768},
+        requested = f"{repo}:Q4_K_M",
+    )
+    assert req.max_seq_length == 32768
+
+    # A bare entry under the repo id keeps working too.
+    req2 = _switch_with_overrides(
+        monkeypatch,
+        resolves_to = (snapshot, "Q4_K_M", repo),
+        stored = {repo: 16384},
+        requested = f"{repo}:Q4_K_M",
+    )
+    assert req2.max_seq_length == 16384
+
+
+def test_a_fill_does_not_replay_a_stored_flag_through_validation(monkeypatch):
+    """The migration now writes for entries it used to skip, and an omitted
+    llama_extra_args is normally carried over from the stored entry. Replaying a
+    flag that has been denylisted since it was saved would 400 the one-time
+    migration, which then retries on every start. A fill keeps the stored flags
+    without sending them back."""
+    import routes.settings as settings_route
+    from core.inference import llama_server_args
+
+    store = _mock_override_store(monkeypatch)
+    settings.set_model_override("unsloth/B-GGUF:Q4_K_M", llama_extra_args = ["--flash-attn"])
+
+    # The flag is refused from now on, as a later release's denylist would.
+    real_validate = llama_server_args.validate_extra_args
+
+    def _reject_flash_attn(args):
+        if args and "--flash-attn" in args:
+            raise ValueError("--flash-attn is managed by the server.")
+        return real_validate(args)
+
+    monkeypatch.setattr(llama_server_args, "validate_extra_args", _reject_flash_attn)
+
+    fill = settings_route.ModelOverridePayload(
+        model_id = "unsloth/B-GGUF:Q4_K_M", custom_context_length = 32768, fill_absent_fields = True
+    )
+    resp = settings_route.update_openai_auto_switch_override(fill, "tester")
+    entry = resp.overrides["unsloth/B-GGUF:Q4_K_M"]
+    assert entry["llama_extra_args"] == ["--flash-attn"]
+    assert entry["custom_context_length"] == 32768
+    assert list(store[settings.MODEL_OVERRIDES_SETTING_KEY]) == ["unsloth/B-GGUF:Q4_K_M"]
+
+    # An ordinary save still validates what it is handed.
+    with pytest.raises(HTTPException) as excinfo:
+        _put("unsloth/C-GGUF", llama_extra_args = ["--flash-attn"])
+    assert excinfo.value.status_code == 400
+
+
+def test_override_payload_rejects_booleans_for_numeric_fields():
+    """bool subclasses int and pydantic parses non-strictly, so `true` would
+    arrive as 1: `max_seq_length: true` becomes a one-token context and
+    `gpu_ids: [true]` pins GPU 1. _bounded_int rejects bools for exactly that
+    reason, but never sees one, because coercion happens at the route boundary
+    first. Reject them there so that guard is reachable through this path."""
+    import pytest
+    from pydantic import ValidationError
+    from routes.settings import ModelOverridePayload
+
+    for field, value in (
+        ("max_seq_length", True),
+        ("custom_context_length", True),
+        ("spec_draft_n_max", True),
+        ("n_parallel", True),
+        ("gpu_layers", False),
+        ("n_cpu_moe", True),
+        ("gpu_ids", [True]),
+        ("gpu_ids", [0, False, 2]),
+    ):
+        with pytest.raises(ValidationError):
+            ModelOverridePayload(model_id = "unsloth/x-GGUF:Q4_K_M", **{field: value})
+
+    # Only bools are rejected: real values, including real booleans, still validate.
+    ok = ModelOverridePayload(
+        model_id = "unsloth/x-GGUF:Q4_K_M",
+        max_seq_length = 4096,
+        gpu_layers = -1,
+        n_cpu_moe = 0,
+        gpu_ids = [0, 1],
+        tensor_parallel = True,
+        remove = True,
+        fill_absent_fields = True,
+    )
+    assert ok.max_seq_length == 4096
+    assert ok.gpu_ids == [0, 1]
+    assert ok.gpu_layers == -1
+    assert ok.tensor_parallel is True
+    assert ok.remove is True
+    assert ok.fill_absent_fields is True
+
+
+# ── codex round: the alias retirement has to be atomic with the write ──
+
+
+def test_two_spellings_of_one_cached_quant_do_not_delete_each_others_save(monkeypatch):
+    """A save writes its target key, then reads the map back to retire the other spelling
+    of the same cached repo, in a second transaction. This route is a plain `def`, so
+    FastAPI runs it in a threadpool: two clients saving one quant, one by repo id and one
+    by the snapshot path an upgraded install still holds, can both write before either
+    cleanup runs and then retire each other's row. Both calls return 200 and nothing is
+    stored. Whichever runs second must retire the first instead."""
+    import threading
+    import routes.settings as settings_route
+
+    _mock_override_store(monkeypatch)
+    repo = "unsloth/Qwen3-8B-GGUF:Q4_K_M"
+    snapshot = "/mnt/old-cache/models--unsloth--Qwen3-8B-GGUF/snapshots/abc123:Q4_K_M"
+
+    ready = threading.Barrier(2)
+    written = threading.Barrier(2)
+    write_lock = threading.Lock()
+    wrote = set()
+    real_set = settings_route.set_model_override
+
+    def _set_then_sync(model_id, *args, **kwargs):
+        # One write is one transaction in production (BEGIN IMMEDIATE), so keep the fake
+        # store's read-modify-write atomic too: only the gap between writes is on trial.
+        with write_lock:
+            result = real_set(model_id, *args, **kwargs)
+        ident = threading.get_ident()
+        if ident not in wrote:
+            wrote.add(ident)
+            try:
+                # Hold each save just after it stored its own key, so neither looks for
+                # aliases until both are there. Broken instead when the two are serialized:
+                # the second saver cannot reach this while the first is still inside.
+                written.wait(timeout = 1.0)
+            except threading.BrokenBarrierError:
+                pass
+        return result
+
+    monkeypatch.setattr(settings_route, "set_model_override", _set_then_sync)
+
+    failures = []
+
+    def _save(model_id, max_seq_length):
+        try:
+            ready.wait(timeout = 10.0)
+            _put(model_id, max_seq_length = max_seq_length)
+        except BaseException as exc:  # noqa: BLE001 - re-reported below
+            failures.append(exc)
+
+    threads = [
+        threading.Thread(target = _save, args = (repo, 8192)),
+        threading.Thread(target = _save, args = (snapshot, 4096)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout = 30.0)
+        assert not thread.is_alive()
+    assert not failures, failures
+
+    stored = settings.get_model_overrides()
+    assert list(stored) in ([repo], [snapshot]), stored
+    assert stored[list(stored)[0]]["max_seq_length"] in (4096, 8192)

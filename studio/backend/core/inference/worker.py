@@ -13,7 +13,6 @@ mp.Queue, and exits on shutdown or unload. Pattern follows core/training/worker.
 from __future__ import annotations
 
 import base64
-import contextlib
 import json
 from loggers import get_logger
 import os
@@ -26,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 logger = get_logger(__name__)
-from utils.hardware import apply_gpu_ids
+from utils.hardware import apply_gpu_ids, is_apple_silicon
 
 _SHARE_OBJECT_MAX_BYTES = 1 << 20
 _SHARE_OBJECT_ERROR_SIZE = -1
@@ -39,6 +38,43 @@ _BACKEND_PATH = str(Path(__file__).resolve().parent.parent.parent)
 def _ensure_backend_on_path() -> None:
     if _BACKEND_PATH not in sys.path:
         sys.path.insert(0, _BACKEND_PATH)
+
+
+def _recorded_local_base(model_name) -> "tuple[str | None, bool]":
+    """``(base, needs_hub)`` for the base this checkpoint records on disk.
+
+    Delegates to the resolver's own disk reads so the gate cannot drift from what
+    activation later resolves. Fail closed: an unavailable reader counts as needing the
+    Hub, since skipping a needed probe costs the retry backoff the probe exists to avoid.
+    """
+    try:
+        _ensure_backend_on_path()
+        from utils.transformers_version import recorded_local_base
+        return recorded_local_base(model_name)
+    except Exception:
+        return None, True
+
+
+def _hub_targets_are_local(*targets) -> bool:
+    """True when every non-empty target is a local path, so nothing here needs the Hub.
+
+    Fail closed: an unresolvable target, or an unavailable is_local_path, counts as remote,
+    since skipping a needed probe costs the retry backoff it exists to avoid.
+    """
+    try:
+        _ensure_backend_on_path()
+        from utils.paths import is_local_path
+    except Exception:
+        return False
+    for target in targets:
+        if not target:
+            continue
+        try:
+            if not (isinstance(target, str) and is_local_path(target)):
+                return False
+        except Exception:
+            return False
+    return True
 
 
 def _activate_transformers_version(model_name: str, hf_token: str | None = None) -> None:
@@ -96,50 +132,18 @@ def _clean_token(value: str | None) -> str | None:
     return value if value and value.strip() else None
 
 
-@contextlib.contextmanager
-def _local_only_offline_env(enabled: bool):
-    """Force HF offline for a local-only background load. The worker is a
-    fresh per-load process, so scoping env here covers config resolution,
-    security gates, and every from_pretrained in the load, then restores it so
-    generation-time fetches (e.g. the chat template fallback) still work."""
-    if not enabled:
-        yield
-        return
-    prev = {key: os.environ.get(key) for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")}
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    os.environ["TRANSFORMERS_OFFLINE"] = "1"
-    try:
-        yield
-    finally:
-        for key, value in prev.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-
-
 def _build_model_config(config: dict):
     """Build a ModelConfig from the config dict."""
     from utils.models import ModelConfig
 
     model_name = config["model_name"]
-    snapshot_override = config.get("local_snapshot_path")
     mc = ModelConfig.from_identifier(
-        # Rebuild every metadata field from the exact snapshot selected by the
-        # inventory/load route. Resolving the Hub id here can follow refs/main
-        # to an older revision and pair stale architecture metadata with newer
-        # weights.
-        model_id = snapshot_override or model_name,
+        model_id = model_name,
         hf_token = _clean_token(config.get("hf_token")),
         gguf_variant = config.get("gguf_variant"),
     )
     if not mc:
         raise ValueError(f"Invalid model identifier: {model_name}")
-    # The Hub id remains the stable registry/UI identity; path, vision/audio,
-    # LoRA/base-model and all other load metadata remain snapshot-derived.
-    if snapshot_override:
-        mc.identifier = model_name
-        mc.display_name = model_name.rstrip("/").rsplit("/", 1)[-1]
     return mc
 
 
@@ -184,7 +188,7 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     import json
 
     try:
-        with open(adapter_cfg_path, encoding = "utf-8") as f:
+        with open(adapter_cfg_path, encoding = "utf-8-sig") as f:
             adapter_cfg = json.load(f)
         training_method = adapter_cfg.get("unsloth_training_method")
         if training_method == "lora" and load_in_4bit:
@@ -208,48 +212,19 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     return load_in_4bit
 
 
-def _ensure_ssm_kernels(
-    targets: list,
-    resp_queue: Any,
-    local_files_only: bool = False,
-) -> bool:
+def _ensure_ssm_kernels(targets: list, resp_queue: Any) -> bool:
     """Install the SSM kernels the given model(s) lazy-import in from_pretrained; no-op for
     non-SSM models, idempotent. Returns True on success; on a fatal mamba-ssm failure sends a
     'loaded' failure response and returns False. Call BEFORE importing transformers, which
     snapshots its optional-backend gates at import (a later install may not be picked up).
-    Under ``local_files_only`` nothing is ever installed: kernels already present are used,
-    a missing fatal kernel fails the load into candidate failover, and the optional
-    causal-conv1d fast path is skipped (its torch fallback covers it).
     """
     try:
-        from utils.ssm_runtime import ensure_ssm_runtime, model_is_ssm
+        from utils.ssm_runtime import ensure_ssm_runtime
     except Exception as exc:
         logger.debug("ssm_runtime unavailable (%s); skipping SSM kernel pre-install", exc)
         return True
 
     _ssm_status = lambda m: _send_response(resp_queue, {"type": "status", "message": m})
-    if local_files_only:
-        import importlib.util
-        for ssm_target in dict.fromkeys(t for t in targets if t):
-            try:
-                needs_mamba = model_is_ssm(ssm_target)
-            except Exception:
-                needs_mamba = False
-            if needs_mamba and importlib.util.find_spec("mamba_ssm") is None:
-                _send_response(
-                    resp_queue,
-                    {
-                        "type": "loaded",
-                        "success": False,
-                        "message": (
-                            "This model needs the mamba-ssm kernel, which is not "
-                            "installed; select the model explicitly to install it."
-                        ),
-                        "error_kind": "ssm_runtime_install_failed",
-                    },
-                )
-                return False
-        return True
     try:
         for ssm_target in dict.fromkeys(t for t in targets if t):
             ensure_ssm_runtime(ssm_target, status_cb = _ssm_status)
@@ -347,13 +322,7 @@ def _run_security_gates(
 
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
     """Handle a load command: load a model into the backend."""
-    _offline_guard = contextlib.ExitStack()
     try:
-        # Local-only loads run the WHOLE load offline: config resolution,
-        # security gates, and from_pretrained can otherwise all reach the Hub.
-        _offline_guard.enter_context(
-            _local_only_offline_env(bool(config.get("local_files_only", False)))
-        )
         mc = _build_model_config(config)
 
         hf_token = _clean_token(config.get("hf_token"))
@@ -363,7 +332,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         # expert weights into unvalidated paths (e.g. grouped-MoE torch._grouped_mm).
         if load_in_4bit:
             from utils.transformers_version import latest_tier_active_for
-            if latest_tier_active_for(mc.path, hf_token):
+            if latest_tier_active_for(config["model_name"], hf_token):
                 load_in_4bit = False
                 logger.info(
                     "Latest-transformers sidecar active for %s - forcing a 16-bit "
@@ -380,7 +349,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
 
         # Authoritative gates over the model + the LoRA base resolved via mc. Must run before
         # the SSM install so a blocked model never triggers a native kernel build.
-        targets = [mc.path]
+        targets = [config["model_name"]]
         if mc.is_lora and getattr(mc, "base_model", None):
             targets.append(str(mc.base_model))
         if not _run_security_gates(
@@ -402,12 +371,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             _ssm_base = (
                 str(mc.base_model) if (mc.is_lora and getattr(mc, "base_model", None)) else None
             )
-            ssm_targets = [ssm_probe_identifier(mc.path, _ssm_base)]
-            if not _ensure_ssm_kernels(
-                ssm_targets,
-                resp_queue,
-                local_files_only = bool(config.get("local_files_only", False)),
-            ):
+            ssm_targets = [ssm_probe_identifier(config["model_name"], _ssm_base)]
+            if not _ensure_ssm_kernels(ssm_targets, resp_queue):
                 return
 
         # Heartbeat keeps the orchestrator's inactivity deadline alive during slow
@@ -435,7 +400,6 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "hf_token": hf_token,
                 "trust_remote_code": trust_remote_code,
                 "gpu_ids": config.get("resolved_gpu_ids"),
-                "local_files_only": bool(config.get("local_files_only", False)),
             }
             if getattr(backend, "device", None) == "mlx":
                 load_kwargs["parallel_mode"] = config.get("mlx_parallel_mode")
@@ -467,6 +431,10 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     model_info["context_length"] = int(_context_length)
             except Exception as _ctx_exc:
                 logger.warning("context_length forward failed: %s", _ctx_exc)
+            # Backend post-load audio classification outranks pre-load config.
+            model_info.update(
+                {k: _entry[k] for k in ("is_audio", "audio_type", "has_audio_input") if k in _entry}
+            )
             # Forward chat_template_info so the parent can classify capabilities.
             try:
                 _tpl_info = _entry.get("chat_template_info")
@@ -508,8 +476,6 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "stack": traceback.format_exc(limit = 20),
             },
         )
-    finally:
-        _offline_guard.close()
 
 
 def _drain_skip_generate(cmd: dict, resp_queue: Any, drain_event) -> bool:
@@ -747,23 +713,31 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
         audio_type = cmd.get("audio_type")
 
         if audio_type == "whisper":
+            if not hasattr(backend, "generate_whisper_response"):
+                # MLX has no ASR path; report it instead of a raw AttributeError.
+                raise RuntimeError("Whisper transcription is not supported on the MLX backend yet.")
             generator = backend.generate_whisper_response(
                 audio_array = audio_array,
                 cancel_event = cancel_event,
             )
         else:
-            generator = backend.generate_audio_input_response(
-                messages = cmd.get("messages", []),
-                system_prompt = cmd.get("system_prompt", ""),
-                audio_array = audio_array,
-                temperature = cmd.get("temperature", 0.7),
-                top_p = cmd.get("top_p", 0.9),
-                top_k = cmd.get("top_k", 40),
-                min_p = cmd.get("min_p", 0.0),
-                max_new_tokens = cmd.get("max_new_tokens", 512),
-                repetition_penalty = cmd.get("repetition_penalty", 1.0),
-                cancel_event = cancel_event,
-            )
+            audio_kwargs = {
+                "messages": cmd.get("messages", []),
+                "system_prompt": cmd.get("system_prompt", ""),
+                "audio_array": audio_array,
+                "temperature": cmd.get("temperature", 0.7),
+                "top_p": cmd.get("top_p", 0.9),
+                "top_k": cmd.get("top_k", 40),
+                "min_p": cmd.get("min_p", 0.0),
+                "max_new_tokens": cmd.get("max_new_tokens", 512),
+                "repetition_penalty": cmd.get("repetition_penalty", 1.0),
+                "cancel_event": cancel_event,
+            }
+            # Forward only when present, as the "generate" branch does.
+            use_adapter = cmd.get("use_adapter")
+            if use_adapter is not None:
+                audio_kwargs["use_adapter"] = use_adapter
+            generator = backend.generate_audio_input_response(**audio_kwargs)
 
         logger.info("Starting audio input generation for request_id=%s", request_id)
 
@@ -858,6 +832,46 @@ def run_inference_process(
         os.environ["HF_HUB_DISABLE_XET"] = "1"
         logger.info("Xet transport disabled (HF_HUB_DISABLE_XET=1)")
 
+    # Offline auto-detect, as the training and export workers already do. The parent's
+    # guard is scoped, so child_env deliberately scrubs it rather than turning a
+    # per-request flag into a lifetime one; without a probe of its own this worker would
+    # then walk back into the retry paths the parent already ruled out, in
+    # _remote_lora_base and in tier activation below. Runs before any HF import, so env
+    # alone is enough.
+    # Skip it entirely for a filesystem-only load: a local checkpoint whose recorded base
+    # (an adapter's, or a full checkpoint's config.json one, both of which activation
+    # resolves and reads Hub metadata for) is local too never reaches the Hub, so probing
+    # would spend seconds before a load that has no Hub dependency.
+    _probe_model = config["model_name"]
+    _probe_base, _probe_needs_hub = _recorded_local_base(_probe_model)
+    if "HF_HUB_OFFLINE" not in os.environ and (
+        _probe_needs_hub or not _hub_targets_are_local(_probe_model, _probe_base)
+    ):
+        try:
+            _ensure_backend_on_path()
+            from utils.utils import hf_dns_dead, hf_env_offline, hf_probe_disabled
+
+            _offline = hf_env_offline()
+            if not _offline:
+                _offline = hf_dns_dead()
+            if not _offline and not hf_probe_disabled():
+                from utils.transformers_version import hf_endpoint_unreachable
+
+                # Lifetime flags, so only a definite no-egress answer counts: a momentary
+                # 502 or a slow proxy must not strand the worker offline.
+                _offline = hf_endpoint_unreachable(
+                    gateway_errors_offline = False,
+                    proxy_timeouts_offline = False,
+                )
+            if _offline:
+                os.environ["HF_HUB_OFFLINE"] = "1"
+                os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+                logger.warning(
+                    "Hugging Face endpoint unreachable; HF_HUB_OFFLINE=1 for this worker."
+                )
+        except Exception:
+            pass  # fail open: the load decides as it does today
+
     import warnings
     from loggers.config import LogConfig
 
@@ -871,30 +885,16 @@ def run_inference_process(
 
     apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 
-    # Local-only background loads keep the ENTIRE bootstrap offline: base
-    # resolution, transformers activation, security gates, kernel probes and
-    # the initial load can all reach the Hub otherwise. Closed before the
-    # command loop so generation-time fetches (e.g. the chat template
-    # fallback) still work; error-path returns end the process anyway.
-    _bootstrap_offline = contextlib.ExitStack()
-    _bootstrap_offline.enter_context(
-        _local_only_offline_env(bool(config.get("local_files_only", False)))
-    )
-
     model_name = config["model_name"]
-    metadata_model_name = config.get("local_snapshot_path") or model_name
 
     # ── 0. MLX fast-path — skip torch/transformers ──
     _ensure_backend_on_path()
 
-    from utils.hardware import hardware as _hw
-
-    _hw.detect_hardware()
-    if _hw.DEVICE == _hw.DeviceType.MLX:
+    if is_apple_silicon():
         # Non-fatal: fall through with the installed version, but log the cause
         # instead of swallowing it (issue #6103).
         try:
-            _activate_transformers_version(metadata_model_name, config.get("hf_token") or None)
+            _activate_transformers_version(model_name, config.get("hf_token") or None)
         except Exception as exc:
             logger.warning(
                 "Failed to activate transformers version for '%s' (MLX inference); "
@@ -902,6 +902,11 @@ def run_inference_process(
                 model_name,
                 exc,
             )
+
+    from utils.hardware import hardware as _hw
+
+    _hw.detect_hardware()
+    if _hw.DEVICE == _hw.DeviceType.MLX:
         try:
             from core.inference.mlx_inference import MLXInferenceBackend, _init_mlx_distributed
 
@@ -943,7 +948,6 @@ def run_inference_process(
             return
 
         # Enter the same command loop as the GPU path.
-        _bootstrap_offline.close()
         logger.info("MLX inference subprocess ready, entering command loop")
         while True:
             try:
@@ -968,6 +972,25 @@ def run_inference_process(
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
                         continue
                     _handle_generate(backend, cmd, resp_queue, cancel_event)
+                elif cmd_type == "generate_audio_input":
+                    # Drain discipline as in "generate" (see that branch).
+                    if _drain_skip_generate(cmd, resp_queue, drain_event):
+                        continue
+                    cancel_event.clear()
+                    if _drain_skip_generate(cmd, resp_queue, drain_event):
+                        continue
+                    _handle_generate_audio_input(backend, cmd, resp_queue, cancel_event)
+                elif cmd_type == "generate_audio":
+                    # No TTS here, but codec checkpoints still reach this loop
+                    # (dispatch is by device). Answer, or the parent waits 120s.
+                    _send_response(
+                        resp_queue,
+                        {
+                            "type": "audio_error",
+                            "request_id": cmd.get("request_id"),
+                            "error": "Text-to-speech is not supported on the MLX backend yet.",
+                        },
+                    )
                 elif cmd_type == "share_object":
                     _handle_share_object(backend, cmd, resp_queue)
                 elif cmd_type == "load":
@@ -997,6 +1020,18 @@ def run_inference_process(
                     )
                 elif cmd_type == "shutdown":
                     return
+                else:
+                    # As in the GPU loop: dropping a command silently costs the
+                    # caller its whole timeout.
+                    logger.warning("Unknown MLX command type: %s", cmd_type)
+                    _send_response(
+                        resp_queue,
+                        {
+                            "type": "error",
+                            "request_id": cmd.get("request_id"),
+                            "error": f"Unknown command type: {cmd_type}",
+                        },
+                    )
             except Exception as exc:
                 logger.error("MLX command error (%s): %s", cmd_type, exc)
                 _send_response(
@@ -1044,11 +1079,11 @@ def run_inference_process(
 
     _hf_token = _clean_token(config.get("hf_token"))
     _lora_base = None
-    _local_adapter_cfg = Path(metadata_model_name) / "adapter_config.json"
+    _local_adapter_cfg = Path(model_name) / "adapter_config.json"
     if _local_adapter_cfg.is_file():
         try:
             _lora_base = (
-                _json.loads(_local_adapter_cfg.read_text(encoding = "utf-8")).get(
+                _json.loads(_local_adapter_cfg.read_text(encoding = "utf-8-sig")).get(
                     "base_model_name_or_path"
                 )
                 or None
@@ -1056,16 +1091,14 @@ def run_inference_process(
         except Exception:
             _lora_base = None
     if not _lora_base:
-        _lora_base = _remote_lora_base(metadata_model_name, hf_token = _hf_token)
+        _lora_base = _remote_lora_base(model_name, hf_token = _hf_token)
     # Base for tier activation + the SSM-kernel heuristic: the LoRA base if any, else a full
     # fine-tune's recorded base from config.json (its name reveals the SSM/sidecar arch).
-    _base = _lora_base or _resolve_base_model(metadata_model_name)
+    _base = _lora_base or _resolve_base_model(model_name)
 
-    # ── 1. Activate transformers version BEFORE any ML imports ──
-    # Pass the selected snapshot so activation can combine its own config tier
-    # with any resolved LoRA/base-model tier instead of consulting stale refs.
+    # ── 1. Activate transformers version (on the resolved base) BEFORE any ML imports ──
     try:
-        _activate_transformers_version(metadata_model_name, _hf_token)
+        _activate_transformers_version(_base, _hf_token)
     except Exception as exc:
         _send_response(
             resp_queue,
@@ -1083,7 +1116,7 @@ def run_inference_process(
     # are metadata-only, so run them first and refuse a blocked model before any native build.
     # Gate only the model + a genuine LoRA base (matching _handle_load), never a full fine-tune's
     # unloaded base; _handle_load re-runs the authoritative gates with the mc base.
-    _gate_targets = [metadata_model_name]
+    _gate_targets = [model_name]
     if _lora_base:
         _gate_targets.append(_lora_base)
     _trust_remote_code = config.get("trust_remote_code", False) or _needs_nemotron_trust(
@@ -1103,12 +1136,8 @@ def run_inference_process(
     # (arbitrary names must not match the SSM substrings).
     from utils.ssm_runtime import ssm_probe_identifier
 
-    _ssm_targets = [ssm_probe_identifier(metadata_model_name, _base)]
-    if not _ensure_ssm_kernels(
-        _ssm_targets,
-        resp_queue,
-        local_files_only = bool(config.get("local_files_only", False)),
-    ):
+    _ssm_targets = [ssm_probe_identifier(model_name, _base)]
+    if not _ensure_ssm_kernels(_ssm_targets, resp_queue):
         return
 
     # ── 2. Import ML libraries (fresh in this clean process) ──
@@ -1169,8 +1198,6 @@ def run_inference_process(
             },
         )
         return
-
-    _bootstrap_offline.close()
 
     # ── 4. Command loop — process commands until shutdown ──
     # cancel_event is an mp.Event the parent can set anytime to cancel

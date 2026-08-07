@@ -301,9 +301,9 @@ def test_a_loaded_alias_advertises_the_quant_that_is_actually_loaded(monkeypatch
 
 
 def test_a_nested_model_directory_is_not_the_resident_one(monkeypatch):
-    # Two separately indexed models can nest (/models/A holding A, /models/A/sub/B
-    # holding B). A plain prefix test made loading B mark A resident, so a request for
-    # A was answered with B's weights. The innermost indexed model owns the file.
+    # Two indexed models can nest (/models/A holding A, /models/A/sub/B holding B). A
+    # plain prefix test made loading B mark A resident, so a request for A was answered
+    # with B's weights. The innermost indexed model owns the file.
     outer = _Info("/models/A", "A", model_id = "publisher/A")
     outer.path = "/models/A"
     inner = _Info("/models/A/sub/B", "B", model_id = "publisher/B")
@@ -325,10 +325,9 @@ def test_a_nested_model_directory_is_not_the_resident_one(monkeypatch):
 
 
 def test_a_transformers_model_does_not_mark_a_gguf_alias_loaded(monkeypatch):
-    # Every entry in this loop is advertised as GGUF and carries a GGUF quant. A
-    # Transformers model live from a directory that also holds GGUF exports is not one
-    # of them, and marking the alias loaded had the usage examples pin alias:quant that
-    # nothing can serve while switching is off.
+    # Every entry in this loop is advertised as GGUF with a GGUF quant. A Transformers
+    # model live from a directory that also holds GGUF exports is not one, and marking
+    # the alias loaded had the examples pin a quant nothing can serve with switching off.
     unsloth = _FakeUnsloth()
     unsloth.active_model_name = "/srv/models"
     monkeypatch.setattr(inf, "get_inference_backend", lambda: unsloth)

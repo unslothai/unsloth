@@ -58,6 +58,10 @@ import { type GgufVariantDetail, deleteCachedModel } from "../inventory";
 import { formatBytes } from "../lib/format";
 import { type GgufFitClass, classifyGgufFit } from "../lib/gguf-fit";
 import {
+  ggufFilenamesMatch,
+  ggufSelectionOverrideMatchesIntent,
+} from "../lib/gguf-filename";
+import {
   ggufVariantDisplayLabel,
   ggufVariantDownloadSizeBytes,
   sortDownloadableGgufVariants,
@@ -69,7 +73,7 @@ import {
 } from "../lib/model-identity";
 import { useHfTokenStore } from "../stores/hf-token-store";
 import { DotTag } from "./dot-tag";
-import { DownloadCancelIndicator } from "./download-cancel-indicator";
+import { DownloadStopIndicator } from "./download-cancel-indicator";
 import {
   CardDivider,
   DeleteConfirmDialog,
@@ -287,11 +291,7 @@ export function QuantOptionsMenu({
   const pinned = pinnedKeys.includes(pinKey(repoId, quant));
   const deviceType = usePlatformStore((s) => s.deviceType);
   const revealLabel =
-    deviceType === "mac"
-      ? "Reveal in Finder"
-      : deviceType === "windows"
-        ? "Reveal in File Explorer"
-        : "Reveal in File Manager";
+    deviceType === "mac" ? "Reveal in Finder" : "Reveal in Folder";
   const handleCopyPath = useCallback(async () => {
     try {
       const { path } = await getCachedModelPath(repoId, quant);
@@ -540,6 +540,9 @@ export function GgufDownloadCard({
   repoId,
   isActive,
   activeQuant,
+  preferredFile = null,
+
+  preferredFileIntent = 0,
   isLoadingThisModel,
   gpuGb,
   systemRamGb,
@@ -553,6 +556,9 @@ export function GgufDownloadCard({
   repoId: string;
   isActive: boolean;
   activeQuant: string | null;
+  preferredFile?: string | null;
+
+  preferredFileIntent?: number;
   isLoadingThisModel: boolean;
   gpuGb?: number;
   systemRamGb?: number;
@@ -579,9 +585,25 @@ export function GgufDownloadCard({
     repoId: string;
     quant: string | null;
     userPicked?: boolean;
+    preferredFile?: string | null;
+
+    preferredFileIntent?: number;
   }>(() => ({ repoId, quant: null }));
+  const preferredQuant = preferredFile
+    ? (variants?.find((variant) =>
+        ggufFilenamesMatch(variant.filename, preferredFile),
+      )?.quant ?? null)
+    : null;
   const selectedQuantOverride =
-    selectedQuantState.repoId === repoId ? selectedQuantState.quant : null;
+    selectedQuantState.repoId === repoId &&
+    ggufSelectionOverrideMatchesIntent(
+      preferredFile,
+      preferredFileIntent,
+      selectedQuantState.preferredFile,
+      selectedQuantState.preferredFileIntent,
+    )
+      ? selectedQuantState.quant
+      : preferredQuant;
   const [open, setOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [updateTarget, setUpdateTarget] = useState<string | null>(null);
@@ -732,10 +754,13 @@ export function GgufDownloadCard({
         repoId,
         quant,
         userPicked: true,
+        preferredFile,
+
+        preferredFileIntent,
       });
       setOpen(false);
     },
-    [repoId],
+    [preferredFile, preferredFileIntent, repoId],
   );
   const handleDeleteVariant = useCallback((quant: string) => {
     setDeleteTarget(quant);
@@ -917,9 +942,11 @@ export function GgufDownloadCard({
               className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-full px-3 text-left transition-colors hover:bg-foreground/[0.04] data-[state=open]:bg-foreground/[0.06] dark:hover:bg-white/[0.04] dark:data-[state=open]:bg-white/[0.06]"
             >
               {/* Quant label + status tags travel together as one left-aligned
-                  group so the fit-info icon never floats orphaned from its tags;
-                  only the chevron pins right, the standard select affordance. */}
-              <span className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden text-ui-12 text-muted-foreground">
+                  group so the fit-info icon never floats orphaned from its tags.
+                  The group sizes to its content (it still shrinks when the row
+                  is tight) so the chevron follows the tags instead of stranding
+                  itself at the far edge of a full-width trigger. */}
+              <span className="flex min-w-0 items-center gap-2 overflow-hidden text-ui-12 text-muted-foreground">
                 {selected ? (
                   <QuantBadge
                     quant={selectedLabel ?? selected.quant}
@@ -1094,7 +1121,7 @@ export function GgufDownloadCard({
             </span>
           ) : downloadingThisVariant ? (
             <span className="inline-flex items-center gap-2">
-              <DownloadCancelIndicator />
+              <DownloadStopIndicator mode={downloadAction.stopMode} />
               {downloadAction.progressPercent != null
                 ? `${downloadAction.progressPercent}%`
                 : null}

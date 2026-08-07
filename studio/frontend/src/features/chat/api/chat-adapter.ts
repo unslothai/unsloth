@@ -2,31 +2,50 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getAuthToken } from "@/features/auth";
+import { prepareHfTokenForUse } from "@/features/hf-auth";
+import { DOWNLOAD_KIND } from "@/features/hub/download-manager/constants";
 import {
-  type CachedGgufRepo,
-  type CachedModelRepo,
+  downloadManager,
+  jobKeyOf,
+  selectActiveJob,
+  subscribeJobListeners,
+  useDownloadManagerStore,
+} from "@/features/hub/download-manager/download-manager-controller";
+import {
   type LocalModelInfo,
-  listCachedGguf,
-  listCachedModels,
   listLocalModels,
 } from "@/features/hub/inventory/api";
-import {
-  ensureHiddenModelMatchers,
-  isHiddenModelId,
-} from "@/features/hub/lib/hidden-models";
+import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
 import { resolveInitialConfig } from "@/features/model-picker";
 import { isMlxId } from "@/features/model-picker/components/model-selector/recommended-fit";
-import { fetchDeviceType, usePlatformStore } from "@/config/env";
+import { usePlatformStore } from "@/config/env";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
-import { toast } from "@/lib/toast";
+import { createLoadingToastIcon, toast } from "@/lib/toast";
+import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
+import {
+  adoptPreStreamRunReservation,
+  findPreStreamRunReservation,
+  preStreamRunThreadIdsForAdapter,
+  releasePreStreamRunForThreadIds,
+  releasePreStreamRunReservation,
+} from "../utils/pre-stream-run-reservation";
+import {
+  consumeQueuedChatRunSettings,
+  snapshotQueuedChatRunSettings,
+} from "../utils/queued-chat-run-settings";
+import {
+  mergeQueuedModelCapabilities,
+  type QueuedModelCapabilities,
+} from "../utils/queued-model-capabilities";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
 import {
   getExternalProviderApiKey,
   isCustomProviderType,
+  isExternalModelId,
   isPromptCacheTtl,
   loadExternalProviders,
   parseExternalModelId,
@@ -38,8 +57,10 @@ import {
 import { pickFriendlyContainerName } from "../lib/friendly-names";
 import {
   reasoningCapsFromLoad,
+  resolveInferenceCheckpointId,
   tryAdoptServerActiveModel,
 } from "../lib/apply-inference-status-to-store";
+import { syncModelCapabilities } from "../hooks/use-chat-model-runtime";
 import {
   clampReasoningEffortToLevels,
   getExternalMaxOutputTokens,
@@ -57,7 +78,6 @@ import {
   type PendingImageEditReference,
   type RagAutoInject,
   GPU_LAYERS_AUTO,
-  isLocalModelPath,
   loadedGpuMemoryFields,
   reconcilePersistedGpuIds,
   resolveLoadedSpeculativeSettings,
@@ -74,6 +94,7 @@ import {
   shouldPreserveFullOutput,
   toolOutputKey,
   toolPaneScope,
+  toolThreadScope,
 } from "../tool-output-scope";
 import type { ModelType } from "../types";
 import { isMultimodalResponse } from "../types/api";
@@ -94,22 +115,30 @@ import {
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
 import {
-  isManagedCacheSource,
   readLastLocalModelLoad,
   recordLastLocalModelLoad,
   type LastLocalModelKind,
-  type LastLocalModelLoad,
-  type LastLocalModelSource,
 } from "../utils/last-local-model-load";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
-  hasClosedThinkTag,
+  extractDeltaText,
+  hasUnclosedThinkTag,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
+import {
+  countReasoningGroups,
+  createReasoningDurationTracker,
+  lastReasoningGroupTextLength,
+} from "../utils/reasoning-duration";
 import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
+import type { CachedGgufRepo, CachedModelRepo } from "./chat-api";
 import {
   generateAudio,
   GenerationLengthError,
+  fetchGgufStagedMetadata,
+  getInferenceStatus,
+  listCachedGguf,
+  listCachedModels,
   listGgufVariants,
   loadModel,
   streamChatCompletions,
@@ -630,67 +659,6 @@ function estimateTokenCount(text: string): number | undefined {
     return undefined;
   }
   return Math.max(1, Math.round(trimmed.length / 4));
-}
-
-/**
- * Normalize a streamed `delta.content` to a plain text string.
- *
- * OpenAI Chat Completions originally typed `delta.content` as a string, but
- * some providers now emit an array of structured content parts; concatenating
- * those directly would stringify each as `[object Object]`. This guards that.
- *
- * Handled part shapes:
- *   { type: "text" | "output_text", text | content: "..." }   → text body
- *   { type: "thinking" | "reasoning", thinking | text: "..." } → wrapped as
- *       inline `<think>...</think>` so `parseAssistantContent` lifts it into
- *       a reasoning part (else Mistral magistral and similar reasoning-part
- *       providers lose their thinking panel).
- *
- * Unknown part types are skipped — better to drop a stray field than
- * stringify an object into the rendered chat.
- */
-function extractDeltaText(delta: unknown): string {
-  const extractReasoningText = (payload: unknown): string => {
-    if (typeof payload === "string") return payload;
-    if (Array.isArray(payload)) {
-      return payload.map((item) => extractReasoningText(item)).join("");
-    }
-    if (!payload || typeof payload !== "object") return "";
-
-    const obj = payload as Record<string, unknown>;
-    for (const key of ["thinking", "text", "content", "reasoning", "summary"]) {
-      if (key in obj) {
-        const text = extractReasoningText(obj[key]);
-        if (text) return text;
-      }
-    }
-    return "";
-  };
-
-  if (typeof delta === "string") return delta;
-  if (!Array.isArray(delta)) return "";
-  let out = "";
-  for (const part of delta) {
-    if (typeof part === "string") {
-      out += part;
-      continue;
-    }
-    if (!part || typeof part !== "object") continue;
-    const obj = part as {
-      type?: string;
-      text?: string;
-      content?: string;
-      thinking?: string;
-    };
-    if (obj.type === "text" || obj.type === "output_text") {
-      if (typeof obj.text === "string") out += obj.text;
-      else if (typeof obj.content === "string") out += obj.content;
-    } else if (obj.type === "thinking" || obj.type === "reasoning") {
-      const thinking = extractReasoningText(obj);
-      if (thinking) out += `<think>${thinking}</think>`;
-    }
-  }
-  return out;
 }
 
 function buildTiming(
@@ -1298,8 +1266,31 @@ function extractAudioPartBase64(
 }
 
 // Exported for tests.
+// Whether any message carries an image, by the rule collectImageParts pushes one. A predicate,
+// not that helper: building the parts would copy the base64 this exists to avoid touching.
+export function messagesContainImage(messages: RunMessages): boolean {
+  const isImage = (part: { type: string }) =>
+    part.type === "image" &&
+    "image" in part &&
+    Boolean((part as { image: string }).image);
+  for (const message of messages) {
+    for (const part of message.content ?? []) {
+      if (isImage(part)) return true;
+    }
+    if ("attachments" in message) {
+      for (const attachment of message.attachments ?? []) {
+        for (const part of attachment.content ?? []) {
+          if (isImage(part)) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 export function findLatestUserAudioBase64(
   messages: RunMessages,
+  includePendingAudio = true,
 ): string | undefined {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
@@ -1330,8 +1321,201 @@ export function findLatestUserAudioBase64(
   }
 
   // Runtime store (main composer's audio upload).
-  const pendingAudio = useChatRuntimeStore.getState().pendingAudioBase64;
+  const pendingAudio = includePendingAudio
+    ? useChatRuntimeStore.getState().pendingAudioBase64
+    : null;
   return pendingAudio ?? undefined;
+}
+
+// The Canvas instructions createOpenAIStreamAdapter appends, named so the recount prices the same
+// text the request carries.
+export const CANVAS_TOOL_INSTRUCTION =
+  "When the user asks for an HTML, CSS, or JavaScript canvas, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new canvases may call render_html once.";
+export const CANVAS_FALLBACK_INSTRUCTION =
+  "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax.";
+
+/**
+ * The OpenAI-form messages a completion would send. Mirrors the prune + system-prompt half of
+ * createOpenAIStreamAdapter; the tool catalog is priced server-side instead, since --enable-tools
+ * can inject schemas the client cannot see.
+ */
+export async function buildOutboundMessagesForTokenCount(
+  messages: RunMessages,
+  threadId: string | undefined,
+): Promise<OpenAIChatMessage[]> {
+  const survivingMessages: RunMessage[] = [];
+  for (const message of messages) {
+    if (isAnthropicRefusalMessage(message)) {
+      const last = survivingMessages.at(-1);
+      if (last && last.role === "user") survivingMessages.pop();
+      continue;
+    }
+    survivingMessages.push(message);
+  }
+
+  const outboundMessages = survivingMessages
+    .flatMap(toOpenAIMessages)
+    .filter((message): message is NonNullable<typeof message> =>
+      Boolean(message),
+    );
+
+  const { params, artifactsEnabled, supportsTools } =
+    useChatRuntimeStore.getState();
+  const safeSystemPrompt =
+    typeof params.systemPrompt === "string"
+      ? resolveSystemPromptVariables(
+          params.systemPrompt,
+          typeof params.systemVariables === "string"
+            ? params.systemVariables
+            : "",
+        )
+      : "";
+  const projectInstructions = await resolveProjectInstructions(threadId);
+  const combinedSystemPrompt = [
+    projectInstructions
+      ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
+      : "",
+    safeSystemPrompt.trim(),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  if (combinedSystemPrompt) {
+    outboundMessages.unshift({
+      role: "system",
+      content: combinedSystemPrompt,
+    });
+  }
+
+  // Canvas appends one of these on every request, schema or not, so a count without it reads low.
+  // The adapter's image gate is never why render_html is off here: the count route refuses images.
+  const canvasInstruction = artifactsEnabled
+    ? supportsTools
+      ? CANVAS_TOOL_INSTRUCTION
+      : CANVAS_FALLBACK_INSTRUCTION
+    : "";
+  if (canvasInstruction) {
+    const first = outboundMessages[0];
+    if (first && first.role === "system" && typeof first.content === "string") {
+      outboundMessages[0] = {
+        ...first,
+        content: `${first.content}\n\n${canvasInstruction}`,
+      };
+    } else {
+      outboundMessages.unshift({ role: "system", content: canvasInstruction });
+    }
+  }
+
+  return outboundMessages as OpenAIChatMessage[];
+}
+
+/**
+ * The reasoning fields a completion would send. llama-server falls back to the load-time
+ * `--chat-template-kwargs` only for keys a request omits, so a count sending none renders the
+ * template in whatever mode the model was LOADED in and misreports any prefilled thinking block.
+ */
+export function buildLocalTokenCountReasoning(): Record<string, unknown> {
+  const {
+    supportsReasoning,
+    reasoningStyle,
+    reasoningEnabled,
+    reasoningEffort,
+    reasoningEffortLevels,
+    supportsPreserveThinking,
+    preserveThinking,
+  } = useChatRuntimeStore.getState();
+  // Same clamp the request build applies: a level the loaded template does not offer would be
+  // dropped by the backend and counted against the template default.
+  const localReasoningEffort = clampReasoningEffortToLevels(
+    reasoningEffort,
+    reasoningEffortLevels,
+  );
+  return {
+    // enable_thinking, not the Anthropic-style `thinking` block: the backend normalizes it anyway.
+    ...(supportsReasoning
+      ? reasoningStyle === "enable_thinking_effort"
+        ? reasoningEnabled
+          ? { enable_thinking: true, reasoning_effort: localReasoningEffort }
+          : { enable_thinking: false }
+        : reasoningStyle === "reasoning_effort"
+          ? reasoningEnabled
+            ? { reasoning_effort: localReasoningEffort }
+            : {}
+          : { enable_thinking: reasoningEnabled }
+      : {}),
+    ...(supportsPreserveThinking
+      ? { preserve_thinking: preserveThinking }
+      : {}),
+  };
+}
+
+/**
+ * The tool flags a completion would send, so the count includes the schemas and the action nudge.
+ * Same gates the adapter applies; the render_html image gate is left to the server.
+ */
+export async function buildLocalTokenCountExtras(
+  threadId: string | undefined,
+): Promise<Record<string, unknown>> {
+  const {
+    supportsTools,
+    toolsEnabled,
+    codeToolsEnabled,
+    artifactsEnabled,
+    mcpEnabledForChat,
+    ragEnabled,
+    ragSource,
+    ragMode,
+    ragTopK,
+    autoHealToolCalls,
+  } = useChatRuntimeStore.getState();
+  if (!supportsTools) return {};
+
+  const ragProjectId = await resolveProjectId(threadId);
+  const projectRagEnabled = ragProjectId
+    ? await projectHasSources(ragProjectId)
+    : false;
+  const ragOn = ragEnabled || projectRagEnabled;
+  if (
+    !toolsEnabled &&
+    !codeToolsEnabled &&
+    !artifactsEnabled &&
+    !mcpEnabledForChat &&
+    !ragOn
+  ) {
+    return {};
+  }
+
+  return {
+    enable_tools: true,
+    // Auto-Heal off leaves leaked tool markup in the real prompt, so the count keeps it.
+    auto_heal_tool_calls: autoHealToolCalls,
+    enabled_tools: [
+      ...(ragOn ? ["search_knowledge_base"] : []),
+      ...(toolsEnabled ? ["web_search"] : []),
+      ...(codeToolsEnabled ? ["python", "terminal"] : []),
+      ...(artifactsEnabled ? ["render_html"] : []),
+    ],
+    mcp_enabled: mcpEnabledForChat,
+    // Only truthiness is read server-side, to keep search_knowledge_base and its grounding nudge
+    // in the prompt; no retrieval runs for a count.
+    ...(ragOn
+      ? {
+          rag_scope: {
+            ...(ragEnabled && ragSource.type === "kb"
+              ? { kb_id: ragSource.kbId }
+              : {
+                  ...(ragEnabled && threadId ? { thread_id: threadId } : {}),
+                  ...(projectRagEnabled && ragProjectId
+                    ? { project_id: ragProjectId }
+                    : {}),
+                }),
+            // Carried as the completion carries them: an unpersisted New Chat has neither id,
+            // and {} is falsy in Python, so the count alone would drop the tool and its nudge.
+            default_top_k: ragTopK,
+            mode: ragMode,
+          },
+        }
+      : {}),
+  };
 }
 
 async function resolveUseAdapter(
@@ -1443,6 +1627,11 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
   });
 }
 
+/**
+ * Auto-load the smallest downloaded model when the user chats without
+ * selecting one. Prefers GGUF (smallest cached variant), then smallest
+ * cached safetensors model.
+ */
 // Cap cascade so broken cached repos can't spam /api/inference/load.
 const MAX_AUTO_LOAD_ATTEMPTS = 3;
 const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/gi;
@@ -1456,8 +1645,6 @@ type AutoLoadCandidate = {
   ggufVariant: string | null;
   maxSeqLength: number;
   successLabel: string;
-  inventoryId?: string | null;
-  source: LastLocalModelSource;
 };
 
 function autoLoadCandidateKey(
@@ -1465,329 +1652,7 @@ function autoLoadCandidateKey(
   id: string,
   ggufVariant?: string | null,
 ): string {
-  // Path-shape-aware case handling: on a case-sensitive filesystem, a skip
-  // key recorded for /models/Foo must not also skip /models/foo.
-  return `${kind}:${normalizeLoadTargetKey(id)}:${(ggufVariant ?? "").toLowerCase()}`;
-}
-
-// Skip keys use the backend load target, not the display id: a cached repo
-// and an indexed local row aliasing the same files share the key, so a file
-// that failed through one row is not retried through the other.
-function autoLoadSkipKey(candidate: AutoLoadCandidate): string {
-  return autoLoadCandidateKey(
-    candidate.kind,
-    candidate.loadId ?? candidate.id,
-    candidate.ggufVariant,
-  );
-}
-
-function findCachedRepo<T extends { repo_id: string }>(
-  repos: T[],
-  id: string,
-): T | undefined {
-  const normalized = id.toLowerCase();
-  return repos.find((repo) => repo.repo_id.toLowerCase() === normalized);
-}
-
-/**
- * Managed-cache rows eligible for background auto-load: complete, not
- * hidden infrastructure, not declared non-chat by the backend, and not an
- * adapter (loading an adapter resolves its base model, which for an
- * uncached Hub base would start an implicit remote fetch).
- */
-function isAutoLoadableCachedRepo(repo: {
-  repo_id: string;
-  partial?: boolean;
-  model_format?: string | null;
-  capabilities?: { can_chat?: boolean } | null;
-}): boolean {
-  if (repo.partial) return false;
-  if (repo.model_format === "adapter") return false;
-  // Cached checkpoint repos (pickle .bin/.pt weights) stay interactive-only,
-  // like local checkpoint rows: forced-offline validation cannot consult the
-  // Hub security scan, and deserializing a pickle can execute code.
-  if (repo.model_format === "checkpoint") {
-    return false;
-  }
-  if (repo.capabilities?.can_chat === false) return false;
-  return !isHiddenModelId(repo.repo_id);
-}
-
-// Same on-device scan sources the unified picker exposes
-// (use-chat-picker-inventory's PICKER_LOCAL_SOURCES). hf_cache rows are
-// covered by the cached lists; ollama links are not directly loadable.
-const AUTO_LOAD_LOCAL_SOURCES: ReadonlySet<string> = new Set([
-  "models_dir",
-  "lmstudio",
-  "custom",
-]);
-
-/** The picker's chat-only platform snapshot, read once per auto-load run. */
-type AutoLoadPlatform = {
-  chatOnly: boolean;
-  isMac: boolean;
-};
-
-// Mirrors the picker's localModelIsGguf / localModelIsMlx checks: the backend
-// format hint is authoritative for indexed rows, with the same name/path
-// fallbacks the picker applies.
-function localRowIsGgufLike(row: LocalModelInfo): boolean {
-  return (
-    row.model_format === "gguf" || row.path.toLowerCase().endsWith(".gguf")
-  );
-}
-
-function localRowIsMlxNamed(row: LocalModelInfo): boolean {
-  return (
-    isMlxId(row.id) ||
-    isMlxId(row.display_name ?? "") ||
-    isMlxId(row.model_id ?? "")
-  );
-}
-
-/**
- * Backend-indexed local rows eligible for background auto-load: same policy
- * as the on-device picker (complete, chat-capable, not hidden infra), plus
- * no variant requirement, since a background load cannot ask for a quant.
- */
-function isAutoLoadableLocalRow(
-  row: LocalModelInfo,
-  platform: AutoLoadPlatform,
-): boolean {
-  if (!AUTO_LOAD_LOCAL_SOURCES.has(row.source)) return false;
-  if (row.capabilities?.can_chat !== true) return false;
-  if (row.partial) return false;
-  // Chat-only installs run GGUF (any host) and MLX (Mac only); the picker
-  // hides other local formats there, so the background load must not pick a
-  // row the user could not have selected (mirrors sortedLocalDir's gate).
-  if (
-    platform.chatOnly &&
-    !localRowIsGgufLike(row) &&
-    !(platform.isMac && localRowIsMlxNamed(row))
-  ) {
-    return false;
-  }
-  // Adapters are chat-capable but load by resolving their base model, which
-  // for a Hub-id base can trigger the implicit remote fetch a background
-  // auto-load must never start. Adapters stay interactive-only.
-  if (row.model_format === "adapter") return false;
-  // Checkpoint rows (pickle .bin/.pt weights) are chat-capable but a local
-  // scan-folder checkpoint has no Hub security scan, and deserializing a
-  // pickle can execute code. Loading one must be an explicit user action,
-  // never a background pick; they stay interactive-only like adapters.
-  if (row.model_format === "checkpoint") {
-    return false;
-  }
-  if (isHiddenModelId(row.model_id, row.id, row.path)) return false;
-  // The name-based big-endian marker only applies to direct .gguf files: a
-  // DIRECTORY named e.g. /models/foo-be says nothing about the files inside
-  // it, and those are already filtered per-file by isAutoLoadableGgufVariant
-  // when the folder's quants are resolved.
-  if (
-    row.model_format === "gguf" &&
-    row.path.toLowerCase().endsWith(".gguf") &&
-    hasBigEndianGgufMarker(row.path, row.format_variant)
-  ) {
-    return false;
-  }
-  return true;
-}
-
-function localRowLoadTarget(row: LocalModelInfo): string {
-  return row.load_id || row.id;
-}
-
-function localRowToCandidate(
-  row: LocalModelInfo,
-  ggufVariant: string | null = null,
-): AutoLoadCandidate {
-  const isGguf = row.model_format === "gguf";
-  return {
-    id: row.id,
-    loadId: localRowLoadTarget(row),
-    kind: isGguf ? "gguf" : "model",
-    // The backend load target identifies the GGUF itself; no Hub quant is
-    // required (a remembered quant is passed through for multi-quant dirs).
-    ggufVariant: isGguf ? ggufVariant : null,
-    maxSeqLength: isGguf ? 0 : 4096,
-    successLabel: `Loaded ${row.display_name || row.id}`,
-    inventoryId: row.inventory_id ?? null,
-    source: AUTO_LOAD_LOCAL_SOURCES.has(row.source)
-      ? (row.source as LastLocalModelSource)
-      : "local",
-  };
-}
-
-/**
- * Build a loadable candidate for a backend-indexed local row. Directory-based
- * GGUFs (LM Studio, models dir, custom folders) are flagged requires_variant
- * by the backend, so without a remembered quant the folder is scanned through
- * the same variants API the picker card uses and the smallest complete,
- * auto-loadable quant is chosen. Returns null when no quant can be resolved.
- */
-// Unknown sizes (0) sort last so a sizeless row can't shadow a real one.
-function sizeOrUnknownBytes(bytes?: number | null): number {
-  return bytes && bytes > 0 ? bytes : Number.MAX_SAFE_INTEGER;
-}
-
-/**
- * Identifier-matching key with path-shape-aware case semantics: Windows-style
- * paths (drive letter or UNC) and Hub repo ids compare case-insensitively,
- * while POSIX paths keep their case, since Linux filesystems distinguish
- * /models/Foo from /models/foo and folding them can match the wrong model.
- */
-function normalizeLoadTargetKey(value: string): string {
-  const looksWindowsPath = /^(?:[A-Za-z]:[\\/]|\\\\)/.test(value);
-  if (!looksWindowsPath && (value.startsWith("/") || value.startsWith("~"))) {
-    return value;
-  }
-  return value.toLowerCase();
-}
-
-// Inventory scans hit disk on the backend; an unbounded fan-out over many
-// indexed folders can saturate the connection pool and disk.
-const AUTO_LOAD_VARIANT_SCAN_CONCURRENCY = 4;
-
-// How long after the bounded inventory calls resolve the best-effort
-// prefetches (hidden-model matchers, platform snapshot) may still be
-// waited on. Both use unbounded fetches of their own, so past this bound
-// their client-side fallbacks apply (static needles; boot-detected
-// platform) rather than letting a stalled request hang Send.
-const BEST_EFFORT_PREFETCH_GRACE_MS = 1_000;
-
-// Settle window before the fallback starts consuming resolved candidates:
-// when scans finish quickly (the common case) the pool is complete first and
-// keeps the exact smallest-first order; slow scans stop blocking the send
-// path after this window and join the pool in size order as they resolve.
-const AUTO_LOAD_RESOLVE_GRACE_MS = 2500;
-
-// Upper bound on ONE GGUF variant scan. Pending scans hold the model-kind
-// gate, and the underlying fetch has no timeout of its own, so a single hung
-// request would otherwise gate Send forever. Matches the inventory calls'
-// own 30s bound; on expiry the scan job settles as failed and a ready
-// safetensors candidate can proceed.
-const AUTO_LOAD_VARIANT_SCAN_TIMEOUT_MS = 30_000;
-
-// The scan pool can contain many more jobs than workers. Per-request timeouts
-// bound each job, but not the time needed to drain every worker batch. Preserve
-// GGUF-first ordering for one scan window, then let an already-ready
-// safetensors candidate proceed instead of multiplying the timeout by the
-// number of batches.
-const AUTO_LOAD_GGUF_GATE_TIMEOUT_MS = AUTO_LOAD_VARIANT_SCAN_TIMEOUT_MS;
-
-// An HF cache snapshot dir: captures the cache repo ROOT before /snapshots/.
-const HF_SNAPSHOT_PATH_RE = /^(.*)[\\/]snapshots[\\/][^\\/]+[\\/]?$/;
-
-// A custom scan folder registered at an HF cache snapshot aliases the cached
-// row for the same repo, but the cached row contributes the cache repo ROOT
-// (cache_path) while the custom row contributes its snapshots/<rev> dir.
-// Expanding a snapshot path with its cache root lets the two rows collide on
-// one seen-set key, so shared files consume one attempt.
-function expandSeenValues(value: string): string[] {
-  const snapshotMatch = HF_SNAPSHOT_PATH_RE.exec(value);
-  return snapshotMatch ? [value, snapshotMatch[1]] : [value];
-}
-
-async function listGgufVariantsBounded(
-  repoId: string,
-  options: { preferLocalCache?: boolean; localPath?: string | null },
-) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => {
-    controller.abort();
-  }, AUTO_LOAD_VARIANT_SCAN_TIMEOUT_MS);
-  try {
-    return await listGgufVariants(repoId, undefined, {
-      ...options,
-      signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-type ResolvedLocalCandidate = {
-  candidate: AutoLoadCandidate;
-  /** Size of what would actually load: the resolved quant's own size for a
-   *  multi-quant folder (whose row size_bytes SUMS every quant), else the
-   *  row size. Orders the smallest-first cascade. */
-  sizeBytes: number;
-};
-
-async function resolveLocalRowCandidate(
-  row: LocalModelInfo,
-  rememberedVariant: string | null = null,
-  isSkippedCandidate?: (candidate: AutoLoadCandidate) => boolean,
-): Promise<ResolvedLocalCandidate | null> {
-  const isGguf = row.model_format === "gguf";
-  if (row.capabilities?.requires_variant === true) {
-    // Only GGUF folders have an automatic quant resolution path.
-    if (!isGguf) return null;
-    if (!rememberedVariant) {
-      // Scan the folder the row will actually load from: the cache-first
-      // prefer_local_cache flow could return a quant present in the HF
-      // cache but missing at row's own path. A local-path repo id routes
-      // the backend straight to the filesystem scan of that folder.
-      const variantScanTarget = isLocalModelPath(row.id) ? row.id : row.path;
-      const variants = await listGgufVariantsBounded(variantScanTarget, {
-        preferLocalCache: true,
-        localPath: row.path,
-      });
-      const downloaded = variants.variants
-        .filter(
-          (entry) =>
-            entry.downloaded && !entry.partial && isAutoLoadableGgufVariant(entry),
-        )
-        .sort((a, b) => a.size_bytes - b.size_bytes);
-      // Smallest first, skipping quants that already failed or were
-      // blocked, so one bad file cannot sink a folder with other quants.
-      for (const entry of downloaded) {
-        const candidate = localRowToCandidate(row, entry.quant);
-        if (isSkippedCandidate?.(candidate)) continue;
-        return { candidate, sizeBytes: sizeOrUnknownBytes(entry.size_bytes) };
-      }
-      return null;
-    }
-  }
-  const candidate = localRowToCandidate(row, isGguf ? rememberedVariant : null);
-  // Single-candidate rows resolve to null once their candidate is skipped,
-  // so the retry loop in the fallback terminates instead of re-attempting.
-  if (isSkippedCandidate?.(candidate)) return null;
-  return {
-    candidate,
-    sizeBytes: sizeOrUnknownBytes(row.size_bytes),
-  };
-}
-
-/** Resolve a remembered local model against current backend inventory. */
-function matchesRememberedLocalRow(
-  row: LocalModelInfo,
-  remembered: LastLocalModelLoad,
-): boolean {
-  // A folder holding both GGUF and safetensors weights yields two rows with
-  // the same path/load target, so the format must agree with the remembered
-  // kind before identifier matching can accept the row.
-  if ((row.model_format === "gguf") !== (remembered.kind === "gguf")) {
-    return false;
-  }
-  // Inventory ids come from one backend generator on both sides, so they
-  // compare exactly; case folding could merge distinct case-sensitive paths
-  // embedded in the id.
-  if (
-    remembered.inventoryId &&
-    row.inventory_id &&
-    row.inventory_id === remembered.inventoryId
-  ) {
-    return true;
-  }
-  const targets = new Set(
-    [remembered.loadId, remembered.id]
-      .filter((value): value is string => Boolean(value))
-      .map((value) => normalizeLoadTargetKey(value)),
-  );
-  return [row.load_id, row.id, row.path, row.model_id].some(
-    (value) => !!value && targets.has(normalizeLoadTargetKey(value)),
-  );
+  return `${kind}:${id.toLowerCase()}:${(ggufVariant ?? "").toLowerCase()}`;
 }
 
 function hasBigEndianGgufMarker(filename: string, quant?: string | null): boolean {
@@ -1826,24 +1691,515 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
   return !hasBigEndianGgufMarker(filename, variant.quant);
 }
 
+type QueuedResolvedModelRuntime = {
+  checkpoint: string;
+  supportsTools: boolean;
+  supportsReasoning: boolean;
+  reasoningAlwaysOn: boolean;
+  reasoningStyle: ReturnType<typeof reasoningCapsFromLoad>["reasoningStyle"];
+  supportsReasoningOff: boolean;
+  reasoningEffortLevels: ReturnType<
+    typeof reasoningCapsFromLoad
+  >["reasoningEffortLevels"];
+  supportsPreserveThinking: boolean;
+  ggufContextLength: number | null;
+  loadedIsMultimodal: boolean;
+  modelCapabilities: QueuedModelCapabilities | null;
+};
+
+type ChatRuntimeState = ReturnType<typeof useChatRuntimeStore.getState>;
+
+// A background auto-load may enrich models[] with the loaded catalog entry,
+// but every field describing the model visible in the current chat must return
+// to its prior value after the queued run captures its private runtime.
+const VISIBLE_MODEL_RUNTIME_KEYS = [
+  "activeLoadId",
+  "activeGgufVariant",
+  "activeModelIsLocal",
+  "ggufContextLength",
+  "ggufMaxContextLength",
+  "ggufNativeContextLength",
+  "modelRequiresTrustRemoteCode",
+  "supportsReasoning",
+  "reasoningAlwaysOn",
+  "reasoningEnabled",
+  "reasoningStyle",
+  "supportsReasoningOff",
+  "reasoningEffortLevels",
+  "supportsPreserveThinking",
+  "supportsTools",
+  "toolsEnabled",
+  "codeToolsEnabled",
+  "kvCacheDtype",
+  "loadedKvCacheDtype",
+  "nParallel",
+  "loadedNParallel",
+  "tensorParallel",
+  "loadedTensorParallel",
+  "gpuMemoryMode",
+  "loadedGpuMemoryMode",
+  "gpuLayers",
+  "loadedGpuLayers",
+  "nCpuMoe",
+  "loadedNCpuMoe",
+  "splitRatio",
+  "loadedSplitRatio",
+  "ggufLayerCount",
+  "moeLayerCount",
+  "selectedGpuIds",
+  "selectedGpuIndexKind",
+  "loadedGpuIds",
+  "loadedGpuIndexKind",
+  "customContextLength",
+  "loadedCustomContextLength",
+  "defaultChatTemplate",
+  "chatTemplateOverride",
+  "loadedChatTemplateOverride",
+  "loadedIsMultimodal",
+  "loadedIsDiffusion",
+  "speculativeType",
+  "loadedSpeculativeType",
+  "specFallbackReason",
+  "specDraftNMax",
+  "loadedSpecDraftNMax",
+] as const satisfies readonly (keyof ChatRuntimeState)[];
+
+type VisibleModelRuntimeState = Pick<
+  ChatRuntimeState,
+  (typeof VISIBLE_MODEL_RUNTIME_KEYS)[number]
+>;
+
+type VisibleModelStateSnapshot = {
+  settings: ReturnType<typeof snapshotQueuedChatRunSettings>;
+  runtime: VisibleModelRuntimeState;
+};
+
+function snapshotVisibleModelState(
+  state: ChatRuntimeState,
+): VisibleModelStateSnapshot {
+  const runtime = {} as VisibleModelRuntimeState;
+  for (const key of VISIBLE_MODEL_RUNTIME_KEYS) {
+    Object.assign(runtime, { [key]: state[key] });
+  }
+  return {
+    settings: snapshotQueuedChatRunSettings(state),
+    runtime,
+  };
+}
+
+function restoreVisibleModelState(snapshot: VisibleModelStateSnapshot): void {
+  const liveUsage = useChatRuntimeStore.getState();
+  liveUsage
+    .setCheckpoint(snapshot.settings.params.checkpoint, undefined, {
+      trackQueuedSettings: false,
+    });
+  useChatRuntimeStore.setState({
+    ...snapshot.runtime,
+    ...snapshot.settings,
+    params: { ...snapshot.settings.params },
+    // A visible provider run can finish while the background model loads.
+    // Preserve those newer per-thread totals instead of restoring stale usage.
+    contextUsage: liveUsage.contextUsage,
+    contextUsageByThreadId: liveUsage.contextUsageByThreadId,
+  });
+}
+
+function queuedResolvedModelFromStore(
+  state: ChatRuntimeState,
+): QueuedResolvedModelRuntime {
+  const activeModel = state.models.find(
+    (model) => model.id === state.params.checkpoint,
+  );
+  return {
+    checkpoint: state.params.checkpoint,
+    supportsTools: state.supportsTools,
+    supportsReasoning: state.supportsReasoning,
+    reasoningAlwaysOn: state.reasoningAlwaysOn,
+    reasoningStyle: state.reasoningStyle,
+    supportsReasoningOff: state.supportsReasoningOff,
+    reasoningEffortLevels: state.reasoningEffortLevels,
+    supportsPreserveThinking: state.supportsPreserveThinking,
+    ggufContextLength: state.ggufContextLength,
+    loadedIsMultimodal: state.loadedIsMultimodal,
+    modelCapabilities: activeModel
+      ? {
+          isVision: activeModel.isVision,
+          isGguf: activeModel.isGguf,
+          isAudio: activeModel.isAudio,
+          audioType: activeModel.audioType,
+          hasAudioInput: activeModel.hasAudioInput,
+        }
+      : null,
+  };
+}
+
+type AutoLoadOptions = {
+  skipAdoptServerModel?: boolean;
+  preserveVisibleSettings?: boolean;
+  captureResolvedRuntime?: (runtime: QueuedResolvedModelRuntime) => void;
+  abortSignal?: AbortSignal;
+};
+
+function applyAutoLoadRuntimeState(
+  options: AutoLoadOptions | undefined,
+  apply: () => void,
+) {
+  const visibleState = options?.preserveVisibleSettings
+    ? snapshotVisibleModelState(useChatRuntimeStore.getState())
+    : null;
+  try {
+    apply();
+    options?.captureResolvedRuntime?.(
+      queuedResolvedModelFromStore(useChatRuntimeStore.getState()),
+    );
+  } finally {
+    if (visibleState) {
+      restoreVisibleModelState(visibleState);
+    }
+  }
+}
+
+/** Whether a cache row is chattable. Both fields are optional so an older backend keeps trying. */
+function isChattableCachedRepo(repo: {
+  partial?: boolean;
+  capabilities?: { can_chat?: boolean } | null;
+}): boolean {
+  return repo.partial !== true && repo.capabilities?.can_chat !== false;
+}
+
+// Scan folders the picker exposes. hf_cache is already in the cached lists,
+// and ollama links are not loadable.
+const AUTO_LOAD_LOCAL_SOURCES: ReadonlySet<string> = new Set([
+  "models_dir",
+  "lmstudio",
+  "custom",
+]);
+
 /**
- * Auto-load a model already on this device when the user chats without
- * selecting one: adopt the server-active model, then the last successfully
- * loaded on-device model (managed HF caches, models dir, LM Studio, custom
- * scan folders), then the smallest complete chat-capable on-device model
- * (GGUF first, then safetensors). Never downloads: with no valid on-device
- * candidate the caller shows the actionable "no model" error instead.
- *
- * Exported for tests.
+ * Picker policy for a background pick. Adapters and checkpoints are excluded:
+ * an adapter resolves its base model (a Hub fetch when the base is uncached),
+ * and a scan-folder checkpoint is a pickle with no Hub security scan.
  */
-export async function autoLoadOnDeviceModel(): Promise<{
+function isAutoLoadableLocalRow(row: LocalModelInfo): boolean {
+  return (
+    AUTO_LOAD_LOCAL_SOURCES.has(row.source) &&
+    row.capabilities?.can_chat === true &&
+    row.partial !== true &&
+    row.model_format !== "adapter" &&
+    row.model_format !== "checkpoint" &&
+    runsOnThisPlatform(row) &&
+    !isHiddenModelId(row.model_id, row.id, row.path)
+  );
+}
+
+/**
+ * Chat-only installs run GGUF anywhere and MLX on a Mac; the picker hides every
+ * other local format there. Reads the boot-detected snapshot, so no fetch.
+ */
+function runsOnThisPlatform(row: LocalModelInfo): boolean {
+  const platform = usePlatformStore.getState();
+  if (!platform.isChatOnly()) return true;
+  if (row.model_format === "gguf" || row.path.toLowerCase().endsWith(".gguf")) {
+    return true;
+  }
+  return (
+    platform.deviceType === "mac" &&
+    (isMlxId(row.id) ||
+      isMlxId(row.display_name ?? "") ||
+      isMlxId(row.model_id ?? ""))
+  );
+}
+
+/**
+ * One loadable thing on this device, from any inventory. `listVariants` is
+ * lazy, so only the repos the cascade actually reaches are scanned.
+ */
+type AutoLoadSource = {
+  kind: LastLocalModelKind;
+  /** Catalog id: per-model settings, toasts, remembered-model matching. */
+  id: string;
+  /** Sent to /api/inference/load as model_path. */
+  loadId: string;
+  sizeBytes: number;
+  maxSeqLength: number;
+  /** null when the target is one file already (a local .gguf) or safetensors. */
+  listVariants: (() => Promise<GgufVariantDetail[]>) | null;
+};
+
+// POSIX paths keep their case (Linux distinguishes /models/Foo from
+// /models/foo); repo ids and Windows paths fold, as the backend resolves them.
+function autoLoadSourceKey(source: AutoLoadSource): string {
+  const target = source.loadId;
+  const posixPath = /^[/~]/.test(target) && !/^[A-Za-z]:[\\/]/.test(target);
+  return `${source.kind}:${posixPath ? target : target.toLowerCase()}`;
+}
+
+function buildAutoLoadSources(
+  ggufRepos: CachedGgufRepo[],
+  modelRepos: CachedModelRepo[],
+  localRows: LocalModelInfo[],
+  safetensorsMaxSeqLength: number,
+): AutoLoadSource[] {
+  const sources: AutoLoadSource[] = [];
+  for (const repo of ggufRepos) {
+    sources.push({
+      kind: "gguf",
+      id: repo.repo_id,
+      loadId: repo.load_id || repo.repo_id,
+      sizeBytes: repo.size_bytes,
+      maxSeqLength: 0,
+      listVariants: () =>
+        listGgufVariants(repo.repo_id, undefined, {
+          preferLocalCache: true,
+          localPath: repo.cache_path,
+        }).then((response) => response.variants),
+    });
+  }
+  for (const repo of modelRepos) {
+    sources.push({
+      kind: "model",
+      id: repo.repo_id,
+      loadId: repo.load_id || repo.repo_id,
+      sizeBytes: repo.size_bytes,
+      maxSeqLength: safetensorsMaxSeqLength,
+      listVariants: null,
+    });
+  }
+  for (const row of localRows) {
+    const isGguf = row.model_format === "gguf";
+    // A quant folder needs one picked; a .gguf path is already the file.
+    const needsVariant = isGguf && row.capabilities?.requires_variant === true;
+    sources.push({
+      kind: isGguf ? "gguf" : "model",
+      id: row.id,
+      loadId: row.load_id || row.id,
+      sizeBytes: row.size_bytes ?? 0,
+      maxSeqLength: isGguf ? 0 : safetensorsMaxSeqLength,
+      listVariants: needsVariant
+        ? () =>
+            listGgufVariants(row.path, undefined, {
+              preferLocalCache: true,
+              localPath: row.path,
+            }).then((response) => response.variants)
+        : null,
+    });
+  }
+  return sources;
+}
+
+function isRememberedSource(
+  source: AutoLoadSource,
+  remembered: { id: string; kind: LastLocalModelKind },
+): boolean {
+  if (source.kind !== remembered.kind) return false;
+  const target = remembered.id.trim().toLowerCase();
+  return (
+    source.id.toLowerCase() === target || source.loadId.toLowerCase() === target
+  );
+}
+
+/** Last used first, then GGUF before safetensors, then smallest first. */
+function orderAutoLoadSources(
+  sources: AutoLoadSource[],
+  remembered: { id: string; kind: LastLocalModelKind } | null,
+): AutoLoadSource[] {
+  const seen = new Set<string>();
+  const deduped = sources.filter((source) => {
+    const key = autoLoadSourceKey(source);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const rank = (source: AutoLoadSource): number => {
+    if (remembered && isRememberedSource(source, remembered)) return 0;
+    return source.kind === "gguf" ? 1 : 2;
+  };
+  // Unknown sizes sort last so a sizeless row cannot shadow a real one.
+  const size = (source: AutoLoadSource): number =>
+    source.sizeBytes > 0 ? source.sizeBytes : Number.MAX_SAFE_INTEGER;
+  return deduped.sort((a, b) => rank(a) - rank(b) || size(a) - size(b));
+}
+
+/**
+ * The candidate to attempt, resolving a GGUF quant when one is needed:
+ * remembered quant first, then smallest, skipping quants already tried so one
+ * bad file cannot sink a whole repo. null when nothing here is loadable.
+ */
+async function resolveAutoLoadCandidate(
+  source: AutoLoadSource,
+  rememberedVariant: string | null,
+  isSkipped: (candidate: AutoLoadCandidate) => boolean,
+): Promise<AutoLoadCandidate | null> {
+  const build = (ggufVariant: string | null): AutoLoadCandidate => ({
+    id: source.id,
+    loadId: source.loadId,
+    kind: source.kind,
+    ggufVariant,
+    maxSeqLength: source.maxSeqLength,
+    successLabel: ggufVariant
+      ? `Loaded ${source.id} (${ggufVariant})`
+      : `Loaded ${source.id}`,
+  });
+  if (!source.listVariants) {
+    const candidate = build(null);
+    return isSkipped(candidate) ? null : candidate;
+  }
+  const downloaded = (await source.listVariants())
+    .filter(
+      (variant) =>
+        variant.downloaded &&
+        variant.partial !== true &&
+        isAutoLoadableGgufVariant(variant),
+    )
+    .sort((a, b) => a.size_bytes - b.size_bytes);
+  const wanted = rememberedVariant?.trim().toLowerCase();
+  const ordered = wanted
+    ? [
+        ...downloaded.filter((v) => v.quant?.toLowerCase() === wanted),
+        ...downloaded.filter((v) => v.quant?.toLowerCase() !== wanted),
+      ]
+    : downloaded;
+  for (const variant of ordered) {
+    const candidate = build(variant.quant);
+    if (!isSkipped(candidate)) return candidate;
+  }
+  return null;
+}
+
+// Fetched only when the device genuinely has nothing on it.
+const DEFAULT_CHAT_MODEL_REPO = "unsloth/gemma-4-E2B-it-GGUF";
+const DEFAULT_CHAT_MODEL_VARIANT = "UD-Q4_K_XL";
+const DEFAULT_CHAT_MODEL_LABEL = "Gemma 4 E2B";
+
+function formatDownloadBytes(bytes: number): string {
+  if (!(bytes > 0)) return "";
+  const gb = bytes / 1024 ** 3;
+  return gb >= 1
+    ? `${gb.toFixed(1)} GB`
+    : `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
+}
+
+/**
+ * Fetch the default model through the Hub download manager rather than letting
+ * /api/inference/load pull it inline: the manager gives it a download panel
+ * entry, live progress, and a working Cancel. "ready" means the bytes are on
+ * disk.
+ */
+async function ensureDefaultModelDownloaded(
+  abortSignal: AbortSignal | undefined,
+  setToast: (title: string, description: string, cancel?: () => void) => void,
+): Promise<"ready" | "cancelled" | "failed"> {
+  const variantKey = DEFAULT_CHAT_MODEL_VARIANT.toLowerCase();
+  let expectedBytes = 0;
+  try {
+    const listing = await listGgufVariants(DEFAULT_CHAT_MODEL_REPO);
+    const variant = listing.variants.find(
+      (entry) => entry.quant?.toLowerCase() === variantKey,
+    );
+    // Pulled by an earlier run: nothing to download.
+    if (variant?.downloaded && variant.partial !== true) return "ready";
+    expectedBytes = variant?.download_size_bytes || variant?.size_bytes || 0;
+  } catch {
+    // Sizing is cosmetic; the manager learns the real total from the server.
+  }
+  abortSignal?.throwIfAborted();
+
+  const request = {
+    kind: DOWNLOAD_KIND.MODEL,
+    repoId: DEFAULT_CHAT_MODEL_REPO,
+    variant: DEFAULT_CHAT_MODEL_VARIANT,
+    expectedBytes,
+  };
+  const jobKey = jobKeyOf(request.kind, request.repoId, request.variant);
+  const cancelDownload = (): void => {
+    const active = selectActiveJob(
+      useDownloadManagerStore.getState(),
+      request.kind,
+      request.repoId,
+      request.variant,
+    );
+    void downloadManager.cancel(active?.key ?? jobKey);
+  };
+  const totalLabel = formatDownloadBytes(expectedBytes);
+  const description =
+    `Unsloth couldn’t find an existing model. Unsloth is now getting ` +
+    `${DEFAULT_CHAT_MODEL_LABEL} ready for use. You can stop the download or ` +
+    `manage models later in the 'Model hub'`;
+  setToast(
+    `Getting ${DEFAULT_CHAT_MODEL_LABEL} ready`,
+    description,
+    cancelDownload,
+  );
+
+  const isOurVariant = (variant: string | null): boolean =>
+    (variant ?? "").toLowerCase() === variantKey;
+
+  return await new Promise<"ready" | "cancelled" | "failed">((resolve) => {
+    let settled = false;
+    const cleanups: Array<() => void> = [];
+    const finish = (outcome: "ready" | "cancelled" | "failed"): void => {
+      if (settled) return;
+      settled = true;
+      for (const cleanup of cleanups) cleanup();
+      resolve(outcome);
+    };
+
+    // Before the start request, so a fast completion cannot be missed.
+    cleanups.push(
+      subscribeJobListeners(request.kind, request.repoId, {
+        onComplete: (variant) => isOurVariant(variant) && finish("ready"),
+        onCancelled: (variant) => isOurVariant(variant) && finish("cancelled"),
+        onError: (variant) => isOurVariant(variant) && finish("failed"),
+      }),
+    );
+    // Live progress in the title; the panel shows the same job with its bar.
+    cleanups.push(
+      useDownloadManagerStore.subscribe((state) => {
+        const job = state.jobs[jobKey];
+        if (!job || job.state === "cancelling") return;
+        const done = formatDownloadBytes(job.downloadedBytes);
+        const total = formatDownloadBytes(job.expectedBytes) || totalLabel;
+        if (!done || !total) return;
+        setToast(
+          `Getting ${DEFAULT_CHAT_MODEL_LABEL} ready (${done} of ${total})`,
+          description,
+          cancelDownload,
+        );
+      }),
+    );
+    // Stopping the send stops the wait, not the transfer: it keeps running and
+    // stays cancellable in the panel.
+    if (abortSignal) {
+      const onAbort = () => finish("cancelled");
+      abortSignal.addEventListener("abort", onAbort, { once: true });
+      cleanups.push(() => abortSignal.removeEventListener("abort", onAbort));
+    }
+
+    void downloadManager.requestStart(request).then(
+      (outcome) => {
+        if (outcome === "started") return;
+        // "conflict" and "busy" need the Hub download card; "error" already
+        // toasted.
+        finish("failed");
+      },
+      () => finish("failed"),
+    );
+  });
+}
+
+async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   loaded: boolean;
   blockedByTrustRemoteCode: boolean;
-  /** True when an inventory failure was already surfaced to the user. */
-  inventoryErrorSurfaced?: boolean;
+  /** A load failure was already toasted, so callers must not replace it with generic advice. */
+  loadFailureReported?: boolean;
 }> {
-  if (await tryAdoptServerActiveModel()) {
-    return { loaded: true, blockedByTrustRemoteCode: false };
+  options?.abortSignal?.throwIfAborted();
+  if (!options?.skipAdoptServerModel) {
+    const adoptedServerModel = await tryAdoptServerActiveModel();
+    options?.abortSignal?.throwIfAborted();
+    if (adoptedServerModel) {
+      return { loaded: true, blockedByTrustRemoteCode: false };
+    }
   }
 
   const store = useChatRuntimeStore.getState();
@@ -1851,17 +2207,74 @@ export async function autoLoadOnDeviceModel(): Promise<{
   const trustRemoteCode = store.params.trustRemoteCode ?? false;
   const specSettings = resolveSpeculativeSettingsForLoad();
   const lastLoaded = readLastLocalModelLoad();
-  const toastId = toast("Loading a model…", {
+  let autoLoadToastDismissed = false;
+  const toastId = toast.message("Loading a model…", {
     description: lastLoaded
       ? "Loading last used model."
-      : "Auto-selecting the smallest on-device model.",
-    duration: 5000,
+      : "Auto-selecting the smallest downloaded model.",
+    duration: Number.POSITIVE_INFINITY,
     closeButton: true,
+    icon: createLoadingToastIcon(),
+    onDismiss: () => {
+      autoLoadToastDismissed = true;
+    },
   });
+  const updateAutoLoadToast = (
+    message: string,
+    description: string,
+    onCancel?: () => void,
+  ): void => {
+    if (autoLoadToastDismissed) return;
+    toast.message(message, {
+      id: toastId,
+      description,
+      duration: Number.POSITIVE_INFINITY,
+      action: onCancel
+        ? { label: "Cancel", onClick: () => onCancel() }
+        : undefined,
+    });
+  };
+  const showAutoLoadSuccess = (message: string): void => {
+    const options = {
+      description: undefined,
+      duration: 5000,
+      icon: undefined,
+    };
+    if (autoLoadToastDismissed) {
+      toast.success(message, options);
+      return;
+    }
+    toast.success(message, { ...options, id: toastId });
+  };
   let blockedByTrustRemoteCode = false;
   let hadNonTrustFailure = false;
   let loadAttempts = 0;
   const skippedAutoLoadCandidates = new Set<string>();
+  // Why the last load attempt failed. Boxed: a `let` set only in a nested fn narrows to `null`.
+  const loadFailure: {
+    current: { label: string; detail: string; blamesModel: boolean } | null;
+  } = { current: null };
+
+  // Set once the user declines the HF token dialog, so nothing asks again.
+  let autoLoadCancelled = false;
+
+  function noteLoadFailure(label: string, error: unknown): void {
+    const detail =
+      error instanceof Error && error.message.trim() ? error.message.trim() : "";
+    // loadModel also rejects before /api/inference/load is sent (dismissed token dialog, dead
+    // backend): those stop the Hub download, but must not blame the model.
+    const marker = error as { unslothTransportFailure?: boolean; unslothUserCancelled?: boolean };
+    const blamesModel = !(
+      marker?.unslothTransportFailure === true || marker?.unslothUserCancelled === true
+    );
+    loadFailure.current = {
+      label,
+      // Older backends and non-Error throws carry no detail; still name the model that failed.
+      detail:
+        detail || "The server did not report a reason. Check the Studio logs.",
+      blamesModel,
+    };
+  }
 
   async function canAutoLoad(payload: {
     model_path: string;
@@ -1875,17 +2288,17 @@ export async function autoLoadOnDeviceModel(): Promise<{
     // The safetensors fallback omits both fields and uses HF auto-placement.
     gpu_ids?: number[];
     gpu_memory_mode?: "auto" | "manual";
+    cache_type_kv?: string | null;
+    tensor_parallel?: boolean | null;
   }): Promise<boolean> {
+    options?.abortSignal?.throwIfAborted();
     const validation = await validateModel({
       ...payload,
       hf_token: hfToken,
       load_in_4bit: true,
-      // Same local-only policy the follow-up /load enforces, so ineligible
-      // candidates (uncached, or audio models whose codecs would fetch) are
-      // rejected here without consuming a load attempt.
-      local_files_only: true,
       trust_remote_code: trustRemoteCode,
     });
+    options?.abortSignal?.throwIfAborted();
     // Background auto-load never runs a repo's custom code or loads Hub-flagged unsafe
     // files on its own; both are deferred to the explicit consent dialog instead.
     if (
@@ -1903,14 +2316,43 @@ export async function autoLoadOnDeviceModel(): Promise<{
     return true;
   }
 
+  function recordCandidateFailure(label: string, error: unknown): void {
+    // Every rejection is recorded: the sweep's catches are bare, so one left unrecorded reads as
+    // "nothing was cached" and fetches the default. Only cancelling ends the sweep.
+    const marker = error as { unslothUserCancelled?: boolean };
+    noteLoadFailure(label, error);
+    if (marker?.unslothUserCancelled === true) {
+      // The next candidate would reopen the same dialog, so stop rather than ask per repo. A
+      // transport failure deliberately does NOT: the backend can come back mid-sweep.
+      autoLoadCancelled = true;
+    }
+  }
+
+  async function canAutoLoadRecordingFailures(
+    label: string,
+    payload: Parameters<typeof canAutoLoad>[0],
+  ): Promise<boolean> {
+    try {
+      return await canAutoLoad(payload);
+    } catch (error) {
+      // validateModel prepares the token too, so a dismissed dialog or dead backend surfaces here,
+      // where the sweep's bare catches would drop it and hit the Hub download.
+      recordCandidateFailure(label, error);
+      throw error;
+    }
+  }
+
   async function loadAutoLoadCandidate(
     candidate: AutoLoadCandidate,
   ): Promise<boolean> {
-    if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
+    if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
       return false;
     }
     const currentStore = useChatRuntimeStore.getState();
     const modelPath = candidate.loadId ?? candidate.id;
+    const failureLabel = candidate.ggufVariant
+      ? `${candidate.id} (${candidate.ggufVariant})`
+      : candidate.id;
     const { config } = resolveInitialConfig(candidate.id, candidate.ggufVariant);
     const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
       modelId: candidate.id,
@@ -1939,9 +2381,48 @@ export async function autoLoadOnDeviceModel(): Promise<{
       // the load with the picker hidden.
       await ensureGpuDeviceCache();
     }
+    let isDiffusion = false;
+    if (
+      candidate.kind === "gguf" &&
+      (config.selectedGpuIds != null || config.tensorParallel === true)
+    ) {
+      // Prepare the token before this probe, exactly as validateModel/loadModel
+      // (and the interactive performLoad path) do: the Hub 401s an invalid
+      // Authorization header even for a public repo, so sending the raw stored
+      // token here would abort this candidate before the existing anonymous/
+      // replacement-token recovery flow could run.
+      const preparedToken = await prepareHfTokenForUse(hfToken);
+      if (!preparedToken.proceed) {
+        // Raised before loadModel, so route it through the same helper or every later candidate
+        // reopens the dialog.
+        const cancelled = Object.assign(new Error("Model load cancelled."), {
+          unslothUserCancelled: true,
+        });
+        recordCandidateFailure(failureLabel, cancelled);
+        throw cancelled;
+      }
+      isDiffusion = (
+        await fetchGgufStagedMetadata({
+          model_path: modelPath,
+          gguf_variant: candidate.ggufVariant,
+          hf_token: preparedToken.token,
+        }).catch((error: unknown) => {
+          // Same authFetch as validate and load, so a dead backend throws here first.
+          recordCandidateFailure(failureLabel, error);
+          throw error;
+        })
+      ).isDiffusion;
+    }
+    const effectiveTensorParallel = isDiffusion
+      ? false
+      : config.tensorParallel;
     const effectiveGpuIds =
       config.selectedGpuIds !== undefined
-        ? reconcilePersistedGpuIds(config.selectedGpuIds)
+        ? reconcilePersistedGpuIds(
+            config.selectedGpuIds,
+            config.selectedGpuIndexKind,
+            isDiffusion,
+          )
         : null;
     // Under Manual GPU memory + Auto layers, llama.cpp's --fit owns context
     // sizing, so send 0 (or the pinned length). GGUF-only; a no-op otherwise.
@@ -1962,24 +2443,39 @@ export async function autoLoadOnDeviceModel(): Promise<{
       ? config.chatTemplateOverride
       : null;
     if (
-      !(await canAutoLoad({
+      !(await canAutoLoadRecordingFailures(failureLabel, {
         model_path: modelPath,
         max_seq_length: fitMaxSeqLength,
         is_lora: false,
         gguf_variant: candidate.ggufVariant,
+        cache_type_kv: config.kvCacheDtype,
+        tensor_parallel: effectiveTensorParallel,
         // The same remembered-derived GPU pick the load below sends.
         ...(candidate.kind === "gguf"
           ? {
               gpu_ids: effectiveGpuIds ?? undefined,
               gpu_memory_mode: effectiveGpuMemoryMode,
+              // Sized like the load below: a remembered manual DiffusionGemma
+              // split (0 especially) must not be refused as a full-GGUF occupant.
+              gpu_layers: effectiveGpuLayers,
+              n_parallel: config.nParallel ?? null,
             }
           : {}),
       }))
     ) {
-      skippedAutoLoadCandidates.add(autoLoadSkipKey(candidate));
+      skippedAutoLoadCandidates.add(
+        autoLoadCandidateKey(
+          candidate.kind,
+          // Keyed by load target: a cached repo and a local row can alias the
+          // same files, so blocking one must block the other.
+          candidate.loadId ?? candidate.id,
+          candidate.ggufVariant,
+        ),
+      );
       return false;
     }
     loadAttempts += 1;
+    options?.abortSignal?.throwIfAborted();
     const loadResp = await loadModel({
       model_path: modelPath,
       hf_token: hfToken,
@@ -1987,17 +2483,12 @@ export async function autoLoadOnDeviceModel(): Promise<{
       load_in_4bit: true,
       is_lora: false,
       gguf_variant: candidate.ggufVariant,
-      // A background load never downloads: the backend resolves a cached
-      // repo id against the local snapshot only, so a cache populated
-      // outside Studio with missing shards fails over to the next
-      // candidate instead of silently fetching the gaps.
-      local_files_only: true,
       trust_remote_code: trustRemoteCode,
       chat_template_override: effectiveChatTemplateOverride,
       cache_type_kv: config.kvCacheDtype,
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
-      tensor_parallel: config.tensorParallel,
+      tensor_parallel: effectiveTensorParallel,
       // GGUF-only: the safetensors fallback loads via HF auto-placement (no
       // explicit pins). The split ratio is deliberately never remembered
       // (positionally bound to an exact GPU set), so auto-load leaves llama.cpp's
@@ -2008,63 +2499,360 @@ export async function autoLoadOnDeviceModel(): Promise<{
             gpu_layers: effectiveGpuLayers,
             n_cpu_moe: effectiveNCpuMoe,
             gpu_ids: effectiveGpuIds ?? undefined,
+            // Per-model too, or the auto-load reverts a remembered override.
+            n_parallel: config.nParallel ?? null,
           }
         : {}),
+    }).catch((error: unknown) => {
+      // The sweep's parameterless catches discard this error, so record it before rethrowing.
+      noteLoadFailure(failureLabel, error);
+      throw error;
     });
-    // Only persist the global preference when the value came from the global
-    // settings. A per-model config's choice must stay load-local, or autoloading
-    // a remembered model on startup would rewrite the global default.
-    if (config.speculativeType == null) {
-      saveSpeculativeType(effectiveSpeculativeType);
-    }
-    // Self-gates on is_gguf (skips diffusion), so persists only for a real GGUF load.
-    persistGpuMemoryModeOnLoad(loadResp, effectiveGpuMemoryMode);
-    const loadedModelId = loadResp.model || modelPath;
-    useChatRuntimeStore
-      .getState()
-      .setCheckpoint(loadedModelId, candidate.ggufVariant ?? undefined);
-    const store = useChatRuntimeStore.getState();
-    store.setModelRequiresTrustRemoteCode(
-      loadResp.requires_trust_remote_code ?? false,
-    );
-    store.setParams({
-      ...store.params,
-      ...(candidate.kind === "gguf"
-        ? {}
-        : { maxSeqLength: effectiveMaxSeqLength }),
-      maxTokens:
-        candidate.kind === "gguf"
-          ? loadResp.context_length ?? 131072
-          : effectiveMaxSeqLength,
-    });
-    const autoModel: ChatModelSummary = {
-      id: loadedModelId,
-      name: loadResp.display_name ?? candidate.id,
-      isVision: loadResp.is_vision ?? false,
-      isLora: loadResp.is_lora ?? false,
-      isGguf: loadResp.is_gguf ?? candidate.kind === "gguf",
-      isAudio: loadResp.is_audio ?? false,
-      audioType: loadResp.audio_type ?? null,
-      hasAudioInput: loadResp.has_audio_input ?? false,
-    };
-    if (!store.models.some((m) => m.id === loadedModelId)) {
-      store.setModels([...store.models, autoModel]);
-    }
-    if (candidate.kind === "gguf") {
-      // Keep an explicit Manual+Auto context pin the load just applied (so a
-      // later Apply doesn't silently revert it to auto-fit sizing), mirroring
-      // the interactive path's keepCustomCtx; other cases baseline on
-      // ggufContextLength.
-      const keepCustomCtx = resolveManualAutoCtxPin(
-        effectiveGpuMemoryMode,
-        effectiveGpuLayers,
-        config.customContextLength ?? null,
-      );
+    // Do not apply this load to the visible runtime after its queue was
+    // cancelled. We still await /load so the model lifecycle remains
+    // serialized before a foreground selection can begin.
+    options?.abortSignal?.throwIfAborted();
+    applyAutoLoadRuntimeState(options, () => {
+      // Only persist the global preference when the value came from the global
+      // settings. A per-model config's choice must stay load-local, or autoloading
+      // a remembered model on startup would rewrite the global default.
+      if (config.speculativeType == null) {
+        saveSpeculativeType(effectiveSpeculativeType);
+      }
+      // Self-gates on is_gguf (skips diffusion), so persists only for a real GGUF load.
+      persistGpuMemoryModeOnLoad(loadResp, effectiveGpuMemoryMode);
+      const loadedModelId = loadResp.model || modelPath;
+      // The identity stays the backend's, per the inactive-cache contract; the
+      // pin is recorded alongside it so a later reload finds the same directory.
       useChatRuntimeStore.setState({
+        activeLoadId: modelPath === candidate.id ? null : modelPath,
+      });
+      useChatRuntimeStore
+        .getState()
+        .setCheckpoint(loadedModelId, candidate.ggufVariant ?? undefined, {
+          trackQueuedSettings: !options?.preserveVisibleSettings,
+        });
+      const store = useChatRuntimeStore.getState();
+      store.setModelRequiresTrustRemoteCode(
+        loadResp.requires_trust_remote_code ?? false,
+      );
+      store.setParams(
+        {
+          ...store.params,
+          ...(candidate.kind === "gguf"
+            ? {}
+            : { maxSeqLength: effectiveMaxSeqLength }),
+          maxTokens:
+            candidate.kind === "gguf"
+              ? loadResp.context_length ?? 131072
+              : effectiveMaxSeqLength,
+        },
+        {
+          persist: !options?.preserveVisibleSettings,
+          trackQueuedSettings: !options?.preserveVisibleSettings,
+        },
+      );
+      // Upsert: a pre-load catalog entry has no backend-derived audio
+      // capability, and the load response is the authority on it.
+      syncModelCapabilities(loadedModelId, {
+        ...loadResp,
+        display_name: loadResp.display_name ?? candidate.id,
+        is_gguf: loadResp.is_gguf ?? candidate.kind === "gguf",
+      });
+      if (candidate.kind === "gguf") {
+        // Keep an explicit Manual+Auto context pin the load just applied (so a
+        // later Apply doesn't silently revert it to auto-fit sizing), mirroring
+        // the interactive path's keepCustomCtx; other cases baseline on
+        // ggufContextLength.
+        const keepCustomCtx = resolveManualAutoCtxPin(
+          effectiveGpuMemoryMode,
+          effectiveGpuLayers,
+          config.customContextLength ?? null,
+        );
+        // Slots this auto-load committed. Diffusion ignores --parallel, so a count
+        // there would mint a phantom override a saved preset carries onto a GGUF.
+        const committedSlots = (loadResp.is_diffusion ?? false)
+          ? null
+          : (config.nParallel ?? null);
+        useChatRuntimeStore.setState({
+          ggufContextLength: loadResp.context_length ?? 131072,
+          ggufMaxContextLength:
+            loadResp.max_context_length ?? loadResp.context_length ?? 131072,
+          ggufNativeContextLength: loadResp.native_context_length ?? null,
+          supportsReasoning: loadResp.supports_reasoning ?? false,
+          reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
+          reasoningEnabled: loadResp.supports_reasoning ?? false,
+          ...reasoningCapsFromLoad(loadResp),
+          supportsPreserveThinking:
+            loadResp.supports_preserve_thinking ?? false,
+          supportsTools: loadResp.supports_tools ?? false,
+          ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
+          kvCacheDtype: loadResp.cache_type_kv ?? null,
+          loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+          // Click-time value, not the resolved backend echo (see performLoad).
+          nParallel: committedSlots,
+          loadedNParallel: committedSlots,
+          tensorParallel: loadResp.tensor_parallel ?? false,
+          loadedTensorParallel: loadResp.tensor_parallel ?? false,
+          ...loadedGpuMemoryFields(loadResp),
+          loadedCustomContextLength: keepCustomCtx,
+          defaultChatTemplate: loadResp.chat_template ?? null,
+          chatTemplateOverride: effectiveChatTemplateOverride,
+          loadedChatTemplateOverride: effectiveChatTemplateOverride,
+          // Retain the saved requested context so re-saving the config keeps the
+          // override; null stays null (auto/VRAM-fit).
+          customContextLength: config.customContextLength,
+          loadedIsMultimodal: isMultimodalResponse(loadResp),
+          loadedIsDiffusion: loadResp.is_diffusion ?? false,
+          activeModelIsLocal: loadResp.is_local_model ?? false,
+          ...resolveLoadedSpeculativeSettings(loadResp),
+        });
+      } else {
+        useChatRuntimeStore.setState({
+          supportsReasoning: loadResp.supports_reasoning ?? false,
+          reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
+          reasoningEnabled: loadResp.supports_reasoning ?? false,
+          ...reasoningCapsFromLoad(loadResp),
+          supportsPreserveThinking:
+            loadResp.supports_preserve_thinking ?? false,
+          supportsTools: loadResp.supports_tools ?? false,
+          ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
+          kvCacheDtype: loadResp.cache_type_kv ?? null,
+          loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+          // GGUF-only and never sent here: a staged override would be saved for
+          // a model that cannot use it.
+          nParallel: null,
+          loadedNParallel: null,
+          tensorParallel: loadResp.tensor_parallel ?? false,
+          loadedTensorParallel: loadResp.tensor_parallel ?? false,
+          // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
+          // GGUF load left, matching the interactive/status sibling load paths.
+          ...loadedGpuMemoryFields(loadResp),
+          defaultChatTemplate: loadResp.chat_template ?? null,
+          chatTemplateOverride: effectiveChatTemplateOverride,
+          loadedChatTemplateOverride: effectiveChatTemplateOverride,
+          customContextLength: null,
+          ...resolveLoadedSpeculativeSettings(loadResp),
+          loadedIsMultimodal: isMultimodalResponse(loadResp),
+          loadedIsDiffusion: loadResp.is_diffusion ?? false,
+          activeModelIsLocal: loadResp.is_local_model ?? false,
+        });
+      }
+      if (!(loadResp.is_lora ?? false)) {
+        recordLastLocalModelLoad({
+          id: candidate.id,
+          kind: candidate.kind,
+          ggufVariant: candidate.ggufVariant,
+        });
+      }
+      showAutoLoadSuccess(candidate.successLabel);
+    });
+    return true;
+  }
+  try {
+    // Fail closed. These three lists are the only evidence of what is on the
+    // device, and `.catch(() => [])` turned one flaky request into "the user
+    // has nothing", downloading a model over a loadable local one.
+    const [allGgufRepos, allModelRepos, localList] = await Promise.all([
+      listCachedGguf(),
+      listCachedModels(),
+      listLocalModels(),
+    ]);
+    options?.abortSignal?.throwIfAborted();
+
+    // Managed cache plus everything the picker indexes on disk. Reading only
+    // the cache lists is what made a local model invisible here.
+    const sources = orderAutoLoadSources(
+      buildAutoLoadSources(
+        allGgufRepos.filter(isChattableCachedRepo),
+        allModelRepos.filter(isChattableCachedRepo),
+        localList.models.filter(isAutoLoadableLocalRow),
+        store.params.maxSeqLength,
+      ),
+      lastLoaded,
+    );
+
+    for (const source of sources) {
+      if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
+      const isRemembered = lastLoaded
+        ? isRememberedSource(source, lastLoaded)
+        : false;
+      try {
+        const candidate = await resolveAutoLoadCandidate(
+          source,
+          isRemembered ? lastLoaded?.ggufVariant ?? null : null,
+          (entry) =>
+            skippedAutoLoadCandidates.has(
+              autoLoadCandidateKey(
+                entry.kind,
+                entry.loadId ?? entry.id,
+                entry.ggufVariant,
+              ),
+            ),
+        );
+        options?.abortSignal?.throwIfAborted();
+        if (!candidate) continue;
+        updateAutoLoadToast(
+          isRemembered ? "Loading last used model…" : "Loading a model…",
+          candidate.ggufVariant
+            ? `${candidate.id} (${candidate.ggufVariant})`
+            : candidate.id,
+        );
+        if (await loadAutoLoadCandidate(candidate)) {
+          return { loaded: true, blockedByTrustRemoteCode: false };
+        }
+      } catch {
+        options?.abortSignal?.throwIfAborted();
+        hadNonTrustFailure = true;
+        continue;
+      }
+    }
+
+    // Cap also gates the default download, so total /api/inference/load
+    // budget across cached + fallback is MAX_AUTO_LOAD_ATTEMPTS, not +1.
+    // A tried-and-failed cached model stops here: that reason beats an unrelated Hub default.
+    // An empty cache never sets loadFailure and still falls through.
+    if (loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS || loadFailure.current) {
+      toast.dismiss(toastId);
+      if (loadFailure.current) {
+        toast.error(
+          loadFailure.current.blamesModel
+            ? `Could not load ${loadFailure.current.label}`
+            : loadFailure.current.detail,
+          {
+            description: loadFailure.current.blamesModel
+              ? loadFailure.current.detail
+              : `Stopped before loading ${loadFailure.current.label}.`,
+            duration: 10000,
+            closeButton: true,
+          },
+        );
+      }
+      return {
+        loaded: false,
+        blockedByTrustRemoteCode:
+          blockedByTrustRemoteCode && !hadNonTrustFailure,
+        loadFailureReported: loadFailure.current !== null,
+      };
+    }
+
+    // Nothing on the device: fetch the default as a managed download job, and
+    // only hand it to /api/inference/load once the bytes are here.
+    try {
+      const download = await ensureDefaultModelDownloaded(
+        options?.abortSignal,
+        updateAutoLoadToast,
+      );
+      options?.abortSignal?.throwIfAborted();
+      if (download !== "ready") {
+        toast.dismiss(toastId);
+        if (download === "cancelled") {
+          toast.message(`${DEFAULT_CHAT_MODEL_LABEL} download stopped`, {
+            description:
+              "No model is loaded. Pick one from the top bar, or download another from the Hub, then send again.",
+            duration: 8000,
+            closeButton: true,
+          });
+        }
+        return {
+          loaded: false,
+          blockedByTrustRemoteCode,
+          loadFailureReported: download === "cancelled",
+        };
+      }
+      updateAutoLoadToast(
+        `Loading ${DEFAULT_CHAT_MODEL_LABEL}…`,
+        `${DEFAULT_CHAT_MODEL_REPO} (${DEFAULT_CHAT_MODEL_VARIANT})`,
+      );
+      const rt = useChatRuntimeStore.getState();
+      if (rt.selectedGpuIds != null) {
+        await ensureGpuDeviceCache();
+      }
+      const defaultGpuIds = reconcilePersistedGpuIds(
+        rt.selectedGpuIds,
+        rt.selectedGpuIndexKind,
+      );
+      if (
+        !(await canAutoLoad({
+          model_path: DEFAULT_CHAT_MODEL_REPO,
+          max_seq_length: 0,
+          is_lora: false,
+          gguf_variant: DEFAULT_CHAT_MODEL_VARIANT,
+          // The same live-store GPU pick the load below sends (a fresh default
+          // model has no remembered settings to prefer).
+          gpu_ids: defaultGpuIds ?? undefined,
+          gpu_memory_mode: rt.gpuMemoryMode,
+        }))
+      ) {
+        toast.dismiss(toastId);
+        return { loaded: false, blockedByTrustRemoteCode };
+      }
+      loadAttempts += 1;
+      options?.abortSignal?.throwIfAborted();
+      const loadResp = await loadModel({
+        model_path: DEFAULT_CHAT_MODEL_REPO,
+        hf_token: hfToken,
+        // Model default under both modes: Auto layers + no pin means
+        // resolveFitMaxSeqLength returns 0 for every mode (the canAutoLoad
+        // preflight above sends the same).
+        max_seq_length: 0,
+        load_in_4bit: true,
+        is_lora: false,
+        gguf_variant: DEFAULT_CHAT_MODEL_VARIANT,
+        trust_remote_code: trustRemoteCode,
+        speculative_type: specSettings.speculativeType,
+        spec_draft_n_max: specSettings.specDraftNMax,
+        // GPU Memory mode is a standing preference, so honor it on auto-load.
+        // The layer/MoE/split knobs and the context pin are per-model: the live
+        // store may hold edits drafted for a staged pick, and a fresh default
+        // model has no remembered settings, so those stay at their defaults like
+        // the cached-candidate path. The GPU pick deliberately differs (it's the
+        // picker's current on-screen selection, which the canAutoLoad preflight
+        // above already committed to).
+        gpu_memory_mode: rt.gpuMemoryMode,
+        gpu_layers: GPU_LAYERS_AUTO,
+        n_cpu_moe: 0,
+        gpu_ids: defaultGpuIds ?? undefined,
+      });
+      options?.abortSignal?.throwIfAborted();
+      applyAutoLoadRuntimeState(options, () => {
+        saveSpeculativeType(specSettings.speculativeType);
+        persistGpuMemoryModeOnLoad(loadResp, rt.gpuMemoryMode);
+        useChatRuntimeStore
+          .getState()
+          .setCheckpoint(
+            DEFAULT_CHAT_MODEL_REPO,
+            DEFAULT_CHAT_MODEL_VARIANT,
+            { trackQueuedSettings: !options?.preserveVisibleSettings },
+          );
+        const store = useChatRuntimeStore.getState();
+        store.setModelRequiresTrustRemoteCode(
+          loadResp.requires_trust_remote_code ?? false,
+        );
+        store.setParams(
+          {
+            ...store.params,
+            maxTokens: loadResp.context_length ?? 131072,
+          },
+          {
+            persist: !options?.preserveVisibleSettings,
+            trackQueuedSettings: !options?.preserveVisibleSettings,
+          },
+        );
+        const defaultModel: ChatModelSummary = {
+          id: DEFAULT_CHAT_MODEL_REPO,
+          name: loadResp.display_name ?? DEFAULT_CHAT_MODEL_LABEL,
+          isVision: loadResp.is_vision ?? false,
+          isLora: false,
+          isGguf: true,
+        };
+        if (!store.models.some((m) => m.id === DEFAULT_CHAT_MODEL_REPO)) {
+          store.setModels([...store.models, defaultModel]);
+        }
+        useChatRuntimeStore.setState({
         ggufContextLength: loadResp.context_length ?? 131072,
         ggufMaxContextLength:
           loadResp.max_context_length ?? loadResp.context_length ?? 131072,
-        ggufNativeContextLength: loadResp.native_context_length ?? null,
         supportsReasoning: loadResp.supports_reasoning ?? false,
         reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
         reasoningEnabled: loadResp.supports_reasoning ?? false,
@@ -2074,735 +2862,44 @@ export async function autoLoadOnDeviceModel(): Promise<{
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
+        // The request above omits n_parallel: a staged override left from a
+        // preset would read as applied and be re-sent by the next Apply.
+        nParallel: null,
+        loadedNParallel: null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         ...loadedGpuMemoryFields(loadResp),
-        loadedCustomContextLength: keepCustomCtx,
-        defaultChatTemplate: loadResp.chat_template ?? null,
-        chatTemplateOverride: effectiveChatTemplateOverride,
-        loadedChatTemplateOverride: effectiveChatTemplateOverride,
-        // Retain the saved requested context so re-saving the config keeps the
-        // override; null stays null (auto/VRAM-fit).
-        customContextLength: config.customContextLength,
-        loadedIsMultimodal: isMultimodalResponse(loadResp),
+        // Drives the GPU Memory controls' diffusion gate; set alongside the
+        // GPU fields on every load path so the gate can't read stale.
         loadedIsDiffusion: loadResp.is_diffusion ?? false,
-        ...resolveLoadedSpeculativeSettings(loadResp),
-      });
-    } else {
-      useChatRuntimeStore.setState({
-        supportsReasoning: loadResp.supports_reasoning ?? false,
-        reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
-        reasoningEnabled: loadResp.supports_reasoning ?? false,
-        ...reasoningCapsFromLoad(loadResp),
-        supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
-        supportsTools: loadResp.supports_tools ?? false,
-        ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
-        kvCacheDtype: loadResp.cache_type_kv ?? null,
-        loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
-        tensorParallel: loadResp.tensor_parallel ?? false,
-        loadedTensorParallel: loadResp.tensor_parallel ?? false,
-        // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
-        // GGUF load left, matching the interactive/status sibling load paths.
-        ...loadedGpuMemoryFields(loadResp),
         defaultChatTemplate: loadResp.chat_template ?? null,
-        chatTemplateOverride: effectiveChatTemplateOverride,
-        loadedChatTemplateOverride: effectiveChatTemplateOverride,
-        customContextLength: null,
-        ...resolveLoadedSpeculativeSettings(loadResp),
+        chatTemplateOverride: null,
         loadedIsMultimodal: isMultimodalResponse(loadResp),
-        loadedIsDiffusion: loadResp.is_diffusion ?? false,
-      });
-    }
-    if (!(loadResp.is_lora ?? false)) {
-      recordLastLocalModelLoad({
-        id: candidate.id,
-        kind: candidate.kind,
-        ggufVariant: candidate.ggufVariant,
-        loadId: candidate.loadId ?? null,
-        inventoryId: candidate.inventoryId ?? null,
-        source: candidate.source,
-      });
-    }
-    toast.success(candidate.successLabel, { id: toastId });
-    return true;
-  }
-  // An inventory failure is NOT an empty inventory: surface it and stop the
-  // automatic selection path instead of concluding nothing is on device.
-  let allGgufRepos: CachedGgufRepo[];
-  let allModelRepos: CachedModelRepo[];
-  let allLocalRows: LocalModelInfo[];
-  try {
-    // Dynamic hidden-model matchers are best-effort; the static needles
-    // still filter the built-in infra models when the fetch fails. The
-    // fetch has no timeout of its own, so it runs alongside the
-    // (30s-bounded) inventory calls and is only awaited through a short
-    // grace afterwards: a stalled matcher request must not hang Send.
-    const hiddenMatchersReady = ensureHiddenModelMatchers().catch(
-      () => undefined,
-    );
-    // The platform fetch behind the picker's format gates is unbounded
-    // too (raw fetch, no signal); run it alongside as well. Past the
-    // grace, the store's boot-detected client-side platform applies.
-    const platformReady: Promise<void> = fetchDeviceType().then(
-      () => undefined,
-      () => undefined,
-    );
-    const [cachedGguf, cachedModels, localList] = await Promise.all([
-      listCachedGguf(hfToken),
-      listCachedModels(hfToken),
-      listLocalModels(),
-    ]);
-    const bestEffortPrefetches = Promise.all([
-      hiddenMatchersReady,
-      platformReady,
-    ]);
-    await new Promise<void>((resolve) => {
-      const matcherTimer = setTimeout(resolve, BEST_EFFORT_PREFETCH_GRACE_MS);
-      bestEffortPrefetches.then(() => {
-        clearTimeout(matcherTimer);
-        resolve();
-      });
-    });
-    allGgufRepos = cachedGguf;
-    allModelRepos = cachedModels;
-    allLocalRows = localList.models;
-  } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : "Could not read the on-device model inventory.";
-    toast.error("Couldn't check on-device models", {
-      id: toastId,
-      description: message,
-    });
-    return {
-      loaded: false,
-      blockedByTrustRemoteCode: false,
-      inventoryErrorSurfaced: true,
-    };
-  }
-
-  // The platform snapshot the picker's format gates key on. Format gates
-  // only apply once the BACKEND-reported platform has been fetched: the
-  // boot-detected fallback describes the browser, which may differ from the
-  // host (a Mac browser against a remote Linux/CUDA backend would wrongly
-  // gate out every cached non-GGUF candidate). While the platform is
-  // unknown, candidates flow ungated and an actually chat-only backend
-  // rejects ineligible ones at validation without consuming an attempt.
-  const platformState = usePlatformStore.getState();
-  const platform: AutoLoadPlatform = {
-    chatOnly: platformState.fetched ? platformState.isChatOnly() : false,
-    isMac: platformState.deviceType === "mac",
-  };
-  const ggufRepos = allGgufRepos.filter(isAutoLoadableCachedRepo);
-  const modelRepos = allModelRepos.filter(isAutoLoadableCachedRepo);
-  const localRows = allLocalRows.filter((row) =>
-    isAutoLoadableLocalRow(row, platform),
-  );
-  // Dedupe candidates that resolve to the SAME load target (e.g. a custom
-  // scan folder pointing into an HF cache). Keyed on kind + load target /
-  // on-disk path: a shared model_id does not mean the same files (a distinct
-  // local copy stays available when the cached copy fails), and a folder
-  // emitting both GGUF and safetensors rows shares a path while holding two
-  // different models, so the format is part of the key.
-  const seenLoadTargets = new Set<string>();
-  const markSeen = (
-    kind: LastLocalModelKind,
-    ...values: (string | null | undefined)[]
-  ): void => {
-    for (const value of values) {
-      if (value) {
-        for (const alias of expandSeenValues(value)) {
-          seenLoadTargets.add(`${kind}:${normalizeLoadTargetKey(alias)}`);
-        }
-      }
-    }
-  };
-  const isSeen = (
-    kind: LastLocalModelKind,
-    ...values: (string | null | undefined)[]
-  ): boolean =>
-    values.some(
-      (value) =>
-        !!value &&
-        expandSeenValues(value).some((alias) =>
-          seenLoadTargets.has(`${kind}:${normalizeLoadTargetKey(alias)}`),
-        ),
-    );
-
-  // One variant scan per cached repo per run: the remembered-model lookup
-  // and the cascade share the same result, so a stalled repository times
-  // out ONCE instead of gating Send through a second identical bounded
-  // request. Rejections are memoized too, on purpose: a repo whose scan
-  // already failed this run is not rescanned.
-  const repoVariantScans = new Map<
-    string,
-    ReturnType<typeof listGgufVariantsBounded>
-  >();
-  const scanRepoVariants = (
-    repoId: string,
-    localPath: string | null | undefined,
-  ) => {
-    const key = `${repoId}|${localPath ?? ""}`;
-    let pending = repoVariantScans.get(key);
-    if (!pending) {
-      pending = listGgufVariantsBounded(repoId, {
-        preferLocalCache: true,
-        localPath,
-      });
-      repoVariantScans.set(key, pending);
-    }
-    return pending;
-  };
-
-  try {
-    if (lastLoaded) {
-      if (!isManagedCacheSource(lastLoaded.source)) {
-        const row = localRows.find((candidateRow) =>
-          matchesRememberedLocalRow(candidateRow, lastLoaded),
-        );
-        if (row) {
-          // Not marked seen here: if this exact quant fails, the fallback
-          // loop may still pick another complete quant from the same folder
-          // (only the failed candidate key below is excluded, mirroring the
-          // managed-cache remembered path).
-          let rememberedCandidate: AutoLoadCandidate | null = null;
-          try {
-            rememberedCandidate =
-              (await resolveLocalRowCandidate(row, lastLoaded.ggufVariant))
-                ?.candidate ?? null;
-            if (rememberedCandidate) {
-              toast("Loading last used model…", {
-                id: toastId,
-                description: row.display_name || row.id,
-                duration: 5000,
-              });
-              if (await loadAutoLoadCandidate(rememberedCandidate)) {
-                return { loaded: true, blockedByTrustRemoteCode: false };
-              }
-            }
-          } catch {
-            hadNonTrustFailure = true;
-            skippedAutoLoadCandidates.add(
-              rememberedCandidate
-                ? autoLoadSkipKey(rememberedCandidate)
-                : autoLoadCandidateKey(
-                    row.model_format === "gguf" ? "gguf" : "model",
-                    localRowLoadTarget(row),
-                    lastLoaded.ggufVariant,
-                  ),
-            );
-          }
-        }
-      } else if (lastLoaded.kind === "gguf") {
-        const repo = findCachedRepo(ggufRepos, lastLoaded.id);
-        if (repo && lastLoaded.ggufVariant) {
-          // Not marked seen: if this exact quant fails, the fallback pool
-          // may still pick another complete quant from this repo (only the
-          // failed candidate key below is excluded).
-          try {
-            const variants = await scanRepoVariants(repo.repo_id, repo.cache_path);
-            const variant = variants.variants.find(
-              (entry) =>
-                entry.downloaded &&
-                !entry.partial &&
-                entry.quant?.toLowerCase() ===
-                  lastLoaded.ggufVariant?.toLowerCase() &&
-                isAutoLoadableGgufVariant(entry),
-            );
-            if (variant) {
-              toast("Loading last used model…", {
-                id: toastId,
-                description: `${repo.repo_id} (${variant.quant})`,
-                duration: 5000,
-              });
-              if (
-                await loadAutoLoadCandidate({
-                  id: repo.repo_id,
-                  loadId: repo.load_id,
-                  kind: "gguf",
-                  ggufVariant: variant.quant,
-                  maxSeqLength: 0,
-                  successLabel: `Loaded ${repo.repo_id} (${variant.quant})`,
-                  inventoryId: repo.inventory_id ?? null,
-                  source: "hf_cache",
-                })
-              ) {
-                return { loaded: true, blockedByTrustRemoteCode: false };
-              }
-            }
-          } catch {
-            hadNonTrustFailure = true;
-            skippedAutoLoadCandidates.add(
-              autoLoadCandidateKey(
-                "gguf",
-                repo.load_id || repo.repo_id,
-                lastLoaded.ggufVariant,
-              ),
-            );
-          }
-        }
-      } else {
-        const repo = findCachedRepo(modelRepos, lastLoaded.id);
-        if (repo) {
-          try {
-            toast("Loading last used model…", {
-              id: toastId,
-              description: repo.repo_id,
-              duration: 5000,
-            });
-            if (
-              await loadAutoLoadCandidate({
-                id: repo.repo_id,
-                loadId: repo.load_id,
-                kind: "model",
-                ggufVariant: null,
-                maxSeqLength: store.params.maxSeqLength,
-                successLabel: `Loaded ${repo.repo_id}`,
-                inventoryId: repo.inventory_id ?? null,
-                source: "hf_cache",
-              })
-            ) {
-              return { loaded: true, blockedByTrustRemoteCode: false };
-            }
-          } catch {
-            hadNonTrustFailure = true;
-            skippedAutoLoadCandidates.add(
-              autoLoadCandidateKey("model", repo.load_id || repo.repo_id),
-            );
-          }
-        }
-      }
-      toast("Loading a model…", {
-        id: toastId,
-        description: "Auto-selecting the smallest on-device model.",
-        duration: 5000,
-      });
-    }
-
-    // On-device fallback: complete/loadable GGUF models first, then
-    // complete/loadable non-GGUF models, smallest first within each group,
-    // merging managed-cache repos with backend-indexed local rows. Both
-    // cached repos and local rows order on the size of the quant that will
-    // actually load: a multi-quant repo's row size_bytes SUMS every quant,
-    // which would push a repo holding one small quant behind larger models.
-    type FallbackCandidate =
-      | {
-          type: "cached-gguf";
-          repo: CachedGgufRepo;
-          variant: GgufVariantDetail;
-          sizeBytes: number;
-          /** Re-queued quant of an already-visited repo (skips the seen gate). */
-          retry?: boolean;
-        }
-      | { type: "cached-model"; repo: CachedModelRepo; sizeBytes: number }
-      | {
-          type: "local";
-          row: LocalModelInfo;
-          candidate: AutoLoadCandidate;
-          sizeBytes: number;
-          /** Re-queued quant of an already-visited row (skips the seen gate). */
-          retry?: boolean;
-        };
-    const isModelKindEntry = (entry: FallbackCandidate): boolean =>
-      entry.type === "cached-model" ||
-      (entry.type === "local" && entry.candidate.kind === "model");
-    const isSkippedAutoLoadCandidate = (c: AutoLoadCandidate): boolean =>
-      skippedAutoLoadCandidates.has(autoLoadSkipKey(c));
-    // Candidates are resolved through a bounded worker pool and consumed
-    // incrementally from a size-ordered pool: awaiting every folder scan
-    // before the first attempt let one slow folder stall the send path
-    // behind the transport timeout. Ordered insertion keeps GGUF entries
-    // ahead of safetensors entries and each group smallest-first, so
-    // late-resolving scans and requeued quants land in the same global
-    // order a full pre-sort would give.
-    const readyPool: FallbackCandidate[] = [];
-    const insertReady = (entry: FallbackCandidate): void => {
-      let at = 0;
-      if (isModelKindEntry(entry)) {
-        while (at < readyPool.length && !isModelKindEntry(readyPool[at])) {
-          at += 1;
-        }
-      }
-      while (
-        at < readyPool.length &&
-        isModelKindEntry(readyPool[at]) === isModelKindEntry(entry) &&
-        readyPool[at].sizeBytes <= entry.sizeBytes
-      ) {
-        at += 1;
-      }
-      readyPool.splice(at, 0, entry);
-    };
-    // Non-GGUF cached repos need no scan: their snapshot loads whole. The
-    // picker hides cached non-GGUF rows entirely on chat-only installs, so
-    // the automatic cascade must not pick one there either; the remembered
-    // path above stays ungated since a recorded load is user precedent that
-    // the model runs on this install (e.g. an MLX repo loaded on a Mac).
-    for (const repo of platform.chatOnly ? [] : modelRepos) {
-      insertReady({
-        type: "cached-model",
-        repo,
-        // Order by the snapshot the load will actually resolve: the row's
-        // size_bytes sums weight blobs across EVERY cached revision, so a
-        // small current revision beside a huge stale one would otherwise be
-        // ranked as their total and sink behind genuinely larger candidates.
-        sizeBytes: sizeOrUnknownBytes(
-          repo.snapshot_size_bytes ?? repo.size_bytes,
-        ),
-      });
-    }
-    // Smallest complete, auto-loadable, not-yet-skipped quant of a managed
-    // cache repo; null when none remains.
-    const resolveCachedGgufEntry = async (
-      repo: CachedGgufRepo,
-    ): Promise<Extract<FallbackCandidate, { type: "cached-gguf" }> | null> => {
-      const variants = await scanRepoVariants(repo.repo_id, repo.cache_path);
-      const downloaded = variants.variants
-        .filter(
-          (v) => v.downloaded && !v.partial && isAutoLoadableGgufVariant(v),
-        )
-        .sort((a, b) => a.size_bytes - b.size_bytes);
-      for (const variant of downloaded) {
-        if (
-          skippedAutoLoadCandidates.has(
-            autoLoadCandidateKey(
-              "gguf",
-              repo.load_id || repo.repo_id,
-              variant.quant,
-            ),
-          )
-        ) {
-          continue;
-        }
-        return {
-          type: "cached-gguf",
-          repo,
-          variant,
-          sizeBytes: sizeOrUnknownBytes(variant.size_bytes),
-        };
-      }
-      return null;
-    };
-    // Directory-based GGUF rows resolve a quant automatically; only non-GGUF
-    // variant-requiring rows have no background resolution path.
-    const cascadeLocalRows = localRows.filter(
-      (row) =>
-        row.model_format === "gguf" ||
-        row.capabilities?.requires_variant !== true,
-    );
-    // Only GGUF directory rows hit the backend folder scan; everything else
-    // resolves in-process and is seeded straight into the pool so it can
-    // never queue behind slow scans.
-    const needsVariantScan = (row: LocalModelInfo): boolean =>
-      row.model_format === "gguf" &&
-      row.capabilities?.requires_variant === true;
-    await Promise.all(
-      cascadeLocalRows
-        .filter((row) => !needsVariantScan(row))
-        .map(async (row) => {
-          try {
-            const resolved = await resolveLocalRowCandidate(
-              row,
-              null,
-              isSkippedAutoLoadCandidate,
-            );
-            if (resolved) {
-              insertReady({
-                type: "local",
-                row,
-                candidate: resolved.candidate,
-                sizeBytes: resolved.sizeBytes,
-              });
-            }
-          } catch {
-            hadNonTrustFailure = true;
-          }
-        }),
-    );
-    // The remaining jobs all need a backend scan and can all yield GGUF
-    // candidates. Cached repos and local folders interleave so a run of
-    // slow scans from one source cannot monopolize every worker.
-    const cachedScanJobs = ggufRepos.map(
-      (repo) => () => resolveCachedGgufEntry(repo),
-    );
-    const localScanJobs = cascadeLocalRows.filter(needsVariantScan).map(
-      (row) => async (): Promise<FallbackCandidate | null> => {
-        const resolved = await resolveLocalRowCandidate(
-          row,
-          null,
-          isSkippedAutoLoadCandidate,
-        );
-        if (!resolved) {
-          return null;
-        }
-        return {
-          type: "local",
-          row,
-          candidate: resolved.candidate,
-          sizeBytes: resolved.sizeBytes,
-        };
-      },
-    );
-    const resolutionJobs: Array<() => Promise<FallbackCandidate | null>> = [];
-    for (
-      let jobIndex = 0;
-      jobIndex < Math.max(cachedScanJobs.length, localScanJobs.length);
-      jobIndex += 1
-    ) {
-      if (jobIndex < cachedScanJobs.length) {
-        resolutionJobs.push(cachedScanJobs[jobIndex]);
-      }
-      if (jobIndex < localScanJobs.length) {
-        resolutionJobs.push(localScanJobs[jobIndex]);
-      }
-    }
-    let pendingJobs = resolutionJobs.length;
-    // Once auto-load reaches a terminal result (a model loaded, the attempt
-    // cap was hit, or the pool drained), the workers stop claiming jobs so a
-    // successful early load does not leave background scans hammering the
-    // backend while inference is already running. In-flight scans finish.
-    let resolutionStopped = false;
-    let ggufGateExpired = false;
-    let progressWaiters: Array<() => void> = [];
-    const signalProgress = (): void => {
-      const waiters = progressWaiters;
-      progressWaiters = [];
-      for (const resolve of waiters) {
-        resolve();
-      }
-    };
-    const nextProgress = (): Promise<void> =>
-      new Promise((resolve) => progressWaiters.push(resolve));
-    const runResolutionJobs = async (): Promise<void> => {
-      let nextJob = 0;
-      await Promise.all(
-        Array.from(
-          {
-            length: Math.max(
-              1,
-              Math.min(AUTO_LOAD_VARIANT_SCAN_CONCURRENCY, resolutionJobs.length),
-            ),
-          },
-          async () => {
-            while (!resolutionStopped && nextJob < resolutionJobs.length) {
-              const job = resolutionJobs[nextJob];
-              nextJob += 1;
-              let entry: FallbackCandidate | null = null;
-              try {
-                entry = await job();
-              } catch {
-                hadNonTrustFailure = true;
-              }
-              pendingJobs -= 1;
-              if (entry) {
-                insertReady(entry);
-              }
-              signalProgress();
-            }
-          },
-        ),
-      );
-    };
-    const resolutionDone = runResolutionJobs();
-    const ggufGateTimer =
-      pendingJobs > 0
-        ? setTimeout(() => {
-            ggufGateExpired = true;
-            signalProgress();
-          }, AUTO_LOAD_GGUF_GATE_TIMEOUT_MS)
-        : null;
-    if (pendingJobs > 0) {
-      await new Promise<void>((resolve) => {
-        const graceTimer = setTimeout(resolve, AUTO_LOAD_RESOLVE_GRACE_MS);
-        resolutionDone.then(() => {
-          clearTimeout(graceTimer);
-          resolve();
+        activeModelIsLocal: loadResp.is_local_model ?? false,
+        ...resolveLoadedSpeculativeSettings(loadResp),
         });
+        recordLastLocalModelLoad({
+          id: DEFAULT_CHAT_MODEL_REPO,
+          kind: "gguf",
+          ggufVariant: DEFAULT_CHAT_MODEL_VARIANT,
+        });
+        showAutoLoadSuccess(
+          `Loaded ${DEFAULT_CHAT_MODEL_LABEL} (${DEFAULT_CHAT_MODEL_VARIANT})`,
+        );
       });
+      return { loaded: true, blockedByTrustRemoteCode: false };
+    } catch {
+      options?.abortSignal?.throwIfAborted();
+      toast.dismiss(toastId);
+      hadNonTrustFailure = true;
+      return {
+        loaded: false,
+        blockedByTrustRemoteCode:
+          blockedByTrustRemoteCode && !hadNonTrustFailure,
+      };
     }
-    try {
-      while (loadAttempts < MAX_AUTO_LOAD_ATTEMPTS) {
-        const candidate = readyPool[0];
-        if (!candidate) {
-          if (pendingJobs <= 0) {
-            break;
-          }
-          await nextProgress();
-          continue;
-        }
-        // Only the first attempt may leapfrog pending scans: it is the
-        // latency-critical one and it almost always succeeds. Once any
-        // budget has been spent, consumption waits for resolution to
-        // settle, so the remaining attempts follow the complete global
-        // smallest-first order instead of exhausting the cap on larger
-        // candidates while smaller ones are still resolving. The overall
-        // gate deadline prevents many serial worker batches from multiplying
-        // the per-scan timeout.
-        if (pendingJobs > 0 && loadAttempts > 0 && !ggufGateExpired) {
-          await nextProgress();
-          continue;
-        }
-        // Every pending scan job can still yield a GGUF candidate (no-scan
-        // rows were seeded upfront), and GGUF outranks safetensors in the
-        // documented order, so the model-kind group stays gated until the
-        // scans settle or the overall gate deadline expires; resolved GGUF
-        // entries keep flowing immediately.
-        if (
-          isModelKindEntry(candidate) &&
-          pendingJobs > 0 &&
-          !ggufGateExpired
-        ) {
-          await nextProgress();
-          continue;
-        }
-        readyPool.shift();
-        if (candidate.type === "cached-gguf") {
-          const repo = candidate.repo;
-          if (!candidate.retry) {
-            // A shared load target may already have been visited through an
-            // indexed local row (e.g. a scan folder aliasing this cache).
-            if (isSeen("gguf", repo.load_id || repo.repo_id, repo.cache_path)) {
-              continue;
-            }
-            markSeen("gguf", repo.load_id || repo.repo_id, repo.cache_path);
-          }
-          const skipKey = autoLoadCandidateKey(
-            "gguf",
-            repo.load_id || repo.repo_id,
-            candidate.variant.quant,
-          );
-          if (skippedAutoLoadCandidates.has(skipKey)) {
-            continue;
-          }
-          try {
-            if (
-              await loadAutoLoadCandidate({
-                id: repo.repo_id,
-                loadId: repo.load_id,
-                kind: "gguf",
-                ggufVariant: candidate.variant.quant,
-                maxSeqLength: 0,
-                successLabel: `Loaded ${repo.repo_id} (${candidate.variant.quant})`,
-                inventoryId: repo.inventory_id ?? null,
-                source: "hf_cache",
-              })
-            ) {
-              return { loaded: true, blockedByTrustRemoteCode: false };
-            }
-          } catch {
-            hadNonTrustFailure = true;
-            skippedAutoLoadCandidates.add(skipKey);
-            // A quant that passed validation can still fail /load (corrupt
-            // file, llama.cpp startup error). Re-enter the repo's next
-            // complete quant into the global size order, so one repo of
-            // failing quants cannot starve a smaller model elsewhere.
-            // Validation blocks are model-scoped, so they get no requeue.
-            try {
-              const next = await resolveCachedGgufEntry(repo);
-              if (next) {
-                insertReady({ ...next, retry: true });
-              }
-            } catch {
-              hadNonTrustFailure = true;
-            }
-          }
-          continue;
-        }
-        if (candidate.type === "cached-model") {
-          const repo = candidate.repo;
-          if (isSeen("model", repo.load_id || repo.repo_id, repo.cache_path)) {
-            continue;
-          }
-          markSeen("model", repo.load_id || repo.repo_id, repo.cache_path);
-          if (
-            skippedAutoLoadCandidates.has(
-              autoLoadCandidateKey("model", repo.load_id || repo.repo_id),
-            )
-          ) {
-            continue;
-          }
-          try {
-            if (
-              await loadAutoLoadCandidate({
-                id: repo.repo_id,
-                loadId: repo.load_id,
-                kind: "model",
-                ggufVariant: null,
-                maxSeqLength: 4096,
-                successLabel: `Loaded ${repo.repo_id}`,
-                inventoryId: repo.inventory_id ?? null,
-                source: "hf_cache",
-              })
-            ) {
-              return { loaded: true, blockedByTrustRemoteCode: false };
-            }
-          } catch {
-            hadNonTrustFailure = true;
-            skippedAutoLoadCandidates.add(
-              autoLoadCandidateKey("model", repo.load_id || repo.repo_id),
-            );
-          }
-          continue;
-        }
-        const row = candidate.row;
-        const localCandidate = candidate.candidate;
-        if (!candidate.retry) {
-          if (isSeen(localCandidate.kind, row.load_id, row.id, row.path)) {
-            continue;
-          }
-          markSeen(localCandidate.kind, row.load_id, row.id, row.path);
-        }
-        if (isSkippedAutoLoadCandidate(localCandidate)) {
-          continue;
-        }
-        try {
-          if (await loadAutoLoadCandidate(localCandidate)) {
-            return { loaded: true, blockedByTrustRemoteCode: false };
-          }
-        } catch {
-          hadNonTrustFailure = true;
-          skippedAutoLoadCandidates.add(autoLoadSkipKey(localCandidate));
-          // Same requeue as the cached-gguf branch: the folder's next complete
-          // quant re-enters the global size order instead of retrying inline.
-          try {
-            const next = await resolveLocalRowCandidate(
-              row,
-              null,
-              isSkippedAutoLoadCandidate,
-            );
-            if (next) {
-              insertReady({
-                type: "local",
-                row,
-                candidate: next.candidate,
-                sizeBytes: next.sizeBytes,
-                retry: true,
-              });
-            }
-          } catch {
-            hadNonTrustFailure = true;
-          }
-        }
-      }
-    } finally {
-      // Runs on every exit (successful return, cap, drained pool, or a
-      // thrown error) so no worker keeps scanning after the outcome is set.
-      resolutionStopped = true;
-      if (ggufGateTimer !== null) {
-        clearTimeout(ggufGateTimer);
-      }
-    }
-
-    // No auto-loadable on-device model (or the attempt cap was hit). Never
-    // fall back to a remote download from the send path: the caller shows
-    // the actionable "no model" error and any download stays an explicit
-    // user action.
-    toast.dismiss(toastId);
-    return {
-      loaded: false,
-      blockedByTrustRemoteCode: blockedByTrustRemoteCode && !hadNonTrustFailure,
-    };
   } catch {
+    options?.abortSignal?.throwIfAborted();
     toast.dismiss(toastId);
     hadNonTrustFailure = true;
     return {
@@ -2812,10 +2909,119 @@ export async function autoLoadOnDeviceModel(): Promise<{
   }
 }
 
+async function resolveQueuedEmptyLocalModel(
+  abortSignal: AbortSignal,
+): Promise<{
+  loaded: boolean;
+  blockedByTrustRemoteCode: boolean;
+  loadFailureReported?: boolean;
+  modelRuntime: QueuedResolvedModelRuntime | null;
+}> {
+  let lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
+  while (lifecycleLease === null) {
+    await waitForModelReady(abortSignal);
+    abortSignal.throwIfAborted();
+    lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
+  }
+
+  try {
+    abortSignal.throwIfAborted();
+    const visibleState = useChatRuntimeStore.getState();
+    if (isExternalModelId(visibleState.params.checkpoint)) {
+      // Hold the lifecycle lease across the probe. Its response cannot become
+      // stale behind a foreground or sibling queued load, and only this owner
+      // may clear modelLoading afterward.
+      // A failed probe is not evidence that the local server is empty. Fail
+      // closed so a transient status error cannot replace a valid resident
+      // model with the recorded/default auto-load candidate.
+      const status = await getInferenceStatus();
+      abortSignal.throwIfAborted();
+      const checkpoint = resolveInferenceCheckpointId(status);
+      if (checkpoint) {
+        return {
+          loaded: true,
+          blockedByTrustRemoteCode: false,
+          modelRuntime: {
+            checkpoint,
+            supportsTools: status.supports_tools ?? false,
+            supportsReasoning: status.supports_reasoning ?? false,
+            reasoningAlwaysOn: status.reasoning_always_on ?? false,
+            ...reasoningCapsFromLoad(status),
+            supportsPreserveThinking:
+              status.supports_preserve_thinking ?? false,
+            ggufContextLength: status.is_gguf
+              ? (status.context_length ?? null)
+              : null,
+            loadedIsMultimodal: isMultimodalResponse(status),
+            modelCapabilities: {
+              isVision: status.is_vision ?? false,
+              isGguf: status.is_gguf ?? false,
+              isAudio: status.is_audio ?? false,
+              audioType: status.audio_type ?? null,
+              hasAudioInput: status.has_audio_input ?? false,
+            },
+          },
+        };
+      }
+
+      const visibleExternalState = snapshotVisibleModelState(visibleState);
+      const visibleThreadEpoch = visibleState.activeThreadEpoch;
+      const visibleSettingsEpoch = visibleState.queuedSettingsEpoch;
+      const visibleRoute = window.location.href;
+      let result: Awaited<ReturnType<typeof autoLoadSmallestModel>>;
+      let modelRuntime: QueuedResolvedModelRuntime | null = null;
+      try {
+        result = await autoLoadSmallestModel({
+          skipAdoptServerModel: true,
+          preserveVisibleSettings: true,
+          captureResolvedRuntime: (runtime) => {
+            modelRuntime = runtime;
+          },
+          abortSignal,
+        });
+        if (result.loaded && !modelRuntime) {
+          modelRuntime = queuedResolvedModelFromStore(
+            useChatRuntimeStore.getState(),
+          );
+        }
+      } finally {
+        if (
+          useChatRuntimeStore.getState().activeThreadEpoch ===
+            visibleThreadEpoch &&
+          useChatRuntimeStore.getState().queuedSettingsEpoch ===
+            visibleSettingsEpoch &&
+          window.location.href === visibleRoute
+        ) {
+          restoreVisibleModelState(visibleExternalState);
+        }
+      }
+      return { ...result, modelRuntime };
+    }
+
+    if (visibleState.params.checkpoint) {
+      return {
+        loaded: true,
+        blockedByTrustRemoteCode: false,
+        modelRuntime: queuedResolvedModelFromStore(visibleState),
+      };
+    }
+
+    const result = await autoLoadSmallestModel({ abortSignal });
+    return {
+      ...result,
+      modelRuntime: result.loaded
+        ? queuedResolvedModelFromStore(useChatRuntimeStore.getState())
+        : null,
+    };
+  } finally {
+    useChatRuntimeStore.getState().endModelLoading(lifecycleLease);
+  }
+}
+
 export function createOpenAIStreamAdapter(
   options: OpenAIStreamAdapterOptions = {},
 ): ChatModelAdapter {
-  return {
+  const adapter = {
     async *run({
       messages,
       abortSignal,
@@ -2828,13 +3034,43 @@ export function createOpenAIStreamAdapter(
       // switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
+      const releaseCurrentPreStreamRun = () =>
+        releasePreStreamRunForThreadIds([
+          unstable_threadId,
+          resolvedThreadId,
+        ]);
+      const queuedRunSettings =
+        consumeQueuedChatRunSettings(resolvedThreadId);
+      let queuedEmptyModelRuntime: QueuedResolvedModelRuntime | null = null;
+      const persistResolvedQueuedModel = async (modelId: string) => {
+        if (
+          !queuedRunSettings ||
+          queuedRunSettings.params.checkpoint ||
+          !resolvedThreadId ||
+          !modelId
+        ) {
+          return;
+        }
+        try {
+          await updateStoredChatThread(resolvedThreadId, { modelId });
+        } catch (error) {
+          throw error;
+        }
+      };
+      if (queuedRunSettings) {
+        runtime = { ...runtime, ...queuedRunSettings };
+      }
       const threadAlreadyResearched = Boolean(
         resolvedThreadId &&
           useResearchRunStore.getState().claimedThreadIds[resolvedThreadId],
       );
       if (runtime.deepResearchEnabled && threadAlreadyResearched) {
-        runtime.setDeepResearchEnabled(false);
-        runtime = useChatRuntimeStore.getState();
+        if (queuedRunSettings) {
+          runtime = { ...runtime, deepResearchEnabled: false };
+        } else {
+          runtime.setDeepResearchEnabled(false);
+          runtime = useChatRuntimeStore.getState();
+        }
       }
       if (
         runtime.deepResearchEnabled &&
@@ -2843,30 +3079,84 @@ export function createOpenAIStreamAdapter(
       ) {
         if (runtime.modelLoading) {
           toast.info("Waiting for model to finish loading…");
-          await waitForModelReady(abortSignal);
+          try {
+            await waitForModelReady(abortSignal);
+          } catch (error) {
+            throw error;
+          }
         }
-        if (!useChatRuntimeStore.getState().params.checkpoint) {
-          // Same on-device-only auto-load as the plain send path: deep
-          // research must never trigger a background download either.
-          const { loaded, blockedByTrustRemoteCode, inventoryErrorSurfaced } =
-            await autoLoadOnDeviceModel();
-          if (!loaded) {
-            if (!inventoryErrorSurfaced) {
+        if (!runtime.params.checkpoint) {
+          let resolution: Awaited<
+            ReturnType<typeof resolveQueuedEmptyLocalModel>
+          >;
+          try {
+            resolution = await resolveQueuedEmptyLocalModel(abortSignal);
+          } catch (error) {
+            throw error;
+          }
+          queuedEmptyModelRuntime = resolution.modelRuntime;
+          if (!resolution.loaded) {
+            // A reported failure already names the model; generic advice buries it.
+            if (!resolution.loadFailureReported) {
               toast.error(
-                blockedByTrustRemoteCode
+                resolution.blockedByTrustRemoteCode
                   ? "This model needs custom code approval"
                   : "No model loaded",
                 {
-                  description: blockedByTrustRemoteCode
+                  description: resolution.blockedByTrustRemoteCode
                     ? "Select it from the top bar to review and approve its custom code, or pick another model."
-                    : "Select a model in the top bar, or download one from the Hub, then retry.",
+                    : "Pick a model in the top bar, then retry.",
                 },
               );
             }
             throw new Error("Load a model first.");
           }
         }
-        runtime = useChatRuntimeStore.getState();
+        const liveRuntime = useChatRuntimeStore.getState();
+        runtime = queuedRunSettings
+          ? queuedRunSettings.params.checkpoint
+            ? { ...liveRuntime, ...queuedRunSettings }
+            : {
+                ...liveRuntime,
+                ...queuedRunSettings,
+                params: {
+                  ...queuedRunSettings.params,
+                  checkpoint:
+                    queuedEmptyModelRuntime?.checkpoint ??
+                    liveRuntime.params.checkpoint,
+                },
+                supportsTools:
+                  queuedEmptyModelRuntime?.supportsTools ??
+                  liveRuntime.supportsTools,
+                supportsReasoning:
+                  queuedEmptyModelRuntime?.supportsReasoning ??
+                  liveRuntime.supportsReasoning,
+                reasoningAlwaysOn:
+                  queuedEmptyModelRuntime?.reasoningAlwaysOn ??
+                  liveRuntime.reasoningAlwaysOn,
+                reasoningStyle:
+                  queuedEmptyModelRuntime?.reasoningStyle ??
+                  liveRuntime.reasoningStyle,
+                supportsReasoningOff:
+                  queuedEmptyModelRuntime?.supportsReasoningOff ??
+                  liveRuntime.supportsReasoningOff,
+                reasoningEffortLevels:
+                  queuedEmptyModelRuntime?.reasoningEffortLevels ??
+                  liveRuntime.reasoningEffortLevels,
+                supportsPreserveThinking:
+                  queuedEmptyModelRuntime?.supportsPreserveThinking ??
+                  liveRuntime.supportsPreserveThinking,
+                ggufContextLength:
+                  queuedEmptyModelRuntime !== null
+                    ? queuedEmptyModelRuntime.ggufContextLength
+                    : liveRuntime.ggufContextLength,
+                models: mergeQueuedModelCapabilities(
+                  liveRuntime.models,
+                  queuedEmptyModelRuntime?.checkpoint ?? "",
+                  queuedEmptyModelRuntime?.modelCapabilities ?? null,
+                ),
+              }
+          : liveRuntime;
         if (!resolvedThreadId) throw new Error("Research requires a saved chat.");
         if (!unstable_assistantMessageId) {
           throw new Error(
@@ -2879,6 +3169,7 @@ export function createOpenAIStreamAdapter(
         const userMessageParentId =
           userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null;
         const { params } = runtime;
+        await persistResolvedQueuedModel(params.checkpoint);
         const model = params.checkpoint.trim();
         if (!model || parseExternalModelId(model)) {
           throw new Error("Deep research requires a selected local model.");
@@ -2960,7 +3251,21 @@ export function createOpenAIStreamAdapter(
             : undefined;
 
         const threadKey = resolvedThreadId;
-        runtime.setThreadRunning(threadKey, true);
+        // The run is durable on the server, but Stop, archive and delete reach a background
+        // thread only through this map: without a handle the supervisor kept planning against
+        // a deleted conversation. Registered before the run exists, since the thread can be
+        // stopped while createResearchRun is still in flight.
+        let researchRunId: string | null = null;
+        let researchStopRequested = false;
+        const researchServerCancel = () => {
+          researchStopRequested = true;
+          if (researchRunId) {
+            void cancelResearchRun(researchRunId).catch(() => {});
+          }
+        };
+        runtime.registerThreadServerCancel(threadKey, researchServerCancel);
+        releaseCurrentPreStreamRun();
+        runtime.setThreadRunning(threadKey, true, { owner: researchServerCancel });
         let report = "";
         let releaseResearchFollow: (() => void) | null = null;
         const researchFollowController = new AbortController();
@@ -3000,11 +3305,24 @@ export function createOpenAIStreamAdapter(
               blockedDomains: [...runtime.researchWebsitePolicy.blockedDomains],
             },
           });
+          researchRunId = createdRun.id;
+          if (researchStopRequested) {
+            // Stopped while createResearchRun was still in flight, so the handle had no
+            // id to act on. Replay it rather than following a run the user already ended.
+            void cancelResearchRun(createdRun.id).catch(() => {});
+            return;
+          }
           releaseResearchFollow = beginExternalResearchFollow(
             createdRun,
             detachResearchFollow,
           );
-          runtime.setDeepResearchEnabled(false);
+          if (
+            !queuedRunSettings ||
+            resolvedThreadId ===
+              useChatRuntimeStore.getState().activeThreadId
+          ) {
+            runtime.setDeepResearchEnabled(false);
+          }
           if (abortSignal.aborted) {
             const detached = Boolean(
               (abortSignal.reason as { detach?: boolean } | undefined)?.detach,
@@ -3058,7 +3376,8 @@ export function createOpenAIStreamAdapter(
         } finally {
           abortSignal.removeEventListener("abort", forwardAdapterAbort);
           releaseResearchFollow?.();
-          runtime.setThreadRunning(threadKey, false);
+          runtime.clearThreadServerCancel(threadKey, researchServerCancel);
+          runtime.setThreadRunning(threadKey, false, { owner: researchServerCancel });
         }
         return;
       }
@@ -3067,17 +3386,21 @@ export function createOpenAIStreamAdapter(
         ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
         : sandboxSessionId || "_default";
       const toolConfirmationIdsByBackendId = new Map<string, string>();
-      // Store keys are pane-scoped since local tool ids ("call_0") repeat across
-      // turns and concurrent panes (compare mode). Track this run's keys so
-      // cleanup can't wipe another pane's.
-      const toolOutputPaneScope = toolPaneScope(
-        options.modelType,
-        options.pairId,
+      // Local tool ids ("call_0") repeat across turns, panes and conversations, so scope by pane
+      // AND thread. unstable_threadId alone, no activeThreadId fallback: the reader has only
+      // threadListItem.remoteId, which is exactly this value.
+      const toolOutputPaneScope = toolThreadScope(
+        toolPaneScope(options.modelType, options.pairId),
+        unstable_threadId,
       );
       const scopedToolOutputKey = (id: string) =>
         toolOutputKey(toolOutputPaneScope, id);
       const runToolLiveOutputKeys = new Set<string>();
       const resolvedThreadKey = resolvedThreadId ?? null;
+      // Which conversation was on screen when this run started. A first turn has no id yet, so
+      // this is the only way to tell later whether the user has switched away from it.
+      const activeThreadIdAtRunStart =
+        useChatRuntimeStore.getState().activeThreadId ?? null;
       const pendingImageEditReferenceForRun = runtime.pendingImageEditReference;
       const selectedImageEditReference =
         (pendingImageEditReferenceForRun?.threadId ?? null) ===
@@ -3101,7 +3424,6 @@ export function createOpenAIStreamAdapter(
           store.clearPendingImageEditReference();
         }
       };
-
       // Wait for in-progress model load before inferring.
       if (runtime.modelLoading) {
         toast.info("Waiting for model to finish loading…");
@@ -3113,28 +3435,28 @@ export function createOpenAIStreamAdapter(
         }
       }
 
-      if (!useChatRuntimeStore.getState().params.checkpoint) {
-        // Prefer a model already loaded by the CLI/API before auto-loading.
-        let loaded: boolean;
-        let blockedByTrustRemoteCode: boolean;
-        let inventoryErrorSurfaced: boolean | undefined;
+      if (!runtime.params.checkpoint) {
+        let resolution: Awaited<
+          ReturnType<typeof resolveQueuedEmptyLocalModel>
+        >;
         try {
-          ({ loaded, blockedByTrustRemoteCode, inventoryErrorSurfaced } =
-            await autoLoadOnDeviceModel());
+          resolution = await resolveQueuedEmptyLocalModel(abortSignal);
         } catch (error) {
           clearSelectedImageEditReference();
           throw error;
         }
-        if (!loaded) {
-          if (!inventoryErrorSurfaced) {
+        queuedEmptyModelRuntime = resolution.modelRuntime;
+        if (!resolution.loaded) {
+          // A reported failure already names the model; generic advice buries it.
+          if (!resolution.loadFailureReported) {
             toast.error(
-              blockedByTrustRemoteCode
+              resolution.blockedByTrustRemoteCode
                 ? "This model needs custom code approval"
                 : "No model loaded",
               {
-                description: blockedByTrustRemoteCode
+                description: resolution.blockedByTrustRemoteCode
                   ? "Select it from the top bar to review and approve its custom code, or pick another model."
-                  : "Select a model in the top bar, or download one from the Hub, then retry.",
+                  : "Pick a model in the top bar, then retry.",
               },
             );
           }
@@ -3144,8 +3466,56 @@ export function createOpenAIStreamAdapter(
       }
 
       // Re-read store after auto-load / model-ready wait.
-      runtime = useChatRuntimeStore.getState();
+      const liveRuntime = useChatRuntimeStore.getState();
+      runtime = queuedRunSettings
+        ? queuedRunSettings.params.checkpoint
+          ? { ...liveRuntime, ...queuedRunSettings }
+          : {
+              ...liveRuntime,
+              ...queuedRunSettings,
+              params: {
+                ...queuedRunSettings.params,
+                checkpoint:
+                  queuedEmptyModelRuntime?.checkpoint ??
+                  liveRuntime.params.checkpoint,
+              },
+              supportsTools:
+                queuedEmptyModelRuntime?.supportsTools ??
+                liveRuntime.supportsTools,
+              supportsReasoning:
+                queuedEmptyModelRuntime?.supportsReasoning ??
+                liveRuntime.supportsReasoning,
+              reasoningAlwaysOn:
+                queuedEmptyModelRuntime?.reasoningAlwaysOn ??
+                liveRuntime.reasoningAlwaysOn,
+              reasoningStyle:
+                queuedEmptyModelRuntime?.reasoningStyle ??
+                liveRuntime.reasoningStyle,
+              supportsReasoningOff:
+                queuedEmptyModelRuntime?.supportsReasoningOff ??
+                liveRuntime.supportsReasoningOff,
+              reasoningEffortLevels:
+                queuedEmptyModelRuntime?.reasoningEffortLevels ??
+                liveRuntime.reasoningEffortLevels,
+              supportsPreserveThinking:
+                queuedEmptyModelRuntime?.supportsPreserveThinking ??
+                liveRuntime.supportsPreserveThinking,
+              ggufContextLength:
+                queuedEmptyModelRuntime !== null
+                  ? queuedEmptyModelRuntime.ggufContextLength
+                  : liveRuntime.ggufContextLength,
+              loadedIsMultimodal:
+                queuedEmptyModelRuntime?.loadedIsMultimodal ??
+                liveRuntime.loadedIsMultimodal,
+              models: mergeQueuedModelCapabilities(
+                liveRuntime.models,
+                queuedEmptyModelRuntime?.checkpoint ?? "",
+                queuedEmptyModelRuntime?.modelCapabilities ?? null,
+              ),
+            }
+        : liveRuntime;
       const { params } = runtime;
+      await persistResolvedQueuedModel(params.checkpoint);
       const {
         supportsTools,
         toolsEnabled,
@@ -3437,7 +3807,10 @@ export function createOpenAIStreamAdapter(
       // Scan post-prune history so a refused user turn's image/audio
       // doesn't gate or mis-attribute the next turn.
       const imageBase64 = findLatestUserImageBase64(survivingMessages);
-      const audioBase64 = findLatestUserAudioBase64(survivingMessages);
+      const audioBase64 = findLatestUserAudioBase64(
+        survivingMessages,
+        !queuedRunSettings,
+      );
       const hasOutboundImage = Boolean(imageBase64);
 
       // Keep render_html local-only and mirror the backend image-turn gate.
@@ -3451,8 +3824,8 @@ export function createOpenAIStreamAdapter(
       );
       const artifactInstruction = artifactsEnabled
         ? renderHtmlToolEnabledForThisTurn
-          ? "When the user asks for an HTML, CSS, or JavaScript canvas, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new canvases may call render_html once."
-          : "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax."
+          ? CANVAS_TOOL_INSTRUCTION
+          : CANVAS_FALLBACK_INSTRUCTION
         : null;
       const effectiveDisabledToolGuard =
         disabledToolGuard && artifactsEnabled
@@ -3486,14 +3859,17 @@ export function createOpenAIStreamAdapter(
           // waitForRunEnd resolves instead of hanging: this gate fires
           // before the streaming path's setThreadRunning(true).
           const gatedThreadKey = resolvedThreadId || "__default";
-          runtime.setThreadRunning(gatedThreadKey, true);
-          runtime.setThreadRunning(gatedThreadKey, false);
+          // Own token: siblings share "__default", so an ownerless clear would drop their
+          // entries while they are still generating.
+          const gateOwner = () => {};
+          runtime.setThreadRunning(gatedThreadKey, true, { owner: gateOwner });
+          runtime.setThreadRunning(gatedThreadKey, false, { owner: gateOwner });
           clearSelectedImageEditReference();
           throw new Error(imageGateReason);
         }
       }
       // Clear pending audio from store after extracting (consumed on send).
-      if (audioBase64) {
+      if (audioBase64 && !queuedRunSettings) {
         const audioName = runtime.pendingAudioName;
         if (audioName) {
           const lastUserMsg = [...survivingMessages]
@@ -3505,13 +3881,45 @@ export function createOpenAIStreamAdapter(
       }
       const useAdapter = await resolveUseAdapter(resolvedThreadId, options);
 
+      const threadKey = resolvedThreadId || "__default";
+      // A first turn files its handles under "__default"; autosave then assigns a real id and
+      // adoptDefaultThreadRun re-keys them mid-run. Resolve per use so later writes and the
+      // final clear follow the run instead of stranding entries behind.
+      const liveThreadKey = (owner: () => void) =>
+        threadKey === "__default"
+          ? useChatRuntimeStore.getState().runKeyForOwner(threadKey, owner)
+          : threadKey;
+
+      // Per-run token so a delayed stop POST can't match the next run.
+      const cancelId =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+      // Per-run abort, chained to assistant-ui's signal. cancelByThreadId only holds the visible
+      // thread's cancelRun(), so this controller is the only way to end a backgrounded chat's
+      // request; the cancel POST below reaches llama-server only.
+      const runAbort = new AbortController();
+      const runSignal = runAbort.signal;
+      const forwardAbort = () => runAbort.abort(abortSignal.reason);
+      // Declared here, not at its registration below: it doubles as this run's identity token
+      // on the per-thread maps (see registerThreadServerCancel).
+      const serverCancel = () => runAbort.abort();
+      if (abortSignal.aborted) {
+        forwardAbort();
+      } else {
+        abortSignal.addEventListener("abort", forwardAbort, { once: true });
+      }
+
       // ── Audio model path (non-streaming) ─────────────────────
       const activeModel = runtime.models.find(
         (m) => m.id === params.checkpoint,
       );
       if (activeModel?.isAudio && !activeModel?.hasAudioInput) {
-        const threadKey = resolvedThreadId || "__default";
-        runtime.setThreadRunning(threadKey, true);
+        const audioCancel = () => runAbort.abort();
+        runtime.registerThreadServerCancel(threadKey, audioCancel);
+        releaseCurrentPreStreamRun();
+        runtime.setThreadRunning(threadKey, true, { owner: audioCancel });
         try {
           yield {
             content: [{ type: "text" as const, text: "Generating audio..." }],
@@ -3521,6 +3929,10 @@ export function createOpenAIStreamAdapter(
             {
               model: params.checkpoint,
               messages: outboundMessages,
+              // Same run in both registries: without it the backend files this under no
+              // thread, and the stop-chats prompt counts the named local run and the
+              // unnamed backend one as two.
+              ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
               stream: false,
               temperature: params.temperature,
               top_p: params.topP,
@@ -3531,7 +3943,7 @@ export function createOpenAIStreamAdapter(
               presence_penalty: params.presencePenalty,
               ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             },
-            abortSignal,
+            runSignal,
           );
 
           const audioUrl = `data:audio/wav;base64,${result.audio.data}`;
@@ -3544,19 +3956,21 @@ export function createOpenAIStreamAdapter(
             ],
           };
         } catch (err) {
-          if (!abortSignal.aborted) {
+          if (!runSignal.aborted) {
             toast.error("Audio generation failed", {
               description: err instanceof Error ? err.message : "Unknown error",
             });
           }
           throw err;
         } finally {
-          runtime.setThreadRunning(threadKey, false);
+          abortSignal.removeEventListener("abort", forwardAbort);
+          const audioKey = liveThreadKey(audioCancel);
+          runtime.setThreadRunning(audioKey, false, { owner: audioCancel });
+          runtime.clearThreadServerCancel(audioKey, audioCancel);
         }
         return;
       }
 
-      const threadKey = resolvedThreadId || "__default";
       let waitingFirstChunk = true;
       let firstTokenSettled = false;
       const streamStartTime = Date.now();
@@ -3587,13 +4001,18 @@ export function createOpenAIStreamAdapter(
       const warmupDelayMs = 450;
       const warmupTimer = setTimeout(() => {
         if (!waitingFirstChunk) return;
-        if (abortSignal.aborted) return;
+        if (runSignal.aborted) return;
         runtime.setGeneratingStatus("waiting");
       }, warmupDelayMs);
-      runtime.setThreadRunning(threadKey, true);
+      // Flagged local/external so the model-swap gate only counts the chats a reload ends; the
+      // backend leaves external-provider runs out of active_generations for the same reason.
+      releaseCurrentPreStreamRun();
+      runtime.setThreadRunning(threadKey, true, {
+        local: !isExternalRequest,
+        owner: serverCancel,
+      });
       let cumulativeText = "";
-      let reasoningStartAt: number | null = null;
-      let reasoningDuration = 0;
+      const reasoningDurationTracker = createReasoningDurationTracker();
       // True while wrapping a `delta.reasoning_content` stream in
       // <think>...</think> for parseAssistantContent. Lives outside the
       // SSE loop because the close tag fires when content arrives.
@@ -3733,9 +4152,11 @@ export function createOpenAIStreamAdapter(
         return merged;
       };
       const closeReasoningContent = () => {
-        if (!reasoningContentOpen) return;
-        cumulativeText += "</think>";
-        reasoningContentOpen = false;
+        if (reasoningContentOpen) {
+          cumulativeText += "</think>";
+          reasoningContentOpen = false;
+        }
+        reasoningDurationTracker.finishGroup();
       };
       // Anthropic document_citations payload, converted to Sources-panel
       // parts at end-of-stream so inline [N] markers have matching entries.
@@ -3756,21 +4177,12 @@ export function createOpenAIStreamAdapter(
         timings?: ServerTimings;
       } | null = null;
 
-      // Per-run cancellation token so a delayed stop POST can't match
-      // the next run on the same thread.
-      const cancelId =
-        typeof crypto !== "undefined" && "randomUUID" in crypto
-          ? crypto.randomUUID()
-          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
       // Colab-style proxies can swallow fetch aborts, so also POST
       // /inference/cancel explicitly on abort.
       const onAbortCancel = () => {
-        // assistant-ui aborts with AbortError(detach=true) when a thread's runtime
-        // unmounts (navigation / background thread switch) and detach=false for an
-        // explicit Stop. Only a real Stop cancels the backend run; a detach must
-        // leave a backgrounded generation streaming.
-        if ((abortSignal.reason as { detach?: boolean } | undefined)?.detach) {
+        // assistant-ui aborts with detach=true when a runtime unmounts and detach=false for an
+        // explicit Stop. Only a real Stop cancels the backend run; runSignal forwards the reason.
+        if ((runSignal.reason as { detach?: boolean } | undefined)?.detach) {
           return;
         }
         const body: Record<string, string> = { cancel_id: cancelId };
@@ -3791,11 +4203,17 @@ export function createOpenAIStreamAdapter(
           keepalive: true,
         }).catch(() => {});
       };
+
+      // Stop handle for when this conversation is not the visible one, which cancelByThreadId
+      // cannot reach. Aborting this run's own controller closes just its request, and the
+      // listener above posts its cancel_id so llama-server stops decoding too. For an
+      // external provider the abort is the stop, since its cancel_id is never registered.
+      runtime.registerThreadServerCancel(threadKey, serverCancel);
       try {
-        if (abortSignal.aborted) {
+        if (runSignal.aborted) {
           onAbortCancel();
         } else {
-          abortSignal.addEventListener("abort", onAbortCancel, { once: true });
+          runSignal.addEventListener("abort", onAbortCancel, { once: true });
         }
 
         const {
@@ -4239,13 +4657,11 @@ export function createOpenAIStreamAdapter(
                         },
                       }
                     : {}),
-                  auto_heal_tool_calls:
-                    useChatRuntimeStore.getState().autoHealToolCalls,
-                  nudge_tool_calls: useChatRuntimeStore.getState().nudgeToolCalls,
-                  max_tool_calls_per_message:
-                    useChatRuntimeStore.getState().maxToolCallsPerMessage,
+                  auto_heal_tool_calls: runtime.autoHealToolCalls,
+                  nudge_tool_calls: runtime.nudgeToolCalls,
+                  max_tool_calls_per_message: runtime.maxToolCallsPerMessage,
                   tool_call_timeout: (() => {
-                    const mins = useChatRuntimeStore.getState().toolCallTimeout;
+                    const mins = runtime.toolCallTimeout;
                     return mins >= 9999 ? 9999 : mins * 60;
                   })(),
                 }
@@ -4267,7 +4683,7 @@ export function createOpenAIStreamAdapter(
             }
             clearSelectedImageEditReference();
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
-            const stream = streamChatCompletions(requestPayload, abortSignal);
+            const stream = streamChatCompletions(requestPayload, runSignal);
 
             for await (const chunk of stream) {
               const chunkModel = (chunk as { model?: unknown }).model;
@@ -4280,7 +4696,11 @@ export function createOpenAIStreamAdapter(
                 chunk as unknown as { _toolStatus?: string }
               )._toolStatus;
               if (toolStatusText !== undefined) {
-                runtime.setToolStatus(toolStatusText || null);
+                runtime.setToolStatus(
+                  liveThreadKey(serverCancel),
+                  toolStatusText || null,
+                  serverCancel,
+                );
                 continue;
               }
 
@@ -4290,8 +4710,9 @@ export function createOpenAIStreamAdapter(
               const reasoningMs = (
                 chunk as { _reasoningDurationMs?: number } | null | undefined
               )?._reasoningDurationMs;
-              if (typeof reasoningMs === "number" && Number.isFinite(reasoningMs)) {
-                reasoningDuration = Math.max(0, Math.round(reasoningMs / 1000));
+              if (
+                reasoningDurationTracker.recordServerDuration(reasoningMs)
+              ) {
                 continue;
               }
 
@@ -4309,7 +4730,9 @@ export function createOpenAIStreamAdapter(
                 }
               )._diffusionFrame;
               if (diffusionFrame !== undefined) {
-                runtime.setActiveDiffusionCanvas({
+                // Keyed by thread so a background run's frames stay out of the visible chat
+                // instead of overwriting the frame it is painting.
+                runtime.setActiveDiffusionCanvas(liveThreadKey(serverCancel), {
                   block: diffusionFrame.block ?? 0,
                   step: diffusionFrame.step ?? 0,
                   total: diffusionFrame.total ?? 0,
@@ -4433,7 +4856,7 @@ export function createOpenAIStreamAdapter(
                             totalChunks,
                             firstTokenTime,
                           ),
-                          custom: { reasoningDuration },
+                          custom: reasoningDurationTracker.metadata(),
                         },
                       };
                     }
@@ -4450,8 +4873,16 @@ export function createOpenAIStreamAdapter(
                   const approvalId = (toolEvent.approval_id as string) || "";
                   const awaitingConfirmation =
                     toolEvent.awaiting_confirmation === true;
+                  // Reuse a provisional card's part id, else the confirmation-scoped id
+                  // opens a second card and the first spins "Running" forever.
+                  const openPartId = backendToolCallId
+                    ? toolPartIdByBackendId.get(backendToolCallId)
+                    : undefined;
+                  const reuseOpenPart =
+                    !!openPartId &&
+                    toolCallParts.some((p) => p.toolCallId === openPartId);
                   const id =
-                    awaitingConfirmation && approvalId
+                    awaitingConfirmation && approvalId && !reuseOpenPart
                       ? `${toolConfirmationScopeId}:${approvalId}`
                       : backendToolCallId
                         ? resolveToolPartId(backendToolCallId)
@@ -4720,7 +5151,7 @@ export function createOpenAIStreamAdapter(
                       totalChunks,
                       firstTokenTime,
                     ),
-                    custom: { reasoningDuration },
+                    custom: reasoningDurationTracker.metadata(),
                   },
                 };
                 continue;
@@ -4759,7 +5190,10 @@ export function createOpenAIStreamAdapter(
               }
               const rawDelta = chunk.choices?.[0]?.delta?.content;
               // Normalize structured delta.content (mistral magistral).
-              const delta = extractDeltaText(rawDelta);
+              const {
+                text: delta,
+                structuredReasoningContinues,
+              } = extractDeltaText(rawDelta);
               // Latest Gemini text-part thoughtSignature for next-turn replay.
               const deltaExtraContent = (
                 chunk.choices?.[0]?.delta as
@@ -4913,7 +5347,7 @@ export function createOpenAIStreamAdapter(
                       totalChunks,
                       firstTokenTime,
                     ),
-                    custom: { reasoningDuration },
+                    custom: reasoningDurationTracker.metadata(),
                   },
                 };
                 continue;
@@ -4930,6 +5364,7 @@ export function createOpenAIStreamAdapter(
 
               if (reasoning) {
                 if (!reasoningContentOpen) {
+                  reasoningDurationTracker.startGroup();
                   cumulativeText += `<think>${reasoning}`;
                   reasoningContentOpen = true;
                 } else {
@@ -4937,7 +5372,9 @@ export function createOpenAIStreamAdapter(
                 }
               }
               if (delta) {
-                closeReasoningContent();
+                if (reasoningContentOpen) {
+                  closeReasoningContent();
+                }
                 cumulativeText += delta;
               }
               // Strip a trailing ${...} template-literal fragment from
@@ -4948,35 +5385,48 @@ export function createOpenAIStreamAdapter(
                   "",
                 );
               }
-              const textParts = parseAssistantContent(cumulativeText);
+              const assistantContent = buildAssistantContent(cumulativeText);
 
               // Fallback when no server-side reasoning_summary arrives.
+              const parsedReasoningGroupCount =
+                countReasoningGroups(assistantContent);
               if (
-                textParts.some((part) => part.type === "reasoning") &&
-                !reasoningStartAt
+                parsedReasoningGroupCount >
+                reasoningDurationTracker.groupCount
               ) {
-                reasoningStartAt = Date.now();
-              }
-              if (
-                hasClosedThinkTag(cumulativeText) &&
-                reasoningStartAt &&
-                !reasoningDuration
-              ) {
-                reasoningDuration = Math.round(
-                  (Date.now() - reasoningStartAt) / 1000,
+                reasoningDurationTracker.startGroup(
+                  parsedReasoningGroupCount - 1,
                 );
               }
+              if (parsedReasoningGroupCount > 0) {
+                // Providers that close every reasoning block atomically
+                // (structured parts wrapped as <think>..</think>) end the group
+                // on each chunk. Reopen while the reasoning text is still
+                // growing so the timer spans the whole pass.
+                reasoningDurationTracker.resumeGroup(
+                  parsedReasoningGroupCount - 1,
+                  lastReasoningGroupTextLength(assistantContent),
+                );
+              }
+              if (
+                reasoningDurationTracker.hasActiveGroup &&
+                !reasoningContentOpen &&
+                !structuredReasoningContinues &&
+                !hasUnclosedThinkTag(cumulativeText)
+              ) {
+                reasoningDurationTracker.finishGroup();
+              }
 
-              if (textParts.length > 0 || toolCallParts.length > 0) {
+              if (assistantContent.length > 0) {
                 yield {
-                  content: buildAssistantContent(cumulativeText),
+                  content: assistantContent,
                   metadata: {
                     timing: buildTiming(
                       streamStartTime,
                       totalChunks,
                       firstTokenTime,
                     ),
-                    custom: { reasoningDuration },
+                    custom: reasoningDurationTracker.metadata(),
                   },
                 };
               }
@@ -5030,23 +5480,43 @@ export function createOpenAIStreamAdapter(
         // Anthropic-only (billed at the write premium).
         const cacheWriteTokens = meta?.usage?.cache_creation_input_tokens ?? 0;
 
-        // Gate on the captured checkpoint still being active so a late
-        // completion from provider A doesn't populate the bar after a
-        // mid-stream switch to provider B.
+        // Gate on the captured checkpoint so a late completion from provider A cannot populate
+        // the bar after a mid-stream switch to B, and on the captured thread so a background
+        // run finishing after New Chat cannot repaint another chat's usage. An unresolved run
+        // has no id to compare, so compare what was on screen when it started. A first turn is
+        // adopted onto an id mid-run and autosave moves activeThreadId with it, so read the
+        // adopted key, or the run stays "unresolved" for life and the bar stays blank.
+        const usageKey = liveThreadKey(serverCancel);
+        const usageThreadKey = usageKey === "__default" ? null : usageKey;
+        const usageThreadIsVisible =
+          useChatRuntimeStore.getState().activeThreadId ===
+          (usageThreadKey ?? activeThreadIdAtRunStart);
         if (
           meta?.usage &&
           typeof meta.usage.prompt_tokens === "number" &&
           typeof meta.usage.completion_tokens === "number" &&
-          typeof meta.usage.total_tokens === "number" &&
-          useChatRuntimeStore.getState().params.checkpoint === params.checkpoint
+          typeof meta.usage.total_tokens === "number"
         ) {
-          useChatRuntimeStore.getState().setContextUsage({
+          const usage = {
             promptTokens: meta.usage.prompt_tokens,
             completionTokens: meta.usage.completion_tokens,
             totalTokens: meta.usage.total_tokens,
             cachedTokens,
             cacheWriteTokens,
-          });
+          };
+          // File it under this run's own thread even when the gate below blocks the visible
+          // write, so switching back re-applies it.
+          if (usageThreadKey !== null) {
+            useChatRuntimeStore
+              .getState()
+              .setThreadContextUsage(usageThreadKey, usage);
+          }
+          if (
+            usageThreadIsVisible &&
+            useChatRuntimeStore.getState().params.checkpoint === params.checkpoint
+          ) {
+            useChatRuntimeStore.getState().setContextUsage(usage);
+          }
         }
 
         const finishedAt = Date.now();
@@ -5061,12 +5531,7 @@ export function createOpenAIStreamAdapter(
         );
 
         // Finalize reasoning-only streams.
-        if (reasoningStartAt && !reasoningDuration) {
-          reasoningDuration = Math.max(
-            0,
-            Math.round((Date.now() - reasoningStartAt) / 1000),
-          );
-        }
+        reasoningDurationTracker.finishGroup();
         yield {
           content: [
             ...buildAssistantContent(cumulativeText),
@@ -5076,7 +5541,7 @@ export function createOpenAIStreamAdapter(
           metadata: {
             timing: finalTiming,
             custom: {
-              reasoningDuration,
+              ...reasoningDurationTracker.metadata(),
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
               serverTimings: meta?.timings ?? undefined,
@@ -5099,7 +5564,7 @@ export function createOpenAIStreamAdapter(
         settleFirstTokenErr(
           err instanceof Error ? err : new Error("Generation failed"),
         );
-        if (!abortSignal.aborted) {
+        if (!runSignal.aborted) {
           const msg = err instanceof Error ? err.message : String(err);
           if (err instanceof GenerationLengthError) {
             toast.error("Response ran out of tokens", {
@@ -5135,15 +5600,44 @@ export function createOpenAIStreamAdapter(
             });
           }
         }
+        if (!abortSignal.aborted) {
+          closeReasoningContent();
+          const partialContent = buildAssistantContent(cumulativeText);
+          if (partialContent.length > 0) {
+            const partialTiming = buildTiming(
+              streamStartTime,
+              totalChunks,
+              firstTokenTime,
+              Date.now() - streamStartTime,
+              estimateTokenCount(cumulativeText),
+              toolCallParts.length,
+            );
+            yield {
+              content: partialContent,
+              metadata: {
+                timing: partialTiming,
+                custom: {
+                  ...reasoningDurationTracker.metadata(),
+                  timing: partialTiming,
+                },
+              },
+            };
+          }
+        }
         throw err;
       } finally {
-        abortSignal.removeEventListener("abort", onAbortCancel);
+        runSignal.removeEventListener("abort", onAbortCancel);
+        abortSignal.removeEventListener("abort", forwardAbort);
+        // Resolve once: the clears below drop the owner the lookup keys on.
+        const cleanupKey = liveThreadKey(serverCancel);
         const confirmStore = useChatRuntimeStore.getState();
         for (const part of toolCallParts) {
           confirmStore.clearToolConfirmation(part.toolCallId);
         }
         runtime.setGeneratingStatus(null);
-        runtime.setToolStatus(null);
+        // Scoped by thread AND by run: a global clear wiped every other running chat's badge,
+        // and an unowned one wiped a concurrent run's badge behind the same key.
+        runtime.setToolStatus(cleanupKey, null, serverCancel);
         // Clear only this run's live keys (a concurrent pane owns its own). A
         // key still here streamed stdout but never reached tool_end (SSE drop or
         // cancel), so promote it to full output first, else the partial
@@ -5157,20 +5651,53 @@ export function createOpenAIStreamAdapter(
           store.clearToolLiveOutput(liveKey);
         }
         runToolLiveOutputKeys.clear();
-        // Drop the transient denoising canvas so the finished bubble shows only
-        // the committed markdown answer (cancellation/error included).
-        runtime.setActiveDiffusionCanvas(null);
+        // Drop the transient denoising canvas so the finished bubble shows only the committed
+        // answer. Scoped: a global clear wiped another denoising chat's frame.
+        runtime.clearActiveDiffusionCanvasForThread(cleanupKey);
         clearTimeout(warmupTimer);
         if (waitingFirstChunk) {
           if (firstTokenSettled) {
             settleFirstTokenOk();
-          } else if (abortSignal.aborted) {
+          } else if (runSignal.aborted) {
             settleFirstTokenErr(new Error("Cancelled"));
           } else {
             settleFirstTokenErr(new Error("No tokens received"));
           }
         }
-        runtime.setThreadRunning(threadKey, false);
+        // serverCancel narrows both clears: runs with no resolved thread id share the "__default"
+        // key, so a blind clear could drop a sibling's entry.
+        runtime.setThreadRunning(cleanupKey, false, { owner: serverCancel });
+        runtime.clearThreadServerCancel(cleanupKey, serverCancel);
+      }
+    },
+  } satisfies ChatModelAdapter;
+  return {
+    async *run(args) {
+      const preStreamThreadIds = preStreamRunThreadIdsForAdapter(
+        args.unstable_threadId,
+        useChatRuntimeStore.getState().activeThreadId,
+      );
+      const reservationToken =
+        findPreStreamRunReservation(preStreamThreadIds);
+      if (reservationToken) {
+        adoptPreStreamRunReservation(reservationToken, preStreamThreadIds);
+      }
+      try {
+        yield* adapter.run(args);
+      } catch (error) {
+        if (!args.abortSignal.aborted) {
+          notifyPromptQueueRunFailed(
+            args.unstable_threadId ?? preStreamThreadIds[0] ?? null,
+          );
+        }
+        throw error;
+      } finally {
+        if (
+          reservationToken &&
+          releasePreStreamRunReservation(reservationToken)
+        ) {
+          notifyPromptQueueRunFailed(args.unstable_threadId ?? null);
+        }
       }
     },
   };

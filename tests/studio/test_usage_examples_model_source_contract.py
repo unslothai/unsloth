@@ -50,9 +50,9 @@ def test_examples_never_print_a_hardcoded_model_id():
 
 
 def test_catalog_refresh_follows_the_loaded_model():
-    # A dep list that misses these never re-ran, so a finished load left the first
-    # fetch's name. It must not be gated on having no checkpoint either: the store
-    # keeps one across an idle unload, which changes nothing React can see.
+    # A dep list missing these never re-ran, so a finished load left the first fetch's
+    # name. Nor may it be gated on having no checkpoint: the store keeps one across an
+    # idle unload, which changes nothing React can see.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert "}, [checkpoint, ggufVariant]);" in hook
@@ -66,9 +66,9 @@ def test_catalog_refresh_follows_the_loaded_model():
 
 
 def test_a_stored_checkpoint_needs_catalog_evidence():
-    # The store keeps a checkpoint across an idle unload and across the model being
-    # deleted. Preferring it on the switch setting alone kept naming one /v1/models
-    # had already proved absent, so the snippets 404d instead of falling back.
+    # The store keeps a checkpoint across an idle unload and across a deletion, so
+    # preferring it on the switch setting alone named a model /v1/models had proved
+    # absent, and the snippets 404d instead of falling back.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert 'const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));' in hook
@@ -79,8 +79,8 @@ def test_a_stored_checkpoint_needs_catalog_evidence():
 
 def test_standalone_idle_unload_still_names_the_stored_checkpoint():
     # UNSLOTH_MODEL_IDLE_TTL without auto-switch reloads exactly what it freed, so the
-    # stored checkpoint stays runnable after an idle unload and the panel must keep
-    # showing it. The stash restores only that model, so it can never pick catalog[0].
+    # stored checkpoint stays runnable and the panel must keep showing it. The stash
+    # restores only that model, so it can never pick catalog[0].
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert "const [idleReload, setIdleReload] = useState(false);" in hook
@@ -92,9 +92,9 @@ def test_standalone_idle_unload_still_names_the_stored_checkpoint():
 
 
 def test_a_failed_refresh_does_not_erase_what_the_server_holds():
-    # Catching into [] and false made a transient error authoritative: the panel
-    # dropped a still-servable model and printed "No model" until the next poll.
-    # The catalog is deliberately tri-state, and a failure must stay the unknown one.
+    # Catching into [] and false made a transient error authoritative: the panel dropped
+    # a still-servable model and printed "No model". The catalog is deliberately
+    # tri-state, and a failure must stay the unknown state.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert "listOpenAIModels().catch(() => null)" in hook
@@ -108,9 +108,9 @@ def test_a_failed_refresh_does_not_erase_what_the_server_holds():
 
 
 def test_the_pinned_quant_comes_from_the_catalog():
-    # Catalog membership proves the repo, not the saved quant. The stored one can
-    # name a file deleted while another quant of the same repo remains, and pinning
-    # it emitted repo:deleted-quant, a missing-quant 404 with a runnable one listed.
+    # Catalog membership proves the repo, not the saved quant: the stored one can name
+    # a file deleted while another quant remains, so pinning it 404d on a missing quant
+    # with a runnable one listed.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find("// Backend PATH detection")]
     assert "const quant = catalog === null ? ggufVariant : entry?.quant;" in hook
@@ -132,33 +132,42 @@ def test_usage_examples_has_no_duplicate_auto_switch_control():
     assert "<ModelAutoSwitchSection />" in tab
 
 
-API_MONITOR_TSX = SETTINGS / "components/api-monitor-console.tsx"
+# The monitor moved onto its own page; Settings keeps configuration and links across.
+API_MONITOR_TSX = REPO / "studio/frontend/src/features/api-monitor/api-monitor-page.tsx"
+# Their own module: the overlay mounts from __root.tsx, so importing from the page
+# pulled it into the eager bundle.
+API_MONITOR_LIFECYCLE_TS = REPO / "studio/frontend/src/features/api-monitor/lifecycle.ts"
+MONITOR_LINK_TSX = SETTINGS / "components/monitor-link.tsx"
 
 
-def test_api_monitor_pages_five_at_a_time():
-    # The backend retains 50 terminal entries; the console used to dump them all at once.
+def test_api_monitor_history_does_not_reorder_under_the_reader():
+    # The backend moves an entry to the front as it finishes, so the page pauses the poll
+    # to hold the whole list still while a payload is read.
     src = API_MONITOR_TSX.read_text(encoding = "utf-8")
-    assert "const PAGE_SIZE = 5;" in src
-    assert "ordered.slice(" in src
-    # Paging back must freeze the id order, or live traffic reorders history under it.
-    assert "frozenIds" in src
-    assert "setFrozenIds((prev) => prev ?? entries.map((entry) => entry.id))" in src
+    assert "paused" in src
+    assert "setPaused" in src
+    # Filters and search are what keep 50 rows usable without paging.
+    assert "filterEntries(" in src
+    assert "STATUS_FILTERS" in src
 
 
 def test_api_monitor_renders_lifecycle_rows():
     src = API_MONITOR_TSX.read_text(encoding = "utf-8")
-    assert "function LifecycleEntry(" in src
-    assert 'entry.kind === "lifecycle"' in src
+    labels = API_MONITOR_LIFECYCLE_TS.read_text(encoding = "utf-8")
+    assert "export function isLifecycleEntry(" in labels
+    assert 'entry.kind === "lifecycle"' in labels
     for label in ("Loading model", "Model loaded", "Model unloaded"):
-        assert label in src
-    # Lifecycle rows have no prompt/reply to fetch.
-    assert "isLifecycle(entry) || !expandedIds.has(entry.id)" in src
+        assert label in labels
+    # A lifecycle row has no prompt or reply, so it is not selectable for detail.
+    assert "if (isLifecycleEntry(entry)) {" in src
+    assert 'from "./lifecycle"' in src
 
 
-def test_auto_switch_section_sits_above_the_monitor():
+def test_auto_switch_section_sits_above_the_usage_examples():
     tab = API_KEYS_TAB_TSX.read_text(encoding = "utf-8")
-    assert tab.index("<ModelAutoSwitchSection />") < tab.index("<ApiMonitorConsole />")
-    assert tab.index("<ApiMonitorConsole />") < tab.index("<UsageExamples")
+    # Configuration still comes ahead of the examples that depend on it.
+    assert tab.index("<MonitorLink />") < tab.index("<ModelAutoSwitchSection />")
+    assert tab.index("<ModelAutoSwitchSection />") < tab.index("<UsageExamples")
 
 
 AUTO_SWITCH_TSX = SETTINGS / "components/model-auto-switch-section.tsx"
@@ -166,7 +175,7 @@ EN_TS = REPO / "studio/frontend/src/i18n/locales/en.ts"
 
 
 def test_api_monitor_renders_download_rows():
-    src = API_MONITOR_TSX.read_text(encoding = "utf-8")
+    src = API_MONITOR_LIFECYCLE_TS.read_text(encoding = "utf-8")
     assert 'entry.event === "download"' in src
     for label in ("Downloading model", "Model downloaded", "Model download failed"):
         assert label in src
@@ -181,6 +190,12 @@ def test_monitor_can_unload_the_loaded_model():
     # /unload matches on the internal id, omitted here (a host path), so read it from status.
     assert "resolveInferenceCheckpointId(status)" in src
     assert "unloadModel({ model_path: checkpoint })" in src
+
+
+def test_settings_still_reaches_the_monitor():
+    # The console is gone, so Settings must still have a way through to it.
+    link = MONITOR_LINK_TSX.read_text(encoding = "utf-8")
+    assert 'to: "/api-monitor"' in link
 
 
 def test_auto_download_toggle_is_gated_on_auto_switch():

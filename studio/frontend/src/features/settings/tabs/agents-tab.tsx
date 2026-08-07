@@ -41,11 +41,7 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import {
-  ArrowUpRight01Icon,
-  Book03Icon,
-  Copy01Icon,
-} from "@hugeicons/core-free-icons";
+import { ArrowUpRight01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiProviderLogo } from "../../chat/api-provider-logo";
@@ -57,6 +53,7 @@ import {
 } from "../components/agent-command";
 import { SettingsSection } from "../components/settings-section";
 import { psSingle, shSingle } from "../components/usage-examples";
+import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 
 const DOCS_URL = "https://unsloth.ai/docs/integrations/unsloth-start";
 const EXAMPLE_MODEL_REPO = "unsloth/gemma-4-E4B-it-GGUF";
@@ -66,7 +63,7 @@ const STATUS_POLL_MS = 5000;
 const HUGGING_FACE_REPO_PATTERN = /^[^/\\:\s]+\/[^/\\:\s]+$/;
 const SEARCH_TOKEN_PATTERN = /\s+/;
 const SAFE_SHELL_ARG_PATTERN = /^[A-Za-z0-9_./:@%+=,-]+$/;
-const SUBAGENT_AGENT_IDS = new Set(["claude", "codex", "opencode", "pi"]);
+const SUBAGENT_AGENT_IDS = new Set(["claude", "codex", "opencode"]);
 
 function isLoopbackBase(base: string): boolean {
   try {
@@ -165,12 +162,6 @@ const SUPPORTED_AGENTS: AgentDetails[] = [
     icon: "opencode-light.svg",
     darkIcon: "opencode-dark.svg",
   },
-  {
-    id: "pi",
-    name: "Pi Coding Agent",
-    docsUrl: DOCS_URL,
-    icon: "pi.svg",
-  },
 ];
 
 const FALLBACK_AGENT = SUPPORTED_AGENTS[0];
@@ -224,6 +215,11 @@ function looksLikePath(value: string): boolean {
   );
 }
 
+// hugging face ids fold case; a path does not, since Linux paths are sensitive.
+function modelKey(model: string): string {
+  return looksLikePath(model) ? model : model.toLowerCase();
+}
+
 function isHuggingFaceRepo(model: string): boolean {
   return HUGGING_FACE_REPO_PATTERN.test(model);
 }
@@ -252,11 +248,9 @@ function discoverGgufModels(
   const variants: Record<string, string> = {};
   // Hugging Face ids are case-insensitive, and the catalog and cache endpoints can
   // disagree on spelling; two rows for one repo would leave the load id on only one.
-  const seen = new Set(models.map((model) => model.toLowerCase()));
+  const seen = new Set(models.map(modelKey));
   const add = (model: string) => {
-    // Local entries arrive here as absolute paths, and a path is case-sensitive on
-    // Linux: folding those would collapse two distinct models into one.
-    const key = looksLikePath(model) ? model : model.toLowerCase();
+    const key = modelKey(model);
     if (seen.has(key)) {
       return;
     }
@@ -382,8 +376,8 @@ function AgentIcon({
 }) {
   if (logo) {
     return (
-      <span className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-md">
-        <ApiProviderLogo providerType={logo} className="size-7 rounded-md" />
+      <span className="flex size-5 shrink-0 items-center justify-center overflow-hidden rounded">
+        <ApiProviderLogo providerType={logo} className="size-5 rounded" />
       </span>
     );
   }
@@ -393,13 +387,13 @@ function AgentIcon({
       ? `${import.meta.env.BASE_URL}agent-logos/${darkIcon}`
       : null;
     return (
-      <span className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-md">
+      <span className="flex size-5 shrink-0 items-center justify-center overflow-hidden rounded">
         <img
           src={iconSrc}
           alt=""
           aria-hidden={true}
           className={cn(
-            "size-7 object-contain",
+            "size-5 object-contain",
             darkIconSrc && "dark:hidden",
             invertIconInDark && "dark:invert",
           )}
@@ -409,7 +403,7 @@ function AgentIcon({
             src={darkIconSrc}
             alt=""
             aria-hidden={true}
-            className="hidden size-7 object-contain dark:block"
+            className="hidden size-5 object-contain dark:block"
           />
         ) : null}
       </span>
@@ -419,7 +413,7 @@ function AgentIcon({
     <span
       aria-hidden={true}
       style={{ backgroundColor: color }}
-      className="flex size-7 shrink-0 items-center justify-center rounded-md font-heading text-ui-11 font-semibold text-white"
+      className="flex size-5 shrink-0 items-center justify-center rounded font-heading text-ui-10 font-semibold text-white"
     >
       {mark}
     </span>
@@ -473,13 +467,59 @@ const PASSTHROUGH_EXAMPLES = [
 
 const DRY_RUN_FLAGS = "--no-launch";
 
+/** Code box with the copy control inside it, top-right. Presentational: the
+ *  copy state stays with the caller so existing resets still apply. */
+function CopyableCode({
+  value,
+  copyLabel,
+  copied,
+  onCopy,
+  breakAll = true,
+}: {
+  value: string;
+  copyLabel: string;
+  copied: boolean;
+  onCopy: () => void;
+  breakAll?: boolean;
+}) {
+  const t = useT();
+
+  return (
+    <div className="relative min-w-0">
+      <code
+        className={cn(
+          "block min-w-0 whitespace-pre-wrap rounded-lg border border-border bg-background/70 py-2.5 pr-9 pl-4 font-mono text-ui-11 leading-relaxed text-foreground dark:border-transparent dark:bg-white/[0.05]",
+          breakAll ? "break-all" : "break-words",
+        )}
+      >
+        {value}
+      </code>
+      <button
+        type="button"
+        onClick={onCopy}
+        aria-label={copyLabel}
+        className="absolute top-1.5 right-1.5 flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      >
+        <HugeiconsIcon
+          icon={copied ? Tick02Icon : Copy01Icon}
+          className={cn("size-3.5", copied && "text-control-accent")}
+          strokeWidth={2}
+        />
+      </button>
+      <output className="sr-only" aria-live="polite">
+        {copied ? t("settings.agents.copied") : ""}
+      </output>
+    </div>
+  );
+}
+
 function CommandBlock({ command }: { command: string }) {
   const t = useT();
   const { copied, copy } = useCopyButton(command);
 
   return (
-    <div className="group relative">
-      <pre className="hover-scrollbar overflow-x-auto rounded-lg border border-border bg-muted/40 py-3 pl-3.5 pr-11 text-xs leading-relaxed text-foreground dark:bg-white/[0.04]">
+    <div className="group relative overflow-hidden rounded-xl border border-border bg-muted/40 dark:border-transparent dark:bg-white/[0.04]">
+      <pre className="hover-scrollbar overflow-x-auto py-3 pr-11 pl-4 text-xs leading-relaxed text-foreground">
         <code className="font-mono whitespace-pre">{command}</code>
       </pre>
       <button
@@ -535,7 +575,7 @@ function SubagentSection({
   }
 
   return (
-    <div className="flex min-w-0 flex-col gap-3 rounded-lg border border-border bg-muted/10 p-3">
+    <div className="flex min-w-0 flex-col gap-4">
       <div className="flex flex-col gap-1">
         <span
           data-settings-label={t("settings.agents.subagent.title")}
@@ -548,60 +588,29 @@ function SubagentSection({
         </p>
       </div>
 
-      <div className="flex min-w-0 flex-col gap-1.5">
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-ui-11 font-medium text-foreground">
-            {t("settings.agents.subagent.setupCommand")}
-          </span>
-          <button
-            type="button"
-            onClick={commandCopy.copy}
-            aria-label={t("settings.agents.subagent.copySetupCommand")}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 text-ui-11 font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            <HugeiconsIcon
-              icon={commandCopy.copied ? Tick02Icon : Copy01Icon}
-              className={cn(
-                "size-3.5",
-                commandCopy.copied && "text-control-accent",
-              )}
-            />
-            {commandCopy.copied
-              ? t("settings.agents.copied")
-              : t("settings.agents.copy")}
-          </button>
-        </div>
-        <code className="block min-w-0 whitespace-pre-wrap break-all rounded-md border border-border bg-background/70 px-2.5 py-2 font-mono text-ui-11 leading-relaxed text-foreground">
-          {command}
-        </code>
+      <div className="flex min-w-0 flex-col gap-2">
+        <span className="text-ui-11 font-medium text-foreground">
+          {t("settings.agents.subagent.setupCommand")}
+        </span>
+        <CopyableCode
+          value={command}
+          copyLabel={t("settings.agents.subagent.copySetupCommand")}
+          copied={commandCopy.copied}
+          onCopy={commandCopy.copy}
+        />
       </div>
 
-      <div className="flex min-w-0 flex-col gap-1.5">
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-ui-11 font-medium text-foreground">
-            {t("settings.agents.subagent.usagePrompt", { agent: agent.name })}
-          </span>
-          <button
-            type="button"
-            onClick={promptCopy.copy}
-            aria-label={t("settings.agents.subagent.copyUsagePrompt")}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 text-ui-11 font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            <HugeiconsIcon
-              icon={promptCopy.copied ? Tick02Icon : Copy01Icon}
-              className={cn(
-                "size-3.5",
-                promptCopy.copied && "text-control-accent",
-              )}
-            />
-            {promptCopy.copied
-              ? t("settings.agents.copied")
-              : t("settings.agents.copy")}
-          </button>
-        </div>
-        <code className="block min-w-0 whitespace-pre-wrap break-words rounded-md border border-border bg-background/70 px-2.5 py-2 font-mono text-ui-11 leading-relaxed text-foreground">
-          {prompt}
-        </code>
+      <div className="flex min-w-0 flex-col gap-2">
+        <span className="text-ui-11 font-medium text-foreground">
+          {t("settings.agents.subagent.usagePrompt", { agent: agent.name })}
+        </span>
+        <CopyableCode
+          value={prompt}
+          copyLabel={t("settings.agents.subagent.copyUsagePrompt")}
+          copied={promptCopy.copied}
+          onCopy={promptCopy.copy}
+          breakAll={false}
+        />
       </div>
     </div>
   );
@@ -630,14 +639,29 @@ export function AgentsTab() {
     ? deviceType === "windows"
     : isWindowsClient;
   const localDetection = canUseLocalAgentDetection(serverUrl ?? origin);
+  const setStoredAgent = useSettingsPanelPrefsStore((s) => s.setAgentsAgent);
+  const setStoredModel = useSettingsPanelPrefsStore((s) => s.setAgentsModel);
+  const setStoredVariant = useSettingsPanelPrefsStore(
+    (s) => s.setAgentsVariant,
+  );
+  // read once: these seed the controls, which write back through the handlers.
+  const [storedPrefs] = useState(() => useSettingsPanelPrefsStore.getState());
   const [agents, setAgents] = useState<string[]>(
     SUPPORTED_AGENTS.map((agent) => agent.id),
   );
-  const [selectedAgent, setSelectedAgent] = useState(FALLBACK_AGENT.id);
-  const agentSelectionChanged = useRef(false);
+  const [selectedAgent, setSelectedAgent] = useState(
+    storedPrefs.agentsAgent ?? FALLBACK_AGENT.id,
+  );
+  // a restored pick counts as explicit, or detection would overwrite it.
+  const agentSelectionChanged = useRef(storedPrefs.agentsAgent != null);
   const [detectedAgents, setDetectedAgents] = useState<Set<string>>(new Set());
   const [loaded, setLoaded] = useState(false);
-  const [models, setModels] = useState<string[]>([EXAMPLE_MODEL_REPO]);
+  // list the restored model until the discovery scan confirms or retires it.
+  const [models, setModels] = useState<string[]>(
+    storedPrefs.agentsModel && storedPrefs.agentsModel !== EXAMPLE_MODEL_REPO
+      ? [storedPrefs.agentsModel, EXAMPLE_MODEL_REPO]
+      : [EXAMPLE_MODEL_REPO],
+  );
   const [cachedLoadIds, setCachedLoadIds] = useState<Record<string, string>>(
     {},
   );
@@ -653,21 +677,43 @@ export function AgentsTab() {
   const [knownVariants, setKnownVariants] = useState<Record<string, string>>({
     [EXAMPLE_MODEL_REPO]: EXAMPLE_MODEL_VARIANT,
   });
-  const [selectedModel, setSelectedModel] = useState(EXAMPLE_MODEL_REPO);
-  const modelSelectionChanged = useRef(false);
+  const initialModel = storedPrefs.agentsModel ?? EXAMPLE_MODEL_REPO;
+  const [selectedModel, setSelectedModel] = useState(initialModel);
+  const modelSelectionChanged = useRef(storedPrefs.agentsModel != null);
+  // held until discovery and the first status can confirm the restored model.
+  const restoredModel = useRef<string | null>(storedPrefs.agentsModel);
+  const [discoveredKeys, setDiscoveredKeys] = useState<Set<string> | null>(
+    null,
+  );
+  const [statusSettled, setStatusSettled] = useState(false);
   // The model status last reported, for the discovery scan to preserve.
-  const activeModelRef = useRef<string | null>(null);
+  const activeModelRef = useRef<{
+    model: string;
+    variant: string | null;
+  } | null>(null);
   // Only the newest status request may apply; a slow earlier one must not win.
   const statusSeq = useRef(0);
   // A quant picked by hand, scoped to its repo: polling and refetches must not
   // overwrite it, but it must not follow the selection onto a different repo.
-  const chosenVariant = useRef<{ model: string; variant: string } | null>(null);
+  // a restored quant is scoped the same way, so it applies when its model does.
+  const chosenVariant = useRef<{ model: string; variant: string } | null>(
+    storedPrefs.agentsVariantModel && storedPrefs.agentsVariant
+      ? {
+          model: storedPrefs.agentsVariantModel,
+          variant: storedPrefs.agentsVariant,
+        }
+      : null,
+  );
   const [modelSearch, setModelSearch] = useState("");
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [variants, setVariants] = useState<GgufVariantDetail[]>([]);
-  const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
   const [selectedVariant, setSelectedVariant] = useState<string | null>(
-    EXAMPLE_MODEL_VARIANT,
+    chosenVariant.current &&
+    modelKey(chosenVariant.current.model) === modelKey(initialModel)
+      ? chosenVariant.current.variant
+      : initialModel === EXAMPLE_MODEL_REPO
+        ? EXAMPLE_MODEL_VARIANT
+        : null,
   );
   const [variantsLoading, setVariantsLoading] = useState(true);
   const [variantsFailed, setVariantsFailed] = useState(false);
@@ -792,12 +838,40 @@ export function AgentsTab() {
     };
   }, [localDetection]);
 
+  // a restored agent the backend no longer lists cannot build a command.
+  useEffect(() => {
+    if (!agentSelectionChanged.current) return;
+    if (localDetection && !loaded) return;
+    if (agents.includes(selectedAgent)) return;
+    agentSelectionChanged.current = false;
+    setStoredAgent(null);
+    setSelectedAgent(
+      agents.find((agent) => detectedAgents.has(agent)) ??
+        agents[0] ??
+        FALLBACK_AGENT.id,
+    );
+  }, [
+    agents,
+    detectedAgents,
+    loaded,
+    localDetection,
+    selectedAgent,
+    setStoredAgent,
+  ]);
+
   useEffect(() => {
     let cancelled = false;
+    // An endpoint that could not answer has not proved a model absent, and the
+    // retire treats discoveredKeys as exactly that proof.
+    let discoveryComplete = true;
+    const note = <T,>(fallback: T) => (): T => {
+      discoveryComplete = false;
+      return fallback;
+    };
     Promise.all([
-      listModels().catch(() => null),
-      listCachedGguf().catch(() => []),
-      listLocalModels().catch(() => null),
+      listModels().catch(note(null)),
+      listCachedGguf().catch(note([])),
+      listLocalModels().catch(note(null)),
     ])
       .then(([info, cachedGgufs, local]) => {
         if (cancelled) {
@@ -824,10 +898,14 @@ export function AgentsTab() {
             labels[entry.id] = entry.label;
           }
         }
+        // Left null when a source failed; null already means "cannot retire".
+        if (discoveryComplete) {
+          setDiscoveredKeys(new Set(discovered.models.map(modelKey)));
+        }
         // Status is applied on its own schedule now, so keep whatever model it has
         // already adopted rather than dropping it when this slower scan lands.
         setModels(() => {
-          const active = activeModelRef.current;
+          const active = activeModelRef.current?.model;
           return active && !discovered.models.includes(active)
             ? [active, ...discovered.models]
             : discovered.models;
@@ -847,6 +925,16 @@ export function AgentsTab() {
     };
   }, []);
 
+  // The remembered quant for `model`, matched through modelKey: the catalog,
+  // cache and status endpoints can disagree on repo-id casing, and an exact
+  // compare would silently drop the user's quant.
+  const rememberedVariant = useCallback((model: string): string | null => {
+    const chosen = chosenVariant.current;
+    return chosen && modelKey(chosen.model) === modelKey(model)
+      ? chosen.variant
+      : null;
+  }, []);
+
   // List the resident model and follow it, unless the user picked one explicitly.
   const adoptActiveModel = useCallback(
     (active: { model: string; variant: string | null }) => {
@@ -861,12 +949,12 @@ export function AgentsTab() {
       }
       if (!modelSelectionChanged.current) {
         setSelectedModel(active.model);
-        if (chosenVariant.current?.model !== active.model) {
-          setSelectedVariant(active.variant);
-        }
+        // a remembered quant for this model wins, since it may be adopted here
+        // before the variants fetch below has had a chance to apply it.
+        setSelectedVariant(rememberedVariant(active.model) ?? active.variant);
       }
     },
-    [],
+    [rememberedVariant],
   );
 
   // A native-grant label only stands for whatever was resident at the time, so once
@@ -916,7 +1004,9 @@ export function AgentsTab() {
   const applyStatus = useCallback(
     (status: InferenceStatusResponse) => {
       const active = activeGgufSelection(status);
-      activeModelRef.current = active?.model ?? null;
+      activeModelRef.current = active
+        ? { model: active.model, variant: active.variant }
+        : null;
       const wasAttachOnly = attachOnlyModel;
       setActiveStatusModel(active?.model ?? null);
       setAttachOnlyModel(active && !active.named ? active.model : null);
@@ -950,10 +1040,14 @@ export function AgentsTab() {
         .then((status) => {
           if (!cancelled && seq === statusSeq.current) {
             applyStatus(status);
+            // Only a current, answered poll is evidence: settling a superseded
+            // one would let the retire run with activeModelRef unset.
+            setStatusSettled(true);
           }
         })
         .catch(() => {
-          // A failed poll just leaves the last known selection in place.
+          // Not settled: a request that never answered proves nothing about
+          // what is resident, so the retire below must keep waiting.
         });
     };
     sync();
@@ -963,6 +1057,40 @@ export function AgentsTab() {
       window.clearInterval(timer);
     };
   }, [applyStatus]);
+
+  // retiring a restored pick needs both reads: either alone can miss a model
+  // the other knows about, and a wrong retire drops the user's choice.
+  useEffect(() => {
+    const restored = restoredModel.current;
+    if (!(restored && discoveredKeys && statusSettled)) return;
+    const active = activeModelRef.current;
+    restoredModel.current = null;
+    // modelKey both sides: discovery folds repo-id case, so an exact match
+    // would retire a valid pick just for a different spelling.
+    // A path is never in discoveredKeys (the catalog drops path ids and a scan
+    // root may not cover it), but `unsloth start --model <path>` is valid, so
+    // absence there is not evidence.
+    if (
+      looksLikePath(restored) ||
+      discoveredKeys.has(modelKey(restored)) ||
+      (active && modelKey(active.model) === modelKey(restored))
+    ) {
+      return;
+    }
+    // an uncached pick would pin the builder to a model the CLI cannot load.
+    modelSelectionChanged.current = false;
+    chosenVariant.current = null;
+    setStoredModel(null, null);
+    // adopt straight away rather than parking on the example model: the next
+    // poll is STATUS_POLL_MS away, and a command copied meanwhile would switch
+    // a shared server off whatever is loaded.
+    if (active) {
+      adoptActiveModel(active);
+      return;
+    }
+    setSelectedModel(EXAMPLE_MODEL_REPO);
+    setSelectedVariant(EXAMPLE_MODEL_VARIANT);
+  }, [adoptActiveModel, discoveredKeys, statusSettled, setStoredModel]);
 
   useEffect(() => {
     let cancelled = false;
@@ -986,7 +1114,6 @@ export function AgentsTab() {
           return;
         }
         setVariants([]);
-        setDefaultVariant(null);
         setSelectedVariant(standaloneFile ? null : preferredVariant);
         setVariantsFailed(false);
         setVariantsLoading(false);
@@ -999,7 +1126,6 @@ export function AgentsTab() {
     // A programmatic model change reaches here too, so clear the previous model's
     // quants up front rather than leaving them selectable until this resolves.
     setVariants([]);
-    setDefaultVariant(null);
     setVariantsLoading(true);
     // Offer the quants from the same place the command loads from, not remote-only ones.
     listGgufVariants(selectedModel, hfToken || undefined, {
@@ -1023,15 +1149,22 @@ export function AgentsTab() {
           ).values(),
         );
         setVariants(uniqueVariants);
-        setDefaultVariant(info.default_variant);
         const available = new Set(
           uniqueVariants.map((variant) => variant.quant),
         );
+        // Authoritative for this repo: drop a remembered quant it no longer
+        // offers, or adoptActiveModel re-imposes it on the next poll.
+        // Stop adoptActiveModel re-imposing a quant this repo will not serve.
+        // In-memory only: `partial` here means "still downloading", and an
+        // offline reply lists just the cache, so neither is grounds to delete
+        // the user's saved quant. Dropping the ref re-runs this next mount.
+        const remembered = rememberedVariant(selectedModel);
+        if (remembered && !available.has(remembered)) {
+          chosenVariant.current = null;
+        }
         const nextVariant =
           pickVariant(available, [
-            chosenVariant.current?.model === selectedModel
-              ? chosenVariant.current.variant
-              : null,
+            rememberedVariant(selectedModel),
             preferredVariant,
             info.default_variant,
           ]) ??
@@ -1045,7 +1178,6 @@ export function AgentsTab() {
         }
         setVariantsFailed(true);
         setVariants([]);
-        setDefaultVariant(null);
         setSelectedVariant(preferredVariant);
         if (preferredVariant) {
           setVariants([
@@ -1067,13 +1199,19 @@ export function AgentsTab() {
     return () => {
       cancelled = true;
     };
-  }, [cachedLoadId, hfToken, preferredVariant, selectedModel]);
+  }, [
+    cachedLoadId,
+    hfToken,
+    preferredVariant,
+    rememberedVariant,
+    selectedModel,
+  ]);
 
   // No GGUF warning for `codex` (unsloth_cli's _require_gguf_for_codex): the
   // picker only ever offers GGUF models.
 
   return (
-    <div className="flex min-w-0 max-w-full flex-col gap-6">
+    <div className="flex min-w-0 max-w-full flex-col gap-8">
       {/* data-settings-label lets indexed settings search scroll to these. */}
       <header className="flex min-w-0 flex-col gap-1">
         <h1
@@ -1094,249 +1232,279 @@ export function AgentsTab() {
         data-settings-label={t("settings.agents.intro")}
         className="text-sm text-muted-foreground leading-relaxed"
       >
-        <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em] text-foreground dark:bg-white/[0.08]">
+        {/* The chip is the docs entry point, so no separate link is needed.
+            No aria-label: it would replace the visible "unsloth start" as the
+            accessible name, leaving voice control unable to target it. */}
+        <a
+          href={DOCS_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={t("settings.agents.readDocs")}
+          className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em] text-foreground underline decoration-border decoration-dotted underline-offset-2 transition-colors hover:decoration-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-white/[0.08]"
+        >
           unsloth start
-        </code>{" "}
+        </a>{" "}
         {t("settings.agents.intro")}
       </p>
 
-      <a
-        href={DOCS_URL}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="inline-flex w-fit items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
-      >
-        <HugeiconsIcon icon={Book03Icon} className="size-3.5" />
-        {t("settings.agents.readDocs")}
-        <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
-      </a>
-
       <section
         aria-label={t("settings.agents.commandBuilder")}
-        className="flex w-full flex-col gap-4"
+        className="flex w-full flex-col gap-6"
       >
-        <div className="flex flex-col gap-1.5">
-          <div className="flex items-center justify-between gap-3">
-            <span
-              data-settings-label={t("settings.agents.agent")}
-              className="text-xs font-medium text-foreground"
-            >
-              {t("settings.agents.agent")}
-            </span>
-            <a
-              href={selectedAgentDetails.docsUrl}
-              target="_blank"
-              rel="noreferrer"
-              aria-label={t("settings.agents.agentDocs", {
-                agent: selectedAgentDetails.name,
-              })}
-              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
-              {t("settings.agents.docs")}
-              <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
-            </a>
-          </div>
-          <Select
-            value={selectedAgent}
-            onValueChange={(agent) => {
-              agentSelectionChanged.current = true;
-              setSelectedAgent(agent);
-              resetCopied();
-            }}
-          >
-            <SelectTrigger
-              aria-label={t("settings.agents.agent")}
-              className="w-full rounded-lg"
-            >
-              <SelectValue>
-                <span className="flex min-w-0 items-center gap-2">
-                  <AgentIcon
-                    logo={selectedAgentDetails.logo}
-                    icon={selectedAgentDetails.icon}
-                    darkIcon={selectedAgentDetails.darkIcon}
-                    invertIconInDark={selectedAgentDetails.invertIconInDark}
-                    color={selectedAgentDetails.color}
-                    mark={selectedAgentDetails.mark}
-                  />
-                  <span className="truncate">{selectedAgentDetails.name}</span>
+        {/* Keyed to this pane, not the viewport. The dialog leaves the tab
+            about 440px at a 768px window, where three columns crush the agent
+            and model controls; 34rem is the point all three stay usable. */}
+        <div className="@container">
+          <div className="grid grid-cols-1 items-start gap-3 @[34rem]:grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)_minmax(9rem,0.5fr)]">
+            <div className="flex min-w-0 flex-col gap-1.5">
+              {/* Fixed height on every column header, so the padded docs link
+                  here cannot push this control below the other two. */}
+              <div className="flex h-5 items-center justify-between gap-3">
+                <span
+                  data-settings-label={t("settings.agents.agent")}
+                  className="text-xs font-medium text-foreground"
+                >
+                  {t("settings.agents.agent")}
                 </span>
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent align="start">
-              {agents.map((agentId) => {
-                const agent = detailsFor(agentId);
-                return (
-                  <SelectItem key={agent.id} value={agent.id}>
+                <a
+                  href={selectedAgentDetails.docsUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label={t("settings.agents.agentDocs", {
+                    agent: selectedAgentDetails.name,
+                  })}
+                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  {t("settings.agents.docs")}
+                  <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+                </a>
+              </div>
+              <Select
+                value={selectedAgent}
+                onValueChange={(agent) => {
+                  agentSelectionChanged.current = true;
+                  setSelectedAgent(agent);
+                  setStoredAgent(agent);
+                  resetCopied();
+                }}
+              >
+                <SelectTrigger
+                  aria-label={t("settings.agents.agent")}
+                  className="w-full rounded-lg"
+                >
+                  <SelectValue>
                     <span className="flex min-w-0 items-center gap-2">
                       <AgentIcon
-                        logo={agent.logo}
-                        icon={agent.icon}
-                        darkIcon={agent.darkIcon}
-                        invertIconInDark={agent.invertIconInDark}
-                        color={agent.color}
-                        mark={agent.mark}
+                        logo={selectedAgentDetails.logo}
+                        icon={selectedAgentDetails.icon}
+                        darkIcon={selectedAgentDetails.darkIcon}
+                        invertIconInDark={selectedAgentDetails.invertIconInDark}
+                        color={selectedAgentDetails.color}
+                        mark={selectedAgentDetails.mark}
                       />
-                      <span className="truncate">{agent.name}</span>
-                      {localDetection &&
-                      loaded &&
-                      detectedAgents.has(agent.id) ? (
-                        <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
-                          {t("settings.agents.quickstart.installed")}
-                        </span>
-                      ) : null}
+                      <span className="truncate">
+                        {selectedAgentDetails.name}
+                      </span>
                     </span>
-                  </SelectItem>
-                );
-              })}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="grid grid-cols-[minmax(0,1fr)_minmax(10rem,0.4fr)] items-start gap-3 max-md:grid-cols-1">
-          <div className="flex min-w-0 flex-col gap-1.5">
-            <span
-              data-settings-label={t("settings.agents.model")}
-              className="text-xs font-medium text-foreground"
-            >
-              {t("settings.agents.model")}
-            </span>
-            <Popover
-              open={modelPickerOpen}
-              onOpenChange={(open) => {
-                setModelPickerOpen(open);
-                if (!open) {
-                  setModelSearch("");
-                }
-              }}
-            >
-              <PopoverTrigger asChild={true}>
-                <button
-                  type="button"
-                  aria-label={t("settings.agents.model")}
-                  aria-expanded={modelPickerOpen}
-                  title={selectedModel}
-                  className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10"
-                >
-                  <span className="min-w-0 truncate font-mono text-xs">
-                    {labelFor(selectedModel)}
-                  </span>
-                  <HugeiconsIcon
-                    icon={ChevronDownStandardIcon}
-                    strokeWidth={2}
-                    className="size-4 shrink-0 text-muted-foreground"
-                  />
-                </button>
-              </PopoverTrigger>
-              <PopoverContent
-                align="start"
-                sideOffset={4}
-                className="w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] gap-0 rounded-lg p-1"
-              >
-                <Command
-                  shouldFilter={false}
-                  className="rounded-none bg-transparent p-0"
-                >
-                  <CommandInput
-                    value={modelSearch}
-                    onValueChange={setModelSearch}
-                    aria-label={t("settings.agents.searchModels")}
-                    placeholder={t("settings.agents.searchModels")}
-                    className="font-mono text-xs"
-                  />
-                  <CommandList>
-                    <CommandEmpty>{t("settings.agents.noModels")}</CommandEmpty>
-                    {visibleModels.map((model) => (
-                      <CommandItem
-                        key={model}
-                        value={model}
-                        data-checked={model === selectedModel}
-                        onSelect={() => {
-                          modelSelectionChanged.current = true;
-                          setSelectedModel(model);
-                          setSelectedVariant(knownVariants[model] ?? null);
-                          setVariants([]);
-                          setDefaultVariant(null);
-                          setVariantsFailed(false);
-                          setVariantsLoading(isHuggingFaceRepo(model));
-                          setModelSearch("");
-                          setModelPickerOpen(false);
-                          resetCopied();
-                        }}
-                        className="cursor-pointer font-mono text-xs"
-                      >
-                        <span className="min-w-0 truncate" title={model}>
-                          {labelFor(model)}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent align="start">
+                  {agents.map((agentId) => {
+                    const agent = detailsFor(agentId);
+                    return (
+                      <SelectItem key={agent.id} value={agent.id}>
+                        <span className="flex min-w-0 items-center gap-2">
+                          <AgentIcon
+                            logo={agent.logo}
+                            icon={agent.icon}
+                            darkIcon={agent.darkIcon}
+                            invertIconInDark={agent.invertIconInDark}
+                            color={agent.color}
+                            mark={agent.mark}
+                          />
+                          <span className="truncate">{agent.name}</span>
+                          {localDetection &&
+                          loaded &&
+                          detectedAgents.has(agent.id) ? (
+                            <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
+                              {t("settings.agents.quickstart.installed")}
+                            </span>
+                          ) : null}
                         </span>
-                      </CommandItem>
-                    ))}
-                  </CommandList>
-                  {matchingModels.length > visibleModels.length ? (
-                    <p className="border-t border-border/60 px-3 py-2 text-ui-11 text-muted-foreground">
-                      {t("settings.agents.showingModels", {
-                        shown: visibleModels.length,
-                        total: matchingModels.length,
-                      })}
-                    </p>
-                  ) : null}
-                </Command>
-              </PopoverContent>
-            </Popover>
-          </div>
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+            </div>
 
-          <div className="flex min-w-0 flex-col gap-1.5">
-            <span
-              data-settings-label={t("settings.agents.quantization")}
-              className="text-xs font-medium text-foreground"
-            >
-              {t("settings.agents.quantization")}
-            </span>
-            <Select
-              value={selectedVariant ?? undefined}
-              onValueChange={(variant) => {
-                chosenVariant.current = { model: selectedModel, variant };
-                setSelectedVariant(variant);
-                resetCopied();
-              }}
-              disabled={variantsLoading || variants.length === 0}
-            >
-              <SelectTrigger
-                aria-label={t("settings.agents.quantization")}
-                className="w-full rounded-lg font-mono text-xs"
-              >
-                <SelectValue
-                  placeholder={
-                    variantsLoading
-                      ? t("settings.agents.loadingQuantizations")
-                      : t("settings.agents.noQuantizations")
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <div className="flex h-5 items-center">
+                <span
+                  data-settings-label={t("settings.agents.model")}
+                  className="text-xs font-medium text-foreground"
+                >
+                  {t("settings.agents.model")}
+                </span>
+              </div>
+              <Popover
+                open={modelPickerOpen}
+                onOpenChange={(open) => {
+                  setModelPickerOpen(open);
+                  if (!open) {
+                    setModelSearch("");
                   }
+                }}
+              >
+                <PopoverTrigger asChild={true}>
+                  <button
+                    type="button"
+                    aria-label={t("settings.agents.model")}
+                    aria-expanded={modelPickerOpen}
+                    title={selectedModel}
+                    className="flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 text-left transition-colors hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10"
+                  >
+                    <span className="min-w-0 truncate font-mono text-xs">
+                      {labelFor(selectedModel)}
+                    </span>
+                    <HugeiconsIcon
+                      icon={ChevronDownStandardIcon}
+                      strokeWidth={2}
+                      className="size-4 shrink-0 text-muted-foreground"
+                    />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent
+                  align="start"
+                  sideOffset={4}
+                  className="w-[var(--radix-popover-trigger-width)] max-w-[calc(100vw-2rem)] gap-0 rounded-lg p-1"
                 >
-                  {selectedVariant}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent align="start">
-                {variants.map((variant) => {
-                  const metadata = [
-                    variant.quant === defaultVariant
-                      ? t("settings.agents.recommended")
-                      : null,
-                    variant.downloaded ? t("settings.agents.downloaded") : null,
-                    formatBytes(
+                  <Command
+                    shouldFilter={false}
+                    className="rounded-none bg-transparent p-0"
+                  >
+                    <CommandInput
+                      value={modelSearch}
+                      onValueChange={setModelSearch}
+                      aria-label={t("settings.agents.searchModels")}
+                      placeholder={t("settings.agents.searchModels")}
+                      className="font-mono text-xs"
+                    />
+                    <CommandList>
+                      <CommandEmpty>
+                        {t("settings.agents.noModels")}
+                      </CommandEmpty>
+                      {visibleModels.map((model) => (
+                        <CommandItem
+                          key={model}
+                          value={model}
+                          data-checked={model === selectedModel}
+                          onSelect={() => {
+                            modelSelectionChanged.current = true;
+                            restoredModel.current = null;
+                            const variant =
+                              rememberedVariant(model) ?? knownVariants[model] ?? null;
+                            setSelectedModel(model);
+                            setSelectedVariant(variant);
+                            // a native-grant label names no path to reuse.
+                            setStoredModel(
+                              model === attachOnlyModel ? null : model,
+                              model === attachOnlyModel ? null : variant,
+                            );
+                            setVariants([]);
+                            setVariantsFailed(false);
+                            setVariantsLoading(isHuggingFaceRepo(model));
+                            setModelSearch("");
+                            setModelPickerOpen(false);
+                            resetCopied();
+                          }}
+                          className="cursor-pointer font-mono text-xs"
+                        >
+                          <span className="min-w-0 truncate" title={model}>
+                            {labelFor(model)}
+                          </span>
+                        </CommandItem>
+                      ))}
+                    </CommandList>
+                    {matchingModels.length > visibleModels.length ? (
+                      <p className="border-t border-border/60 px-3 py-2 text-ui-11 text-muted-foreground">
+                        {t("settings.agents.showingModels", {
+                          shown: visibleModels.length,
+                          total: matchingModels.length,
+                        })}
+                      </p>
+                    ) : null}
+                  </Command>
+                </PopoverContent>
+              </Popover>
+            </div>
+
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <div className="flex h-5 items-center">
+                <span
+                  data-settings-label={t("settings.agents.quantization")}
+                  className="text-xs font-medium text-foreground"
+                >
+                  {t("settings.agents.quantization")}
+                </span>
+              </div>
+              <Select
+                value={selectedVariant ?? undefined}
+                onValueChange={(variant) => {
+                  chosenVariant.current = { model: selectedModel, variant };
+                  setSelectedVariant(variant);
+                  // stored against its model, so a quant picked while following
+                  // the resident model is remembered without pinning it.
+                  if (selectedModel !== attachOnlyModel) {
+                    setStoredVariant(selectedModel, variant);
+                  }
+                  resetCopied();
+                }}
+                disabled={variantsLoading || variants.length === 0}
+              >
+                <SelectTrigger
+                  aria-label={t("settings.agents.quantization")}
+                  className="w-full rounded-lg font-mono text-xs"
+                >
+                  <SelectValue
+                    placeholder={
+                      variantsLoading
+                        ? t("settings.agents.loadingQuantizations")
+                        : t("settings.agents.noQuantizations")
+                    }
+                  >
+                    {selectedVariant}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent align="start" className="min-w-[16rem]">
+                  {variants.map((variant) => {
+                    // Size only: the recommended/downloaded tags wrapped every
+                    // row onto two lines and made the list hard to scan.
+                    const size = formatBytes(
                       variant.download_size_bytes ?? variant.size_bytes,
-                    ),
-                  ].filter(Boolean);
-                  return (
-                    <SelectItem key={variant.quant} value={variant.quant}>
-                      <span className="font-mono text-xs">{variant.quant}</span>
-                      {metadata.length > 0 ? (
-                        <span className="text-ui-10 text-muted-foreground">
-                          {metadata.join(" · ")}
+                    );
+                    return (
+                      <SelectItem
+                        key={variant.quant}
+                        value={variant.quant}
+                        // Stretch the item text so the size can sit flush right,
+                        // giving the list a clean two-column read.
+                        className="[&>span:last-child]:w-full [&>span:last-child]:justify-between"
+                      >
+                        <span className="font-mono text-xs whitespace-nowrap">
+                          {variant.quant}
                         </span>
-                      ) : null}
-                    </SelectItem>
-                  );
-                })}
-              </SelectContent>
-            </Select>
+                        {size ? (
+                          <span className="text-ui-10 whitespace-nowrap text-muted-foreground">
+                            {size}
+                          </span>
+                        ) : null}
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </div>
 
@@ -1346,27 +1514,16 @@ export function AgentsTab() {
           </p>
         ) : null}
 
-        <div className="flex min-w-0 flex-col gap-2 rounded-lg border border-border bg-muted/20 p-3">
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-xs font-medium text-foreground">
-              {t("settings.agents.generatedCommand")}
-            </span>
-            <button
-              type="button"
-              onClick={handleCopy}
-              aria-label={t("settings.agents.copyGeneratedCommand")}
-              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 text-ui-11 font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
-              <HugeiconsIcon
-                icon={copied ? Tick02Icon : Copy01Icon}
-                className={cn("size-3.5", copied && "text-control-accent")}
-              />
-              {copied ? t("settings.agents.copied") : t("settings.agents.copy")}
-            </button>
-          </div>
-          <code className="block min-w-0 whitespace-pre-wrap break-all rounded-md border border-border bg-background/70 px-2.5 py-2 font-mono text-ui-11 leading-relaxed text-foreground">
-            {command}
-          </code>
+        <div className="flex min-w-0 flex-col gap-2.5">
+          <span className="text-xs font-medium text-foreground">
+            {t("settings.agents.generatedCommand")}
+          </span>
+          <CopyableCode
+            value={command}
+            copyLabel={t("settings.agents.copyGeneratedCommand")}
+            copied={copied}
+            onCopy={handleCopy}
+          />
         </div>
 
         <SubagentSection
@@ -1406,7 +1563,7 @@ export function AgentsTab() {
         title={t("settings.agents.remote.title")}
         description={t("settings.agents.remote.description")}
       >
-        <div className="pt-2">
+        <div className="pt-3">
           <CommandBlock command={remoteCommand} />
         </div>
       </SettingsSection>
@@ -1415,7 +1572,7 @@ export function AgentsTab() {
         title={t("settings.agents.passthrough.title")}
         description={t("settings.agents.passthrough.description")}
       >
-        <div className="flex flex-col gap-2 pt-2">
+        <div className="flex flex-col gap-3 pt-3">
           {PASSTHROUGH_EXAMPLES.map(({ agent, flags }) => (
             <CommandBlock key={flags} command={example(agent, flags)} />
           ))}
@@ -1426,7 +1583,7 @@ export function AgentsTab() {
         title={t("settings.agents.dryRun.title")}
         description={t("settings.agents.dryRun.description")}
       >
-        <div className="pt-2">
+        <div className="pt-3">
           <CommandBlock command={example("claude", DRY_RUN_FLAGS)} />
         </div>
       </SettingsSection>

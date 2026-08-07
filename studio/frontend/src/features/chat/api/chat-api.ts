@@ -3,10 +3,11 @@
 
 import { authFetch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
-// These helpers are deliberately API-layer-only and are not part of their
-// features' React-facing public barrels.
+// These helpers are deliberately API-layer-only, not part of their features' public barrels.
 // eslint-disable-next-line no-restricted-imports
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
+// eslint-disable-next-line no-restricted-imports
+import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 // eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
@@ -31,15 +32,20 @@ import type {
   UnloadModelRequest,
   ValidateModelResponse,
 } from "../types/api";
+import {
+  type GgufVariantsRequestOptions,
+  ggufVariantsQuery,
+  runBoundedVariantsRequest,
+} from "./gguf-variants-request";
+import { assertCompletedPaddedBody } from "./padded-response";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 export const CHAT_PROJECTS_UPDATED_EVENT = "unsloth-chat-projects-updated";
 
 /**
- * Thrown when the chat SSE stream ends without a terminal signal (`[DONE]` or a
- * finish_reason chunk): the connection dropped mid-generation. The adapter
- * surfaces it as an explicit interrupted state instead of ending the turn.
- */
+* Thrown when the chat SSE stream ends without a terminal signal (`[DONE]` or a finish_reason
+* chunk): the connection dropped mid-generation, surfaced as an explicit interrupted state.
+*/
 export class StreamInterruptedError extends Error {
   constructor() {
     super(
@@ -51,10 +57,9 @@ export class StreamInterruptedError extends Error {
 }
 
 /**
- * Thrown when a reasoning model consumes its output budget before emitting any
- * standard content. Keeping this distinct from a dropped connection lets the
- * chat UI explain why a completed stream contains only a thinking panel.
- */
+* Thrown when a reasoning model consumes its output budget before emitting any standard
+* content, so the chat UI can explain a completed stream holding only a thinking panel.
+*/
 export class GenerationLengthError extends Error {
   constructor() {
     super(
@@ -89,10 +94,39 @@ function parseErrorText(status: number, body: unknown): string {
   return `Request failed (${status})`;
 }
 
-async function parseJsonOrThrow<T>(response: Response): Promise<T> {
+/**
+* `/api/inference/load` and `/unload` pad their body so a proxy cannot time the request out,
+* which commits the status early: a later failure can only arrive in-band as `_deferred_error`.
+*/
+function deferredError(body: unknown): { status: number; message: string } | null {
+  const deferred =
+    body && typeof body === "object"
+      ? (body as { _deferred_error?: { status_code?: unknown; detail?: unknown } })
+          ._deferred_error
+      : undefined;
+  if (!deferred || typeof deferred !== "object") return null;
+  const status =
+    typeof deferred.status_code === "number" ? deferred.status_code : 500;
+  return { status, message: parseErrorText(status, { detail: deferred.detail }) };
+}
+
+/**
+* `paddedLabel` opts a caller into `assertCompletedPaddedBody`; only the two padded routes may,
+* since a truncated body means unfinished there but is legitimate elsewhere. */
+async function parseJsonOrThrow<T>(
+  response: Response,
+  paddedLabel?: string,
+): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
     throw new Error(parseErrorText(response.status, body));
+  }
+  const deferred = deferredError(body);
+  if (deferred) {
+    throw new Error(deferred.message);
+  }
+  if (paddedLabel !== undefined) {
+    assertCompletedPaddedBody(body, paddedLabel);
   }
   return body as T;
 }
@@ -129,11 +163,42 @@ export async function getApiMonitorEntry(id: string): Promise<ApiMonitorEntry> {
   return parseJsonOrThrow<ApiMonitorEntry>(response);
 }
 
+export async function clearApiMonitor(): Promise<void> {
+  const response = await authFetch("/api/inference/monitor", {
+    method: "DELETE",
+  });
+  await parseJsonOrThrow<{ cleared: boolean }>(response);
+}
+
+export interface ActiveGenerationsResponse {
+  count: number;
+  /** Conversations with a generation in flight. Shorter than `count` when a
+   *  first turn started before its thread id was persisted. */
+  thread_ids: string[];
+  /** One entry per in-flight request. `kind` is "chat" unless it is an
+   *  embeddings / completions / audio call, which has no conversation. */
+  active?: { thread_id: string | null; kind?: string }[];
+  parallel_slots: number;
+}
+
+/**
+* Chats generating on the backend right now. Authoritative where `runningByThreadId` is not:
+* that map is per-tab, empty after a reload and blind to a second tab, and /load 409s on these.
+*/
+export async function getActiveGenerations(): Promise<ActiveGenerationsResponse> {
+  const response = await authFetch("/api/inference/active-generations");
+  return parseJsonOrThrow<ActiveGenerationsResponse>(response);
+}
+
 export async function loadModel(
   payload: LoadModelRequest,
 ): Promise<LoadModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
-  if (!preparedToken.proceed) throw new Error("Model load cancelled.");
+  // Tagged so auto-load can tell a user cancellation from a backend rejection.
+  if (!preparedToken.proceed)
+    throw Object.assign(new Error("Model load cancelled."), {
+      unslothUserCancelled: true,
+    });
   const response = await authFetch("/api/inference/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -144,14 +209,38 @@ export async function loadModel(
       nativePathLease: undefined,
     }),
   });
-  return parseJsonOrThrow<LoadModelResponse>(response);
+  return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
+}
+
+export async function countChatInputTokens(payload: {
+  model: string;
+  messages: OpenAIChatCompletionsRequest["messages"];
+  enable_thinking?: boolean;
+  reasoning_effort?: OpenAIChatCompletionsRequest["reasoning_effort"];
+  preserve_thinking?: boolean;
+  enable_tools?: boolean;
+  enabled_tools?: string[];
+  mcp_enabled?: boolean;
+  rag_scope?: Record<string, unknown>;
+  auto_heal_tool_calls?: boolean;
+  // `model` is informational: the endpoint counts with whatever is resident and reports which.
+}): Promise<{ input_tokens: number; model?: string }> {
+  const response = await authFetch("/api/inference/chat/count_tokens", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonOrThrow<{ input_tokens: number; model?: string }>(response);
 }
 
 export async function validateModel(
   payload: LoadModelRequest,
 ): Promise<ValidateModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
-  if (!preparedToken.proceed) throw new Error("Model load cancelled.");
+  if (!preparedToken.proceed)
+    throw Object.assign(new Error("Model load cancelled."), {
+      unslothUserCancelled: true,
+    });
   const response = await authFetch("/api/inference/validate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -160,31 +249,35 @@ export async function validateModel(
       native_path_lease: payload.nativePathLease ?? null,
       hf_token: preparedToken.token,
       gguf_variant: payload.gguf_variant ?? null,
-      // Intended load settings so validate's preflight matches the follow-up
-      // /load. Default placement is sized against the selected GPUs.
+      // Intended load settings so validate's preflight matches the follow-up /load.
       max_seq_length: payload.max_seq_length,
       load_in_4bit: payload.load_in_4bit,
+      cache_type_kv: payload.cache_type_kv ?? null,
+      tensor_parallel: payload.tensor_parallel ?? false,
       gpu_ids: payload.gpu_ids,
-      // Manual placement is an explicit override: Auto layers use llama.cpp
-      // --fit, while a pinned layer count is owned by the user. Tell validate
-      // so it applies the same training-guard policy as /load.
+      // Manual placement is an explicit override: Auto layers use llama.cpp --fit, a pinned
+      // layer count is owned by the user. Tell validate so it applies the same policy as /load.
       gpu_memory_mode: payload.gpu_memory_mode,
-      // Background auto-loads: resolve metadata from the local cache only
-      // and reject candidates whose runtime pulls remote auxiliaries.
-      local_files_only: payload.local_files_only ?? false,
+      // Only 0 changes the verdict: a zero-layer DiffusionGemma split places no layers.
+      gpu_layers: payload.gpu_layers,
+      // Slots scale the KV estimate; keep validate sized like the load.
+      n_parallel: payload.n_parallel,
+      // The estimate charges a drafter whose size differs by kind (a DSpark
+      // sidecar is ~11 GB), so omitting the mode makes this preflight disagree
+      // with /load in both directions.
+      speculative_type: payload.speculative_type ?? null,
+      spec_draft_n_max: payload.spec_draft_n_max ?? null,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);
 }
 
 /**
- * Read a GGUF's header dims (native context length, total layer count, MoE
- * expert-layer count) from its local file (no GPU load, no download). All are
- * null when the file isn't downloaded yet, the model isn't a GGUF, or it's
- * gated. For a native (drag-drop / picked) file, pass `nativePathToken` so the
- * backend reads the granted local path. Used by the deferred-load staging flow
- * to size the context, GPU-layers and MoE sliders before the single load.
- */
+* Read a GGUF's header dims (native context length, layer count, MoE expert-layer count) from
+* its local file (no GPU load, no download). All null when the file isn't downloaded, isn't a
+* GGUF, or is gated. For a native (drag-drop) file, pass `nativePathToken`. Used by the
+* deferred-load staging flow to size the context, GPU-layers and MoE sliders before the load.
+*/
 export async function fetchGgufStagedMetadata(payload: {
   model_path: string;
   gguf_variant?: string | null;
@@ -194,6 +287,10 @@ export async function fetchGgufStagedMetadata(payload: {
   contextLength: number | null;
   layerCount: number | null;
   moeLayerCount: number | null;
+  isDiffusion: boolean;
+  /** Unclassifiable, so `isDiffusion: false` above means "not known to be diffusion":
+   *  callers picking a GPU split must assume possibly-diffusion. */
+  diffusionUnknown: boolean;
 }> {
   let nativePathLease: string | null = null;
   if (payload.nativePathToken) {
@@ -202,8 +299,14 @@ export async function fetchGgufStagedMetadata(payload: {
         await consumeNativePathToken(payload.nativePathToken, "validate-model")
       ).nativePathLease;
     } catch {
-      // Lease expired / revoked: degrade to no metadata (the load can re-mint).
-      return { contextLength: null, layerCount: null, moeLayerCount: null };
+      // Lease expired / revoked: degrade to no metadata (the load can re-mint). Nothing was read, so diffusion is unknown, not false.
+      return {
+        contextLength: null,
+        layerCount: null,
+        moeLayerCount: null,
+        isDiffusion: false,
+        diffusionUnknown: true,
+      };
     }
   }
   const response = await authFetch("/api/inference/validate", {
@@ -222,6 +325,9 @@ export async function fetchGgufStagedMetadata(payload: {
     contextLength: res.context_length ?? null,
     layerCount: res.layer_count ?? null,
     moeLayerCount: res.moe_layer_count ?? null,
+    isDiffusion: res.is_diffusion ?? false,
+    // Absent on a pre-#7575 backend, which never reported the inconclusive case.
+    diffusionUnknown: res.diffusion_unknown ?? false,
   };
 }
 
@@ -231,16 +337,14 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  await parseJsonOrThrow<unknown>(response);
+  await parseJsonOrThrow<unknown>(response, "Model unload");
 }
 
 /**
- * Allow or deny a tool call that is paused awaiting user confirmation
- * (when the "Confirm tool calls" toggle is on). The call is identified by
- * the backend ``approvalId`` echoed in the tool_start event; ``sessionId``
- * is a scope check. Resolves to ``true`` only when the backend matched a
- * pending call, so the caller can surface a retry on a stale/failed post.
- */
+* Allow or deny a tool call paused awaiting user confirmation. Identified by the backend
+* ``approvalId`` echoed in the tool_start event; ``sessionId`` is a scope check. Resolves to
+* ``true`` only when the backend matched a pending call, so a stale post can offer a retry.
+*/
 export async function resolveToolConfirmation(
   sessionId: string,
   approvalId: string,
@@ -270,6 +374,18 @@ export interface CachedGgufRepo {
   /** True when the repo ships an mmproj adapter (image inputs). Optional for
    * older-backend compatibility. */
   has_vision?: boolean;
+  /** HF pipeline task inferred from the GGUF architecture ("text-to-image" for diffusion), so the Images picker can show only diffusion GGUFs. Optional for older backends. */
+  task?: string | null;
+  /** True when some quant has a download manifest or cancel marker. Optional
+   * for older-backend compatibility. */
+  has_variant_state?: boolean;
+  partial?: boolean;
+  capabilities?: CachedRepoCapabilities | null;
+}
+
+/** The subset of a row's capabilities auto-load acts on; Hub view models have a wider type. */
+export interface CachedRepoCapabilities {
+  can_chat?: boolean;
 }
 
 export async function getGgufDownloadProgress(
@@ -294,12 +410,17 @@ export async function getGgufDownloadProgress(
 
 export interface DownloadProgressResponse {
   downloaded_bytes: number;
+  /**
+   * Finalized-blob bytes only. Bytes still landing in a `.incomplete` blob count
+   * toward `downloaded_bytes` but not here, so the two are equal exactly when
+   * nothing is in flight.
+   */
+  completed_bytes: number;
   expected_bytes: number;
   progress: number;
   /**
-   * On-disk path of the snapshot dir (or cache repo root if no snapshot yet).
-   * Null when nothing has been written to the cache for this repo.
-   */
+  * On-disk path of the snapshot dir (or cache repo root if no snapshot yet); null when
+  * nothing has been written to the cache for this repo. */
   cache_path: string | null;
 }
 
@@ -315,7 +436,9 @@ export async function getDatasetDownloadProgress(
   repoId: string,
 ): Promise<DownloadProgressResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
-  const response = await authFetch(`/api/datasets/download-progress?${params}`);
+  const response = await authFetch(
+    `/api/hub/datasets/download-progress?${params}`,
+  );
   return parseJsonOrThrow(response);
 }
 
@@ -323,9 +446,8 @@ export type ModelLoadPhase = "mmap" | "ready" | null;
 
 export interface LoadProgressResponse {
   /**
-   * Load phase: "mmap" while llama-server pages weight shards into RAM,
-   * "ready" once healthy, or null when no load is in flight.
-   */
+  * Load phase: "mmap" while llama-server pages weight shards into RAM, "ready" once
+  * healthy, or null when no load is in flight. */
   phase: ModelLoadPhase;
   bytes_loaded: number;
   bytes_total: number;
@@ -333,10 +455,9 @@ export interface LoadProgressResponse {
 }
 
 /**
- * Fetch the active GGUF load's mmap/upload progress. Complements the download
- * progress endpoints for the "download complete" -> "chat ready" window, which
- * for large MoE models can be several minutes of otherwise-opaque spinning.
- */
+* Fetch the active GGUF load's mmap/upload progress. Complements the download progress
+* endpoints for the "download complete" -> "chat ready" window, minutes for large MoE models.
+*/
 export async function getLoadProgress(): Promise<LoadProgressResponse> {
   const response = await authFetch(`/api/inference/load-progress`);
   return parseJsonOrThrow(response);
@@ -348,13 +469,13 @@ export interface LocalModelInfo {
   path: string;
   source: "models_dir" | "hf_cache" | "lmstudio" | "custom";
   model_id?: string | null;
-  // Backend-detected weights format ("gguf" when known), so the UI can
-  // classify scanned folders whose name lacks a -GGUF suffix.
+  // Backend-detected weights format ("gguf" when known), for folders whose name lacks -GGUF.
   model_format?: string | null;
-  // Set when a cached snapshot holds an incomplete download, so consumers can skip
-  // weights that cannot load yet.
+  // Set when a cached snapshot holds an incomplete download, so consumers skip unloadable weights.
   partial?: boolean;
   updated_at?: number | null;
+  // HF pipeline task inferred from the GGUF architecture, so the Images picker can filter to diffusion ("text-to-image"). Optional for older backends.
+  task?: string | null;
 }
 
 interface LocalModelListResponse {
@@ -383,15 +504,21 @@ export interface CachedModelRepo {
   repo_id: string;
   load_id?: string | null;
   size_bytes: number;
-  /** Weight bytes of the newest cached snapshot only (what a load resolves);
-   * size_bytes sums selected-format blobs across every cached revision. */
-  snapshot_size_bytes?: number | null;
   /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
    * newest-first. Optional for older-backend compatibility. */
   last_modified?: number;
+  /** HF pipeline task: "text-to-image" for a cached diffusers pipeline repo (model_index.json present), so the chat picker can hide it. Absent = chat. */
+  task?: string | null;
+  /** True when the snapshot is incomplete (a cancelled/partial download): such a repo must not count as downloaded, or a click re-downloads the full weights. */
+  partial?: boolean;
+  /** True for a diffusion repo with no model_index.json: a single-file checkpoint loadable only via from_single_file, so task pickers must not offer it as a pipeline load unless the curated catalog carries its artifact. */
+  single_file?: boolean;
+  /** True for an sd.cpp companion mirror (VAE / text encoders, no denoiser): listed so it can be seen and deleted, never offered as a load. */
+  companion?: boolean;
   /** Owning cache dir; sent so a delete targets this copy, not the active
    * cache. Optional for older-backend compatibility. */
   cache_path?: string | null;
+  capabilities?: CachedRepoCapabilities | null;
 }
 
 export async function listCachedModels(
@@ -504,8 +631,7 @@ export async function listChatThreads(
   const qs = params.toString();
   const response = await authFetch(`/api/chat/threads${qs ? `?${qs}` : ""}`);
   const data = await parseJsonOrThrow<{ threads: ThreadRecord[] }>(response);
-  // Always hand back an array: an older or misbehaving backend may omit the
-  // field or send a non-array, which would crash list consumers.
+  // Always hand back an array: an older or misbehaving backend may omit it or send a non-array.
   return Array.isArray(data.threads) ? data.threads : [];
 }
 
@@ -676,8 +802,7 @@ export async function listChatProjects(
   const qs = params.toString();
   const response = await authFetch(`/api/chat/projects${qs ? `?${qs}` : ""}`);
   const data = await parseJsonOrThrow<{ projects: ProjectRecord[] }>(response);
-  // Always hand back an array: an older or misbehaving backend may omit the
-  // field or send a non-array, which would crash list consumers.
+  // Always hand back an array: an older or misbehaving backend may omit it or send a non-array.
   return Array.isArray(data.projects) ? data.projects : [];
 }
 
@@ -748,10 +873,8 @@ export async function listChatMessages(
 }
 
 /**
- * Fetch messages for many threads in one HTTP call. Falls back to
- * per-thread listChatMessages on 404/405 (older servers without the
- * batch route).
- */
+* Fetch messages for many threads in one HTTP call. Falls back to per-thread
+* listChatMessages on 404/405 (older servers without the batch route). */
 export async function batchListChatMessages(
   threadIds: string[],
 ): Promise<Map<string, MessageRecord[]>> {
@@ -855,14 +978,12 @@ export async function buildBackendChatExport(): Promise<{
   return parseJsonOrThrow(response);
 }
 
-// Legacy-Dexie import ledger: server-side source of truth replacing the
-// boolean localStorage sentinel, so a studio.db wipe keeps the import
-// recoverable.
+// Legacy-Dexie import ledger: a server-side source of truth replacing the localStorage
+// sentinel, so a studio.db wipe keeps the import recoverable.
 export async function listChatImportLedger(): Promise<Set<string>> {
   const response = await authFetch("/api/chat/import-ledger");
-  // Backends without this endpoint behave like an empty ledger -- caller
-  // re-imports every legacy thread. syncChatMessages UPSERTs prevent
-  // duplicates, so this fallback is safe.
+  // Backends without this endpoint behave like an empty ledger -- the caller re-imports every
+  // legacy thread, and syncChatMessages UPSERTs prevent duplicates.
   if (response.status === 404 || response.status === 405) return new Set();
   const data = await parseJsonOrThrow<{ threadIds: string[] }>(response);
   return new Set(data.threadIds);
@@ -871,9 +992,8 @@ export async function listChatImportLedger(): Promise<Set<string>> {
 export interface RecordChatImportLedgerResult {
   accepted: number;
   inserted: number;
-  // false when the backend predates /api/chat/import-ledger (404/405/501) so
-  // the caller avoids poisoning the localStorage perf hint; next launch
-  // retries the (idempotent) import.
+  // false when the backend predates /api/chat/import-ledger, so the caller does not poison the
+  // localStorage perf hint; the next launch retries the (idempotent) import.
   supported: boolean;
 }
 
@@ -935,10 +1055,7 @@ export async function browseFolders(
   if (path !== undefined && path !== null) params.set("path", path);
   if (showHidden) params.set("show_hidden", "true");
   const qs = params.toString();
-  // Forward the AbortSignal through authFetch -> fetch so a cancelled
-  // FolderBrowser navigation actually cancels the in-flight request
-  // server-side, instead of just dropping the response while the backend
-  // keeps walking large directory trees.
+  // Forward the AbortSignal through authFetch so a cancelled FolderBrowser navigation also cancels the server-side walk.
   const response = await authFetch(
     `/api/models/browse-folders${qs ? `?${qs}` : ""}`,
     signal ? { signal } : undefined,
@@ -949,27 +1066,16 @@ export async function browseFolders(
 export async function listGgufVariants(
   repoId: string,
   hfToken?: string,
-  options?: {
-    preferLocalCache?: boolean;
-    localPath?: string | null;
-    /** Aborts the underlying fetch; background scans pass a timeout signal so
-     * one hung request cannot gate Send forever. */
-    signal?: AbortSignal;
-  },
+  options?: GgufVariantsRequestOptions,
 ): Promise<GgufVariantsResponse> {
-  const params = new URLSearchParams({ repo_id: repoId });
-  if (options?.preferLocalCache) {
-    params.set("prefer_local_cache", "true");
-  }
-  const localPath = options?.localPath?.trim();
-  if (localPath) {
-    params.set("local_path", localPath);
-  }
-  const response = await authFetch(`/api/models/gguf-variants?${params}`, {
-    headers: hubTokenHeader(hfToken),
-    signal: options?.signal,
+  const params = ggufVariantsQuery(repoId, options, isHuggingFaceOffline());
+  return runBoundedVariantsRequest(options?.signal, async (signal) => {
+    const response = await authFetch(`/api/models/gguf-variants?${params}`, {
+      headers: hubTokenHeader(hfToken),
+      signal,
+    });
+    return parseJsonOrThrow<GgufVariantsResponse>(response);
   });
-  return parseJsonOrThrow<GgufVariantsResponse>(response);
 }
 
 export interface KvCacheEstimate {
@@ -1089,8 +1195,7 @@ export async function* streamChatCompletions(
   const decoder = new TextDecoder();
   let buffer = "";
   let completed = false;
-  // EOF without `[DONE]` or a finish_reason chunk means the stream was cut
-  // mid-generation: surface as interrupted, not silent success.
+  // EOF without `[DONE]` or a finish_reason chunk means the stream was cut mid-generation.
   let sawTerminalSignal = false;
   let terminalFinishReason: string | null = null;
   let sawAssistantContent = false;
@@ -1190,8 +1295,7 @@ export async function* streamChatCompletions(
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
-        // finish_reason is a valid terminal signal for providers that close
-        // the stream without an explicit [DONE] sentinel.
+        // finish_reason is a valid terminal signal for providers that close without a [DONE] sentinel.
         const parsedChoices = (
           parsed as {
             choices?: Array<{
@@ -1225,10 +1329,8 @@ export async function* streamChatCompletions(
       }
     }
   } finally {
-    // Only abort on an early/abnormal exit. After a natural [DONE] (or server
-    // EOF) the request is logically complete and the backend finalizes its
-    // api-monitor entry right after the sentinel; cancelling here can be seen as
-    // a disconnect and mark a successful request as cancelled.
+    // Only abort on an early/abnormal exit: after a natural [DONE] (or server EOF) the request is logically complete and the
+    // backend finalizes its api-monitor entry, so cancelling here can mark a successful request as cancelled.
     if (!completed) {
       try {
         await reader.cancel();

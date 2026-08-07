@@ -31,6 +31,7 @@ import { Streamdown } from "streamdown";
 import { loadCodingAgents } from "../api/coding-agents";
 import { loadOpenAIAutoSwitchSettings } from "../api/openai-auto-switch";
 import { type OpenAIModel, listOpenAIModels } from "../api/openai-models";
+import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import { buildAgentCommand, isLoopbackHost, normalizeHost } from "./agent-command";
 
 type ExampleType =
@@ -57,6 +58,9 @@ const TYPE_TABS: { id: ExampleType; label: string }[] = [
   { id: "pythonAdvanced", label: "Python + advanced" },
   { id: "javascriptAdvanced", label: "JavaScript + advanced" },
 ];
+
+// guards a restored tab against a snippet type dropped in a later release.
+const EXAMPLE_TYPE_IDS = new Set<string>(TYPE_TABS.map((tab) => tab.id));
 
 const TYPE_LABEL_KEY: Partial<Record<ExampleType, TranslationKey>> = {
   curlTools: "settings.apiKeys.exampleCurlTools",
@@ -86,7 +90,7 @@ const JAVASCRIPT_TYPES = new Set<ExampleType>([
   "javascriptAdvanced",
 ]);
 
-const PROMPT = "What is Unsloth Studio?";
+const PROMPT = "What is Unsloth?";
 // web_search + python + terminal are the reliable built-in tools.
 const TOOLS = ["web_search", "python", "terminal"];
 const ADV = {
@@ -106,16 +110,15 @@ const DOC_LINKS = [
   { label: "Hermes Agent", href: "https://unsloth.ai/docs/integrations/hermes-agent" },
 ];
 
-// Falls back to this list until the backend's installed-CLI check resolves;
-// kept in sync with the `unsloth start <agent>` subcommands and with
-// CODING_AGENTS in studio/backend/utils/coding_agents.py.
+// Fallback until the backend's installed-CLI check resolves. Mirrors
+// CODING_AGENTS in studio/backend/utils/coding_agents.py, minus HIDDEN_AGENTS
+// (see ../api/coding-agents.ts).
 const DEFAULT_AGENTS = [
   "claude",
   "codex",
   "openclaw",
   "opencode",
   "hermes",
-  "pi",
 ];
 // The agent selection resets to this whenever an auto-pick is no longer
 // trustworthy (leaving loopback, or the only compatible detected agent
@@ -127,7 +130,6 @@ const AGENT_LABELS: Record<string, string> = {
   openclaw: "OpenClaw",
   opencode: "OpenCode",
   hermes: "Hermes",
-  pi: "Pi",
 };
 
 const j = (s: string): string => JSON.stringify(s);
@@ -334,7 +336,7 @@ const KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
 const USE_TUNNEL_KEY = "unsloth_api_use_tunnel";
 // Slow retry while /v1 has nothing to name: a download or load moves no store state.
 const CATALOG_RETRY_MS = 15000;
-// Slower beat once something is servable: idle unload frees a model without
+// Slower beat once something is servable: an idle unload frees a model without
 // touching the store, so residency is never settled for good.
 const CATALOG_IDLE_MS = 60000;
 
@@ -382,9 +384,8 @@ function useExampleModelName(): string | null {
   const [catalog, setCatalog] = useState<OpenAIModel[] | null>(null);
   // A downloaded but unloaded model is only runnable when switching is on.
   const [autoSwitch, setAutoSwitch] = useState(false);
-  // Idle-unload running on its own (UNSLOTH_MODEL_IDLE_TTL, switching off) still
-  // reloads exactly what it freed on the next request. That restores the stored
-  // checkpoint only, never an arbitrary catalog entry, so it is tracked apart.
+  // Idle-unload on its own (UNSLOTH_MODEL_IDLE_TTL, switching off) reloads exactly
+  // what it freed: the stored checkpoint only, never an arbitrary catalog entry.
   const [idleReload, setIdleReload] = useState(false);
   const usableCheckpoint =
     !!checkpoint && !checkpoint.startsWith("external::") && !looksLikePath(checkpoint);
@@ -396,9 +397,9 @@ function useExampleModelName(): string | null {
     let timeoutId: number | null = null;
 
     const update = () => {
-      // null on failure, never [] or false: a transient error is not evidence that the
-      // server holds nothing, and feeding those negatives in blanked every example while
-      // the model was still servable. Keep the last answer and retry.
+      // null on failure, never [] or false: a transient error is no evidence that the
+      // server holds nothing, and those negatives blanked every example while the
+      // model was still servable. Keep the last answer and retry.
       void Promise.all([
         listOpenAIModels().catch(() => null),
         loadOpenAIAutoSwitchSettings()
@@ -443,10 +444,10 @@ function useExampleModelName(): string | null {
         ? `${pick.id}:${pick.quant}`
         : pick.id;
     };
-    // The store keeps a checkpoint across an idle unload, and across the model
-    // being deleted, so it only names a runnable model while the catalog still
-    // lists it: resident, or downloaded with switching able to reload it. A null
-    // catalog means /v1/models has not answered, which is not evidence against it.
+    // The store keeps a checkpoint across an idle unload and across the model being
+    // deleted, so it only names a runnable model while the catalog still lists it:
+    // resident, or downloaded with switching able to reload it. A null catalog means
+    // /v1/models has not answered, which is not evidence against it.
     const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));
     const backed =
       catalog === null || (!!entry && (entry.loaded || autoSwitch || idleReload));
@@ -454,9 +455,9 @@ function useExampleModelName(): string | null {
       if (checkpoint.includes(":")) {
         return checkpoint;
       }
-      // Pin the quant the catalog advertises, not the stored one: membership proves
-      // the repo, and the saved quant can name a file deleted while another quant of
-      // the same repo remains. Fall back to the store only before /v1/models answers.
+      // Pin the quant the catalog advertises, not the stored one: membership proves the
+      // repo, and the saved quant can name a file deleted while another quant remains.
+      // Fall back to the store only before /v1/models answers.
       const quant = catalog === null ? ggufVariant : entry?.quant;
       return quant ? `${checkpoint}:${quant}` : checkpoint;
     }
@@ -512,20 +513,41 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const secure = usePlatformStore((s) => s.secure);
-  const [lang, setLang] = useState<ExampleType>("curl");
+  const setStoredLang = useSettingsPanelPrefsStore((s) => s.setApiExampleLang);
+  const setStoredOs = useSettingsPanelPrefsStore((s) => s.setApiExampleOs);
+  const setStoredAgent = useSettingsPanelPrefsStore(
+    (s) => s.setApiExampleAgent,
+  );
+  // read once: these seed the controls, which write back through the handlers.
+  const [storedPrefs] = useState(() => useSettingsPanelPrefsStore.getState());
+  const [lang, setLang] = useState<ExampleType>(
+    storedPrefs.apiExampleLang && EXAMPLE_TYPE_IDS.has(storedPrefs.apiExampleLang)
+      ? (storedPrefs.apiExampleLang as ExampleType)
+      : "curl",
+  );
+  // an explicit pick wins, since the snippet may target another machine.
   const [os, setOs] = useState<Os>(
-    deviceType === "windows" ? "windows" : "unix",
+    storedPrefs.apiExampleOs === "windows" ||
+      storedPrefs.apiExampleOs === "unix"
+      ? storedPrefs.apiExampleOs
+      : deviceType === "windows"
+        ? "windows"
+        : "unix",
   );
   const [copied, setCopied] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [copiedAgent, setCopiedAgent] = useState(false);
-  const [agent, setAgent] = useState<string>(DEFAULT_AGENT);
+  const [agent, setAgent] = useState<string>(
+    storedPrefs.apiExampleAgent ?? DEFAULT_AGENT,
+  );
   const [availableAgents, setAvailableAgents] =
     useState<string[]>(DEFAULT_AGENTS);
   const [detectedAgents, setDetectedAgents] = useState<string[]>([]);
+  // set on answer, so a restored agent never validates against the defaults.
+  const [agentsLoaded, setAgentsLoaded] = useState(false);
   // True once the user has picked an agent themselves; guards the detection
   // effect below from clobbering that choice if it resolves afterward.
-  const agentPickedByUserRef = useRef(false);
+  const agentPickedByUserRef = useRef(storedPrefs.apiExampleAgent != null);
   const [useTunnel, setUseTunnel] = useState<boolean>(readUseTunnelPref);
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const base =
@@ -564,11 +586,24 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
       })
       .catch(() => {
         // Best-effort: keep the default agent list and let the user pick manually.
+      })
+      .finally(() => {
+        if (!cancelled) setAgentsLoaded(true);
       });
     return () => {
       cancelled = true;
     };
   }, [localAgentDetection]);
+
+  // a restored agent this build no longer offers cannot build a command.
+  useEffect(() => {
+    if (!agentPickedByUserRef.current) return;
+    if (localAgentDetection && !agentsLoaded) return;
+    if (availableAgents.includes(agent)) return;
+    agentPickedByUserRef.current = false;
+    setStoredAgent(null);
+    setAgent(DEFAULT_AGENT);
+  }, [agent, agentsLoaded, availableAgents, localAgentDetection, setStoredAgent]);
 
   // Single source of truth for the auto-picked agent, re-derived whenever
   // the detected list or the loaded model's GGUF-ness changes -- in either
@@ -729,7 +764,10 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
                 <button
                   key={tab.id}
                   type="button"
-                  onClick={() => setLang(tab.id)}
+                  onClick={() => {
+                    setLang(tab.id);
+                    setStoredLang(tab.id);
+                  }}
                   aria-pressed={active}
                   className={cn(
                     "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
@@ -748,7 +786,10 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
           <div className="flex min-w-0 items-center gap-0.5 border-b border-border px-2 py-1.5">
             <button
               type="button"
-              onClick={() => setOs("unix")}
+              onClick={() => {
+                setOs("unix");
+                setStoredOs("unix");
+              }}
               aria-pressed={os === "unix"}
               className={cn(
                 "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
@@ -761,7 +802,10 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
             </button>
             <button
               type="button"
-              onClick={() => setOs("windows")}
+              onClick={() => {
+                setOs("windows");
+                setStoredOs("windows");
+              }}
               aria-pressed={os === "windows"}
               className={cn(
                 "rounded-full px-2.5 py-1 text-ui-11 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
@@ -819,6 +863,7 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
                   onClick={() => {
                     agentPickedByUserRef.current = true;
                     setAgent(id);
+                    setStoredAgent(id);
                   }}
                   aria-pressed={active}
                   title={

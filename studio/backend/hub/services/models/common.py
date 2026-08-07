@@ -63,69 +63,6 @@ _LOCAL_BASE_MODEL_PREFIXES = {
 }
 _HF_CACHE_MODEL_FILE_PROBE_LIMIT = 2000
 
-# Architecture names used by Transformers for generation-capable models. Keep
-# this deliberately narrow: an unknown/custom architecture must not be called
-# non-chat merely because its class name is unfamiliar.
-_GENERATIVE_ARCHITECTURE_SUFFIXES = (
-    "ForCausalLM",
-    "ForConditionalGeneration",
-    "ForSeq2SeqLM",
-    "LMHeadModel",
-)
-_NON_GENERATIVE_ARCHITECTURE_SUFFIXES = (
-    "ForAudioClassification",
-    "ForCTC",
-    "ForFeatureExtraction",
-    "ForImageClassification",
-    "ForImageTextRetrieval",
-    "ForMaskedLM",
-    "ForMultipleChoice",
-    "ForNextSentencePrediction",
-    "ForObjectDetection",
-    "ForPreTraining",
-    "ForQuestionAnswering",
-    "ForRetrieval",
-    "ForRewardModel",
-    "ForSemanticSegmentation",
-    "ForSequenceClassification",
-    "ForTextEncoding",
-    "ForTokenClassification",
-    "ForVideoClassification",
-    "ForZeroShotImageClassification",
-)
-_ENCODER_ONLY_MODEL_TYPES = frozenset(
-    {
-        "albert",
-        "bert",
-        "camembert",
-        "chinese_clip",
-        "clip",
-        "deberta",
-        "deberta-v2",
-        "distilbert",
-        "electra",
-        "funnel",
-        "ibert",
-        "layoutlm",
-        "layoutlmv2",
-        "layoutlmv3",
-        "longformer",
-        "megatron-bert",
-        "mobilebert",
-        "modernbert",
-        "mpnet",
-        "nystromformer",
-        "rembert",
-        "roberta",
-        "roformer",
-        "siglip",
-        "siglip2",
-        "squeezebert",
-        "vision-text-dual-encoder",
-        "xlm-roberta",
-    }
-)
-
 
 def _is_model_directory(d: Path) -> bool:
     """True when *d* has a config plus real weights; excludes mmproj GGUFs and non-weight ``.bin`` files (``tokenizer.bin``) to avoid false positives."""
@@ -187,12 +124,9 @@ def _capabilities_for_format(
     *,
     partial: bool = False,
     requires_variant: bool = False,
-    can_chat_override: Optional[bool] = None,
 ) -> LocalModelCapabilities:
     is_complete = not partial
     can_chat = model_format in {"gguf", "safetensors", "adapter", "checkpoint"}
-    if can_chat_override is not None:
-        can_chat = can_chat and can_chat_override
     can_train = model_format in {"safetensors", "checkpoint"} and is_complete
     return LocalModelCapabilities(
         can_train = can_train,
@@ -203,64 +137,6 @@ def _capabilities_for_format(
         supports_lora = model_format in {"safetensors", "checkpoint"} and is_complete,
         supports_vision = False,
     )
-
-
-def _read_local_json_object(path: Path) -> dict:
-    try:
-        data = json.loads(path.read_text(encoding = "utf-8"))
-        return data if isinstance(data, dict) else {}
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-        return {}
-
-
-def _local_transformers_can_chat(path: Path) -> Optional[bool]:
-    """Return False for locally identifiable non-generative Transformers rows.
-
-    ``None`` means the local metadata is inconclusive and preserves the
-    existing format capability. This intentionally fails open for custom
-    architectures so inventory discovery does not hide a valid chat model.
-    """
-    if not _safe_is_dir(path):
-        return None
-
-    # SentenceTransformers exports carry this local, authoritative marker even
-    # when the underlying config names a broadly reusable encoder class.
-    try:
-        if (path / "modules.json").is_file():
-            return False
-    except OSError:
-        return None
-
-    config = _read_local_json_object(path / "config.json")
-    if not config:
-        return None
-
-    auto_map = config.get("auto_map")
-    if isinstance(auto_map, dict) and any(
-        key in auto_map for key in ("AutoModelForCausalLM", "AutoModelForSeq2SeqLM")
-    ):
-        return True
-
-    architectures = config.get("architectures")
-    names = (
-        [name.strip() for name in architectures if isinstance(name, str) and name.strip()]
-        if isinstance(architectures, list)
-        else []
-    )
-    if any(name.endswith(_GENERATIVE_ARCHITECTURE_SUFFIXES) for name in names):
-        return True
-    if names and all(name.endswith(_NON_GENERATIVE_ARCHITECTURE_SUFFIXES) for name in names):
-        return False
-
-    model_type = config.get("model_type")
-    normalized_type = model_type.strip().lower() if isinstance(model_type, str) else ""
-    if (
-        normalized_type in _ENCODER_ONLY_MODEL_TYPES
-        and names
-        and all(name.endswith("Model") for name in names)
-    ):
-        return False
-    return None
 
 
 def _prefer_complete_larger(
@@ -337,7 +213,6 @@ def _apply_format_aware_partial(
                         row.source,
                         partial = True,
                         requires_variant = row.capabilities.requires_variant,
-                        can_chat_override = row.capabilities.can_chat,
                     ),
                 }
             )
@@ -352,6 +227,22 @@ def _weight_basename(name: str) -> str:
 def _is_adapter_weight_name(name: str) -> bool:
     lower = _weight_basename(name)
     return lower.startswith("adapter_model") and lower.endswith((".safetensors", ".bin"))
+
+
+# Trainer state saved beside the weights, not the model. The .bin side is already an allow list.
+_TRAINING_ARTEFACT_PREFIXES = (
+    "optimizer",
+    "scheduler",
+    "rng_state",
+    "trainer_state",
+    "scaler",
+    "training_args",
+)
+
+
+def _is_training_artefact_name(name: str) -> bool:
+    """Whether *name* is trainer state rather than weights any row loads."""
+    return _weight_basename(name).startswith(_TRAINING_ARTEFACT_PREFIXES)
 
 
 def _is_transformers_safetensors_weight_name(name: str) -> bool:
@@ -373,6 +264,14 @@ def _is_checkpoint_weight_name(name: str) -> bool:
     if lower.endswith(".bin"):
         return _is_transformers_bin_weight_name(lower)
     return lower.endswith(_LOCAL_CHECKPOINT_EXTENSIONS)
+
+
+def _is_discoverable_ungrouped_weight_name(name: str) -> bool:
+    """Ungrouped payloads a runtime opens by name: diffusers components, single-file checkpoints."""
+    lower = _weight_basename(name)
+    if lower.endswith(".safetensors"):
+        return lower.startswith("diffusion_pytorch_model")
+    return _is_checkpoint_weight_name(lower)
 
 
 def _is_adapter_weight_file(path: Path) -> bool:
@@ -567,7 +466,6 @@ def _local_model_info(
     adapter_type: Optional[str] = None,
     training_method: Optional[str] = None,
     active_cache: Optional[bool] = None,
-    can_chat_override: Optional[bool] = None,
 ) -> LocalModelInfo:
     load_id = (
         model_id
@@ -604,7 +502,6 @@ def _local_model_info(
             source,
             partial = partial,
             requires_variant = requires_variant,
-            can_chat_override = can_chat_override,
         ),
     )
 
@@ -719,11 +616,6 @@ def _classify_local_path(
                 adapter_type = adapter_type if model_format == "adapter" else None,
                 training_method = training_method if model_format == "adapter" else None,
                 active_cache = active_cache,
-                can_chat_override = (
-                    _local_transformers_can_chat(scan_path)
-                    if model_format in {"safetensors", "checkpoint"}
-                    else None
-                ),
             )
         )
     elif not rows:

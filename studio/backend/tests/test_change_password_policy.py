@@ -43,7 +43,9 @@ def _change(new_password):
         current_password = "bootstrap-pw",
         new_password = new_password,
     )
-    return asyncio.run(auth_routes.change_password(payload, None, "unsloth"))
+    # is_desktop explicitly: positionally it would default to the Depends object,
+    # which is truthy, and silently take the preserve-desktop-secret branch.
+    return asyncio.run(auth_routes.change_password(payload, None, "unsloth", False))
 
 
 def test_rejects_whitespace_only_password(_user):
@@ -67,9 +69,11 @@ def test_rejects_password_containing_spaces(_user):
 
 
 def test_allows_password_without_spaces(_user, monkeypatch):
-    monkeypatch.setattr(auth_routes.storage, "update_password", lambda *args, **kwargs: True)
-    monkeypatch.setattr(auth_routes, "create_access_token", lambda subject: "at")
-    monkeypatch.setattr(auth_routes, "create_refresh_token", lambda subject: "rt")
+    monkeypatch.setattr(
+        auth_routes.storage, "update_password", lambda *args, **kwargs: "rotated-secret"
+    )
+    monkeypatch.setattr(auth_routes, "create_access_token", lambda subject, **kwargs: "at")
+    monkeypatch.setattr(auth_routes, "create_refresh_token", lambda subject, **kwargs: "rt")
     token = _change("correct-horse-battery")
     assert token.access_token == "at"
     assert token.must_change_password is False

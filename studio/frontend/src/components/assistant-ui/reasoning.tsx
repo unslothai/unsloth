@@ -11,6 +11,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { resolveReasoningGroupDuration } from "@/features/chat";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import {
@@ -339,9 +340,11 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
   });
 
   const persistedDuration = useAuiState(({ message }) => {
-    const d = (message.metadata?.custom as Record<string, unknown>)
-      ?.reasoningDuration;
-    return typeof d === "number" ? d : 0;
+    return resolveReasoningGroupDuration(
+      message.parts,
+      startIndex,
+      message.metadata?.custom as Record<string, unknown> | undefined,
+    );
   });
 
   const [manualOpen, setManualOpen] = useState(false);
@@ -412,7 +415,7 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
           className="min-w-0 flex-1"
           active={isReasoningStreaming}
           // Prefer server timing when available.
-          duration={persistedDuration || duration}
+          duration={persistedDuration ?? duration}
         />
         <div className="flex w-16 shrink-0 justify-end">
           {isOpen && !isReasoningStreaming && (

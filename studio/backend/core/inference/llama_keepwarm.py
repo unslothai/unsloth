@@ -60,10 +60,17 @@ _INFERENCE_SUFFIXES = (
     "/completions",
     "/messages",
     "/messages/count_tokens",  # counts via the loaded tokenizer; protect like /messages
+    "/chat/count_tokens",
     "/embeddings",
     "/responses",
     "/generate/stream",  # Unsloth's own streaming route on the same llama-server
     "/audio/generate",  # direct GGUF TTS; can outlive the idle TTL
+    # Image generation holds a multi-GB pipeline for the whole request; tracking it lets other_inference_request_count() see
+    # an in-flight generation so an API-key training start is refused (409). endswith avoids matching *-progress / */cancel.
+    "/images/generate",  # /api/inference/images/generate
+    "/images/generations",  # /v1/images/generations (+ /api/inference/images/generations)
+    # Video runs as a background job (the POST returns at once), so this covers only the brief accept; the training-start guards also probe generate-progress.
+    "/video/generate",  # /api/inference/video/generate
 )
 
 
@@ -346,8 +353,8 @@ def _loaded_identity(backend):
 
 
 def _note_idle_unload_event(freed) -> None:
-    """Record an idle auto-unload in the API monitor, using the advertised repo id
-    from the stash so the row never shows the on-disk load path. Best-effort."""
+    """Monitor row for an idle auto-unload. Best-effort; uses the stash's
+    advertised repo id so the row never shows the on-disk load path."""
     try:
         from core.inference.api_monitor import api_monitor
         from core.inference.model_ids import public_model_id

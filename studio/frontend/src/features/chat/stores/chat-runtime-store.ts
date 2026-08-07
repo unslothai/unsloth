@@ -2,9 +2,19 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mirrorHfTokenInto, useHfTokenStore } from "@/features/hub";
-import { cachedPinnableGpuIndices } from "@/hooks/use-gpu-info";
+import {
+  cachedPinnableGpuIndexKind,
+  reconcileCachedGpuSelection,
+  type ReconciledGpuSelection,
+  type GpuIndexKind,
+} from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
+import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
 import { create } from "zustand";
+import {
+  GPU_LAYERS_AUTO,
+  recoverDroppedDiffusionSplit,
+} from "../lib/gpu-placement";
 import { isExternalModelId, parseExternalModelId } from "../external-providers";
 import {
   type ChatPresetSource,
@@ -23,6 +33,11 @@ import {
   loadChatSettingsWithLegacyImport,
   savePersistedChatSettingsPatch,
 } from "../utils/chat-settings-storage";
+import {
+  chatModelLifecycleGate,
+  type ModelLifecycleLease,
+} from "../utils/model-lifecycle-gate";
+import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
 import type { ResearchWebsitePolicy } from "../types/research";
 import { useExternalProvidersStore } from "./external-providers-store";
 import { PLUS_MENU_PINS_STORAGE_KEY } from "./plus-menu-prefs-store";
@@ -77,9 +92,10 @@ export const CHAT_RAG_CAPTION_KEY = "unsloth_chat_rag_caption_figures";
 export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
 export const CHAT_GPU_MEMORY_MODE_KEY = "unsloth_chat_gpu_memory_mode";
 
-// Persist only the model-agnostic intents (auto/ngram/off). MTP modes
-// (mtp/mtp+ngram) and spec_draft_n_max stay session-only: a persisted MTP
-// choice would silently no-op on models without an MTP head. Unknown -> auto.
+// Persist only the model-agnostic intents (auto/ngram/off). The model-specific
+// drafter modes (mtp/mtp+ngram/dspark) and spec_draft_n_max stay session-only:
+// a persisted choice would silently no-op on a model with no MTP head or no
+// DSpark sidecar. Unknown -> auto.
 const PERSISTED_SPEC_MODES = new Set(["auto", "ngram", "off"]);
 
 export type RagSource = { type: "thread" } | { type: "kb"; kbId: string };
@@ -487,6 +503,7 @@ export function normalizeSpeculativeType(
   if (s === "auto" || s === "default") return "auto";
   if (s === "off") return "off";
   if (s === "mtp" || s === "draft-mtp") return "mtp";
+  if (s === "dspark" || s === "draft-dspark") return "dspark";
   if (s === "ngram" || s === "ngram-mod" || s === "ngram-simple") {
     return "ngram";
   }
@@ -563,9 +580,8 @@ export function persistGpuMemoryModeOnLoad(
   if (resp.is_gguf && !resp.is_diffusion) saveGpuMemoryMode(mode);
 }
 
-// Manual-mode gpu_layers sentinel: -1 = Auto (hand layer + context sizing to
-// llama.cpp's --fit). The Manual default; "all on GPU" is the slider's max.
-export const GPU_LAYERS_AUTO = -1;
+// Re-exported from its dependency-free home so existing imports keep working.
+export { GPU_LAYERS_AUTO } from "../lib/gpu-placement";
 
 // Round real-valued shares to integers summing exactly to `total`, giving the
 // leftover units to the largest fractional parts (largest-remainder method).
@@ -628,14 +644,35 @@ export function rebalanceSplit(
 // set), so a saved [1] on a now-1-GPU host doesn't get sent and rejected with no
 // way to clear it. A null pick (= automatic) passes through unchanged, and an
 // unpopulated device cache leaves the pick alone (the backend still guards).
+// An explicit null namespace means discovery had not completed when the live
+// state was captured, while an absent namespace is a legacy physical-ID pick.
 export function reconcilePersistedGpuIds(
   ids: number[] | null,
+  savedIndexKind?: GpuIndexKind | null,
+  forDiffusion = false,
 ): number[] | null {
-  if (ids == null) return ids;
-  const pinnable = cachedPinnableGpuIndices();
-  if (pinnable === null) return ids; // cache not ready: can't validate, keep it
-  const kept = ids.filter((i) => pinnable.includes(i));
-  return kept.length > 0 ? kept : null;
+  return reconcilePersistedGpuSelection(
+    ids,
+    savedIndexKind,
+    forDiffusion,
+  ).ids;
+}
+
+export function reconcilePersistedGpuSelection(
+  ids: number[] | null,
+  savedIndexKind?: GpuIndexKind | null,
+  forDiffusion = false,
+): ReconciledGpuSelection {
+  return reconcileCachedGpuSelection(ids, savedIndexKind, forDiffusion);
+}
+
+export function requestedGpuIdsFromResponse(resp: {
+  gpu_ids?: number[] | null;
+  requested_gpu_ids?: number[] | null;
+}): number[] | null {
+  return Object.prototype.hasOwnProperty.call(resp, "requested_gpu_ids")
+    ? (resp.requested_gpu_ids ?? null)
+    : (resp.gpu_ids ?? null);
 }
 
 // Store fields derived from a load/status response's GPU-memory settings.
@@ -651,6 +688,7 @@ export function loadedGpuMemoryFields(resp: {
   n_moe_layers?: number;
   gpu_ids?: number[] | null;
   requested_gpu_ids?: number[] | null;
+  diffusion_requested_ngl?: number | null;
 }) {
   // GPU-memory state is meaningful only for a GGUF chat load. A non-GGUF response
   // still carries gpu_memory_mode (its default "auto" is serialized), so gate on
@@ -664,7 +702,9 @@ export function loadedGpuMemoryFields(resp: {
     // baseline clears to null so Reset preserves the preference, not a stale mode.
     return {
       selectedGpuIds: null,
+      selectedGpuIndexKind: null,
       loadedGpuIds: null,
+      loadedGpuIndexKind: null,
       loadedGpuMemoryMode: null,
       gpuLayers: GPU_LAYERS_AUTO,
       loadedGpuLayers: null,
@@ -679,7 +719,27 @@ export function loadedGpuMemoryFields(resp: {
   const mode = resp.gpu_memory_mode ?? "auto";
   // Keep the user's placement pool editable across status/load hydration.
   // gpu_ids remains the effective fitted subset for diagnostics.
-  const gpuIds = resp.requested_gpu_ids ?? resp.gpu_ids ?? null;
+  const reportedGpuIds = requestedGpuIdsFromResponse(resp);
+  const gpuIndexKind =
+    reportedGpuIds == null
+      ? null
+      : cachedPinnableGpuIndexKind(resp.is_diffusion === true);
+  // A numeric ID is unsafe to adopt or persist once discovery says it is NOT a
+  // physical CUDA/ROCm ID or a Vulkan ordinal (gpuIndexKind === null, cache
+  // warm). But while discovery is still cold (gpuIndexKind === undefined) the
+  // namespace is merely deferred, not rejected -- keep the just-applied pin so
+  // a reload/rollback in that window doesn't omit gpu_ids and let llama.cpp
+  // fall back to every device. A later status refresh resolves the namespace
+  // once the shared system cache warms.
+  const gpuIds =
+    reportedGpuIds != null && gpuIndexKind !== null ? reportedGpuIds : null;
+  // A shim without --ngl reports Auto while the backend still holds the ask, so recover
+  // it: in-memory state survives a reload but not a refresh.
+  const droppedSplit = recoverDroppedDiffusionSplit(
+    resp.is_diffusion,
+    mode,
+    resp.diffusion_requested_ngl,
+  );
   // Layer/MoE/split knobs apply (and are reported) only in manual mode; in auto
   // the server ignores them, so don't seed the loaded baseline or the editable
   // knobs with values it never applied. In manual, the server reports gpu_layers
@@ -702,24 +762,40 @@ export function loadedGpuMemoryFields(resp: {
           // loaded baseline) -- else a later switch back to Manual would snapshot
           // and send a previous model's stale gpuLayers/nCpuMoe/split that this
           // load never applied. Mirrors the non-GGUF branch above.
-          gpuLayers: GPU_LAYERS_AUTO,
+          // Diffusion excepted: an "auto" diffusion response may be an older shim
+          // DROPPING a manual split. Restore the ask when the response carries it (a
+          // refresh has none left in memory), else keep what is standing. Resetting the
+          // slider would turn the ask into manual/-1, unapplyable even after the
+          // unsloth_zoo upgrade that adds --ngl.
+          ...(resp.is_diffusion
+            ? droppedSplit != null
+              ? { gpuLayers: droppedSplit }
+              : {}
+            : { gpuLayers: GPU_LAYERS_AUTO }),
           nCpuMoe: 0,
           splitRatio: null,
         };
   return {
-    // A diffusion GGUF runs mode-agnostic (pins all layers on one GPU, reports
-    // "auto"), so adopt everything a chat GGUF does EXCEPT the live standing
-    // preference -- the next chat load must still honor the user's manual choice.
-    // The loaded baseline is still "auto", but the UI hides mode controls for a
-    // loaded diffusion model so it can't read as dirty against the preference.
-    ...(resp.is_diffusion ? {} : { gpuMemoryMode: mode }),
+    // A diffusion GGUF reporting "auto" ran on the runner's defaults, so an inert standing
+    // manual preference must survive it. But "manual" means a split was actually applied
+    // (#7574): adopt it, or a refresh hydrates back to "auto" while the runner serves one.
+    ...(resp.is_diffusion && mode !== "manual"
+      ? droppedSplit != null
+        ? { gpuMemoryMode: "manual" as const }
+        : {}
+      : { gpuMemoryMode: mode }),
     loadedGpuMemoryMode: mode,
     ggufLayerCount: resp.n_layers ?? null,
     // MoE expert-layer count: the n_cpu_moe slider max, and 0 hides the slider.
     moeLayerCount: resp.n_moe_layers ?? null,
     // The picker reflects the requested placement pool, not a fitted subset.
     selectedGpuIds: gpuIds,
+    // gpuIndexKind is `undefined` only in the deferred (cache-cold) case here,
+    // since a `null` kind already forced gpuIds to null above. Normalize to the
+    // explicit-null-namespace convention (discovery not complete yet).
+    selectedGpuIndexKind: gpuIds == null ? null : (gpuIndexKind ?? null),
     loadedGpuIds: gpuIds,
+    loadedGpuIndexKind: gpuIds == null ? null : (gpuIndexKind ?? null),
     ...manualKnobs,
   };
 }
@@ -762,6 +838,30 @@ export function isDownloadableHubRepo(x: {
   );
 }
 
+type ContextUsageSnapshot = {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cachedTokens: number;
+  // Anthropic-only; optional so pre-cache-stats persisted entries load.
+  cacheWriteTokens?: number;
+};
+
+/**
+ * One live run behind `runningByThreadId[id]`, with the `local` flag it started with so the
+ * model-swap gate can tell llama-server runs from external ones when runs share a key.
+ */
+type ThreadRunOwner = {
+  owner: () => void;
+  local: boolean;
+};
+
+type ToolStatusEntry = {
+  status: string;
+  startedAt: number;
+  owner?: () => void;
+};
+
 type ChatRuntimeStore = {
   settingsHydrated: boolean;
   params: InferenceParams;
@@ -771,7 +871,25 @@ type ChatRuntimeStore = {
   models: ChatModelSummary[];
   loras: ChatLoraSummary[];
   runningByThreadId: Record<string, boolean>;
+  /**
+     * The subset of `runningByThreadId` decoding on the local llama-server. Swapping the local
+     * model neither interrupts an external-provider chat nor needs its consent, which is why
+     * the backend keeps those out of `active_generations` too.
+     */
+  localRunByThreadId: Record<string, boolean>;
+  /**
+     * Which runs set `runningByThreadId[id]`; see `setThreadRunning`'s `owner`. A list, not one
+     * entry: runs without a resolved thread id share the "__default" key, so one entry would let
+     * a newer run's clear delete an older run's flag while it still generates.
+     */
+  runOwnerByThreadId: Record<string, ThreadRunOwner[]>;
   cancelByThreadId: Record<string, () => void>;
+  /**
+     * Backend cancels for the threads generating in the background. `cancelByThreadId` only holds
+     * the visible thread's `cancelRun()`, so the adapter parks a closure here that POSTs that
+     * run's own cancel_id. A list for the same reason as `runOwnerByThreadId`: "__default" is shared.
+     */
+  serverCancelByThreadId: Record<string, (() => void)[]>;
   autoTitle: boolean;
   hfToken: string;
   modelsError: string | null;
@@ -779,6 +897,8 @@ type ChatRuntimeStore = {
   // lets the attach gates flag a failed load vs "no model picked".
   lastModelLoadError: string | null;
   activeGgufVariant: string | null;
+  /** Whether the backend loaded the active model from a filesystem path. */
+  activeModelIsLocal: boolean;
   ggufContextLength: number | null;
   ggufMaxContextLength: number | null;
   ggufNativeContextLength: number | null;
@@ -892,7 +1012,16 @@ type ChatRuntimeStore = {
    * consulted when `providerSupportsBuiltinWebFetch` is true.
    */
   webFetchToolsEnabled: boolean;
-  toolStatus: string | null;
+  /**
+     * Live tool status per conversation ("Running Python: ...") with its start time. Keyed by
+     * thread, or one chat's tool call shows above every other composer; the timestamp keeps the
+     * counter running across a thread switch.
+     */
+  /**
+     * Per-run entries, newest last. Unresolved threads share "__default", so one scalar per key
+     * meant a finishing run's clear removed a sibling's status while its tool was still running.
+     */
+  toolStatusByThreadId: Record<string, ToolStatusEntry[]>;
   /** Live stdout/stderr from running tools, keyed by toolCallId. Transient:
    *  appended by tool_output, cleared on tool_end or run end. */
   toolLiveOutput: Record<string, string>;
@@ -910,13 +1039,26 @@ type ChatRuntimeStore = {
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
   /**
-   * Why MTP was disabled on the loaded model despite being requested, or null.
+   * Why speculative decoding was disabled despite being requested, or null.
    * Mirrors InferenceStatusResponse.spec_fallback_reason.
    */
   specFallbackReason: string | null;
+  /**
+   * Which drafter the loaded model's speculative resolution was about, "mtp" or
+   * "dspark". Paired with specFallbackReason: the reason alone cannot name the
+   * file to fix, since Auto resolves the kind server-side and the requested mode
+   * still reads "auto".
+   */
+  specDrafterKind: string | null;
   /** User --spec-draft-n-max override (null = platform default). */
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
+  /** User --parallel slots override for GGUF loads (null = server default).
+   *  Never re-seeded from an echo: the resolved count would pin a blank control. */
+  nParallel: number | null;
+  /** Slots the last successful load sent (null = default); the rollback
+   *  re-sends it so a failed switch can't lose the override. */
+  loadedNParallel: number | null;
   /** Tensor-parallel split (--split-mode tensor) toggle, GGUF multi-GPU only. */
   tensorParallel: boolean;
   /** Backend-reported tensor-parallel state; null until first hydrated. */
@@ -944,9 +1086,13 @@ type ChatRuntimeStore = {
   ggufLayerCount: number | null;
   /** MoE expert-layer count: the nCpuMoe slider max; 0/null hides the slider. */
   moeLayerCount: number | null;
-  /** Picked physical GPU indices (null = use all / automatic). */
+  /** Picked IDs in the backend-declared GPU namespace (null = automatic). */
   selectedGpuIds: number[] | null;
+  /** Namespace used by selectedGpuIds; kept with deferred persisted picks. */
+  selectedGpuIndexKind: GpuIndexKind | null;
   loadedGpuIds: number[] | null;
+  /** Backend-reported namespace paired with loadedGpuIds. */
+  loadedGpuIndexKind: GpuIndexKind | null;
   /** Persisted: expand every On Device GGUF repo's quantizations by default
    *  instead of waiting for a click. */
   expandQuantizations: boolean;
@@ -959,9 +1105,12 @@ type ChatRuntimeStore = {
   /** Active model is a block-diffusion model (DiffusionGemma): drives the
    *  denoising-canvas artifact auto-render. */
   loadedIsDiffusion: boolean;
-  /** Live denoising frame for the in-progress diffusion message. Transient: set
-   *  per step, cleared when the run ends, never persisted into the transcript. */
-  activeDiffusionCanvas: DiffusionCanvasFrame | null;
+  /**
+     * Live denoising frame per conversation ("__default" until the id exists). Transient: set per
+     * step, cleared when the run ends, never persisted. Keyed, not global: two denoising chats
+     * overwrote each other's frame, so the visible preview flickered or vanished.
+     */
+  activeDiffusionCanvasByThreadId: Record<string, DiffusionCanvasFrame>;
   customContextLength: number | null;
   /** The pinned context the loaded model used (null = Auto), so dirty-tracking
    *  and a later fit Apply can tell an explicit pin apart from Auto. */
@@ -970,6 +1119,8 @@ type ChatRuntimeStore = {
   chatTemplateOverride: string | null;
   loadedChatTemplateOverride: string | null;
   activeThreadId: string | null;
+  activeThreadEpoch: number;
+  queuedSettingsEpoch: number;
   activeProjectId: string | null;
   /**
    * Temporary / incognito chat toggle. When on, the active conversation
@@ -984,40 +1135,76 @@ type ChatRuntimeStore = {
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
   pendingImageEditReference: PendingImageEditReference | null;
-  contextUsage: {
-    promptTokens: number;
-    completionTokens: number;
-    totalTokens: number;
-    cachedTokens: number;
-    // Anthropic-only; optional so pre-cache-stats persisted entries load.
-    cacheWriteTokens?: number;
-  } | null;
+  contextUsage: ContextUsageSnapshot | null;
+  /**
+     * Per-thread copy of the above, so the bar survives a switch away and back. `contextUsage` is
+     * the VISIBLE conversation's usage and a background run may not write it, so without this a
+     * run finishing off-screen leaves nothing to restore.
+     */
+  contextUsageByThreadId: Record<string, ContextUsageSnapshot>;
   modelLoading: boolean;
   loadingModelPick: LoadingModelPick | null;
+  // What the resident model loaded from, when that is not its id. A reload rebuilds its target
+  // from the checkpoint, so without this it goes back down the ref the pin avoided.
+  activeLoadId: string | null;
   activeNativePathToken: string | null;
   // Wall-clock expiry (ms) of the active native path token. The desktop host
   // prunes file leases after a TTL, so a reload checks this to prompt
   // re-selection instead of reusing a dead token.
   activeNativePathExpiresAtMs: number | null;
   hydratePersistedSettings: () => Promise<void>;
-  setModelLoading: (loading: boolean) => void;
+  beginModelLoading: () => ModelLifecycleLease | null;
+  endModelLoading: (lease: ModelLifecycleLease) => void;
   setLoadingModelPick: (pick: LoadingModelPick | null) => void;
   clearLoadingModelPick: (expected: LoadingModelPick) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
-  setParams: (params: InferenceParams) => void;
+  setParams: (
+    params: InferenceParams,
+    options?: { persist?: boolean; trackQueuedSettings?: boolean },
+  ) => void;
   setCustomPresets: (presets: Preset[]) => void;
   setActivePreset: (name: string) => void;
   setActivePresetSource: (source: ChatPresetSource) => void;
   setModels: (models: ChatModelSummary[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
-  setThreadRunning: (threadId: string, running: boolean) => void;
+  /**
+     * `local` defaults to true, so an unqualified caller still counts for the model-swap gate.
+     * `owner` narrows the clear to the run that set the flag: unresolved thread ids share the
+     * "__default" key, so a blind delete would drop a sibling's live entry. Owners accumulate,
+     * so the flag survives until the last one clears.
+     */
+  setThreadRunning: (
+    threadId: string,
+    running: boolean,
+    options?: { local?: boolean; owner?: () => void },
+  ) => void;
+  /**
+     * Re-key a first turn's run handles once its thread is persisted.
+     *
+     * A run that starts before its id exists files everything under "__default". Nothing moved it
+     * afterwards, so once the user navigated away the sidebar found no run and showed no spinner;
+     * stopChatThread had no handle either and the generation carried on holding a slot.
+     */
+  adoptDefaultThreadRun: (threadId: string) => void;
+  /**
+     * Which key this run's handles live under now. `adoptDefaultThreadRun` re-keys them mid-run,
+     * so a run that started under "__default" must look its owner up instead of reusing the key
+     * it captured, or its writes and its final clear miss the entries.
+     */
+  runKeyForOwner: (fallbackKey: string, owner: () => void) => string;
   registerThreadCancel: (threadId: string, cancel: () => void) => void;
-  clearThreadCancel: (threadId: string) => void;
+  clearThreadCancel: (threadId: string, cancel?: () => void) => void;
+  registerThreadServerCancel: (threadId: string, cancel: () => void) => void;
+  clearThreadServerCancel: (threadId: string, cancel?: () => void) => void;
   setAutoTitle: (enabled: boolean) => void;
   setHfToken: (token: string) => void;
   setModelsError: (error: string | null) => void;
   setLastModelLoadError: (error: string | null) => void;
-  setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
+  setCheckpoint: (
+    modelId: string,
+    ggufVariant?: string | null,
+    options?: { trackQueuedSettings?: boolean },
+  ) => void;
   setActiveThreadId: (threadId: string | null) => void;
   setActiveProjectId: (projectId: string | null) => void;
   setIncognito: (incognito: boolean) => void;
@@ -1066,7 +1253,15 @@ type ChatRuntimeStore = {
   setRagAutoInjectMinScore: (score: number) => void;
   setRagOcrScanned: (enabled: boolean) => void;
   setRagCaptionFigures: (enabled: boolean) => void;
-  setToolStatus: (status: string | null) => void;
+  /**
+     * `owner` is the run's identity token, as for `setThreadRunning`: unresolved threads share
+     * "__default", so without it one run's cleanup clears a concurrent run's status.
+     */
+  setToolStatus: (
+    threadId: string,
+    status: string | null,
+    owner?: () => void,
+  ) => void;
   appendToolLiveOutput: (toolCallId: string, text: string) => void;
   /** Clear one tool's live output, or all when no id is given. */
   clearToolLiveOutput: (toolCallId?: string) => void;
@@ -1075,7 +1270,13 @@ type ChatRuntimeStore = {
   /** Drop a stale preserved full output (a new run is reusing the id). */
   clearToolFullOutput: (toolCallId: string) => void;
   setGeneratingStatus: (status: string | null) => void;
-  setActiveDiffusionCanvas: (canvas: DiffusionCanvasFrame | null) => void;
+  setActiveDiffusionCanvas: (
+    threadId: string | null,
+    canvas: DiffusionCanvasFrame,
+  ) => void;
+  /** Drop only `threadId`'s canvas: a run ending in a background chat must not wipe the
+     * frame another chat is still painting. */
+  clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
@@ -1084,7 +1285,10 @@ type ChatRuntimeStore = {
   setGpuLayers: (value: number) => void;
   setNCpuMoe: (value: number) => void;
   setSplitRatio: (value: number[] | null) => void;
-  setSelectedGpuIds: (ids: number[] | null) => void;
+  setSelectedGpuIds: (
+    ids: number[] | null,
+    indexKind?: GpuIndexKind | null,
+  ) => void;
   setExpandQuantizations: (value: boolean) => void;
   setShowAllQuantizations: (value: boolean) => void;
   setFitOnDeviceOnly: (value: boolean) => void;
@@ -1095,6 +1299,11 @@ type ChatRuntimeStore = {
   ) => void;
   clearPendingImageEditReference: () => void;
   setContextUsage: (usage: ChatRuntimeStore["contextUsage"]) => void;
+  /** A finished run's usage, kept per thread so switching back re-applies it. */
+  setThreadContextUsage: (
+    threadId: string,
+    usage: ContextUsageSnapshot,
+  ) => void;
 };
 
 type PersistedChatSettings = Awaited<
@@ -1310,12 +1519,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   models: [],
   loras: [],
   runningByThreadId: {},
+  localRunByThreadId: {},
+  runOwnerByThreadId: {},
   cancelByThreadId: {},
+  serverCancelByThreadId: {},
   autoTitle: false,
   hfToken: useHfTokenStore.getState().token,
   modelsError: null,
   lastModelLoadError: null,
   activeGgufVariant: null,
+  activeModelIsLocal: false,
   ggufContextLength: null,
   ggufMaxContextLength: null,
   ggufNativeContextLength: null,
@@ -1374,11 +1587,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ),
   ragOcrScanned: loadBool(CHAT_RAG_OCR_KEY, DEFAULT_RAG_OCR),
   ragCaptionFigures: loadBool(CHAT_RAG_CAPTION_KEY, DEFAULT_RAG_CAPTION),
-  toolStatus: null,
+  toolStatusByThreadId: {},
   toolLiveOutput: {},
   toolFullOutput: {},
   generatingStatus: null,
-  activeDiffusionCanvas: null,
+  activeDiffusionCanvasByThreadId: {},
   autoHealToolCalls: true,
   nudgeToolCalls: true,
   maxToolCallsPerMessage: 25,
@@ -1388,8 +1601,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   speculativeType: readPersistedSpeculativeType(),
   loadedSpeculativeType: null,
   specFallbackReason: null,
+  specDrafterKind: null,
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
+  nParallel: null,
+  loadedNParallel: null,
   tensorParallel: false,
   loadedTensorParallel: null,
   gpuMemoryMode: readPersistedGpuMemoryMode(),
@@ -1403,9 +1619,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ggufLayerCount: null,
   moeLayerCount: null,
   selectedGpuIds: null,
+  selectedGpuIndexKind: null,
   loadedGpuIds: null,
+  loadedGpuIndexKind: null,
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
-  showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, true),
+  // Off by default: On Device lists what is on disk, not the whole repo.
+  showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, false),
   fitOnDeviceOnly: loadBool(MODELS_FIT_ON_DEVICE_ONLY_KEY, false),
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
@@ -1415,6 +1634,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   chatTemplateOverride: null,
   loadedChatTemplateOverride: null,
   activeThreadId: null,
+  activeThreadEpoch: 0,
+  queuedSettingsEpoch: 0,
   activeProjectId: null,
   incognito: false,
   settingsPanelOpen: false,
@@ -1423,8 +1644,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   pendingAudioName: null,
   pendingImageEditReference: null,
   contextUsage: null,
+  contextUsageByThreadId: {},
   modelLoading: false,
   loadingModelPick: null,
+  activeLoadId: null,
   activeNativePathToken: null,
   activeNativePathExpiresAtMs: null,
   hydratePersistedSettings: async () => {
@@ -1464,7 +1687,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     })();
     return settingsHydrationPromise;
   },
-  setModelLoading: (loading) => set({ modelLoading: loading }),
+  beginModelLoading: () => {
+    const lease = chatModelLifecycleGate.tryAcquire();
+    if (lease !== null) {
+      set({ modelLoading: true });
+    }
+    return lease;
+  },
+  endModelLoading: (lease) => {
+    if (chatModelLifecycleGate.release(lease)) {
+      set({ modelLoading: false });
+    }
+  },
   setLoadingModelPick: (pick) => set({ loadingModelPick: pick }),
   clearLoadingModelPick: (expected) =>
     set((state) => {
@@ -1481,12 +1715,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
     set({ modelRequiresTrustRemoteCode }),
-  setParams: (params) =>
+  setParams: (params, options) =>
     set((state) => {
       // Bump version unconditionally so a late hydration response won't clobber
       // a pre-hydrate user edit; only the HTTP write is gated on settingsHydrated.
       const changedParams = getChangedInferenceParams(params, state.params);
-      if (state.settingsHydrated && hasKeys(changedParams)) {
+      const queuedSettingsChanged = shouldAdvanceQueuedSettingsEpoch(
+        state.params,
+        params,
+        options?.trackQueuedSettings !== false,
+      );
+      if (
+        options?.persist !== false &&
+        state.settingsHydrated &&
+        hasKeys(changedParams)
+      ) {
         saveSettingsPatch({ inferenceParams: changedParams });
       }
       // Mirror setCheckpoint: the local load path can mutate params.checkpoint
@@ -1495,7 +1738,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const checkpointChanged = state.params.checkpoint !== params.checkpoint;
       return {
         params,
-        ...(checkpointChanged ? { contextUsage: null } : {}),
+        ...(queuedSettingsChanged
+          ? { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }
+          : {}),
+        ...(checkpointChanged
+          ? { contextUsage: null, contextUsageByThreadId: {} }
+          : {}),
       };
     }),
   setCustomPresets: (customPresets) =>
@@ -1518,28 +1766,130 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setModels: (models) => set({ models }),
   setLoras: (loras) => set({ loras }),
-  setThreadRunning: (threadId, running) =>
+  setThreadRunning: (threadId, running, options) =>
     set((state) => {
       const next = { ...state.runningByThreadId };
+      const nextLocal = { ...state.localRunByThreadId };
+      const nextOwner = { ...state.runOwnerByThreadId };
+      const owners = state.runOwnerByThreadId[threadId] ?? [];
+      const local = options?.local !== false;
       if (running) {
         next[threadId] = true;
+        if (options?.owner) {
+          nextOwner[threadId] = [...owners, { owner: options.owner, local }];
+        }
+        // Any local owner keeps the key counted by the model-swap gate, so an external run
+        // joining a shared key must not clear a sibling's flag.
+        if (local) {
+          nextLocal[threadId] = true;
+        } else if (!owners.some((o) => o.local)) {
+          delete nextLocal[threadId];
+        }
       } else {
-        delete next[threadId];
+        const remaining = options?.owner
+          ? owners.filter((o) => o.owner !== options.owner)
+          : [];
+        // An owner missing from the list was already cleared, or the key belongs to siblings
+        // only: either way this run must change nothing.
+        if (options?.owner && remaining.length === owners.length) return state;
+        // An ownerless clear predates per-run tracking, so it must not speak for runs that
+        // own the key: leave them to clear themselves.
+        if (!options?.owner && owners.length > 0) return state;
+        if (remaining.length > 0) {
+          nextOwner[threadId] = remaining;
+          if (remaining.some((o) => o.local)) {
+            nextLocal[threadId] = true;
+          } else {
+            delete nextLocal[threadId];
+          }
+        } else {
+          delete next[threadId];
+          delete nextLocal[threadId];
+          delete nextOwner[threadId];
+        }
       }
-      return { runningByThreadId: next };
+      return {
+        runningByThreadId: next,
+        localRunByThreadId: nextLocal,
+        runOwnerByThreadId: nextOwner,
+      };
     }),
+  adoptDefaultThreadRun: (threadId) =>
+    set((state) => {
+      const key = "__default";
+      if (!threadId || threadId === key) return state;
+      // Two first turns can share "__default", and nothing links a run there to the thread being
+      // persisted. Moving the arrays wholesale handed this thread the sibling's owner and stop
+      // handle too, so stopping one aborted both. Adopt only when the key holds a single run.
+      if ((state.runOwnerByThreadId[key]?.length ?? 0) > 1) return state;
+      // Only the transient run maps move. Anything already filed under the real id wins,
+      // since that is a later, better-identified run.
+      const moved: Partial<ChatRuntimeStore> = {};
+      const move = <T,>(
+        map: Record<string, T>,
+        name: keyof ChatRuntimeStore,
+      ) => {
+        const entry = map[key];
+        if (entry === undefined || map[threadId] !== undefined) return;
+        const next = { ...map };
+        delete next[key];
+        next[threadId] = entry;
+        (moved as Record<string, unknown>)[name as string] = next;
+      };
+      move(state.runningByThreadId, "runningByThreadId");
+      move(state.localRunByThreadId, "localRunByThreadId");
+      move(state.runOwnerByThreadId, "runOwnerByThreadId");
+      move(state.cancelByThreadId, "cancelByThreadId");
+      move(state.serverCancelByThreadId, "serverCancelByThreadId");
+      move(state.toolStatusByThreadId, "toolStatusByThreadId");
+      move(
+        state.activeDiffusionCanvasByThreadId,
+        "activeDiffusionCanvasByThreadId",
+      );
+      return Object.keys(moved).length > 0 ? moved : state;
+    }),
+  runKeyForOwner: (fallbackKey, owner) => {
+    for (const [key, entries] of Object.entries(get().runOwnerByThreadId)) {
+      if (entries.some((e) => e.owner === owner)) return key;
+    }
+    return fallbackKey;
+  },
   registerThreadCancel: (threadId, cancel) =>
     set((state) => {
       const next = { ...state.cancelByThreadId };
       next[threadId] = cancel;
       return { cancelByThreadId: next };
     }),
-  clearThreadCancel: (threadId) =>
+  clearThreadCancel: (threadId, cancel) =>
     set((state) => {
       if (!(threadId in state.cancelByThreadId)) return state;
+      if (cancel && state.cancelByThreadId[threadId] !== cancel) return state;
       const next = { ...state.cancelByThreadId };
       delete next[threadId];
       return { cancelByThreadId: next };
+    }),
+  registerThreadServerCancel: (threadId, cancel) =>
+    set((state) => {
+      const next = { ...state.serverCancelByThreadId };
+      next[threadId] = [...(state.serverCancelByThreadId[threadId] ?? []), cancel];
+      return { serverCancelByThreadId: next };
+    }),
+  // `cancel` narrows removal to the run that registered it: unresolved thread ids share the
+  // "__default" key, so a blind delete would drop a live sibling.
+  clearThreadServerCancel: (threadId, cancel) =>
+    set((state) => {
+      const current = state.serverCancelByThreadId[threadId];
+      if (current === undefined) return state;
+      const remaining =
+        cancel === undefined ? [] : current.filter((c) => c !== cancel);
+      if (remaining.length === current.length) return state;
+      const next = { ...state.serverCancelByThreadId };
+      if (remaining.length > 0) {
+        next[threadId] = remaining;
+      } else {
+        delete next[threadId];
+      }
+      return { serverCancelByThreadId: next };
     }),
   setAutoTitle: (autoTitle) =>
     set((state) => {
@@ -1549,7 +1899,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setHfToken: (hfToken) => useHfTokenStore.getState().setToken(hfToken),
   setModelsError: (modelsError) => set({ modelsError }),
   setLastModelLoadError: (lastModelLoadError) => set({ lastModelLoadError }),
-  setCheckpoint: (modelId, ggufVariant) =>
+  setCheckpoint: (modelId, ggufVariant, options) =>
     set((state) => {
       // Persist external selections so they survive a refresh. Local ids are
       // NOT persisted -- they're re-derived from the backend on mount, and a
@@ -1581,21 +1931,64 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           nextMaxTokens = cap;
         }
       }
+      const nextGgufVariant = ggufVariant ?? null;
+      const nextDeepResearchEnabled = isExternalModelId(modelId)
+        ? false
+        : state.deepResearchEnabled;
+      const queuedSettingsChanged = shouldAdvanceQueuedSettingsEpoch(
+        {
+          checkpoint: state.params.checkpoint,
+          maxTokens: state.params.maxTokens,
+          ggufVariant: state.activeGgufVariant,
+          deepResearchEnabled: state.deepResearchEnabled,
+        },
+        {
+          checkpoint: modelId,
+          maxTokens: nextMaxTokens,
+          ggufVariant: nextGgufVariant,
+          deepResearchEnabled: nextDeepResearchEnabled,
+        },
+        options?.trackQueuedSettings !== false,
+      );
       return {
         params: {
           ...state.params,
           checkpoint: modelId,
           maxTokens: nextMaxTokens,
         },
-        activeGgufVariant: ggufVariant ?? null,
-        ...(checkpointChanged ? { contextUsage: null } : {}),
+        activeGgufVariant: nextGgufVariant,
+        ...(queuedSettingsChanged
+          ? { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }
+          : {}),
+        // Provenance and the spec-fallback reason both describe the model
+        // being replaced, so they go together on a real change. Dropping only
+        // one leaves the settings sheet pairing a stale reason with the wrong
+        // recovery text. The load or status response reseeds both.
+        ...(checkpointChanged
+          ? {
+              contextUsage: null,
+              contextUsageByThreadId: {},
+              activeModelIsLocal: false,
+              specFallbackReason: null,
+              specDrafterKind: null,
+            }
+          : {}),
         // Switching to an external provider disables Deep Research, which only
         // applies to the local base model.
         ...(isExternalModelId(modelId) ? { deepResearchEnabled: false } : {}),
       };
     }),
+  // Re-apply the incoming thread's own usage rather than blanking the bar: a run that finished
+  // in the background never wrote the visible value, and a still-mounted runtime skips the
+  // history loader on the way back.
   setActiveThreadId: (activeThreadId) =>
-    set({ activeThreadId, contextUsage: null }),
+    set((state) => ({
+      activeThreadId,
+      activeThreadEpoch: state.activeThreadEpoch + 1,
+      contextUsage: activeThreadId
+        ? (state.contextUsageByThreadId[activeThreadId] ?? null)
+        : null,
+    })),
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
   setIncognito: (incognito) => {
     if (incognito) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
@@ -1614,11 +2007,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     saveLastExternalCheckpoint(null);
     saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
     return set((state) => ({
+      queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       params: {
         ...state.params,
         checkpoint: "",
       },
       activeGgufVariant: null,
+      activeModelIsLocal: false,
+      activeLoadId: null,
       activeNativePathToken: null,
       activeNativePathExpiresAtMs: null,
       ggufContextLength: null,
@@ -1626,6 +2022,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       ggufNativeContextLength: null,
       modelRequiresTrustRemoteCode: false,
       contextUsage: null,
+      contextUsageByThreadId: {},
       supportsReasoning: false,
       reasoningAlwaysOn: false,
       reasoningEnabled: true,
@@ -1647,17 +2044,20 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       webFetchToolsEnabled: false,
       // Only the per-session enable pill resets; source/mode/top_k persist.
       ragEnabled: false,
-      toolStatus: null,
+      toolStatusByThreadId: {},
       toolLiveOutput: {},
       toolFullOutput: {},
-      activeDiffusionCanvas: null,
+      activeDiffusionCanvasByThreadId: {},
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
       speculativeType: readPersistedSpeculativeType(),
       loadedSpeculativeType: null,
       specFallbackReason: null,
+      specDrafterKind: null,
       specDraftNMax: null,
       loadedSpecDraftNMax: null,
+      nParallel: null,
+      loadedNParallel: null,
       tensorParallel: false,
       loadedTensorParallel: null,
       // Standing preference: survives unload, unlike the per-model knobs above.
@@ -1672,7 +2072,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       ggufLayerCount: null,
       moeLayerCount: null,
       selectedGpuIds: null,
+      selectedGpuIndexKind: null,
       loadedGpuIds: null,
+      loadedGpuIndexKind: null,
       loadedIsMultimodal: false,
       loadedIsDiffusion: false,
       customContextLength: null,
@@ -1684,15 +2086,22 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }));
   },
   setReasoningEnabled: (reasoningEnabled, options) =>
-    set(() => {
+    set((state) => {
       if (options?.persist !== false) {
         saveBool(CHAT_REASONING_ENABLED_KEY, reasoningEnabled);
       }
-      return { reasoningEnabled };
+      return {
+        reasoningEnabled,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setLastOpenRouterChosenModel: (lastOpenRouterChosenModel) =>
     set({ lastOpenRouterChosenModel }),
-  setReasoningStyle: (reasoningStyle) => set({ reasoningStyle }),
+  setReasoningStyle: (reasoningStyle) =>
+    set((state) => ({
+      reasoningStyle,
+      queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+    })),
   setReasoningEffort: (reasoningEffort) =>
     set((state) => {
       setScalarSettingVersion(
@@ -1700,7 +2109,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         reasoningEffort,
         state.reasoningEffort,
       );
-      return { reasoningEffort };
+      return {
+        reasoningEffort,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setPreserveThinking: (preserveThinking) =>
     set((state) => {
@@ -1709,34 +2121,48 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         preserveThinking,
         state.preserveThinking,
       );
-      return { preserveThinking };
+      return {
+        preserveThinking,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setToolsEnabled: (toolsEnabled, options) =>
-    set(() => {
+    set((state) => {
       if (options?.persist !== false) {
         saveBool(CHAT_TOOLS_ENABLED_KEY, toolsEnabled);
       }
       if (toolsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-      return toolsEnabled ? { toolsEnabled, deepResearchEnabled: false } : { toolsEnabled };
+      return {
+        ...(toolsEnabled
+          ? { toolsEnabled, deepResearchEnabled: false }
+          : { toolsEnabled }),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setCodeToolsEnabled: (codeToolsEnabled) =>
-    set(() => {
+    set((state) => {
       saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, codeToolsEnabled);
       if (codeToolsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-      return codeToolsEnabled
-        ? { codeToolsEnabled, deepResearchEnabled: false }
-        : { codeToolsEnabled };
+      return {
+        ...(codeToolsEnabled
+          ? { codeToolsEnabled, deepResearchEnabled: false }
+          : { codeToolsEnabled }),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setImageToolsEnabled: (imageToolsEnabled) =>
-    set(() => {
+    set((state) => {
       saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, imageToolsEnabled);
       if (imageToolsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-      return imageToolsEnabled
-        ? { imageToolsEnabled, deepResearchEnabled: false }
-        : { imageToolsEnabled };
+      return {
+        ...(imageToolsEnabled
+          ? { imageToolsEnabled, deepResearchEnabled: false }
+          : { imageToolsEnabled }),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setDeepResearchEnabled: (deepResearchEnabled) =>
-    set(() => {
+    set((state) => {
       saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, deepResearchEnabled);
       const permissionMode = loadPermissionMode();
       if (deepResearchEnabled) {
@@ -1760,23 +2186,33 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             permissionMode,
             confirmToolCalls:
               permissionMode === "ask" || permissionMode === "auto",
+            queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
           }
-        : { deepResearchEnabled };
+        : {
+            deepResearchEnabled,
+            queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+          };
     }),
   setResearchWebsitePolicy: (researchWebsitePolicy) =>
-    set(() => {
+    set((state) => {
       saveResearchWebsitePolicy(researchWebsitePolicy);
-      return { researchWebsitePolicy };
+      return {
+        researchWebsitePolicy,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setArtifactsEnabled: (artifactsEnabled, options) =>
-    set(() => {
+    set((state) => {
       if (options?.persist !== false) {
         saveBool(CHAT_ARTIFACTS_ENABLED_KEY, artifactsEnabled);
       }
       if (artifactsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-      return artifactsEnabled
-        ? { artifactsEnabled, deepResearchEnabled: false }
-        : { artifactsEnabled };
+      return {
+        ...(artifactsEnabled
+          ? { artifactsEnabled, deepResearchEnabled: false }
+          : { artifactsEnabled }),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setShowCanvasMenuItem: (showCanvasMenuItem) =>
     set(() => {
@@ -1807,12 +2243,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { allowArtifactNetworkAccess };
     }),
   setMcpEnabledForChat: (mcpEnabledForChat) =>
-    set(() => {
+    set((state) => {
       saveBool(CHAT_MCP_ENABLED_KEY, mcpEnabledForChat);
       if (mcpEnabledForChat) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-      return mcpEnabledForChat
-        ? { mcpEnabledForChat, deepResearchEnabled: false }
-        : { mcpEnabledForChat };
+      return {
+        ...(mcpEnabledForChat
+          ? { mcpEnabledForChat, deepResearchEnabled: false }
+          : { mcpEnabledForChat }),
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setConfirmToolCalls: (confirmToolCalls) =>
     set((state) => {
@@ -1820,13 +2259,22 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // The legacy toggle is a view over the permission level: on -> "ask",
       // off -> "off" (no prompts). While "full" is active the level is left
       // alone (the toggle is disabled in the UI anyway).
-      if (state.permissionMode === "full") return { confirmToolCalls };
+      if (state.permissionMode === "full") {
+        return {
+          confirmToolCalls,
+          queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+        };
+      }
       const permissionMode: PermissionMode = confirmToolCalls ? "ask" : "off";
       savePermissionMode(permissionMode);
-      return { confirmToolCalls, permissionMode };
+      return {
+        confirmToolCalls,
+        permissionMode,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setPermissionMode: (permissionMode) =>
-    set(() => {
+    set((state) => {
       // "full" is session-only (never persisted, see init); ask/auto/off
       // persist and keep the legacy confirm toggle in sync (the gate is
       // requested for both ask and auto).
@@ -1840,18 +2288,24 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           bypassPermissions: true,
           confirmToolCalls: false,
           deepResearchEnabled: false,
+          queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
       const confirmToolCalls =
         permissionMode === "ask" || permissionMode === "auto";
       saveBool(CHAT_CONFIRM_TOOL_CALLS_KEY, confirmToolCalls);
-      return { permissionMode, bypassPermissions: false, confirmToolCalls };
+      return {
+        permissionMode,
+        bypassPermissions: false,
+        confirmToolCalls,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setBypassPermissions: (bypassPermissions) =>
     // Deliberately not persisted (see init): a reload must not silently keep
     // the sandbox/confirmation bypass active without re-accepting the warning.
     // Turning bypass off returns to the last persisted ask/auto level.
-    set(() => {
+    set((state) => {
       if (bypassPermissions) {
         // Full access never prompts; mirror confirm_tool_calls=false in the
         // store so metadata does not report confirmations as enabled.
@@ -1861,6 +2315,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           permissionMode: "full" as PermissionMode,
           confirmToolCalls: false,
           deepResearchEnabled: false,
+          queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
       const permissionMode = loadPermissionMode();
@@ -1868,6 +2323,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         bypassPermissions,
         permissionMode,
         confirmToolCalls: permissionMode === "ask" || permissionMode === "auto",
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
   setBypassConfirmOpen: (bypassConfirmOpen) =>
@@ -1902,38 +2358,60 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { toolConfirmations: next };
     }),
   setWebFetchToolsEnabled: (webFetchToolsEnabled) =>
-    set(() => {
+    set((state) => {
       saveBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, webFetchToolsEnabled);
-      return { webFetchToolsEnabled };
+      return {
+        webFetchToolsEnabled,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
-  setRagEnabled: (ragEnabled) => set(() => ({ ragEnabled })),
+  setRagEnabled: (ragEnabled) =>
+    set((state) => ({
+      ragEnabled,
+      queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+    })),
   setRagSource: (ragSource) =>
-    set(() => {
+    set((state) => {
       saveRagSource(ragSource);
-      return { ragSource };
+      return {
+        ragSource,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setRagMode: (ragMode) =>
-    set(() => {
+    set((state) => {
       saveString(CHAT_RAG_MODE_KEY, ragMode);
-      return { ragMode };
+      return {
+        ragMode,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setRagTopK: (ragTopK) =>
-    set(() => {
+    set((state) => {
       saveString(CHAT_RAG_TOP_K_KEY, String(ragTopK));
-      return { ragTopK };
+      return {
+        ragTopK,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setRagAutoInject: (ragAutoInject) =>
-    set(() => {
+    set((state) => {
       saveString(CHAT_RAG_AUTOINJECT_KEY, ragAutoInject);
-      return { ragAutoInject };
+      return {
+        ragAutoInject,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setRagAutoInjectMinScore: (ragAutoInjectMinScore) =>
-    set(() => {
+    set((state) => {
       saveString(
         CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY,
         String(ragAutoInjectMinScore),
       );
-      return { ragAutoInjectMinScore };
+      return {
+        ragAutoInjectMinScore,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setRagOcrScanned: (ragOcrScanned) =>
     set(() => {
@@ -1945,7 +2423,31 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveBool(CHAT_RAG_CAPTION_KEY, ragCaptionFigures);
       return { ragCaptionFigures };
     }),
-  setToolStatus: (toolStatus) => set({ toolStatus }),
+  setToolStatus: (threadId, status, owner) =>
+    set((state) => {
+      const next = { ...state.toolStatusByThreadId };
+      const entries = state.toolStatusByThreadId[threadId] ?? [];
+      const mine = entries.find((e) => e.owner === owner);
+      if (!status) {
+        // Drop only this run's entry: a sibling behind the same key may still be running a tool,
+        // and its status has to survive this clear.
+        if (mine === undefined) return state;
+        const rest = entries.filter((e) => e !== mine);
+        if (rest.length > 0) {
+          next[threadId] = rest;
+        } else {
+          delete next[threadId];
+        }
+      } else {
+        // Same text from the same run means the same call, so keep startedAt: only a new tool restarts it.
+        if (mine?.status === status) return state;
+        const entry = { status, startedAt: Date.now(), owner };
+        next[threadId] = mine
+          ? entries.map((e) => (e === mine ? entry : e))
+          : [...entries, entry];
+      }
+      return { toolStatusByThreadId: next };
+    }),
   appendToolLiveOutput: (toolCallId, text) =>
     set((state) => ({
       toolLiveOutput: {
@@ -1983,8 +2485,21 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       delete next[toolCallId];
       return { toolLiveOutput: next };
     }),
-  setActiveDiffusionCanvas: (activeDiffusionCanvas) =>
-    set({ activeDiffusionCanvas }),
+  setActiveDiffusionCanvas: (threadId, canvas) =>
+    set((state) => ({
+      activeDiffusionCanvasByThreadId: {
+        ...state.activeDiffusionCanvasByThreadId,
+        [threadId || "__default"]: canvas,
+      },
+    })),
+  clearActiveDiffusionCanvasForThread: (threadId) =>
+    set((state) => {
+      const key = threadId || "__default";
+      if (state.activeDiffusionCanvasByThreadId[key] === undefined) return state;
+      const next = { ...state.activeDiffusionCanvasByThreadId };
+      delete next[key];
+      return { activeDiffusionCanvasByThreadId: next };
+    }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
   setAutoHealToolCalls: (autoHealToolCalls) =>
     set((state) => {
@@ -1993,7 +2508,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         autoHealToolCalls,
         state.autoHealToolCalls,
       );
-      return { autoHealToolCalls };
+      return {
+        autoHealToolCalls,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setNudgeToolCalls: (nudgeToolCalls) =>
     set((state) => {
@@ -2002,7 +2520,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         nudgeToolCalls,
         state.nudgeToolCalls,
       );
-      return { nudgeToolCalls };
+      return {
+        nudgeToolCalls,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setMaxToolCallsPerMessage: (maxToolCallsPerMessage) =>
     set((state) => {
@@ -2011,7 +2532,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         maxToolCallsPerMessage,
         state.maxToolCallsPerMessage,
       );
-      return { maxToolCallsPerMessage };
+      return {
+        maxToolCallsPerMessage,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setToolCallTimeout: (toolCallTimeout) =>
     set((state) => {
@@ -2020,7 +2544,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         toolCallTimeout,
         state.toolCallTimeout,
       );
-      return { toolCallTimeout };
+      return {
+        toolCallTimeout,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   // Standing preference, but persisted only on a successful load (see
   // use-chat-model-runtime), not on selection -- so an unapplied pick the user
@@ -2029,7 +2556,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setGpuLayers: (gpuLayers) => set({ gpuLayers }),
   setNCpuMoe: (nCpuMoe) => set({ nCpuMoe }),
   setSplitRatio: (splitRatio) => set({ splitRatio }),
-  setSelectedGpuIds: (selectedGpuIds) => set({ selectedGpuIds }),
+  setSelectedGpuIds: (selectedGpuIds, selectedGpuIndexKind = null) =>
+    set({
+      selectedGpuIds,
+      selectedGpuIndexKind:
+        selectedGpuIds == null ? null : selectedGpuIndexKind,
+    }),
   setExpandQuantizations: (expandQuantizations) => {
     saveBool(CHAT_EXPAND_QUANTIZATIONS_KEY, expandQuantizations);
     set({ expandQuantizations });
@@ -2050,7 +2582,27 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ pendingImageEditReference }),
   clearPendingImageEditReference: () =>
     set({ pendingImageEditReference: null }),
-  setContextUsage: (contextUsage) => set({ contextUsage }),
+  // Write through to the visible thread's own entry, so a value restored by the history loader
+  // survives a switch away and back: that loader runs once per mount and setActiveThreadId
+  // reads the map, so without this the bar goes blank on return.
+  setContextUsage: (contextUsage) =>
+    set((state) => {
+      if (!state.activeThreadId) return { contextUsage };
+      const next = { ...state.contextUsageByThreadId };
+      if (contextUsage) {
+        next[state.activeThreadId] = contextUsage;
+      } else {
+        delete next[state.activeThreadId];
+      }
+      return { contextUsage, contextUsageByThreadId: next };
+    }),
+  setThreadContextUsage: (threadId, usage) =>
+    set((state) => ({
+      contextUsageByThreadId: {
+        ...state.contextUsageByThreadId,
+        [threadId]: usage,
+      },
+    })),
 }));
 
 // Mirror token edits made through the shared store (e.g. Unsloth's field).
@@ -2075,7 +2627,8 @@ export function resolveSpeculativeSettingsForLoad({
     speculativeType,
     specDraftNMax:
       !usePersistedPreference &&
-      (speculativeType === "mtp" || speculativeType === "mtp+ngram")
+      speculativeType != null &&
+      DRAFT_N_MAX_SPEC_TYPES.has(speculativeType)
         ? state.specDraftNMax
         : null,
   };
