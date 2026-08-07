@@ -282,6 +282,7 @@ async def stream_external_chat_with_tools(
         assistant_text: list[str] = []
         round_finished = False
         round_failed = False
+        round_terminal_error: str | None = None
         upstream = client.stream_chat_completion(
             messages = conversation,
             model = model,
@@ -327,18 +328,31 @@ async def stream_external_chat_with_tools(
                 if isinstance(payload, Mapping):
                     if "error" in payload:
                         round_failed = True
+                    _collect_round_delta(payload, round_calls, assistant_text)
                     choices = payload.get("choices")
-                    if isinstance(choices, list) and any(
-                        isinstance(choice, Mapping) and choice.get("finish_reason") is not None
-                        for choice in choices
-                    ):
-                        round_finished = True
+                    if isinstance(choices, list):
+                        for choice in choices:
+                            if not isinstance(choice, Mapping):
+                                continue
+                            finish_reason = choice.get("finish_reason")
+                            if finish_reason is None:
+                                continue
+                            if finish_reason in ("tool_calls", "function_call"):
+                                round_finished = True
+                            elif round_calls:
+                                round_terminal_error = (
+                                    "External provider ended a tool-call response with "
+                                    f"finish_reason={finish_reason!r}."
+                                )
+                            else:
+                                round_finished = True
                     usage = payload.get("usage")
                     if isinstance(usage, Mapping):
                         _accumulate_usage(aggregate_usage, usage)
                         usage_template = copy.deepcopy(dict(payload))
                         has_usage = True
-                _collect_round_delta(payload, round_calls, assistant_text)
+                else:
+                    _collect_round_delta(payload, round_calls, assistant_text)
                 forward = _without_tool_transport(
                     payload,
                     has_tool_calls = bool(round_calls),
@@ -357,6 +371,8 @@ async def stream_external_chat_with_tools(
             except RuntimeError:
                 pass
 
+        if round_terminal_error is not None:
+            raise RuntimeError(round_terminal_error)
         if round_failed:
             return
         if round_calls and not round_finished:

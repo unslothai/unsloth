@@ -8945,24 +8945,6 @@ async def _proxy_to_external_provider(
         provider_type = provider_type,
         base_url = base_url,
     )
-    monitor_id = None
-    if not getattr(request.state, "skip_api_monitor", False):
-        monitor_id = api_monitor.start(
-            endpoint = request.url.path,
-            via_api_key = _request_used_api_key(request),
-            method = request.method,
-            model = model,
-            prompt = _monitor_prompt_from_messages(payload.messages),
-            context_length = None,
-            subject = current_subject,
-        )
-
-    client = ExternalProviderClient(
-        provider_type = provider_type,
-        base_url = base_url,
-        api_key = api_key,
-    )
-
     # `top_k` defaults to 20 in ChatCompletionRequest because the local path
     # expects an int, but the external-provider path treats "field omitted from
     # JSON" as "use provider default" so callers sending only model/messages
@@ -9062,6 +9044,24 @@ async def _proxy_to_external_provider(
         )
         if _external_nudge:
             chat_messages = _set_or_prepend_system_message(chat_messages, _external_nudge)
+
+    monitor_id = None
+    if not getattr(request.state, "skip_api_monitor", False):
+        monitor_id = api_monitor.start(
+            endpoint = request.url.path,
+            via_api_key = _request_used_api_key(request),
+            method = request.method,
+            model = model,
+            prompt = _monitor_prompt_from_messages(payload.messages),
+            context_length = None,
+            subject = current_subject,
+        )
+
+    client = ExternalProviderClient(
+        provider_type = provider_type,
+        base_url = base_url,
+        api_key = api_key,
+    )
 
     async def _stream():
         gen = client.stream_chat_completion(

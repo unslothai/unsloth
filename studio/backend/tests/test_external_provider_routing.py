@@ -120,6 +120,8 @@ def test_saved_provider_owns_routing_and_keeps_unrelated_hosted_tools(monkeypatc
 
 
 def test_managed_studio_tools_reject_caller_defined_functions(monkeypatch):
+    monitor_starts = []
+    client_starts = []
     monkeypatch.setattr(
         inference_mod.providers_db,
         "get_provider",
@@ -139,12 +141,18 @@ def test_managed_studio_tools_reject_caller_defined_functions(monkeypatch):
     monkeypatch.setattr(inference_mod, "_select_request_tools", select_tools)
 
     class FakeClient:
-        def __init__(self, **_kwargs):
-            pass
+        def __init__(self, **kwargs):
+            client_starts.append(kwargs)
 
     monkeypatch.setattr(inference_mod, "ExternalProviderClient", FakeClient)
+    monkeypatch.setattr(
+        inference_mod.api_monitor,
+        "start",
+        lambda **kwargs: monitor_starts.append(kwargs),
+    )
+    monkeypatch.setattr(inference_mod, "_request_used_api_key", lambda _request: False)
     request = SimpleNamespace(
-        state = SimpleNamespace(skip_api_monitor = True),
+        state = SimpleNamespace(skip_api_monitor = False),
         url = SimpleNamespace(path = "/v1/chat/completions"),
         method = "POST",
     )
@@ -173,6 +181,8 @@ def test_managed_studio_tools_reject_caller_defined_functions(monkeypatch):
 
     assert caught.value.status_code == 400
     assert caught.value.detail["error"]["param"] == "tools"
+    assert monitor_starts == []
+    assert client_starts == []
 
 
 def test_hosted_only_tools_reject_confirmation_without_managed_loop(monkeypatch):

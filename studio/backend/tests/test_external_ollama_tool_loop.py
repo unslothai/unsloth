@@ -652,6 +652,34 @@ def test_abrupt_eof_discards_partial_tool_call(monkeypatch):
     assert executed == []
 
 
+@pytest.mark.parametrize("finish_reason", ["length", "content_filter", "stop"])
+def test_non_tool_finish_reason_discards_partial_tool_call(monkeypatch, finish_reason):
+    executed = []
+    monkeypatch.setattr(
+        loop_mod,
+        "execute_tool",
+        lambda name, arguments, **_kwargs: executed.append((name, arguments)),
+    )
+    partial = _chunk(
+        delta = {
+            "tool_calls": [
+                {
+                    "index": 0,
+                    "id": "call_partial",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": '{"query":"Cai'},
+                }
+            ]
+        },
+        finish_reason = finish_reason,
+    )
+
+    with pytest.raises(RuntimeError, match = f"finish_reason='{finish_reason}'"):
+        asyncio.run(_collect(_FakeClient([[partial, "data: [DONE]"]])))
+
+    assert executed == []
+
+
 def test_parallel_batch_deduplicates_normalized_arguments(monkeypatch):
     executed = []
 
