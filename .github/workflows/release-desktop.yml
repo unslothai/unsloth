@@ -733,12 +733,48 @@ jobs:
           echo "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       # ── Windows: verify signing CLI is accessible ──
+      # Fails closed. This used to print a message and exit 0 on both branches,
+      # so a missing or broken binary reported success and the failure only
+      # surfaced later, inside the Tauri bundling step, as a signing error with
+      # no obvious cause. It matters more now that the binary comes from a
+      # cache: a truncated or corrupt cache entry restores, skips the install
+      # above, and would otherwise sail through this check.
       - name: Verify trusted-signing-cli
         if: matrix.platform == 'windows-latest'
         run: |
+          $ErrorActionPreference = "Stop"
           Write-Output "PATH: $env:PATH"
-          Get-Command trusted-signing-cli -ErrorAction SilentlyContinue || Write-Output "trusted-signing-cli NOT in PATH"
-          trusted-signing-cli --version || Write-Output "trusted-signing-cli failed to run"
+
+          $cli = Get-Command trusted-signing-cli -ErrorAction SilentlyContinue
+          if (-not $cli) {
+            Write-Output "::error::trusted-signing-cli is not on PATH. If the cache restored a bad entry, bump the key in 'Restore trusted-signing-cli' to force a rebuild."
+            exit 1
+          }
+          Write-Output "resolved: $($cli.Source)"
+
+          # Two different failure modes, and neither one covers the other:
+          #   * the binary cannot be started at all (a truncated cache entry
+          #     gives "Exec format error"). That raises a terminating error
+          #     under $ErrorActionPreference = "Stop", so it has to be caught
+          #     or the step dies here, before the recovery message below.
+          #   * the binary starts and exits non-zero. That does NOT raise, so
+          #     $LASTEXITCODE has to be read explicitly.
+          try {
+            & $cli.Source --version
+          }
+          catch {
+            # The PowerShell error spans several lines (message, offending line,
+            # caret). An annotation is truncated at the first newline, so flatten
+            # it, and put the recovery ahead of the detail so it survives even if
+            # the annotation is clipped for length.
+            $detail = ($_.Exception.Message -replace '\s+', ' ').Trim()
+            Write-Output "::error::trusted-signing-cli could not be started. If the cache restored a bad entry, bump the key in 'Restore trusted-signing-cli' to force a rebuild. Underlying error: $detail"
+            exit 1
+          }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error::trusted-signing-cli is on PATH but exited $LASTEXITCODE. If the cache restored a bad entry, bump the key in 'Restore trusted-signing-cli' to force a rebuild."
+            exit 1
+          }
 
       # ── Linux: pin AppImage packaging toolchain ──
       - name: Pin thin AppImage toolchain
