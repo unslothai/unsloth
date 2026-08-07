@@ -496,6 +496,9 @@ mod tests {
         assert_eq!(
             cmd.get_args().map(OsString::from).collect::<Vec<_>>(),
             vec![
+                // -X utf8 leads: -I implies -E, so PYTHONUTF8 would be ignored.
+                OsString::from("-X"),
+                OsString::from("utf8"),
                 OsString::from("-I"),
                 OsString::from("-c"),
                 OsString::from(WINDOWS_CLI_ENTRYPOINT),
