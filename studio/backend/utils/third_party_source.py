@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import gzip
 import hashlib
 import importlib
@@ -920,7 +921,10 @@ def ensure_dac_speech_weights(legacy_path: Path | str | None = None) -> Path:
                 expected_size = _DAC_SIZE,
                 expected_sha256 = _DAC_SHA256,
             ):
-                return downloaded.resolve()
+                # Populate the pinned destination so later loads hit the fast path above
+                # instead of re-downloading and re-hashing 295 MB under the install lock.
+                _install_verified_artifact(downloaded, destination)
+                return destination.resolve()
 
             if download_error is not None:
                 raise RuntimeError(
@@ -949,6 +953,11 @@ def _module_is_inside(module: ModuleType, package_root: Path) -> bool:
 
 
 def _purge_package_bytecode(package_root: Path) -> None:
+    # Best-effort: the runtime tree is shared by the inference and training workers and this
+    # runs without the install lock, so another process purging or writing __pycache__
+    # concurrently must not turn a codec load into a FileNotFoundError/PermissionError. The
+    # manifest, the sealed __init__.py and the post-import origin audit are the real
+    # defences; this only stops a stale .pyc shadowing a verified .py.
     for directory, child_directories, files in os.walk(package_root, topdown = True):
         directory_path = Path(directory)
         for name in tuple(child_directories):
@@ -956,13 +965,15 @@ def _purge_package_bytecode(package_root: Path) -> None:
             if path.is_symlink():
                 child_directories.remove(name)
                 if name == "__pycache__":
-                    path.unlink()
+                    with contextlib.suppress(OSError):
+                        path.unlink()
             elif name == "__pycache__":
                 child_directories.remove(name)
-                shutil.rmtree(path)
+                shutil.rmtree(path, ignore_errors = True)
         for name in files:
             if name.endswith((".pyc", ".pyo")):
-                (directory_path / name).unlink(missing_ok = True)
+                with contextlib.suppress(OSError):
+                    (directory_path / name).unlink(missing_ok = True)
 
 
 def _remove_package_modules(package: str) -> None:
@@ -994,13 +1005,17 @@ def import_pinned_module(module_name: str, *, package: str, source: Path | str) 
         while source_value in sys.path:
             sys.path.remove(source_value)
         sys.path.insert(0, source_value)
-        _purge_package_bytecode(package_root)
-        importlib.invalidate_caches()
         try:
+            # Inside the try: anything raising here would otherwise strand the cache dir at
+            # sys.path[0] for the process lifetime, with nothing imported and no rollback.
+            _purge_package_bytecode(package_root)
+            importlib.invalidate_caches()
             module = importlib.import_module(module_name)
             invalid_modules = sorted(
                 name
-                for name, loaded_module in sys.modules.items()
+                # Snapshot: another thread importing here would otherwise raise
+                # "dictionary changed size during iteration" out of a good codec load.
+                for name, loaded_module in list(sys.modules.items())
                 if (name == package or name.startswith(f"{package}."))
                 and not _module_is_inside(loaded_module, package_root)
             )

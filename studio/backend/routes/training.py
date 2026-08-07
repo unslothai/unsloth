@@ -131,7 +131,15 @@ class TrainingStopRequest(PydanticBaseModel):
 
 
 class TrainingResetRequest(PydanticBaseModel):
-    expected_job_id: Optional[str] = None
+    # Stays optional: every Studio build before the train-page rework posts /reset with no
+    # body, and those clients only ever reset a finished run. The backend refuses an
+    # unscoped reset that would touch a LIVE run instead, so the guard costs no compat.
+    expected_job_id: Optional[str] = PydanticField(
+        default = None,
+        min_length = 1,
+        max_length = 128,
+        pattern = TRAINING_REQUEST_ID_PATTERN,
+    )
 
 
 router = APIRouter()

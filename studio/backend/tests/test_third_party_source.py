@@ -659,7 +659,10 @@ def test_dac_weights_use_immutable_revision_and_active_cache(monkeypatch, tmp_pa
 
     result = source.ensure_dac_speech_weights()
 
-    assert result == downloaded.resolve()
+    # The download is installed into the pinned destination, so the next load hits the
+    # fast path instead of re-downloading and re-hashing the artifact.
+    assert result.is_relative_to(hub_cache)
+    assert result.read_bytes() == payload
     assert calls == [
         {
             "repo_id": source._DAC_REPOSITORY,
@@ -719,3 +722,43 @@ def test_dac_weight_hash_mismatch_fails_closed(monkeypatch, tmp_path):
 
     with pytest.raises(RuntimeError, match = "failed integrity validation"):
         source.ensure_dac_speech_weights(tmp_path / "missing.pth")
+
+
+def test_bytecode_purge_tolerates_a_concurrent_purge(tmp_path):
+    """The runtime tree is shared by the inference and training workers and the purge runs
+    without the install lock, so a __pycache__ vanishing mid-walk must not raise."""
+    package_root = tmp_path / "sparktts"
+    (package_root / "models" / "__pycache__").mkdir(parents = True)
+    (package_root / "models" / "__pycache__" / "a.cpython-313.pyc").write_bytes(b"")
+    (package_root / "stale.pyc").write_bytes(b"")
+
+    real_rmtree = source.shutil.rmtree
+
+    def rmtree_racing_another_worker(path, *args, **kwargs):
+        real_rmtree(path, ignore_errors = True)
+        return real_rmtree(path, *args, **kwargs)
+
+    source.shutil.rmtree = rmtree_racing_another_worker
+    try:
+        source._purge_package_bytecode(package_root)
+    finally:
+        source.shutil.rmtree = real_rmtree
+
+    assert not list(package_root.rglob("*.pyc"))
+
+
+def test_bytecode_purge_tolerates_an_unwritable_runtime(tmp_path):
+    """A root-owned or read-only cache must not fail an otherwise verified codec load."""
+    package_root = tmp_path / "sparktts"
+    package_root.mkdir(parents = True)
+    (package_root / "stale.pyc").write_bytes(b"")
+
+    def refuse(*args, **kwargs):
+        raise PermissionError("read-only cache")
+
+    original = source.Path.unlink
+    source.Path.unlink = refuse
+    try:
+        source._purge_package_bytecode(package_root)
+    finally:
+        source.Path.unlink = original

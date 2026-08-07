@@ -1423,7 +1423,8 @@ def test_reset_route_reports_superseded_job_without_mutation():
     assert calls == ["job_old"]
 
 
-def test_reset_route_without_body_uses_unscoped_reset():
+def test_reset_route_without_body_stays_supported():
+    """Pre-rework clients POST /reset with no body; that must keep working when idle."""
     route = _load_route_module("training_route_unscoped_reset")
     calls: list[str | None] = []
     backend = SimpleNamespace(
@@ -1438,6 +1439,23 @@ def test_reset_route_without_body_uses_unscoped_reset():
 
     assert response == {"status": "ok"}
     assert calls == [None]
+
+
+def test_unscoped_reset_cannot_touch_a_live_run(monkeypatch):
+    """...but it may not force-terminate a run it cannot prove it owns."""
+    from core.training.training import TrainingBackend
+
+    backend = TrainingBackend.__new__(TrainingBackend)
+    TrainingBackend.__init__(backend)
+    backend.current_job_id = "job_new"
+    backend._cancel_requested = True
+    monkeypatch.setattr(backend, "is_training_active", lambda: True)
+    monkeypatch.setattr(
+        backend, "force_terminate", lambda **_kw: pytest.fail("unscoped reset terminated a run")
+    )
+
+    assert backend.reset_training_state() == "superseded"
+    assert backend.reset_training_state(expected_job_id = "job_old") == "superseded"
 
 
 def test_runtime_4bit_resume_reaches_worker_with_source_resource_pins(tmp_path):

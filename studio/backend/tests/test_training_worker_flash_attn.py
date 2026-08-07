@@ -1354,12 +1354,13 @@ def test_run_training_process_eagerly_installs_causal_conv1d_in_normal_mode():
     import inspect
 
     src = inspect.getsource(worker.run_training_process)
-    # Orchestration block.
-    assert "_ensure_causal_conv1d_fast_path(event_queue, model_name)" in src
-    assert "_install_fast_path_hooks(event_queue, model_name)" in src
+    # Orchestration block. Match the call, not its formatting, so wrapping the args over
+    # several lines or adding a keyword does not break this.
+    assert "_ensure_causal_conv1d_fast_path(" in src
+    assert "_install_fast_path_hooks(" in src
     # Eager causal_conv1d call must come BEFORE the hook-mode if/else, not
     # nested inside the `if _FAST_PATH_HOOKS_SKIP_ENV` branch.
-    eager_pos = src.find("_ensure_causal_conv1d_fast_path(event_queue, model_name)")
+    eager_pos = src.find("_ensure_causal_conv1d_fast_path(")
     skip_check_pos = src.find('os.getenv(_FAST_PATH_HOOKS_SKIP_ENV) == "1"')
     assert eager_pos < skip_check_pos, (
         "_ensure_causal_conv1d_fast_path must be called BEFORE the hook-mode "

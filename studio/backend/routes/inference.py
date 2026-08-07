@@ -7058,11 +7058,20 @@ def _requires_security_review_for_model(
     the consent dialog must open as a hard block before loading. Metadata-only;
     never downloads the flagged files. Fails open (False) on any error."""
     try:
-        from utils.security import evaluate_file_security, security_load_subdirs
+        from utils.security import (
+            evaluate_file_security,
+            load_scan_target,
+            security_load_subdirs,
+        )
+
+        # Same alias normalization as _requires_trust_remote_code_for_model: the raw
+        # `<name>/LLM` alias 404s and would fail open to "no review needed".
+        load_subdirs = security_load_subdirs(model_identifier, hf_token)
+        target, load_subdirs = load_scan_target(model_identifier, load_subdirs)
         return evaluate_file_security(
-            model_identifier,
+            target,
             hf_token,
-            load_subdirs = security_load_subdirs(model_identifier, hf_token),
+            load_subdirs = load_subdirs,
         ).blocked
     except Exception:
         return False

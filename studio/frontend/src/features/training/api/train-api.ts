@@ -281,17 +281,12 @@ export async function stopTraining(
 }
 
 export async function resetTraining(
-  scope?: TrainingJobScope,
+  scope: RequiredTrainingJobScope,
 ): Promise<TrainingResetResponse> {
-  const hasScope = scope?.expectedJobId !== undefined;
   const response = await authFetch("/api/train/reset", {
     method: "POST",
-    ...(hasScope
-      ? {
-          headers: { "Content-Type": "application/json" },
-          body: scopedTrainingBody({}, scope),
-        }
-      : {}),
+    headers: { "Content-Type": "application/json" },
+    body: scopedTrainingBody({}, scope),
   });
   return parseJson<TrainingResetResponse>(response);
 }
