@@ -411,7 +411,16 @@ class TestRouteCompleteness:
             idx = end
         return blocks
 
-    _NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+    # Comprehensions included: in Python 3 their targets live in their own scope, so
+    # `[None for fields in values]` does NOT rebind the hoisted dict, and recording it as a
+    # rebind failed the contract on code that is perfectly fine.
+    _CALLABLE_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+    _NESTED_SCOPES = _CALLABLE_SCOPES + (
+        ast.ListComp,
+        ast.SetComp,
+        ast.DictComp,
+        ast.GeneratorExp,
+    )
 
     @staticmethod
     def _is_runtime_fields_call(node) -> bool:
@@ -477,7 +486,10 @@ class TestRouteCompleteness:
                 elif (
                     isinstance(child, ast.Name)
                     and child.id == name
-                    and isinstance(child.ctx, ast.Store)
+                    # Del as well as Store: `del llama_backend` after the allowed
+                    # initialisation leaves the name unbound at the helper call, which is an
+                    # UnboundLocalError rather than a response.
+                    and isinstance(child.ctx, (ast.Store, ast.Del))
                     and id(child) not in handled
                 ):
                     found.append((child, None))
@@ -658,7 +670,10 @@ class TestRouteCompleteness:
                         ok = False
                 elif isinstance(child, (ast.Global, ast.Nonlocal)) and name in child.names:
                     ok = False
-                check_reads(child, nested or isinstance(child, self._NESTED_SCOPES))
+                # Only callable scopes set `nested`. A comprehension target is local and
+                # harmless, but a comprehension READING the dict is a real use of it, and the
+                # `not store` arm already catches that.
+                check_reads(child, nested or isinstance(child, self._CALLABLE_SCOPES))
 
         check_reads(scope)
         return ok
@@ -694,8 +709,7 @@ class TestRouteCompleteness:
                     return node
         return None
 
-    @staticmethod
-    def _returned_calls(scope, class_name: str) -> list:
+    def _returned_calls(self, scope, class_name: str) -> list:
         """``return ClassName(...)`` in ``scope``'s OWN body, nested scopes excluded.
 
         Two narrowings, both because the caller only asks whether SOME call qualifies. A nested
@@ -704,18 +718,43 @@ class TestRouteCompleteness:
         sees, so it cannot stand in for the response that goes out.
         """
         calls: list = []
+        # `response = ClassName(...)` then `return response` is a behaviour-preserving
+        # refactor, so the construction is traced through a single local rather than read as
+        # discarded. Only when that name is bound exactly once, to the construction: any
+        # other binding of it and we no longer know what the return carries.
+        built: dict = {}
+        rebound: set = set()
+        returned: set = set()
 
         def walk(node) -> None:
             for child in ast.iter_child_nodes(node):
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+                if isinstance(child, self._CALLABLE_SCOPES):
                     continue
                 if isinstance(child, ast.Return) and isinstance(child.value, ast.Call):
                     call = child.value
                     if isinstance(call.func, ast.Name) and call.func.id == class_name:
                         calls.append(call)
+                elif isinstance(child, ast.Return) and isinstance(child.value, ast.Name):
+                    returned.add(child.value.id)
+                elif isinstance(child, ast.Assign) and len(child.targets) == 1:
+                    target = child.targets[0]
+                    if isinstance(target, ast.Name):
+                        value = child.value
+                        if (
+                            isinstance(value, ast.Call)
+                            and isinstance(value.func, ast.Name)
+                            and value.func.id == class_name
+                            and target.id not in built
+                        ):
+                            built[target.id] = value
+                        else:
+                            rebound.add(target.id)
                 walk(child)
 
         walk(scope)
+        for local, call in built.items():
+            if local in returned and local not in rebound:
+                calls.append(call)
         return calls
 
     # How the handler is allowed to obtain each name the helper call is spelled with. The
@@ -766,6 +805,10 @@ class TestRouteCompleteness:
                     and not value.keywords
                 )
 
+            if dependency in self._parameter_names(scope):
+                # A parameter is a binding with no source to check, and a plain FastAPI
+                # parameter would not carry the backend singleton anyway.
+                return False
             bindings = self._bindings_in_own_scope(scope, dependency)
             if not bindings:
                 continue  # never rebound here: it is the module-level name
@@ -937,9 +980,12 @@ class TestRouteCompleteness:
         """Run the analyser over a synthetic route function instead of the real file."""
         import textwrap
 
+        # No `llama_backend` parameter: the real handler takes `current_subject` and gets the
+        # backend from `get_llama_cpp_backend()`. A dependency arriving as a parameter has no
+        # source to verify, which the analyser now rejects, so the fixture must not fake one.
         self._source = (
             '@router.get("/status", response_model = InferenceStatusResponse)\n'
-            "async def get_status(llama_backend):\n"
+            "async def get_status(current_subject = None):\n"
         ) + textwrap.indent(textwrap.dedent(body).strip("\n"), "    ")
         return bool(self._status_calls_getting_runtime_fields())
 
@@ -1332,6 +1378,86 @@ class TestRouteCompleteness:
             """
         )
         assert not self._status_calls_getting_runtime_fields()
+
+    def test_the_hoist_analysis_rejects_a_deleted_dependency(self):
+        """`del llama_backend` after the allowed init leaves the name unbound at the call.
+
+        The Name node has Del context, not Store, so the bindings walk skipped it and the
+        dependency check saw only the clean initialisation.
+        """
+        assert not self._accepts(
+            """
+            llama_backend = get_llama_cpp_backend()
+            del llama_backend
+            fields = _llama_runtime_fields(llama_backend)
+            return InferenceStatusResponse(is_gguf = True, **fields)
+            """
+        )
+
+    def test_the_hoist_analysis_rejects_a_dependency_that_arrives_as_a_parameter(self):
+        """A parameter is a binding with no source to verify.
+
+        With no local initialisation the dependency check read the name as module level and
+        accepted it, but a plain FastAPI parameter does not carry the backend singleton.
+        """
+        import textwrap
+
+        self._source = textwrap.dedent(
+            """
+            @router.get("/status")
+            async def get_status(llama_backend):
+                fields = _llama_runtime_fields(llama_backend)
+                return InferenceStatusResponse(is_gguf = True, **fields)
+            """
+        )
+        assert not self._status_calls_getting_runtime_fields()
+
+    def test_the_hoist_analysis_follows_a_response_bound_to_a_local(self):
+        """`response = InferenceStatusResponse(...)` then `return response` is a refactor.
+
+        Reading only inline returns treated it as discarded, so the contract failed on code
+        that still sends the fields. It is traced through a single local bound exactly once
+        to the construction; any other binding of that name and we no longer know what the
+        return carries.
+        """
+        assert self._accepts(
+            """
+            fields = _llama_runtime_fields(llama_backend)
+            response = InferenceStatusResponse(is_gguf = True, **fields)
+            return response
+            """
+        )
+        # Rebound in between: what comes back is no longer that construction.
+        assert not self._accepts(
+            """
+            fields = _llama_runtime_fields(llama_backend)
+            response = InferenceStatusResponse(is_gguf = True, **fields)
+            response = InferenceStatusResponse(is_gguf = True)
+            return response
+            """
+        )
+
+    def test_an_unrelated_comprehension_does_not_break_the_contract(self):
+        """A comprehension target is scoped to the comprehension in Python 3.
+
+        `[None for fields in values]` does not touch the hoisted dict, so recording it as a
+        rebind failed the contract on code that is fine. A comprehension that READS the dict
+        is a different matter and still disqualifies.
+        """
+        assert self._accepts(
+            """
+            fields = _llama_runtime_fields(llama_backend)
+            _unused = [None for fields in _values]
+            return InferenceStatusResponse(is_gguf = True, **fields)
+            """
+        )
+        assert not self._accepts(
+            """
+            fields = _llama_runtime_fields(llama_backend)
+            _leaked = [v for v in fields]
+            return InferenceStatusResponse(is_gguf = True, **fields)
+            """
+        )
 
     def test_non_gguf_status_path_reports_runtime_context_length(self):
         """Non-GGUF InferenceStatusResponse reports context_length from model_info."""
