@@ -96,7 +96,10 @@ def test_the_migration_stays_off_where_the_guard_is_not_enforced():
     repair = _read(REPAIR)
     assert "if (!(await backendEnforcesTitleGuard())) return 0;" in repair
     assert 'const response = await authFetch("/openapi.json");' in repair
-    assert "probe = readGuardProbe( response.ok, response.ok ? await response.json() : null, );" in repair
+    assert (
+        "probe = readGuardProbe( response.ok, response.ok ? await response.json() : null, );"
+        in repair
+    )
     # Only a settled answer is cached. A 401 while the token warms up, or a 503
     # during startup, would otherwise park the migration for the session.
     assert "if (!probe.settled) guardSupport = null;" in repair
