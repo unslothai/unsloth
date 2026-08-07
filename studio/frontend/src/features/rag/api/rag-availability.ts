@@ -29,6 +29,19 @@ interface RagAvailabilityMarker {
 const DEFAULT_UNAVAILABLE_REASON =
   "RAG is unavailable on this machine: the sqlite-vec extension could not be loaded.";
 
+// What routes/rag.py sends with its 503 ("RAG is unavailable: the sqlite-vec extension
+// could not be loaded."). Matched on these two stable fragments rather than the whole
+// sentence, so a reworded detail still reads as the backend's verdict while a proxy's
+// "Service Temporarily Unavailable" does not.
+const RAG_UNAVAILABLE_MARKERS = ["rag is unavailable", "sqlite-vec"];
+
+/** True only for a 503 body the RAG router itself produced. */
+function isRagUnavailableDetail(detail: string | null | undefined): detail is string {
+  if (!detail) return false;
+  const text = detail.toLowerCase();
+  return RAG_UNAVAILABLE_MARKERS.some((marker) => text.includes(marker));
+}
+
 interface RagAvailabilityState {
   // Optimistic seed. Never gate on this directly; it is "not known to be broken",
   // not an answer. See isUnavailable().
@@ -115,9 +128,15 @@ export function noteRagResponse(status: number, body: unknown): void {
     const detail = formatFastApiDetail(
       (body as { detail?: unknown } | null)?.detail,
     );
+    // Only the backend's own wording is a capability verdict. A 503 is also what a
+    // reverse proxy, Cloudflare, or a briefly overloaded server returns, and those
+    // bodies say nothing about sqlite-vec. Recording one as unavailable would gate the
+    // dialog for the session behind a transient outage, showing an extension
+    // explanation for something that was never the extension.
+    if (!isRagUnavailableDetail(detail)) return;
     useRagAvailabilityStore.setState({
       available: false,
-      reason: detail || DEFAULT_UNAVAILABLE_REASON,
+      reason: detail,
       answered: true,
     });
     return;

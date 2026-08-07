@@ -126,16 +126,23 @@ test("a 503 from any endpoint marks unavailable, with the stated reason", () => 
   assert.equal(state.unavailableReason(), BACKEND_REASON);
 });
 
-test("a 503 with no readable body still explains itself", () => {
+// A bodyless 503 is precisely what a reverse proxy, Cloudflare or a briefly overloaded
+// server returns, and it says nothing about sqlite-vec. This test used to assert the
+// opposite: that such a response should still be explained with the extension reason.
+// That turns any transient outage into a permanent, wrongly-worded verdict for the rest
+// of the session, since only a 2xx from a gated endpoint can clear it. Unknown is the
+// honest state, and the dialog stays usable until the backend actually says otherwise.
+test("a 503 with no readable body is not a capability verdict", () => {
   resetAvailability();
   noteRagResponse(503, null);
   const state = useRagAvailabilityStore.getState();
-  assert.equal(state.isUnavailable(), true);
-  assert.match(
-    state.unavailableReason() ?? "",
-    /sqlite-vec/,
-    "a gateway 503 leaves the empty state with nothing to say",
+  assert.equal(state.isUnavailable(), false);
+  assert.equal(
+    state.availabilityUnknown(),
+    true,
+    "a gateway 503 was recorded as a measured sqlite-vec failure",
   );
+  assert.equal(state.unavailableReason(), null);
 });
 
 // 401, 404, 422 and a genuine 500 say nothing about whether the extension loads. Treating
@@ -324,4 +331,39 @@ test("host availability is kept out of the model-capability gate", async () => {
     !src.includes("rag-availability"),
     "the sqlite-vec verdict was folded into the tool-capability hook",
   );
+});
+
+// A 503 is not automatically a capability verdict. Cloudflare, a reverse proxy and a
+// briefly overloaded server all return one, and their bodies say nothing about
+// sqlite-vec. Recording those would gate the dialog for the session behind a transient
+// outage and show an extension explanation for something that was never the extension.
+test("a generic 503 from a proxy is not read as a RAG capability verdict", () => {
+  useRagAvailabilityStore.setState({ available: true, reason: null, answered: false });
+
+  for (const body of [
+    { detail: "Service Temporarily Unavailable" },
+    { detail: "upstream connect error" },
+    null,
+    {},
+    "<html><body><h1>503 Service Unavailable</h1></body></html>",
+  ]) {
+    noteRagResponse(503, body);
+    assert.equal(
+      useRagAvailabilityStore.getState().isUnavailable(),
+      false,
+      `a 503 carrying ${JSON.stringify(body)} was treated as a sqlite-vec verdict`,
+    );
+    assert.equal(
+      useRagAvailabilityStore.getState().answered,
+      false,
+      "a generic 503 must leave the verdict unanswered, not answer it optimistically",
+    );
+  }
+});
+
+test("the backend's own 503 detail is still read as unavailable", () => {
+  useRagAvailabilityStore.setState({ available: true, reason: null, answered: false });
+  noteRagResponse(503, { detail: BACKEND_REASON });
+  assert.equal(useRagAvailabilityStore.getState().isUnavailable(), true);
+  assert.equal(useRagAvailabilityStore.getState().reason, BACKEND_REASON);
 });
