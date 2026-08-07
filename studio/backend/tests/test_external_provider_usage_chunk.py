@@ -553,9 +553,7 @@ def test_other_providers_do_not_get_the_continuation_flags(monkeypatch, provider
         # "openai" is absent: it routes to /v1/responses, which reports usage itself.
     ],
 )
-def test_streamed_usage_is_requested_only_where_documented(
-    monkeypatch, provider_type, expected
-):
+def test_streamed_usage_is_requested_only_where_documented(monkeypatch, provider_type, expected):
     # An OAI-compatible stream omits usage without stream_options.include_usage, and
     # these providers report no llama.cpp timings, so the monitor has no token count to
     # derive a speed from and the row shows a blank Speed for every completed request.
