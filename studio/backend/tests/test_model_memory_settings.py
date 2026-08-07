@@ -1480,3 +1480,65 @@ class TestTheRetryCanReadTheGate:
                 f"{inner.name} assigns _mem_host_resident without a nonlocal, so "
                 f"reading it there raises UnboundLocalError"
             )
+
+
+class TestInheritedCpuPlacement:
+    """The child inherits these, so they outlive stripping the equivalent
+    flags and keep weights in host RAM whatever the layer count says."""
+
+    @pytest.mark.parametrize(
+        "env,expected",
+        [
+            ({}, False),
+            ({"LLAMA_ARG_OVERRIDE_TENSOR": "blk.*=CPU"}, True),
+            ({"LLAMA_ARG_OVERRIDE_TENSOR": ""}, False),
+            ({"LLAMA_ARG_CPU_MOE": "1"}, True),
+            ({"LLAMA_ARG_CPU_MOE": "on"}, True),
+            ({"LLAMA_ARG_CPU_MOE": "0"}, False),
+            ({"LLAMA_ARG_N_CPU_MOE": "4"}, True),
+            ({"LLAMA_ARG_N_CPU_MOE": "0"}, False),
+            ({"LLAMA_ARG_N_CPU_MOE": "-1"}, False),
+            ({"LLAMA_ARG_N_CPU_MOE": "nonsense"}, False),
+        ],
+    )
+    def test_the_predicate(self, env, expected):
+        from core.inference.llama_cpp import _env_places_tensors_on_cpu
+
+        assert _env_places_tensors_on_cpu(env) is expected
+
+    def test_it_is_the_same_predicate_the_pipeline_check_uses(self):
+        """Shared, so the two cannot drift apart."""
+        import inspect
+
+        from core.inference.llama_cpp import _pipeline_parallel_disabled_by_args
+
+        source = inspect.getsource(_pipeline_parallel_disabled_by_args)
+        assert "_env_places_tensors_on_cpu" in source
+        for name in ("LLAMA_ARG_OVERRIDE_TENSOR", "LLAMA_ARG_CPU_MOE", "LLAMA_ARG_N_CPU_MOE"):
+            assert name not in source, f"{name} re-implemented instead of shared"
+
+    @pytest.mark.parametrize(
+        "env",
+        [
+            {"LLAMA_ARG_OVERRIDE_TENSOR": "blk.*=CPU"},
+            {"LLAMA_ARG_CPU_MOE": "1"},
+            {"LLAMA_ARG_N_CPU_MOE": "4"},
+        ],
+    )
+    def test_an_inherited_placement_keeps_a_full_offload_host_resident(
+        self, monkeypatch, env
+    ):
+        assert (
+            TestHostMemoryGate._gate(
+                monkeypatch, fully_gpu_offloaded = True, extra_args = None, env = env
+            )
+            is True
+        )
+
+    def test_an_unset_environment_leaves_the_gate_alone(self, monkeypatch):
+        assert (
+            TestHostMemoryGate._gate(
+                monkeypatch, fully_gpu_offloaded = True, extra_args = None, env = {}
+            )
+            is False
+        )

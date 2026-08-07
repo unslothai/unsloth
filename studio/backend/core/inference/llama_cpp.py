@@ -2035,6 +2035,21 @@ def _is_positive_int(value: Optional[str]) -> bool:
         return False
 
 
+def _env_places_tensors_on_cpu(env: Optional[Mapping[str, str]] = None) -> bool:
+    """True when inherited env keeps weights on the CPU, whatever the argv says.
+
+    The child inherits these, so they survive stripping the equivalent flags.
+    Shared with the Model Memory host-residency gate, which must not call a load
+    fully offloaded while one of them is holding tensors in RAM.
+    """
+    source_env = os.environ if env is None else env
+    return bool(
+        source_env.get("LLAMA_ARG_OVERRIDE_TENSOR")
+        or source_env.get("LLAMA_ARG_CPU_MOE") in _LLAMA_ARG_TRUE_VALUES
+        or _is_positive_int(source_env.get("LLAMA_ARG_N_CPU_MOE"))
+    )
+
+
 def _pipeline_parallel_disabled_by_args(
     extra_args: Optional[Iterable[str]],
     env: Optional[Mapping[str, str]] = None,
@@ -2054,11 +2069,7 @@ def _pipeline_parallel_disabled_by_args(
     split. ``n_layers`` is the GGUF block count for the ``-ngl`` check below; None/0
     means unknown."""
     source_env = os.environ if env is None else env
-    if source_env.get("LLAMA_ARG_OVERRIDE_TENSOR"):
-        return True
-    if source_env.get("LLAMA_ARG_CPU_MOE") in _LLAMA_ARG_TRUE_VALUES:
-        return True
-    if _is_positive_int(source_env.get("LLAMA_ARG_N_CPU_MOE")):
+    if _env_places_tensors_on_cpu(source_env):
         return True
     if not _kv_offload_from_args(extra_args, env = env):
         return True
@@ -4514,6 +4525,7 @@ class LlamaCppBackend:
         gpu_indices = None,
         is_vulkan_backend: bool = False,
         binary: Optional[str] = None,
+        env: Optional[Mapping[str, str]] = None,
     ) -> bool:
         """True when the weights will sit in pageable host RAM, so mlock helps.
 
@@ -4524,7 +4536,10 @@ class LlamaCppBackend:
 
         # A CPU placement extra keeps weights in RAM whatever the layer count,
         # so it applies to the auto path too and cannot be short-circuited past.
+        # Inherited env does the same and outlives any token stripping.
         if _extra_args_set_any_flag(extra_args, _CPU_PLACEMENT_FLAGS):
+            return True
+        if _env_places_tensors_on_cpu(env):
             return True
         all_on_gpu = fully_gpu_offloaded or self._offloads_every_layer(
             gpu_memory_mode = gpu_memory_mode,

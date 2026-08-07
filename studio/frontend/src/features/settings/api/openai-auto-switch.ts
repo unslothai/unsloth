@@ -110,6 +110,10 @@ export async function updateOpenAIAutoSwitchSettings(
   autoUnloadKeepKv?: boolean,
   autoDownloadModel?: boolean,
 ): Promise<OpenAIAutoSwitchSettings> {
+  // Read BEFORE the request: idleUnloadActive depends on the Model Memory
+  // setting, so a residency write landing mid-flight makes this response stale
+  // even though it is our own write's reply.
+  const generation = cacheGeneration;
   const res = await authFetch("/api/settings/openai-auto-switch", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -138,6 +142,12 @@ export async function updateOpenAIAutoSwitchSettings(
       ),
     );
   }
-  // A write's own response is the freshest there is, so it always caches.
-  return cacheSettings(fromApi(await res.json()), cacheGeneration);
+  const settings = fromApi(await res.json());
+  if (generation !== cacheGeneration) {
+    // A Model Memory write committed while this PUT was in flight, so this
+    // reply predates it. Caching it would pin a stale idleUnloadActive, which
+    // the Hub reads to decide whether an eviction was a real unload.
+    return loadOpenAIAutoSwitchSettings();
+  }
+  return cacheSettings(settings, generation);
 }
