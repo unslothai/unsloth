@@ -790,9 +790,7 @@ class VideoBackend:
         # for, so drop the flag rather than the mode; --offload-to-cpu and --clip-on-cpu, which
         # are where the savings actually are, still apply.
         native_offload = tuple(
-            offload_flags(
-                policy, vae_tiling = False, diffusion_fa = True, vae_on_cpu = False
-            )
+            offload_flags(policy, vae_tiling = False, diffusion_fa = True, vae_on_cpu = False)
         )
         from .video_minimax_h3 import MiniMaxH3NativeRuntime
 
