@@ -1,0 +1,44 @@
+{
+  "$comment": [
+    "Allowlist for .github/workflows/ci-capacity.yml. Nothing outside this file",
+    "is ever cancelled or disabled, so the blast radius is reviewable in a diff",
+    "rather than inferred from a filter expression at runtime.",
+    "",
+    "'heavy' is the set a release pipeline is allowed to preempt. Pick workflows",
+    "by what they cost the shared runner pool, not by how important they are:",
+    "the point is to free macOS and Linux slots, and preempting a one-job lint",
+    "run frees nothing while still showing up as a cancelled check.",
+    "",
+    "'never' is belt and braces. The sweeper already refuses to touch releases,",
+    "pull_request runs and itself; listing them again means a careless edit to",
+    "'heavy' cannot reach them."
+  ],
+  "heavy": {
+    "macos": [
+      "clean-machine-install-ci.yml",
+      "interrupted-install-ci.yml",
+      "studio-mac-install-matrix.yml",
+      "studio-mac-inference-smoke.yml",
+      "studio-mac-ui-smoke.yml",
+      "mlx-ci.yml",
+      "startup-profile-ci.yml"
+    ],
+    "linux": [
+      "version-compat-ci.yml",
+      "local-agent-guides-ci.yml",
+      "notebooks-ci.yml",
+      "security-audit.yml"
+    ],
+    "windows": [
+      "studio-windows-inference-smoke.yml",
+      "cross-platform-parity-ci.yml"
+    ]
+  },
+  "never": [
+    "release-desktop.yml",
+    "publish-desktop-updater.yml",
+    "ci-capacity.yml",
+    "ossf.yml",
+    "stale.yml"
+  ]
+}

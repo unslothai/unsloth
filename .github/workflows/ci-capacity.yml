@@ -1,0 +1,357 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+name: CI capacity
+
+# Frees runner slots in THIS repository so a release pipeline elsewhere in the
+# org stops queueing behind ordinary CI.
+#
+# Why it lives here and not in the release repo. GitHub's `concurrency:` is
+# scoped to one repository, so it cannot express "llama.cpp is releasing, so
+# unsloth should stand down". Doing that across repos means an explicit API
+# call. The obvious shape, a release job that reaches into unsloth and cancels
+# things, needs a PAT with Actions write on every target and puts the kill
+# switch in a repo whose maintainers cannot see what it killed. This is the
+# inverse: each CI repo carries its own sweeper, acts with its own
+# GITHUB_TOKEN, and a release only has to *ask*. No cross-repo Actions
+# credential exists anywhere in the design, and the whole blast radius is one
+# reviewable file plus .github/ci-preempt.json.
+#
+# SHIPS INERT. Every destructive path is gated on the repository variable
+# CI_PREEMPT_ENABLED being the exact string 'true'. With the variable unset,
+# which is how this merges, the sweeper still runs, still resolves exactly what
+# it would have cancelled, and prints it to the job summary without touching
+# anything. Turn it on with:
+#
+#   gh variable set CI_PREEMPT_ENABLED --repo unslothai/unsloth --body true
+#
+# and off again by deleting the variable. Read the note on the guard job
+# before enabling `pause`.
+#
+# The one credential this needs. A release repo has to be able to reach
+# repository_dispatch here, and POST /repos/{o}/{r}/dispatches requires
+# Contents: write on THIS repository, which GITHUB_TOKEN in another repo does
+# not have. Nothing in the org can do that today: the only proven cross-repo
+# secret is WHISPER_DISPATCH_TOKEN on llama.cpp, which is a personal PAT
+# carrying the whole account. If this is ever turned on, mint a GitHub App
+# with Contents: write scoped to unsloth and unsloth-zoo and nothing else,
+# rather than adding a second account-wide PAT. Note that the credential only
+# ever grants the right to *ask*: the sweeping is done here, by this
+# repository's own GITHUB_TOKEN, against a list committed in this repository.
+
+on:
+  repository_dispatch:
+    types: [ci-pause, ci-resume]
+
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'sweep = cancel only (reversible by re-running). pause = also disable the allowlist so nothing refills. resume = undo a pause.'
+        type: choice
+        options: [sweep, pause, resume]
+        default: sweep
+      events:
+        description: 'Which triggers may be cancelled, comma separated. schedule is the safe default: nobody is waiting on a nightly and it runs again tomorrow.'
+        type: string
+        default: schedule
+      classes:
+        description: 'Runner classes to free, comma separated: macos, linux, windows.'
+        type: string
+        default: macos
+      hold_minutes:
+        description: 'Keep sweeping for this many minutes. 0 sweeps once. New runs queue the moment the sweep stops, so a single pass rarely holds.'
+        type: number
+        default: 0
+      reason:
+        description: 'Shown in the job summary and in every cancelled run trail.'
+        type: string
+        default: 'manual'
+
+  # The guard below. Deliberately frequent and deliberately independent of
+  # everything above. Off the top of the hour on purpose: crons at :00 are the
+  # most delayed slot GitHub has, and this is the one job whose lateness is
+  # measured in how long CI stays off. Twice an hour is noise in the Actions
+  # tab that buys a bounded worst case; if that trade stops being worth it,
+  # lower the rate and raise MAX_DISABLED_MINUTES to match, never just one.
+  schedule:
+    - cron: '7,37 * * * *'
+
+permissions:
+  actions: write   # cancel / disable / enable, this repository only
+  contents: read
+
+env:
+  # Longest a workflow may stay disabled before the guard turns it back on
+  # regardless of what the release is doing. This is the number that decides
+  # how bad the worst case is, so keep it shorter than you think you need.
+  MAX_DISABLED_MINUTES: '120'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # The guard runs on its own schedule, has no `if:` on the enabled flag, and
+  # depends on nothing. That is the whole point.
+  #
+  # It is worth being precise about what it is guarding against, because the
+  # obvious worry turns out to be the wrong one. GitHub re-evaluates job `if:`
+  # conditions when a run is cancelled, and a job whose condition is
+  # `always()` is explicitly NOT cancelled -- only POST .../force-cancel
+  # bypasses that. So a release really can carry its own `if: always()` resume
+  # job and have it survive being cancelled. What is *not* documented is
+  # whether such a job still starts when it never got a runner in the first
+  # place; the reports of `needs`-dependent `always()` jobs stranded at
+  # "waiting for a runner" are exactly the case a paused CI repo creates.
+  #
+  # So the release-side resume is the fast path and this is the floor under it.
+  # It reads the current state of each workflow from the API and re-enables
+  # anything sitting in disabled_manually longer than MAX_DISABLED_MINUTES.
+  # There is no state file to lose, no issue to reconcile and no lease to
+  # renew: the disabled workflow *is* the state, and `updated_at` is the
+  # timestamp. The worst case is bounded by a number in this file rather than
+  # by whether some other repository behaved.
+  # ---------------------------------------------------------------------------
+  guard:
+    name: Re-enable anything left disabled
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Re-enable stale disabled workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          NOW="$(date -u +%s)"
+          CUT=$(( NOW - MAX_DISABLED_MINUTES * 60 ))
+          RESTORED=0
+
+          # Only ever re-enable something this repository's own allowlist claims
+          # as sweepable. A workflow a human disabled on purpose is not ours to
+          # switch back on, so anything outside .github/ci-preempt.json is left
+          # exactly as found.
+          ALLOWED="$(jq -r '[.heavy[][]] | unique[]' .github/ci-preempt.json)"
+
+          while read -r id state path updated; do
+            [ "$state" = "disabled_manually" ] || continue
+            grep -qxF "${path##*/}" <<<"$ALLOWED" || continue
+            TS="$(date -u -d "$updated" +%s 2>/dev/null || echo "$NOW")"
+            if [ "$TS" -le "$CUT" ]; then
+              AGE=$(( (NOW - TS) / 60 ))
+              if gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${id}/enable"; then
+                echo "re-enabled ${path} (disabled ${AGE}m, limit ${MAX_DISABLED_MINUTES}m)"
+                RESTORED=$(( RESTORED + 1 ))
+              else
+                echo "::error::could not re-enable ${path}; enable it by hand in the Actions tab"
+              fi
+            else
+              echo "leaving ${path} disabled for now ($(( (NOW - TS) / 60 ))m of ${MAX_DISABLED_MINUTES}m)"
+            fi
+          done < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/workflows" \
+                     --jq '.workflows[] | "\(.id) \(.state) \(.path) \(.updated_at)"')
+
+          # A guard that fails quietly is worse than no guard, so say so loudly
+          # when it had to act. Routine passes stay silent.
+          if [ "$RESTORED" -gt 0 ]; then
+            echo "::warning::re-enabled ${RESTORED} workflow(s) left disabled past the ${MAX_DISABLED_MINUTES}m limit"
+          fi
+          echo "guard: restored ${RESTORED}" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  sweep:
+    name: Free capacity
+    if: ${{ github.event_name != 'schedule' }}
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Resolve the request
+        id: req
+        env:
+          # repository_dispatch carries its arguments in client_payload;
+          # workflow_dispatch carries them in inputs. Normalise once here so the
+          # step below has one shape to read, and so an unset field on either
+          # path lands on the same default rather than an empty string.
+          P_MODE: ${{ github.event.client_payload.mode }}
+          P_EVENTS: ${{ github.event.client_payload.events }}
+          P_CLASSES: ${{ github.event.client_payload.classes }}
+          P_HOLD: ${{ github.event.client_payload.hold_minutes }}
+          P_REASON: ${{ github.event.client_payload.reason }}
+          I_MODE: ${{ inputs.mode }}
+          I_EVENTS: ${{ inputs.events }}
+          I_CLASSES: ${{ inputs.classes }}
+          I_HOLD: ${{ inputs.hold_minutes }}
+          I_REASON: ${{ inputs.reason }}
+          ACTION: ${{ github.event.action }}
+        run: |
+          set -euo pipefail
+          # ci-resume is a mode, not a separate entry point: a release that
+          # finishes should not have to know which mode it asked for earlier.
+          if [ "${ACTION:-}" = "ci-resume" ]; then
+            MODE=resume
+          else
+            MODE="${P_MODE:-${I_MODE:-sweep}}"
+          fi
+          {
+            echo "mode=${MODE}"
+            echo "events=${P_EVENTS:-${I_EVENTS:-schedule}}"
+            echo "classes=${P_CLASSES:-${I_CLASSES:-macos}}"
+            echo "hold=${P_HOLD:-${I_HOLD:-0}}"
+            echo "reason=${P_REASON:-${I_REASON:-manual}}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Sweep
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Not an `if:` on the job. The dry run is the useful half of this
+          # workflow before anyone commits to enabling it: it answers "what
+          # would this have taken from us" without taking anything.
+          ENABLED: ${{ vars.CI_PREEMPT_ENABLED }}
+          MODE: ${{ steps.req.outputs.mode }}
+          EVENTS: ${{ steps.req.outputs.events }}
+          CLASSES: ${{ steps.req.outputs.classes }}
+          HOLD: ${{ steps.req.outputs.hold }}
+          REASON: ${{ steps.req.outputs.reason }}
+        run: |
+          set -uo pipefail
+          DRY=1; [ "${ENABLED:-}" = "true" ] && DRY=0
+          [ "$DRY" = 1 ] && echo "::notice::CI_PREEMPT_ENABLED is not 'true'; reporting what would happen and changing nothing"
+
+          # Resolve the allowlist for the requested runner classes. Anything not
+          # named in .github/ci-preempt.json is out of reach, and the never list
+          # is subtracted afterwards so a mistake in heavy cannot reach a
+          # release workflow.
+          if [ "$MODE" = "resume" ]; then
+            # Resume ignores `classes` on purpose. A pause that named two
+            # classes and a resume that named one would leave half the
+            # allowlist disabled, and re-enabling something that was never
+            # disabled is free.
+            FILES="$(jq -r '[.heavy[][]] - .never | unique[]' .github/ci-preempt.json)"
+          else
+            WANT="$(tr ',' '\n' <<<"$CLASSES" | sed 's/ //g' | grep -v '^$' | jq -Rsc 'split("\n") - [""]')"
+            FILES="$(jq -r --argjson want "$WANT" \
+                       '[.heavy[$want[]][]?] - .never | unique[]' .github/ci-preempt.json)"
+          fi
+          if [ -z "$FILES" ]; then
+            echo "::warning::no workflows selected for classes '${CLASSES}'"; exit 0
+          fi
+          echo "allowlist:"; sed 's/^/  /' <<<"$FILES"
+
+          # Map file name -> numeric workflow id once. Everything downstream
+          # compares ids, so a workflow renamed in the UI cannot slip through.
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/workflows" \
+            --jq '.workflows[] | "\(.id)\t\(.path)"' > /tmp/wf.tsv
+          : > /tmp/ids.txt
+          while read -r f; do
+            ID="$(awk -F'\t' -v p=".github/workflows/$f" '$2==p{print $1}' /tmp/wf.tsv)"
+            if [ -z "$ID" ]; then
+              echo "::warning::${f} is in ci-preempt.json but not in this repository; ignoring"
+            else
+              echo "$ID" >> /tmp/ids.txt
+            fi
+          done <<<"$FILES"
+
+          enable_all() {
+            while read -r ID; do
+              [ "$DRY" = 1 ] && { echo "would enable workflow ${ID}"; continue; }
+              gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${ID}/enable" \
+                && echo "enabled ${ID}" || echo "::error::could not enable ${ID}"
+            done < /tmp/ids.txt
+          }
+
+          if [ "$MODE" = "resume" ]; then
+            enable_all
+            echo "resume complete (${REASON})" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [ "$MODE" = "pause" ]; then
+            # Disabling is what actually stops the pool refilling; cancelling
+            # alone loses the race against the next push. Two costs, both real:
+            #
+            #  - A push during the window gets no run at all, and no cancelled
+            #    run to re-run either. Cancellation at least leaves a red check
+            #    and a Re-run button; a disabled workflow leaves a commit with
+            #    no check, which required status checks will then block on.
+            #  - GitHub documents that disabling stops a workflow "from being
+            #    triggered". It says nothing about runs already sitting in the
+            #    queue. If disable does not drain those, this buys much less
+            #    than it looks like it does against a 70-deep backlog.
+            #
+            # Hence: not the default, gated behind the enable flag, and floored
+            # by the guard above.
+            while read -r ID; do
+              [ "$DRY" = 1 ] && { echo "would disable workflow ${ID}"; continue; }
+              gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/${ID}/disable" \
+                && echo "disabled ${ID}" || echo "::error::could not disable ${ID}"
+            done < /tmp/ids.txt
+          fi
+
+          # Only the count goes to stdout, because the caller reads it through a
+          # command substitution. Everything a human wants to read goes to
+          # stderr, which the Actions log interleaves with stdout anyway.
+          sweep_once() {
+            local n=0
+            exec 3>&1 1>&2
+            while read -r ID; do
+              # status=queued and status=in_progress are separate queries; there
+              # is no OR filter, and asking for every run and filtering locally
+              # pages through months of history for nothing.
+              # exclude_pull_requests only trims the response body, it does NOT
+              # drop pull_request runs. The case below is what does that.
+              for ST in queued in_progress; do
+                while read -r RUN EV BR; do
+                  # Never a pull_request run. Cancelling one deletes a
+                  # contributor's feedback, shows up on their PR as our doing,
+                  # and cannot be undone by anyone but them.
+                  case "$EV" in pull_request|pull_request_target) continue;; esac
+                  grep -qx "$EV" <<<"${EVENTS//,/$'\n'}" || continue
+                  # /cancel, never /force-cancel. force-cancel is the one that
+                  # bypasses `always()`, which is where other people put their
+                  # artifact uploads and their cleanup. Freeing a slot four
+                  # minutes sooner is not worth leaving someone's teardown
+                  # unrun.
+                  if [ "$DRY" = 1 ]; then
+                    echo "would cancel run ${RUN} (${EV} on ${BR})"
+                  elif gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN}/cancel" >/dev/null; then
+                    echo "cancelled run ${RUN} (${EV} on ${BR})"
+                  else
+                    echo "::warning::could not cancel run ${RUN}"
+                    continue
+                  fi
+                  n=$(( n + 1 ))
+                done < <(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?workflow_id=${ID}&status=${ST}&per_page=100&exclude_pull_requests=true" \
+                           --jq '.workflow_runs[] | "\(.id) \(.event) \(.head_branch)"' 2>/dev/null)
+              done
+            done < /tmp/ids.txt
+            echo "$n" >&3
+          }
+
+          TOTAL=0
+          DEADLINE=$(( $(date -u +%s) + HOLD * 60 ))
+          while :; do
+            N="$(sweep_once)"
+            TOTAL=$(( TOTAL + ${N:-0} ))
+            [ "$(date -u +%s)" -lt "$DEADLINE" ] || break
+            # A single pass does not hold: anything queued after it refills the
+            # pool. Holding costs one ubuntu slot, which is the cheapest thing
+            # in the pool and far less than what it frees.
+            sleep 60
+          done
+
+          {
+            echo "### CI capacity"
+            echo
+            echo "- mode: \`${MODE}\`  events: \`${EVENTS}\`  classes: \`${CLASSES}\`  hold: \`${HOLD}m\`"
+            echo "- reason: ${REASON}"
+            echo "- ${TOTAL} run(s) $( [ "$DRY" = 1 ] && echo 'would have been cancelled (dry run)' || echo cancelled )"
+            if [ "$MODE" = "pause" ]; then
+              echo "- allowlist disabled; the guard re-enables it within ${MAX_DISABLED_MINUTES}m no matter what"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          # The block above ends in a conditional, and this step runs without
+          # `set -e`, so say what the step's status is rather than inheriting it
+          # from whichever branch happened to be last.
+          exit 0
