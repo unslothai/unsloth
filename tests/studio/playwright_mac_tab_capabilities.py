@@ -66,7 +66,19 @@ TABS = [
     ("/export", "export", "Export"),
 ]
 
+STUDIO_USER = os.environ.get("STUDIO_USER", "unsloth")
+# Routes that mean "not signed in". Landing on one invalidates every later assertion,
+# so they are matched explicitly rather than folded into the generic redirect check.
+_SIGNED_OUT_PATHS = ("/login", "/onboarding", "/change-password")
+
 _failed: list[str] = []
+# Set once any nav row is located. A walk that never finds one proves nothing about
+# the gating, so an all-miss run is a failure rather than a stream of info lines.
+_saw_any_row = False
+
+
+def signed_out(url: str) -> bool:
+    return any(url.rstrip("/").endswith(p) or f"{p}?" in url for p in _SIGNED_OUT_PATHS)
 
 
 def info(s: str) -> None:
@@ -153,6 +165,42 @@ class BackendSurvivalPoller:
                 )
 
 
+def log_in(page) -> bool:
+    """Sign in and prove it took. Returns False if the app is still signed out.
+
+    The form wants a username as well as a password. Filling only the password
+    leaves the submit a no-op, and the app stays on /login while every later step
+    quietly finds an empty shell, which is a green run that checked nothing.
+    """
+    page.goto(BASE, wait_until = "domcontentloaded", timeout = 120000)
+    try:
+        pw_box = page.get_by_label("Password", exact = False)
+        if pw_box.count() > 0:
+            user_box = page.get_by_label("Username", exact = False)
+            if user_box.count() > 0:
+                user_box.first.fill(STUDIO_USER)
+            pw_box.first.fill(OLD)
+            page.get_by_role("button", name = "Sign in").first.click()
+            page.wait_for_timeout(3000)
+        else:
+            info("no password form; assuming desktop auth")
+    except Exception as exc:
+        info(f"login form interaction raised {exc!r}")
+
+    # Prove it rather than assume it: land somewhere authed and check we stayed.
+    try:
+        page.goto(f"{BASE}/chat", wait_until = "domcontentloaded", timeout = 60000)
+        page.wait_for_timeout(1500)
+    except Exception as exc:
+        info(f"post-login navigation raised {exc!r}")
+    if signed_out(page.url):
+        info(f"still signed out after the login attempt (at {page.url})")
+        page.screenshot(path = str(ART / "login_failed.png"))
+        return False
+    info("signed in")
+    return True
+
+
 def assert_row_never_greyed_while_unmeasured(page) -> None:
     """A row whose verdict is unmeasured must spin, never grey out.
 
@@ -218,6 +266,12 @@ def drive_tabs(page) -> None:
         # The chat-only route guard may legitimately bounce Train/Video on a host
         # without the capability. What it must not do is bounce while the verdict
         # is still unknown, which is the race this run is here to catch.
+        if signed_out(landed):
+            # Never legitimate here: the session was proven signed in before the walk
+            # started. Calling this an allowed redirect is exactly how a run that
+            # authenticated with nobody goes green having exercised nothing.
+            fail(f"{name}: bounced to the login page at {landed}; the session was lost mid-walk")
+            continue
         if route not in landed:
             detecting = (_get_json("/api/health")[1] or {}).get("hardware_detecting")
             if detecting is True:
@@ -229,8 +283,11 @@ def drive_tabs(page) -> None:
 
         # Clicking the row is the interaction the user reported; a greyed-out row
         # swallows the click, so this doubles as a check that it is reachable.
+        global _saw_any_row
         try:
             row = page.locator(f'[data-testid="nav-row-{row_id}"]')
+            if row.count() > 0:
+                _saw_any_row = True
             if row.count() > 0 and row.first.is_enabled():
                 row.first.click(timeout = 10000)
                 page.wait_for_timeout(1000)
@@ -266,18 +323,22 @@ def main() -> int:
         )
 
         step("login")
-        page.goto(BASE, wait_until = "domcontentloaded", timeout = 120000)
-        try:
-            pw_box = page.get_by_label("Password", exact = False)
-            if pw_box.count() > 0:
-                pw_box.first.fill(OLD)
-                page.get_by_role("button", name = "Sign in").first.click()
-                page.wait_for_timeout(3000)
-        except Exception as exc:
-            info(f"login form not presented ({exc!r}); assuming desktop auth")
+        if not log_in(page):
+            # Every assertion past this point reads the authenticated shell. Signed out,
+            # the sidebar does not render, so the tab checks would find no rows, report
+            # nothing, and the run would go green having tested none of what it claims.
+            fail("could not sign in; the tab assertions below would all be vacuous")
+            poller.finish()
+            poller.report()
+            return 1
 
         assert_row_never_greyed_while_unmeasured(page)
         drive_tabs(page)
+        if not _saw_any_row:
+            fail(
+                "no sidebar nav row was found on any route; the tab gating was never "
+                "actually exercised, so a green run here would mean nothing"
+            )
 
         # Hold the session open until the survival window is covered. The reported
         # crash landed at t+66s, well inside this.
