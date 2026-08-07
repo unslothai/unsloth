@@ -1490,6 +1490,9 @@ class ExternalProviderClient:
             )
             fallback_body = dict(body)
             fallback_body.pop("tools", None)
+            # This path returns before the common body injection, and Kimi reports no
+            # engine timings, so without this the row has neither tokens nor a speed.
+            fallback_body["stream_options"] = {"include_usage": True}
             try:
                 async with _http_client.stream(
                     "POST",

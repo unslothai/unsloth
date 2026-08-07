@@ -1457,3 +1457,34 @@ def test_a_stop_reason_written_after_finish_escapes_the_clearing():
 
     monitor.set_perf(entry_id, stop_reason = "stop")
     assert next(r for r in monitor.snapshot() if r["id"] == entry_id)["stop_reason"] == "stop"
+
+
+@pytest.mark.parametrize(
+    "line, dropped",
+    [
+        ('data: {"choices":[],"usage":{"completion_tokens":9}}', True),
+        # A content chunk carrying inline usage still has to reach the client.
+        ('data: {"choices":[{"delta":{"content":"x"}}],"usage":{"completion_tokens":9}}', False),
+        ('data: {"choices":[{"delta":{"content":"x"}}]}', False),
+        ("data: [DONE]", False),
+        ("data: not json", False),
+        (": keepalive comment", False),
+    ],
+)
+def test_usage_only_sse_is_recognized_for_relay_filtering(line, dropped):
+    # Providers are asked for stream usage regardless of what the caller wanted, so the
+    # proxy has to drop the standalone chunk on the way out: a client that did not opt in
+    # would index choices[0] on it. Same rule _cmpl_stream_event_out applies locally.
+    import routes.inference as inf
+
+    assert inf._is_openai_usage_only_sse(line) is dropped
+
+
+@pytest.mark.parametrize("include_usage, expected", [(True, True), (False, False)])
+def test_wants_stream_usage_reads_the_callers_opt_in(include_usage, expected):
+    import routes.inference as inf
+    from types import SimpleNamespace
+
+    payload = SimpleNamespace(stream_options = {"include_usage": include_usage})
+    assert inf._wants_stream_usage(payload) is expected
+    assert inf._wants_stream_usage(SimpleNamespace(stream_options = None)) is False

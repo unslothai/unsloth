@@ -778,6 +778,28 @@ def _wants_stream_usage(payload) -> bool:
     return bool((payload.stream_options or {}).get("include_usage"))
 
 
+def _is_openai_usage_only_sse(line: str) -> bool:
+    """Whether *line* is a standalone ``choices: []`` usage chunk.
+
+    Only that shape: a content chunk carrying inline usage still has to reach the client.
+    """
+    if not isinstance(line, str) or not line.startswith("data:"):
+        return False
+    body = line[len("data:") :].strip()
+    if not body or body == "[DONE]":
+        return False
+    try:
+        obj = json.loads(body)
+    except Exception:
+        return False
+    return (
+        isinstance(obj, dict)
+        and obj.get("usage") is not None
+        and isinstance(obj.get("choices"), list)
+        and not obj["choices"]
+    )
+
+
 _OPENAI_PASSTHROUGH_TERMINAL_GRACE_S = 2.0
 _SSE_DONE_LINE = "data: [DONE]"
 _SSE_DONE_CHUNK = "data: [DONE]\n\n"
@@ -9919,6 +9941,12 @@ async def _proxy_to_external_provider(
                         pass
                 if monitor_event == "error":
                     stream_failed = True
+                # The monitor has read it by now. Providers are asked for usage on the
+                # stream regardless of what the caller wanted, so honour OpenAI's contract
+                # on the way out: a client that did not opt in never sees the standalone
+                # choices: [] chunk. Same rule _cmpl_stream_event_out applies locally.
+                if not _wants_stream_usage(payload) and _is_openai_usage_only_sse(line):
+                    continue
                 yield f"{line}\n\n"
                 # Parsed from the line itself, not from monitor_event: with the
                 # monitor disabled the helper returns None for every line, and
@@ -11197,7 +11225,9 @@ async def openai_chat_completions(
                         if event["type"] in ("tool_start", "tool_end"):
                             if event["type"] == "tool_start":
                                 # Tool card is client-visible output; stamp the turn here.
-                                api_monitor.mark_first_token(monitor_id)
+                                # Not decoded output: the tool run (or a human confirming
+                                # it) before the next turn is not decoding time.
+                                api_monitor.mark_first_token(monitor_id, decoded = False)
                                 for chunk in _flush_reasoning_extractor():
                                     yield chunk
                                 prev_text = ""
@@ -12620,8 +12650,8 @@ async def openai_chat_completions(
 
                     if event["type"] in ("tool_start", "tool_end"):
                         if event["type"] == "tool_start":
-                            # Same as the GGUF loop: the tool card is visible output.
-                            api_monitor.mark_first_token(monitor_id)
+                            # Same as the GGUF loop: visible output, but not decoded.
+                            api_monitor.mark_first_token(monitor_id, decoded = False)
                             # Flush reasoning before tool_start so the thinking block closes ahead of the card.
                             for _c in _sf_flush_reasoning():
                                 yield _c

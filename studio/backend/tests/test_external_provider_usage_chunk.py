@@ -592,3 +592,44 @@ def test_streamed_usage_is_requested_only_where_documented(monkeypatch, provider
         assert captured["body"]["stream_options"] == {"include_usage": True}
     else:
         assert "stream_options" not in captured["body"]
+
+
+def test_kimi_no_search_fallback_requests_usage(monkeypatch):
+    # The web-search path returns before the common body injection, and Kimi reports no
+    # engine timings, so this fallback would leave tokens and speed blank.
+    bodies: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        bodies.append(body)
+        # First call: the model declines to invoke $web_search.
+        return httpx.Response(
+            200,
+            content = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "kimi",
+            base_url = "http://kimi.example/v1",
+            api_key = "sk-test",
+        )
+        await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "kimi-k2",
+                max_tokens = 64,
+                enabled_tools = ["web_search"],
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    assert len(bodies) >= 2, "the search call then the plain fallback"
+    search_body, fallback_body = bodies[0], bodies[-1]
+    assert "tools" in search_body
+    assert "tools" not in fallback_body
+    assert fallback_body["stream_options"] == {"include_usage": True}
