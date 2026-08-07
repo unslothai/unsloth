@@ -245,6 +245,27 @@ test("a chat with nothing stored is left for a later refresh", () => {
   ]);
 });
 
+test("a chat whose opening prompt is gone is decided, not retried forever", () => {
+  // Nothing stored means the import may still land, so those rows are unmarked
+  // and tried again. A chat that does have messages is a complete answer: the
+  // opening prompt was deleted or edited, so no later pass can prove the title.
+  // Unmarking it too would re-select it on every refresh for the session, since
+  // its title stays clipped and keeps matching the pre-filter.
+  const legacy = LONG.slice(0, 48) + "...";
+  const candidates = [thread("a", legacy)];
+  const messages = new Map<string, MessageRecord[]>([
+    ["a", [{ ...userMessage("a", "a different question entirely"), id: "a-m9" }]],
+  ]);
+
+  assert.deepEqual(planLegacyTitleRepairs(candidates, messages), []);
+  assert.deepEqual(threadsMissingMessages(["a"], messages), []);
+  // So it stays marked, and the next page passes over it.
+  assert.deepEqual(
+    selectLegacyRepairPage(candidates, new Set(["a"]), 100).candidates,
+    [],
+  );
+});
+
 test("a rename drops the rewrite even where the guard is not enforced", () => {
   // The desktop app can meet an older backend, which ignores expectedTitle and
   // would apply the write. This check is what stops it there.
