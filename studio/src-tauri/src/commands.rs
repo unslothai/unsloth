@@ -844,7 +844,7 @@ async fn health_watchdog(
         }
 
         let should_count_failure =
-            port.is_some() || should_count_watchdog_failure(has_seen_healthy, started_at.elapsed());
+            should_count_watchdog_failure(has_seen_healthy, started_at.elapsed());
 
         let Some(port) = port else {
             if has_adopted {
