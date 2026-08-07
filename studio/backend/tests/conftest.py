@@ -11,6 +11,7 @@ Model/variant for the managed mode resolve from ``--unsloth-model`` /
 ``--unsloth-gguf-variant``, then env vars, then ``test_studio_api.py`` defaults.
 """
 
+import itertools
 import os
 import sys
 from pathlib import Path
@@ -30,9 +31,25 @@ os.environ.setdefault("UNSLOTH_ALLOW_CPU", "1")
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 
 
+@pytest.fixture(scope = "session")
+def _studio_home_root(tmp_path_factory):
+    """One parent directory for every per-test studio home.
+
+    ``tmp_path_factory.mktemp`` scans the whole basetemp on every call to pick
+    the next number, so calling it once per test is quadratic in the number of
+    tests. Paid once per session here, the per-test cost below is a bare mkdir.
+    """
+    return tmp_path_factory.mktemp("studio_homes")
+
+
+_studio_home_counter = itertools.count()
+
+
 @pytest.fixture(autouse = True)
-def _isolate_studio_home(tmp_path_factory, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path_factory.mktemp("studio_home")))
+def _isolate_studio_home(_studio_home_root, monkeypatch):
+    home = _studio_home_root / f"home-{next(_studio_home_counter)}"
+    home.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
     for name, module in tuple(sys.modules.items()):
         if name.startswith(("storage.", "hub.storage.")) and hasattr(module, "_schema_ready"):
             monkeypatch.setattr(module, "_schema_ready", False)

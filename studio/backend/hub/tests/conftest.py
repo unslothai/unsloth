@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import itertools
 import sys
 import types
 
@@ -109,9 +110,25 @@ sys.modules.setdefault(
 import pytest
 
 
+@pytest.fixture(scope = "session")
+def _hub_studio_home_root(tmp_path_factory):
+    """One parent directory for every per-test studio home.
+
+    ``tmp_path_factory.mktemp`` scans the whole basetemp on every call to pick
+    the next number, so calling it once per test is quadratic in the number of
+    tests. Paid once per session here, the per-test cost below is a bare mkdir.
+    """
+    return tmp_path_factory.mktemp("hub_studio_homes")
+
+
+_studio_home_counter = itertools.count()
+
+
 @pytest.fixture(autouse = True)
-def _isolate_studio_home(tmp_path_factory, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path_factory.mktemp("studio_home")))
+def _isolate_studio_home(_hub_studio_home_root, monkeypatch):
+    home = _hub_studio_home_root / f"home-{next(_studio_home_counter)}"
+    home.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
     for name, module in tuple(sys.modules.items()):
         if name.startswith(("storage.", "hub.storage.")) and hasattr(module, "_schema_ready"):
             monkeypatch.setattr(module, "_schema_ready", False)
