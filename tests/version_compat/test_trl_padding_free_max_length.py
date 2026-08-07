@@ -365,9 +365,9 @@ def _short_tokenized_dataset(tok):
     from datasets import Dataset
 
     ids = tok("The quick brown fox.")["input_ids"][: _MODEL_MAX_SEQ_LENGTH // 2]
-    return Dataset.from_list([
-        {"input_ids": list(ids), "attention_mask": [1] * len(ids)} for _ in range(4)
-    ])
+    return Dataset.from_list(
+        [{"input_ids": list(ids), "attention_mask": [1] * len(ids)} for _ in range(4)]
+    )
 
 
 def test_unprepared_datasets_keep_their_length_cap(tmp_path, trl_has_guard):
