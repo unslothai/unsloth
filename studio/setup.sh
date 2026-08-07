@@ -337,17 +337,32 @@ _cg_dirs() {
 # at <root>/<name>.
 _cg_mounts() {
     [ -r "$1" ] || return 0
+    # mountinfo escapes space, tab, newline and backslash in paths as \040 and
+    # friends, so both path fields are decoded before use. strtonum is a gawk
+    # extension; this arithmetic is POSIX and runs under mawk and BSD awk too.
     awk -v want="$2" '
+        function unesc(s,   out, i, c, o, v) {
+            out = ""; i = 1
+            while (i <= length(s)) {
+                c = substr(s, i, 1)
+                if (c == "\\" && substr(s, i + 1, 3) ~ /^[0-7][0-7][0-7]$/) {
+                    o = substr(s, i + 1, 3)
+                    v = (substr(o, 1, 1) + 0) * 64 + (substr(o, 2, 1) + 0) * 8 + (substr(o, 3, 1) + 0)
+                    out = out sprintf("%c", v); i += 4
+                } else { out = out c; i++ }
+            }
+            return out
+        }
         {
             for (i = 1; i <= NF; i++) if ($i == "-") break
             if (i + 3 > NF) next
             if (want == "cgroup2") {
-                if ($(i + 1) == "cgroup2") print $4 "\t" $5
+                if ($(i + 1) == "cgroup2") print unesc($4) "\t" unesc($5)
                 next
             }
             if ($(i + 1) != "cgroup") next
             n = split($(i + 3), opts, ",")
-            for (j = 1; j <= n; j++) if (opts[j] == want) { print $4 "\t" $5; next }
+            for (j = 1; j <= n; j++) if (opts[j] == want) { print unesc($4) "\t" unesc($5); next }
         }' "$1" 2>/dev/null
     return 0
 }
@@ -414,8 +429,16 @@ _cgroup_free_mb() {
     }
     # Prefer the real mounts; fall back to the conventional layout. The process
     # path is read first so the right mount can be chosen among several.
-    _v2rel=$(awk -F: '/^0::/ { print $3; exit }' "$_proc" 2>/dev/null || true)
-    _v1rel=$(awk -F: '$2 ~ /(^|,)memory(,|$)/ { print $3; exit }' "$_proc" 2>/dev/null || true)
+    # Only the first two colons are delimiters: a systemd unit name may contain
+    # one, and -F: with $3 would truncate the path there.
+    _v2rel=$(awk '/^0::/ { print substr($0, 4); exit }' "$_proc" 2>/dev/null || true)
+    _v1rel=$(awk '
+        {
+            a = index($0, ":"); if (a == 0) next
+            rest = substr($0, a + 1)
+            b = index(rest, ":"); if (b == 0) next
+            if (substr(rest, 1, b - 1) ~ /(^|,)memory(,|$)/) { print substr(rest, b + 1); exit }
+        }' "$_proc" 2>/dev/null || true)
     IFS=$'\t' read -r _v2root _v2 <<< "$(_cg_mounts "$_mnt" cgroup2 | _cg_pick_mount "$_v2rel")"
     IFS=$'\t' read -r _v1root _v1 <<< "$(_cg_mounts "$_mnt" memory | _cg_pick_mount "$_v1rel")"
     [ -n "$_v2" ] || { _v2=$_root; _v2root="/"; }

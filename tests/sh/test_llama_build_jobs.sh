@@ -247,6 +247,43 @@ printf '3:memory:/docker/abc/task\n' > "$_TMPD/multiv1.proc"
 assert_eq "v1 picks the containing mount too" "2048" \
     "$(run_cgroup "$_TMPD/multi" "$_TMPD/multiv1.proc" "$_TMPD/multiv1.mnt")"
 
+# 22) mountinfo escapes space, tab, newline and backslash as octal. Returning
+#     the fields verbatim gave a path that does not exist.
+mkdir -p "$_TMPD/esc/a b/job"
+printf '8589934592\n' > "$_TMPD/esc/a b/memory.max"
+printf '1073741824\n' > "$_TMPD/esc/a b/job/memory.max"
+printf '0::/slice/job\n' > "$_TMPD/esc.proc"
+printf '%s\n' "70 30 0:60 /slice $_TMPD/esc/a\\040b rw - cgroup2 cgroup2 rw" > "$_TMPD/esc.mnt"
+assert_eq "an escaped mount point is decoded" "1024" \
+    "$(run_cgroup "$_TMPD/esc" "$_TMPD/esc.proc" "$_TMPD/esc.mnt")"
+
+# 23) The mount root is escaped the same way, and has to match the process path.
+mkdir -p "$_TMPD/esc/plain/job"
+printf '2147483648\n' > "$_TMPD/esc/plain/job/memory.max"
+printf '0::/a b/job\n' > "$_TMPD/escroot.proc"
+printf '%s\n' "71 30 0:61 /a\\040b $_TMPD/esc/plain rw - cgroup2 cgroup2 rw" > "$_TMPD/escroot.mnt"
+assert_eq "an escaped mount root is decoded" "2048" \
+    "$(run_cgroup "$_TMPD/esc" "$_TMPD/escroot.proc" "$_TMPD/escroot.mnt")"
+
+# 24) A colon is legal in a systemd unit name, and -F: with $3 truncated there.
+mkdir -p "$_TMPD/colon/cg/slice:tenant/job"
+printf '8589934592\n' > "$_TMPD/colon/cg/slice:tenant/memory.max"
+printf '1073741824\n' > "$_TMPD/colon/cg/slice:tenant/job/memory.max"
+printf '0::/slice:tenant/job\n' > "$_TMPD/colon.proc"
+assert_eq "v2 keeps a colon in the path" "1024" "$(run_cgroup "$_TMPD/colon/cg" "$_TMPD/colon.proc")"
+
+# 25) Same for v1, where the path is the third field rather than the remainder.
+mkdir -p "$_TMPD/colon/v1/memory/slice:tenant/task"
+printf '8589934592\n' > "$_TMPD/colon/v1/memory/slice:tenant/memory.limit_in_bytes"
+printf '2147483648\n' > "$_TMPD/colon/v1/memory/slice:tenant/task/memory.limit_in_bytes"
+printf '4:memory:/slice:tenant/task\n' > "$_TMPD/colonv1.proc"
+assert_eq "v1 keeps a colon in the path" "2048" "$(run_cgroup "$_TMPD/colon/v1" "$_TMPD/colonv1.proc")"
+
+# 26) The controller column is still matched exactly, not by substring.
+printf '4:cpu,memoryfoo:/slice:tenant/task\n' > "$_TMPD/colonv1.bad"
+assert_eq "a lookalike controller is not matched" "" \
+    "$(run_cgroup "$_TMPD/colon/v1" "$_TMPD/colonv1.bad")"
+
 # The min() that ties it together. _usable_ram_mb hardcodes the real paths, so
 # stub the reader to prove the wiring rather than just the parts.
 _RAM_FILE=$(mktemp)
