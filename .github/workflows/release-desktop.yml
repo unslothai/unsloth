@@ -1371,48 +1371,6 @@ jobs:
           print('\n'.join(sorted(actual_names)))
           PY
 
-      # ── Advisory multi-engine scan of the bundles we are about to publish ──
-      # Defender (build job) is one vendor and gates only Windows. VirusTotal
-      # aggregates ~70 engines across all four bundles, which is how a false
-      # positive from some other vendor gets noticed here rather than in a user
-      # bug report. Advisory on purpose: installers routinely trip one or two
-      # obscure heuristics, so a hard gate here would block releases on noise.
-      # Defender stays the authoritative fail-closed check.
-      #
-      # The step never fails the job: a missing secret, a VirusTotal outage or a
-      # quota exhaustion must not be able to block a release.
-      - name: VirusTotal pre-flight scan
-        continue-on-error: true
-        # Free-tier keys allow 4 requests/minute, and the script paces itself to
-        # match, so four bundles of lookup + upload + polling can take a while.
-        timeout-minutes: 30
-        env:
-          VT_API_KEY: ${{ secrets.VIRUS_TOTAL_API_TOKEN }}
-        run: |
-          set -euo pipefail
-          # continue-on-error means a silent failure here would publish an unscanned
-          # release with only a terse "no summary" note, so name the cause loudly.
-          if [ ! -f scripts/virustotal_scan.py ]; then
-            echo "::error::scripts/virustotal_scan.py is missing; the checkout step in this job must provide it"
-            exit 1
-          fi
-          python3 scripts/virustotal_scan.py \
-            "$RUNNER_TEMP/desktop-release-assets" \
-            --output-markdown "$RUNNER_TEMP/virustotal-summary.md"
-
-      - name: Publish VirusTotal summary
-        if: always()
-        run: |
-          set -euo pipefail
-          summary="$RUNNER_TEMP/virustotal-summary.md"
-          if [ -f "$summary" ]; then
-            cat "$summary" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo '### VirusTotal pre-flight scan' >> "$GITHUB_STEP_SUMMARY"
-            echo '' >> "$GITHUB_STEP_SUMMARY"
-            echo 'The scan step produced no summary.' >> "$GITHUB_STEP_SUMMARY"
-          fi
-
       - name: Create or validate versioned release
         shell: bash
         env:
@@ -1456,6 +1414,48 @@ jobs:
               release_flags+=(--prerelease)
             fi
             gh release create "$DESKTOP_RELEASE_TAG" "${release_flags[@]}"
+          fi
+
+      # ── Advisory multi-engine scan of the bundles we are about to publish ──
+      # Defender (build job) is one vendor and gates only Windows. VirusTotal
+      # aggregates ~70 engines across all four bundles, which is how a false
+      # positive from some other vendor gets noticed here rather than in a user
+      # bug report. Advisory on purpose: installers routinely trip one or two
+      # obscure heuristics, so a hard gate here would block releases on noise.
+      # Defender stays the authoritative fail-closed check.
+      #
+      # The step never fails the job: a missing secret, a VirusTotal outage or a
+      # quota exhaustion must not be able to block a release.
+      - name: VirusTotal pre-flight scan
+        continue-on-error: true
+        # Free-tier keys allow 4 requests/minute, and the script paces itself to
+        # match, so four bundles of lookup + upload + polling can take a while.
+        timeout-minutes: 30
+        env:
+          VT_API_KEY: ${{ secrets.VIRUS_TOTAL_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          # continue-on-error means a silent failure here would publish an unscanned
+          # release with only a terse "no summary" note, so name the cause loudly.
+          if [ ! -f scripts/virustotal_scan.py ]; then
+            echo "::error::scripts/virustotal_scan.py is missing; the checkout step in this job must provide it"
+            exit 1
+          fi
+          python3 scripts/virustotal_scan.py \
+            "$RUNNER_TEMP/desktop-release-assets" \
+            --output-markdown "$RUNNER_TEMP/virustotal-summary.md"
+
+      - name: Publish VirusTotal summary
+        if: always()
+        run: |
+          set -euo pipefail
+          summary="$RUNNER_TEMP/virustotal-summary.md"
+          if [ -f "$summary" ]; then
+            cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '### VirusTotal pre-flight scan' >> "$GITHUB_STEP_SUMMARY"
+            echo '' >> "$GITHUB_STEP_SUMMARY"
+            echo 'The scan step produced no summary.' >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Publish versioned release assets

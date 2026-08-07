@@ -19,6 +19,7 @@ from __future__ import annotations
 import importlib.util
 import pathlib
 import sys
+import time
 
 import pytest
 
@@ -45,8 +46,10 @@ class FakeTransport:
     def __init__(self, routes: dict[str, tuple[int, bytes]]):
         self.routes = routes
         self.calls: list[tuple[str, str, dict, int]] = []
+        self.timeouts: list[float | None] = []
 
-    def __call__(self, method, url, headers, body):
+    def __call__(self, method, url, headers, body, timeout = None):
+        self.timeouts.append(timeout)
         self.calls.append((method, url, headers, len(body or b"")))
         for fragment, response in self.routes.items():
             if fragment in url:
@@ -300,7 +303,7 @@ class TestSingleUseUploadUrl:
             def __init__(self):
                 self.posts = 0
 
-            def __call__(self, method, url, headers, body):
+            def __call__(self, method, url, headers, body, timeout = None):
                 if url.endswith("/files/upload_url"):
                     token = f"https://up.example/{len(seen_upload_urls)}"
                     seen_upload_urls.append(token)
@@ -322,7 +325,7 @@ class TestSingleUseUploadUrl:
     def test_max_attempts_one_disables_retry(self, tmp_path):
         calls = []
 
-        def transport(method, url, headers, body):
+        def transport(method, url, headers, body, timeout = None):
             calls.append(url)
             return 500, b""
 
@@ -342,7 +345,7 @@ class TestDeadlineEnforcement:
     def test_request_checks_deadline_before_issuing(self):
         calls = []
 
-        def transport(method, url, headers, body):
+        def transport(method, url, headers, body, timeout = None):
             calls.append(url)
             return 200, b"{}"
 
@@ -358,7 +361,7 @@ class TestDeadlineEnforcement:
         assert calls == []
 
     def test_wait_for_analysis_stops_at_the_deadline(self):
-        def transport(method, url, headers, body):
+        def transport(method, url, headers, body, timeout = None):
             return 200, b'{"data": {"attributes": {"status": "queued"}}}'
 
         now = [0.0]
@@ -507,3 +510,104 @@ class TestDeadlineIsNotOverrunByThrottling:
         status, _payload = client.request("GET", "https://x.example/y", deadline = now[0] + 600.0)
         assert status == 200
         assert len(transport.calls) == 1
+
+
+class TestSocketBudgetIsClampedToTheDeadline:
+    """The per-call socket timeout has to respect the scan deadline.
+
+    Otherwise a call that starts just before the deadline still blocks for the
+    full socket timeout and eats the cushion the step needs to write its summary.
+    """
+
+    def test_socket_timeout_is_clamped_to_remaining_budget(self):
+        client, transport = _client({"x.example": (200, b"{}")})
+        client.request("GET", "https://x.example/y", deadline = time.monotonic() + 30.0)
+        assert transport.timeouts[0] <= 30.0
+
+    def test_socket_timeout_is_the_default_when_budget_is_large(self):
+        client, transport = _client({"x.example": (200, b"{}")})
+        client.request("GET", "https://x.example/y", deadline = time.monotonic() + 100000.0)
+        assert transport.timeouts[0] == vt._SOCKET_TIMEOUT
+
+    def test_socket_timeout_without_a_deadline_is_the_default(self):
+        client, transport = _client({"x.example": (200, b"{}")})
+        client.request("GET", "https://x.example/y")
+        assert transport.timeouts[0] == vt._SOCKET_TIMEOUT
+
+    def test_clamp_never_goes_to_zero_or_negative(self):
+        # A non-positive urlopen timeout would fail instantly rather than try.
+        client, transport = _client({"x.example": (200, b"{}")})
+        client.request("GET", "https://x.example/y", deadline = time.monotonic() + 0.001)
+        assert transport.timeouts[0] >= 1.0
+
+
+class TestMalformedUploadAcknowledgement:
+    """An accepted upload whose ack did not parse is a failed attempt.
+
+    Raising straight out reports the asset unavailable after we already paid the
+    disclosure cost of sending the bundle.
+    """
+
+    def test_malformed_ack_retries_with_a_fresh_signed_url(self, tmp_path):
+        bundle = tmp_path / "big.exe"
+        bundle.write_bytes(b"payload")
+        state = {"n": 0}
+
+        def transport(method, url, headers, body, timeout = None):
+            if "/files/upload_url" in url:
+                state["n"] += 1
+                return (200, b'{"data": "https://up.example/%d"}' % state["n"])
+            # First ack is unparseable, second is well formed.
+            if state["n"] == 1:
+                return (200, b"not json")
+            return (200, b'{"data": {"id": "an-2"}}')
+
+        client = vt.VirusTotalClient(
+            "k", transport = transport, request_interval = 0.0, sleep = lambda _s: None
+        )
+        assert client.upload(bundle) == "an-2"
+        assert state["n"] == 2       # a second, fresh signed URL was fetched
+
+    def test_malformed_ack_on_the_last_attempt_raises(self, tmp_path):
+        bundle = tmp_path / "big.exe"
+        bundle.write_bytes(b"payload")
+
+        def transport(method, url, headers, body, timeout = None):
+            if "/files/upload_url" in url:
+                return (200, b'{"data": "https://up.example/x"}')
+            return (200, b"not json")
+
+        client = vt.VirusTotalClient(
+            "k", transport = transport, request_interval = 0.0, sleep = lambda _s: None
+        )
+        with pytest.raises(RuntimeError, match = "analysis id"):
+            client.upload(bundle)
+
+
+class TestWorkflowOrdering:
+    """The scan must not disclose bundles for a release that cannot be published."""
+
+    def _publish_steps(self):
+        yaml = pytest.importorskip("yaml")
+        workflow = REPO_ROOT / ".github" / "workflows" / "release-desktop.yml"
+        data = yaml.safe_load(workflow.read_text(encoding = "utf-8"))
+        return [step.get("name") for step in data["jobs"]["publish-release"]["steps"]]
+
+    def test_scan_runs_after_the_release_is_validated(self):
+        names = self._publish_steps()
+        assert names.index("Create or validate versioned release") < names.index(
+            "VirusTotal pre-flight scan"
+        )
+
+    def test_scan_runs_before_the_assets_are_published(self):
+        names = self._publish_steps()
+        assert names.index("VirusTotal pre-flight scan") < names.index(
+            "Publish versioned release assets"
+        )
+
+    def test_the_scan_script_is_checked_out_first(self):
+        # publish-release otherwise has no source tree, so the script would be missing.
+        names = self._publish_steps()
+        assert names.index("Check out the scan script") < names.index(
+            "VirusTotal pre-flight scan"
+        )

@@ -52,9 +52,12 @@ _MAX_ATTEMPTS = 4
 _UPLOAD_ATTEMPTS = 2
 _SOCKET_TIMEOUT = 300.0
 
-# Transport contract: (method, url, headers, body) -> (status_code, response_bytes).
+# Transport contract: (method, url, headers, body, timeout) -> (status, response_bytes).
 # Injected so the unit tests can exercise every branch without touching the network.
-Transport = Callable[[str, str, "dict[str, str]", "bytes | None"], "tuple[int, bytes]"]
+# `timeout` is the per-call socket budget, already clamped to the scan deadline.
+Transport = Callable[
+    [str, str, "dict[str, str]", "bytes | None", float], "tuple[int, bytes]"
+]
 
 
 @dataclass(frozen = True)
@@ -201,12 +204,16 @@ def render_markdown(reports: Sequence[FileReport], threshold: int) -> str:
 
 
 def _default_transport(
-    method: str, url: str, headers: dict[str, str], body: bytes | None
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    body: bytes | None,
+    timeout: float = _SOCKET_TIMEOUT,
 ) -> tuple[int, bytes]:
     request = urllib.request.Request(url, data = body, headers = headers, method = method)
     context = ssl.create_default_context()
     try:
-        with urllib.request.urlopen(request, timeout = _SOCKET_TIMEOUT, context = context) as response:
+        with urllib.request.urlopen(request, timeout = timeout, context = context) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as error:
         # 404 on a hash lookup is an expected control-flow signal, not a failure.
@@ -291,7 +298,14 @@ class VirusTotalClient:
                     f"deadline reached while pacing before {method} {_redact_url(url)}"
                 )
             try:
-                status, payload = self._transport(method, url, headers, body)
+                # Clamp the socket budget to what is left. Without this a call that
+                # starts just before the deadline can still block for the full
+                # socket timeout and consume the whole cushion the step relies on
+                # to write its summary.
+                socket_timeout = _SOCKET_TIMEOUT
+                if deadline is not None:
+                    socket_timeout = max(1.0, min(socket_timeout, deadline - self._clock()))
+                status, payload = self._transport(method, url, headers, body, socket_timeout)
             except Exception as error:  # network layer, DNS, TLS, truncated read
                 last_error = f"{type(error).__name__}: {error}"
                 status, payload = 0, b""
@@ -401,7 +415,15 @@ class VirusTotalClient:
             if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
                 analysis_id = payload["data"].get("id")
             if not isinstance(analysis_id, str) or not analysis_id:
-                raise RuntimeError("VirusTotal upload did not return an analysis id")
+                # An accepted upload whose acknowledgement did not parse is a failed
+                # attempt, not a dead end: VirusTotal may well be analysing the file
+                # already. Raising straight out would report the asset unavailable
+                # after we had paid the disclosure cost of sending it, so spend the
+                # remaining attempt on a fresh signed URL instead.
+                last_error = RuntimeError("VirusTotal upload did not return an analysis id")
+                if attempt < attempts:
+                    continue
+                raise last_error
             return analysis_id
 
         raise RuntimeError(f"VirusTotal upload failed after {attempts} attempt(s): {last_error}")
