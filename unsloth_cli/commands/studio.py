@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import contextlib
 import importlib.util
 import hashlib
 import hmac
@@ -23,7 +24,7 @@ from pathlib import Path
 from typing import List, Literal, Optional, Sequence
 import typer
 
-from unsloth_cli import _studio_deps
+from unsloth_cli import _studio_deps, _studio_runtime_gate
 from unsloth_cli._inference import SpeculativeType
 from unsloth_cli.commands import _password_prompt
 
@@ -166,6 +167,31 @@ def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
         kwargs["startupinfo"] = startupinfo
 
     return kwargs
+
+
+@contextlib.contextmanager
+def _studio_runtime_launch_guard(*, inherited: bool = False):
+    guard = _studio_runtime_gate.studio_runtime_launch_guard(
+        STUDIO_HOME,
+        inherited = inherited,
+    )
+    try:
+        acquired = guard.__enter__()
+    except _studio_runtime_gate.StudioRuntimeGateBusy:
+        typer.echo(
+            "Error: Unsloth installation is modifying the managed environment. "
+            "Wait for it to finish, then try again.",
+            err = True,
+        )
+        raise typer.Exit(1)
+    except OSError as exc:
+        typer.echo(f"Error: could not coordinate the Studio launch: {exc}", err = True)
+        raise typer.Exit(1)
+
+    try:
+        yield acquired
+    finally:
+        guard.__exit__(None, None, None)
 
 
 def _stream_for_subprocess(stream):
@@ -1482,6 +1508,7 @@ def studio_default(
             raise typer.Exit(2)
         return
 
+    runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
     _preserve_cloudflare_intent(cloudflare, secure)
 
     # --secure requires the tunnel; force a loopback bind.
@@ -1626,12 +1653,13 @@ def studio_default(
                 # captures nothing -- the same trap noted at the setup.ps1 call below.
                 # Omitting stdin does not withhold it (subprocess still fills it from
                 # GetStdHandle); that would need stdin = DEVNULL.
-                proc = _sp.Popen(
-                    args,
-                    stdout = _stream_for_subprocess(sys.stdout),
-                    stderr = _stream_for_subprocess(sys.stderr),
-                    **_windows_hidden_subprocess_kwargs(),
-                )
+                with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
+                    proc = _sp.Popen(
+                        args,
+                        stdout = _stream_for_subprocess(sys.stdout),
+                        stderr = _stream_for_subprocess(sys.stderr),
+                        **_windows_hidden_subprocess_kwargs(),
+                    )
                 try:
                     rc = proc.wait()
                 except KeyboardInterrupt:
@@ -1676,7 +1704,8 @@ def studio_default(
     # in-process server serves exactly the dist we vouched for.
     if resolved_frontend is not None:
         run_kwargs["frontend_path"] = resolved_frontend
-    run_server(**run_kwargs)
+    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
+        run_server(**run_kwargs)
 
     try:
         if run_mod._shutdown_event is not None:
@@ -2061,6 +2090,7 @@ def run(
     # env so an older child ignores it instead of treating it as a llama-server arg.
     inherited_start_api_key_marker = _consume_start_api_key_marker_env()
     start_api_key_marker = start_api_key_marker or inherited_start_api_key_marker
+    runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
 
     # Back-compat: --not-secure is a deprecated alias for --no-secure.
     secure = _resolve_secure(secure, not_secure)
@@ -2317,7 +2347,11 @@ def run(
             os.environ[_START_API_KEY_MARKER_ENV] = "1"
         try:
             if sys.platform == "win32":
-                proc = subprocess.Popen(args)
+                with _studio_runtime_launch_guard(inherited = runtime_gate_handoff) as gate_held:
+                    popen_kwargs = {}
+                    if gate_held:
+                        popen_kwargs["env"] = _studio_runtime_gate.runtime_gate_child_environment()
+                    proc = subprocess.Popen(args, **popen_kwargs)
                 try:
                     rc = proc.wait()
                 except KeyboardInterrupt:
@@ -2359,7 +2393,8 @@ def run(
     # Forward the frontend validated before the gate (in-venv path).
     if resolved_frontend is not None:
         run_kwargs["frontend_path"] = resolved_frontend
-    app = run_server(**run_kwargs)
+    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
+        app = run_server(**run_kwargs)
     actual_port = getattr(app.state, "server_port", port) or port
 
     # Steps 3-5 can abort (health timeout, model-load error, or Ctrl+C during the
@@ -2755,6 +2790,35 @@ def stop():
 # ── unsloth studio setup / update ─────────────────────────────────────
 
 
+def _wait_for_windows_setup_process(process) -> int:
+    """Reap setup and its descendants before a runtime-gate owner can unwind."""
+
+    try:
+        return process.wait()
+    except BaseException:
+        if process.poll() is not None:
+            raise
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdin = subprocess.DEVNULL,
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+                check = False,
+                **_windows_hidden_subprocess_kwargs(),
+            )
+        except BaseException:
+            # taskkill interrupted or unavailable: hold the gate until setup
+            # exits naturally rather than exposing a live mutator.
+            pass
+        while process.poll() is None:
+            try:
+                process.wait()
+            except KeyboardInterrupt:
+                continue
+        raise
+
+
 def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None) -> None:
     """Find and run the studio setup/update script."""
     script = _find_setup_script(repo_root)
@@ -2790,13 +2854,13 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
             ]
         )
         # Explicitly hand std handles to the child so CI tee sees setup.ps1's
-        # output. On Windows, subprocess.run defaults to close_fds=True
+        # output. On Windows, subprocess.Popen defaults to close_fds=True
         # (bInheritHandles=False); combined with CREATE_NO_WINDOW the child
         # has no console and no inherited handles, so Write-Host writes to
         # nothing. Passing stdout/stderr makes Python mark the std handles
         # inheritable via PROC_THREAD_ATTRIBUTE_HANDLE_LIST. Empty update.log
         # on windows-latest CI was the smoking gun (runs 25533694490/25534292239).
-        result = subprocess.run(
+        process = subprocess.Popen(
             powershell_args,
             env = env,
             stdin = _stream_for_subprocess(sys.stdin),
@@ -2804,11 +2868,13 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
             stderr = _stream_for_subprocess(sys.stderr),
             **_windows_hidden_subprocess_kwargs(),
         )
+        returncode = _wait_for_windows_setup_process(process)
     else:
         result = subprocess.run(["bash", str(script)], env = env)
+        returncode = result.returncode
 
-    if result.returncode != 0:
-        raise typer.Exit(result.returncode)
+    if returncode != 0:
+        raise typer.Exit(returncode)
 
 
 _INSTALLER_URL_BASH = "https://unsloth.ai/install.sh"
@@ -2971,7 +3037,10 @@ def setup(
     ),
 ):
     """Run Unsloth setup (called by install.ps1 / install.sh)."""
-    _run_setup_script(verbose = verbose)
+    runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
+    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
+        _studio_runtime_gate.ensure_managed_environment_is_idle(STUDIO_HOME)
+        _run_setup_script(verbose = verbose)
 
 
 def _fail_if_install_damaged() -> None:
@@ -3140,21 +3209,24 @@ def update(
     else:
         os.environ["STUDIO_LOCAL_INSTALL"] = "0"
         os.environ.pop("STUDIO_LOCAL_REPO", None)
-    _release_self_exe_lock_windows()
-    try:
-        _run_setup_script(verbose = verbose, repo_root = repo_root)
-    except BaseException:
-        # Restore unsloth.exe from .deleteme if setup failed before pip
-        # produced a replacement; otherwise the user has no CLI for recovery.
-        _restore_self_exe_lock_windows()
-        raise
-    # On Windows clear the .deleteme orphan now that pip wrote a fresh
-    # unsloth.exe; on next update os.replace would overwrite it anyway,
-    # but leaving a stale binary around invites cross-version restore
-    # confusion from _restore_self_exe_lock_windows.
-    _cleanup_self_exe_lock_windows()
-    if verify:
-        _fail_if_install_damaged()
+    runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
+    with _studio_runtime_launch_guard(inherited = runtime_gate_handoff):
+        _studio_runtime_gate.ensure_managed_environment_is_idle(STUDIO_HOME)
+        _release_self_exe_lock_windows()
+        try:
+            _run_setup_script(verbose = verbose, repo_root = repo_root)
+        except BaseException:
+            # Restore unsloth.exe from .deleteme if setup failed before pip
+            # produced a replacement; otherwise the user has no CLI for recovery.
+            _restore_self_exe_lock_windows()
+            raise
+        # On Windows clear the .deleteme orphan now that pip wrote a fresh
+        # unsloth.exe; on next update os.replace would overwrite it anyway,
+        # but leaving a stale binary around invites cross-version restore
+        # confusion from _restore_self_exe_lock_windows.
+        _cleanup_self_exe_lock_windows()
+        if verify:
+            _fail_if_install_damaged()
     # Tauri desktop owns its own bundle entries; skip CLI launcher refresh
     # so a Tauri-initiated update doesn't create duplicate shortcuts.
     if os.environ.get("UNSLOTH_TAURI_UPDATE") == "1":

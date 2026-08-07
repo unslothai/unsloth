@@ -97,6 +97,8 @@ fn spawn_update(
     // desktop bundle so it skips re-creating CLI launchers/.app/.desktop
     // shortcuts (Tauri owns its own bundle entries).
     cmd.env("UNSLOTH_TAURI_UPDATE", "1");
+    #[cfg(windows)]
+    cmd.env(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
 
     // read_lossy_lines decodes as UTF-8, and here the child is Python itself,
     // which otherwise encodes redirected streams with the locale code page.
@@ -285,33 +287,27 @@ fn run_backend_update_with_terminal_events(
     };
     let _ = app.emit(progress_event, "Starting backend update...");
 
-    let (stdout, stderr) = match spawn_update(&bin, &state) {
-        Ok(handles) => handles,
-        Err(msg) => {
-            diagnostics::finish_attempt(
-                &diagnostics,
-                &attempt,
-                None,
-                false,
-                Some(format!("spawn_update: {msg}")),
-            );
-            clear_current_attempt(&state);
-            return Err(msg);
-        }
-    };
-    let threads = stream_output(
-        &app,
-        progress_event,
-        diagnostics.clone(),
-        attempt.clone(),
-        stdout,
-        stderr,
-    );
+    // Update mutates the managed environment for its whole lifetime. This function
+    // is synchronous, so the thread-owned Win32 mutex never crosses an await.
+    let result = crate::process::with_studio_runtime_launch_guard(|| {
+        crate::process::ensure_managed_environment_is_idle(&bin)?;
+        let (stdout, stderr) =
+            spawn_update(&bin, &state).map_err(|msg| format!("spawn_update: {msg}"))?;
+        let threads = stream_output(
+            &app,
+            progress_event,
+            diagnostics.clone(),
+            attempt.clone(),
+            stdout,
+            stderr,
+        );
 
-    let result = wait_for_exit(&state);
-    for handle in threads {
-        let _ = handle.join();
-    }
+        let result = wait_for_exit(&state);
+        for handle in threads {
+            let _ = handle.join();
+        }
+        result
+    });
 
     match result {
         Ok((status, _)) if status.success() => {

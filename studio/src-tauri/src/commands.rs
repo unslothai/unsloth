@@ -158,7 +158,9 @@ pub async fn check_install_status() -> bool {
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
 
-    let mut child = match cmd.spawn() {
+    let mut child = match process::with_studio_runtime_launch_guard(|| {
+        cmd.spawn().map_err(|error| error.to_string())
+    }) {
         Ok(c) => c,
         Err(e) => {
             warn!("Install check: failed to spawn {:?}: {}", bin, e);
@@ -488,8 +490,17 @@ pub fn open_models_dir(window: tauri::WebviewWindow, path: String) -> Result<(),
 pub async fn start_install(
     app: AppHandle,
     state: tauri::State<'_, install::InstallState>,
+    backend_state: tauri::State<'_, BackendState>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<(), String> {
+    if has_owned_backend(&backend_state)? {
+        return Err(
+            "The Unsloth backend is still running. Stop it before starting installation."
+                .to_string(),
+        );
+    }
+    block_external_conflict(&[]).await?;
+
     let state = state.inner().clone();
     let diagnostics_state = diagnostics.inner().clone();
     tokio::task::spawn_blocking(move || install::run_install(app, state, diagnostics_state))
