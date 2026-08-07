@@ -848,6 +848,26 @@ def test_an_inventory_failure_never_reads_as_an_empty_device(inventory):
     assert out["result"]["loaded"] is False
 
 
+@pytest.mark.parametrize("broken", ["ggufRepos", "modelRepos", "localModels"])
+def test_one_broken_inventory_still_loads_a_model_another_one_found(broken):
+    """A failure is one unknown source, not a verdict on the other two. Awaiting
+    the three with Promise.all rejected the batch, discarding lists that had
+    already arrived, so a broken local scan left a loadable model unused."""
+    # Put the model in a source that is not the one being broken.
+    holder = "localModels" if broken != "localModels" else "ggufRepos"
+    rows = "[LOCAL_GGUF]" if holder == "localModels" else "[GEMMA]"
+    extra = (
+        "" if holder == "localModels"
+        else ", variants: { [GEMMA.repo_id]: GEMMA_VARIANTS }"
+    )
+    out = _run(f"scenario({{ {broken}: 'throw', {holder}: {rows}{extra} }})")
+
+    assert out["result"]["loaded"] is True
+    # Still fails closed on the part it cannot see: no default is fetched.
+    assert _downloads_started(out) == []
+    assert DEFAULT_MODEL not in _loaded_paths(out)
+
+
 def test_a_local_row_the_picker_would_hide_is_never_auto_loaded():
     """A background pick must be something the user could have picked themselves."""
     hidden = (

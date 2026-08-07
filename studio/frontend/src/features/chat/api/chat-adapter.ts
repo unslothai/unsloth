@@ -2771,12 +2771,25 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     // Both cached calls take the run signal: they are raw fetches with no
     // timeout, so a stall would hold the model-loading lease open after the
     // user stops the send. listLocalModels has its own 30s bound.
-    const [allGgufRepos, allModelRepos, localList] = await Promise.all([
+    const inventory = await Promise.allSettled([
       listCachedGguf(options?.abortSignal),
       listCachedModels(hfToken, options?.abortSignal),
       listLocalModels(),
     ]);
     options?.abortSignal?.throwIfAborted();
+    // Settled, not all: a rejection is one unknown source, not an empty device.
+    // Rejecting the whole batch threw away the lists that did arrive, so a
+    // broken local scan skipped a loadable cached model. Keep what came back
+    // and let the gap block only the default download below.
+    const [ggufSettled, modelsSettled, localSettled] = inventory;
+    const allGgufRepos =
+      ggufSettled.status === "fulfilled" ? ggufSettled.value : [];
+    const allModelRepos =
+      modelsSettled.status === "fulfilled" ? modelsSettled.value : [];
+    const localRows =
+      localSettled.status === "fulfilled" ? localSettled.value.models : [];
+    const inventoryIncomplete = inventory.some((r) => r.status === "rejected");
+    if (inventoryIncomplete) hadNonTrustFailure = true;
 
     // Managed cache plus everything the picker indexes on disk. Reading only
     // the cache lists is what made a local model invisible here.
@@ -2786,7 +2799,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         cachedModelsRunOnThisPlatform()
           ? allModelRepos.filter(isChattableCachedRepo)
           : [],
-        localList.models.filter(isAutoLoadableLocalRow),
+        localRows.filter(isAutoLoadableLocalRow),
         store.params.maxSeqLength,
         options?.abortSignal,
       ),
@@ -2876,6 +2889,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           blockedByTrustRemoteCode && !hadNonTrustFailure,
         loadFailureReported: loadFailure.current !== null,
       };
+    }
+
+    // Only an empty *complete* inventory means the device has nothing. With a
+    // source still unknown, downloading risks duplicating a model already here.
+    if (inventoryIncomplete) {
+      toast.dismiss(toastId);
+      return { loaded: false, blockedByTrustRemoteCode: false };
     }
 
     // Nothing on the device: fetch the default as a managed download job, and
