@@ -2133,11 +2133,13 @@ def test_a_transformed_split_is_not_memoized_by_fingerprint():
 
     ids = list(range(8))
     other = list(reversed(ids))
-    backing = Dataset.from_dict({
-        "input_ids": [list(ids), list(other)],
-        "attention_mask": [[1] * 8, [1] * 8],
-        "labels": [list(ids), list(other)],
-    })
+    backing = Dataset.from_dict(
+        {
+            "input_ids": [list(ids), list(other)],
+            "attention_mask": [[1] * 8, [1] * 8],
+            "labels": [list(ids), list(other)],
+        }
+    )
     supervised = {"both": True}
 
     def _mask_second(batch):
