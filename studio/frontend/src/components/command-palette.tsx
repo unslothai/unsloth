@@ -20,6 +20,7 @@ import {
   useChatSearchStore,
 } from "@/features/chat";
 import { useSettingsDialogStore, type SettingsTab } from "@/features/settings";
+import { SETTINGS_SEARCH_INDEX } from "@/features/settings/settings-search";
 import { useT, type TranslationKey } from "@/i18n";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { useCommandPaletteStore } from "@/stores/command-palette";
@@ -54,19 +55,18 @@ const TestTubeOutlineIcon = TestTube01Icon.slice(
 const SETTINGS_TAB_ENTRIES: {
   id: SettingsTab;
   labelKey: TranslationKey;
-  keywords: string[];
 }[] = [
-  { id: "general", labelKey: "settings.tabs.general", keywords: ["account", "password", "token"] },
-  { id: "profile", labelKey: "settings.tabs.profile", keywords: ["personalization"] },
-  { id: "appearance", labelKey: "settings.tabs.appearance", keywords: ["theme"] },
-  { id: "resources", labelKey: "settings.tabs.resources", keywords: ["resources", "hardware", "storage"] },
-  { id: "chat", labelKey: "settings.tabs.chat", keywords: ["archived"] },
-  { id: "connections", labelKey: "settings.tabs.connections", keywords: ["providers"] },
-  { id: "data", labelKey: "settings.tabs.data", keywords: ["archived", "import", "export"] },
-  { id: "api-keys", labelKey: "settings.tabs.apiKeys", keywords: ["api keys"] },
-  { id: "voice", labelKey: "settings.tabs.voice", keywords: ["dictation", "microphone", "read aloud"] },
-  { id: "agents", labelKey: "settings.tabs.agents", keywords: ["agent", "subagent", "codex", "claude"] },
-  { id: "about", labelKey: "settings.tabs.about", keywords: ["help", "version", "updates"] },
+  { id: "general", labelKey: "settings.tabs.general" },
+  { id: "profile", labelKey: "settings.tabs.profile" },
+  { id: "appearance", labelKey: "settings.tabs.appearance" },
+  { id: "resources", labelKey: "settings.tabs.resources" },
+  { id: "chat", labelKey: "settings.tabs.chat" },
+  { id: "connections", labelKey: "settings.tabs.connections" },
+  { id: "data", labelKey: "settings.tabs.data" },
+  { id: "api-keys", labelKey: "settings.tabs.apiKeys" },
+  { id: "voice", labelKey: "settings.tabs.voice" },
+  { id: "agents", labelKey: "settings.tabs.agents" },
+  { id: "about", labelKey: "settings.tabs.about" },
 ];
 
 export function CommandPalette() {
@@ -77,7 +77,7 @@ export function CommandPalette() {
     const handler = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
       if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
-      if (e.key.toLowerCase() !== "p") return;
+      if (e.code !== "KeyP") return;
       e.preventDefault(); // prevents the browser print dialog
       // A held shortcut auto-repeats keydown; toggling on repeats would
       // close the palette on the first repeat after it opened.
@@ -232,7 +232,11 @@ function PaletteContent() {
             </CommandShortcut>
           </CommandItem>
           <CommandItem
-            onSelect={runAndClose(() => useChatSearchStore.getState().open())}
+            onSelect={runAndClose(() =>
+              useChatSearchStore.getState().open({
+                opener: useCommandPaletteStore.getState().opener,
+              }),
+            )}
           >
             <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} />
             <span>{t("shell.commandPalette.searchChats")}</span>
@@ -262,7 +266,7 @@ function PaletteContent() {
               {SETTINGS_TAB_ENTRIES.map((tab) => (
                 <CommandItem
                   key={tab.id}
-                  keywords={tab.keywords}
+                  keywords={SETTINGS_SEARCH_INDEX[tab.id].map((key) => t(key))}
                   onSelect={openSettings(tab.id)}
                 >
                   <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} />
