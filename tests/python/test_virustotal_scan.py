@@ -48,7 +48,14 @@ class FakeTransport:
         self.calls: list[tuple[str, str, dict, int]] = []
         self.timeouts: list[float | None] = []
 
-    def __call__(self, method, url, headers, body, timeout = None):
+    def __call__(
+        self,
+        method,
+        url,
+        headers,
+        body,
+        timeout = None,
+    ):
         self.timeouts.append(timeout)
         self.calls.append((method, url, headers, len(body or b"")))
         for fragment, response in self.routes.items():
@@ -303,7 +310,14 @@ class TestSingleUseUploadUrl:
             def __init__(self):
                 self.posts = 0
 
-            def __call__(self, method, url, headers, body, timeout = None):
+            def __call__(
+                self,
+                method,
+                url,
+                headers,
+                body,
+                timeout = None,
+            ):
                 if url.endswith("/files/upload_url"):
                     token = f"https://up.example/{len(seen_upload_urls)}"
                     seen_upload_urls.append(token)
@@ -325,7 +339,13 @@ class TestSingleUseUploadUrl:
     def test_max_attempts_one_disables_retry(self, tmp_path):
         calls = []
 
-        def transport(method, url, headers, body, timeout = None):
+        def transport(
+            method,
+            url,
+            headers,
+            body,
+            timeout = None,
+        ):
             calls.append(url)
             return 500, b""
 
@@ -345,7 +365,13 @@ class TestDeadlineEnforcement:
     def test_request_checks_deadline_before_issuing(self):
         calls = []
 
-        def transport(method, url, headers, body, timeout = None):
+        def transport(
+            method,
+            url,
+            headers,
+            body,
+            timeout = None,
+        ):
             calls.append(url)
             return 200, b"{}"
 
@@ -361,7 +387,13 @@ class TestDeadlineEnforcement:
         assert calls == []
 
     def test_wait_for_analysis_stops_at_the_deadline(self):
-        def transport(method, url, headers, body, timeout = None):
+        def transport(
+            method,
+            url,
+            headers,
+            body,
+            timeout = None,
+        ):
             return 200, b'{"data": {"attributes": {"status": "queued"}}}'
 
         now = [0.0]
@@ -553,7 +585,13 @@ class TestMalformedUploadAcknowledgement:
         bundle.write_bytes(b"payload")
         state = {"n": 0}
 
-        def transport(method, url, headers, body, timeout = None):
+        def transport(
+            method,
+            url,
+            headers,
+            body,
+            timeout = None,
+        ):
             if "/files/upload_url" in url:
                 state["n"] += 1
                 return (200, b'{"data": "https://up.example/%d"}' % state["n"])
@@ -566,13 +604,19 @@ class TestMalformedUploadAcknowledgement:
             "k", transport = transport, request_interval = 0.0, sleep = lambda _s: None
         )
         assert client.upload(bundle) == "an-2"
-        assert state["n"] == 2       # a second, fresh signed URL was fetched
+        assert state["n"] == 2  # a second, fresh signed URL was fetched
 
     def test_malformed_ack_on_the_last_attempt_raises(self, tmp_path):
         bundle = tmp_path / "big.exe"
         bundle.write_bytes(b"payload")
 
-        def transport(method, url, headers, body, timeout = None):
+        def transport(
+            method,
+            url,
+            headers,
+            body,
+            timeout = None,
+        ):
             if "/files/upload_url" in url:
                 return (200, b'{"data": "https://up.example/x"}')
             return (200, b"not json")
@@ -608,6 +652,4 @@ class TestWorkflowOrdering:
     def test_the_scan_script_is_checked_out_first(self):
         # publish-release otherwise has no source tree, so the script would be missing.
         names = self._publish_steps()
-        assert names.index("Check out the scan script") < names.index(
-            "VirusTotal pre-flight scan"
-        )
+        assert names.index("Check out the scan script") < names.index("VirusTotal pre-flight scan")

@@ -55,9 +55,7 @@ _SOCKET_TIMEOUT = 300.0
 # Transport contract: (method, url, headers, body, timeout) -> (status, response_bytes).
 # Injected so the unit tests can exercise every branch without touching the network.
 # `timeout` is the per-call socket budget, already clamped to the scan deadline.
-Transport = Callable[
-    [str, str, "dict[str, str]", "bytes | None", float], "tuple[int, bytes]"
-]
+Transport = Callable[[str, str, "dict[str, str]", "bytes | None", float], "tuple[int, bytes]"]
 
 
 @dataclass(frozen = True)
