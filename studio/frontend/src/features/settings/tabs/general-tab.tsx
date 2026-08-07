@@ -591,17 +591,6 @@ export function GeneralTab() {
 
       <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
         <SettingsRow
-          label={t("settings.general.notifications.showLlamaUpdates")}
-          description={t(
-            "settings.general.notifications.showLlamaUpdatesDescription",
-          )}
-        >
-          <Switch
-            checked={showLlamaUpdates}
-            onCheckedChange={setShowLlamaUpdateBanner}
-          />
-        </SettingsRow>
-        <SettingsRow
           label={t("settings.general.notifications.showLoadedModels")}
           description={t(
             "settings.general.notifications.showLoadedModelsDescription",
@@ -610,6 +599,17 @@ export function GeneralTab() {
           <Switch
             checked={showLoadedModels}
             onCheckedChange={setShowLoadedModels}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.general.notifications.showLlamaUpdates")}
+          description={t(
+            "settings.general.notifications.showLlamaUpdatesDescription",
+          )}
+        >
+          <Switch
+            checked={showLlamaUpdates}
+            onCheckedChange={setShowLlamaUpdateBanner}
           />
         </SettingsRow>
       </SettingsSection>

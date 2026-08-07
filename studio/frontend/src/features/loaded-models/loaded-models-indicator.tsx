@@ -18,8 +18,8 @@ import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
+  AiBrain01Icon,
   Cancel01Icon,
-  ChipIcon,
   DragDropVerticalIcon,
   Image01Icon,
   Message01Icon,
@@ -46,7 +46,7 @@ import { useLoadedModels } from "./use-loaded-models";
 // default: a card you have to open first answers nothing.
 const COLLAPSED_KEY = LOADED_MODELS_PREFERENCE_KEYS.collapsed;
 
-const KIND_ICONS: Record<LoadedModelKind, typeof ChipIcon> = {
+const KIND_ICONS: Record<LoadedModelKind, typeof AiBrain01Icon> = {
   text: Message01Icon,
   tts: VolumeHighIcon,
   image: Image01Icon,
@@ -177,7 +177,7 @@ export function LoadedModelsIndicator({
               className="menu-soft-surface pointer-events-auto flex h-9 cursor-pointer items-center gap-1.5 rounded-full pl-2.5 pr-3 font-heading text-muted-foreground transition-colors hover:text-foreground"
             >
               <HugeiconsIcon
-                icon={ChipIcon}
+                icon={AiBrain01Icon}
                 strokeWidth={1.75}
                 className="size-[15px]"
               />
@@ -194,7 +194,7 @@ export function LoadedModelsIndicator({
         <div className="menu-soft-surface pointer-events-auto flex min-h-0 w-[268px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[20px] p-1.5 font-heading">
           <div className="flex items-center gap-1.5 px-1.5 pb-1 pt-0.5">
             <HugeiconsIcon
-              icon={ChipIcon}
+              icon={AiBrain01Icon}
               strokeWidth={1.75}
               className="size-[15px] shrink-0 text-muted-foreground"
             />
