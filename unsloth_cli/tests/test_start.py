@@ -7005,6 +7005,24 @@ def test_codex_attach_check_defers_foreign_path_syntax(monkeypatch, tmp_path):
         )
 
 
+def test_codex_attach_check_treats_both_spellings_as_native_on_windows(monkeypatch, tmp_path):
+    # The other half of the asymmetry above: Windows accepts forward slashes, so both
+    # spellings are native there and an absent file is really absent.
+    monkeypatch.chdir(tmp_path)
+    _simulate_windows(monkeypatch)
+    assert start._path_syntax_is_native("C:\\models\\foo-Q4_K_M.gguf") is True
+    assert start._path_syntax_is_native("/models/foo-Q4_K_M.gguf") is True
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: pytest.fail("a visible missing file needs no probe"),
+    )
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(
+            BASE, "sk-test", os.fspath(tmp_path / "gone-Q4_K_M.gguf")
+        )
+
+
 def test_codex_attach_check_rejects_missing_direct_paths(tmp_path, monkeypatch, capsys):
     # A mistyped or deleted path is still a GGUF load to the backend, so it
     # would tear the resident model down and only then fail.
