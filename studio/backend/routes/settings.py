@@ -505,10 +505,9 @@ def update_openai_auto_switch(
             log = logger,
         ) from exc
     idle_unload_active = get_auto_unload_idle_seconds() > 0
-    # The purge reads the configured setting, not the effective one: residency
-    # zeroes the TTL, and that must not throw away KV the user still wants.
     if not keep_kv or not idle_unload_is_configured():
-        # Keep-KV off or idle unload disabled: drop already-saved chat context too.
+        # Drop already-saved chat context too. Configured, not effective: residency
+        # zeroes the TTL, and that must not discard KV the user still wants.
         from core.inference.llama_keepwarm import purge_kv_resume
         purge_kv_resume()
     return OpenAIAutoSwitchResponse(

@@ -191,11 +191,10 @@ def get_auto_unload_idle_seconds() -> int:
 
 
 def idle_unload_is_configured() -> bool:
-    """Whether the user has idle unload switched on, ignoring the residency veto.
+    """The user's idle-unload setting, ignoring the residency veto.
 
-    Residency zeroes the effective TTL without the user turning idle unload off, so
-    anything deciding whether to DISCARD saved state reads this instead: their KV
-    resume is still theirs the moment residency goes back off.
+    Residency zeroes the effective TTL without them turning idle unload off, so
+    anything deciding whether to DISCARD saved state reads this, not the gated one.
     """
     stored = _stored_idle_seconds()
     if stored is not None:
