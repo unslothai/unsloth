@@ -4572,9 +4572,7 @@ class LlamaCppBackend:
         # -ngl 0 lands the model in RAM. Only a fit that is switched ON voids the
         # prediction: "--fit off" is what we already pass, and a disabled fitter
         # cannot move anything to the CPU.
-        if _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS) or fit_is_enabled_in(
-            extra_args
-        ):
+        if _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS) or fit_is_enabled_in(extra_args):
             fully_gpu_offloaded = False
         all_on_gpu = fully_gpu_offloaded or self._offloads_every_layer(
             gpu_memory_mode = gpu_memory_mode,
