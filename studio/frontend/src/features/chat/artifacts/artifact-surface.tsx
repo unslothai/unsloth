@@ -331,8 +331,8 @@ export function ArtifactSurface({
             code={artifact.code}
             title={artifact.title}
             fill={true}
-            // Network mode only for tool-rendered canvases, never fences.
-            allowNetworkAccess={artifact.source === "tool"}
+            // Both canvas sources offer it; the off-by-default setting decides.
+            allowNetworkAccess={true}
             className="h-full"
           />
         ) : (

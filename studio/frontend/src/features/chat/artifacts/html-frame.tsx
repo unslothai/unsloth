@@ -35,7 +35,7 @@ export function ArtifactHtmlFrame({
   title = "HTML canvas preview",
   className,
   fill = false,
-  // Tool-rendered canvases only; default off so fences never get network.
+  // Fail closed: a caller must opt in before the user setting is even consulted.
   allowNetworkAccess = false,
 }: {
   code: string;
