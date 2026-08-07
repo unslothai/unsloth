@@ -993,6 +993,50 @@ def test_completion_marking_reports_a_symlinked_root_ancestor_as_unsafe(tmp_path
         dataset_processed_cache.mark_app_processed_dataset_cache_complete(entry)
 
 
+def test_completion_marking_reports_a_symlinked_cache_root_as_unsafe(tmp_path):
+    """The configured root is the trust anchor, so it is classified too.
+
+    The descendant walk starts below it, so a swap of the configured directory itself
+    would otherwise leave every walked child reporting False.
+    """
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    entry = dataset_processed_cache.prepare_app_processed_dataset_cache(repo_id, snapshot)
+    configured = tmp_path / "app-cache"
+    external = tmp_path / "external"
+    external.mkdir()
+    shutil.rmtree(configured)
+    configured.symlink_to(external, target_is_directory = True)
+    external.rmdir()
+
+    with pytest.raises(dataset_processed_cache.UnsafeDatasetCachePathError):
+        dataset_processed_cache.mark_app_processed_dataset_cache_complete(entry)
+
+
+def test_completion_marking_allows_a_live_symlinked_cache_root(tmp_path):
+    """Pointing the cache at another volume is a legitimate setup, not an attack.
+
+    Only a root that fails to resolve is suspicious. A live symlink resolves normally and
+    must keep working, or this hardening breaks anyone who moved their cache off the
+    system disk.
+    """
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    real_cache = tmp_path / "real-cache"
+    real_cache.mkdir()
+    (tmp_path / "app-cache").symlink_to(real_cache, target_is_directory = True)
+
+    entry = dataset_processed_cache.prepare_app_processed_dataset_cache(repo_id, snapshot)
+    dataset_processed_cache.mark_app_processed_dataset_cache_complete(entry)
+
+    assert (
+        dataset_processed_cache.prepare_app_processed_dataset_cache(repo_id, snapshot).complete
+        is True
+    )
+
+
 def test_completion_marking_treats_a_real_purge_as_benign(tmp_path):
     """The counterpart: a root that is genuinely gone must stay a benign failure.
 

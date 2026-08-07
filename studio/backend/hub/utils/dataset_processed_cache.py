@@ -155,6 +155,16 @@ def _cache_root_is_present() -> bool:
         root_path = app_processed_dataset_cache_root().expanduser()
     except (OSError, RuntimeError, TypeError, ValueError):
         return False
+    # The configured root is the trust anchor, so classify it too -- the walk below only
+    # covers its descendants. Anything ABOVE it is the user's own filesystem layout and
+    # deliberately out of scope. This only runs once resolution has already failed, so a
+    # live symlink pointing the cache at another volume -- a legitimate setup -- resolves
+    # normally and never reaches here.
+    try:
+        if configured_root.is_symlink():
+            return True
+    except OSError:
+        return True
     if _symlinked_component(root_path, configured_root) is not None:
         return True
     try:
