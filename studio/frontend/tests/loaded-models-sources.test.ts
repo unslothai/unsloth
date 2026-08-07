@@ -131,6 +131,26 @@ test("each STT engine that has a model resident gets a row naming its engine", (
   assert.equal(rows[0].detail, "llama.cpp · cuda");
 });
 
+// Those two sidecars report their engine name as the device, so the label and
+// the device are the same string and must not print twice.
+test("an engine that reports itself as its device is named once", () => {
+  const rows = describeSttStatus({
+    mtmd: { loaded_model: "qwen3-asr-0.6b", device: "llama.cpp" },
+    gguf: { loaded_model: "ggml-base.en", device: "whisper.cpp" },
+  });
+  assert.deepEqual(
+    rows.map((row) => row.detail),
+    ["llama.cpp", "whisper.cpp"],
+  );
+});
+
+test("a real device is still reported next to its engine", () => {
+  const [row] = describeSttStatus({
+    transformers: { loaded_model: "openai/whisper-large-v3", device: "cuda" },
+  });
+  assert.equal(row.detail, "Transformers · cuda");
+});
+
 test("image and video rows omit the parts the backend did not report", () => {
   const [image] = describeDiffusionStatus({
     loaded: true,

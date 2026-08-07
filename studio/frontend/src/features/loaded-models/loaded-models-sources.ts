@@ -60,9 +60,22 @@ export const LOADED_MODEL_KIND_LABELS: Record<LoadedModelKind, string> = {
   stt: "Dictation",
 };
 
-/** Join only the known parts, so no row shows a stray separator. */
+/**
+ * Join the known parts, so no row shows a stray separator, and drop repeats:
+ * the llama.cpp and whisper.cpp dictation sidecars report their engine name as
+ * the device, which would otherwise print twice.
+ */
 function joinDetail(...parts: (string | null | undefined)[]): string {
-  return parts.filter((part): part is string => Boolean(part)).join(" · ");
+  const seen = new Set<string>();
+  const kept: string[] = [];
+  for (const part of parts) {
+    if (!part) continue;
+    const key = part.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    kept.push(part);
+  }
+  return kept.join(" · ");
 }
 
 /** Keep a path's last two segments; a repo id is already short. */
