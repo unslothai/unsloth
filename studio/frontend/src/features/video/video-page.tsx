@@ -1183,11 +1183,21 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const pendingStagedLoad = useRef<{
     repoId: string;
     opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string };
+    // The pick that staged it. A download outlives its pick, so a newer one must not be evicted when this lands.
+    token: number;
   } | null>(null);
   const handleLoadRef = useRef(handleLoad);
   handleLoadRef.current = handleLoad;
   // A download finishing while this page is hidden must not evict the model the visible page loaded. The pick is held, not dropped.
   const stagedLoadDeferred = useRef(false);
+  // Staging does not set `busy`, so a pick made while the download ran already owns the page; only the newest one may load.
+  // `isLatest`, not `holds`: leaving the page is not a new pick, and the deferred load below is exactly that case.
+  const runStagedLoad = useCallback(() => {
+    const pending = pendingStagedLoad.current;
+    pendingStagedLoad.current = null;
+    if (!pending || !pickGuard.isLatest(pending.token)) return;
+    void handleLoadRef.current(pending.repoId, pending.opts);
+  }, [pickGuard]);
   const { stage } = useStagedDownload({
     scopeId: "diffusion",
     onReady: () => {
@@ -1195,29 +1205,26 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         stagedLoadDeferred.current = true;
         return;
       }
-      const pending = pendingStagedLoad.current;
-      pendingStagedLoad.current = null;
-      if (pending) void handleLoadRef.current(pending.repoId, pending.opts);
+      runStagedLoad();
     },
   });
 
   useEffect(() => {
     if (!active || !stagedLoadDeferred.current) return;
     stagedLoadDeferred.current = false;
-    const pending = pendingStagedLoad.current;
-    pendingStagedLoad.current = null;
-    if (pending) void handleLoadRef.current(pending.repoId, pending.opts);
-  }, [active]);
+    runStagedLoad();
+  }, [active, runStagedLoad]);
 
   // Stage a not-yet-downloaded hub pick, else load it directly.
-  // `isCurrent` lets an awaiting caller drop out here too: the plan below is a second window for a newer pick to take the page.
+  // `token` lets an awaiting caller drop out here too: the plan below is a second window for a newer pick to take the page.
   const loadOrStage = useCallback(
     async (
       repoId: string,
       opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string },
       isDownloaded?: boolean,
-      isCurrent?: () => boolean,
+      token?: number,
     ): Promise<boolean> => {
+      const owns = () => token === undefined || pickGuard.holds(token);
       if (isDownloaded !== false) return handleLoadRef.current(repoId, opts);
       try {
         const plan = await getVideoDownloadPlan({
@@ -1228,9 +1235,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           hf_token: hfApiToken(getHfToken()),
         });
         // Superseded mid-plan: neither stage nor load, and leave `pendingStagedLoad` to its new owner.
-        if (isCurrent && !isCurrent()) return false;
+        if (!owns()) return false;
         if (plan.entries.length > 0) {
-          pendingStagedLoad.current = { repoId, opts };
+          pendingStagedLoad.current = { repoId, opts, token: token ?? pickGuard.claim() };
           stage(
             plan.entries.map((e) => ({
               repoId: e.repo_id,
@@ -1244,10 +1251,10 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       } catch {
         // No plan (older backend, metadata hiccup): fall back to the load's own download.
       }
-      if (isCurrent && !isCurrent()) return false;
+      if (!owns()) return false;
       return handleLoadRef.current(repoId, opts);
     },
-    [stage],
+    [stage, pickGuard],
   );
 
   // A GGUF pick can arrive with only a repo id: a pinned row sends its quant label, a curated artifact sends neither, and a
@@ -1289,7 +1296,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           quantRevert.current = null;
         },
         load: (filename) =>
-          loadOrStage(repoId, { kind: "gguf", filename }, isDownloaded, isCurrent),
+          loadOrStage(repoId, { kind: "gguf", filename }, isDownloaded, token),
       });
     },
     [loadOrStage, pickGuard, quant],
@@ -1368,7 +1375,6 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       // This pick owns the page now, so one still awaiting a listing or a plan drops out. Before any branch: staging does not
       // set `busy`, so any pick can land on top of an awaiting one.
       const token = pickGuard.claim();
-      const isCurrent = () => isMounted.current && pickGuard.holds(token);
       // Curated non-GGUF model: load as a full pipeline.
       const spec = loadSpecFor(id, VIDEO_CATALOG);
       if (spec && spec.kind !== "gguf") {
@@ -1382,7 +1388,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           id,
           { kind: spec.kind, filename: spec.filename },
           meta.isDownloaded,
-          isCurrent,
+          token,
         );
         return;
       }
@@ -1399,10 +1405,10 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           id,
           { kind: "gguf", filename: meta.ggufFilename },
           meta.isDownloaded,
-          isCurrent,
+          token,
         ).then((started) => {
           // `quantRevert` is one slot, so only the pick that set the label may take it back.
-          if (!started && isCurrent()) {
+          if (!started && pickGuard.holds(token)) {
             setQuant(prevQuant);
             quantRevert.current = null;
           }
@@ -1481,7 +1487,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       const d = defaultsFor(id);
       setSteps(d.steps);
       setGuidance(d.guidance);
-      void loadOrStage(id, { kind: "pipeline" }, meta.isDownloaded, isCurrent);
+      void loadOrStage(id, { kind: "pipeline" }, meta.isDownloaded, token);
     },
     [busy, handleLoad, loadGgufRepoPick, loadOrStage, pickGuard, quant],
   );

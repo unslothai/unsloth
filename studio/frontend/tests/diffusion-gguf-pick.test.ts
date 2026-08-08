@@ -152,3 +152,13 @@ test("releasing the page invalidates the pick holding it", () => {
   // And the token a release lands on is not claimable by an outstanding holder.
   assert.notEqual(guard.claim(), token);
 });
+
+test("a release is not a new pick, so a staged download still lands", () => {
+  // Leaving the page defers the staged load rather than dropping it; only another pick may take it.
+  const guard = createPickGuard();
+  const staged = guard.claim();
+  guard.release();
+  assert.equal(guard.isLatest(staged), true);
+  guard.claim();
+  assert.equal(guard.isLatest(staged), false);
+});

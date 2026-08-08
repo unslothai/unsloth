@@ -9,20 +9,26 @@ export interface PickGuard {
   claim(): number;
   /** Leave the page unowned: a page switch, an unload, an unmount. */
   release(): void;
+  /** Is this token still the owner? False after a release, so nothing lands on a page nobody is picking for. */
   holds(token: number): boolean;
+  /** Has nothing been picked since this token? Survives a release, so a staged download still loads on the way back. */
+  isLatest(token: number): boolean;
 }
 
 export function createPickGuard(): PickGuard {
-  let current = 0;
+  let latest = 0;
+  let owner = 0;
   return {
     claim: () => {
-      current += 1;
-      return current;
+      latest += 1;
+      owner = latest;
+      return latest;
     },
     release: () => {
-      current += 1;
+      owner = 0;
     },
-    holds: (token) => token === current,
+    holds: (token) => token !== 0 && token === owner,
+    isLatest: (token) => token !== 0 && token === latest,
   };
 }
 
