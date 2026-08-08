@@ -186,6 +186,7 @@ if HAS_XFORMERS and torch.cuda.is_available():
                 _probe_rest.strip() or None,
             )
 
+
 # On sm_100+ (B200, sm_120) xformers' fp32-capable cutlass op is capability-rejected and
 # only its fp16/bf16 flash-2 op runs, so fp32 Q/K/V (DoRA, #1013) must be downcast there;
 # below sm_100 cutlass handles fp32 natively. Read once from the same device the probe gate
