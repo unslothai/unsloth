@@ -75,9 +75,9 @@ def _script_text(tree, name):
 @pytest.mark.parametrize("relative", _ENTRYPOINTS)
 def test_entrypoint_activates_native_tls_at_module_level(relative):
     tree = ast.parse((_BACKEND / relative).read_text(encoding = "utf-8"))
-    assert "activate_native_tls" in _import_time_calls(tree.body), (
-        f"{relative} spawns a fresh interpreter but never calls activate_native_tls()"
-    )
+    assert "activate_native_tls" in _import_time_calls(
+        tree.body
+    ), f"{relative} spawns a fresh interpreter but never calls activate_native_tls()"
 
 
 @pytest.mark.parametrize(("relative", "name"), _INLINE_SCRIPTS)
@@ -88,7 +88,9 @@ def test_probe_script_injects_before_it_downloads(relative, name):
     activate = max(script.find("activate_native_tls"), script.find("inject_into_ssl"))
     assert activate != -1, f"{name} lost its native TLS activation"
     if "inject_into_ssl" in script:
-        assert "UNSLOTH_STUDIO_NATIVE_TLS" in script, f"{name} injects without honouring the opt-out"
+        assert (
+            "UNSLOTH_STUDIO_NATIVE_TLS" in script
+        ), f"{name} injects without honouring the opt-out"
     assert activate < script.find(".from_pretrained("), f"{name} downloads before activating"
 
 
