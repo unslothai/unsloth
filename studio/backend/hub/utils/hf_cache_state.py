@@ -318,14 +318,28 @@ def _repo_dir_has_broken_snapshot_symlinks(repo_dir: Path) -> bool:
     return False
 
 
-def iter_repo_cache_dirs(repo_type: str, repo_id: str) -> Iterator[Path]:
+def iter_repo_cache_dirs(
+    repo_type: str,
+    repo_id: str,
+    *,
+    scan_errors: Optional[list] = None,
+) -> Iterator[Path]:
+    """Cache dirs for this repo, skipping a root that cannot be listed.
+
+    ``scan_errors`` collects those skips. Suppressing them is right for every caller that
+    only wants the dirs, but hydration reads "no dirs" as "the cache was wiped and this
+    persisted job can be retired" -- and a root that raised EACCES or EIO is not evidence
+    of that. A caller that passes a list can tell the two apart.
+    """
     target = target_dir_name(repo_type, repo_id)
     for root in hf_cache_roots():
         try:
             for entry in root.iterdir():
                 if entry.name.lower() == target:
                     yield entry
-        except OSError:
+        except OSError as exc:
+            if scan_errors is not None:
+                scan_errors.append(exc)
             continue
 
 
@@ -363,6 +377,7 @@ def iter_active_repo_cache_dirs(
     repo_id: str,
     *,
     root: Optional[Path] = None,
+    scan_errors: Optional[list] = None,
 ) -> Iterator[Path]:
     root = hf_cache_root(root = root)
     if root is None:
@@ -372,7 +387,9 @@ def iter_active_repo_cache_dirs(
         for entry in root.iterdir():
             if entry.name.lower() == target:
                 yield entry
-    except OSError:
+    except OSError as exc:  # see iter_repo_cache_dirs on why the caller may want this
+        if scan_errors is not None:
+            scan_errors.append(exc)
         return
 
 
@@ -382,11 +399,16 @@ def preferred_repo_cache_dirs(
     *,
     force_active: bool = False,
     active_root: Optional[Path] = None,
+    scan_errors: Optional[list] = None,
 ) -> list[Path]:
     # iter_active_repo_cache_dirs already matches case-insensitively, so a repo
     # dir the active root does hold is found whatever its casing; the canonical
     # name below is only ever a placeholder for one that is not there yet.
-    active_entries = list(iter_active_repo_cache_dirs(repo_type, repo_id, root = active_root))
+    active_entries = list(
+        iter_active_repo_cache_dirs(
+            repo_type, repo_id, root = active_root, scan_errors = scan_errors
+        )
+    )
     if active_entries:
         return active_entries
     if force_active:
@@ -401,7 +423,7 @@ def preferred_repo_cache_dirs(
         if root is not None:
             canonical = repo_cache_dir_name(repo_type, repo_id)
             return [root / canonical]
-    return list(iter_repo_cache_dirs(repo_type, repo_id))
+    return list(iter_repo_cache_dirs(repo_type, repo_id, scan_errors = scan_errors))
 
 
 def _configured_hub_cache() -> Optional[Path]:

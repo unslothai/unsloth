@@ -288,15 +288,22 @@ def compute_snapshot_progress(
     )
 
     readings: list[tuple[int, int, Optional[str], bool]] = []
+    # The enumeration suppresses OSError per root, so an unreadable cache root came back as
+    # "no dirs" -- indistinguishable from a wiped cache, and hydration retires the job on
+    # that. Collected so the empty answer below can say unknown instead of absent.
+    scan_errors: list = []
     cache_dirs = (
         preferred_repo_cache_dirs(
             repo_type,
             repo_id,
             force_active = force_active,
             active_root = active_root,
+            scan_errors = scan_errors,
         )
         if active_root is not None
-        else preferred_repo_cache_dirs(repo_type, repo_id, force_active = force_active)
+        else preferred_repo_cache_dirs(
+            repo_type, repo_id, force_active = force_active, scan_errors = scan_errors
+        )
     )
     for entry in cache_dirs:
         completed_bytes = 0
@@ -379,6 +386,10 @@ def compute_snapshot_progress(
         default = None,
     )
     if selected is None:
+        # Nothing measured AND a root that could not be listed: the cache may be entirely
+        # intact behind that error, so this is unknown, not gone.
+        if scan_errors:
+            return _empty_progress(expected_bytes, measured = False)
         return empty
 
     completed_bytes, in_progress_bytes, cache_path, complete_on_disk = selected

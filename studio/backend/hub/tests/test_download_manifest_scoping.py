@@ -668,3 +668,49 @@ def test_the_active_cache_must_have_a_manifest_when_it_is_scanned(monkeypatch, t
     )
 
     assert downloads._variant_manifest_in_any_cache("unsloth/Model-GGUF", "Q4_K_M") is None
+
+
+def test_an_unreadable_cache_root_is_unknown_rather_than_absent(monkeypatch, tmp_path):
+    """A root that cannot be listed is not evidence that the cache was wiped.
+
+    ``iter_repo_cache_dirs`` and ``iter_active_repo_cache_dirs`` swallow OSError per root, so
+    an EACCES or EIO came back as "no cache dirs" -- and the all-zero reading that produces
+    carried ``cache_path: null``, which hydration reads as gone and removes a persisted job
+    whose partial cache is sitting on the disk behind that error. These errors never reached
+    the exception fallback that already knew the difference, because nothing raised."""
+    from hub.services import snapshot_progress
+    from hub.utils import hf_cache_state
+
+    unreadable = tmp_path / "hub"
+    unreadable.mkdir()
+
+    def _explode(self):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [unreadable])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_root", lambda root = None: None)
+    monkeypatch.setattr(type(unreadable), "iterdir", _explode)
+
+    # The enumeration reports the skip rather than only swallowing it...
+    errors: list = []
+    assert hf_cache_state.preferred_repo_cache_dirs(
+        "model", "unsloth/Model-GGUF", scan_errors = errors
+    ) == []
+    assert errors and isinstance(errors[0], OSError)
+
+    # ...and the reading built on it says unknown by omitting cache_path entirely.
+    class _Registry:
+        def get_job(self, key):
+            return SimpleNamespace(state = "idle")
+
+    reading = snapshot_progress.compute_snapshot_progress(
+        repo_type = "model",
+        repo_id = "unsloth/Model-GGUF",
+        job_key = "model:unsloth/Model-GGUF",
+        expected_bytes = 33_000_000_000,
+        hf_token = None,
+        registry = _Registry(),
+        metadata_resolver = lambda *a, **k: (33_000_000_000, frozenset()),
+    )
+    assert "cache_path" not in reading
+    assert reading["downloaded_bytes"] == 0

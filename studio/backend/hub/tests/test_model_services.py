@@ -5367,7 +5367,7 @@ def test_snapshot_progress_filters_stale_blobs(monkeypatch, tmp_path):
     monkeypatch.setattr(
         snapshot_progress,
         "preferred_repo_cache_dirs",
-        lambda _repo_type, _repo_id, force_active = False: [entry],
+        lambda _repo_type, _repo_id, force_active = False, **kw: [entry],
     )
 
     result = snapshot_progress.compute_snapshot_progress(
@@ -5403,7 +5403,7 @@ def test_snapshot_progress_confirms_complete_only_with_verified_snapshot(monkeyp
     monkeypatch.setattr(
         snapshot_progress,
         "preferred_repo_cache_dirs",
-        lambda _repo_type, _repo_id, force_active = False: [entry],
+        lambda _repo_type, _repo_id, force_active = False, **kw: [entry],
     )
     monkeypatch.setattr(
         snapshot_progress.download_manifest,
@@ -5478,7 +5478,7 @@ def test_snapshot_progress_complete_with_manifest_synthesized_from_disk(monkeypa
     monkeypatch.setattr(
         snapshot_progress,
         "preferred_repo_cache_dirs",
-        lambda _repo_type, _repo_id, force_active = False: [entry],
+        lambda _repo_type, _repo_id, force_active = False, **kw: [entry],
     )
     monkeypatch.setattr(
         snapshot_progress.download_manifest,
