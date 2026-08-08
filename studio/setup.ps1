@@ -453,25 +453,26 @@ function Get-CanonicalDir {
 
     $trimmedPath = $Path.Trim()
     if ([string]::IsNullOrWhiteSpace($trimmedPath)) { return $trimmedPath }
+    $resolvedPath = $null
     if ((Get-PathState -Path $trimmedPath -PathType Container) -eq "Present") {
-        try { return (Resolve-Path -LiteralPath $trimmedPath).Path } catch {}
+        try { $resolvedPath = (Resolve-Path -LiteralPath $trimmedPath).Path } catch {}
     }
-    try {
-        $fallbackPath =
-            $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($trimmedPath)
-    } catch {
-        $fallbackPath = [System.Environment]::ExpandEnvironmentVariables($trimmedPath)
-    }
-    try {
-        $fullPath = [System.IO.Path]::GetFullPath($fallbackPath)
-        $root = [System.IO.Path]::GetPathRoot($fullPath)
-        if ($root -and $fullPath.Length -gt $root.Length) {
-            return $fullPath.TrimEnd('\', '/')
+    if (-not $resolvedPath) {
+        try {
+            $resolvedPath =
+                $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($trimmedPath)
+        } catch {
+            $resolvedPath = [System.Environment]::ExpandEnvironmentVariables($trimmedPath)
         }
-        return $fullPath
-    } catch {
-        return $fallbackPath.TrimEnd('\', '/')
+        try { $resolvedPath = [System.IO.Path]::GetFullPath($resolvedPath) } catch {}
     }
+    # Resolve-Path keeps a trailing separator, so both branches need this trim or
+    # "...\studio\" compares unequal to "...\studio". Never trim a path root.
+    try {
+        $root = [System.IO.Path]::GetPathRoot($resolvedPath)
+        if ($root -and $resolvedPath.Length -gt $root.Length) { return $resolvedPath.TrimEnd('\', '/') }
+    } catch {}
+    return $resolvedPath
 }
 
 # Compare canonical homes so path spelling does not change ownership policy.
@@ -1797,6 +1798,12 @@ function Clear-WebViewCaches {
 
 # Resolve and preflight the install root before phase 1 for direct setup/update.
 # Keep environment override precedence consistent with the other resolvers.
+# Every resolver below joins onto USERPROFILE; stop here so a blank one reports
+# through Exit-SetupFailure instead of throwing a raw binding error under "Stop".
+if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+    Write-Host "ERROR: USERPROFILE is not set." -ForegroundColor Red
+    Exit-SetupFailure "USERPROFILE is not set"
+}
 $_studioOverrideVar = $null
 $_studioOverride = $null
 if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {

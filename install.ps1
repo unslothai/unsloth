@@ -819,25 +819,26 @@ public static class UnslothStudioFinalPathV2
 
         $trimmedPath = $Path.Trim()
         if ([string]::IsNullOrWhiteSpace($trimmedPath)) { return $trimmedPath }
+        $resolvedPath = $null
         if ((Get-PathState -Path $trimmedPath -PathType Container) -eq "Present") {
-            try { return (Resolve-Path -LiteralPath $trimmedPath).Path } catch {}
+            try { $resolvedPath = (Resolve-Path -LiteralPath $trimmedPath).Path } catch {}
         }
-        try {
-            $fallbackPath =
-                $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($trimmedPath)
-        } catch {
-            $fallbackPath = [System.Environment]::ExpandEnvironmentVariables($trimmedPath)
-        }
-        try {
-            $fullPath = [System.IO.Path]::GetFullPath($fallbackPath)
-            $root = [System.IO.Path]::GetPathRoot($fullPath)
-            if ($root -and $fullPath.Length -gt $root.Length) {
-                return $fullPath.TrimEnd('\', '/')
+        if (-not $resolvedPath) {
+            try {
+                $resolvedPath =
+                    $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($trimmedPath)
+            } catch {
+                $resolvedPath = [System.Environment]::ExpandEnvironmentVariables($trimmedPath)
             }
-            return $fullPath
-        } catch {
-            return $fallbackPath.TrimEnd('\', '/')
+            try { $resolvedPath = [System.IO.Path]::GetFullPath($resolvedPath) } catch {}
         }
+        # Resolve-Path keeps a trailing separator, so both branches need this trim or
+        # "...\studio\" compares unequal to "...\studio". Never trim a path root.
+        try {
+            $root = [System.IO.Path]::GetPathRoot($resolvedPath)
+            if ($root -and $resolvedPath.Length -gt $root.Length) { return $resolvedPath.TrimEnd('\', '/') }
+        } catch {}
+        return $resolvedPath
     }
 
     # Compare canonical homes so path spelling does not change ownership policy.

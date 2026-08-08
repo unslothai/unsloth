@@ -75,8 +75,10 @@ setup_fail() {
     [ "$exit_code" -ne 0 ] || exit_code=1
     local message
     message=$(printf '%s' "$*" | tr '\r\n' '  ')
-    case "${UNSLOTH_TAURI_MODE:-0}" in
-        1|true) printf '[TAURI:ERROR] %s\n' "$message" ;;
+    # Match setup.ps1: update.rs sets UNSLOTH_TAURI_UPDATE on every platform, and
+    # promotes this line over the generic "Update exited with code N".
+    case "${UNSLOTH_TAURI_MODE:-0},${UNSLOTH_TAURI_UPDATE:-0}" in
+        1,*|true,*|*,1|*,true) printf '[TAURI:ERROR] %s\n' "$message" ;;
     esac
     exit "$exit_code"
 }
@@ -979,6 +981,15 @@ _studio_owned_adoptable() {
 _studio_dir_unsearchable() {
     [ -d "$1" ] || return 1
     ( cd "$1" ) 2>/dev/null && return 1
+    return 0
+}
+
+# Read (+r) as well, for callers that list or replace the tree rather than probe
+# a known child: mode 111 is searchable but still fails install_llama_prebuilt.py.
+_studio_dir_unreadable() {
+    [ -d "$1" ] || return 1
+    _studio_dir_unsearchable "$1" && return 0
+    ls -A "$1" >/dev/null 2>&1 && return 1
     return 0
 }
 
@@ -2024,8 +2035,8 @@ else
         _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
     fi
     # The custom-home ownership check above does not cover the default cache.
-    # Stop before pathlib turns an unsearchable cache into a traceback.
-    if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then
+    # Stop before pathlib turns an unreadable cache into a traceback.
+    if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then
         _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
     fi
     _PREBUILT_CMD=(

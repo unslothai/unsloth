@@ -159,6 +159,31 @@ foreach ($mode in $bareModes) {
 }
 Remove-Item -Recurse -Force -LiteralPath $bareRoot -ErrorAction SilentlyContinue
 
+# ── A readable marker inside a tree that cannot be listed ──
+# The shape a marker-only probe calls Readable: attributes readable, listing denied.
+# Windows denies ReadData; POSIX mode 111 keeps the named child stat-able.
+$listRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_list_" + [guid]::NewGuid().ToString("N"))
+$listLocked = Join-Path $listRoot "llama.cpp"
+New-Item -ItemType Directory -Force -Path $listLocked | Out-Null
+Set-Content -LiteralPath (Join-Path $listLocked "UNSLOTH_PREBUILT_INFO.json") -Value '{"release_tag":"app-1"}'
+if ($onWindows) { icacls $listLocked /deny "$env:USERDOMAIN\${env:USERNAME}:(RD)" *>$null }
+else { chmod 111 $listLocked }
+try {
+    $markerReadable = ((Get-PathState -Path (Join-Path $listLocked "UNSLOTH_PREBUILT_INFO.json") -PathType Leaf) -eq "Present")
+    $listDenied = $false
+    try { $null = Get-ChildItem -LiteralPath $listLocked -Force -ErrorAction Stop } catch { $listDenied = $true }
+    if ($markerReadable -and $listDenied) {
+        Check "a readable marker does not excuse an unlistable tree" (
+            (Get-LlamaCppInstallReadState -Path $listLocked) -eq "Denied")
+    } else {
+        Write-Host "  SKIP  host cannot deny listing while keeping the marker readable"
+    }
+} finally {
+    if ($onWindows) { icacls $listLocked /remove:d "$env:USERDOMAIN\$env:USERNAME" *>$null }
+    else { chmod 755 $listLocked }
+    Remove-Item -Recurse -Force -LiteralPath $listRoot -ErrorAction SilentlyContinue
+}
+
 # ── Test-Path parity: the regression-safety invariant ──
 # Preserve every non-throwing Test-Path result; only thrown probes may be denied.
 $parityRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("uns_par_" + [guid]::NewGuid().ToString("N"))

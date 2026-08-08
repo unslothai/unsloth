@@ -106,7 +106,8 @@ def test_the_probe_keeps_all_three_answers() -> None:
     assert "Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop" in probe
     assert "Test-AccessDeniedError" in probe
     # A readable marker is not enough: replacement also needs directory listing.
-    assert '"Present" { return "Readable" }' not in probe
+    # Regex, not a literal: whitespace alone must not reintroduce the early return.
+    assert not re.search(r'"Present"\s*\{\s*return\s+"Readable"', probe)
     assert probe.index("Get-ChildItem -LiteralPath") < probe.rindex('return "Readable"')
     # It runs before anything is installed, so it must not terminate.
     assert probe.count("try {") == 1
@@ -253,8 +254,10 @@ def test_the_managed_path_rule_is_not_duplicated_in_the_installer() -> None:
     assert "Resolve-Path -LiteralPath $trimmedPath" in canonicalizer
     # A denied path cannot resolve, so compare lexical full paths instead.
     assert "GetUnresolvedProviderPathFromPSPath" in canonicalizer
-    assert "[System.IO.Path]::GetFullPath($fallbackPath)" in canonicalizer
-    assert "$fullPath.TrimEnd('\\', '/')" in canonicalizer
+    assert "[System.IO.Path]::GetFullPath(" in canonicalizer
+    # One trim, after both branches: Resolve-Path keeps a trailing separator too.
+    assert canonicalizer.count("TrimEnd('\\', '/')") == 1
+    assert canonicalizer.index("Resolve-Path") < canonicalizer.index("TrimEnd")
     assert INSTALL_PS1.count("Resolve-Path -LiteralPath $trimmedPath") == 1
 
 
@@ -295,7 +298,8 @@ def test_setup_sh_reports_a_denied_default_home_cache() -> None:
     """The POSIX prebuilt path must report a denied default cache."""
     block = SETUP_SH.split('substep "installing prebuilt llama.cpp..."', 1)[1]
     block = block.split("_PREBUILT_CMD=(", 1)[0]
-    assert 'if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then' in block
+    # Listing, not just search: mode 111 passes cd and still breaks the installer.
+    assert 'if _studio_dir_unreadable "$LLAMA_CPP_DIR"; then' in block
     assert '_path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"' in block
     # Preserve the custom-home ownership guard's more cautious wording.
-    assert block.index("_assert_studio_owned_or_absent") < block.index("_studio_dir_unsearchable")
+    assert block.index("_assert_studio_owned_or_absent") < block.index("_studio_dir_unreadable")

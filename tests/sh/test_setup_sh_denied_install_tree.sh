@@ -38,17 +38,19 @@ assert_contains "an unverifiable tree is never described as not ours" \
     "$SETUP_SH" "Unsloth cannot confirm this folder is its own install while it is unreadable"
 
 # The custom-home ownership guard does not cover the default cache, so verify
-# the prebuilt path rejects an unsearchable default cache before Python runs.
+# the prebuilt path rejects an unreadable default cache before Python runs.
 PREBUILT_BLOCK="$(awk '/substep "installing prebuilt llama.cpp\.\.\."/,/_PREBUILT_CMD=\(/' "$SETUP_SH")"
-if printf '%s' "$PREBUILT_BLOCK" | grep -qF '_studio_dir_unsearchable "$LLAMA_CPP_DIR"' &&
+if printf '%s' "$PREBUILT_BLOCK" | grep -qF '_studio_dir_unreadable "$LLAMA_CPP_DIR"' &&
    printf '%s' "$PREBUILT_BLOCK" | grep -qF '_path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"'; then
-    ok "the default-home prebuilt install stops on an unsearchable tree"
+    ok "the default-home prebuilt install stops on an unreadable tree"
 else
-    bad "the default-home prebuilt install stops on an unsearchable tree"
+    bad "the default-home prebuilt install stops on an unreadable tree"
 fi
 # Run the custom-home ownership guard first to preserve its cautious wording.
-if [ "$(printf '%s' "$PREBUILT_BLOCK" | grep -n '_assert_studio_owned_or_absent' | cut -d: -f1 | head -1)" -lt \
-     "$(printf '%s' "$PREBUILT_BLOCK" | grep -n '_studio_dir_unsearchable' | cut -d: -f1 | head -1)" ]; then
+# Default the line numbers so a vanished grep fails loudly instead of erroring out.
+OWNED_LINE="$(printf '%s' "$PREBUILT_BLOCK" | grep -n '_assert_studio_owned_or_absent' | cut -d: -f1 | head -1)"
+UNREADABLE_LINE="$(printf '%s' "$PREBUILT_BLOCK" | grep -n '_studio_dir_unreadable' | cut -d: -f1 | head -1)"
+if [ -n "$OWNED_LINE" ] && [ -n "$UNREADABLE_LINE" ] && [ "$OWNED_LINE" -lt "$UNREADABLE_LINE" ]; then
     ok "the ownership guard still reports a custom home first"
 else
     bad "the ownership guard still reports a custom home first"
@@ -97,6 +99,7 @@ import sys, pathlib
 src = pathlib.Path(sys.argv[1]).read_text()
 out = []
 for name in ("_studio_owned_adoptable", "_studio_dir_unsearchable",
+             "_studio_dir_unreadable",
              "_path_access_denied", "_assert_studio_owned_or_absent"):
     i = src.index(name + "() {")
     out.append(src[i:src.index("\n}\n", i) + 3])
@@ -152,6 +155,26 @@ else
     esac
 fi
 chmod 755 "$OURS"
+
+# Mode 111 is searchable but not listable, and still breaks install_llama_prebuilt.py.
+NOLIST="$WORK/nolist"; mkdir -p "$NOLIST"; : > "$NOLIST/UNSLOTH_PREBUILT_INFO.json"
+chmod 111 "$NOLIST"
+if ls -A "$NOLIST" >/dev/null 2>&1; then
+    echo "  SKIP: this host cannot make a directory unlistable (running as root?)"
+else
+    ok "the host really cannot list the tree (negative control)"
+    probe=$(bash -c '. "$1"; _studio_dir_unsearchable "$2" && echo SEARCH_CAUGHT
+        _studio_dir_unreadable "$2" && echo READ_CAUGHT' _ "$WORK/helpers.sh" "$NOLIST")
+    case "$probe" in
+        *SEARCH_CAUGHT*) bad "mode 111 is searchable, so the search probe must not fire" ;;
+        *) ok "mode 111 is searchable, so the search probe does not fire" ;;
+    esac
+    case "$probe" in
+        *READ_CAUGHT*) ok "the read probe catches a searchable but unlistable tree" ;;
+        *) bad "the read probe catches a searchable but unlistable tree (got: $probe)" ;;
+    esac
+fi
+chmod 755 "$NOLIST"
 
 echo ""
 echo "=== Results ==="
