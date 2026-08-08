@@ -15,6 +15,7 @@ import types
 import pytest
 
 from core.inference.diffusion_memory import (
+    DEFAULT_GROUP_BLOCKS,
     DEFAULT_IMAGE_HEIGHT,
     DEFAULT_IMAGE_WIDTH,
     MEMORY_MODE_BALANCED,
@@ -24,6 +25,7 @@ from core.inference.diffusion_memory import (
     OFFLOAD_MODEL,
     OFFLOAD_NONE,
     OFFLOAD_SEQUENTIAL,
+    OFFLOAD_STREAMING,
     DeviceMemory,
     MemoryPlan,
     apply_memory_plan,
@@ -31,6 +33,7 @@ from core.inference.diffusion_memory import (
     estimate_image_runtime_mib,
     normalize_memory_mode,
     plan_diffusion_memory,
+    refine_memory_plan_for_components,
     snapshot_device_memory,
 )
 
@@ -504,6 +507,143 @@ def test_apply_group_fallback_enables_vae_tiling():
     effective, tiled = apply_memory_plan(pipe, plan, device = "cuda")
     assert effective == OFFLOAD_MODEL
     assert tiled is True and "vae_tiling" in pipe.calls
+
+
+def _install_sized_torch(monkeypatch):
+    import sys
+
+    class Tensor:
+        def __init__(self, size_mib):
+            self.size_mib = size_mib
+
+        def numel(self):
+            return self.size_mib * 1024 * 1024
+
+        def element_size(self):
+            return 1
+
+    class Module:
+        def __init__(self, size_mib = 0):
+            self.tensor = Tensor(size_mib)
+            self.moved_to = None
+
+        def parameters(self, recurse = True):
+            return [self.tensor]
+
+        def buffers(self, recurse = True):
+            return []
+
+        def to(self, device):
+            self.moved_to = device
+            return self
+
+    fake_torch = types.ModuleType("torch")
+    fake_torch.nn = types.SimpleNamespace(Module = Module)
+    fake_torch.device = lambda value: types.SimpleNamespace(type = str(value).split(":")[0])
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    return Module
+
+
+def test_refine_model_offload_streams_only_when_a_component_exceeds_budget(monkeypatch):
+    Module = _install_sized_torch(monkeypatch)
+    plan = MemoryPlan(
+        requested_mode = "low_vram",
+        offload_policy = OFFLOAD_MODEL,
+        vae_tiling = True,
+        vae_slicing = True,
+        device_memory = _discrete(8000),
+        estimates = {"safe_device_budget_mib": 6000},
+    )
+
+    fitting_transformer = Module(4000)
+    fits = types.SimpleNamespace(
+        transformer = fitting_transformer,
+        components = {"transformer": fitting_transformer, "text_encoder": Module(5500)},
+    )
+    assert refine_memory_plan_for_components(fits, plan) is plan
+
+    transformer = Module(2500)
+    oversized = types.SimpleNamespace(
+        transformer = transformer,
+        components = {"transformer": transformer, "text_encoder": Module(7500)},
+    )
+    refined = refine_memory_plan_for_components(oversized, plan)
+    assert refined.offload_policy == OFFLOAD_STREAMING
+    assert refined.estimates["largest_component_mib"] == 7500
+    assert any("text_encoder" in reason for reason in refined.reasons)
+
+
+def test_apply_streaming_uses_block_and_leaf_hooks_with_bounded_cpu_memory(monkeypatch):
+    Module = _install_sized_torch(monkeypatch)
+    calls = []
+
+    def _apply(
+        module,
+        *,
+        onload_device,
+        offload_device,
+        offload_type,
+        num_blocks_per_group = None,
+        use_stream = False,
+        non_blocking = False,
+        record_stream = True,
+        low_cpu_mem_usage = False,
+    ):
+        calls.append(
+            (
+                module,
+                offload_type,
+                num_blocks_per_group,
+                use_stream,
+                non_blocking,
+                record_stream,
+                low_cpu_mem_usage,
+            )
+        )
+
+    import sys
+
+    if "diffusers" not in sys.modules:
+        monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
+    hooks = types.ModuleType("diffusers.hooks")
+    hooks.apply_group_offloading = _apply
+    monkeypatch.setitem(sys.modules, "diffusers.hooks", hooks)
+
+    transformer = Module(2500)
+    text_encoder = Module(7500)
+    vae = Module(200)
+    pipe = types.SimpleNamespace(
+        transformer = transformer,
+        components = {
+            "transformer": transformer,
+            "text_encoder": text_encoder,
+            "vae": vae,
+        },
+    )
+    effective, _ = apply_memory_plan(
+        pipe, _manual_plan(OFFLOAD_STREAMING, tiling = True), device = "cuda"
+    )
+
+    assert effective == OFFLOAD_STREAMING
+    assert vae.moved_to.type == "cuda"
+    assert [(call[1], call[2]) for call in calls] == [
+        ("block_level", DEFAULT_GROUP_BLOCKS),
+        ("leaf_level", None),
+    ]
+    assert all(call[3:] == (True, True, False, True) for call in calls)
+
+
+def test_apply_streaming_does_not_fall_back_to_known_oom_path(monkeypatch):
+    import core.inference.diffusion_memory as mem
+
+    def _fail(*args, **kwargs):
+        raise RuntimeError("granular streaming offload could not be enabled")
+
+    monkeypatch.setattr(mem, "_apply_streaming_offload", _fail)
+    pipe = _RecordingPipe()
+    with pytest.raises(RuntimeError, match = "granular streaming offload could not be enabled"):
+        apply_memory_plan(pipe, _manual_plan(OFFLOAD_STREAMING, tiling = True), device = "cuda")
+    assert "model_offload" not in pipe.calls
 
 
 def test_apply_sequential_offload():

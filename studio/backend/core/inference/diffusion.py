@@ -59,6 +59,7 @@ from .diffusion_memory import (
     MEMORY_MODE_BALANCED,
     MEMORY_MODE_LOW_VRAM,
     OFFLOAD_NONE,
+    OFFLOAD_STREAMING,
     apply_memory_plan,
     estimate_gguf_resident_mib,
     estimate_image_runtime_mib,
@@ -67,6 +68,7 @@ from .diffusion_memory import (
     normalize_memory_mode,
     plan_diffusion_memory,
     plan_fits_total_capacity,
+    refine_memory_plan_for_components,
     settled_snapshot_device_memory,
 )
 from .diffusion_speed import (
@@ -2430,6 +2432,19 @@ class DiffusionBackend:
                         logger = logger,
                     )
 
+                    # Whole-module offload still onloads one complete component for its forward.
+                    # Refine it from the loaded, possibly quantized weights so an oversized text
+                    # encoder uses leaf streaming instead of failing during prompt encoding.
+                    refined_plan = refine_memory_plan_for_components(pipe, plan)
+                    if refined_plan.offload_policy != plan.offload_policy:
+                        logger.info(
+                            "diffusion.memory: refined policy %s -> %s (%s)",
+                            plan.offload_policy,
+                            refined_plan.offload_policy,
+                            "; ".join(refined_plan.reasons),
+                        )
+                    plan = refined_plan
+
                     # Persistent conditioning cache (UNSLOTH_DIFFUSION_COND_CACHE_DIR): repeated prompts skip the text-encoder
                     # forward. After the TE quant so the key reflects the encoders that run; ``base`` keys the companion repo.
                     cond_cache.install(
@@ -2491,6 +2506,9 @@ class DiffusionBackend:
                                 effective_policy,
                                 "everything fits on the GPU, no offload needed"
                                 if effective_policy == OFFLOAD_NONE
+                                else "a loaded component exceeds the device budget; "
+                                "streaming transformer blocks and text-encoder layers"
+                                if effective_policy == OFFLOAD_STREAMING
                                 else "planned from measured free VRAM vs estimated footprint",
                             ),
                             "transformer_cache": (

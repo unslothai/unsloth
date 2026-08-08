@@ -17,7 +17,7 @@ imported lazily.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Optional
 
 
@@ -36,10 +36,12 @@ MEMORY_MODES = (
 # none   -- all weights resident (fastest; fits only with room).
 # model  -- enable_model_cpu_offload(): one top-level module on the GPU at a time.
 # group  -- apply_group_offloading() on the transformer: stream a few blocks at a time with a prefetch stream.
-# sequential -- enable_sequential_cpu_offload(): submodule-level (broken for GGUF on diffusers 0.38, kept as an escape hatch).
+# streaming -- group-offload the transformer and leaf-offload text encoders that cannot fit whole.
+# sequential -- enable_sequential_cpu_offload(): submodule-level (broken for GGUF through diffusers 0.39, kept as an escape hatch).
 OFFLOAD_NONE = "none"
 OFFLOAD_MODEL = "model"
 OFFLOAD_GROUP = "group"
+OFFLOAD_STREAMING = "streaming"
 OFFLOAD_SEQUENTIAL = "sequential"
 
 # Transformer blocks resident per group under group offloading: fewer = lower VRAM, more host-to-device traffic.
@@ -106,7 +108,7 @@ class MemoryPlan:
 
     @property
     def engages_offload(self) -> bool:
-        return self.offload_policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL)
+        return self.offload_policy != OFFLOAD_NONE
 
     def as_public_dict(self) -> dict[str, Any]:
         return {
@@ -379,6 +381,7 @@ def plan_diffusion_memory(
       none  - everything resident: fastest, highest VRAM.
       group - stream the transformer, companions resident: near-resident speed, moderate cut.
       model - offload every component: lowest VRAM, slow.
+      streaming - stream transformer blocks and text-encoder leaves when one component cannot fit.
     """
     mode = normalize_memory_mode(requested_mode) or MEMORY_MODE_AUTO
     can_offload = bool(getattr(target, "supports_model_cpu_offload", False))
@@ -464,6 +467,68 @@ def plan_diffusion_memory(
 # ── apply to a built pipeline ─────────────────────────────────────────────────
 
 
+def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan:
+    """Replace whole-module offload when a loaded component cannot fit on the device.
+
+    The coarse planner runs before the pipeline exists. At this point the weights are still on
+    CPU, so their actual packed storage is a better signal than family or cache estimates. Keep
+    whole-module offload when every component can fit, preserving its faster execution. When one
+    cannot, use granular streaming so no forward needs to materialise that component in full.
+    """
+    if plan.offload_policy != OFFLOAD_MODEL:
+        return plan
+    budget = plan.estimates.get("safe_device_budget_mib")
+    if budget is None or int(budget) <= 0:
+        return plan
+
+    try:
+        import torch
+
+        components = getattr(pipe, "components", {})
+        transformer = getattr(pipe, "transformer", None)
+        if not isinstance(components, dict) or not isinstance(transformer, torch.nn.Module):
+            return plan
+
+        sizes: list[tuple[str, int]] = []
+        mib = 1024 * 1024
+        for name, component in components.items():
+            if not isinstance(component, torch.nn.Module):
+                continue
+            seen: set[int] = set()
+            storage_bytes = 0
+            tensors = list(component.parameters(recurse = True)) + list(
+                component.buffers(recurse = True)
+            )
+            for tensor in tensors:
+                marker = id(tensor)
+                if marker in seen:
+                    continue
+                seen.add(marker)
+                storage_bytes += int(tensor.numel()) * int(tensor.element_size())
+            sizes.append((str(name), (storage_bytes + mib - 1) // mib))
+    except Exception:  # noqa: BLE001 - runtime measurement is an optional refinement
+        return plan
+
+    if not sizes:
+        return plan
+    largest_name, largest_mib = max(sizes, key = lambda item: item[1])
+    if largest_mib <= int(budget):
+        return plan
+
+    estimates = dict(plan.estimates)
+    estimates["largest_component_mib"] = largest_mib
+    return replace(
+        plan,
+        offload_policy = OFFLOAD_STREAMING,
+        estimates = estimates,
+        reasons = plan.reasons
+        + (
+            f"loaded {largest_name} is {largest_mib} MiB, above the {int(budget)} MiB "
+            "device budget; streaming transformer blocks and text-encoder layers",
+        ),
+    )
+
+
 def apply_memory_plan(
     pipe: Any,
     plan: MemoryPlan,
@@ -476,7 +541,7 @@ def apply_memory_plan(
 
     Returns the ``(offload_policy, vae_tiling)`` ACTUALLY engaged, which can differ from the plan:
     tiling is a no-op where there's no tiling control, and group / sequential offload fall back to
-    whole-module offload if unsupported (e.g. sequential is broken for GGUF on diffusers 0.38)."""
+    whole-module offload if unsupported (e.g. sequential is broken for GGUF through diffusers 0.39)."""
     tiling_engaged = False
     if plan.vae_tiling:
         tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
@@ -497,6 +562,8 @@ def apply_memory_plan(
         if not _apply_group_offload(pipe, device, logger):
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
+    elif policy == OFFLOAD_STREAMING:
+        _apply_streaming_offload(pipe, device, logger)
     elif policy == OFFLOAD_SEQUENTIAL:
         try:
             pipe.enable_sequential_cpu_offload(device = device)
@@ -594,3 +661,77 @@ def _apply_group_offload(pipe: Any, device: str, logger: Any) -> bool:
                 exc,
             )
         return False
+
+
+def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:
+    """Stream transformer blocks and text-encoder leaves without whole-component onloads.
+
+    This is selected only after measuring a component larger than the safe device budget, so a
+    model-offload fallback would deterministically OOM. Any setup failure is therefore fatal and
+    reports the granular-offload failure directly.
+    """
+    installed = 0
+    try:
+        import inspect
+
+        import torch
+        from diffusers.hooks import apply_group_offloading
+
+        components = getattr(pipe, "components", {})
+        if not isinstance(components, dict):
+            raise RuntimeError("pipeline does not expose its components")
+
+        streamed: dict[str, tuple[Any, str]] = {}
+        for name in ("transformer", "transformer_2", "unconditional_transformer"):
+            module = getattr(pipe, name, None)
+            if isinstance(module, torch.nn.Module):
+                streamed[name] = (module, "block_level")
+        for name, module in components.items():
+            if str(name).startswith("text_encoder") and isinstance(module, torch.nn.Module):
+                streamed[str(name)] = (module, "leaf_level")
+        if "transformer" not in streamed:
+            raise RuntimeError("pipeline has no transformer to stream")
+
+        onload = torch.device(device)
+        offload = torch.device("cpu")
+        params = inspect.signature(apply_group_offloading).parameters
+        use_stream = onload.type == "cuda" and "low_cpu_mem_usage" in params
+
+        # Keep small companions such as the tiled VAE resident. Every transformer and text
+        # encoder remains on CPU behind a granular hook.
+        for name, component in components.items():
+            if str(name) in streamed:
+                continue
+            if isinstance(component, torch.nn.Module):
+                component.to(onload)
+
+        for module, offload_type in streamed.values():
+            kwargs: dict[str, Any] = {
+                "onload_device": onload,
+                "offload_device": offload,
+                "offload_type": offload_type,
+            }
+            if offload_type == "block_level":
+                kwargs["num_blocks_per_group"] = DEFAULT_GROUP_BLOCKS
+            if "use_stream" in params:
+                kwargs["use_stream"] = use_stream
+            if use_stream and "non_blocking" in params:
+                kwargs["non_blocking"] = True
+            if use_stream and "record_stream" in params:
+                kwargs["record_stream"] = False
+            if use_stream and "low_cpu_mem_usage" in params:
+                kwargs["low_cpu_mem_usage"] = True
+            apply_group_offloading(module, **kwargs)
+            installed += 1
+    except Exception as exc:
+        if logger is not None:
+            logger.warning(
+                "diffusion.memory: granular streaming offload failed after installing hooks "
+                "on %d module(s): %s",
+                installed,
+                exc,
+            )
+        raise RuntimeError(
+            "A diffusion component is larger than the available GPU memory, and granular "
+            f"streaming offload could not be enabled: {exc}"
+        ) from exc

@@ -2918,7 +2918,7 @@ class DiffusionStatusResponse(BaseModel):
     )
     cpu_offload: bool = Field(False, description = "Whether CPU offload is engaged")
     offload_policy: Optional[str] = Field(
-        None, description = "Resolved offload policy: none | group | model | sequential"
+        None, description = "Resolved offload policy: none | group | model | streaming | sequential"
     )
     vae_tiling: bool = Field(False, description = "Whether VAE tiling/slicing is enabled")
     memory_mode: Optional[str] = Field(None, description = "Requested memory mode")
