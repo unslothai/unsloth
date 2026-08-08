@@ -7212,15 +7212,13 @@ def _migrate_legacy_sandbox(root: str) -> None:
     global _legacy_sandbox_migrated
     if _legacy_sandbox_migrated:
         return
-    # Under the lock, and flagged only once the move is done: setting it first
-    # let a concurrent first tool call create a destination session directory,
-    # which then looked like a collision and stranded the user's legacy files.
+    # Flagged only once the move is done: setting it first let a concurrent
+    # call create the destination, which then read as a collision.
     with _legacy_sandbox_lock:
         if _legacy_sandbox_migrated:
             return
-        # Flagged only when nothing movable is left: a file locked by another
-        # process on Windows is retryable, and giving up after one attempt
-        # strands it once _get_workdir creates the destination.
+        # Only when nothing movable is left: a file locked on Windows is
+        # retryable, and one attempt strands it once the destination exists.
         if _migrate_legacy_sandbox_locked(root):
             _legacy_sandbox_migrated = True
 
@@ -7270,9 +7268,8 @@ def _contained_in_root(workdir: str, root: str) -> bool:
     """
     try:
         resolved, base = os.path.realpath(workdir), os.path.realpath(root)
-        # commonpath, not a prefix test: a root that is a filesystem or volume
-        # root ("/", "D:\\") already ends in a separator, and appending another
-        # made every real session path fail.
+        # commonpath, not a prefix test: a filesystem root already ends in a
+        # separator, and appending another failed every real session path.
         return resolved != base and os.path.commonpath([resolved, base]) == base
     except (OSError, ValueError):
         return False
@@ -7309,9 +7306,8 @@ def _get_workdir(session_id: str | None = None) -> str:
         else:
             workdir = os.path.join(sandbox_root_path, "_default")
         os.makedirs(workdir, exist_ok = True)
-        # Only a root we just created, or our own default location.
-        # UNSLOTH_STUDIO_SANDBOX_HOME can name an existing shared directory, and
-        # locking that down would cut off everything else using it.
+        # Only a root we just created: the override can name a shared
+        # directory, and locking that down would cut off everything else.
         if not root_existed or not (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip():
             try:
                 os.chmod(sandbox_root_path, 0o700)
@@ -7351,9 +7347,8 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
     if not _usable_session_id(session_id):
         return os.path.join(root, "_invalid")
     workdir = os.path.join(root, session_id)
-    # The same containment _get_workdir applies: a session entry that is a
-    # symlink out of the root would otherwise become the root for reads, and
-    # serve whatever it points at.
+    # Same containment _get_workdir applies: a session entry symlinked out of
+    # the root would otherwise serve whatever it points at.
     if not _contained_in_root(workdir, root):
         return os.path.join(root, "_invalid")
     return workdir
@@ -7371,13 +7366,11 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
         return False
     if session_id.startswith(_PROJECT_SESSION_PREFIX):
         return False
-    # Deleting a chat can be the first thing that happens after an upgrade, and
-    # the folder to remove may still be at the legacy root. Outside the lock
-    # below: it can move a whole tree, and it takes a lock of its own.
+    # The folder may still be at the legacy root right after an upgrade.
+    # Outside the lock below: it moves a tree and takes a lock of its own.
     _migrate_legacy_sandbox(sandbox_root())
-    # Held across the decision AND the unlink: checking first and deleting after
-    # leaves a window for a tool to start in between, and it would then be
-    # running in a directory this call is about to remove.
+    # Held across the decision AND the unlink: otherwise a tool can start in
+    # between and run in a directory this call then removes.
     with _active_sessions_lock:
         if _active_sessions.get(session_id, 0) > 0:
             # Queued rather than dropped: the chat is already gone from history,
@@ -7390,9 +7383,8 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
 def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
     root = os.path.realpath(sandbox_root())
     entry = os.path.join(root, session_id)
-    # The entry itself, not what it resolves to: a session directory replaced by
-    # a symlink to a sibling still passes the containment check below, and would
-    # take the other chat's files with it. Drop the link, keep the target.
+    # The entry itself, not what it resolves to: a symlink to a sibling passes
+    # the check below and would take that chat's files. Drop the link.
     if os.path.islink(entry):
         try:
             os.unlink(entry)
@@ -10456,10 +10448,9 @@ def _drain_process_output(
 
 
 _MAX_REPORTED_FILES = 25
-# A build step or an unpacked archive can leave thousands of files; the walk is
-# bounded so a tool call cannot turn into a filesystem crawl. Counted in path
-# segments, the same unit the download route enforces, so the card can never
-# advertise a file that route would refuse.
+# Bounded so an unpacked archive cannot turn a tool call into a filesystem
+# crawl. In path segments, the unit the download route enforces, so a card can
+# never advertise a file that route would refuse.
 _MAX_SANDBOX_PATH_SEGMENTS = 4
 _MAX_SNAPSHOT_FILES = 2000  # a shard-writing script must not blow up the result
 _MAX_SNAPSHOT_DIRS = 2000  # nor a directory-writing one stall the next call
@@ -10610,9 +10601,8 @@ def _python_exec(
     # Snapshot mtimes to detect new and overwritten files.
     _before = _snapshot_workdir_files(workdir)
     try:
-        # In the workdir: it is what Python puts on sys.path[0], so an earlier
-        # call's helper.py stays importable, __file__ resolves inside the
-        # sandbox, and the script's directory is 0o700 rather than shared /tmp.
+        # In the workdir: Python puts it on sys.path[0], so an earlier call's
+        # helper.py stays importable and __file__ resolves inside the sandbox.
         fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_", dir = workdir)
         # utf-8 so non-ASCII in model-written code survives the OS default codec
         # (Windows cp1252 would otherwise raise UnicodeEncodeError).
@@ -10690,13 +10680,9 @@ def _python_exec(
         result = _truncate(result) if result.strip() else "(no output)"
         result += hint
 
-        # Tell the frontend what this call created, so the user can open it.
-        # No session id yet on a chat's first turn, and that call still runs in
-        # a real workdir (_default), which the UI and the route both resolve.
-        # Only for a chat that has an id. Without one every first turn shares
-        # the _default workdir, and a card pinned to it would later download
-        # whatever the next new chat wrote there. Reporting these needs a
-        # per-chat sandbox allocated before tools run, not this.
+        # Only for a chat that has an id: without one every first turn shares
+        # the _default workdir, so a card pinned to it would later download
+        # whatever the next new chat wrote there.
         if session_id:
             result += _created_file_sentinels(workdir, _before, _scratch_name)
 
@@ -10809,10 +10795,7 @@ def _bash_exec(
         hint = _missing_path_hint(result, workdir)
         result = _truncate(result) if result.strip() else "(no output)"
         result += hint
-        # Only for a chat that has an id. Without one every first turn shares
-        # the _default workdir, and a card pinned to it would later download
-        # whatever the next new chat wrote there. Reporting these needs a
-        # per-chat sandbox allocated before tools run, not this.
+        # Only for a chat that has an id (see _python_exec).
         if session_id:
             result += _created_file_sentinels(workdir, _before)
         return result
