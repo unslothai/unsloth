@@ -38,6 +38,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import { useSidebar } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -72,6 +73,7 @@ import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { ChevronDown } from "lucide-react";
 import { NegativePromptField } from "@/components/negative-prompt-field";
 import { cn } from "@/lib/utils";
+import { isTauri } from "@/lib/api-base";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
 import { toast } from "@/lib/toast";
@@ -1054,6 +1056,7 @@ type LoadAdvanced = Pick<
 >;
 
 export function ImagesPage({ active = true }: { active?: boolean }) {
+  const { pinned } = useSidebar();
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
     "a tiny ginger sloth coding in a sunlit treehouse, photorealistic",
@@ -2458,7 +2461,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
     <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
       {/* Top: the model selector, sitting clear of the sidebar and level with the settings column below. Load progress shows in a toast. */}
-      <div className="pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+      <div
+        className={cn(
+          "pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start justify-between pr-2 pt-[var(--studio-chat-header-padding-top,11px)]",
+          !pinned && isTauri
+            ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
+            : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
+        )}
+      >
         <div className="pointer-events-auto flex items-center gap-2">
           {pageMode === "train" ? (
             <TrainBaseSelector

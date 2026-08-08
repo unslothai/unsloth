@@ -60,7 +60,7 @@ export function SettingsRow({
             {icon}
           </span>
         ) : null}
-        <div className="flex min-w-0 flex-col gap-0.5">
+        <div className="flex min-w-0 w-full max-w-lg flex-col gap-0.5">
           {/* Flex only when hinted, so every other row's label renders exactly
               as before. */}
           <span

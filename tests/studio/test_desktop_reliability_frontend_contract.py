@@ -689,6 +689,19 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
             assert "pointer-events-auto" in group, (page.name, group)
 
 
+def test_images_header_clears_collapsed_tauri_titlebar_controls():
+    """Images follows Chat's pin-aware inset instead of sliding under collapsed controls."""
+    source = IMAGES_PAGE.read_text(encoding = "utf-8")
+    before, marker, after = source.partition("h-[48px] shrink-0 items-start justify-between")
+    assert marker
+    opening = before.rsplit("<div", 1)[1] + marker + after.split(">", 1)[0]
+
+    assert "const { pinned } = useSidebar();" in source
+    assert "!pinned && isTauri" in opening
+    assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in opening
+    assert "pl-[var(--studio-media-header-left-inset,1.5rem)]" in opening
+
+
 def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():
     """unslothai/unsloth#7793: the support report prints final_status verbatim, so a
     user quitting mid-update must not read as a failed repair."""
