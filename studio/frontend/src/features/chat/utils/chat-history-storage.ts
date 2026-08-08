@@ -50,7 +50,8 @@ export function markThreadIncognito(threadId: string): void {
   incognitoThreadIds.add(threadId);
 }
 
-function isThreadIncognito(threadId: string): boolean {
+/** True for a temporary-session thread, which is deliberately never persisted. */
+export function isThreadIncognito(threadId: string): boolean {
   return incognitoThreadIds.has(threadId);
 }
 

@@ -7,7 +7,10 @@ import { AttachmentIcon, FileDatabaseIcon } from "@hugeicons/core-free-icons";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { awaitStoredChatThreadRecord } from "@/features/chat/utils/chat-history-storage";
+import {
+  ensureStoredChatThread,
+  isThreadIncognito,
+} from "@/features/chat/utils/chat-history-storage";
 import {
   useNativeAttachmentTargetKey,
   useNativeIntentStore,
@@ -110,8 +113,12 @@ export function ThreadDocumentsBar({
       .threadListItem()
       .initialize()
       .then(async ({ remoteId }) => {
-        // initialize() resolves before the row is written, and these documents index against it.
-        await awaitStoredChatThreadRecord(remoteId);
+        // A cached initialize() still resolves after a failed row write, so confirm the row these
+        // documents index against rather than only waiting for a write in flight.
+        const needsStoredRow = !isThreadIncognito(remoteId);
+        if (needsStoredRow && !(await ensureStoredChatThread(remoteId))) {
+          throw new Error(`Thread ${remoteId} was not persisted`);
+        }
         setMaterializedId(remoteId);
         return remoteId;
       })
