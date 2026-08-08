@@ -2072,7 +2072,10 @@ def _surviving_parent_id(
 
 
 def _research_message_would_change(
-    conn: sqlite3.Connection, thread_id: str, message: dict, pruned: set = frozenset()
+    conn: sqlite3.Connection,
+    thread_id: str,
+    message: dict,
+    pruned: set = frozenset(),
 ) -> bool:
     message_id = str(message["id"])
     row = conn.execute(
@@ -2111,7 +2114,10 @@ def _research_message_would_change(
 
 
 def _guard_research_messages(
-    conn: sqlite3.Connection, thread_id: str, messages: list[dict], pruned: set = frozenset()
+    conn: sqlite3.Connection,
+    thread_id: str,
+    messages: list[dict],
+    pruned: set = frozenset(),
 ) -> None:
     protected = _research_message_ids(conn, thread_id)
     if not protected:

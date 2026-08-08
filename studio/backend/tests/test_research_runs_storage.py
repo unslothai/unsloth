@@ -1290,6 +1290,8 @@ def test_research_agent_actions_are_model_directed_and_url_bounded():
     assert "<query_history_json>" not in shielded
     assert "<untrusted_synthesis_audit_json>" not in shielded
     assert "<synthesis_audit_json>" not in shielded
+
+
 def test_rag_evidence_makes_failed_web_search_recoverable():
     from core.research_runs import _research_step_failed
 

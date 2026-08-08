@@ -296,7 +296,6 @@ def test_rate_limited_search_says_so_instead_of_leaking_the_exception(monkeypatc
 
 def test_search_timeout_reports_the_budget_it_exceeded(monkeypatch):
     from ddgs.exceptions import TimeoutException
-
     result = _search_with_raising_ddgs(monkeypatch, TimeoutException("timed out"))
     assert result == "Search failed: the search engines did not respond within 7s."
 

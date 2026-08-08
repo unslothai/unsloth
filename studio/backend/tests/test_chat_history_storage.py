@@ -713,7 +713,12 @@ def test_count_forks_for_message(tmp_path, monkeypatch):
     assert studio_db.count_forks_for_message("src", "m1") == 2
 
 
-def _research_thread(tmp_path, monkeypatch, *, extra_ancestors: int = 1):
+def _research_thread(
+    tmp_path,
+    monkeypatch,
+    *,
+    extra_ancestors: int = 1,
+):
     """A thread shaped `a0 -> ... -> prompt -> report`, with the pair claimed by a research run.
 
     Returns the ancestor ids in order. `prompt` and `report` are the server-managed pair.
@@ -838,9 +843,7 @@ def test_deleting_a_protected_message_itself_is_still_refused(tmp_path, monkeypa
 
     for dropped in ("prompt", "report"):
         with pytest.raises(studio_db.ChatMessageProtectedError):
-            studio_db.sync_chat_messages(
-                "src", _without(messages, dropped), prune_missing = True
-            )
+            studio_db.sync_chat_messages("src", _without(messages, dropped), prune_missing = True)
 
 
 def test_a_research_prompt_already_at_the_root_is_unaffected(tmp_path, monkeypatch):
@@ -891,8 +894,6 @@ def test_a_plain_message_whose_parent_is_pruned_is_never_guarded(tmp_path, monke
     studio_db.sync_chat_messages("src", [*messages, plain_parent, plain_child])
 
     relinked = {**plain_child, "parentId": "report"}
-    synced = studio_db.sync_chat_messages(
-        "src", [*messages, relinked], prune_missing = True
-    )
+    synced = studio_db.sync_chat_messages("src", [*messages, relinked], prune_missing = True)
 
     assert next(m for m in synced if m["id"] == "plain-child")["parentId"] == "report"
