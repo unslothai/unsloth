@@ -52,6 +52,22 @@ const LINE_BREAK_PATTERN = /[\r\n]/;
 // bytes are for the player, not for a transcript.
 const AUDIO_DATA_URI_PATTERN = /<audio-player\s+src="data:[^"]*"\s*\/>/g;
 const DETAILS_CLOSE_PATTERN = /<\/(details)\s*>/gi;
+const FENCE_PATTERN = /^ {0,3}(`{3,}|~{3,})/;
+
+// A message that ends mid-fence or mid-comment swallows everything after it,
+// including the next role heading, so each turn closes what it opened.
+function closeOpenBlocks(text: string): string {
+  let open: string | null = null;
+  for (const line of text.split("\n")) {
+    const run = FENCE_PATTERN.exec(line)?.[1];
+    if (!run) continue;
+    if (open === null) open = run;
+    else if (run[0] === open[0] && run.length >= open.length) open = null;
+  }
+  let out = open === null ? text : `${text}\n${open}`;
+  if (out.lastIndexOf("<!--") > out.lastIndexOf("-->")) out += "-->";
+  return out;
+}
 
 // Long enough to not be closed early by backticks inside the body.
 function fence(body: string, language = ""): string {
@@ -69,13 +85,19 @@ function inlineCode(value: string): string {
     0,
   );
   const ticks = "`".repeat(longestRun + 1);
-  // Padding keeps a leading or trailing backtick from closing the span.
-  const pad = value.startsWith("`") || value.endsWith("`") ? " " : "";
+  // Padding keeps a leading or trailing backtick from closing the span, and
+  // keeps an empty value from collapsing into one delimiter run.
+  const pad = !value || value.startsWith("`") || value.endsWith("`") ? " " : "";
   return `${ticks}${pad}${value}${pad}${ticks}`;
 }
 
+// Labels sit inside ** ** and [ ]: a line break ends either one, letting the
+// rest of the label out as markdown, a backtick opens a code span, and < starts
+// inline html that a permissive local viewer will render.
 function escapeMarkdownLabel(value: string): string {
-  return value.replace(/([\\[\]*])/g, "\\$1");
+  // Not _: it cannot emphasise inside a word, and escaping it would turn every
+  // snake_case tool key into snake\_case.
+  return value.replace(/[\r\n]+/g, " ").replace(/([\\[\]*`<])/g, "\\$1");
 }
 
 function safeSourceUrl(raw: string): string {
@@ -83,10 +105,11 @@ function safeSourceUrl(raw: string): string {
   if (!value || LINE_BREAK_PATTERN.test(value)) {
     return "";
   }
-  if (value.startsWith("#")) {
-    return encodeURI(value).replaceAll("<", "%3C").replaceAll(">", "%3E");
-  }
   try {
+    // encodeURI throws on a lone surrogate, so it stays inside the guard.
+    if (value.startsWith("#")) {
+      return encodeURI(value).replaceAll("<", "%3C").replaceAll(">", "%3E");
+    }
     const parsed = new URL(value);
     return parsed.protocol === "http:" || parsed.protocol === "https:"
       ? parsed.href.replaceAll("<", "%3C").replaceAll(">", "%3E")
@@ -104,14 +127,19 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 // it as-is so it reads as code instead of a JSON string full of \n. No language
 // tag, since guessing one wrong is worse than none.
 function renderValue(label: string, value: unknown): string[] {
+  if (value === undefined) return [];
   const escapedLabel = escapeMarkdownLabel(label);
   if (typeof value === "string") {
-    if (value.includes("\n")) return [`**${escapedLabel}:**`, fence(value)];
+    if (LINE_BREAK_PATTERN.test(value)) return [`**${escapedLabel}:**`, fence(value)];
     // A code span rather than escaping: tool values are data, and any list of
     // markdown metacharacters to escape is one another syntax slips past.
     return [`**${escapedLabel}:** ${inlineCode(value)}`];
   }
-  if (value === undefined) return [];
+  // Scalars inline too. A json fence spends three lines on `10`, and a tool
+  // call with four of them reads as a wall of fences instead of a call.
+  if (value === null || typeof value !== "object") {
+    return [`**${escapedLabel}:** ${inlineCode(String(value))}`];
+  }
   return [
     `**${escapedLabel}:**`,
     fence(JSON.stringify(value, null, 2), "json"),
@@ -122,24 +150,31 @@ function renderBlock(block: ConversationMarkdownBlock): string {
   // Emitted verbatim: leading indentation can be an indented code block, so
   // trimming is only ever an emptiness test, never applied to the output.
   if (block.kind === "text") {
-    return block.text.trim() ? block.text : "";
+    return block.text.trim() ? closeOpenBlocks(block.text) : "";
   }
   if (block.kind === "thinking") {
     if (!block.text.trim()) return "";
     // Reasoning that quotes a closing details tag would end the block early;
     // the entity renders as that same literal text.
-    const text = block.text.replace(DETAILS_CLOSE_PATTERN, "&lt;/$1>");
+    const text = closeOpenBlocks(
+      block.text.replace(DETAILS_CLOSE_PATTERN, "&lt;/$1>"),
+    );
     // Collapsed so a transcript reads as the conversation first, with the
     // reasoning still there for anyone who wants it.
     return `<details>\n<summary>thinking</summary>\n\n${text}\n\n</details>`;
   }
   if (block.kind === "attachment") {
-    return block.label;
+    // Escaped: a link reference definition elsewhere in the transcript would
+    // otherwise resolve the bare [label] into a link.
+    return escapeMarkdownLabel(block.label);
   }
   if (block.kind === "source") {
-    const title = escapeMarkdownLabel(block.title);
     const url = safeSourceUrl(block.url);
-    return url ? `**source:** [${title}](<${url}>)` : `**source:** ${title}`;
+    // A rejected destination falls back to a code span, not plain text: a
+    // title that is itself a bare url would just get autolinked instead.
+    return url
+      ? `**source:** [${escapeMarkdownLabel(block.title)}](<${url}>)`
+      : `**source:** ${inlineCode(block.title)}`;
   }
   const parts: string[] = [`**tool call:** ${inlineCode(block.name)}`];
   if (isPlainObject(block.args)) {

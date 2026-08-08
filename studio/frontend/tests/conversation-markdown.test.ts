@@ -217,7 +217,7 @@ test("collapses thinking and leaves prose untouched", () => {
       "",
       "Here is the answer.",
       "",
-      "[image attachment]",
+      "\\[image attachment\\]",
     ].join("\n"),
   );
 });
@@ -350,7 +350,7 @@ test("does not turn unsafe citation schemes into markdown links", () => {
     renderConversationBlocks([
       { kind: "source", title: "Untrusted source", url: "javascript:alert(1)" },
     ]),
-    "**source:** Untrusted source",
+    "**source:** `Untrusted source`",
   );
   assert.equal(
     renderConversationBlocks([
@@ -360,7 +360,7 @@ test("does not turn unsafe citation schemes into markdown links", () => {
         url: "https://safe.test/\n[evil](https://evil.test)",
       },
     ]),
-    "**source:** Injected source",
+    "**source:** `Injected source`",
   );
   assert.equal(
     renderConversationBlocks([
@@ -380,5 +380,153 @@ test("does not turn unsafe citation schemes into markdown links", () => {
       "",
       "**source:** [Attempted link injection](<https://safe.test/)%20[evil](https://evil.test>)",
     ].join("\n"),
+  );
+});
+
+test("an unclosed fence cannot swallow the message that follows it", () => {
+  assert.equal(
+    buildConversationMarkdown([
+      {
+        role: "user",
+        content: renderConversationBlocks(
+          contentBlocksToMarkdownBlocks([
+            { type: "text", text: "look:\n```js\nvar a = 1;" },
+          ]),
+        ),
+      },
+      { role: "assistant", content: "Done." },
+    ]),
+    [
+      "## User",
+      "",
+      "look:",
+      "```js",
+      "var a = 1;",
+      "```",
+      "",
+      "## Assistant",
+      "",
+      "Done.",
+      "",
+    ].join("\n"),
+  );
+});
+
+test("an unterminated html comment cannot hide the message that follows it", () => {
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "<!-- note" }]),
+    "<!-- note-->",
+  );
+});
+
+test("reasoning that leaves a fence open still closes its details block", () => {
+  assert.equal(
+    renderConversationBlocks([{ kind: "thinking", text: "~~~\nsketch" }]),
+    [
+      "<details>",
+      "<summary>thinking</summary>",
+      "",
+      "~~~",
+      "sketch",
+      "~~~",
+      "",
+      "</details>",
+    ].join("\n"),
+  );
+});
+
+test("renders scalar args inline instead of spending a fence on each", () => {
+  assert.equal(
+    renderConversationBlocks([
+      {
+        kind: "tool-call",
+        name: "web_search",
+        args: { query: "lora", limit: 10, recursive: true, cursor: null },
+      },
+    ]),
+    [
+      "**tool call:** `web_search`",
+      "",
+      "**query:** `lora`",
+      "",
+      "**limit:** `10`",
+      "",
+      "**recursive:** `true`",
+      "",
+      "**cursor:** `null`",
+    ].join("\n"),
+  );
+});
+
+test("a line break in an arg key cannot end the bold label", () => {
+  assert.equal(
+    renderConversationBlocks([
+      {
+        kind: "tool-call",
+        name: "run",
+        args: { "a:**\n\n<img src=x onerror=alert(1)>": "1" },
+      },
+    ]),
+    [
+      "**tool call:** `run`",
+      "",
+      "**a:\\*\\* \\<img src=x onerror=alert(1)>:** `1`",
+    ].join("\n"),
+  );
+});
+
+test("a line break in a citation title cannot end the link label", () => {
+  assert.equal(
+    renderConversationBlocks([
+      {
+        kind: "source",
+        title: "ok\n\n<img src=x onerror=alert(1)>",
+        url: "https://good.test/",
+      },
+    ]),
+    "**source:** [ok \\<img src=x onerror=alert(1)>](<https://good.test/>)",
+  );
+});
+
+test("a rejected destination leaves a bare url title unlinkable", () => {
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "source", title: "https://evil.test/track", url: "javascript:alert(1)" },
+    ]),
+    "**source:** `https://evil.test/track`",
+  );
+});
+
+test("keeps an attachment label from resolving as a link reference", () => {
+  assert.equal(
+    renderConversationBlocks([{ kind: "attachment", label: "[audio attachment]" }]),
+    "\\[audio attachment\\]",
+  );
+});
+
+test("renders an empty tool value as a code span, not two bare backticks", () => {
+  assert.equal(
+    renderConversationBlocks([{ kind: "tool-call", name: "run", args: { k: "" } }]),
+    ["**tool call:** `run`", "", "**k:** `  `"].join("\n"),
+  );
+});
+
+test("fences a value whose only line break is a carriage return", () => {
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "tool-call", name: "run", args: { k: "left\rright" } },
+    ]),
+    ["**tool call:** `run`", "", "**k:**", "", "```", "left\rright", "```"].join(
+      "\n",
+    ),
+  );
+});
+
+test("drops a fragment url that cannot be encoded instead of throwing", () => {
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "source", title: "Broken", url: "#\ud800" },
+    ]),
+    "**source:** `Broken`",
   );
 });
