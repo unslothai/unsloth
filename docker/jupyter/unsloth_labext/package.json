@@ -1,0 +1,54 @@
+{
+  "name": "unsloth-jupyterlab",
+  "version": "0.1.0",
+  "description": "Unsloth Dark (Monokai) theme + Colab-style cell navigation for JupyterLab.",
+  "keywords": [
+    "jupyter",
+    "jupyterlab",
+    "jupyterlab-extension",
+    "theme"
+  ],
+  "license": "AGPL-3.0-only",
+  "author": "Unsloth AI",
+  "private": true,
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "style": "style/index.css",
+  "files": [
+    "lib/**/*.{d.ts,js,js.map}",
+    "style/**/*.{css,js,eot,gif,html,jpg,json,png,svg,woff2,ttf}",
+    "schema/*.json"
+  ],
+  "scripts": {
+    "build": "jlpm build:lib && jlpm build:labextension:dev",
+    "build:prod": "jlpm clean && jlpm build:lib:prod && jlpm build:labextension",
+    "build:lib": "tsc --sourceMap",
+    "build:lib:prod": "tsc",
+    "build:labextension": "jupyter labextension build .",
+    "build:labextension:dev": "jupyter labextension build --development True .",
+    "clean": "rimraf lib tsconfig.tsbuildinfo unsloth-jupyterlab/labextension"
+  },
+  "dependencies": {
+    "@codemirror/state": "^6.0.0",
+    "@codemirror/view": "^6.0.0",
+    "@jupyterlab/application": "^4.5.0",
+    "@jupyterlab/apputils": "^4.5.0",
+    "@jupyterlab/cells": "^4.5.0",
+    "@jupyterlab/codemirror": "^4.5.0",
+    "@jupyterlab/mainmenu": "^4.5.0",
+    "@jupyterlab/notebook": "^4.5.0",
+    "@jupyterlab/theme-dark-extension": "^4.5.0",
+    "@lumino/disposable": "^2.0.0",
+    "@lumino/widgets": "^2.0.0"
+  },
+  "devDependencies": {
+    "@jupyterlab/builder": "^4.5.0",
+    "rimraf": "^5.0.0",
+    "typescript": "~5.5.0"
+  },
+  "jupyterlab": {
+    "extension": true,
+    "themePath": "style/index.css",
+    "outputDir": "unsloth-jupyterlab/labextension"
+  }
+}
