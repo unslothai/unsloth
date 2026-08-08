@@ -2427,6 +2427,19 @@ exit 0
     # Returns $null when nothing named uv resolves to an executable, so the caller's
     # "not installed yet" branch keeps its current meaning.
     function Resolve-UvExecutable {
+        # @(): a one-element return unrolls to a bare string, and indexing THAT gives its
+        # first character.
+        $candidates = @(Get-UvExecutableCandidates)
+        if ($candidates.Count -gt 0) { return $candidates[0] }
+        return $null
+    }
+
+    # Every uv this machine offers, in the order the bare token would pick them: the alias
+    # first, then PATH. A LIST rather than one answer, because the version gate has to be
+    # able to move on -- an alias pointing at a stale uv made the probe return that same
+    # binary forever, so a current uv already on PATH (or one winget had just installed)
+    # was never consulted and the install ended at "uv could not be installed".
+    function Get-UvExecutableCandidates {
         # -All: without it Get-Command's ordering across several matches is incidental
         # rather than documented, and picking the wrong one would silently change which
         # uv runs on a machine that has two.
@@ -2439,10 +2452,14 @@ exit 0
         #
         # Followed only as far as an Application, and the resolved path is returned rather than
         # the alias name, so the rest of the script is not going back through command discovery.
+        $found = [System.Collections.Generic.List[string]]::new()
         $alias = Get-Command uv -CommandType Alias -ErrorAction SilentlyContinue
         while ($alias -and $alias.ResolvedCommand) {
             $target = $alias.ResolvedCommand
-            if ($target.CommandType -eq 'Application' -and $target.Source) { return $target.Source }
+            if ($target.CommandType -eq 'Application' -and $target.Source) {
+                $found.Add($target.Source)
+                break
+            }
             if ($target.CommandType -ne 'Alias') { break }
             $alias = $target
         }
@@ -2452,18 +2469,32 @@ exit 0
         )
         # Applications come back in PATH order (PATHEXT deciding within a directory), so
         # on a console with no profile overrides this is the uv the bare token would run.
-        if ($apps.Count -gt 0) { return $apps[0].Source }
+        foreach ($app in $apps) {
+            if (-not $found.Contains($app.Source)) { $found.Add($app.Source) }
+        }
+        if ($found.Count -gt 0) { return @($found) }
         # Anything else named uv is a function, a cmdlet, or an alias to one. Do NOT
         # hand back the bare token here: a wrapper that answers `--version` with a
         # plausible number would pass the version gate and then receive every install
         # command this script runs, which is the hijack this function exists to stop.
-        # $null keeps the caller's "not installed yet" meaning, so uv gets installed
+        # An empty list keeps the caller's "not installed yet" meaning, so uv gets installed
         # for real and the gate re-probes against that.
-        return $null
+        return @()
     }
 
     function Test-UvVersionOk {
-        $exe = Resolve-UvExecutable
+        # EVERY candidate, not just the first: an alias pointing at a stale uv used to be the
+        # only one ever probed, so a current uv on PATH -- including one winget or the pinned
+        # release had just installed -- could not rescue the run and the install ended at
+        # "uv could not be installed". Alias first still, so a passing alias keeps winning.
+        foreach ($exe in Get-UvExecutableCandidates) {
+            if (Test-UvCandidateVersion $exe) { return $true }
+        }
+        return $false
+    }
+
+    function Test-UvCandidateVersion {
+        param([string]$exe)
         if (-not $exe) { return $false }
         try {
             $raw = (& $exe --version 2>$null | Select-Object -First 1)

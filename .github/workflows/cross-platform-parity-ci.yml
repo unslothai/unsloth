@@ -175,11 +175,13 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
-      # typer / pyyaml / pydantic / click: test_installer_profile_hardening.py imports
+      # typer / pyyaml / pydantic / click / rich: test_installer_profile_hardening.py imports
       # unsloth_cli.commands.studio to exercise the profile probe directly, and that pulls
       # the CLI's own import chain. Without them the job dies on ModuleNotFoundError before
-      # a single test runs. No torch: UNSLOTH_NO_TORCH keeps the suite off it.
-      - run: python -m pip install -U pip pytest typer pyyaml pydantic click
+      # a single test runs. rich arrives through typer today, but unsloth_cli imports it
+      # directly, so it is named rather than left to somebody else's dependency list. No
+      # torch: UNSLOTH_NO_TORCH keeps the suite off it.
+      - run: python -m pip install -U pip pytest typer pyyaml pydantic click rich
       # -rs: these files are full of platform-gated cases, and a case that
       # silently stopped running on the row it exists for still reports green.
       - name: Cross-platform parity tests

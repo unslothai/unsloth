@@ -166,7 +166,7 @@ def test_no_bare_uv_token_survives_at_a_call_site():
 
 
 def test_uv_is_resolved_as_an_application():
-    body = _extract_function("Resolve-UvExecutable")
+    body = _extract_function("Get-UvExecutableCandidates")
     # The whole invocation, not the flags separately: the function's own comment mentions both,
     # so a substring test for either passes on a body that no longer uses them.
     assert "Get-Command uv -CommandType Application -All -ErrorAction SilentlyContinue" in body, (
@@ -182,9 +182,9 @@ def test_uv_is_resolved_as_an_application():
         "an alias pointing at a real executable is still a legitimate way to have uv, so follow "
         "it -- but only as far as an Application, and hand back the resolved path"
     )
-    probe = _extract_function("Test-UvVersionOk")
+    probe = _extract_function("Test-UvVersionOk") + _extract_function("Test-UvCandidateVersion")
     assert (
-        "Resolve-UvExecutable" in probe and "$script:UvExe = $exe" in probe
+        "Get-UvExecutableCandidates" in probe and "$script:UvExe = $exe" in probe
     ), "the probe must pin the executable that answered, so later PATH edits cannot swap it"
 
 
@@ -523,7 +523,9 @@ def _uv_probe_body(*extra: str) -> str:
         [
             _guarded(
                 '    $UvMinVersion = "0.8.16"',
+                _extract_function("Get-UvExecutableCandidates"),
                 _extract_function("Resolve-UvExecutable"),
+                _extract_function("Test-UvCandidateVersion"),
                 _extract_function("Test-UvVersionOk"),
                 '    "OK:$(Test-UvVersionOk)"',
                 '    "PINNED:$script:UvExe"',
@@ -563,9 +565,13 @@ def test_uv_probe_finds_the_real_uv_behind_a_profile_alias(tmp_path):
 
 @requires_pwsh
 def test_uv_probe_rejects_a_too_old_uv_and_leaves_the_reset_value(tmp_path):
-    """The version gate still has to fail closed, or a stale uv would be pinned and used."""
+    """The version gate still has to fail closed, or a stale uv would be pinned and used.
+
+    PATH is REPLACED, not prepended to: since the gate now walks every candidate, a real uv on
+    the machine running this would legitimately rescue the run and hide the branch under test.
+    """
     fake = _fake_uv(tmp_path / "bin", version = "0.7.0")
-    res = _run_with_profile(tmp_path, _uv_probe_body(), path_prepend = fake.parent)
+    res = _run_with_profile(tmp_path, _uv_probe_body(), path_override = fake.parent)
     assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
     assert "OK:False" in res.stdout
     assert "PINNED:uv" in res.stdout, "a rejected uv must not be pinned over the reset value"
@@ -1085,11 +1091,56 @@ def test_the_uv_alias_is_resolved_before_the_path_candidates():
     that binary -- and checking PATH first made the alias branch unreachable on any machine
     that also has some uv on PATH."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
-    start = _locate(src, "function Resolve-UvExecutable {", "the uv resolver")
+    start = _locate(src, "function Get-UvExecutableCandidates {", "the uv resolver")
     body = src[start : start + 2500]
     alias = _locate(body, "Get-Command uv -CommandType Alias", "the alias lookup")
     apps = _locate(body, "Get-Command uv -CommandType Application", "the PATH lookup")
     assert alias < apps, "the PATH candidates are consulted before the alias"
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+def test_a_stale_alias_does_not_block_a_current_uv_on_path(tmp_path):
+    """Executed: the version gate walks EVERY candidate.
+
+    An alias pointing at a real but stale uv used to be the only binary ever probed, so a
+    current uv already on PATH -- or one winget had just installed -- could not rescue the
+    run, and the install ended at "uv could not be installed" on a machine that had one.
+    """
+    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    gate = src[
+        _locate(src, "    function Test-UvVersionOk {", "the version gate") : _locate(
+            src, "    # Fallback for hosts without winget", "the end of the gate"
+        )
+    ]
+    script = (
+        "$UvMinVersion = '0.9.0'\n"
+        f"{gate}\n"
+        # Two candidates: a stale alias target first, a current one second.
+        "function Get-UvExecutableCandidates { @('stale', 'current') }\n"
+        "function Test-UvCandidateVersionShim { }\n"
+        "Write-Output ([string](Test-UvVersionOk))\n"
+        "Write-Output $script:UvExe\n"
+    )
+    # The candidates are invoked as executables, so stand in two shims that answer --version.
+    stale = tmp_path / "stale.ps1"
+    stale.write_text("Write-Output 'uv 0.4.30'", encoding = "utf-8")
+    current = tmp_path / "current.ps1"
+    current.write_text("Write-Output 'uv 0.12.1'", encoding = "utf-8")
+    script = script.replace(
+        "@('stale', 'current')",
+        f"@('{stale.as_posix()}', '{current.as_posix()}')",
+    )
+    result = subprocess.run(
+        [shutil.which("pwsh"), "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output = True,
+        text = True,
+        check = False,
+    )
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    assert lines and lines[0] == "True", (
+        f"the gate stopped at the stale alias: {result.stdout!r} {result.stderr!r}"
+    )
+    assert lines[-1].endswith("current.ps1"), "the passing candidate must be the pinned one"
 
 
 def test_the_parity_workflow_runs_when_the_studio_command_changes():
@@ -1118,7 +1169,54 @@ def test_the_parity_job_installs_what_this_suite_imports():
     ).read_text(encoding = "utf-8")
     install = [line for line in workflow.splitlines() if "pip install" in line and "pytest" in line]
     assert install, "the parity job's install step was not found"
-    for package in ("typer", "pyyaml", "pydantic", "click"):
+    for package in ("typer", "pyyaml", "pydantic", "click", "rich"):
         assert all(
             package in line for line in install
         ), f"the parity job does not install {package}, which this suite's imports need"
+
+
+def test_the_probe_output_is_decoded_lossily():
+    """The profile ran before the record was printed and may have said anything in any
+    encoding. `text=True` alone decodes with the locale codec and STRICT errors, so a UTF-8
+    banner on an ANSI console raised UnicodeDecodeError -- neither OSError nor
+    SubprocessError, so it escaped the handler and took the update down before the
+    -NoProfile child ever ran."""
+    import ast
+
+    tree = ast.parse(STUDIO_COMMAND.read_text(encoding = "utf-8"))
+    probe = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_probe_profile_proxy_defaults"
+    )
+    runs = [
+        node
+        for node in ast.walk(probe)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "run"
+    ]
+    assert runs, "the probe no longer shells out"
+    for call in runs:
+        keywords = {kw.arg for kw in call.keywords}
+        assert "encoding" in keywords and "errors" in keywords, (
+            "a strict locale decode of the profile's own output can raise before the framing "
+            "is ever consulted"
+        )
+
+
+def test_a_non_ascii_banner_does_not_cost_the_proxy(monkeypatch):
+    # The decode is the parent's job, so this drives the extractor with the mangled text the
+    # lossy decode produces: the record is ASCII and has to survive whatever precedes it.
+    from unsloth_cli.commands import studio as studio_cmd
+
+    class _Result:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    banner = "Bienvenue \ufffd\ufffd\ufffd chez Contoso\n"
+    noisy = _framed('{"invoke-webrequest:proxy": "http://proxy.corp:8080"}', banner = banner)
+    monkeypatch.setattr(studio_cmd.subprocess, "run", lambda argv, **kw: _Result(noisy))
+
+    merged = studio_cmd._probe_profile_proxy_defaults(["pwsh.exe"])
+    assert json.loads(merged) == {"invoke-webrequest:proxy": "http://proxy.corp:8080"}

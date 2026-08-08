@@ -2924,6 +2924,14 @@ def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str
                 ],
                 capture_output = True,
                 text = True,
+                # The profile ran before the record was printed and may have said anything in
+                # any encoding. text=True alone decodes with the locale codec and STRICT
+                # errors, so a UTF-8 banner on an ANSI console raised UnicodeDecodeError --
+                # which is neither OSError nor SubprocessError, so it escaped this handler and
+                # took the update down before the -NoProfile child ever ran. The record itself
+                # is ASCII; the banner is allowed to arrive mangled and be discarded.
+                encoding = "utf-8",
+                errors = "replace",
                 timeout = 20,
                 **_windows_hidden_subprocess_kwargs(),
             )
