@@ -116,6 +116,62 @@ def test_an_unrecognised_op_table_leaves_the_load_status_alone(monkeypatch):
     assert "could not be enumerated" in entry["error"]
 
 
+def test_a_cpp_lib_that_raises_on_import_is_broken_not_unknown(monkeypatch):
+    """The parent adds a package to `degraded` on imports=False or runs=False only, so a
+    native load error raised by _cpp_lib itself showed as "Not checked" with no banner --
+    on precisely the corrupt install this report exists to name."""
+    import builtins
+
+    _install_xformers(monkeypatch, [_op(minimum = (7, 0))])
+    real_import = builtins.__import__
+
+    def _raise_for_cpp_lib(name, *args, **kwargs):
+        if name == "xformers._cpp_lib" or (name == "xformers" and "_cpp_lib" in (args[2] or ())):
+            raise OSError("libc10.so: undefined symbol")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.delitem(sys.modules, "xformers._cpp_lib")
+    monkeypatch.setattr(builtins, "__import__", _raise_for_cpp_lib)
+    entry = probe.probe_xformers()
+    assert entry["imports"] is True
+    assert entry["runs"] is False
+    assert "undefined symbol" in entry["error"]
+
+
+def test_a_layout_without_a_cpp_lib_at_all_is_still_unknown(monkeypatch):
+    # A future rename is not a dead install, so ModuleNotFoundError stays unknown.
+    import builtins
+
+    _install_xformers(monkeypatch, [_op(minimum = (7, 0))])
+    real_import = builtins.__import__
+
+    def _missing(name, *args, **kwargs):
+        if name == "xformers._cpp_lib" or (name == "xformers" and "_cpp_lib" in (args[2] or ())):
+            raise ModuleNotFoundError("No module named 'xformers._cpp_lib'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.delitem(sys.modules, "xformers._cpp_lib")
+    monkeypatch.setattr(builtins, "__import__", _missing)
+    assert probe.probe_xformers()["runs"] is None
+
+
+def test_an_unresolvable_mask_does_not_fall_back_to_the_whole_box(monkeypatch):
+    """The parent answers None when it cannot resolve a numeric mask, and used to serialize
+    that as an empty override -- which this child reads as no override at all and answers
+    from nvidia-smi over every physical GPU, the exact verdict the parent declined to give."""
+    import shutil as _shutil
+    import subprocess as _subprocess
+
+    monkeypatch.setenv("UNSLOTH_PROBE_DEVICE_CC", probe._CC_UNKNOWN)
+    monkeypatch.setattr(
+        _shutil, "which", lambda name: pytest.fail("the child must not look for nvidia-smi")
+    )
+    monkeypatch.setattr(
+        _subprocess, "run", lambda *a, **k: pytest.fail("the child must not ask nvidia-smi")
+    )
+    assert probe._device_compute_capabilities() == ()
+
+
 def test_a_failed_library_load_still_wins(monkeypatch):
     _install_xformers(monkeypatch, [_op(minimum = (7, 0))])
     sys.modules["xformers._cpp_lib"]._cpp_library_load_exception = OSError("undefined symbol")

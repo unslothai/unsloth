@@ -35,6 +35,10 @@ import sys
 from typing import Any, Dict
 
 
+# Mirrors _CC_UNKNOWN in utils/hardware/hardware.py, which sets it.
+_CC_UNKNOWN = "unknown"
+
+
 def _error(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
@@ -62,7 +66,16 @@ def probe_xformers() -> Dict[str, Any]:
 
     try:
         from xformers import _cpp_lib
+    except ModuleNotFoundError as exc:
+        # A layout with no _cpp_lib at all. Unknown, not broken: treating a future rename as a
+        # dead install would put a red banner on a working one.
+        entry["error"] = _error(exc)
+        return entry
     except BaseException as exc:
+        # The module exists and raised: its native load failed, which IS the dead-kernel state
+        # this report exists to surface. Left as None it read "Not checked", stayed out of
+        # `degraded`, and showed no banner at all.
+        entry["runs"] = False
         entry["error"] = _error(exc)
         return entry
 
@@ -176,6 +189,11 @@ def _device_compute_capabilities():
     cleared it.
     """
     override = os.environ.get("UNSLOTH_PROBE_DEVICE_CC", "").strip()
+    if override == _CC_UNKNOWN:
+        # The parent could not resolve the mask (a numeric ordinal under a non-PCI_BUS_ID
+        # CUDA_DEVICE_ORDER). Falling back to nvidia-smi here would answer from every GPU on
+        # the box, which is exactly the verdict the parent declined to give.
+        return ()
     text = override
     if not text:
         try:

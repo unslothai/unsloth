@@ -2316,7 +2316,31 @@ def _xformers_torch_index_url():
     import os
 
     base = os.environ.get("UNSLOTH_PYTORCH_MIRROR") or "https://download.pytorch.org/whl"
-    return f"{base.rstrip('/')}/{family}"
+    return f"{_redact_index_url(base.rstrip('/'))}/{family}"
+
+
+def _redact_index_url(url):
+    """Strip userinfo, query and fragment from a wheel index before it is PRINTED.
+
+    UNSLOTH_PYTORCH_MIRROR can carry credentials (``https://user:token@host/simple``) or a
+    signed-URL query, and this hint goes to stdout on the default import path -- into logs,
+    CI output and shared notebooks. pip redacts the same thing in its own output; the URL is
+    still copy-pasteable, since the user's own mirror config supplies the secret back.
+    """
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+
+        parts = urlsplit(str(url))
+        if not parts.netloc and not parts.query and not parts.fragment:
+            return str(url)
+        host = parts.hostname or ""
+        if parts.port:
+            host = f"{host}:{parts.port}"
+        if parts.username:
+            host = f"***@{host}"
+        return urlunsplit((parts.scheme, host, parts.path, "", ""))
+    except Exception:  # noqa: BLE001 -- an unparseable mirror must not break the hint
+        return str(url)
 
 
 def _xformers_fix_hint():

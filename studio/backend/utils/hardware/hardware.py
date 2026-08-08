@@ -959,9 +959,14 @@ _ACCELERATOR_PACKAGES = (
 )
 
 # What a ROCm host could actually load. flash-attn ships ROCm wheels and Unsloth enables it
-# under DEVICE_TYPE == "hip"; the other three are CUDA-only builds there, so probing them
+# under DEVICE_TYPE == "hip"; xformers and torchao are CUDA-only builds there, so probing them
 # would turn an expected import failure into a red banner.
-_ROCM_ACCELERATOR_PACKAGES = frozenset({"flash_attn"})
+#
+# bitsandbytes belongs here too: unsloth/device_type.py imports it on EVERY backend and asks
+# native_kernels_ready(..., DEVICE_TYPE) whether 4-bit and prequantized loading are allowed, so
+# a ROCm wheel with a dead native library silently costs quantized loading. Skipping it labelled
+# an installed package "not used on this device", which is the false all-clear this report is for.
+_ROCM_ACCELERATOR_PACKAGES = frozenset({"flash_attn", "bitsandbytes"})
 
 # And on Intel XPU. Same reasoning, other package: bitsandbytes has an XPU backend that the
 # loader gates 4-bit on, while flash-attn / xformers / torchao publish nothing for it.
@@ -1153,7 +1158,16 @@ def _run_probe_subprocess(
                     # mask is gone by the time it starts, and nvidia-smi's first row is a
                     # physical device this process may not even be allowed to touch.
                     **(
-                        {"UNSLOTH_PROBE_DEVICE_CC": _visible_compute_capability() or ""}
+                        # "unknown", never "": the child reads an EMPTY override as no
+                        # override and falls back to nvidia-smi over the whole physical box,
+                        # so an unresolvable mask (a user-preserved FASTEST_FIRST ordering)
+                        # would be answered from every GPU present -- the false verdict the
+                        # resolver returned None to avoid.
+                        {
+                            "UNSLOTH_PROBE_DEVICE_CC": (
+                                _visible_compute_capability() or _CC_UNKNOWN
+                            )
+                        }
                         if not keep_cuda
                         else {}
                     ),
@@ -1183,6 +1197,11 @@ def _run_probe_subprocess(
         logger.debug(f"Accelerator probe output was not JSON: {e}")
         return None
     return results if isinstance(results, dict) else None
+
+
+# Sentinel for "the capabilities could not be resolved", passed to the probe child in place of
+# an empty string so it cannot read the absence as "no mask, read the whole box".
+_CC_UNKNOWN = "unknown"
 
 
 # The torch release xFormers moved to the PyTorch stable API/ABI at. Its v0.0.34 notes

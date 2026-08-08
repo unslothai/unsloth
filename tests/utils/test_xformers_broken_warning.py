@@ -306,6 +306,28 @@ def test_the_fix_hint_honours_a_configured_mirror(monkeypatch):
     assert "--index-url https://mirror.example/whl/cu128" in _utils._xformers_fix_hint()
 
 
+def test_the_fix_hint_redacts_a_credentialed_mirror(monkeypatch):
+    """UNSLOTH_PYTORCH_MIRROR can carry credentials or a signed-URL query, and this hint is
+    printed to stdout on the DEFAULT import path -- into logs, CI output and notebooks."""
+    from unsloth.models import _utils
+
+    monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://ci:s3cr3t@wheels.internal/simple")
+    index = _utils._xformers_torch_index_url()
+    if index is None:
+        pytest.skip("no CUDA torch, so there is no index to name")
+    assert "s3cr3t" not in index and "ci:" not in index
+    assert "***@wheels.internal" in index
+
+    monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://wheels.internal/simple?token=abc123")
+    index = _utils._xformers_torch_index_url()
+    assert "abc123" not in index and "token" not in index
+    assert index.startswith("https://wheels.internal/simple/")
+
+    # An ordinary mirror is passed through untouched, so the command stays copy-pasteable.
+    monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://wheels.internal/whl")
+    assert _utils._xformers_torch_index_url().startswith("https://wheels.internal/whl/")
+
+
 def test_the_fix_hint_names_no_index_without_a_cuda_torch(monkeypatch):
     # ROCm / XPU / CPU: there is no CUDA-matched xformers index to point at, and inventing
     # one would send the user to a 404.

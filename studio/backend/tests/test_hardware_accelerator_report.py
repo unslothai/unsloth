@@ -463,17 +463,22 @@ def test_a_rocm_host_probes_only_what_it_can_actually_load(monkeypatch, fake_pro
     they are not empty either. Unsloth imports and enables flash-attn under
     DEVICE_TYPE == "hip", so a broken ROCm FlashAttention is something training will
     actually reach, and calling it "not used on this device" hides the one banner that
-    explains the crash. The other three ship CUDA-only builds, where an import failure is
-    the design."""
+    explains the crash. bitsandbytes is reached on every backend -- device_type.py imports it
+    and asks native_kernels_ready(..., DEVICE_TYPE) whether 4-bit loading is allowed -- so a
+    dead ROCm wheel silently costs quantized loading. xformers and torchao ship CUDA-only
+    builds, where an import failure is the design."""
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "IS_ROCM", True)
     monkeypatch.setattr(hw, "pkg_version", lambda name: "1.2.3")
     calls = fake_probe({"flash_attn": {"imports": False, "runs": None, "error": "OSError: boom"}})
 
     report = hw.get_accelerator_report(refresh = True)
-    assert calls["names"] == ["flash_attn"]
+    # Two children, because flash-attn needs the real device mask and bitsandbytes must not
+    # latch a CUDA context; the fixture records the last group.
+    # Two children: bitsandbytes is probed with the device mask intact, flash-attn without.
+    assert calls["n"] == 2 and calls["names"] == ["bitsandbytes"]
+    assert report["packages"]["bitsandbytes"]["reason"] != "not used on this device"
     assert report["degraded"] == ["flash_attn"]
-    assert report["packages"]["bitsandbytes"]["reason"] == "not used on this device"
     assert report["packages"]["xformers"]["reason"] == "not used on this device"
     assert report["packages"]["torchao"]["reason"] == "not used on this device"
 
@@ -527,6 +532,24 @@ def test_the_capability_follows_the_mask_the_app_runs_under(monkeypatch, mask, e
     else:
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
     assert hw._visible_compute_capability() == expected
+
+
+def test_an_unresolved_capability_reaches_the_child_as_unknown(monkeypatch):
+    """The child reads an EMPTY UNSLOTH_PROBE_DEVICE_CC as "no override" and falls back to
+    nvidia-smi over every physical GPU -- so serializing an unresolvable mask as "" handed it
+    the whole box, which is the verdict the resolver returned None to avoid."""
+    seen = {}
+
+    def _capture(argv, **kwargs):
+        seen.update(kwargs.get("env") or {})
+        raise RuntimeError("stop here; the environment is what is under test")
+
+    monkeypatch.setattr(hw, "_visible_compute_capability", lambda: None)
+    monkeypatch.setattr(hw.subprocess, "run", _capture)
+    hw._run_probe_subprocess(["xformers"], keep_cuda = False)
+
+    assert seen.get("UNSLOTH_PROBE_DEVICE_CC") == hw._CC_UNKNOWN
+    assert seen.get("UNSLOTH_PROBE_DEVICE_CC") != ""
 
 
 def test_a_numeric_mask_is_unknown_under_a_non_pci_device_order(monkeypatch):
