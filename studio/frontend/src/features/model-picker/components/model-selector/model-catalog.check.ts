@@ -582,8 +582,21 @@ console.log("model-catalog check: all assertions passed");
 const HF_API = "https://huggingface.co/api/models";
 const HF_RESOLVE = "https://huggingface.co";
 const NETWORK_ATTEMPTS = 3;
-/** Per-attempt wall clock, headers and body together. Three of these still fit the job budget. */
+/** Per-attempt wall clock, headers and body together. */
 const NETWORK_TIMEOUT_MS = 20_000;
+/**
+ * Wall clock for the whole network pass, comfortably under the workflow's 10-minute
+ * timeout-minutes.
+ *
+ * Bounding each attempt is not enough on its own: ~53 repos at NETWORK_BATCH 4 is 14 serial
+ * batches, and a peer that stalls every request costs 3 x 20s plus 1.5s of backoff per batch,
+ * so a fully stalled Hub takes about 14.3 minutes to fail open -- and the job is killed at 10,
+ * which is the red run this retry logic exists to avoid. Past this deadline every remaining
+ * request short-circuits to "no opinion", so the check still reaches its warnings and exits 0.
+ */
+const NETWORK_DEADLINE_MS = 7 * 60 * 1000;
+/** Set when the network pass starts; Infinity keeps the offline assertions unbounded. */
+let networkDeadlineAt = Number.POSITIVE_INFINITY;
 const NETWORK_BATCH = 4;
 
 interface HubRepo {
@@ -606,6 +619,9 @@ async function fetchWithRetry(
 ): Promise<{ response: Response | null; body: string; why: string }> {
   let why = "unknown";
   for (let attempt = 1; attempt <= NETWORK_ATTEMPTS; attempt++) {
+    if (Date.now() >= networkDeadlineAt) {
+      return { response: null, body: "", why: "the network check ran out of its overall budget" };
+    }
     try {
       // A per-attempt deadline, or a peer that accepts the connection and then stalls has no
       // retry and no fail-open: fetch simply never settles, and the scheduled job dies on its own
@@ -635,6 +651,7 @@ async function inBatches<T>(items: T[], work: (item: T) => Promise<void>): Promi
 }
 
 async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<string[]> {
+  networkDeadlineAt = Date.now() + NETWORK_DEADLINE_MS;
   const failures: string[] = [];
   const groups = catalogs.flat();
   // One metadata call per repo id, however many artifacts share it.
