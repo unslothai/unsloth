@@ -69,6 +69,16 @@ import { resolveDiffusionGgufFilename } from "@/lib/diffusion-gguf-filename";
 import { createPickGuard, runGgufRepoPick } from "@/lib/diffusion-gguf-pick";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
 import {
+  PRECISION_REFUSAL_TITLE,
+  denseTextEncoderBuildLabel,
+  denseTransformerBuildLabel,
+  formatResolvedValue,
+  isPrecisionRefusal,
+  resolvedBadge,
+  resolvedSeedKey,
+  resolvedSelectValue,
+} from "@/lib/resolved-precision";
+import {
   routedGgufFilename,
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
@@ -339,16 +349,10 @@ function Field({
   );
 }
 
-// The engaged value of a resolved Advanced control, formatted for its "Auto: X" badge (`_native_cudnn` shows as cuDNN).
-function formatResolvedValue(value: string | boolean | null): string {
-  if (value === null || value === "") return "Off";
-  if (typeof value === "boolean") return value ? "On" : "Off";
-  if (value === "_native_cudnn" || value.toLowerCase() === "cudnn") return "cuDNN";
-  return value.toUpperCase();
-}
-
-// The "Auto: X" badge for one Advanced control: rendered only when the backend resolved it (source === "auto").
-// The reason is a hover tooltip. Muted pill matching the panel's other chips, same markup as the images page ResolvedBadge.
+// The badge for one Advanced control: "Auto: X" when the backend decided it, "NVFP4 -> OFF" in a
+// warning tone when an EXPLICIT request was declined. The old rule rendered nothing for the second
+// case, which is how a clip could be labelled BF16 while telemetry confirmed NVFP4 (and the other
+// way round). Same markup and helpers as the images page ResolvedBadge.
 function ResolvedBadge({
   status,
   controlKey,
@@ -356,20 +360,111 @@ function ResolvedBadge({
   status: VideoStatus | null;
   controlKey: string;
 }) {
-  const resolved = status?.resolved?.[controlKey];
-  if (!resolved || resolved.source !== "auto") return null;
+  const info = resolvedBadge(controlKey, status?.resolved?.[controlKey]);
+  if (!info) return null;
   const badge = (
-    <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-ui-9 font-medium uppercase tracking-wider text-muted-foreground">
-      Auto: {formatResolvedValue(resolved.value)}
+    <span
+      className={cn(
+        "shrink-0 rounded-sm px-1 py-px text-ui-9 font-medium uppercase tracking-wider",
+        info.tone === "warn"
+          ? "bg-destructive/15 text-destructive"
+          : "bg-muted text-muted-foreground",
+      )}
+    >
+      {info.label}
     </span>
   );
-  if (!resolved.reason) return badge;
+  if (!info.tooltip) return badge;
   return (
     <Tooltip>
       <TooltipTrigger asChild={true}>{badge}</TooltipTrigger>
-      <TooltipContent>{resolved.reason}</TooltipContent>
+      <TooltipContent>{info.tooltip}</TooltipContent>
     </Tooltip>
   );
+}
+
+// One "what actually ran" line in the loaded-build summary below. Mirrors the images page.
+function BuildRow({ label, value, badge }: { label: string; value: string; badge?: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-muted-foreground">
+        {label}
+        {badge}
+      </span>
+      <span className="min-w-0 truncate text-foreground">{value}</span>
+    </div>
+  );
+}
+
+/**
+ * What the LOADED model is actually running, read from status (never from the request): the DiT and
+ * text-encoder precision, the memory mode with its resolved offload behaviour, and the attention
+ * backend. The Advanced selects above say what was ASKED for; this says what happened, and any
+ * control whose request was declined carries its reason in the badge tooltip.
+ */
+function LoadedBuildSummary({ status }: { status: VideoStatus | null }) {
+  if (!status?.loaded) return null;
+  const offload = status.offload_policy ?? "none";
+  return (
+    <div className="flex flex-col gap-1 rounded-md border border-border/60 px-2.5 py-2 text-ui-11">
+      <div className="flex items-center gap-1 pb-0.5 text-xs font-medium text-muted-foreground">
+        Loaded build
+        <InfoHint>
+          What the loaded model is actually running, reported by the backend. A control whose
+          requested value could not be used shows it next to that control, with the reason.
+        </InfoHint>
+      </div>
+      <BuildRow
+        label="Transformer"
+        value={
+          status.transformer_quant
+            ? formatResolvedValue("transformer_quant", status.transformer_quant)
+            // No dense quant ran, so the row reports what the checkpoint itself carries.
+            : denseTransformerBuildLabel(status)
+        }
+        badge={<ResolvedBadge status={status} controlKey="transformer_quant" />}
+      />
+      <BuildRow
+        label="Text encoder"
+        value={
+          status.text_encoder_quant
+            ? formatResolvedValue("text_encoder_quant", status.text_encoder_quant)
+            // No runtime TE quant engaged, which on the native engine is not the same as bf16.
+            : denseTextEncoderBuildLabel(status)
+        }
+        badge={<ResolvedBadge status={status} controlKey="text_encoder_quant" />}
+      />
+      <BuildRow
+        label="Memory"
+        value={
+          offload === "none"
+            ? `${status.memory_mode ?? "auto"} · resident`
+            : `${status.memory_mode ?? "auto"} · ${offload} offload`
+        }
+      />
+      <BuildRow
+        label="Attention"
+        value={
+          status.attention_backend
+            ? formatResolvedValue("attention_backend", status.attention_backend)
+            : "Native SDPA"
+        }
+      />
+    </div>
+  );
+}
+
+/**
+ * Report a failed load. A refused precision is a long actionable sentence, so it becomes a toast
+ * description under a short title rather than one unreadable line. Mirrors the images page.
+ */
+function reportLoadFailure(message: string | null | undefined, fallback: string): void {
+  const text = (message || "").trim();
+  if (text && isPrecisionRefusal(text)) {
+    toast.error(PRECISION_REFUSAL_TITLE, { description: text });
+    return;
+  }
+  toast.error(text || fallback);
 }
 
 // A compact labeled Select row for the Advanced Options panel.
@@ -457,6 +552,27 @@ function RecipePopover({
             <RecipeRow label="Negative" value={video.negative_prompt} wrap />
           ) : null}
           {video.model ? <RecipeRow label="Model" value={video.model} /> : null}
+          {/* The load-time build, all ENGAGED values, so a saved clip can never be labelled with a
+              precision that did not run. Matches what the images Recipe already shows. */}
+          {video.gguf_filename ? (
+            <RecipeRow label="File" value={video.gguf_filename} mono />
+          ) : null}
+          {video.transformer_quant ? (
+            <RecipeRow label="Quant" value={video.transformer_quant} />
+          ) : null}
+          {video.text_encoder_quant ? (
+            <RecipeRow label="TE quant" value={video.text_encoder_quant} />
+          ) : null}
+          {video.memory_mode ? (
+            <RecipeRow
+              label="Memory"
+              value={
+                video.offload_policy && video.offload_policy !== "none"
+                  ? `${video.memory_mode} (${video.offload_policy} offload)`
+                  : video.memory_mode
+              }
+            />
+          ) : null}
           <RecipeRow label="Size" value={`${video.width} × ${video.height}`} />
           <RecipeRow label="Frames" value={`${video.num_frames} @ ${video.fps} fps`} />
           <RecipeRow label="Duration" value={`${video.duration_s.toFixed(2)}s`} />
@@ -754,6 +870,36 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     }
   }, [loadedModelKey, defaultSteps, defaultGuidance]);
 
+  // Reseed the Advanced selects from the LOADED build, so they stop being pure local request state.
+  // An honored request re-selects itself; a declined one snaps to what actually engaged, so the
+  // Precision dropdown can never go on advertising a scheme the loaded DiT is not running. Keyed on
+  // the LOAD-TIME half of the record: the backend rewrites the transformer_cache entry at GENERATION
+  // time, so serializing the whole record let a step-cache toggle discard a pending Advanced edit.
+  const resolvedKey = status?.loaded ? resolvedSeedKey(status.resolved) : null;
+  useEffect(() => {
+    const record = status?.loaded ? status.resolved : null;
+    if (!record) return;
+    const quant = resolvedSelectValue(record.transformer_quant, (v) =>
+      // The engaged value spells "no quant" as "off"; the select's option for it is "none".
+      (["auto", "none", "int8", "fp8", "nvfp4", "mxfp8"] as const).find(
+        (o) => o === v || (o === "none" && v === "off"),
+      ) ?? null,
+    );
+    if (quant) setTransformerQuant(quant);
+    const memory = resolvedSelectValue(record.memory_mode, (v) =>
+      (["auto", "fast", "balanced", "low_vram"] as const).find((o) => o === v) ?? null,
+    );
+    if (memory) setMemoryMode(memory);
+    const attention = resolvedSelectValue(record.attention_backend, (v) =>
+      // The engaged value uses the dispatcher's own name; map it back to the option.
+      (["auto", "native", "cudnn", "flash3", "sage"] as const).find(
+        (o) => o === v || `_native_${o}` === v,
+      ) ?? null,
+    );
+    if (attention) setAttentionBackend(attention);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
+  }, [resolvedKey]);
+
   // Mint (once) a playable link for a record's MP4, cached across remounts. Unlike the images gallery this does NOT download
   // the file: the link goes straight into the <video> element, which streams ranges, so playback starts and seeking works.
   const ensureSrc = useCallback(async (video: GalleryVideo) => {
@@ -1031,7 +1177,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       }
       if (p.phase === "error") {
         dismissLoadToast();
-        toast.error(p.error || "Failed to load model");
+        reportLoadFailure(p.error, "Failed to load model");
         setBusy(null);
         if (quantRevert.current) {
           setQuant(quantRevert.current.prev);
@@ -1215,14 +1361,18 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           speed_mode: speedMode === "auto" ? undefined : speedMode,
           attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
           transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
-          transformer_quant: transformerQuant === "auto" ? undefined : transformerQuant,
+          // Full-pipeline loads only: a GGUF / single-file DiT runs the precision its checkpoint
+          // carries. The Precision control is hidden for those kinds but the state persists across
+          // picks, so a stale scheme would reach a load that can only refuse it.
+          transformer_quant:
+            opts.kind === "pipeline" && transformerQuant !== "auto" ? transformerQuant : undefined,
         });
       } catch (err) {
         lastLoad.current = prevLastLoad;
         setCanReapply(prevCanReapply);
         lastLoadRevert.current = null;
         dismissLoadToast();
-        toast.error(err instanceof Error ? err.message : "Failed to start load");
+        reportLoadFailure(err instanceof Error ? err.message : "", "Failed to start load");
         setBusy(null);
         void refreshStatus();
         return false;
@@ -1725,6 +1875,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           ["fbcache", "First-Block-Cache"],
         ]}
       />
+      <LoadedBuildSummary status={status} />
       {status?.loaded && canReapply && (
         <Tooltip>
           <TooltipTrigger asChild={true}>

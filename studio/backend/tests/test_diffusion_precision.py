@@ -148,8 +148,8 @@ def test_fp8_dynamic_supported_requires_sm89_and_fp8(monkeypatch):
 def test_quantize_disabled_returns_none(monkeypatch):
     _stub_torch(monkeypatch)
     pipe = types.SimpleNamespace(text_encoder = object())
-    assert quantize_text_encoders(pipe, _target(), mode = None) is None
-    assert quantize_text_encoders(pipe, _target(), mode = "none") is None
+    assert quantize_text_encoders(pipe, _target(), mode = None).mode is None
+    assert quantize_text_encoders(pipe, _target(), mode = "none").mode is None
 
 
 def test_quantize_fp8_casts_all_encoders(monkeypatch):
@@ -158,8 +158,9 @@ def test_quantize_fp8_casts_all_encoders(monkeypatch):
     _stub_casters(monkeypatch, recorder)
     te1, te3 = object(), object()
     pipe = types.SimpleNamespace(text_encoder = te1, text_encoder_2 = None, text_encoder_3 = te3)
-    mode = quantize_text_encoders(pipe, _target(), mode = "fp8")
-    assert mode == TE_QUANT_FP8
+    outcome = quantize_text_encoders(pipe, _target(), mode = "fp8")
+    assert outcome.mode == TE_QUANT_FP8
+    assert outcome.status == "applied"
     assert recorder == [("fp8", te1), ("fp8", te3)]
 
 
@@ -169,8 +170,8 @@ def test_quantize_nvfp4_uses_torchao(monkeypatch):
     _stub_casters(monkeypatch, recorder)
     te = object()
     pipe = types.SimpleNamespace(text_encoder = te)
-    mode = quantize_text_encoders(pipe, _target(), mode = "nvfp4")
-    assert mode == TE_QUANT_NVFP4
+    outcome = quantize_text_encoders(pipe, _target(), mode = "nvfp4")
+    assert outcome.mode == TE_QUANT_NVFP4
     assert recorder == [("nvfp4", te)]
 
 
@@ -179,7 +180,10 @@ def test_quantize_nvfp4_unsupported_on_hopper_is_noop(monkeypatch):
     recorder: list = []
     _stub_casters(monkeypatch, recorder)
     pipe = types.SimpleNamespace(text_encoder = object())
-    assert quantize_text_encoders(pipe, _target(cc = (9, 0)), mode = "nvfp4") is None
+    outcome = quantize_text_encoders(pipe, _target(cc = (9, 0)), mode = "nvfp4")
+    assert outcome.mode is None
+    # An unsupported request is now REPORTED rather than silently skipped.
+    assert outcome.status == "unsupported" and "nvfp4" in outcome.reason
     assert recorder == []
 
 
@@ -196,8 +200,9 @@ def test_quantize_tolerates_caster_failure(monkeypatch):
     monkeypatch.setitem(sys.modules, "diffusers.hooks", hooks)
     monkeypatch.setitem(sys.modules, "diffusers.hooks.layerwise_casting", casting)
     pipe = types.SimpleNamespace(text_encoder = object())
-    # The only encoder fails to cast -> nothing applied -> None.
-    assert quantize_text_encoders(pipe, _target(), mode = "fp8") is None
+    # The only encoder fails to cast -> nothing applied -> None, reported as a fallback.
+    outcome = quantize_text_encoders(pipe, _target(), mode = "fp8")
+    assert outcome.mode is None and outcome.status == "fell_back"
 
 
 # ── int8 (selective) + fp8_dynamic routing ─────────────────────────────────────
@@ -212,8 +217,9 @@ def test_quantize_int8_uses_family_keep_bf16_schedule(monkeypatch):
     )
     te = object()
     pipe = types.SimpleNamespace(text_encoder = te)
-    mode = quantize_text_encoders(pipe, _target(), mode = "int8", family = "qwen-image")
-    assert mode == TE_QUANT_INT8
+    outcome = quantize_text_encoders(pipe, _target(), mode = "int8", family = "qwen-image")
+    assert outcome.mode == TE_QUANT_INT8
+    assert outcome.status == "applied"
     assert calls == [(te, 6, 6)]
 
 
@@ -226,8 +232,11 @@ def test_quantize_int8_unknown_family_falls_back_to_fp8(monkeypatch):
     monkeypatch.setattr(dp, "_cast_fp8", lambda enc, tgt: fp8_calls.append(enc))
     te = object()
     pipe = types.SimpleNamespace(text_encoder = te)
-    mode = quantize_text_encoders(pipe, _target(), mode = "int8", family = "wan-umt5")
-    assert mode == TE_QUANT_FP8
+    outcome = quantize_text_encoders(pipe, _target(), mode = "int8", family = "wan-umt5")
+    assert outcome.mode == TE_QUANT_FP8
+    # The downgrade is reported, not silent: this is what the status badge renders.
+    assert outcome.status == "fell_back"
+    assert "no measured keep-bf16 schedule" in outcome.reason and "wan-umt5" in outcome.reason
     assert int8_calls == [] and fp8_calls == [te]
 
 
@@ -238,8 +247,8 @@ def test_quantize_fp8_dynamic_uses_compute_caster(monkeypatch):
     monkeypatch.setattr(dp, "_cast_fp8_dynamic", lambda enc, tgt: calls.append(enc))
     te = object()
     pipe = types.SimpleNamespace(text_encoder = te)
-    mode = quantize_text_encoders(pipe, _target(), mode = "fp8_dynamic")
-    assert mode == TE_QUANT_FP8_DYNAMIC
+    outcome = quantize_text_encoders(pipe, _target(), mode = "fp8_dynamic")
+    assert outcome.mode == TE_QUANT_FP8_DYNAMIC
     assert calls == [te]
 
 
@@ -248,7 +257,7 @@ def test_quantize_int8_unsupported_hw_is_noop(monkeypatch):
     _stub_torch(monkeypatch, cc = (7, 5))
     monkeypatch.setattr(dp, "_cast_int8_selective", lambda *a: pytest.fail("must not cast"))
     pipe = types.SimpleNamespace(text_encoder = object())
-    assert quantize_text_encoders(pipe, _target(), mode = "int8", family = "qwen-image") is None
+    assert quantize_text_encoders(pipe, _target(), mode = "int8", family = "qwen-image").mode is None
 
 
 def test_quantize_te_skips_torchao_modes_under_offload(monkeypatch):
@@ -263,18 +272,23 @@ def test_quantize_te_skips_torchao_modes_under_offload(monkeypatch):
         dp, "_cast_int8_selective", lambda *a: pytest.fail("torchao caster must not run")
     )
     pipe = types.SimpleNamespace(text_encoder = object())
-    assert quantize_text_encoders(pipe, _target(), mode = "fp8_dynamic", offload_active = True) is None
-    assert quantize_text_encoders(pipe, _target(), mode = "nvfp4", offload_active = True) is None
+    skipped = quantize_text_encoders(pipe, _target(), mode = "fp8_dynamic", offload_active = True)
+    assert skipped.mode is None and skipped.status == "unsupported"
+    assert "offload" in skipped.reason
+    assert quantize_text_encoders(pipe, _target(), mode = "nvfp4", offload_active = True).mode is None
     assert (
         quantize_text_encoders(
             pipe, _target(), mode = "int8", family = "qwen-image", offload_active = True
-        )
+        ).mode
         is None
     )
     # Layerwise fp8 is not torchao and streams fine under offload, so it still engages.
     fp8_calls: list = []
     monkeypatch.setattr(dp, "_cast_fp8", lambda enc, tgt: fp8_calls.append(enc))
-    assert quantize_text_encoders(pipe, _target(), mode = "fp8", offload_active = True) == TE_QUANT_FP8
+    assert (
+        quantize_text_encoders(pipe, _target(), mode = "fp8", offload_active = True).mode
+        == TE_QUANT_FP8
+    )
     assert len(fp8_calls) == 1
 
 
@@ -458,3 +472,34 @@ def test_fp8_dynamic_filter_skips_zero_row_linear(monkeypatch):
     live = types.SimpleNamespace(weight = _FakeWeight([[0.5, 0.5], [0.5, 0.5]]))
     assert ff(dead, "text_model.encoder.layers.2.self_attn.out_proj") is False
     assert ff(live, "text_model.encoder.layers.2.mlp.fc1") is True
+
+
+def test_quantize_partial_cast_is_reported_as_a_mixture(monkeypatch):
+    # One encoder takes the cast and its sibling does not. The mode DID engage, so the old code
+    # returned "applied" and both loaders' fail-closed checks (which only look at mode is None)
+    # let the load through, recording the requested mode as the engaged precision -- while the
+    # prompt was conditioned by one quantised and one dense bf16 tower.
+    _stub_torch(monkeypatch)
+    good, bad = object(), object()
+
+    def _caster(enc, tgt):
+        if enc is bad:
+            raise RuntimeError("fp8 unsupported for this layer")
+
+    monkeypatch.setattr(dp, "_cast_fp8", _caster)
+    pipe = types.SimpleNamespace(text_encoder = good, text_encoder_2 = bad)
+    outcome = quantize_text_encoders(pipe, _target(), mode = "fp8")
+    assert outcome.mode == TE_QUANT_FP8
+    assert outcome.partial is True
+    assert outcome.status == "fell_back"
+    assert "text_encoder_2" in outcome.reason
+
+
+def test_quantize_full_cast_is_not_partial(monkeypatch):
+    # The other side of the same fence: every present encoder cast, so nothing is a mixture and
+    # the loaders must not refuse.
+    _stub_torch(monkeypatch)
+    monkeypatch.setattr(dp, "_cast_fp8", lambda enc, tgt: None)
+    pipe = types.SimpleNamespace(text_encoder = object(), text_encoder_2 = object())
+    outcome = quantize_text_encoders(pipe, _target(), mode = "fp8")
+    assert outcome.partial is False and outcome.status == "applied"

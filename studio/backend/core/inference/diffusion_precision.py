@@ -25,7 +25,13 @@ the quality cost with scripts/diffusion_quality.py. torch / diffusers / torchao 
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
+
+from .diffusion_auto_policy import (
+    RESOLVED_APPLIED,
+    RESOLVED_FELL_BACK,
+    RESOLVED_UNSUPPORTED,
+)
 
 # stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
 from core._torchao_stub import is_stubbed
@@ -97,6 +103,26 @@ def te_quant_supported(target: Any, mode: str) -> bool:
     return False
 
 
+class TEQuantOutcome(NamedTuple):
+    """What the text-encoder pass actually did, so status can report it instead of guessing.
+
+    ``mode`` is the quantisation APPLIED (None = the encoders stayed dense bf16), ``reason`` is
+    the short human-readable why when that differs from the request, and ``status`` is one of the
+    ``RESOLVED_*`` constants. Every early return below used to be a bare ``None``: an int8 request
+    silently became fp8, an offloaded load silently kept a dense encoder, and an unsupported GPU
+    returned without so much as a log line.
+
+    ``partial`` is True when SOME encoder took the cast and another did not. The mode did engage,
+    so ``mode`` is not None, but a pipeline conditioning off a mixture of quantised and dense
+    encoders is not the build that was asked for and the loaders refuse it like any other declined
+    explicit precision."""
+
+    mode: Optional[str]
+    reason: str = ""
+    status: str = RESOLVED_APPLIED
+    partial: bool = False
+
+
 def quantize_text_encoders(
     pipe: Any,
     target: Any,
@@ -105,21 +131,27 @@ def quantize_text_encoders(
     family: Optional[str] = None,
     offload_active: bool = False,
     logger: Any = None,
-) -> Optional[str]:
-    """Quantise each present text encoder in place with ``mode``. Returns the mode applied, or
-    None when disabled, unsupported, or nothing was cast. ``int8`` needs a per-family schedule
-    (``_TE_INT8_SKIP``); without one it falls back to ``fp8``. Under ``offload_active`` the torchao
-    modes are skipped (their subclasses reject ``Module.to()``); layerwise ``fp8`` still engages.
-    Best-effort: any failure leaves the encoder dense."""
+) -> TEQuantOutcome:
+    """Quantise each present text encoder in place with ``mode``. Returns a ``TEQuantOutcome``
+    carrying the mode applied (None when disabled, unsupported, or nothing was cast) plus WHY it
+    differs from the request. ``int8`` needs a per-family schedule (``_TE_INT8_SKIP``); without one
+    it falls back to ``fp8``. Under ``offload_active`` the torchao modes are skipped (their
+    subclasses reject ``Module.to()``); layerwise ``fp8`` still engages. Best-effort: any failure
+    leaves the encoder dense."""
     mode = normalize_te_quant(mode)
     if mode is None:
-        return None
+        return TEQuantOutcome(None)
+    downgrade_reason = ""
     skip: Optional[tuple[int, int]] = None
     if mode == TE_QUANT_INT8:
         skip = _TE_INT8_SKIP.get((family or "").lower())
         if skip is None:
             _note(logger, f"int8 has no keep-bf16 schedule for family '{family}'; using fp8")
             mode = TE_QUANT_FP8
+            downgrade_reason = (
+                f"int8 has no measured keep-bf16 schedule for family '{family}' "
+                "(it degrades large encoders without one), so fp8 was used instead"
+            )
     # torchao modes produce subclasses that reject Module.to(), which an offload placement uses. Layerwise fp8 streams fine.
     if offload_active and mode in (TE_QUANT_INT8, TE_QUANT_FP8_DYNAMIC, TE_QUANT_NVFP4):
         _note(
@@ -127,9 +159,21 @@ def quantize_text_encoders(
             f"text-encoder '{mode}' skipped under offload (torchao tensors reject Module.to()); "
             "pin a resident memory mode or use fp8",
         )
-        return None
+        return TEQuantOutcome(
+            None,
+            f"text-encoder '{mode}' cannot run under offload (torchao tensors reject "
+            "Module.to()); pin a resident memory mode, or use fp8",
+            RESOLVED_UNSUPPORTED,
+        )
     if not te_quant_supported(target, mode):
-        return None
+        # Previously a silent return: the only decline site in the loader with no log at all.
+        _note(logger, f"text-encoder '{mode}' is not supported on this device; left dense")
+        return TEQuantOutcome(
+            None,
+            f"this device cannot run text-encoder '{mode}' (it needs a CUDA GPU in bf16 with the "
+            "tensor cores that backend requires), so the dense bf16 encoder was kept",
+            RESOLVED_UNSUPPORTED,
+        )
     if mode == TE_QUANT_INT8:
         first, last = skip  # type: ignore[misc]
 
@@ -142,6 +186,7 @@ def quantize_text_encoders(
     else:
         caster = _cast_fp8
     cast: list[str] = []
+    failed: list[str] = []
     for attr in _TEXT_ENCODER_ATTRS:
         encoder = getattr(pipe, attr, None)
         if encoder is None:
@@ -150,8 +195,28 @@ def quantize_text_encoders(
             caster(encoder, target)
             cast.append(attr)
         except Exception as exc:  # noqa: BLE001 — leave this encoder dense
+            failed.append(attr)
             _warn(logger, f"{mode}:{attr}", exc)
-    return mode if cast else None
+    if not cast:
+        return TEQuantOutcome(
+            None,
+            f"no text encoder on this pipeline could be cast to '{mode}' (see the server log)",
+            RESOLVED_FELL_BACK,
+        )
+    if failed:
+        # A sibling took the cast, so `mode` DID engage -- but the encoders that did not are still
+        # dense bf16 and the prompt is conditioned by both. Reporting "applied" here was the one
+        # path where an engaged mode could still be a lie about the build that ran.
+        return TEQuantOutcome(
+            mode,
+            f"'{mode}' engaged on {', '.join(cast)} but {', '.join(failed)} could not be cast and "
+            "stayed dense bf16 (see the server log), so conditioning is a mixture",
+            RESOLVED_FELL_BACK,
+            True,
+        )
+    if downgrade_reason:
+        return TEQuantOutcome(mode, downgrade_reason, RESOLVED_FELL_BACK)
+    return TEQuantOutcome(mode, "dense text encoder(s) quantised in place", RESOLVED_APPLIED)
 
 
 def _te_exclude_tokens(encoder: Any) -> tuple[str, ...]:
