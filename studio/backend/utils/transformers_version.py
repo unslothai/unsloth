@@ -1406,12 +1406,15 @@ _PROBE_TIER_ORDER = ("530", "550", "510")
 _PROBE_TIMEOUT_SECS = 60
 
 # config.json-only parse in a sidecar: built-in parser, no repo code, no weights, exit 0 = parses.
-_PROBE_CONFIG_SCRIPT = r"""
+_PROBE_CONFIG_SCRIPT = (
+    r"""
 import sys, os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 # This -c child cannot import backend modules, and AutoConfig.from_pretrained
 # below may download from the Hub, so it carries the gate as generated source.
-""" + inline_gate_source() + r"""
+"""
+    + inline_gate_source()
+    + r"""
 target_dir, model_name = sys.argv[1], sys.argv[2]
 if target_dir:  # empty = probe the ambient (default 4.57.x) transformers, no sidecar prepend
     sys.path.insert(0, target_dir)
@@ -1425,6 +1428,7 @@ except Exception as exc:
     sys.stderr.buffer.write((type(exc).__name__ + ": " + str(exc)).encode("utf-8", "replace"))
     sys.exit(1)
 """
+)
 
 # stderr fragments meaning "couldn't fetch/auth", NOT "needs a newer parser".
 _PROBE_TRANSIENT_MARKERS = (
