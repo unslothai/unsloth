@@ -52,6 +52,7 @@ from .diffusion_families import (
     resolve_local_gguf_child,
     supported_family_names,
 )
+from .diffusion_compat import assert_flux2_pick_compatible, flux2_pick_mismatch
 from .diffusion_device import (
     DiffusionDeviceTarget,
     diffusion_device_target_from_torch_device,
@@ -1185,14 +1186,15 @@ class DiffusionBackend:
         base_repo: Optional[str] = None,
         hf_token: Optional[str] = None,
     ) -> None:
-        """The gated/unreadable-base refusal, run by the route BEFORE it takes the GPU.
+        """The gated/unreadable-base and FLUX.2 size-pairing refusals, run by the route BEFORE it
+        takes the GPU.
 
-        ``_run_load`` and ``download_plan`` already make it, but ``_run_load`` runs on the load
-        thread, after the route evicted chat, and the plan's 400 does not stop the load: the images
-        page falls back to /images/load on ANY plan failure. Resolves the base exactly as those two
-        do, so all three agree. The one deliberate network step on the pre-eviction path
-        (``validate_load_request`` stays network-free): two metadata calls for a remote pick, none
-        for a local one, both already made by ``_run_load`` moments later. Fails open on
+        ``_run_load`` and ``download_plan`` already make them, but ``_run_load`` runs on the load
+        thread, after the route evicted chat, and the plan's verdict does not stop the load: the
+        images page falls back to /images/load on ANY plan failure. Resolves the base exactly as
+        those two do, so all three agree. The one deliberate network step on the pre-eviction path
+        (``validate_load_request`` stays network-free): a handful of metadata calls for a remote
+        pick, none for a local one, all already made by ``_run_load`` moments later. Fails open on
         offline/transient, so it can refuse a load but never block one that would have worked."""
         kind = resolve_model_kind(gguf_filename, model_kind)
         if kind == "pipeline":
@@ -1203,6 +1205,12 @@ class DiffusionBackend:
         # picks the ungated mirror rescues, and the swap is pure, so it decides the same here as on
         # the load thread. Only the raise matters; _run_load recomputes the excused snapshot.
         _assert_base_repo_accessible(prefer_ungated_mirror(base, hf_token), hf_token)
+        # Same reasoning for the FLUX.2 size pairing, and this is the only place it can be caught
+        # before a teardown: the loader's own guard opens the downloaded checkpoint, so it fires
+        # after ~19 GB of base shards AND after the resident pipeline was freed. Metadata only (one
+        # range request for the GGUF's tensor table), and fails open on anything it cannot read.
+        # The UPSTREAM base, not the mirror: the size tables key on vendor ids.
+        assert_flux2_pick_compatible(fam, repo_id, gguf_filename, base, hf_token)
 
     # ── Background load + progress ─────────────────────────────────────────
 
@@ -1327,6 +1335,13 @@ class DiffusionBackend:
             # Everything above is metadata, so no byte has moved yet. Returns a snapshot dir when it
             # excused the base off a copy only the import-time root holds.
             base_snapshot = _assert_base_repo_accessible(fetch_base, kwargs.get("hf_token"))
+            # And the same size-pairing preflight the plan and the route run, here because a direct
+            # begin_load (a saved config, the deploy path) reaches neither. Still metadata only, so
+            # it lands before _prefetch_files stages the base and before load_pipeline unloads the
+            # resident pipeline -- the two costs the loader's backstop cannot avoid.
+            assert_flux2_pick_compatible(
+                fam, kwargs["repo_id"], kwargs.get("gguf_filename"), base, kwargs.get("hf_token")
+            )
             with self._lock:
                 # Stamp progress only if this load is still current (a superseder has its own token).
                 if self._load_token == token and self._loading is not None:
@@ -1578,6 +1593,11 @@ class DiffusionBackend:
             base = repo_id  # the full pipeline IS the repo
         else:
             base = _resolve_base_repo(repo_id, base_repo, fam, hf_token)
+        # Reported, not raised. The images page falls back to /images/load on ANY plan failure, so
+        # a 400 here would start the very download this is meant to prevent; carried in the
+        # envelope instead, the picker can refuse at SELECTION time. Metadata only (one range
+        # request for the GGUF's tensor table), and None whenever nothing is known to be wrong.
+        incompatible = flux2_pick_mismatch(fam, repo_id, gguf_filename, base, hf_token)
         # Only a checkpoint that really resolves on the Hub earns the right to drop dense shards.
         te_files = self._te_prequant_plan_files(fam, text_encoder_quant, hf_token)
         sizes: dict[str, int] = {}
@@ -1632,7 +1652,11 @@ class DiffusionBackend:
                     "gguf_filename": None,
                 }
             )
-        return {"entries": entries, "total_bytes": int(total)}
+        return {
+            "entries": entries,
+            "total_bytes": int(total),
+            "incompatible_reason": incompatible,
+        }
 
     @staticmethod
     def _hub_cache_repo_dir(repo_id: str) -> Path:

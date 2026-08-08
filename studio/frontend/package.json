@@ -16,6 +16,7 @@
     "i18n:check": "node --experimental-strip-types --no-warnings src/i18n/check-parity.ts",
     "i18n:check:strict": "node --experimental-strip-types --no-warnings src/i18n/check-parity.ts --strict",
     "catalog:check": "node --experimental-strip-types --no-warnings src/features/model-picker/components/model-selector/model-catalog.check.ts",
+    "catalog:check:network": "node --experimental-strip-types --no-warnings src/features/model-picker/components/model-selector/model-catalog.check.ts --network",
     "biome:check": "biome check",
     "biome:fix": "biome check --write"
   },

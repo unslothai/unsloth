@@ -1873,6 +1873,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       if (isDownloaded !== false) return handleLoadRef.current(repoId, opts);
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
       const advanced = currentLoadAdvanced(repoId);
+      // Read inside the try, acted on outside it: refusing from in there would fall through to the
+      // load on any throw from the refusal itself, which is the one outcome that must not happen.
+      let incompatible: string | null = null;
       try {
         const plan = await getDiffusionDownloadPlan({
           model_path: repoId,
@@ -1889,7 +1892,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           // planned a quantized file set and staged too little. Same list handleLoad bakes.
           loras: advanced.loras,
         });
-        if (plan.entries.length > 0) {
+        // Refuse an incompatible pairing HERE, at selection time. The backend also raises it from
+        // the load, but only after staging the base repo: the whole point of checking it in the
+        // plan is that no byte has moved yet. Returning false reverts the picker's optimistic
+        // quant selection, exactly as a load that fails to start does.
+        incompatible = plan.incompatible_reason ?? null;
+        if (!incompatible && plan.entries.length > 0) {
           pendingStagedLoad.current = { repoId, opts, advanced };
           stage(
             plan.entries.map((e) => ({
@@ -1903,6 +1911,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         }
       } catch {
         // No plan (older backend, metadata hiccup): fall back to the load's own download.
+      }
+      if (incompatible) {
+        toast.error(incompatible);
+        return false;
       }
       return handleLoadRef.current(repoId, opts);
     },

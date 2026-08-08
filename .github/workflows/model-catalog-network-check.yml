@@ -1,0 +1,61 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+#
+# Asks the Hub whether the preconfigured model catalog is still downloadable.
+#
+# The picker's catalog is a hand-maintained table of repo ids, filenames and
+# `gated` flags. Nothing in the codebase can tell when one of them stops being
+# true: a repo gets renamed, unpublished or switched to gated, and the entry
+# keeps rendering as a one-click download that 404s or 401s partway through.
+# That is precisely how several links shipped broken.
+#
+# This runs `catalog:check --network`, which HEADs every declared repo id and
+# every declared filename anonymously (what a fresh install sees) and asserts
+# each `gated` flag matches what the Hub reports.
+#
+# Schedule + manual only, never on pull_request. The check is opt-in for the
+# same reason it lives here: it depends on huggingface.co being up, and a Hub
+# hiccup must not fail an unrelated PR. Plain `npm run catalog:check` stays
+# purely offline and keeps every assertion it had. A red run here means the
+# catalog needs editing, not a re-run -- the script already retries 3x with
+# backoff and ignores 429/5xx, so it only speaks when the Hub is definite.
+
+name: Model catalog network check
+
+on:
+  schedule:
+    - cron: '19 6 * * *'   # 06:19 UTC daily, off the cron rush
+  workflow_dispatch:
+
+concurrency:
+  # The event is part of the group so a manual dispatch and the nightly cannot
+  # coalesce; both resolve to refs/heads/main.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  catalog-network:
+    name: catalog entries must still be downloadable
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: studio/frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+
+      # No `npm ci`: the check is a standalone node script over two data
+      # modules and the built-in fetch, so it needs no dependencies at all.
+      # Skipping the install also keeps this job away from the lockfile /
+      # allowScripts machinery the frontend PR gate has to run.
+      - name: Catalog entries must still resolve on the Hub
+        run: npm run catalog:check:network
