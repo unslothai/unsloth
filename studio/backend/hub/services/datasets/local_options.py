@@ -147,7 +147,9 @@ _UNPARSABLE_METADATA = object()
 _STANDALONE_YAML = ".huggingface.yaml"
 # huggingface_hub's REGEX_YAML_BLOCK, which is what actually decides whether a README
 # has front matter. An opening --- followed by anything but a newline is plain text.
-_CARD_BLOCK_RE = re.compile(r"^(\s*---(?:\r\n|\r|\n))([\S\s]*?)((?:\r\n|\r|\n)---[ \t]*(\r\n|\n|$))")
+_CARD_BLOCK_RE = re.compile(
+    r"^(\s*---(?:\r\n|\r|\n))([\S\s]*?)((?:\r\n|\r|\n)---[ \t]*(\r\n|\n|$))"
+)
 # A snapshot file and the module datasets would build it with, None when it is not data.
 _DataFile = tuple[PurePosixPath, Optional[str]]
 _CONFIG_RE = re.compile(r"[^<>:/\\|?*\x00-\x1f\x7f]+")

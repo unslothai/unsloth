@@ -997,7 +997,10 @@ def test_snapshot_options_read_a_data_dir_that_merely_contains_dots(tmp_path):
 
 def test_snapshot_options_collapse_a_repeated_config_name_before_counting_defaults(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: default\n  data_files: a.jsonl\n- config_name: default\n  data_files: b.jsonl\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: default\n  data_files: a.jsonl\n- config_name: default\n  data_files: b.jsonl\n",
+    )
     (snapshot / "a.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
     (snapshot / "b.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -1006,7 +1009,10 @@ def test_snapshot_options_collapse_a_repeated_config_name_before_counting_defaul
 
 def test_snapshot_options_reject_a_null_data_files_on_the_first_config(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: a\n  data_files: null\n  data_dir: a\n- config_name: b\n  data_files: b/train.jsonl\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: a\n  data_files: null\n  data_dir: a\n- config_name: b\n  data_files: b/train.jsonl\n",
+    )
     for name in ("a", "b"):
         (snapshot / name).mkdir()
         (snapshot / name / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
@@ -1053,7 +1059,9 @@ def test_snapshot_options_do_not_infer_past_an_unsafe_card_symlink(tmp_path):
     snapshot.mkdir(parents = True)
     (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
     outside = tmp_path / "README.md"
-    outside.write_text("---\nconfigs:\n- config_name: outside\n  data_files: train.jsonl\n---\n", encoding = "utf-8")
+    outside.write_text(
+        "---\nconfigs:\n- config_name: outside\n  data_files: train.jsonl\n---\n", encoding = "utf-8"
+    )
     (snapshot / "README.md").symlink_to(outside)
 
     assert local_options._snapshot_options(snapshot) == set()
