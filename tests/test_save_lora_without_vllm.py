@@ -36,8 +36,7 @@ import pathlib
 
 import pytest
 
-_UTILS = (pathlib.Path(__file__).resolve().parents[1]
-          / "unsloth" / "models" / "_utils.py")
+_UTILS = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_utils.py"
 
 
 def _patch_function():
