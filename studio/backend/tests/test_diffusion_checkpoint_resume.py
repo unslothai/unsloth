@@ -60,7 +60,13 @@ class _Run:
     schedule and the shared permutation sampler, wired exactly as both trainers wire them so
     the resume helpers are exercised on the real objects rather than mocks."""
 
-    def __init__(self, output_dir: Path, *, seed: int = 0, **cfg_overrides):
+    def __init__(
+        self,
+        output_dir: Path,
+        *,
+        seed: int = 0,
+        **cfg_overrides,
+    ):
         torch.manual_seed(seed)
         self.model = torch.nn.Linear(4, 4, bias = False)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr = 1e-3)
@@ -332,9 +338,7 @@ def test_a_foreign_optimizers_state_is_refused_instead_of_key_erroring(run_dir):
     manifest_path.write_text(json.dumps(manifest), encoding = "utf-8")
 
     fresh = _Run(run_dir)
-    fresh.cfg = __import__("dataclasses").replace(
-        fresh.cfg, resume_from_checkpoint = str(run_dir)
-    )
+    fresh.cfg = __import__("dataclasses").replace(fresh.cfg, resume_from_checkpoint = str(run_dir))
     with pytest.raises(dc.ResumeError, match = "AdamW8bit"):
         fresh.restore()
 
@@ -351,9 +355,7 @@ def test_a_partial_adapter_restore_is_refused(run_dir):
         str(run_dir / "checkpoint-3" / dc.ADAPTER_FILENAME),
     )
     fresh = _Run(run_dir)
-    fresh.cfg = __import__("dataclasses").replace(
-        fresh.cfg, resume_from_checkpoint = str(run_dir)
-    )
+    fresh.cfg = __import__("dataclasses").replace(fresh.cfg, resume_from_checkpoint = str(run_dir))
     with pytest.raises(ValueError, match = "restored 1 of 2 adapter tensors"):
         fresh.restore()
 
@@ -368,8 +370,12 @@ def test_resuming_reapplies_the_live_lr_schedule(run_dir):
         torch.manual_seed(0)
         model = torch.nn.Linear(4, 4, bias = False)
         optimizer = torch.optim.AdamW(model.parameters(), lr = 1e-3)
-        return model, optimizer, get_scheduler(
-            "cosine", optimizer = optimizer, num_warmup_steps = 0, num_training_steps = total
+        return (
+            model,
+            optimizer,
+            get_scheduler(
+                "cosine", optimizer = optimizer, num_warmup_steps = 0, num_training_steps = total
+            ),
         )
 
     model, optimizer, lr_sched = build(6)
@@ -419,9 +425,7 @@ def test_torch_rng_state_is_restored(run_dir):
 
     torch.manual_seed(12345)  # move the global RNG somewhere else entirely
     fresh = _Run(run_dir, seed = 5)
-    fresh.cfg = __import__("dataclasses").replace(
-        fresh.cfg, resume_from_checkpoint = str(run_dir)
-    )
+    fresh.cfg = __import__("dataclasses").replace(fresh.cfg, resume_from_checkpoint = str(run_dir))
     fresh.restore()
     assert torch.equal(torch.randn(8), expected)
 
@@ -498,9 +502,7 @@ def test_resume_at_step_11_with_target_500_runs_steps_12_to_500(run_dir):
     assert error is None and Path(path).name == "checkpoint-11"
 
     second = _Run(run_dir, seed = 1)
-    second.cfg = __import__("dataclasses").replace(
-        second.cfg, resume_from_checkpoint = str(run_dir)
-    )
+    second.cfg = __import__("dataclasses").replace(second.cfg, resume_from_checkpoint = str(run_dir))
     seen, done = _loop(second)
     # train_steps is the TARGET TOTAL, not an extra budget: 12..500, then the run is finished.
     assert seen[0] == 12
@@ -552,9 +554,7 @@ def test_identity_mismatches_are_rejected_with_a_clear_reason(run_dir, overrides
     run = _Run(run_dir)
     run.save(3)
     with pytest.raises(dc.ResumeError, match = expected):
-        dc.preflight_resume(
-            str(run_dir), identity = _identity(**overrides), target_steps = 500
-        )
+        dc.preflight_resume(str(run_dir), identity = _identity(**overrides), target_steps = 500)
     # The matching identity still passes, so the rejection is the mismatch and nothing else.
     path, step = dc.preflight_resume(str(run_dir), identity = _identity(), target_steps = 500)
     assert step == 3 and Path(path).name == "checkpoint-3"

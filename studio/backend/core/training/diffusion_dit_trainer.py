@@ -1933,7 +1933,12 @@ def _train_dit(
         stop_now = _check_stop()
         # Periodic resume point. Skipped on the final step (a finished run has nothing left to
         # resume) and when stopping, since the stop path writes one at the exact step.
-        if not stop_now and cfg.save_steps and done % cfg.save_steps == 0 and done < cfg.train_steps:
+        if (
+            not stop_now
+            and cfg.save_steps
+            and done % cfg.save_steps == 0
+            and done < cfg.train_steps
+        ):
             _save_checkpoint(done)
         if stop_now:
             stopped = True

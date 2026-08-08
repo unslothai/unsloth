@@ -1188,7 +1188,6 @@ def write_resume_checkpoint(
     ``discard_existing`` is set on the FIRST write of a run that did not resume, so bundles
     left in the output dir by an earlier run of the same adapter name cannot outrank it."""
     from core.training.diffusion_checkpoint import capture_rng_state, save_checkpoint
-
     try:
         path = save_checkpoint(
             output_dir = cfg.output_dir,
@@ -1322,7 +1321,9 @@ def restore_resume_state(
 
 
 def _publish_to_lora_catalog(
-    lora_path: str, cfg: DiffusionLoraConfig, steps: Optional[int] = None
+    lora_path: str,
+    cfg: DiffusionLoraConfig,
+    steps: Optional[int] = None,
 ) -> Optional[str]:
     """Best-effort copy of the trained adapter into the Studio diffusion LoRA directory so
     the Images LoRA picker (which scans only files directly under ``loras/diffusion``) finds
@@ -1364,7 +1365,9 @@ def _publish_to_lora_catalog(
 
 
 def _write_lora_sidecar(
-    sidecar_path: Path, cfg: DiffusionLoraConfig, steps: Optional[int] = None
+    sidecar_path: Path,
+    cfg: DiffusionLoraConfig,
+    steps: Optional[int] = None,
 ) -> None:
     """Write the adapter metadata sidecar read back by diffusion_lora._scan_local. Best
     effort: a failure here must not fail publishing, so callers wrap it.

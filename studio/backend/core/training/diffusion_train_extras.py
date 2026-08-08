@@ -100,7 +100,11 @@ class LoRAEMA:
     def state_dict(self) -> dict[str, Any]:
         return {name: t.detach().clone() for name, t in self._shadow.items()}
 
-    def load_state_dict(self, state: dict[str, Any], updates: int = 0) -> None:
+    def load_state_dict(
+        self,
+        state: dict[str, Any],
+        updates: int = 0,
+    ) -> None:
         """Restore shadows saved by ``state_dict`` (a resume checkpoint), in place.
 
         ``updates`` restores the warmup ramp position: without it a resumed run would

@@ -115,7 +115,6 @@ def _resume_fields(
     adapter that was published, so continuing from it would silently lose steps. Never raises."""
     try:
         from core.training.diffusion_checkpoint import describe_resume_state
-
         state = describe_resume_state(
             output_dir, status = status, started_at = started_at, total_steps = total_steps
         )

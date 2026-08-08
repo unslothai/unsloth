@@ -320,7 +320,6 @@ def capture_rng_state(streams: Optional[dict[str, Any]] = None) -> dict[str, Any
             continue
     try:
         import numpy as np
-
         kind, keys, pos, has_gauss, cached = np.random.get_state()
         payload["numpy"] = {
             "bit_generator": str(kind),
@@ -335,7 +334,6 @@ def capture_rng_state(streams: Optional[dict[str, Any]] = None) -> dict[str, Any
     tensors: dict[str, Any] = {}
     try:
         import torch
-
         tensors["torch_cpu"] = torch.get_rng_state()
         if torch.cuda.is_available():
             for i, state in enumerate(torch.cuda.get_rng_state_all()):
@@ -373,7 +371,6 @@ def restore_rng_state(
     if isinstance(np_state, dict):
         try:
             import numpy as np
-
             np.random.set_state(
                 (
                     str(np_state.get("bit_generator") or "MT19937"),
@@ -662,7 +659,9 @@ def _prune_staging(root: Path) -> None:
         shutil.rmtree(entry, ignore_errors = True)
 
 
-def prune_checkpoints(output_dir: str | os.PathLike[str], keep: int = DEFAULT_SAVE_TOTAL_LIMIT) -> None:
+def prune_checkpoints(
+    output_dir: str | os.PathLike[str], keep: int = DEFAULT_SAVE_TOTAL_LIMIT
+) -> None:
     """Keep only the ``keep`` newest ``checkpoint-<N>`` bundles. ``keep <= 0`` keeps all."""
     if keep <= 0:
         return
@@ -698,9 +697,7 @@ def list_checkpoints(output_dir: str | os.PathLike[str]) -> list[Path]:
         found = [p for p in root.glob(f"{CHECKPOINT_PREFIX}*") if p.is_dir()]
     except OSError:
         return []
-    return sorted(
-        (p for p in found if checkpoint_step(p) >= 0), key = checkpoint_step, reverse = True
-    )
+    return sorted((p for p in found if checkpoint_step(p) >= 0), key = checkpoint_step, reverse = True)
 
 
 def read_checkpoint(path: str | os.PathLike[str]) -> Optional[dict[str, Any]]:
@@ -723,7 +720,11 @@ def read_checkpoint(path: str | os.PathLike[str]) -> Optional[dict[str, Any]]:
     if manifest.get("format") != CHECKPOINT_FORMAT:
         return None
     version = manifest.get("version")
-    if not isinstance(version, int) or isinstance(version, bool) or not 1 <= version <= CHECKPOINT_VERSION:
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or not 1 <= version <= CHECKPOINT_VERSION
+    ):
         return None
     step = manifest.get("global_step")
     if isinstance(step, bool) or not isinstance(step, int) or step < 0:
@@ -739,9 +740,7 @@ def read_checkpoint(path: str | os.PathLike[str]) -> Optional[dict[str, Any]]:
             return None
         # Optimizer / scheduler state can be validly tensor-free (SGD without momentum, a
         # constant LR schedule), so only the weight bundles must carry tensors.
-        if not _valid_state_file(
-            directory / name, require_tensor = role in ("adapter", "ema")
-        ):
+        if not _valid_state_file(directory / name, require_tensor = role in ("adapter", "ema")):
             return None
     return manifest
 
@@ -755,7 +754,6 @@ def _valid_state_file(path: Path, require_tensor: bool = True) -> bool:
     ``zlib.error`` straight out of a route preflight and 500s it. Anything unreadable is, by
     definition, not a usable checkpoint."""
     from core.training.resume import _valid_state_file as _validate
-
     try:
         return _validate(path, require_tensor = require_tensor)
     except Exception:  # noqa: BLE001 -- unreadable in any way == not resumable
@@ -895,10 +893,7 @@ def resolve_resume_dir(path_value: str) -> Path:
 
 
 def preflight_resume(
-    path_value: str,
-    *,
-    identity: CheckpointIdentity,
-    target_steps: int,
+    path_value: str, *, identity: CheckpointIdentity, target_steps: int
 ) -> tuple[str, int]:
     """Validate a resume request and return ``(checkpoint_dir, resumed_step)``.
 
@@ -1002,7 +997,11 @@ class LoadedCheckpoint:
         candidate = self.path / name
         return candidate if candidate.is_file() else None
 
-    def tensors(self, role: str, device: str = "cpu") -> dict[str, Any]:
+    def tensors(
+        self,
+        role: str,
+        device: str = "cpu",
+    ) -> dict[str, Any]:
         """The safetensors bundle for ``role`` (``adapter`` / ``ema``), or {}."""
         from safetensors.torch import load_file
 
