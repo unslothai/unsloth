@@ -7064,8 +7064,8 @@ def _requires_security_review_for_model(
             security_load_subdirs,
         )
 
-        # Same alias normalization as _requires_trust_remote_code_for_model: the raw
-        # `<name>/LLM` alias 404s and would fail open to "no review needed".
+        # Normalize the `<name>/LLM` alias here as well as inside evaluate_file_security,
+        # so the subdirs passed alongside the target are resolved against the same repo.
         load_subdirs = security_load_subdirs(model_identifier, hf_token)
         target, load_subdirs = load_scan_target(model_identifier, load_subdirs)
         return evaluate_file_security(

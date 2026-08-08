@@ -1921,11 +1921,13 @@ class TrainingBackend:
                     expected_job_id is not None and self.current_job_id != expected_job_id
                 ):
                     return "superseded"
-                # An unscoped reset cannot prove it means THIS run, so it may only clear a
-                # finished one. Without this, a stale tab's bodyless reset force-terminates
-                # whichever job is mid-cancel below.
+                # An unscoped reset cannot prove it means THIS run, so it never force-
+                # terminates: _cancel_requested is cleared after current_job_id is set, so a
+                # bodyless reset landing in that window would kill the run that just started.
+                # Report "active" (409), which is what a live run without a cancel already
+                # returns below and what every pre-rework client already handles.
                 if expected_job_id is None and is_active:
-                    return "superseded"
+                    return "active"
                 cancel_requested = self._cancel_requested
                 proc = self._proc
 

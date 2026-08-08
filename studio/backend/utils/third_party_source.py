@@ -923,7 +923,12 @@ def ensure_dac_speech_weights(legacy_path: Path | str | None = None) -> Path:
             ):
                 # Populate the pinned destination so later loads hit the fast path above
                 # instead of re-downloading and re-hashing 295 MB under the install lock.
-                _install_verified_artifact(downloaded, destination)
+                # The copy is an optimisation, so a full disk must not fail a verified
+                # download; fall back to the hub path the caller used before.
+                try:
+                    _install_verified_artifact(downloaded, destination)
+                except OSError:
+                    return downloaded.resolve()
                 return destination.resolve()
 
             if download_error is not None:
@@ -953,11 +958,10 @@ def _module_is_inside(module: ModuleType, package_root: Path) -> bool:
 
 
 def _purge_package_bytecode(package_root: Path) -> None:
-    # Best-effort: the runtime tree is shared by the inference and training workers and this
-    # runs without the install lock, so another process purging or writing __pycache__
-    # concurrently must not turn a codec load into a FileNotFoundError/PermissionError. The
-    # manifest, the sealed __init__.py and the post-import origin audit are the real
-    # defences; this only stops a stale .pyc shadowing a verified .py.
+    # This is the only thing stopping a stale or planted .pyc from shadowing a verified .py:
+    # the manifest skips __pycache__ entirely, and the origin audit reads __file__, which
+    # still names the .py. So only the concurrent-purge race is tolerated (another worker
+    # deleting the same tree without the install lock); a PermissionError must stay fatal.
     for directory, child_directories, files in os.walk(package_root, topdown = True):
         directory_path = Path(directory)
         for name in tuple(child_directories):
@@ -965,15 +969,15 @@ def _purge_package_bytecode(package_root: Path) -> None:
             if path.is_symlink():
                 child_directories.remove(name)
                 if name == "__pycache__":
-                    with contextlib.suppress(OSError):
+                    with contextlib.suppress(FileNotFoundError):
                         path.unlink()
             elif name == "__pycache__":
                 child_directories.remove(name)
-                shutil.rmtree(path, ignore_errors = True)
+                with contextlib.suppress(FileNotFoundError):
+                    shutil.rmtree(path)
         for name in files:
             if name.endswith((".pyc", ".pyo")):
-                with contextlib.suppress(OSError):
-                    (directory_path / name).unlink(missing_ok = True)
+                (directory_path / name).unlink(missing_ok = True)
 
 
 def _remove_package_modules(package: str) -> None:

@@ -1454,7 +1454,9 @@ def test_unscoped_reset_cannot_touch_a_live_run(monkeypatch):
         backend, "force_terminate", lambda **_kw: pytest.fail("unscoped reset terminated a run")
     )
 
-    assert backend.reset_training_state() == "superseded"
+    # 409, the same answer a live run already gives, so pre-rework clients keep the error
+    # they handle instead of a 200 that tells them a running job was cleared.
+    assert backend.reset_training_state() == "active"
     assert backend.reset_training_state(expected_job_id = "job_old") == "superseded"
 
 

@@ -747,8 +747,10 @@ def test_bytecode_purge_tolerates_a_concurrent_purge(tmp_path):
     assert not list(package_root.rglob("*.pyc"))
 
 
-def test_bytecode_purge_tolerates_an_unwritable_runtime(tmp_path):
-    """A root-owned or read-only cache must not fail an otherwise verified codec load."""
+def test_bytecode_purge_fails_closed_when_a_pyc_survives(monkeypatch, tmp_path):
+    """The purge is the only defence against a planted .pyc shadowing a verified .py: the
+    manifest skips __pycache__ and the origin audit reads __file__, which still names the
+    .py. So a .pyc we could not delete must fail the load, not be waved through."""
     package_root = tmp_path / "sparktts"
     package_root.mkdir(parents = True)
     (package_root / "stale.pyc").write_bytes(b"")
@@ -756,9 +758,6 @@ def test_bytecode_purge_tolerates_an_unwritable_runtime(tmp_path):
     def refuse(*args, **kwargs):
         raise PermissionError("read-only cache")
 
-    original = source.Path.unlink
-    source.Path.unlink = refuse
-    try:
+    monkeypatch.setattr(source.Path, "unlink", refuse)
+    with pytest.raises(PermissionError):
         source._purge_package_bytecode(package_root)
-    finally:
-        source.Path.unlink = original

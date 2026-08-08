@@ -370,11 +370,9 @@ function ManualDatasetOptions({
         error: null,
       },
     };
+    // setDatasetSubset already clears both splits, so clearing them again here only costs a
+    // spurious runDatasetCheck against an assumed "train" split.
     setDatasetSubset(value);
-    // Clear the backing splits too, else the render-phase draft sync reads the previous
-    // subset's props back into the boxes we just reset.
-    setDatasetSplit(null);
-    setDatasetEvalSplit(null);
     setStoredDrafts(nextDrafts);
     setManualDatasetOptionsValid(
       manualDatasetDraftsAreValid(
