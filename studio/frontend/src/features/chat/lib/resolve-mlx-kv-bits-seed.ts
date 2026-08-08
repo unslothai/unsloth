@@ -69,7 +69,9 @@ export function resolveMlxKvBitsSeed(options: {
     };
   }
   if (incomingRequested === previous.loadedMlxKvBitsRequested) {
-    return {};
+    // Width is steady, but verdict strings can move when another client reloads
+    // with the same mlx_kv_bits_requested and a different chat-template override.
+    return verdict;
   }
   const controlIsDirty =
     previous.mlxKvBits !== previous.loadedMlxKvBitsRequested;

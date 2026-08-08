@@ -93,6 +93,11 @@ test("a steady speculative poll touches neither field", () => {
   assert.deepEqual(seed("auto", paired("ngram", "auto")), {});
 });
 
+test("an omitted speculative_type leaves the pair alone on older backends", () => {
+  assert.deepEqual(seed(undefined, paired("mtp", "mtp")), {});
+  assert.deepEqual(seed(undefined, paired("ngram", "auto")), {});
+});
+
 test("tensor parallel and KV dtype follow the same dirty-control rule", () => {
   assert.deepEqual(seed(true, paired(false, false)), {
     control: true,
@@ -132,6 +137,33 @@ test("mlx kv width reconciles on a same-model reload", () => {
   });
   assert.equal(dirty.loadedMlxKvBitsRequested, 8);
   assert.ok(!("mlxKvBits" in dirty));
+});
+
+test("mlx verdict fields refresh when the requested width is unchanged", () => {
+  const result = resolveMlxKvBitsSeed({
+    isMlx: true,
+    mlxKvBitsDefined: true,
+    incomingRequested: 4,
+    incomingReason: "new reason",
+    incomingTemplateReason: "template refused",
+    incomingNote: "note",
+    previous: {
+      mlxKvBits: 4,
+      loadedMlxKvBitsRequested: 4,
+      mlxKvQuantReason: "old",
+      chatTemplateOverrideReason: null,
+      mlxKvQuantNote: null,
+    },
+    hydratingExistingModel: false,
+    seedLoadParams: true,
+  });
+  assert.deepEqual(result, {
+    mlxKvQuantReason: "new reason",
+    chatTemplateOverrideReason: "template refused",
+    mlxKvQuantNote: "note",
+  });
+  assert.ok(!("mlxKvBits" in result));
+  assert.ok(!("loadedMlxKvBitsRequested" in result));
 });
 
 test("the status applier delegates to the paired load-param resolvers", () => {

@@ -201,7 +201,10 @@ export function applyActiveModelStatusToStore(
   const ggufNativeContextLength = status.is_gguf
     ? (status.native_context_length ?? null)
     : null;
-  const currentSpecType = normalizeSpeculativeType(status.speculative_type);
+  const currentSpecType =
+    status.speculative_type !== undefined
+      ? normalizeSpeculativeType(status.speculative_type)
+      : undefined;
   const prevState = useChatRuntimeStore.getState();
   const clampedReasoningEffort =
     reasoningStyle === "enable_thinking_effort" ||
