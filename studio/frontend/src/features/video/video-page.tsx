@@ -944,13 +944,26 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     [resolutionPresets, durationOptions],
   );
 
+  // A status read started before an eject can answer after the one that
+  // followed it, and this page has no periodic poll to correct it: the controls
+  // would go on offering to generate against a runtime that is already free.
+  // So every read takes a ticket and only the newest may write.
+  const statusTicket = useRef(0);
+  const setStatusIfNewest = useCallback(
+    (ticket: number, next: VideoStatus) => {
+      if (ticket === statusTicket.current) setStatus(next);
+    },
+    [],
+  );
+
   const refreshStatus = useCallback(async () => {
+    const ticket = ++statusTicket.current;
     try {
-      setStatus(await getVideoStatus());
+      setStatusIfNewest(ticket, await getVideoStatus());
     } catch {
       // Status is best-effort; a failed poll shouldn't surface an error toast.
     }
-  }, []);
+  }, [setStatusIfNewest]);
 
   // Track mount so a long generate stops issuing GPU work when the page is truly unmounted.
   useEffect(() => {
@@ -1002,7 +1015,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       const p = await getVideoLoadProgress();
       if (p.phase === "ready") {
         dismissLoadToast();
-        setStatus(await getVideoStatus());
+        setStatusIfNewest(++statusTicket.current, await getVideoStatus());
         toast.success("Model loaded");
         setBusy(null);
         quantRevert.current = null;
@@ -1547,7 +1560,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     dropResidentState();
     setBusy("unloading");
     try {
-      setStatus(await unloadVideoModel());
+      setStatusIfNewest(++statusTicket.current, await unloadVideoModel());
       setQuant(null);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to unload model");

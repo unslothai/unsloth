@@ -1548,13 +1548,26 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     setPortrait((p) => !p);
   };
 
+  // A status read started before an eject can answer after the one that
+  // followed it, and this page has no periodic poll to correct it: the controls
+  // would go on offering to generate against a runtime that is already free.
+  // So every read takes a ticket and only the newest may write.
+  const statusTicket = useRef(0);
+  const setStatusIfNewest = useCallback(
+    (ticket: number, next: DiffusionStatus) => {
+      if (ticket === statusTicket.current) setStatus(next);
+    },
+    [],
+  );
+
   const refreshStatus = useCallback(async () => {
+    const ticket = ++statusTicket.current;
     try {
-      setStatus(await getDiffusionStatus());
+      setStatusIfNewest(ticket, await getDiffusionStatus());
     } catch {
       // Status is best-effort; a failed poll shouldn't surface an error toast.
     }
-  }, []);
+  }, [setStatusIfNewest]);
 
   // Track mount so a long generate run stops issuing GPU work only on a true unmount; the page stays mounted across tab
   // switches, so a batch keeps generating off-tab. The mount-time refresh and cleanup live in the load-resume effect below.
@@ -1608,7 +1621,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       const p = await getDiffusionLoadProgress();
       if (p.phase === "ready") {
         dismissLoadToast();
-        setStatus(await getDiffusionStatus());
+        setStatusIfNewest(++statusTicket.current, await getDiffusionStatus());
         toast.success("Model loaded");
         setBusy(null);
         // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
@@ -2258,7 +2271,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     dropResidentState();
     setBusy("unloading");
     try {
-      setStatus(await unloadDiffusionModel());
+      setStatusIfNewest(++statusTicket.current, await unloadDiffusionModel());
       setQuant(null);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to unload model");

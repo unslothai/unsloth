@@ -33,15 +33,21 @@ function corner(height = 300): MonitorFrame {
   return { left: 1168, top: 884 - height, right: 1424, bottom: 884 };
 }
 
+/** Every published box, in publish order. Replaces the merged rectangle the
+ *  store used to expose: it merged obstacles that do not touch. */
+function published(): MonitorFrame[] {
+  return [...useMonitorFrameStore.getState().frames.values()];
+}
+
 function reset(): void {
-  useMonitorFrameStore.setState({ frame: null, frames: new Map() });
+  useMonitorFrameStore.setState({ frames: new Map() });
 }
 
 test("a panel publishes its own box", () => {
   reset();
   const panel = {};
   useMonitorFrameStore.getState().setFrame(panel, corner());
-  assert.deepEqual(useMonitorFrameStore.getState().frame, corner());
+  assert.deepEqual(published(), [corner()]);
 });
 
 test("closing the only monitor clears the frame", () => {
@@ -49,7 +55,7 @@ test("closing the only monitor clears the frame", () => {
   const panel = {};
   useMonitorFrameStore.getState().setFrame(panel, corner());
   useMonitorFrameStore.getState().clearFrame(panel);
-  assert.equal(useMonitorFrameStore.getState().frame, null);
+  assert.deepEqual(published(), []);
 });
 
 // The regression: reopened during the exit animation, so the replacement
@@ -64,8 +70,8 @@ test("an exiting panel does not clear the replacement's frame", () => {
   useMonitorFrameStore.getState().clearFrame(closing);
 
   assert.deepEqual(
-    useMonitorFrameStore.getState().frame,
-    corner(220),
+    published(),
+    [corner(220)],
     "the open monitor's frame must survive the old panel's unmount",
   );
   // A monitor that then sits still resizes nothing and republishes nothing, so
@@ -85,7 +91,7 @@ test("the replacement can still clear its own frame when closed", () => {
   useMonitorFrameStore.getState().setFrame(reopened, corner(220));
   useMonitorFrameStore.getState().clearFrame(closing);
   useMonitorFrameStore.getState().clearFrame(reopened);
-  assert.equal(useMonitorFrameStore.getState().frame, null);
+  assert.deepEqual(published(), []);
 });
 
 // The overlay stack re-renders on every notification, and reconcileGeometry
@@ -135,7 +141,7 @@ test("clearing on behalf of a panel that owns nothing does not notify", () => {
   useMonitorFrameStore.getState().clearFrame({});
   unsubscribe();
   assert.equal(notifications, 0);
-  assert.deepEqual(useMonitorFrameStore.getState().frame, corner());
+  assert.deepEqual(published(), [corner()]);
 });
 
 // The card is the first overlay in that corner that is persistent rather than
@@ -152,9 +158,9 @@ test("two publishers are dodged together, not one at a time", () => {
     .getState()
     .setFrame(composer, { left: 300, top: 780, right: 1100, bottom: 860 });
   assert.deepEqual(
-    useMonitorFrameStore.getState().frame,
-    { left: 300, top: 584, right: 1424, bottom: 884 },
-    "the stack has to clear both, so it reads their union",
+    published(),
+    [corner(300), { left: 300, top: 780, right: 1100, bottom: 860 }],
+    "both are kept, apart, for stackGeometry to fold one at a time",
   );
 });
 
@@ -166,7 +172,7 @@ test("dropping one publisher leaves the other's box intact", () => {
   useMonitorFrameStore.getState().setFrame(monitor, corner(300));
   useMonitorFrameStore.getState().setFrame(composer, composerBox);
   useMonitorFrameStore.getState().clearFrame(monitor);
-  assert.deepEqual(useMonitorFrameStore.getState().frame, composerBox);
+  assert.deepEqual(published(), [composerBox]);
 });
 
 // A composer that is hidden measures 0x0, and publishing that would pull the

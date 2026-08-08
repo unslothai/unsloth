@@ -25,31 +25,15 @@ export type MonitorFrame = {
 export type MonitorFramePublisher = object;
 
 interface MonitorFrameState {
-  /** Every published box as one rectangle. A summary, not what the stack
-   *  dodges: `stackGeometry` folds the boxes one at a time. */
-  frame: MonitorFrame | null;
+  /** Every published box, kept apart. Deliberately not merged into one: the
+   *  rectangle around a left-hand monitor and a bottom-right composer spans
+   *  the empty space between them, and reading that as a single obstacle
+   *  lifted the stack to its cap for a monitor nowhere near its column.
+   *  `stackGeometry` folds them one at a time. */
   frames: ReadonlyMap<MonitorFramePublisher, MonitorFrame>;
   setFrame: (publisher: MonitorFramePublisher, frame: MonitorFrame) => void;
   /** Drops only this publisher's box; the others still count. */
   clearFrame: (publisher: MonitorFramePublisher) => void;
-}
-
-/** One box covering them all, so the stack dodges whichever is in its way. */
-function union(
-  frames: ReadonlyMap<MonitorFramePublisher, MonitorFrame>,
-): MonitorFrame | null {
-  let merged: MonitorFrame | null = null;
-  for (const frame of frames.values()) {
-    merged = merged
-      ? {
-          left: Math.min(merged.left, frame.left),
-          top: Math.min(merged.top, frame.top),
-          right: Math.max(merged.right, frame.right),
-          bottom: Math.max(merged.bottom, frame.bottom),
-        }
-      : frame;
-  }
-  return merged;
 }
 
 function sameFrame(a: MonitorFrame | null, b: MonitorFrame | null): boolean {
@@ -63,22 +47,20 @@ function sameFrame(a: MonitorFrame | null, b: MonitorFrame | null): boolean {
 }
 
 export const useMonitorFrameStore = create<MonitorFrameState>((set) => ({
-  frame: null,
   frames: new Map(),
   // Written from a layout effect on every reconcile, so no-op writes must not
   // notify: the overlay stack re-renders on this.
   setFrame: (publisher, frame) =>
     set((state) => {
       if (sameFrame(state.frames.get(publisher) ?? null, frame)) return state;
-      const frames = new Map(state.frames).set(publisher, frame);
-      return { frames, frame: union(frames) };
+      return { frames: new Map(state.frames).set(publisher, frame) };
     }),
   clearFrame: (publisher) =>
     set((state) => {
       if (!state.frames.has(publisher)) return state;
       const frames = new Map(state.frames);
       frames.delete(publisher);
-      return { frames, frame: union(frames) };
+      return { frames };
     }),
 }));
 
