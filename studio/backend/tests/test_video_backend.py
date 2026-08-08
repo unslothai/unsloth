@@ -2339,9 +2339,7 @@ def test_h3_native_load_publishes_the_companion_repos_while_downloading(monkeypa
 
     backend = VideoBackend()
     backend._load_token = 7
-    backend._loading = video_mod._VideoLoadingState(
-        repo_id = "leejet/MiniMax-H3-GGUF", base_repo = ""
-    )
+    backend._loading = video_mod._VideoLoadingState(repo_id = "leejet/MiniMax-H3-GGUF", base_repo = "")
     guarded: list[tuple[str, ...]] = []
 
     def _download(_repo, wanted, *_args, **_kwargs):
