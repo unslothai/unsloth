@@ -856,9 +856,7 @@ class VideoBackend:
 
             def _where(name: str, size: int) -> Optional[str]:
                 live = hub_cache_dir()
-                if DiffusionBackend._hub_file_is_cached(
-                    repo, name, revision, size, roots = (live,)
-                ):
+                if DiffusionBackend._hub_file_is_cached(repo, name, revision, size, roots = (live,)):
                     return "live"
                 if not DiffusionBackend._hub_file_is_cached(
                     repo, name, revision, size, roots = (None,)
@@ -867,9 +865,7 @@ class VideoBackend:
                 # A stale live copy under the right name shadows the good one, because
                 # reuse_other_cache_root switches roots only when the live lookup finds NOTHING.
                 # Presence alone is what that switch tests, so ask without the size.
-                if DiffusionBackend._hub_file_is_cached(
-                    repo, name, revision, None, roots = (live,)
-                ):
+                if DiffusionBackend._hub_file_is_cached(repo, name, revision, None, roots = (live,)):
                     return None
                 return "other"
 

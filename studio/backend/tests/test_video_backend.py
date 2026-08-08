@@ -2022,7 +2022,13 @@ def test_download_plan_restages_a_video_base_split_across_cache_roots(monkeypatc
         "vae/ltx-2.3-22b-distilled_audio_vae.safetensors",
     }
 
-    def _cached(repo_id, filename, revision = None, expected_size = None, roots = None):
+    def _cached(
+        repo_id,
+        filename,
+        revision = None,
+        expected_size = None,
+        roots = None,
+    ):
         """Half the repo in the live root, half in the other one, nothing missing."""
         if roots == (live_root,):
             return filename not in elsewhere
