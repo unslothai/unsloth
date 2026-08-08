@@ -433,7 +433,6 @@ class _GgmlDownloadState:
             process = self._process
         if process is not None and process.poll() is None:
             from core.inference.stt_download_worker import terminate_download
-
             terminate_download(process)
         return True
 
