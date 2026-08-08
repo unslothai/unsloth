@@ -496,33 +496,44 @@ async def stream_external_chat_with_tools(
                 (call.get("function") or {}).get("name", ""),
                 (call.get("function") or {}).get("arguments", ""),
             )
-            if key in seen_call_keys:
+            if key in seen_call_keys and not require_complete_tool_batch:
                 continue
             seen_call_keys.add(key)
             normalized_calls.append(call)
-            if len(normalized_calls) >= _MAX_TOOL_CALLS_PER_TURN:
+            if (
+                len(normalized_calls) >= _MAX_TOOL_CALLS_PER_TURN
+                and not require_complete_tool_batch
+            ):
                 break
 
-        if parallel_tool_calls is False:
+        if parallel_tool_calls is False and not require_complete_tool_batch:
             normalized_calls = normalized_calls[:1]
 
         prepared_pairs = list(
             zip(tool_controller.prepare_batch(normalized_calls), normalized_calls)
         )
         remaining_calls = max(0, max_calls - executed_calls)
-        batch_exceeds_budget = (
-            require_complete_tool_batch
-            and sum(decision.should_execute for decision, _call in prepared_pairs) > remaining_calls
+        executable_keys = {
+            decision.key for decision, _call in prepared_pairs if decision.should_execute
+        }
+        complete_batch_rejected = require_complete_tool_batch and (
+            len(prepared_pairs) > _MAX_TOOL_CALLS_PER_TURN
+            or any(
+                not decision.should_execute
+                and not (decision.action == "duplicate" and decision.key in executable_keys)
+                for decision, _call in prepared_pairs
+            )
+            or sum(decision.should_execute for decision, _call in prepared_pairs) > remaining_calls
         )
         decision_pairs: list[tuple[Any, dict[str, Any]]] = []
         retained_executable = 0
         for decision, call in prepared_pairs:
             if decision.should_execute:
-                if batch_exceeds_budget or retained_executable >= remaining_calls:
+                if complete_batch_rejected or retained_executable >= remaining_calls:
                     continue
                 retained_executable += 1
             decision_pairs.append((decision, call))
-        if batch_exceeds_budget:
+        if complete_batch_rejected:
             executed_calls = max_calls
         decisions = [decision for decision, _call in decision_pairs]
         executable_pairs = [
@@ -563,7 +574,10 @@ async def stream_external_chat_with_tools(
             assistant_message["reasoning_content"] = "".join(assistant_reasoning_content)
         if executable:
             assistant_calls: list[dict[str, Any]] = []
-            for decision, raw_call in executable_pairs:
+            assistant_call_pairs = (
+                decision_pairs if require_complete_tool_batch else executable_pairs
+            )
+            for decision, raw_call in assistant_call_pairs:
                 assistant_call = decision.as_assistant_tool_call()
                 extra_content = raw_call.get("extra_content")
                 if isinstance(extra_content, Mapping):
@@ -594,9 +608,19 @@ async def stream_external_chat_with_tools(
             conversation.append(assistant_message)
 
         deferred_noops: list[dict[str, Any]] = []
+        batch_tool_messages: dict[str, dict[str, Any]] = {}
         for decision, _raw_call in decision_pairs:
             if not decision.should_execute:
                 completion = tool_controller.record_noop(decision)
+                aliased_message = batch_tool_messages.get(decision.key)
+                if require_complete_tool_batch and aliased_message is not None:
+                    aliased_message = copy.deepcopy(aliased_message)
+                    if decision.tool_call_id:
+                        aliased_message["tool_call_id"] = decision.tool_call_id
+                    else:
+                        aliased_message.pop("tool_call_id", None)
+                    conversation.append(aliased_message)
+                    continue
                 deferred_noops.append(completion.model_message())
                 continue
 
@@ -653,6 +677,7 @@ async def stream_external_chat_with_tools(
                     if decision.tool_call_id:
                         denied["tool_call_id"] = decision.tool_call_id
                     conversation.append(denied)
+                    batch_tool_messages[decision.key] = denied
                     tool_controller.record_denial(decision)
                     turn_had_denial = True
                     continue
@@ -711,7 +736,9 @@ async def stream_external_chat_with_tools(
             completion = tool_controller.record_result(decision, result)
             executed_calls += 1
             yield _event_line(completion.tool_end_event())
-            conversation.append(completion.tool_message())
+            tool_message = completion.tool_message()
+            conversation.append(tool_message)
+            batch_tool_messages[decision.key] = tool_message
 
         append_deferred_nudges(conversation, deferred_noops)
         yield _event_line({"type": "status", "text": ""})

@@ -106,10 +106,8 @@ def test_executes_tool_continues_and_aggregates_usage(monkeypatch):
             ],
         ]
     )
-
     options = {"confirm_tool_calls": True, "request_kwargs": {"continue_final_message": True}}
     output = asyncio.run(_collect(client, **options))
-
     assert executed == [("web_search", {"query": "Cairo"})]
     assert tuple(message["role"] for message in client.calls[1]["messages"][-2:]) == (
         "assistant",
@@ -146,13 +144,13 @@ def test_tool_round_requires_an_explicit_tool_finish(monkeypatch, terminal):
         finish = "length" if terminal == "length" else None,
     )
     stream = [call] + (["data: [DONE]"] if terminal != "eof" else [])
-
     with pytest.raises(RuntimeError):
         asyncio.run(_collect(_Client([stream])))
     assert executed == []
 
 
-def test_native_batch_over_budget_executes_nothing(monkeypatch):
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_native_batch_is_complete_before_execution(monkeypatch, duplicate):
     executed = []
     monkeypatch.setattr(
         loop_mod,
@@ -174,7 +172,10 @@ def test_native_batch_over_budget_executes_nothing(monkeypatch):
             "index": index,
             "id": f"call_{index}",
             "type": "function",
-            "function": {"name": "web_search", "arguments": json.dumps({"query": index})},
+            "function": {
+                "name": "web_search",
+                "arguments": json.dumps({"query": "same" if duplicate else index}),
+            },
             "extra_content": copy.deepcopy(linked),
         }
         for index in range(2)
@@ -199,13 +200,21 @@ def test_native_batch_over_budget_executes_nothing(monkeypatch):
             [_chunk(delta = {"content": "done"}), "data: [DONE]"],
         ]
     )
-
     asyncio.run(_collect(client, max_tool_iterations = 1, require_complete_tool_batch = True))
-
-    assert executed == []
-    assert not any(message.get("tool_calls") for message in client.calls[1]["messages"])
+    messages = client.calls[1]["messages"]
+    if duplicate:
+        assert executed == [{"query": "same"}]
+        assistant = next(message for message in messages if message.get("tool_calls"))
+        assert [call["id"] for call in assistant["tool_calls"]] == ["call_0", "call_1"]
+        assert [message["tool_call_id"] for message in messages if message["role"] == "tool"] == [
+            "call_0",
+            "call_1",
+        ]
+    else:
+        assert executed == []
+        assert not any(message.get("tool_calls") for message in messages)
     assert client.calls[1]["tools"] is None
-    assert "final answer" in client.calls[1]["messages"][-1]["content"]
+    assert "final answer" in messages[-1]["content"]
 
 
 def test_usage_precedes_provider_error(monkeypatch):
@@ -217,9 +226,7 @@ def test_usage_precedes_provider_error(monkeypatch):
             [error],
         ]
     )
-
     output = asyncio.run(_collect(client))
-
     usage_index = next(i for i, payload in enumerate(_payloads(output)) if payload.get("usage"))
     error_index = next(i for i, payload in enumerate(_payloads(output)) if payload.get("error"))
     assert usage_index < error_index
