@@ -132,6 +132,7 @@ const PREFS_KEYS: string[] = [
   LOADED_MODELS_PREFERENCE_KEYS.show,
   LOADED_MODELS_PREFERENCE_KEYS.collapsed,
   LOADED_MODELS_PREFERENCE_KEYS.position,
+  LOADED_MODELS_PREFERENCE_KEYS.dismissed,
   // Voice settings
   "unsloth_voice_settings",
 ];

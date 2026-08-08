@@ -13,8 +13,11 @@
 // bundler to reorder this.
 export {
   LOADED_MODELS_PREFERENCE_KEYS,
+  getLoadedModelsDismissed,
   getShowLoadedModels,
+  setLoadedModelsDismissed,
   setShowLoadedModels,
+  useLoadedModelsDismissed,
   useShowLoadedModels,
 } from "./show-loaded-models-pref";
 export { LoadedModelsIndicator } from "./loaded-models-indicator";

@@ -17,20 +17,21 @@ import { useSettingsDialogStore } from "@/features/settings";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { cn } from "@/lib/utils";
 import {
-  AiBrain01Icon,
   Cancel01Icon,
   DragDropVerticalIcon,
   Image01Icon,
   Message01Icon,
   Mic01Icon,
+  SparklesIcon,
   Video01Icon,
   VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import {
   LOADED_MODEL_KIND_LABELS,
   type LoadedModelEntry,
@@ -40,6 +41,8 @@ import {
 } from "./loaded-models-sources";
 import {
   LOADED_MODELS_PREFERENCE_KEYS,
+  setLoadedModelsDismissed,
+  useLoadedModelsDismissed,
   useShowLoadedModels,
 } from "./show-loaded-models-pref";
 import { useDragPosition } from "./use-drag-position";
@@ -49,7 +52,7 @@ import { useLoadedModels } from "./use-loaded-models";
 // default: a card you have to open first answers nothing.
 const COLLAPSED_KEY = LOADED_MODELS_PREFERENCE_KEYS.collapsed;
 
-const KIND_ICONS: Record<LoadedModelKind, typeof AiBrain01Icon> = {
+const KIND_ICONS: Record<LoadedModelKind, typeof SparklesIcon> = {
   text: Message01Icon,
   tts: VolumeHighIcon,
   image: Image01Icon,
@@ -166,7 +169,8 @@ export function LoadedModelsIndicator({
 }: { positioned?: boolean } = {}) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const showIndicator = useShowLoadedModels();
-  const enabled = showIndicator && canShowIndicator(pathname);
+  const dismissed = useLoadedModelsDismissed();
+  const enabled = showIndicator && !dismissed && canShowIndicator(pathname);
   const { entries, ejecting, eject } = useLoadedModels(enabled);
   const [collapsed, setCollapsed] = usePersistedToggle(COLLAPSED_KEY);
   const navigate = useNavigate();
@@ -189,6 +193,21 @@ export function LoadedModelsIndicator({
   );
   const { position, panelRef, startDrag, dragging, justDragged } =
     useDragPosition(LOADED_MODELS_PREFERENCE_KEYS.position);
+
+  // A new load brings a closed card back: closing it means "not now", not "stop
+  // telling me", which is what the Settings toggle is for. Subscribed above the
+  // early return, so a dismissed card is still listening for the load that
+  // reopens it. On the start of the load, not the end, so it is up for the whole
+  // time the toast is.
+  useEffect(
+    () =>
+      subscribeModelLifecycle(({ loading }) => {
+        if (loading) {
+          setLoadedModelsDismissed(false);
+        }
+      }),
+    [],
+  );
 
   if (!enabled || entries.length === 0) return null;
 
@@ -226,7 +245,7 @@ export function LoadedModelsIndicator({
               className="menu-soft-surface pointer-events-auto flex h-9 cursor-grab touch-none items-center gap-1.5 rounded-full pl-2.5 pr-3 font-heading text-muted-foreground transition-colors hover:text-foreground active:cursor-grabbing"
             >
               <HugeiconsIcon
-                icon={AiBrain01Icon}
+                icon={SparklesIcon}
                 strokeWidth={1.75}
                 className="size-[15px]"
               />
@@ -243,7 +262,7 @@ export function LoadedModelsIndicator({
         <div className="menu-soft-surface pointer-events-auto flex min-h-0 w-[268px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[20px] p-1.5 font-heading">
           <div className="flex items-center gap-1.5 px-1.5 pb-1 pt-0.5">
             <HugeiconsIcon
-              icon={AiBrain01Icon}
+              icon={SparklesIcon}
               strokeWidth={1.75}
               className="size-[15px] shrink-0 text-muted-foreground"
             />
@@ -290,6 +309,28 @@ export function LoadedModelsIndicator({
               </TooltipTrigger>
               <TooltipContent side="left" sideOffset={6}>
                 Collapse
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <button
+                  type="button"
+                  aria-label="Close loaded models"
+                  onClick={() => setLoadedModelsDismissed(true)}
+                  className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/[0.07] hover:text-foreground"
+                >
+                  <HugeiconsIcon
+                    icon={Cancel01Icon}
+                    strokeWidth={2}
+                    className="size-3.5"
+                  />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="left" sideOffset={6}>
+                <span className="block">Close</span>
+                <span className="block text-muted-foreground">
+                  Back on the next model load
+                </span>
               </TooltipContent>
             </Tooltip>
           </div>
