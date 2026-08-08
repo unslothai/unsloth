@@ -3185,10 +3185,16 @@ class VideoGenerateRequest(BaseModel):
     # route checks with validate_video_request_shape and rejects with a 422 naming the supported shapes. Nothing tighter
     # belongs here: with no model loaded there is no family to judge against, and that path must keep snapping as before.
     width: Optional[int] = Field(
-        None, ge = 32, le = 2048, description = "Frame width in pixels (a resolution preset of the loaded family)"
+        None,
+        ge = 32,
+        le = 2048,
+        description = "Frame width in pixels (a resolution preset of the loaded family)",
     )
     height: Optional[int] = Field(
-        None, ge = 32, le = 2048, description = "Frame height in pixels (a resolution preset of the loaded family)"
+        None,
+        ge = 32,
+        le = 2048,
+        description = "Frame height in pixels (a resolution preset of the loaded family)",
     )
     num_frames: Optional[int] = Field(
         None,

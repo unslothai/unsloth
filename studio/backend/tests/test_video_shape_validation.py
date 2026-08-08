@@ -161,7 +161,14 @@ class _ShapeFakeBackend(video_module.VideoBackend):
             kind = "pipeline",
         )
 
-    def generate(self, *, prompt, seed = None, cancel_event = None, **kwargs):
+    def generate(
+        self,
+        *,
+        prompt,
+        seed = None,
+        cancel_event = None,
+        **kwargs,
+    ):
         state = self._state
         if state is None:
             raise RuntimeError(VIDEO_NOT_LOADED_MSG)
@@ -225,9 +232,7 @@ def test_generate_rejects_256x256_with_422_naming_the_presets(client, backend):
     """The QA report end to end: the request is in range and parses, but the loaded
     model cannot render it, so it is refused instead of silently denoised."""
     backend.load_as(LTX2)
-    resp = client.post(
-        "/api/inference/video/generate", json = _payload(width = 256, height = 256)
-    )
+    resp = client.post("/api/inference/video/generate", json = _payload(width = 256, height = 256))
     assert resp.status_code == 422, resp.text
     detail = resp.json()["detail"]
     assert "256x256" in detail
@@ -262,9 +267,7 @@ def test_generate_rejects_an_off_lattice_frame_count_with_422(client, backend):
 def test_generate_with_nothing_loaded_still_reports_not_loaded_not_a_shape_error(client):
     """The gate must not preempt the 409: with no model there is no family whose
     rules could be applied, so the request falls through exactly as before."""
-    resp = client.post(
-        "/api/inference/video/generate", json = _payload(width = 256, height = 256)
-    )
+    resp = client.post("/api/inference/video/generate", json = _payload(width = 256, height = 256))
     assert resp.status_code == 409
     assert resp.json()["detail"] == VIDEO_NOT_LOADED_MSG
 
@@ -273,9 +276,7 @@ def test_generate_for_a_family_without_presets_still_snaps(client, backend):
     """Backwards compatibility: an odd size against a family that declares no presets
     is accepted and floored to the family multiple, the pre-change behaviour."""
     backend.load_as(replace(LTX2, resolution_presets = ()))
-    resp = client.post(
-        "/api/inference/video/generate", json = _payload(width = 250, height = 250)
-    )
+    resp = client.post("/api/inference/video/generate", json = _payload(width = 250, height = 250))
     assert resp.status_code == 200, resp.text
     record = _wait_terminal(client)["video"]
     # 250 floored to LTX-2's /32 multiple, as snap_video_size has always done.
