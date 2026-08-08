@@ -1021,7 +1021,37 @@ def _is_broken_torchvision_error(error) -> bool:
 # raises the very `operator torchvision::nms does not exist` this command is
 # handed out to clear. CUDA tags are left alone: PyPI already ships that build
 # and the sonames match across cu12x.
-_TORCH_NON_PYPI_BACKEND = re.compile(r"rocm\d[\d.]*|xpu|cpu", re.IGNORECASE)
+_TORCH_BACKEND_INDEX = re.compile(r"cpu|xpu|cu\d+|rocm\d+(?:\.\d+)*", re.IGNORECASE)
+
+# Builds that no public index pairs with, so no pinned reinstall can repair
+# them: a vendor wheel (this repo's own Radeon extras install
+# `torch 2.9.1+rocm7.2.0.lw.git7e1940d4` beside a `repo.radeon.com` torchvision),
+# a source build, and any nightly, whose stable-looking companion version is
+# synthesised from the release numbers alone.
+_TORCH_PRERELEASE_TAGS = (".dev", "a0", "b0", "rc", "alpha", "beta", "nightly")
+
+
+def _torch_local_tag(torch_version_raw):
+    if not torch_version_raw or "+" not in torch_version_raw:
+        return ""
+    return torch_version_raw.split("+", 1)[1]
+
+
+def _has_no_matching_public_wheel(torch_version_raw):
+    if any(tag in (torch_version_raw or "") for tag in _TORCH_PRERELEASE_TAGS):
+        return True
+    local = _torch_local_tag(torch_version_raw)
+    return bool(local) and not _TORCH_BACKEND_INDEX.fullmatch(local)
+
+
+def _torchvision_repair_advice(required = None, torch_version_raw = None):
+    """The one sentence telling the user how to repair a broken torchvision."""
+    if _has_no_matching_public_wheel(torch_version_raw):
+        return (
+            f"Reinstall the torchvision built for torch=={torch_version_raw}, "
+            f"from wherever that torch came from."
+        )
+    return f"Reinstall it with `{_torchvision_repair_command(required, torch_version_raw)}`."
 
 
 def _torchvision_repair_command(required = None, torch_version_raw = None):
@@ -1046,11 +1076,10 @@ def _torchvision_repair_command(required = None, torch_version_raw = None):
         spec = f"torchvision=={required[0]}.{required[1]}.{required[2]}"
     else:
         spec = f"torchvision=={required[0]}.{required[1]}.*"
+    local = _torch_local_tag(torch_version_raw)
     index = ""
-    if torch_version_raw and "+" in torch_version_raw:
-        local = torch_version_raw.split("+", 1)[1]
-        if _TORCH_NON_PYPI_BACKEND.fullmatch(local):
-            index = f" --index-url https://download.pytorch.org/whl/{local.lower()}"
+    if local and not local.lower().startswith("cu") and _TORCH_BACKEND_INDEX.fullmatch(local):
+        index = f" --index-url https://download.pytorch.org/whl/{local.lower()}"
     return f'pip install --force-reinstall --no-deps --no-cache-dir{index} "{spec}"'
 
 
@@ -1081,8 +1110,8 @@ def _probe_torchvision_binary(
         raise ImportError(
             f"Unsloth: torchvision=={torchvision_version_raw} claims to match "
             f"torch=={torch_version_raw}, but its compiled operators do not "
-            f"load ({type(error).__name__}: {error}). Reinstall it with "
-            f"`{_torchvision_repair_command(required, torch_version_raw)}`. "
+            f"load ({type(error).__name__}: {error}). "
+            f"{_torchvision_repair_advice(required, torch_version_raw)} "
             f"Set UNSLOTH_SKIP_TORCHVISION_CHECK=1 to skip this check."
         ) from error
 

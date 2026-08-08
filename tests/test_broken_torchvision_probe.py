@@ -253,7 +253,36 @@ def test_the_repair_command_keeps_the_backend_torch_was_built_for():
         assert f"--index-url https://download.pytorch.org/whl/{tag}" in command, command
         assert "torchvision==0.22.0" in command, command
 
-    # PyPI already ships the CUDA build, a plain release has no backend tag, and
-    # a source build has no index to point at: all three keep the plain command.
-    for raw in ("2.7.0+cu128", "2.7.0", "2.7.0+git1a2b3c"):
+    # PyPI already ships the CUDA build, and a plain release has no backend tag.
+    for raw in ("2.7.0+cu128", "2.7.0"):
         assert "--index-url" not in advice(raw), raw
+        assert "force-reinstall" in advice(raw), raw
+
+
+def test_a_build_no_public_index_carries_is_not_sent_to_pip():
+    """A vendor or source build has no index that pairs with it, and a nightly's
+    companion version is synthesised from the release numbers alone, so any
+    pinned reinstall installs a wheel that cannot load against the installed
+    torch. This repo ships such builds itself: the `rocm72-torch291` extra
+    installs `torch 2.9.1+rocm7.2.0.lw.git7e1940d4` beside a repo.radeon.com
+    torchvision 0.24.0, and the table would otherwise advertise PyPI's 0.24.1."""
+
+    def advice(torch_raw, required):
+        with pytest.raises(ImportError) as excinfo:
+            _probe_with_import_raising(
+                _NMS,
+                required = required,
+                torch_version_raw = torch_raw,
+                torchvision_version_raw = "0.24.0",
+            )
+        return str(excinfo.value)
+
+    for raw, required in (
+        ("2.9.1+rocm7.2.0.lw.git7e1940d4", (0, 24, 1)),  # Radeon Linux extra
+        ("2.9.1+rocmsdk20260116", (0, 24, 1)),  # Radeon Windows extra
+        ("2.7.0+git1a2b3c", (0, 22, 0)),  # built from source
+        ("2.12.0.dev20260801+cpu", (0, 27, 0)),  # nightly
+    ):
+        text = advice(raw, required)
+        assert "pip install" not in text, text
+        assert f"torch=={raw}" in text, text
