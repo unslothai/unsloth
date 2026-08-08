@@ -158,6 +158,8 @@ _INSTALLABLE_BACKENDS: dict[str, tuple[str, str]] = {
     "flash": ("flash_attn", "flash-attn"),
     "_flash_3_hub": ("kernels", "kernels"),  # FA3/FA4 from the HF kernels hub
     "flash_4_hub": ("kernels", "kernels"),
+    # Never handed to pip as a name -- see _MATCHED_WHEEL_BACKENDS below; the package
+    # string survives only for logging and for the _INSTALL_ATTEMPTED bookkeeping.
     "xformers": ("xformers", "xformers"),
 }
 
@@ -166,6 +168,65 @@ _ATTENTION_INSTALL_ENV = "UNSLOTH_DIFFUSION_ATTENTION_INSTALL"
 
 # Packages a pip install was already attempted for in THIS process. The loader pre-installs outside its locks, so a recorded attempt stops apply re-running the 600s install under _generate_lock.
 _INSTALL_ATTEMPTED: set[str] = set()
+
+# Backends whose wheel must be resolved against the RUNNING torch build instead of handed
+# to pip as a name. The answer is memoised for the process: None = not resolved yet, else
+# (wheel URL, refusal reason) with exactly one of the two set. torch cannot change under a
+# running interpreter, and caching a transient failure too is no worse than the status quo
+# -- _INSTALL_ATTEMPTED below already made the old install one-shot per process.
+_MATCHED_WHEEL_BACKENDS = frozenset({"xformers"})
+_XFORMERS_WHEEL_TARGET: Optional[tuple[Optional[str], Optional[str]]] = None
+
+
+def _xformers_wheel_target() -> tuple[Optional[str], Optional[str]]:
+    """Resolve the xFormers wheel built for the resident torch: (URL, refusal reason).
+
+    xformers' compiled extension is linked against ONE exact (torch, CUDA) pair, and next
+    to any other pair ``torch.ops.load_library`` raises -- which xformers/_cpp_lib.py then
+    downgrades to a log warning, so the import "succeeds" with memory-efficient attention,
+    SwiGLU and the sparse ops silently gone. That is invisible to ``find_spec`` and to pip.
+    PyPI publishes only the CUDA-12.8 flavour, so a plain ``pip install xformers`` beside a
+    cu130 torch installs the broken combination every time.
+
+    So resolve the exact download.pytorch.org wheel instead, and when no wheel matches
+    return a reason rather than a URL: installing nothing leaves the caller on torch SDPA,
+    which is strictly better than installing an extension that cannot load.
+    """
+    global _XFORMERS_WHEEL_TARGET
+    if _XFORMERS_WHEEL_TARGET is not None:
+        return _XFORMERS_WHEEL_TARGET
+
+    try:
+        from utils.wheel_utils import probe_torch_wheel_env, url_exists, xformers_wheel_url
+
+        # include_windows: this is the one resolver that HAS win_amd64 wheels upstream.
+        env = probe_torch_wheel_env(timeout = 120, include_windows = True)
+        if env is None:
+            target = (
+                None,
+                "torch could not be probed, or this platform has no xFormers wheel "
+                "(macOS / Linux aarch64 / Windows on ARM)",
+            )
+        else:
+            url = xformers_wheel_url(env)
+            if url is None:
+                target = (
+                    None,
+                    f"no xFormers wheel is published for torch "
+                    f"{env.get('torch_version') or 'unknown'} with CUDA "
+                    f"{env.get('cuda_version') or 'none'}",
+                )
+            elif not url_exists(url):
+                # Belt and braces: an index outage or a withdrawn wheel must refuse too,
+                # never silently degrade into an unpinned resolve.
+                target = (None, f"the matching xFormers wheel is unavailable ({url})")
+            else:
+                target = (url, None)
+    except Exception as exc:  # noqa: BLE001 -- resolution must never break a model load
+        target = (None, f"the xFormers wheel could not be resolved ({exc})")
+
+    _XFORMERS_WHEEL_TARGET = target
+    return target
 
 
 def _pip_requirement(backend: str, package: str) -> str:
@@ -221,22 +282,27 @@ def _kernels_hub_compatible() -> bool:
         return True
 
 
-def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> None:
+def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Optional[str]:
     """Best-effort wheel-only install of the package ``backend`` needs, when allowed.
 
     Called after arch gating, so only for a backend that could work here. Failure is swallowed:
-    the subsequent set_attention_backend raises on the missing package and falls back to native."""
+    the subsequent set_attention_backend raises on the missing package and falls back to native.
+
+    Returns the reason the install was REFUSED (a policy decision, e.g. no CUDA-matched
+    xFormers wheel exists for the resident torch), or None when nothing stood in the way --
+    the install ran, was skipped as already present, or merely failed. Callers may ignore it;
+    it exists so a refusal is reportable rather than only logged."""
     import importlib.util
     import os
 
     spec = _INSTALLABLE_BACKENDS.get(backend)
     if spec is None:
-        return
+        return None
     module, package = spec
     package = _pip_requirement(backend, package)
     gate = os.environ.get(_ATTENTION_INSTALL_ENV, "auto").strip().lower()
     if gate in ("0", "false", "no", "off"):
-        return
+        return None
     # Refusing is a POLICY decision, not a failed attempt, so it is checked before the
     # _INSTALL_ATTEMPTED memo below and records nothing: a later request on a fixed environment
     # must still be able to install. Scoped to kernels; the sage / flash-attn / xformers wheels
@@ -250,15 +316,36 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Non
                 backend,
                 *_KERNELS_HUB_FLOOR,
             )
-        return
+        return "the resident huggingface_hub is too old for the kernels package"
     try:
         if importlib.util.find_spec(module) is not None:
-            return
+            return None
     except Exception:  # noqa: BLE001 — a broken install probes as missing; try the install
         pass
+    # xFormers ships a compiled extension tied to one exact (torch, CUDA) pair, so the name
+    # `xformers` is not a safe thing to hand pip: PyPI serves only the CUDA-12.8 build and
+    # --no-deps below deliberately stops pip from ever reading its `Requires-Dist: torch==X`.
+    # Resolve the matching wheel URL instead, and REFUSE when there is none -- like the
+    # kernels gate above this is policy, so it is checked before the _INSTALL_ATTEMPTED memo
+    # and records nothing there (a refused backend never burns its one install attempt).
+    if backend in _MATCHED_WHEEL_BACKENDS:
+        wheel_url, refusal = _xformers_wheel_target()
+        if wheel_url is None:
+            if logger is not None:
+                logger.warning(
+                    "diffusion.attention: not installing %s for backend=%s — %s; an unpinned "
+                    "install would land an extension that cannot load next to the resident "
+                    "torch and would disable memory-efficient attention silently. Using the "
+                    "default backend",
+                    package,
+                    backend,
+                    refusal,
+                )
+            return refusal
+        package = wheel_url
     # Attempt each install once per process, else the in-lock apply re-runs it under _generate_lock and blocks unload/cancel.
     if package in _INSTALL_ATTEMPTED:
-        return
+        return None
     _INSTALL_ATTEMPTED.add(package)
     import subprocess
     import sys
@@ -269,7 +356,7 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Non
         )
     try:
         subprocess.run(
-            # --no-deps: install ONLY this kernel wheel, since xformers/flash-attn pin an exact torch and normal resolution would replace the running one. An ABI mismatch just fails to import.
+            # --no-deps: install ONLY this kernel wheel, since xformers/flash-attn pin an exact torch and normal resolution would replace the running one. It also means pip never reads the wheel's `Requires-Dist: torch==X`, so nothing here would catch an ABI mismatch -- for xformers, whose mismatch is SILENT (the extension fails to load and _cpp_lib.py logs a warning), the URL was resolved against the running torch above precisely so there is nothing left to catch.
             [
                 sys.executable,
                 "-m",
@@ -304,6 +391,7 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Non
                     package,
                     exc,
                 )
+    return None
 
 
 def _attention_dits(pipe: Any) -> list:

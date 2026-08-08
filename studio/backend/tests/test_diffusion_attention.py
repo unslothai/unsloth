@@ -256,6 +256,9 @@ def _no_real_installs(monkeypatch):
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
     # The install once-per-process memo is module state; clear it so each test starts fresh.
     att._INSTALL_ATTEMPTED.clear()
+    # So is the resolved xFormers wheel. Left set, one test's stub decides the next one's
+    # answer -- and unset, the resolver shells out to probe the real torch.
+    monkeypatch.setattr(att, "_XFORMERS_WHEEL_TARGET", None)
 
 
 class _Recorder:
@@ -322,17 +325,146 @@ def test_sage_install_carries_the_dispatcher_version_floor(monkeypatch):
     assert att._pip_requirement("xformers", "xformers") == "xformers"
 
 
+_XFORMERS_WHEEL = (
+    "https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl"
+)
+
+
+def _stub_xformers_wheel(monkeypatch, url = _XFORMERS_WHEEL, reason = None):
+    """Pin the resolved xFormers wheel so no test probes the real torch."""
+    monkeypatch.setattr(att, "_xformers_wheel_target", lambda: (url, reason))
+
+
 def test_install_uses_no_deps_to_protect_core_deps(monkeypatch):
-    # A kernel add-on pins an exact torch, so --no-deps installs only the kernel wheel; an ABI-incompatible one merely fails to import.
+    # A kernel add-on pins an exact torch, so --no-deps installs only the kernel wheel.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
     import importlib.util
 
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    _stub_xformers_wheel(monkeypatch)
     run = _Recorder()
     _stub_subprocess(monkeypatch, run)
     att._ensure_attention_backend_installed("xformers")
     assert len(run.calls) == 1
     assert "--no-deps" in run.calls[0]
+
+
+def test_xformers_installs_the_cuda_matched_wheel_not_the_package_name(monkeypatch):
+    """`pip install xformers` resolves the PyPI build, which exists only in the CUDA-12.8
+    flavour: beside a cu130 torch its extension fails to load and xformers/_cpp_lib.py
+    logs a warning instead of raising, so memory-efficient attention vanishes silently
+    while the import still succeeds. Only a URL resolved against the running torch is safe."""
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    _stub_xformers_wheel(monkeypatch)
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+
+    assert att._ensure_attention_backend_installed("xformers") is None
+    assert len(run.calls) == 1
+    assert _XFORMERS_WHEEL in run.calls[0]
+    assert "xformers" not in [arg for arg in run.calls[0] if arg != _XFORMERS_WHEEL]
+
+
+def test_xformers_install_refused_when_no_matching_wheel_exists(monkeypatch):
+    """No matched wheel must mean NO install. Falling back to an unpinned resolve is the
+    bug; the caller stays on torch SDPA and gets the reason back."""
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    _stub_xformers_wheel(
+        monkeypatch, url = None, reason = "no xFormers wheel is published for torch 2.11.0"
+    )
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+
+    reason = att._ensure_attention_backend_installed("xformers")
+    assert reason == "no xFormers wheel is published for torch 2.11.0"
+    assert run.calls == []
+
+
+def test_xformers_refusal_is_logged_with_its_reason(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    _stub_xformers_wheel(monkeypatch, url = None, reason = "torch could not be probed")
+    _stub_subprocess(monkeypatch, _Recorder())
+
+    warnings = []
+
+    class _Logger:
+        def info(self, *args, **kwargs):
+            pass
+
+        def warning(self, msg, *args, **kwargs):
+            warnings.append(msg % args if args else msg)
+
+    att._ensure_attention_backend_installed("xformers", _Logger())
+    assert len(warnings) == 1
+    assert "torch could not be probed" in warnings[0]
+    assert "not installing" in warnings[0]
+
+
+def test_xformers_refusal_records_no_attempt(monkeypatch):
+    """Refusal is a POLICY decision, like the kernels/hub gate: a later request on a
+    repaired environment must still be able to install."""
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    _stub_xformers_wheel(monkeypatch, url = None, reason = "nope")
+    _stub_subprocess(monkeypatch, _Recorder())
+
+    att._ensure_attention_backend_installed("xformers")
+    assert att._INSTALL_ATTEMPTED == set()
+
+    # Environment repaired -> the next request installs.
+    _stub_xformers_wheel(monkeypatch)
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+    att._ensure_attention_backend_installed("xformers")
+    assert len(run.calls) == 1
+    assert _XFORMERS_WHEEL in run.calls[0]
+
+
+def test_xformers_resolution_skipped_when_already_installed(monkeypatch):
+    """find_spec runs first, so a working xformers never pays for the torch probe."""
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    resolved = []
+    monkeypatch.setattr(
+        att, "_xformers_wheel_target", lambda: resolved.append(1) or (None, "x")
+    )
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+
+    assert att._ensure_attention_backend_installed("xformers") is None
+    assert resolved == []
+    assert run.calls == []
+
+
+def test_matched_wheel_path_does_not_touch_other_backends(monkeypatch):
+    """sage / flash / kernels still go to pip by name -- only xFormers has the silent
+    ABI failure that forces URL resolution."""
+    assert att._MATCHED_WHEEL_BACKENDS == frozenset({"xformers"})
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr(
+        att, "_xformers_wheel_target", lambda: pytest.fail("resolver must not run for sage")
+    )
+    run = _Recorder()
+    _stub_subprocess(monkeypatch, run)
+    att._ensure_attention_backend_installed("sage")
+    assert len(run.calls) == 1
+    assert "sageattention>=2.1.1" in run.calls[0]
 
 
 def test_failed_install_not_retried_in_same_process(monkeypatch):
