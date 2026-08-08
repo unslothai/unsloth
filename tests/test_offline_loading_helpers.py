@@ -671,17 +671,17 @@ def test_the_failed_attempt_is_not_pinned_by_the_error_it_raised(monkeypatch):
     def fake(*args, **kwargs):
         calls.append(1)
         if len(calls) == 1:
-            partial = _PartialModel()          # what the failed load already built
+            partial = _PartialModel()  # what the failed load already built
             witness["ref"] = weakref.ref(partial)
             raise ConnectionError("connection reset while downloading model.safetensors")
         witness["alive_during_retry"] = witness["ref"]() is not None
         return "loaded"
 
-    monkeypatch.setattr(gc, "collect", lambda *a, **k: 0)   # only refcounts, no cycles
+    monkeypatch.setattr(gc, "collect", lambda *a, **k: 0)  # only refcounts, no cycles
     assert fake("model") == "loaded"
-    assert witness["alive_during_retry"] is False, (
-        "the first attempt's model was still reachable while the retry reloaded"
-    )
+    assert (
+        witness["alive_during_retry"] is False
+    ), "the first attempt's model was still reachable while the retry reloaded"
 
 
 def test_a_real_retry_failure_is_not_replaced_by_the_network_error(monkeypatch):
@@ -743,9 +743,9 @@ def test_a_network_error_wrapped_in_a_runtimeerror_keeps_its_cause(monkeypatch):
 
     with pytest.raises(RuntimeError) as caught:
         fake("model")
-    assert isinstance(caught.value.__cause__, ConnectionError), (
-        "the retry replaced the connection error that made this classifiable"
-    )
-    assert L._is_offline_related_error(caught.value), (
-        "the surfaced error is no longer recognisable as network-related"
-    )
+    assert isinstance(
+        caught.value.__cause__, ConnectionError
+    ), "the retry replaced the connection error that made this classifiable"
+    assert L._is_offline_related_error(
+        caught.value
+    ), "the surfaced error is no longer recognisable as network-related"
