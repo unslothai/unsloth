@@ -77,6 +77,24 @@ class LoRAEMA:
             shadow.requires_grad = False
             self._shadow[name] = shadow
 
+    def reseed_from(self, model: Any) -> None:
+        """Re-point every shadow at the model's CURRENT trainable weights.
+
+        For a resume that turns EMA on for the first time. The trainer builds the EMA before it
+        restores the adapter, so the shadow holds freshly initialised LoRA weights, and a
+        checkpoint written with EMA off carries no shadow to replace them with -- leaving the
+        exported EMA adapter blending the restored weights with initialisation noise. Starting
+        from the restored weights is what enabling EMA at step N means."""
+        import torch
+
+        with torch.no_grad():
+            for name, p in model.named_parameters():
+                shadow = self._shadow.get(name)
+                if shadow is None or tuple(shadow.shape) != tuple(p.shape):
+                    continue
+                shadow.copy_(p.detach().to(device = shadow.device, dtype = shadow.dtype))
+        self.updates = 0
+
     def effective_decay(self) -> float:
         """The decay used for the NEXT update (after ``updates`` prior ones)."""
         if not self.warmup:

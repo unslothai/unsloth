@@ -365,7 +365,7 @@ def test_a_partial_adapter_restore_is_refused(run_dir):
 
     fresh = _Run(run_dir)
     fresh.cfg = __import__("dataclasses").replace(fresh.cfg, resume_from_checkpoint = str(run_dir))
-    with pytest.raises(ValueError, match = "restored 1 of 2 adapter tensors"):
+    with pytest.raises(ValueError, match = "not in this run"):
         fresh.restore()
 
 
@@ -1159,3 +1159,159 @@ def test_cuda_rng_restores_the_devices_the_bundle_covers(monkeypatch):
     dc.restore_rng_state({}, {"torch_cuda_0": only_device_zero})
 
     assert restored == [(0, bytes([7, 8, 9]))], "cuda:0 was not restored"
+
+
+def test_a_checkpoint_missing_a_live_tensor_is_refused():
+    """The other direction, which the count alone could not see.
+
+    Matching the number restored against the checkpoint's own key count proves every SAVED
+    tensor landed somewhere. It says nothing about a live trainable parameter the checkpoint
+    never had: a truncated or hand-edited adapter holding a strict SUBSET passed, and the full
+    optimizer state was then loaded on top, so restored Adam moments drove freshly initialised
+    weights while the run reported a clean resume.
+    """
+    from core.training.diffusion_train_common import (
+        load_trainable_state_dict,
+        trainable_state_dict,
+    )
+
+    model = torch.nn.Sequential(torch.nn.Linear(4, 4, bias = False), torch.nn.Linear(4, 4))
+    for param in model.parameters():
+        param.requires_grad_(True)
+    full = trainable_state_dict(model)
+    assert len(full) >= 2
+
+    # Everything the checkpoint holds still lands, so the old count check was satisfied.
+    partial = {k: v for k, v in full.items() if k != sorted(full)[0]}
+    with pytest.raises(ValueError, match = "not in the checkpoint"):
+        load_trainable_state_dict(model, partial)
+
+    # ...and the complete set is still accepted, so the guard is not simply refusing everything.
+    assert load_trainable_state_dict(model, full) == len(full)
+
+
+# ── the writer must not destroy what it is replacing ──────────────────────────
+
+
+def test_the_bundle_just_written_survives_pruning(run_dir):
+    """Pruning is by STEP, and a resume legitimately writes a bundle that is not the highest
+    numbered one in the folder. Resume 10, stop at 15 with 20 and 30 still present and a limit
+    of 2, and the checkpoint just promoted is the one deleted -- while the service reports
+    checkpoint_saved for a path that no longer exists and the run's own start fence stops those
+    older bundles from making it resumable."""
+    seed = _Run(run_dir, save_total_limit = 0)
+    for step in (10, 20, 30):
+        seed.save(step)
+
+    run = _Run(run_dir, save_total_limit = 2)
+    written, error = run.save(15)
+
+    assert error is None, error
+    assert Path(written).is_dir(), "the checkpoint this call reported was pruned by the same call"
+    assert dc.read_checkpoint(Path(written)) is not None
+    kept = {p.name for p in dc.list_checkpoints(run_dir)}
+    assert "checkpoint-15" in kept
+    assert len(kept) == 2, kept
+
+
+def test_a_failed_write_leaves_the_previous_checkpoints_alone(run_dir, monkeypatch):
+    """discard_existing cleared the directory BEFORE staging anything. A kill or an I/O error
+    mid-write then left the new run with no checkpoint and every earlier run sharing the folder
+    with none either -- the opposite of what this writer promises."""
+    run = _Run(run_dir, save_total_limit = 0)
+    run.save(7)
+
+    def _boom(*_a, **_k):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(dc, "_save_tensors", _boom)
+    # write_resume_checkpoint reports rather than raises, so the run survives a bad disk.
+    written, error = run.save(1, discard_existing = True)
+    assert written is None and error
+
+    survivors = {p.name for p in dc.list_checkpoints(run_dir)}
+    assert survivors == {"checkpoint-7"}, (
+        "the pre-existing bundle was deleted before the replacement was written, so a write "
+        f"failure lost it: {survivors}"
+    )
+    assert dc.read_checkpoint(run_dir / "checkpoint-7") is not None
+
+
+def test_a_successful_discarding_write_still_replaces_the_old_bundles(run_dir):
+    """The other half: deferring the delete must not turn discard_existing into a no-op."""
+    run = _Run(run_dir, save_total_limit = 0)
+    run.save(7)
+    written, error = run.save(1, discard_existing = True)
+
+    assert error is None, error
+    assert {p.name for p in dc.list_checkpoints(run_dir)} == {"checkpoint-1"}
+    assert Path(written).name == "checkpoint-1"
+
+
+# ── a discard must not take the source checkpoint with it ─────────────────────
+
+
+def test_clearing_this_runs_checkpoints_spares_the_one_it_resumed_from(run_dir):
+    """A resumed run writes into the directory its source lives in, so a blanket clear on
+    "stop without saving" deletes the bundle the user resumed from: an accidental resume
+    followed by a discard leaves the ORIGINAL stopped run unresumable."""
+    source = _Run(run_dir, save_total_limit = 0)
+    source.save(11)
+    preexisting = dc.list_checkpoints(run_dir)
+
+    resumed = _Run(run_dir, save_total_limit = 0)
+    resumed.save(14)
+    resumed.save(17)
+
+    dc.clear_own_checkpoints(run_dir, preexisting)
+
+    survivors = {p.name for p in dc.list_checkpoints(run_dir)}
+    assert survivors == {"checkpoint-11"}, (
+        f"the discard removed the source bundle as well as its own: {survivors}"
+    )
+
+
+# ── EMA turned on by the resume ───────────────────────────────────────────────
+
+
+def test_enabling_ema_on_a_resume_starts_from_the_restored_weights():
+    """EMA is not part of the validated identity, so a resume can turn it on for a run that had
+    it off. The trainer builds the EMA before restoring the adapter, so its shadow holds freshly
+    initialised LoRA weights and the checkpoint carries no shadow to replace them -- every later
+    update, and the exported EMA adapter, would blend the restored weights with that noise."""
+    from core.training.diffusion_train_extras import LoRAEMA
+
+    model = torch.nn.Linear(4, 4, bias = False)
+    ema = LoRAEMA(model, decay = 0.99)
+    initial = ema.state_dict()["weight"].clone()
+
+    # ...the adapter is restored afterwards, exactly as the trainer orders it.
+    with torch.no_grad():
+        model.weight.copy_(torch.full_like(model.weight, 3.0))
+    assert not torch.allclose(ema.state_dict()["weight"], model.weight)
+
+    ema.reseed_from(model)
+
+    assert torch.allclose(ema.state_dict()["weight"], model.weight)
+    assert not torch.allclose(ema.state_dict()["weight"], initial)
+    assert ema.updates == 0, "the warmup ramp restarts with the shadow"
+
+
+# ── a run directory that happens to look like a bundle ────────────────────────
+
+
+def test_an_output_directory_named_like_a_checkpoint_is_still_scanned(tmp_path, monkeypatch):
+    """An adapter can legitimately be called "checkpoint-2026". Its output directory then
+    matches the bundle pattern while holding checkpoint-11 rather than a trainer_state.json of
+    its own, and the documented resume API rejected it with the real checkpoint sitting inside."""
+    from utils.paths import outputs_root
+
+    weird = outputs_root() / "checkpoint-2026"
+    weird.mkdir(parents = True, exist_ok = True)
+    run = _Run(weird, save_total_limit = 0)
+    run.save(11)
+
+    path, step = dc.preflight_resume(str(weird), identity = _identity(), target_steps = 500)
+
+    assert Path(path).name == "checkpoint-11"
+    assert step == 11

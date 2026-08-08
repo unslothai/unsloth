@@ -50,7 +50,7 @@ import time
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Iterable
 
 # Bumped only for a breaking layout change. A reader refuses a version it does not know.
 CHECKPOINT_FORMAT = "unsloth-diffusion-checkpoint"
@@ -479,8 +479,13 @@ def save_checkpoint(
         raise ValueError("refusing to write a checkpoint with no adapter tensors")
     root = Path(output_dir).expanduser()
     root.mkdir(parents = True, exist_ok = True)
+    doomed: list[Path] = []
     if discard_existing:
-        clear_checkpoints(root)
+        # Recorded now, deleted AFTER the new bundle is promoted. Clearing first means a kill or
+        # an I/O failure mid-write leaves the directory with no checkpoint at all -- and any
+        # earlier run sharing the folder has irreversibly lost its own, which is the opposite of
+        # what this writer promises.
+        doomed = list_checkpoints(root)
     else:
         # Re-reaching a step that already has a VALID bundle only happens one way: the run
         # resumed at N and stopped before N+1 completed, so its state is byte-identical to what
@@ -561,8 +566,13 @@ def save_checkpoint(
     except BaseException:
         shutil.rmtree(staging, ignore_errors = True)
         raise
+    for stale in doomed:
+        # `final` can be one of these when the new step reuses an existing bundle's name;
+        # _promote already replaced it, so removing it here would delete the new checkpoint.
+        if stale != final:
+            shutil.rmtree(stale, ignore_errors = True)
     _prune_staging(root)
-    prune_checkpoints(root, keep = save_total_limit)
+    prune_checkpoints(root, keep = save_total_limit, protect = final)
     return str(final)
 
 
@@ -704,12 +714,27 @@ def _prune_staging(root: Path) -> None:
 
 
 def prune_checkpoints(
-    output_dir: str | os.PathLike[str], keep: int = DEFAULT_SAVE_TOTAL_LIMIT
+    output_dir: str | os.PathLike[str],
+    keep: int = DEFAULT_SAVE_TOTAL_LIMIT,
+    *,
+    protect: Optional[Path] = None,
 ) -> None:
-    """Keep only the ``keep`` newest ``checkpoint-<N>`` bundles. ``keep <= 0`` keeps all."""
+    """Keep only the ``keep`` newest ``checkpoint-<N>`` bundles. ``keep <= 0`` keeps all.
+
+    ``protect`` is never pruned. Newest is by STEP, and a resume can legitimately write a bundle
+    that is not the highest-numbered one in the folder: resume checkpoint-10, stop at 15, with 20
+    and 30 still present and keep=2, and the bundle just written is the one deleted -- while the
+    service reports checkpoint_saved for a path that no longer exists, and the run's own start
+    fence stops those older bundles from making it resumable. So the caller pins the one it just
+    promoted, and the limit applies to the rest."""
     if keep <= 0:
         return
-    for stale in list_checkpoints(output_dir)[keep:]:
+    survivors = list_checkpoints(output_dir)
+    if protect is not None and protect in survivors:
+        # It occupies one of the kept slots whether or not it sorted into the top `keep`.
+        survivors = [c for c in survivors if c != protect]
+        keep = max(0, keep - 1)
+    for stale in survivors[keep:]:
         shutil.rmtree(stale, ignore_errors = True)
 
 
@@ -717,6 +742,24 @@ def clear_checkpoints(output_dir: str | os.PathLike[str]) -> None:
     """Remove every ``checkpoint-<N>`` bundle in ``output_dir``. Used when a fresh (non-resumed)
     run takes over an output directory that an earlier run of the same name left checkpoints in."""
     for stale in list_checkpoints(output_dir):
+        shutil.rmtree(stale, ignore_errors = True)
+
+
+def clear_own_checkpoints(
+    output_dir: str | os.PathLike[str], preexisting: "Iterable[Path]"
+) -> None:
+    """Remove the bundles THIS run wrote, leaving the ones it found.
+
+    A discard must not take the checkpoint the run resumed FROM with it: a resumed run writes
+    into the same directory the source bundle lives in, so an accidental resume followed by
+    "stop without saving" would otherwise leave the original stopped run unresumable -- the one
+    thing the user was trying not to disturb. Bundles are identified by the set captured before
+    the run's first write, not by step number, because a resume writes lower numbers than the
+    ones already there."""
+    keep = {Path(p) for p in preexisting}
+    for stale in list_checkpoints(output_dir):
+        if stale in keep:
+            continue
         shutil.rmtree(stale, ignore_errors = True)
 
 
@@ -872,6 +915,7 @@ def describe_resume_state(
     status: Optional[str] = None,
     started_at: Optional[float] = None,
     ended_at: Optional[float] = None,
+    source_checkpoint: Optional[str] = None,
     total_steps: Optional[int] = None,
 ) -> dict[str, Any]:
     """What the UI needs to offer (or explain the absence of) a Resume action for a run.
@@ -897,6 +941,17 @@ def describe_resume_state(
         if not root.is_dir():
             return {**blank, "resume_blocked_reason": "This run's output folder no longer exists."}
         found = latest_valid_checkpoint(root, not_before = started_at, not_after = ended_at)
+        if found is None and source_checkpoint:
+            # This run RESUMED and then ended before writing a bundle of its own -- an OOM on
+            # the first restored step is the usual way. The source it was validated against is
+            # still on disk and still correct to continue from, but it predates started_at, so
+            # the fence above excludes it and the run reads as unresumable when retrying is the
+            # obvious thing to do. Read it directly rather than widening the fence, which exists
+            # to stop an unrelated earlier run's bundles being offered.
+            candidate = Path(str(source_checkpoint)).expanduser()
+            manifest = read_checkpoint(candidate) if candidate.is_dir() else None
+            if manifest is not None:
+                found = (candidate, manifest)
     except OSError:
         return blank
     if found is None:
@@ -1009,16 +1064,25 @@ def preflight_resume(
     root = resolve_resume_dir(path_value)
     # An explicit checkpoint-<N> directory resumes exactly that step; a run directory takes
     # its newest complete bundle.
-    if checkpoint_step(root) >= 0:
-        manifest = read_checkpoint(root)
-        if manifest is None:
+    #
+    # The name alone does not settle which it is. An adapter can legitimately be called
+    # "checkpoint-2026", and its output directory then matches the bundle pattern while
+    # containing checkpoint-11 rather than a trainer_state.json of its own -- read as an
+    # explicit bundle it is simply rejected, with the real checkpoint sitting inside it. So the
+    # explicit branch is taken only when the path IS a valid bundle.
+    explicit = read_checkpoint(root) if checkpoint_step(root) >= 0 else None
+    found: Optional[tuple[Path, dict]] = None
+    if explicit is not None:
+        found = (root, explicit)
+    else:
+        found = latest_valid_checkpoint(root)
+        if found is None and checkpoint_step(root) >= 0:
+            # Named like a bundle, is not one, and holds no bundles either: the original
+            # message is the accurate one.
             raise ResumeError(
                 f"'{root.name}' is not a complete training checkpoint (it is missing files, "
                 "or was left behind by an interrupted save)."
             )
-        found: Optional[tuple[Path, dict]] = (root, manifest)
-    else:
-        found = latest_valid_checkpoint(root)
     if found is None:
         raise ResumeError(
             "No complete training checkpoint was found for this run, so there is nothing to "

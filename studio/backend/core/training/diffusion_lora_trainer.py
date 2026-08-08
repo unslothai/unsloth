@@ -70,7 +70,8 @@ from core.training.diffusion_train_common import (  # noqa: F401
     write_resume_checkpoint,
 )
 from core.training.diffusion_checkpoint import (
-    clear_checkpoints,
+    clear_own_checkpoints,
+    list_checkpoints,
     identity_for_config,
     preflight_resume,
 )
@@ -498,6 +499,9 @@ def run_diffusion_lora_training(
             rng_streams = rng_streams,
         )
         resumed = restored.step if restored is not None else 0
+        # The bundles that were already here when this run started, so a discard below
+        # removes only what this run wrote. A resumed run shares its source's directory.
+        preexisting_checkpoints = list_checkpoints(out_dir)
 
         unet.train()
         stopped = False
@@ -689,7 +693,7 @@ def run_diffusion_lora_training(
             # optimizer state in a directory the user never got an artifact from -- invisible
             # to every scanner, unresumable (the record is marked discarded), and with no
             # delete path in the UI.
-            clear_checkpoints(out_dir)
+            clear_own_checkpoints(out_dir, preexisting_checkpoints)
             try:
                 out_dir.rmdir()
             except OSError:

@@ -62,7 +62,8 @@ from core.training.diffusion_train_common import (
     write_resume_checkpoint,
 )
 from core.training.diffusion_checkpoint import (
-    clear_checkpoints,
+    clear_own_checkpoints,
+    list_checkpoints,
     identity_for_config,
     preflight_resume,
 )
@@ -1780,6 +1781,9 @@ def _train_dit(
         rng_streams = rng_streams,
     )
     resumed = restored.step if restored is not None else 0
+    # The bundles that were already here when this run started, so a discard below
+    # removes only what this run wrote. A resumed run shares its source's directory.
+    preexisting_checkpoints = list_checkpoints(out_dir)
     if restored is not None:
         was = restored.progress.get("resolved_base_precision")
         if was and was != base_precision:
@@ -1977,7 +1981,7 @@ def _train_dit(
         # without this a discard leaves up to save_total_limit copies of the optimizer state
         # in a directory the user never got an artifact from -- invisible to every scanner,
         # unresumable (the record is marked discarded), and with no delete path in the UI.
-        clear_checkpoints(out_dir)
+        clear_own_checkpoints(out_dir, preexisting_checkpoints)
         try:
             out_dir.rmdir()
         except OSError:

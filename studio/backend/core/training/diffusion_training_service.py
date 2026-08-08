@@ -104,6 +104,7 @@ def _resume_fields(
     ended_at: Optional[float] = None,
     total_steps: Optional[int] = None,
     write_error: Optional[str] = None,
+    source_checkpoint: Optional[str] = None,
 ) -> dict[str, Any]:
     """``can_resume`` / ``checkpoint_step`` / ``resume_blocked_reason`` for a run, read from
     the checkpoints that are actually on disk.
@@ -124,6 +125,7 @@ def _resume_fields(
             started_at = started_at,
             ended_at = ended_at,
             total_steps = total_steps,
+            source_checkpoint = source_checkpoint,
         )
     except Exception:  # noqa: BLE001 -- history must never break on a checkpoint scan
         state = {}
@@ -166,6 +168,11 @@ def _refresh_resume_state(rec: dict) -> dict:
             ended_at = rec.get("ended_at"),
             total_steps = rec.get("total_steps"),
             write_error = rec.get("checkpoint_write_error"),
+            # What this run itself resumed from, so a resumed run that died before its first
+            # save can still offer the bundle it was validated against.
+            source_checkpoint = (
+                config.get("resume_from_checkpoint") if isinstance(config, dict) else None
+            ),
         )
     )
     return rec

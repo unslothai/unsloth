@@ -1129,10 +1129,14 @@ def load_trainable_state_dict(model: Any, state: Optional[dict[str, Any]]) -> in
     import torch
 
     restored = 0
+    trainable: set[str] = set()
     with torch.no_grad():
         for name, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+            trainable.add(name)
             saved = state.get(name)
-            if saved is None or not p.requires_grad:
+            if saved is None:
                 continue
             if tuple(saved.shape) != tuple(p.shape):
                 raise ValueError(
@@ -1141,12 +1145,23 @@ def load_trainable_state_dict(model: Any, state: Optional[dict[str, Any]]) -> in
                 )
             p.copy_(saved.to(device = p.device, dtype = p.dtype))
             restored += 1
-    if restored != len(state):
-        missing = sorted(set(state) - {n for n, _ in model.named_parameters()})[:3]
+    # BOTH directions. Counting only the checkpoint's own tensors proves every saved tensor
+    # landed somewhere; it says nothing about a live trainable parameter the checkpoint never
+    # had. A truncated or hand-edited adapter file holding a strict SUBSET therefore passed,
+    # and the full optimizer state was then loaded on top: restored Adam moments driving
+    # freshly initialised weights, while the run reported a clean resume.
+    unsaved = sorted(trainable - set(state))
+    unknown = sorted(set(state) - trainable)
+    if unsaved or unknown:
+        detail = []
+        if unsaved:
+            detail.append(f"{len(unsaved)} not in the checkpoint (e.g. {', '.join(unsaved[:3])})")
+        if unknown:
+            detail.append(f"{len(unknown)} not in this run (e.g. {', '.join(unknown[:3])})")
         raise ValueError(
-            f"Checkpoint restored {restored} of {len(state)} adapter tensors; this run's "
-            f"trainable parameters do not match the ones it was saved from "
-            f"(e.g. {', '.join(missing) or 'name mismatch'})."
+            f"This run has {len(trainable)} trainable tensors and the checkpoint has "
+            f"{len(state)}: {'; '.join(detail)}. The LoRA configuration does not match the one "
+            "it was saved from."
         )
     return restored
 
@@ -1308,7 +1323,16 @@ def restore_resume_state(
     if sampler is not None:
         sampler.load_state_dict(ckpt.sampler_state)
     if ema is not None:
-        ema.load_state_dict(ckpt.tensors("ema"), updates = ckpt.ema_updates)
+        ema_state = ckpt.tensors("ema")
+        if ema_state:
+            ema.load_state_dict(ema_state, updates = ckpt.ema_updates)
+        else:
+            # EMA is not part of the validated identity, so a resume may turn it on for a run
+            # that had it off. The EMA object is built BEFORE the adapter is restored, so its
+            # shadow holds freshly initialised LoRA weights and there is nothing saved to
+            # replace them with -- every later update, and the exported EMA adapter, would
+            # blend the restored weights with that initialisation. Start from what was restored.
+            ema.reseed_from(model)
     restore_rng_state(ckpt.rng_json, ckpt.torch_state("rng"), rng_streams)
     _emit(
         on_event,
