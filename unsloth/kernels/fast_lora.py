@@ -22,7 +22,10 @@ from .utils import (
     matmul_lora,
     torch_amp_custom_fwd,
     torch_amp_custom_bwd,
+    quant_act,
+    dequant_act,
 )
+import unsloth.kernels.utils as _kernels_utils
 
 
 class LoRA_MLP(torch.autograd.Function):
@@ -107,7 +110,13 @@ class LoRA_MLP(torch.autograd.Function):
             downS,
             _backward_function,
         )
-        ctx.save_for_backward(gateA, gateB, upA, upB, downA, downB, X, e, g)
+        ctx.quantize_activations = _kernels_utils.UNSLOTH_QUANTIZE_ACTIVATIONS
+        if ctx.quantize_activations:
+            e_q, e_s = quant_act(e)
+            g_q, g_s = quant_act(g)
+            ctx.save_for_backward(gateA, gateB, upA, upB, downA, downB, X, e_q, e_s, g_q, g_s)
+        else:
+            ctx.save_for_backward(gateA, gateB, upA, upB, downA, downB, X, e, g)
         ctx.inplace = inplace
         return i
 
@@ -126,7 +135,12 @@ class LoRA_MLP(torch.autograd.Function):
             downS,
             _backward_function,
         ) = ctx.custom_saved_tensors
-        gateA, gateB, upA, upB, downA, downB, X, e, g = ctx.saved_tensors
+        if ctx.quantize_activations:
+            gateA, gateB, upA, upB, downA, downB, X, e_q, e_s, g_q, g_s = ctx.saved_tensors
+            e = dequant_act(e_q, e_s)
+            g = dequant_act(g_q, g_s)
+        else:
+            gateA, gateB, upA, upB, downA, downB, X, e, g = ctx.saved_tensors
 
         batch, seq_len, hd = X.shape
         dY = dY.view(-1, dY.shape[-1])
