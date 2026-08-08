@@ -273,6 +273,7 @@ def test_all_mapper_calls_receive_downstream_artifact_requirements():
         for call in mapper_calls:
             keywords = {keyword.arg for keyword in call.keywords}
             assert "require_tokenizer" in keywords
+            assert "require_config" in keywords
             assert "require_processor" in keywords
             assert "subfolder" in keywords
             assert "variant" in keywords

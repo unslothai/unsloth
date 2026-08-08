@@ -457,6 +457,52 @@ class TestGetModelName(unittest.TestCase):
             )
 
     @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_external_config_allows_cache_without_config_json(self):
+        canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
+        legacy = canonical.lower()
+        with tempfile.TemporaryDirectory() as cache_dir:
+            legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
+            snapshot = _write_cached_model(legacy_cache, "legacy-main")
+            os.remove(os.path.join(snapshot, "config.json"))
+            self.assertEqual(
+                get_model_name(
+                    "unsloth/Meta-Llama-3.1-8B-Instruct",
+                    cache_dir = cache_dir,
+                    local_files_only = True,
+                    require_config = False,
+                ),
+                legacy,
+            )
+
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_remote_code_cache_requires_auxiliary_and_relative_modules(self):
+        canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
+        legacy = canonical.lower()
+        with tempfile.TemporaryDirectory() as cache_dir:
+            canonical_cache = os.path.join(cache_dir, "models--" + canonical.replace("/", "--"))
+            legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
+            canonical_snapshot = _write_cached_model(canonical_cache, "canonical-main")
+            legacy_snapshot = _write_cached_model(legacy_cache, "legacy-main")
+            tokenizer_config = {"auto_map": {"AutoTokenizer": ["tokenization_custom.Custom", None]}}
+            for snapshot in (canonical_snapshot, legacy_snapshot):
+                with open(
+                    os.path.join(snapshot, "tokenizer_config.json"), "w", encoding = "utf-8"
+                ) as file:
+                    json.dump(tokenizer_config, file)
+                with open(os.path.join(snapshot, "tokenization_custom.py"), "w") as file:
+                    file.write("from .helpers import normalize\n")
+            open(os.path.join(legacy_snapshot, "helpers.py"), "w").close()
+            self.assertEqual(
+                get_model_name(
+                    "unsloth/Meta-Llama-3.1-8B-Instruct",
+                    cache_dir = cache_dir,
+                    local_files_only = True,
+                    trust_remote_code = True,
+                ),
+                legacy,
+            )
+
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
     def test_offline_legacy_cache_uses_transformers_default(self):
         canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
         legacy = canonical.lower()

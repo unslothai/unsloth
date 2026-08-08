@@ -247,6 +247,7 @@ def _prefer_legacy_lowercase_cache(
     local_files_only = False,
     revision = None,
     require_tokenizer = True,
+    require_config = True,
     require_processor = True,
     subfolder = None,
     variant = None,
@@ -305,7 +306,9 @@ def _prefer_legacy_lowercase_cache(
             if not isinstance(config, dict):
                 return False
         except (OSError, ValueError, TypeError):
-            return False
+            if require_config:
+                return False
+            config = {}
         if require_tokenizer and not _snapshot_has_tokenizer(snapshot):
             return False
         architectures = config.get("architectures") or []
@@ -325,17 +328,73 @@ def _prefer_legacy_lowercase_cache(
             return False
 
         if trust_remote_code:
-            auto_map = config.get("auto_map") or {}
-            references = auto_map.values() if isinstance(auto_map, dict) else ()
+            import ast
+
             module_files = set()
-            for reference in references:
-                candidates = reference if isinstance(reference, (list, tuple)) else (reference,)
-                for candidate in candidates:
-                    if not isinstance(candidate, str) or "--" in candidate or "." not in candidate:
+            config_names = (
+                "config.json",
+                "tokenizer_config.json",
+                "processor_config.json",
+                "preprocessor_config.json",
+            )
+            for config_name in config_names:
+                try:
+                    with open(os.path.join(snapshot, config_name), encoding = "utf-8") as file:
+                        auxiliary_config = json.load(file)
+                except (OSError, ValueError, TypeError):
+                    continue
+                auto_map = (
+                    auxiliary_config.get("auto_map") or {}
+                    if isinstance(auxiliary_config, dict)
+                    else {}
+                )
+                references = auto_map.values() if isinstance(auto_map, dict) else ()
+                for reference in references:
+                    candidates = reference if isinstance(reference, (list, tuple)) else (reference,)
+                    for candidate in candidates:
+                        if (
+                            not isinstance(candidate, str)
+                            or "--" in candidate
+                            or "." not in candidate
+                        ):
+                            continue
+                        module = candidate.rsplit(".", 1)[0]
+                        module_files.add(module.replace(".", "/") + ".py")
+
+            pending = list(module_files)
+            checked = set()
+            while pending:
+                module_file = pending.pop()
+                if module_file in checked:
+                    continue
+                checked.add(module_file)
+                module_path = os.path.join(snapshot, module_file)
+                if not os.path.isfile(module_path):
+                    return False
+                try:
+                    with open(module_path, encoding = "utf-8") as file:
+                        module_tree = ast.parse(file.read(), module_path)
+                except (OSError, SyntaxError, UnicodeError):
+                    return False
+                package = module_file[:-3].split("/")[:-1]
+                for node in ast.walk(module_tree):
+                    if not isinstance(node, ast.ImportFrom) or node.level == 0:
                         continue
-                    module = candidate.rsplit(".", 1)[0]
-                    module_files.add(module.replace(".", "/") + ".py")
-            if any(not os.path.isfile(os.path.join(snapshot, name)) for name in module_files):
+                    if node.level > len(package) + 1:
+                        return False
+                    base = package[: len(package) + 1 - node.level]
+                    if node.module:
+                        dependency = base + node.module.split(".")
+                        dependency_file = "/".join(dependency) + ".py"
+                        if dependency_file not in checked:
+                            pending.append(dependency_file)
+                    else:
+                        for alias in node.names:
+                            dependency_file = "/".join(base + [alias.name]) + ".py"
+                            if os.path.isfile(os.path.join(snapshot, dependency_file)):
+                                if dependency_file not in checked:
+                                    pending.append(dependency_file)
+            if any(name not in checked for name in module_files):
                 return False
         weights_root = os.path.abspath(
             os.path.join(snapshot, str(subfolder).strip("/\\")) if subfolder else snapshot
@@ -426,6 +485,7 @@ def get_model_name(
     local_files_only = False,
     revision = None,
     require_tokenizer = True,
+    require_config = True,
     require_processor = True,
     subfolder = None,
     variant = None,
@@ -467,6 +527,7 @@ def get_model_name(
             local_files_only,
             cache_revision,
             require_tokenizer,
+            require_config,
             require_processor,
             subfolder,
             variant,
