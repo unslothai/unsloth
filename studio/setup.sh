@@ -1951,7 +1951,11 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         step "llama.cpp" "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $UNSLOTH_LOCAL_LLAMA_CPP_DIR" "$C_ERR"
         setup_fail 1 "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $UNSLOTH_LOCAL_LLAMA_CPP_DIR"
     fi
-    _RESOLVED_LOCAL="$(CDPATH= cd -P -- "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" && pwd -P)"
+    # In an if condition, so a denied dir reports instead of tripping errexit here.
+    if ! _RESOLVED_LOCAL="$(CDPATH= cd -P -- "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" 2>/dev/null && pwd -P)"; then
+        # owner-unverified: this is the user's own tree, never advise deleting it.
+        _path_access_denied "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" "UNSLOTH_LOCAL_LLAMA_CPP_DIR" owner-unverified
+    fi
     # Canonicalize the install path the same way before comparing: _RESOLVED_LOCAL
     # is fully resolved, but LLAMA_CPP_DIR is textual ($UNSLOTH_HOME/llama.cpp). If
     # $HOME (or UNSLOTH_HOME) contains a symlink, the two never match even when the
@@ -1960,8 +1964,11 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
     # this works whether or not the leaf currently exists.
     _CANON_LLAMA_CPP_DIR="$LLAMA_CPP_DIR"
     _LLAMA_CPP_PARENT="$(dirname "$LLAMA_CPP_DIR")"
-    if [ -d "$_LLAMA_CPP_PARENT" ]; then
-        _CANON_LLAMA_CPP_DIR="$(CDPATH= cd -P -- "$_LLAMA_CPP_PARENT" && pwd -P)/$(basename "$LLAMA_CPP_DIR")"
+    # Also an if condition: an unsearchable parent keeps the textual path rather
+    # than aborting, which is what an absent parent already does.
+    if [ -d "$_LLAMA_CPP_PARENT" ] &&
+       _canon_parent="$(CDPATH= cd -P -- "$_LLAMA_CPP_PARENT" 2>/dev/null && pwd -P)"; then
+        _CANON_LLAMA_CPP_DIR="$_canon_parent/$(basename "$LLAMA_CPP_DIR")"
     fi
     if [ "$_RESOLVED_LOCAL" = "$_CANON_LLAMA_CPP_DIR" ]; then
         # Points at the canonical install location itself: never delete-then-link

@@ -111,6 +111,20 @@ else
     ok "no unguarded rm -rf of the install dir remains"
 fi
 
+# A bare $(cd ...) assignment aborts under errexit before setup_fail can report,
+# so the desktop app gets an exit code with no [TAURI:ERROR]. Both must sit in an
+# if condition, which errexit exempts.
+if grep -qE '^\s*_RESOLVED_LOCAL="\$\(CDPATH= cd' "$SETUP_SH"; then
+    bad "a denied UNSLOTH_LOCAL_LLAMA_CPP_DIR reports instead of tripping errexit"
+else
+    ok "a denied UNSLOTH_LOCAL_LLAMA_CPP_DIR reports instead of tripping errexit"
+fi
+if grep -qE '^\s*_CANON_LLAMA_CPP_DIR="\$\(CDPATH= cd' "$SETUP_SH"; then
+    bad "an unsearchable install parent keeps the textual path instead of aborting"
+else
+    ok "an unsearchable install parent keeps the textual path instead of aborting"
+fi
+
 echo ""
 echo "=== behaviour against a genuinely unsearchable tree ==="
 
