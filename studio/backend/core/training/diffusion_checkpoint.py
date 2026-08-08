@@ -40,11 +40,13 @@ offered to an image run (or vice versa).
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import hashlib
 import json
 import os
 import random
+import re
 import shutil
 import time
 import uuid
@@ -787,21 +789,52 @@ def _promote(staging: Path, root: Path, step: int) -> Path:
             # to free the slot, and it is about to be superseded anyway.
             doomed = None
             shutil.rmtree(final, ignore_errors = True)
-    os.replace(staging, final)
+    try:
+        os.replace(staging, final)
+    except OSError:
+        # The slot is now empty and the only copy of the last resumable state is the one we
+        # moved aside, so put it back before the failure propagates. Without this, a resave of
+        # an occupied step (a resumed run rewriting checkpoint-15) that fails to promote leaves
+        # the run with no checkpoint at all -- strictly worse than the stale one it replaced.
+        if doomed is not None:
+            with contextlib.suppress(OSError):
+                os.replace(doomed, final)
+        raise
     _fsync_dir(root)
     if doomed is not None:
         shutil.rmtree(doomed, ignore_errors = True)
     return final
 
 
+# ``.tmp-checkpoint-stale-<step>-<uuid>``: the step is what _promote encodes, so an orphan can
+# be handed back to the slot it came from.
+_STALE_SLOT = re.compile(r"^stale-(\d+)-")
+
+
 def _prune_staging(root: Path) -> None:
     """Drop abandoned staging directories from an earlier killed process. Safe because only
-    one trainer ever writes into a run's output dir, and this runs after our own promotion."""
+    one trainer ever writes into a run's output dir, and this runs after our own promotion.
+
+    A ``stale-<step>`` orphan whose slot is EMPTY is not abandoned work: it is the previous
+    bundle, moved aside by a promotion that was killed before the rename landed. Deleting it
+    would throw away the run's last resumable state, so it is handed back to its slot instead.
+    """
     try:
         entries = list(root.glob(f"{_STAGING_PREFIX}*"))
     except OSError:
         return
     for entry in entries:
+        match = _STALE_SLOT.match(entry.name[len(_STAGING_PREFIX):])
+        if match is not None:
+            slot = root / f"{CHECKPOINT_PREFIX}{int(match.group(1))}"
+            if not slot.exists():
+                try:
+                    os.replace(entry, slot)
+                except OSError:
+                    # Could not hand it back. Leaving it on disk is still better than
+                    # deleting the only copy of the run's last resumable state.
+                    pass
+                continue
         shutil.rmtree(entry, ignore_errors = True)
 
 
@@ -1194,6 +1227,44 @@ def resolve_resume_dir(path_value: str) -> Path:
     return resolved
 
 
+# What restore_resume_state() refuses to continue without. Kept here rather than inferred from
+# the manifest, because the manifest is exactly what a truncated or hand-edited bundle gets
+# wrong: _assert_loadable only opens the roles the bundle happens to LIST, so a checkpoint that
+# lists an adapter and nothing else passed the route preflight, the resident GPU model was
+# evicted, and the child then died on "This checkpoint carries no optimizer state".
+_REQUIRED_STATE: tuple[tuple[str, str], ...] = (
+    ("adapter", "the trained LoRA weights"),
+    ("optimizer", "the optimizer moments"),
+    ("scheduler", "the learning-rate schedule position"),
+)
+
+
+def _assert_required_state(path: Path, manifest: dict[str, Any]) -> None:
+    """Refuse a bundle missing state the trainer treats as mandatory, BEFORE teardown."""
+    files = manifest.get("files")
+    listed = files if isinstance(files, dict) else {}
+    missing = [
+        label
+        for role, label in _REQUIRED_STATE
+        if not isinstance(listed.get(role), str) or not listed.get(role)
+    ]
+    # NOT the sampler: its permutation lives in the manifest rather than a file, and a run
+    # whose trainer had no sampler legitimately writes none. The trainer's own check is
+    # conditional on having one, so requiring it here would refuse bundles that resume fine.
+    if not missing:
+        return
+    raise ResumeError(
+        f"'{path.name}' is missing {_join_clauses(missing)}, so the run cannot be continued "
+        "from it. Resume from an earlier checkpoint, or start a new run."
+    )
+
+
+def _join_clauses(items: list[str]) -> str:
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
 def _assert_loadable(path: Path, manifest: dict[str, Any]) -> None:
     """Actually open every state file the manifest lists, and turn any failure into a
     ResumeError.
@@ -1272,6 +1343,7 @@ def preflight_resume(
     if reason:
         raise ResumeError(reason)
     # After the identity gate, so a mismatched bundle still fails fast on the cheap check.
+    _assert_required_state(path, manifest)
     _assert_loadable(path, manifest)
     step = int(manifest.get("global_step") or 0)
     if target_steps and step >= int(target_steps):

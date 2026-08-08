@@ -157,6 +157,54 @@ def test_kill_mid_write_leaves_no_valid_looking_checkpoint(run_dir, monkeypatch)
     assert not list(run_dir.glob("checkpoint-*"))
 
 
+def test_a_failed_promotion_puts_the_old_checkpoint_back(run_dir, monkeypatch):
+    """Re-saving an OCCUPIED step swaps the old bundle out to make room. If the rename that
+    puts the new one in place then fails, the slot is empty and the only copy of the run's
+    last resumable state is the hidden stale directory -- which the next _prune_staging
+    deletes. A resumed run overwriting checkpoint-N would lose its resume point outright."""
+    run = _Run(run_dir)
+    first, error = run.save(4)
+    assert error is None and first is not None
+    before = (Path(first) / dc.TRAINER_STATE_FILENAME).read_text(encoding = "utf-8")
+
+    real_replace = dc.os.replace
+
+    def _fail_the_promotion(src, dst):
+        # Only the staging -> slot rename. The swap-aside and the rescue that puts the old
+        # bundle back both move a "stale" directory and have to be allowed through.
+        if Path(dst).name == "checkpoint-4" and "stale" not in Path(src).name:
+            raise OSError("promotion failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(dc.os, "replace", _fail_the_promotion)
+    second, error = run.save(4)
+    monkeypatch.undo()
+
+    assert error is not None, "the failure has to be reported, not swallowed"
+    restored = run_dir / "checkpoint-4"
+    assert restored.is_dir(), "the old bundle must be handed back to its slot"
+    assert (restored / dc.TRAINER_STATE_FILENAME).read_text(encoding = "utf-8") == before
+    assert dc.latest_valid_checkpoint(run_dir) is not None
+
+
+def test_a_kill_between_the_swap_and_the_rename_does_not_lose_the_checkpoint(run_dir, monkeypatch):
+    """Same window, harder ending: the process dies after the old bundle is moved aside. The
+    orphan is the run's last resumable state, so the next save must hand it back rather than
+    sweep it up as abandoned staging."""
+    run = _Run(run_dir)
+    first, error = run.save(4)
+    assert error is None and first is not None
+    stale = run_dir / f"{dc._STAGING_PREFIX}stale-4-deadbeef"
+    dc.os.replace(run_dir / "checkpoint-4", stale)
+    assert not (run_dir / "checkpoint-4").exists()
+
+    dc._prune_staging(run_dir)
+
+    assert (run_dir / "checkpoint-4" / dc.TRAINER_STATE_FILENAME).is_file()
+    assert not stale.exists()
+    assert dc.latest_valid_checkpoint(run_dir) is not None
+
+
 def test_failed_write_cleans_up_and_next_save_clears_stale_staging(run_dir, monkeypatch):
     run = _Run(run_dir)
     # A failure BEFORE the manifest (a full disk mid-optimizer-write) unwinds its own staging dir,
@@ -700,12 +748,18 @@ _RESUME_BODY = {
 
 
 def _write_bundle(run_dir: Path, step: int, identity: dc.CheckpointIdentity) -> None:
+    # A real bundle carries optimizer and scheduler state, and the route preflight now insists
+    # on it, so the fixture has to be a bundle the trainer would actually accept.
+    param = torch.nn.Parameter(torch.zeros(2, 2))
+    optimizer = torch.optim.AdamW([param], lr = 1e-3)
     dc.save_checkpoint(
         output_dir = str(run_dir),
         step = step,
         adapter_state = {"w": torch.zeros(2, 2)},
         identity = identity,
         target_steps = 500,
+        optimizer = optimizer,
+        lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0),
     )
 
 
@@ -1622,7 +1676,12 @@ def test_a_bundle_without_optimizer_state_is_refused(run_dir):
     manifest_path.write_text(json.dumps(manifest), encoding = "utf-8")
 
     resumed = _Run(run_dir, resume_from_checkpoint = path)
-    with pytest.raises(ResumeError, match = "no optimizer state"):
+    # Refused by the ROUTE preflight, before the resident GPU model is evicted. It used to get
+    # through here (the preflight only opened the roles the manifest listed) and fail in the
+    # child, having already torn down the pipeline the refusal exists to protect.
+    with pytest.raises(ResumeError, match = "missing the optimizer moments"):
+        dc.preflight_resume(path, identity = run.identity, target_steps = 10)
+    with pytest.raises(ResumeError):
         resumed.restore()
 
 
