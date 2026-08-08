@@ -26,6 +26,24 @@ def _read(rel: str) -> str:
     return path.read_text(encoding = "utf-8")
 
 
+def _split_args(captured: str) -> list[str]:
+    """A call's argument list, split on its own commas only. Splitting on every
+    comma would cut nested calls such as `loadSpecFor(wanted, CATALOG)` in two."""
+    args, depth, current = [], 0, ""
+    for char in captured:
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        if char == "," and depth == 0:
+            args.append(current)
+            current = ""
+        else:
+            current += char
+    args.append(current)
+    return args
+
+
 def _read_backend(rel: str) -> str:
     path = WORKDIR / "studio" / "backend" / rel
     assert path.exists(), f"missing backend source file: {path}"
@@ -1075,8 +1093,16 @@ def test_a_routed_curated_pick_uses_the_same_load_spec_as_a_direct_one():
         # once; the load-bearing part is the third, so do not pin the second.
         call = re.search(r"diffusionRoutePick\(\s*wanted,\s*(.*?),?\s*\);", src, re.S)
         assert call, f"{rel}: the routed pick does not go through diffusionRoutePick"
-        assert f"loadSpecFor(wanted, {catalog})" in call.group(
-            1
+        # By position, not by presence: the capture is every argument after `wanted`,
+        # and the helper reads `quant` before `spec`. `diffusionRoutePick(wanted,
+        # routedFilename ?? loadSpecFor(wanted, IMAGE_CATALOG)?.filename)` type-checks,
+        # passes the catalog filename as the quant, drops the spec entirely, and would
+        # otherwise satisfy a plain substring check while curated single-file artifacts
+        # load as GGUF.
+        args = _split_args(call.group(1))
+        assert len(args) >= 2, f"{rel}: the routed pick passes no spec argument"
+        assert (
+            f"loadSpecFor(wanted, {catalog})" in args[1]
         ), f"{rel}: the routed pick passes no catalog spec"
 
 
