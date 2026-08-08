@@ -2433,13 +2433,11 @@ def list_gguf_variants(
     Returns:
         (variants, has_vision): non-mmproj GGUF variants + vision flag.
     """
-    from huggingface_hub import model_info as hf_model_info
-
-    # Offline: skip the API and serve from cache
     if _env_offline():
         cached = _list_gguf_variants_from_hf_cache(repo_id)
-        if cached is not None:
-            return cached
+        return cached if cached is not None else ([], False)
+
+    from huggingface_hub import model_info as hf_model_info
 
     try:
         info = hf_model_info(repo_id, token = hf_token, files_metadata = True)
@@ -2702,13 +2700,11 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
     silent None would make the caller treat a GGUF-only repo as non-GGUF and
     fall through to MLX on Apple Silicon. Offline falls back to the local cache.
     """
+    if _env_offline():
+        return _detect_gguf_from_hf_cache(repo_id)
+
     import time
     from huggingface_hub import model_info as hf_model_info
-
-    if _env_offline():
-        cached = _detect_gguf_from_hf_cache(repo_id)
-        if cached is not None:
-            return cached
 
     last_err: Optional[Exception] = None
     for attempt in range(3):
