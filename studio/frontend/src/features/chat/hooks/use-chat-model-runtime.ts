@@ -58,6 +58,10 @@ import {
   resolveInferenceCheckpointId,
 } from "../lib/apply-inference-status-to-store";
 import {
+  awaitInferenceStatusRefreshTurn,
+  beginInferenceStatusRefresh,
+} from "../lib/inference-status-refresh-seq";
+import {
   mergeBackendRecommendedInference,
   resolveFitMaxSeqLength,
   resolveLoadMaxSeqLength,
@@ -293,9 +297,11 @@ async function syncInferenceStatusToStore(options?: {
 }): Promise<void> {
   const signal = options?.signal;
   const includeLoras = options?.includeLoras ?? true;
+  const refresh = beginInferenceStatusRefresh();
   const { setModels, setLoras, setCheckpoint, setModelsError } =
     useChatRuntimeStore.getState();
   setModelsError(null);
+  const settled = (async () => {
   try {
     const [listRes, statusRes, lorasRes] = await Promise.all([
       listModels(),
@@ -306,6 +312,13 @@ async function syncInferenceStatusToStore(options?: {
     // Cancellation can land while the requests above are in flight. Bail
     // before writing backend state back -- cancelLoading already cleared it.
     if (signal?.aborted) return;
+    if (
+      !(await awaitInferenceStatusRefreshTurn(refresh, {
+        aborted: () => signal?.aborted ?? false,
+      }))
+    ) {
+      return;
+    }
 
     setModels(listRes.models.map(toChatModelSummary));
     if (lorasRes) {
@@ -360,6 +373,7 @@ async function syncInferenceStatusToStore(options?: {
         loadedIsDiffusion: false,
       });
     }
+    refresh.markApplied();
   } catch (error) {
     if (signal?.aborted) return;
     const message =
@@ -369,6 +383,8 @@ async function syncInferenceStatusToStore(options?: {
       description: message,
     });
   }
+  })();
+  return refresh.register(settled);
 }
 
 /**

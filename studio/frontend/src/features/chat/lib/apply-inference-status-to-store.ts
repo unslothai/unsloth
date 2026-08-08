@@ -19,6 +19,7 @@ import {
   loadOptionalBool,
   loadedGpuMemoryFields,
   normalizeSpeculativeType,
+  readPersistedSpeculativeType,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -30,8 +31,23 @@ import type { ChatModelSummary } from "../types/runtime";
 import { sameGpuSelection } from "@/hooks/gpu-selection";
 import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
+import { resolveMlxKvBitsSeed } from "./resolve-mlx-kv-bits-seed";
+import { resolvePairedLoadParamSeed } from "./resolve-paired-load-param-seed";
+import type { PairedLoadParamSeed } from "./resolve-paired-load-param-seed";
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
+
+function pairedSeedPatch<T>(
+  seed: PairedLoadParamSeed<T>,
+  controlKey: string,
+  loadedKey: string,
+): Record<string, T | null> {
+  const patch: Record<string, T | null> = {};
+  if ("control" in seed) patch[controlKey] = seed.control ?? null;
+  if ("loaded" in seed) patch[loadedKey] = seed.loaded ?? null;
+  return patch;
+}
+
 
 function sameArray<T>(a: T[] | null, b: T[] | null): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
@@ -186,7 +202,10 @@ export function applyActiveModelStatusToStore(
   const ggufNativeContextLength = status.is_gguf
     ? (status.native_context_length ?? null)
     : null;
-  const currentSpecType = normalizeSpeculativeType(status.speculative_type);
+  const currentSpecType =
+    status.speculative_type !== undefined
+      ? normalizeSpeculativeType(status.speculative_type)
+      : undefined;
   const prevState = useChatRuntimeStore.getState();
   const clampedReasoningEffort =
     reasoningStyle === "enable_thinking_effort" ||
@@ -306,6 +325,66 @@ export function applyActiveModelStatusToStore(
   // A same-model reload from another client advances every loaded baseline.
   // Preserve each editable group only when this tab has an unapplied change.
   const preserveSameModelEdits = gpuStatusChanged && !hydratingExistingModel;
+  const speculativeSeed = resolvePairedLoadParamSeed({
+    incoming: currentSpecType,
+    previous: {
+      control: prevState.speculativeType,
+      loaded: prevState.loadedSpeculativeType,
+    },
+    hydratingExistingModel,
+    seedLoadParams,
+    pristineControl: readPersistedSpeculativeType(),
+  });
+  const specDraftSeed = resolvePairedLoadParamSeed({
+    incoming:
+      status.spec_draft_n_max !== undefined
+        ? (status.spec_draft_n_max ?? null)
+        : undefined,
+    previous: {
+      control: prevState.specDraftNMax,
+      loaded: prevState.loadedSpecDraftNMax,
+    },
+    hydratingExistingModel,
+    seedLoadParams,
+  });
+  const kvCacheSeed = resolvePairedLoadParamSeed({
+    incoming:
+      status.cache_type_kv !== undefined ? status.cache_type_kv : undefined,
+    previous: {
+      control: prevState.kvCacheDtype,
+      loaded: prevState.loadedKvCacheDtype,
+    },
+    hydratingExistingModel,
+    seedLoadParams,
+  });
+  const tensorParallelSeed = resolvePairedLoadParamSeed({
+    incoming:
+      status.tensor_parallel !== undefined ? status.tensor_parallel : undefined,
+    previous: {
+      control: prevState.tensorParallel,
+      loaded: prevState.loadedTensorParallel,
+    },
+    hydratingExistingModel,
+    seedLoadParams,
+    pristineControl: false,
+  });
+  const mlxKvBitsSeed = resolveMlxKvBitsSeed({
+    isMlx: status.is_mlx,
+    mlxKvBitsDefined: status.mlx_kv_bits !== undefined,
+    incomingRequested: status.mlx_kv_bits_requested ?? null,
+    incomingReason: status.mlx_kv_quant_reason ?? null,
+    incomingTemplateReason: status.chat_template_override_reason ?? null,
+    incomingNote: status.mlx_kv_quant_note ?? null,
+    previous: {
+      mlxKvBits: prevState.mlxKvBits,
+      loadedMlxKvBitsRequested: prevState.loadedMlxKvBitsRequested,
+      mlxKvQuantReason: prevState.mlxKvQuantReason,
+      chatTemplateOverrideReason: prevState.chatTemplateOverrideReason,
+      mlxKvQuantNote: prevState.mlxKvQuantNote,
+    },
+    hydratingExistingModel,
+    seedLoadParams,
+  });
   const gpuStatusFields = {
     ...incomingGpuFields,
     customContextLength: gpuPin,
@@ -353,75 +432,11 @@ export function applyActiveModelStatusToStore(
     activeModelIsLocal: status.is_local_model ?? false,
     specFallbackReason: status.spec_fallback_reason ?? null,
     specDrafterKind: status.spec_drafter_kind ?? null,
-    // The spec / KV seeds share the GPU-fields reseed mechanism below: a
-    // non-GGUF status leaves their loaded baselines null, so the "unseeded"
-    // guard re-fires every refresh -- hold them too while a staged pick's
-    // settings are being edited, or the refresh resets the staged edit.
-    // hydratingExistingModel reopens every load-param seed: when the active
-    // model changed underneath this tab (auto-switch, another client), the
-    // old model's baselines are stale and must adopt the new status.
-    ...(seedLoadParams &&
-      (prevState.loadedSpeculativeType === null || hydratingExistingModel) && {
-        speculativeType: currentSpecType,
-        loadedSpeculativeType: currentSpecType,
-      }),
-    ...(seedLoadParams &&
-      status.spec_draft_n_max !== undefined &&
-      (hydratingExistingModel ||
-        (prevState.loadedSpecDraftNMax === null &&
-          prevState.specDraftNMax === null)) && {
-        specDraftNMax: status.spec_draft_n_max ?? null,
-        loadedSpecDraftNMax: status.spec_draft_n_max ?? null,
-      }),
-    ...(seedLoadParams &&
-      status.cache_type_kv !== undefined &&
-      (prevState.loadedKvCacheDtype === null || hydratingExistingModel) && {
-        kvCacheDtype: status.cache_type_kv,
-        loadedKvCacheDtype: status.cache_type_kv,
-      }),
-    ...(seedLoadParams &&
-      status.tensor_parallel !== undefined &&
-      (prevState.loadedTensorParallel === null || hydratingExistingModel) && {
-        tensorParallel: status.tensor_parallel,
-        loadedTensorParallel: status.tensor_parallel,
-      }),
-    // Hydration only, so a steady poll never rewrites settings the store owns.
-    // Width, verdict and request move together; a late reply can overwrite a newer one.
-    ...(seedLoadParams &&
-      hydratingExistingModel &&
-      status.mlx_kv_bits !== undefined &&
-      (status.is_mlx === true
-        ? {
-            mlxKvBits: status.mlx_kv_bits_requested ?? null,
-            loadedMlxKvBitsRequested: status.mlx_kv_bits_requested ?? null,
-            mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
-            chatTemplateOverrideReason:
-              status.chat_template_override_reason ?? null,
-            mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
-          }
-        : {
-            // The verdict retires; the editable width is dormant, not wrong.
-            loadedMlxKvBitsRequested: null,
-            mlxKvQuantReason: null,
-            chatTemplateOverrideReason: null,
-            mlxKvQuantNote: null,
-          })),
-    // Recovery for a hydration this tab never saw, and only when nothing is
-    // staged: re-seeding over an earlier edit would discard it.
-    ...(seedLoadParams &&
-      !hydratingExistingModel &&
-      status.is_mlx === true &&
-      status.mlx_kv_bits !== undefined &&
-      prevState.mlxKvBits === null &&
-      prevState.loadedMlxKvBitsRequested === null &&
-      prevState.mlxKvQuantReason === null &&
-      prevState.chatTemplateOverrideReason === null && {
-        mlxKvBits: status.mlx_kv_bits_requested ?? null,
-        loadedMlxKvBitsRequested: status.mlx_kv_bits_requested ?? null,
-        mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
-        chatTemplateOverrideReason: status.chat_template_override_reason ?? null,
-        mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
-      }),
+    ...(seedLoadParams && pairedSeedPatch(speculativeSeed, "speculativeType", "loadedSpeculativeType")),
+    ...(seedLoadParams && pairedSeedPatch(specDraftSeed, "specDraftNMax", "loadedSpecDraftNMax")),
+    ...(seedLoadParams && pairedSeedPatch(kvCacheSeed, "kvCacheDtype", "loadedKvCacheDtype")),
+    ...(seedLoadParams && pairedSeedPatch(tensorParallelSeed, "tensorParallel", "loadedTensorParallel")),
+    ...(seedLoadParams && mlxKvBitsSeed),
     // Baseline only, never the control: the echo is the RESOLVED count and would
     // pin a blank "server default" control. The rollback re-sends the baseline,
     // so without this a rollback after a tab reload loses the override.
