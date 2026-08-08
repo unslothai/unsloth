@@ -13,6 +13,7 @@ because nothing in-tree mirrors it, and skips when that release is unreachable.
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import json
 import sys
@@ -1218,7 +1219,7 @@ def test_route_to_vulkan_prebuilt_auto_fallback_for_legacy_amd_gfx():
     host = _windows_amd_host(rocm_gfx_target = "gfx803", rocm_gfx_targets = ["gfx803"])
     routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert repo == FORK
-    assert persist == "vulkan"
+    assert persist == "auto"
     assert routed.has_intel_gpu is True
     assert routed.has_rocm is False
 
@@ -1257,7 +1258,7 @@ def test_route_to_vulkan_prebuilt_auto_fallback_when_no_amd_gpu_reaches_floor():
     )
     routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert repo == FORK
-    assert persist == "vulkan"
+    assert persist == "auto"
     assert routed.has_rocm is False
 
 
@@ -1339,6 +1340,24 @@ def test_route_to_vulkan_prebuilt_hip_masked_host_still_honours_explicit_optin(m
         host, FORK, "pin", force_cpu = False, llama_backend = "vulkan"
     )
     assert repo == FORK
+    assert persist == "vulkan"
+
+
+def test_forced_vulkan_on_an_auto_routing_amd_host_persists_as_automatic(monkeypatch):
+    # This box has no HIP-capable AMD GPU, so it routes to Vulkan either way. Persisting
+    # that as automatic keeps pre-#8050 installs (whose updates re-assert
+    # --llama-backend vulkan) eligible for the Vulkan CPU crash recovery.
+    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
+    host = _windows_amd_host(rocm_gfx_target = "gfx1034", rocm_gfx_targets = ["gfx1034"])
+    _routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
+        host, UPSTREAM, "pin", force_cpu = False, llama_backend = "vulkan"
+    )
+    assert persist == "auto"
+    # A host that can run HIP keeps the explicit choice explicit.
+    supported = _windows_amd_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
+    _routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
+        supported, UPSTREAM, "pin", force_cpu = False, llama_backend = "vulkan"
+    )
     assert persist == "vulkan"
 
 
@@ -1456,7 +1475,7 @@ def test_direct_upstream_windows_amd_legacy_gfx_routes_to_vulkan():
         ],
     )
     plan = ilp.direct_upstream_release_plan(rel, routed, repo, "latest")
-    assert persist == "vulkan"
+    assert persist == "auto"
     assert plan.attempts[0].install_kind == "windows-vulkan"
 
 
@@ -1676,7 +1695,7 @@ def test_forwarded_gfx_on_unprobed_host_still_auto_vulkans(monkeypatch):
     assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is True
     _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert repo == FORK
-    assert persist == "vulkan"
+    assert persist == "auto"
 
 
 def test_forwarded_gfx_still_fills_an_unprobed_arch(monkeypatch):
@@ -1818,6 +1837,10 @@ def test_persisted_llama_backend_passes_none_through():
     assert ilp.persisted_llama_backend(None, _choice("windows-vulkan")) is None
 
 
+def test_persisted_llama_backend_keeps_automatic_vulkan_distinct():
+    assert ilp.persisted_llama_backend("auto", _choice("windows-vulkan")) == "auto"
+
+
 def test_marker_records_no_backend_when_vulkan_fell_back_to_cpu(tmp_path):
     # End to end over write_prebuilt_metadata: describe the CPU attempt that actually won,
     # so the next update re-detects instead of re-asserting Vulkan forever.
@@ -1856,6 +1879,165 @@ def test_marker_records_no_backend_when_vulkan_fell_back_to_cpu(tmp_path):
     )
     marker = json.loads((tmp_path / "UNSLOTH_PREBUILT_INFO.json").read_text())
     assert marker["llama_backend"] == "vulkan"
+
+
+def test_automatic_amd_vulkan_marker_records_the_routing_gfx(tmp_path, monkeypatch):
+    """An "auto" Vulkan marker must carry the arch that produced it.
+
+    The Windows AMD hosts that route here have no arch probe of their own
+    (setup.ps1 skips amd-smi without a HIP SDK and hipinfo is absent), so the
+    forwarded --rocm-gfx is the only evidence. The Vulkan asset name has no gfx
+    for rocm_install_args() to recover, so an update that re-detects the host
+    would find no ROCm at all and drop the bundle to CPU.
+    """
+    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    # A driver-only host: nothing probed, the arch arrived over --rocm-gfx.
+    unprobed = ilp.HostInfo(
+        system = "Windows",
+        machine = "amd64",
+        is_windows = True,
+        is_linux = False,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+        has_rocm = False,
+        has_intel_gpu = False,
+    )
+    host = ilp._apply_host_overrides(unprobed, override_rocm_gfx = "gfx1034")
+    assert ilp._should_auto_vulkan_for_amd_windows(host, UPSTREAM) is True
+    gfx = ilp._active_rocm_gfx_target(host)
+    routed, _repo, _tag, persist = ilp._route_to_vulkan_prebuilt(
+        host, UPSTREAM, "pin", force_cpu = False
+    )
+    assert persist == "auto"
+    # The route drops the arch, so it must be read before it, not after.
+    assert ilp._active_rocm_gfx_target(routed) is None
+    assert gfx == "gfx1034"
+
+    checksums = ilp.ApprovedReleaseChecksums(
+        repo = UPSTREAM,
+        release_tag = "b9925",
+        upstream_tag = "b9925",
+        source_repo = UPSTREAM,
+        source_repo_url = f"https://github.com/{UPSTREAM}",
+    )
+    ilp.write_prebuilt_metadata(
+        tmp_path,
+        requested_tag = "latest",
+        llama_tag = "b9925",
+        release_tag = "b9925",
+        choice = _choice("windows-vulkan", "llama-b9925-bin-win-vulkan-x64.zip"),
+        approved_checksums = checksums,
+        prebuilt_fallback_used = False,
+        llama_backend = persist,
+        rocm_gfx = gfx,
+    )
+    marker = json.loads((tmp_path / "UNSLOTH_PREBUILT_INFO.json").read_text())
+    assert marker["llama_backend"] == "auto"
+    assert marker["rocm_gfx"] == "gfx1034"
+
+    # Replaying the marker's arch reaches the same route on a re-detected host.
+    replayed = ilp._apply_host_overrides(unprobed, override_rocm_gfx = marker["rocm_gfx"])
+    assert ilp._should_auto_vulkan_for_amd_windows(replayed, UPSTREAM) is True
+    # Without it the update re-detects a ROCm-less host and leaves Vulkan behind.
+    assert ilp._should_auto_vulkan_for_amd_windows(unprobed, UPSTREAM) is False
+    assert ilp._route_to_vulkan_prebuilt(unprobed, UPSTREAM, "pin", force_cpu = False)[3] is None
+
+
+def test_a_remembered_arch_never_outranks_a_live_probe(monkeypatch):
+    """The updater replays the marker's arch, which is a stale probe result, not
+    an operator override: a host whose GPU changed must keep what it reports."""
+    monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+    unprobed = dataclasses.replace(
+        _windows_amd_host(rocm_gfx_target = None, rocm_gfx_targets = []), has_rocm = False
+    )
+    monkeypatch.setenv("UNSLOTH_ROCM_GFX_REMEMBERED", "gfx1034")
+
+    # No probe of its own: the remembered arch fills the gap.
+    filled = ilp._apply_host_overrides(unprobed)
+    assert ilp._active_rocm_gfx_target(filled) == "gfx1034"
+    assert filled.has_rocm is True
+
+    # A live probe wins, so a replaced card is not routed as the old one.
+    probed = _windows_amd_host(rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
+    assert ilp._active_rocm_gfx_target(ilp._apply_host_overrides(probed)) == "gfx1100"
+
+
+def test_reusing_an_install_still_records_the_routing_gfx(tmp_path):
+    """The reuse paths skip write_prebuilt_metadata, so they must sync it too."""
+    marker_path = tmp_path / "UNSLOTH_PREBUILT_INFO.json"
+    marker_path.write_text(json.dumps({"llama_backend": "auto", "asset": "win-vulkan.zip"}))
+
+    ilp.sync_marker_rocm_gfx(tmp_path, "gfx1034")
+    assert json.loads(marker_path.read_text())["rocm_gfx"] == "gfx1034"
+
+    # Nothing to record leaves the marker untouched.
+    ilp.sync_marker_rocm_gfx(tmp_path, None)
+    assert json.loads(marker_path.read_text())["rocm_gfx"] == "gfx1034"
+
+
+@pytest.mark.parametrize("backend", ["vulkan", None, "hip"])
+def test_only_the_automatic_route_records_a_routing_gfx(tmp_path, backend):
+    """Every other install names its arch in the asset. A stale copy there would
+    assert ROCm on a host whose AMD GPU is gone."""
+    marker_path = tmp_path / "UNSLOTH_PREBUILT_INFO.json"
+    marker_path.write_text(json.dumps({"llama_backend": backend, "asset": "win-hip.zip"}))
+
+    ilp.sync_marker_rocm_gfx(tmp_path, "gfx1034")
+
+    assert "rocm_gfx" not in json.loads(marker_path.read_text())
+
+    checksums = ilp.ApprovedReleaseChecksums(
+        repo = UPSTREAM,
+        release_tag = "b9925",
+        upstream_tag = "b9925",
+        source_repo = UPSTREAM,
+        source_repo_url = f"https://github.com/{UPSTREAM}",
+    )
+    ilp.write_prebuilt_metadata(
+        tmp_path,
+        requested_tag = "latest",
+        llama_tag = "b9925",
+        release_tag = "b9925",
+        choice = _choice("windows-vulkan", "llama-b9925-bin-win-vulkan-x64.zip"),
+        approved_checksums = checksums,
+        prebuilt_fallback_used = False,
+        llama_backend = backend,
+        rocm_gfx = "gfx1034",
+    )
+    assert "rocm_gfx" not in json.loads(marker_path.read_text())
+
+
+def test_non_amd_installs_record_no_routing_gfx(tmp_path):
+    """The key is absent unless an arch actually routed the install."""
+    checksums = ilp.ApprovedReleaseChecksums(
+        repo = UPSTREAM,
+        release_tag = "b9925",
+        upstream_tag = "b9925",
+        source_repo = UPSTREAM,
+        source_repo_url = f"https://github.com/{UPSTREAM}",
+    )
+    ilp.write_prebuilt_metadata(
+        tmp_path,
+        requested_tag = "latest",
+        llama_tag = "b9925",
+        release_tag = "b9925",
+        choice = _choice("windows-vulkan", "llama-b9925-bin-win-vulkan-x64.zip"),
+        approved_checksums = checksums,
+        prebuilt_fallback_used = False,
+        llama_backend = None,
+    )
+    marker = json.loads((tmp_path / "UNSLOTH_PREBUILT_INFO.json").read_text())
+    assert "rocm_gfx" not in marker
 
 
 # setup translates UNSLOTH_LLAMA_CPP_BACKEND=cpu into --force-cpu to pin the

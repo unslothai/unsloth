@@ -16,6 +16,8 @@ import argparse
 import os
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -26,11 +28,20 @@ from utils.native_tls import activate_native_tls
 activate_native_tls()
 
 
+# How long a cancelled worker gets to exit on SIGTERM before it is killed.
+TERMINATE_GRACE_SECONDS = 15.0
+
+
 def backend_dir() -> Path:
     return Path(__file__).resolve().parent.parent.parent
 
 
-def spawn_download(args: Sequence[str], hf_token: Optional[str] = None) -> subprocess.Popen:
+def spawn_download(
+    args: Sequence[str],
+    hf_token: Optional[str] = None,
+    *,
+    hub_cache: Optional[Path] = None,
+) -> subprocess.Popen:
     """Run this module as a child process performing ``args``' download.
 
     The token travels in the environment, never argv, so it stays out of ``ps``.
@@ -39,8 +50,12 @@ def spawn_download(args: Sequence[str], hf_token: Optional[str] = None) -> subpr
     from utils.hf_cache_settings import get_hf_cache_paths
 
     env = get_hf_cache_paths().child_env()
+    if hub_cache is not None:
+        env["HF_HUB_CACHE"] = str(hub_cache)
     env["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
     env["HF_HUB_DISABLE_TELEMETRY"] = "1"
+    # Xet's out-of-order chunks do not provide steady partial-file progress.
+    env["HF_HUB_DISABLE_XET"] = "1"
     # Parallel Range chunks leave sparse partials a resumed sequential writer
     # cannot reuse, which defeats the point of cancelling.
     env["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
@@ -76,6 +91,29 @@ def spawn_download(args: Sequence[str], hf_token: Optional[str] = None) -> subpr
     return process
 
 
+def terminate_download(process: subprocess.Popen) -> None:
+    """SIGTERM now, SIGKILL after a grace, so cancel() still returns at once.
+
+    The canceller holds the repository reservation until the reap returns, so a
+    worker that ignores SIGTERM would lock every Model Hub write on that repo
+    until Studio restarts.
+    """
+    try:
+        process.terminate()
+    except Exception:  # noqa: BLE001
+        return
+
+    def escalate() -> None:
+        time.sleep(TERMINATE_GRACE_SECONDS)
+        try:
+            if process.poll() is None:
+                process.kill()
+        except Exception:  # noqa: BLE001
+            pass
+
+    threading.Thread(target = escalate, daemon = True).start()
+
+
 def reap_download(process: subprocess.Popen) -> bytes:
     """Wait for a worker and drop its PID. Returns its stderr.
 
@@ -88,39 +126,30 @@ def reap_download(process: subprocess.Popen) -> bytes:
     try:
         _, stderr = process.communicate()
     finally:
-        forget_pid(process.pid)
+        pid = getattr(process, "pid", None)
+        if isinstance(pid, int):
+            forget_pid(pid)
     return stderr or b""
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description = "Download one dictation model.")
     parser.add_argument("--repo-id", required = True)
-    # GGML is a single file; Transformers is a snapshot pinned to the revision
-    # the sidecar already validated.
-    parser.add_argument("--filename")
+    # Explicit filenames prevent repository patterns from widening the download.
+    parser.add_argument("--filename", action = "append", required = True)
     parser.add_argument("--revision")
-    parser.add_argument("--allow-pattern", action = "append", default = [])
     args = parser.parse_args(argv)
 
     token = os.environ.get("HF_TOKEN") or None
-    if args.filename:
-        from huggingface_hub import hf_hub_download
+    from huggingface_hub import hf_hub_download
+
+    for filename in args.filename:
         hf_hub_download(
             repo_id = args.repo_id,
-            filename = args.filename,
+            filename = filename,
             revision = args.revision,
             token = token,
         )
-        return 0
-
-    from huggingface_hub import snapshot_download
-
-    snapshot_download(
-        repo_id = args.repo_id,
-        revision = args.revision,
-        allow_patterns = list(args.allow_pattern) or None,
-        token = token,
-    )
     return 0
 
 

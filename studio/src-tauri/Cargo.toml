@@ -10,6 +10,8 @@ version = "2026.4.8"
 description = "Unsloth Desktop App"
 authors = ["Unsloth AI"]
 edition = "2021"
+# std::fs::File::lock, used for the desktop ownership id.
+rust-version = "1.89"
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
@@ -57,7 +59,7 @@ webkit2gtk-sys = "2.0.2"
 [target.'cfg(windows)'.dependencies]
 winreg = "0.10"
 windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -144,7 +144,7 @@ export function DesktopTitlebarNavigation({
           <HugeiconsIcon
             icon={LayoutAlignLeftIcon}
             strokeWidth={1.75}
-            className="size-icon"
+            className="size-icon !size-[calc(var(--icon-size)+1px)]"
           />
         </button>
       ) : (
@@ -165,7 +165,7 @@ export function DesktopTitlebarNavigation({
         <ArrowLeft
           aria-hidden="true"
           strokeWidth={1.75}
-          className="size-icon"
+          className="size-icon !size-[calc(var(--icon-size)+1px)]"
         />
       </button>
       <button
@@ -183,7 +183,7 @@ export function DesktopTitlebarNavigation({
         <ArrowRight
           aria-hidden="true"
           strokeWidth={1.75}
-          className="size-icon"
+          className="size-icon !size-[calc(var(--icon-size)+1px)]"
         />
       </button>
     </div>

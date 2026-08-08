@@ -56,6 +56,31 @@ IMAGE = FRONTEND / "components/assistant-ui/image.tsx"
 AUDIO_PLAYER = FRONTEND / "components/assistant-ui/audio-player.tsx"
 
 
+def _chrome_style_blocks(source: str) -> dict[str, dict[str, str]]:
+    """Each ``const <NAME>_STYLE = { ... } as CSSProperties`` block as a var -> value map.
+
+    Per block, so a value is only ever compared against the others that ship with it.
+    """
+    return {
+        name: dict(re.findall(r'"(--[\w-]+)":\s*"([^"]+)"', body))
+        for name, body in re.findall(
+            r"const (\w+_STYLE) = \{(.*?)\} as CSSProperties;", source, re.S
+        )
+    }
+
+
+def _titlebar_nav_button_px(source: str) -> int | None:
+    """The navigation button's box, read off the class string that sizes it."""
+    match = re.search(r"const buttonClass =\s*\n?\s*\"[^\"]*?size-\[(\d+)px\]", source, re.S)
+    return int(match.group(1)) if match else None
+
+
+def _px(value: str | None) -> int | None:
+    """*value* as whole pixels, or None if it is not a px literal (rem, calc, absent)."""
+    match = re.fullmatch(r"(\d+)px", (value or "").strip())
+    return int(match.group(1)) if match else None
+
+
 def test_desktop_update_offer_remains_actionable_from_settings():
     provider = APP_PROVIDER.read_text(encoding = "utf-8")
     context = TAURI_UPDATE_CONTEXT.read_text(encoding = "utf-8")
@@ -368,28 +393,40 @@ def test_full_app_layout_uses_its_own_initialized_marker():
 
     assert 'invoke<boolean>("has_initialized_app_window_layout")' in source
     setup_layout = source.split("async function showSetupWindow", 1)[1].split(
-        "async function enforceMinimumWindowSize", 1
+        "async function enforceWindowSizeBounds", 1
     )[0]
     reset_call = 'invoke("reset_app_window_layout_initialized")'
     assert reset_call in setup_layout
-    assert setup_layout.index(reset_call) < setup_layout.index("win.setSize")
+    assert setup_layout.index(reset_call) < setup_layout.index("placeWindow(")
     assert 'invoke("mark_app_window_layout_initialized")' in source
     assert "hasInitializedAppLayout && hasSavedState" in source
 
 
 def test_first_app_layout_survives_a_stale_setup_window_size():
     source = APP_PROVIDER.read_text(encoding = "utf-8")
-    minimum_helper = source.split("async function enforceMinimumWindowSize", 1)[1].split(
+    bounds_helper = source.split("async function enforceWindowSizeBounds", 1)[1].split(
         "async function applyAppWindowLayout", 1
     )[0]
     app_layout = source.split("async function applyAppWindowLayout", 1)[1].split(
         "async function showWindowFallback", 1
     )[0]
 
-    assert "requestedSize.width" in minimum_helper
-    assert "requestedSize.height" in minimum_helper
-    assert "requestedSize = { width: finalW, height: finalH };" in app_layout
-    assert "enforceMinimumWindowSize(win, LogicalSize, isCurrent, requestedSize)" in app_layout
+    assert "requestedSize: LogicalWindowSize = bounds.minimum" in bounds_helper
+    assert "constrainWindowSize(currentSize, requestedSize, bounds)" in bounds_helper
+    assert "const cssSafeLogicalWidth = measured.monitor" in app_layout
+    first_size_call = app_layout.split("requestedSize = calculateFirstAppWindowSize(", 1)[1].split(
+        ");", 1
+    )[0]
+    assert "measured.bounds," in first_size_call
+    assert "cssSafeLogicalWidth," in first_size_call
+    assert "finalizeAppWindowLayout({" in app_layout
+    assert "enforceWindowSizeBounds(" in app_layout
+    finalize_call = app_layout.split("finalizeAppWindowLayout({", 1)[1].split("});", 1)[0]
+    assert "measured," in finalize_call
+    # Limit the check to this call's arguments.
+    bounds_call = app_layout.split("enforceWindowSizeBounds(", 1)[1].split(");", 1)[0]
+    assert "bounds," in bounds_call
+    assert "requestedSize," in bounds_call
 
 
 def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
@@ -484,9 +521,24 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
     assert "translate-y-[var(--studio-titlebar-navigation-offset-y,0px)]" in TITLEBAR.read_text(
         encoding = "utf-8"
     )
-    assert '"--studio-titlebar-navigation-offset-y": "2px"' in APP_PROVIDER.read_text(
-        encoding = "utf-8"
-    )
+    # The nudge has to move the navigation without pushing it out of the titlebar it sits
+    # in, so the button box travels with it. The container's mt-1 is deliberately not in
+    # the sum: translate-y is visual, and the margin already seats the box in the row.
+    button = _titlebar_nav_button_px(TITLEBAR.read_text(encoding = "utf-8"))
+    assert button is not None, "navigation button size no longer readable from buttonClass"
+    blocks = _chrome_style_blocks(APP_PROVIDER.read_text(encoding = "utf-8"))
+    nudged = {
+        name: values
+        for name, values in blocks.items()
+        if "--studio-titlebar-navigation-offset-y" in values
+    }
+    assert nudged, blocks.keys()
+    for name, values in nudged.items():
+        offset = _px(values["--studio-titlebar-navigation-offset-y"])
+        titlebar = _px(values.get("--studio-desktop-titlebar-height"))
+        assert offset is not None and offset > 0, (name, values)
+        assert titlebar is not None, (name, values)
+        assert offset + button <= titlebar, (name, offset, button, titlebar)
     assert "aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
     assert "inert={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
 
@@ -537,7 +589,22 @@ def test_mac_chat_header_controls_share_the_titlebar_row():
     assert "shouldUseNativeMacWindowTitlebar" not in source
     assert "[--studio-content-top-inset:var(--studio-mac-titlebar-height" not in source
     assert source.count("var(--studio-mac-traffic-light-inset") == 2
-    assert '"--studio-chat-header-padding-top": "7px"' in provider
+    # Sharing the row is the contract: the padding must leave the control room inside the
+    # header, so a retune to a large value fails here rather than shipping a clipped row.
+    blocks = _chrome_style_blocks(provider)
+    padded = {
+        name: values
+        for name, values in blocks.items()
+        if "--studio-chat-header-padding-top" in values
+    }
+    assert padded, blocks.keys()
+    for name, values in padded.items():
+        padding = _px(values["--studio-chat-header-padding-top"])
+        header = _px(values.get("--studio-chat-header-height"))
+        control = _px(values.get("--studio-chat-control-height"))
+        assert padding is not None and padding > 0, (name, values)
+        assert header is not None and control is not None, (name, values)
+        assert padding + control <= header, (name, padding, control, header)
     assert "pt-[var(--studio-content-top-inset,0px)] md:flex-row" in source
     assert "absolute top-[var(--studio-content-top-inset,0px)]" in source
 

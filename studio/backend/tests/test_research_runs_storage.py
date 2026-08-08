@@ -150,8 +150,8 @@ def test_agent_uses_valid_action_json_from_reasoning_when_content_is_invalid():
 
 
 def test_agent_action_preserves_a_bounded_research_state():
-    from core import research_runs as worker
-    action = worker._validate_agent_action(
+    from core.research.parsing import _validate_agent_action
+    action = _validate_agent_action(
         {
             "action": "search",
             "title": "Close the evidence gap",
@@ -412,7 +412,7 @@ def test_streamed_reasoning_is_batched_before_database_writes(research_home, mon
     )
     supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
 
-    report, reasoning, finish_reason = asyncio.run(
+    report, reasoning, finish_reason, _usage = asyncio.run(
         supervisor._stream_completion(
             run,
             [{"role": "user", "content": "question"}],
@@ -425,8 +425,10 @@ def test_streamed_reasoning_is_batched_before_database_writes(research_home, mon
 
     assert report == ""
     assert reasoning == "x" * 1000
-    assert len(writes) == 2
-    assert "".join(write[1]["reasoningDelta"] for write in writes) == reasoning
+    # Count only the reasoning writes: the phase brackets around the call are not per-token.
+    reasoning_writes = [data for event_type, data in writes if event_type == "reasoning.updated"]
+    assert len(reasoning_writes) == 2
+    assert "".join(write["reasoningDelta"] for write in reasoning_writes) == reasoning
     assert payloads[0]["max_tokens"] == 16384
     assert payloads[0]["enable_thinking"] is False
     assert payloads[0]["reasoning_effort"] == "none"
@@ -658,7 +660,7 @@ def test_pruning_messages_preserves_runs_whose_user_message_survives(research_ho
 
 
 @pytest.mark.parametrize("removed_id", ["user-1", "assistant-1"])
-def test_pruning_rejects_deleting_research_turn_messages(research_home, removed_id):
+def test_pruning_skips_research_turn_messages(research_home, removed_id):
     _create()
     plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
     research_db.approve("run-1", 1, plan["planHash"])
@@ -670,18 +672,37 @@ def test_pruning_rejects_deleting_research_turn_messages(research_home, removed_
         if message["id"] != removed_id
     ]
 
-    with pytest.raises(studio_db.ChatMessageProtectedError, match = "cannot be deleted"):
-        studio_db.sync_chat_messages("thread-1", survivors, prune_missing = True)
+    studio_db.sync_chat_messages("thread-1", survivors, prune_missing = True)
 
     assert research_db.get_run("run-1") is not None
     assert research_db.has_thread_claim("thread-1") is True
-    assert studio_db.get_chat_message("thread-1", "user-1") is not None
+    assert studio_db.get_chat_message("thread-1", removed_id) is not None
 
 
-def test_sync_rejects_editing_research_message_but_allows_noop(research_home):
+@pytest.mark.parametrize("removed_id", ["user-1", "assistant-1"])
+def test_pruning_exempts_research_messages_even_when_updates_allowed(research_home, removed_id):
+    _create()
+    plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
+    research_db.approve("run-1", 1, plan["planHash"])
+    research_db.claim_next("worker-1")
+    research_db.finish("run-1", "worker-1", "completed")
+    survivors = [
+        message
+        for message in studio_db.list_chat_messages("thread-1")
+        if message["id"] != removed_id
+    ]
+
+    studio_db.sync_chat_messages(
+        "thread-1", survivors, prune_missing = True, allow_research_update = True
+    )
+
+    assert research_db.get_run("run-1") is not None
+    assert studio_db.get_chat_message("thread-1", removed_id) is not None
+
+
+def test_sync_ignores_client_edits_to_research_messages(research_home):
     _create()
     unchanged = studio_db.list_chat_messages("thread-1")
-    # Re-syncing identical content is a no-op and must still be allowed.
     studio_db.sync_chat_messages("thread-1", unchanged)
     edited = [
         {**message, "content": [{"type": "text", "text": "HIJACKED"}]}
@@ -689,11 +710,48 @@ def test_sync_rejects_editing_research_message_but_allows_noop(research_home):
         else message
         for message in unchanged
     ]
-    with pytest.raises(studio_db.ChatMessageProtectedError, match = "server-managed"):
-        studio_db.sync_chat_messages("thread-1", edited)
+    studio_db.sync_chat_messages("thread-1", edited)
     assert studio_db.get_chat_message("thread-1", "user-1")["content"] == [
         {"type": "text", "text": "What changed?"}
     ]
+
+
+def test_autosave_round_trip_with_client_drift_saves_other_messages(research_home):
+    # The frontend autosave re-serializes messages lossily; that drift must not 409 the
+    # batch or roll back unrelated messages.
+    _create()
+    replayed = []
+    for message in studio_db.list_chat_messages("thread-1"):
+        replayed.append(
+            {
+                **message,
+                "content": message["content"] or [{"type": "text", "text": ""}],
+                "metadata": {
+                    **(message.get("metadata") or {}),
+                    "researchRun": {"id": "run-1", "status": "planning"},
+                    "serverRevision": 7,
+                }
+                if message["role"] == "assistant"
+                else None,
+            }
+        )
+    replayed.append(
+        {
+            "id": "followup",
+            "threadId": "thread-1",
+            "parentId": "assistant-1",
+            "role": "user",
+            "content": [{"type": "text", "text": "And then?"}],
+            "createdAt": 4,
+        }
+    )
+
+    studio_db.sync_chat_messages("thread-1", replayed)
+
+    assert studio_db.get_chat_message("thread-1", "followup") is not None
+    assistant = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert assistant["content"] == []
+    assert "researchRun" not in (assistant.get("metadata") or {})
 
 
 def test_upsert_rejects_client_edit_but_allows_internal_writer(research_home):
@@ -713,7 +771,7 @@ def test_upsert_rejects_client_edit_but_allows_internal_writer(research_home):
     assert studio_db.get_chat_message("thread-1", "assistant-1") is not None
 
 
-def test_sync_rejects_changing_research_message_attachments(research_home):
+def test_sync_ignores_research_message_attachment_changes(research_home):
     _create()
     messages = studio_db.list_chat_messages("thread-1")
     edited = [
@@ -722,23 +780,20 @@ def test_sync_rejects_changing_research_message_attachments(research_home):
         else message
         for message in messages
     ]
-    with pytest.raises(studio_db.ChatMessageProtectedError, match = "server-managed"):
-        studio_db.sync_chat_messages("thread-1", edited)
+    studio_db.sync_chat_messages("thread-1", edited)
+    assert studio_db.get_chat_message("thread-1", "user-1").get("attachments") is None
 
 
-def test_sync_rejects_reordering_research_message_via_created_at(research_home):
+def test_sync_ignores_research_message_created_at_changes(research_home):
     _create()
     messages = studio_db.list_chat_messages("thread-1")
-    # Same body, different timestamp: this would silently reorder the server-managed prompt/response
-    # pair (messages are ordered by created_at), so the guard must reject it.
+    # A changed timestamp would reorder the pair (ordered by created_at), so the server wins.
     edited = [
         {**message, "createdAt": 999999} if message["id"] == "user-1" else message
         for message in messages
     ]
-    with pytest.raises(studio_db.ChatMessageProtectedError, match = "server-managed"):
-        studio_db.sync_chat_messages("thread-1", edited)
-    # A faithful re-sync (unchanged createdAt) is still a no-op and must be allowed.
-    studio_db.sync_chat_messages("thread-1", messages)
+    studio_db.sync_chat_messages("thread-1", edited)
+    assert studio_db.get_chat_message("thread-1", "user-1")["createdAt"] == 2
 
 
 def test_delete_thread_cancels_active_research_run(research_home):
@@ -1150,12 +1205,50 @@ def test_research_prompts_define_quality_and_citation_contracts():
     assert '"action":"finish"' in _AGENT_SYSTEM_PROMPT
 
 
+def test_agent_action_queries_are_redacted_before_they_leave_the_supervisor():
+    from core.research.parsing import _validate_agent_action
+
+    long_action = _validate_agent_action(
+        {
+            "action": "search",
+            "query": "public evidence " * 30
+            + 'password="'
+            + "private phrase " * 60
+            + '" useful sources',
+        },
+        set(),
+    )
+    assert "private" not in long_action["query"]
+
+    assert len(long_action["query"]) <= 500
+
+    assert _validate_agent_action(
+        {"action": "search", "title": "Verify", "query": "primary source"},
+        set(),
+    ) == {
+        "action": "search",
+        "title": "Verify",
+        "query": "primary source",
+    }
+    assert (
+        _validate_agent_action(
+            {"action": "fetch", "title": "Read", "url": "https://example.com"},
+            {"https://example.com"},
+        )["action"]
+        == "fetch"
+    )
+    with pytest.raises(ValueError, match = "unknown URL"):
+        _validate_agent_action(
+            {"action": "fetch", "url": "https://invented.example"},
+            {"https://example.com"},
+        )
+
+
 def test_research_agent_actions_are_model_directed_and_url_bounded():
     from core.research_runs import (
         _normalize_synthesis_audit,
         _sanitize_public_query,
         _shield_untrusted,
-        _validate_agent_action,
     )
 
     assert (
@@ -1177,18 +1270,6 @@ def test_research_agent_actions_are_model_directed_and_url_bounded():
             "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0."
             "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
         )
-    long_action = _validate_agent_action(
-        {
-            "action": "search",
-            "query": "public evidence " * 30
-            + 'password="'
-            + "private phrase " * 60
-            + '" useful sources',
-        },
-        set(),
-    )
-    assert "private" not in long_action["query"]
-
     allowed_urls = [f"https://example.com/source-{index}" for index in range(10)]
     audit = _normalize_synthesis_audit(
         {
@@ -1262,28 +1343,6 @@ def test_research_agent_actions_are_model_directed_and_url_bounded():
     assert "<query_history_json>" not in shielded
     assert "<untrusted_synthesis_audit_json>" not in shielded
     assert "<synthesis_audit_json>" not in shielded
-    assert len(long_action["query"]) <= 500
-
-    assert _validate_agent_action(
-        {"action": "search", "title": "Verify", "query": "primary source"},
-        set(),
-    ) == {
-        "action": "search",
-        "title": "Verify",
-        "query": "primary source",
-    }
-    assert (
-        _validate_agent_action(
-            {"action": "fetch", "title": "Read", "url": "https://example.com"},
-            {"https://example.com"},
-        )["action"]
-        == "fetch"
-    )
-    with pytest.raises(ValueError, match = "unknown URL"):
-        _validate_agent_action(
-            {"action": "fetch", "url": "https://invented.example"},
-            {"https://example.com"},
-        )
 
 
 def test_rag_evidence_makes_failed_web_search_recoverable():
@@ -1292,6 +1351,18 @@ def test_rag_evidence_makes_failed_web_search_recoverable():
     blocked = "Blocked: website access policy disallows example.com."
     assert _research_step_failed(blocked, []) is True
     assert _research_step_failed(blocked, [{"chunkId": "doc-1:0"}]) is False
+
+
+def test_search_that_matched_nothing_counts_as_a_failed_step():
+    # It ran without erroring, so it used to be recorded as completed and the panel showed a
+    # green step for evidence the report never got.
+    from core.inference.tools import EMPTY_SEARCH_RESULTS
+    from core.research_runs import _research_step_failed
+
+    for empty in EMPTY_SEARCH_RESULTS:
+        assert _research_step_failed(empty, []) is True
+        assert _research_step_failed(empty, [{"chunkId": "doc-1:0"}]) is False
+    assert _research_step_failed("Title: A\nURL: https://example.com\nSnippet: s", []) is False
 
 
 def test_research_budget_defaults_support_long_runs():
@@ -1433,7 +1504,7 @@ def test_planner_prompt_shields_untrusted_conversation(research_home, monkeypatc
         **kwargs,
     ):
         captured["planner"] = messages[1]["content"]
-        return json.dumps(_plan()), "Planned.", "stop"
+        return json.dumps(_plan()), "Planned.", "stop", None
 
     monkeypatch.setattr(supervisor, "_stream_completion", fake_stream_completion)
 
@@ -1503,14 +1574,6 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(research_ho
         )
     )
 
-    async def fake_completion(
-        run,
-        messages,
-        *,
-        json_mode = False,
-    ):
-        raise AssertionError("Planning and agent decisions must use the streaming path")
-
     async def fake_stream_completion(
         run,
         messages,
@@ -1545,9 +1608,14 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(research_ho
         assert "We were discussing OpenAI." in prompt
         assert "Compare that with Anthropic." in prompt
         if "rigorous web research plan" in system:
-            return json.dumps(_plan()), "Planned several lines of inquiry.", "stop"
+            return json.dumps(_plan()), "Planned several lines of inquiry.", "stop", None
         if "iterative research process" in system:
-            return next(decisions), "Evaluated the evidence and selected the next action.", "stop"
+            return (
+                next(decisions),
+                "Evaluated the evidence and selected the next action.",
+                "stop",
+                None,
+            )
         assert "<document_source_catalog>" in prompt
         assert "private.pdf" in prompt
         if kwargs.get("phase") == "synthesis_audit":
@@ -1567,12 +1635,13 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(research_ho
                 ),
                 "Audited document evidence.",
                 "stop",
+                None,
             )
         if kwargs.get("phase") == "synthesis":
-            return "", "Repeated a truncated source URL.", "length"
+            return "", "Repeated a truncated source URL.", "length", None
         report = report_response
         research_db.set_report_progress(run["id"], report)
-        return report, "Checked the available evidence.", "stop"
+        return report, "Checked the available evidence.", "stop", None
 
     tool_calls = []
 
@@ -1599,7 +1668,6 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(research_ho
             return "Full page evidence."
         return "Title: Example\nURL: https://example.com\nSnippet: Evidence snippet."
 
-    monkeypatch.setattr(supervisor, "_completion", fake_completion)
     monkeypatch.setattr(supervisor, "_stream_completion", fake_stream_completion)
     monkeypatch.setattr(worker, "execute_tool", fake_tool)
 
@@ -1772,9 +1840,9 @@ def _run_search_then_finish(
     ):
         system = messages[0]["content"]
         if "rigorous web research plan" in system:
-            return json.dumps(_plan()), "planned", "stop"
+            return json.dumps(_plan()), "planned", "stop", None
         if "iterative research process" in system:
-            return next(decisions), "decided", "stop"
+            return next(decisions), "decided", "stop", None
         synthesis_prompts.append(messages[1]["content"])
         if "evidence-to-claim audit" in system:
             return (
@@ -1797,9 +1865,10 @@ def _run_search_then_finish(
                 ),
                 "audited",
                 "stop",
+                None,
             )
         research_db.set_report_progress(run["id"], report)
-        return report, "synthesized", "stop"
+        return report, "synthesized", "stop", None
 
     monkeypatch.setattr(supervisor, "_stream_completion", fake_stream_completion)
     monkeypatch.setattr(worker, "execute_tool", fake_tool)
@@ -2021,12 +2090,12 @@ def test_synthesis_pass_runs_at_synthesis_phase(research_home, monkeypatch):
     ):
         system = messages[0]["content"]
         if "rigorous web research plan" in system:
-            return json.dumps(_plan()), "p", "stop"
+            return json.dumps(_plan()), "p", "stop", None
         if "iterative research process" in system:
-            return next(decisions), "d", "stop"
+            return next(decisions), "d", "stop", None
         captured.update(kwargs)
         research_db.set_report_progress(run["id"], "# Report\n\nGrounded text.")
-        return "# Report\n\nGrounded text.", "s", "stop"
+        return "# Report\n\nGrounded text.", "s", "stop", None
 
     def fake_tool(name, arguments, *a, **k):
         return "page body" if arguments.get("url") else _two_source_search()
@@ -2258,6 +2327,7 @@ def test_recovered_running_research_resumes_durable_progress(research_home, monk
                 ),
                 "",
                 "stop",
+                None,
             )
         assert "Saved durable snippet" in prompt
         assert "Private durable evidence" in prompt
@@ -2268,6 +2338,7 @@ def test_recovered_running_research_resumes_durable_progress(research_home, monk
             "# Resumed report\n\nSaved finding [Saved source](https://saved.example/source).",
             "",
             "stop",
+            None,
         )
 
     def unexpected_tool(*args, **kwargs):
@@ -2316,12 +2387,12 @@ def test_knowledge_base_evidence_beyond_the_source_cap_is_not_synthesized(
     async def fake_stream_completion(run, messages, **kwargs):
         system = messages[0]["content"]
         if "rigorous web research plan" in system:
-            return json.dumps(_plan()), "planned", "stop"
+            return json.dumps(_plan()), "planned", "stop", None
         if "iterative research process" in system:
-            return next(decisions), "decided", "stop"
+            return next(decisions), "decided", "stop", None
         synthesis_prompts.append(messages[1]["content"])
         research_db.set_report_progress(run["id"], report)
-        return report, "synthesized", "stop"
+        return report, "synthesized", "stop", None
 
     labels = iter(("kept", "capped"))
 
@@ -3077,7 +3148,10 @@ def test_completion_cancellation_closes_loopback_request(research_home, monkeypa
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        async def post(self, *args, **kwargs):
+        def build_request(self, *args, **kwargs):
+            return object()
+
+        async def send(self, request, *, stream):
             try:
                 await asyncio.Event().wait()
             finally:
@@ -3093,7 +3167,7 @@ def test_completion_cancellation_closes_loopback_request(research_home, monkeypa
 
     async def scenario():
         task = asyncio.create_task(
-            supervisor._completion(run, [{"role": "user", "content": "question"}])
+            supervisor._stream_completion(run, [{"role": "user", "content": "question"}])
         )
         await asyncio.sleep(0.05)
         supervisor.cancel("run-1")
@@ -3256,3 +3330,323 @@ def test_merge_scraped_evidence_handles_empty_sides():
     assert _merge_scraped_evidence("only snippets", "") == "only snippets"
     # no raw snippets -> the scraped section is returned
     assert _merge_scraped_evidence("", "only chunk") == "only chunk"
+
+
+def _route_sync(messages, *, prune_missing = False):
+    """Drive the real PUT /threads/{id}/messages against the real database."""
+    from routes import chat_history
+    return chat_history.replace_thread_messages(
+        "thread-1",
+        chat_history.ChatMessageSyncRequest(
+            messages = [chat_history.ChatMessage(**message) for message in messages],
+            pruneMissing = prune_missing,
+        ),
+        current_subject = "alice",
+    )
+
+
+def test_route_autosave_survives_drifted_research_content(research_home):
+    # Through the route autosave actually calls: one drifted row used to 409 the batch.
+    _create()
+    replayed = [
+        {**message, "content": [{"type": "text", "text": "HIJACKED"}]}
+        for message in studio_db.list_chat_messages("thread-1")
+    ]
+    replayed.append(
+        {
+            "id": "followup",
+            "threadId": "thread-1",
+            "parentId": "assistant-1",
+            "role": "user",
+            "content": [{"type": "text", "text": "And then?"}],
+            "createdAt": 4,
+        }
+    )
+
+    response = _route_sync(replayed)
+
+    assert {message.id for message in response.messages} == {"user-1", "assistant-1", "followup"}
+    # Unrelated message saved; the server's copy of the research turn wins.
+    assert studio_db.get_chat_message("thread-1", "followup") is not None
+    assert studio_db.get_chat_message("thread-1", "user-1")["content"] == [
+        {"type": "text", "text": "What changed?"}
+    ]
+
+
+def test_route_prune_cannot_delete_research_messages(research_home):
+    _create()
+    studio_db.upsert_chat_message(
+        {
+            "id": "chatter",
+            "threadId": "thread-1",
+            "parentId": "assistant-1",
+            "role": "user",
+            "content": [{"type": "text", "text": "unrelated"}],
+            "createdAt": 4,
+        }
+    )
+
+    # Client asks to keep nothing: the research turn survives, the rest goes.
+    _route_sync([], prune_missing = True)
+
+    assert studio_db.get_chat_message("thread-1", "user-1") is not None
+    assert studio_db.get_chat_message("thread-1", "assistant-1") is not None
+    assert studio_db.get_chat_message("thread-1", "chatter") is None
+    assert research_db.get_run("run-1") is not None
+
+
+def _thread_imports_cleanly(thread_id = "thread-1") -> bool:
+    """Whether every parent link resolves, which is what MessageRepository.import needs.
+
+    assistant-ui's addOrUpdateMessage raises "Parent message not found" on a dangling
+    parent, and the whole thread stops opening, not just the affected turn.
+    """
+    rows = studio_db.list_chat_messages(thread_id)
+    ids = {row["id"] for row in rows}
+    return all(row["parentId"] is None or row["parentId"] in ids for row in rows)
+
+
+def test_deleting_an_ancestor_reseats_the_protected_prompt(research_home):
+    # The research prompt hangs off an earlier turn. Deleting that ancestor relinks the
+    # prompt in the client's repository, but its content is server-owned, so the whole
+    # message is dropped here: without carrying the relink, the stored prompt keeps a
+    # parent the prune then deletes and the thread can never be opened again.
+    for message_id, parent_id, created_at in (
+        ("root", None, 1),
+        ("ancestor", "root", 2),
+    ):
+        studio_db.upsert_chat_message(
+            {
+                "id": message_id,
+                "threadId": "thread-1",
+                "parentId": parent_id,
+                "role": "user",
+                "content": [{"type": "text", "text": message_id}],
+                "createdAt": created_at,
+            }
+        )
+    _create()
+    studio_db.upsert_chat_message(
+        {
+            "id": "user-1",
+            "threadId": "thread-1",
+            "parentId": "ancestor",
+            "role": "user",
+            "content": [{"type": "text", "text": "What changed?"}],
+            "createdAt": 3,
+        },
+        allow_research_update = True,
+    )
+
+    # What the client sends after deleting "ancestor": survivors only, the research content
+    # lossily re-serialized as always, and a parent claim that is deliberately wrong here.
+    # The reseat is walked from the stored chain, so the client's claim must not decide it.
+    _route_sync(
+        [
+            {
+                "id": "root",
+                "threadId": "thread-1",
+                "parentId": None,
+                "role": "user",
+                "content": [{"type": "text", "text": "root"}],
+                "createdAt": 1,
+            },
+            {
+                "id": "user-1",
+                "threadId": "thread-1",
+                "parentId": "smuggled",
+                "role": "user",
+                "content": [],
+                "createdAt": 3,
+            },
+        ],
+        prune_missing = True,
+    )
+
+    assert studio_db.get_chat_message("thread-1", "ancestor") is None
+    prompt = studio_db.get_chat_message("thread-1", "user-1")
+    assert prompt is not None
+    assert prompt["parentId"] == "root"
+    # Content is still the server's.
+    assert prompt["content"] == [{"type": "text", "text": "What changed?"}]
+    assert _thread_imports_cleanly()
+
+
+def test_a_protected_prompt_roots_when_the_whole_chain_is_pruned(research_home):
+    # Nothing above it survives, so the walk ends at the root. Rooting the prompt keeps the
+    # thread openable, which a dangling parent would not.
+    studio_db.upsert_chat_message(
+        {
+            "id": "ancestor",
+            "threadId": "thread-1",
+            "parentId": None,
+            "role": "user",
+            "content": [{"type": "text", "text": "ancestor"}],
+            "createdAt": 1,
+        }
+    )
+    _create()
+    studio_db.upsert_chat_message(
+        {
+            "id": "user-1",
+            "threadId": "thread-1",
+            "parentId": "ancestor",
+            "role": "user",
+            "content": [{"type": "text", "text": "What changed?"}],
+            "createdAt": 3,
+        },
+        allow_research_update = True,
+    )
+
+    _route_sync(
+        [
+            {
+                "id": "user-1",
+                "threadId": "thread-1",
+                "parentId": "also-gone",
+                "role": "user",
+                "content": [],
+                "createdAt": 3,
+            }
+        ],
+        prune_missing = True,
+    )
+
+    assert studio_db.get_chat_message("thread-1", "ancestor") is None
+    assert studio_db.get_chat_message("thread-1", "user-1")["parentId"] is None
+    assert _thread_imports_cleanly()
+
+
+def test_omitting_the_whole_research_pair_keeps_the_turn_joined(research_home):
+    # The prune exempts protected messages, so a payload that omits both of them deletes
+    # neither. The reseat has to agree: counting the prompt as pruned would walk the report
+    # past it to the root and silently split the turn while both rows still exist.
+    studio_db.upsert_chat_message(
+        {
+            "id": "root",
+            "threadId": "thread-1",
+            "parentId": None,
+            "role": "user",
+            "content": [{"type": "text", "text": "root"}],
+            "createdAt": 1,
+        }
+    )
+    _create()
+    for message_id, parent_id, role, created_at in (
+        ("user-1", "root", "user", 2),
+        ("assistant-1", "user-1", "assistant", 3),
+    ):
+        studio_db.upsert_chat_message(
+            {
+                "id": message_id,
+                "threadId": "thread-1",
+                "parentId": parent_id,
+                "role": role,
+                "content": [{"type": "text", "text": message_id}],
+                "createdAt": created_at,
+            },
+            allow_research_update = True,
+        )
+
+    # Both protected ids omitted, which is exactly what a lossy re-serialize of a research
+    # turn can produce.
+    _route_sync(
+        [
+            {
+                "id": "root",
+                "threadId": "thread-1",
+                "parentId": None,
+                "role": "user",
+                "content": [{"type": "text", "text": "root"}],
+                "createdAt": 1,
+            }
+        ],
+        prune_missing = True,
+    )
+
+    assert studio_db.get_chat_message("thread-1", "user-1")["parentId"] == "root"
+    assert studio_db.get_chat_message("thread-1", "assistant-1")["parentId"] == "user-1"
+    assert _thread_imports_cleanly()
+
+
+def _ancestor_and_research_prompt() -> None:
+    """`ancestor -> user-1`, with the pair claimed by a run. `ancestor` is prunable."""
+    studio_db.upsert_chat_message(
+        {
+            "id": "ancestor",
+            "threadId": "thread-1",
+            "parentId": None,
+            "role": "user",
+            "content": [{"type": "text", "text": "ancestor"}],
+            "createdAt": 1,
+        }
+    )
+    _create()
+    studio_db.upsert_chat_message(
+        {
+            "id": "user-1",
+            "threadId": "thread-1",
+            "parentId": "ancestor",
+            "role": "user",
+            "content": [{"type": "text", "text": "What changed?"}],
+            "createdAt": 3,
+        },
+        allow_research_update = True,
+    )
+
+
+def test_an_authorized_sync_still_reseats_a_research_row_it_omits(research_home):
+    # allow_research_update empties `protected`, but the delete exempts research rows either
+    # way. An omitted research row therefore survives with a parent the same batch deleted,
+    # so the reseat has to be derived from the research ids, not from `protected`.
+    _ancestor_and_research_prompt()
+
+    studio_db.sync_chat_messages("thread-1", [], prune_missing = True, allow_research_update = True)
+
+    assert studio_db.get_chat_message("thread-1", "ancestor") is None
+    assert studio_db.get_chat_message("thread-1", "user-1")["parentId"] is None
+    assert _thread_imports_cleanly()
+
+
+def test_an_authorized_reparent_of_a_research_row_is_not_overwritten(research_home):
+    # The other half: when the batch carries the research row, that write is authorized and
+    # the repair must not clobber it, even though the row's stored parent is being pruned.
+    _ancestor_and_research_prompt()
+    studio_db.upsert_chat_message(
+        {
+            "id": "keeper",
+            "threadId": "thread-1",
+            "parentId": None,
+            "role": "user",
+            "content": [{"type": "text", "text": "keeper"}],
+            "createdAt": 2,
+        }
+    )
+
+    studio_db.sync_chat_messages(
+        "thread-1",
+        [
+            {
+                "id": "keeper",
+                "threadId": "thread-1",
+                "parentId": None,
+                "role": "user",
+                "content": [{"type": "text", "text": "keeper"}],
+                "createdAt": 2,
+            },
+            {
+                "id": "user-1",
+                "threadId": "thread-1",
+                "parentId": "keeper",
+                "role": "user",
+                "content": [{"type": "text", "text": "What changed?"}],
+                "createdAt": 3,
+            },
+        ],
+        prune_missing = True,
+        allow_research_update = True,
+    )
+
+    assert studio_db.get_chat_message("thread-1", "ancestor") is None
+    assert studio_db.get_chat_message("thread-1", "user-1")["parentId"] == "keeper"
+    assert _thread_imports_cleanly()
