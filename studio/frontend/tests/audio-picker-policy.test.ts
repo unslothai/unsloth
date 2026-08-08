@@ -189,6 +189,7 @@ test("community ASR only offers checkpoints the Transformers Whisper sidecar can
   assert.equal(
     communityAudioRowIsRunnable({
       isStt: true,
+      isTts: false,
       isGguf: false,
       id: "openai/whisper-large-v3",
       tags: ["transformers", "whisper", "automatic-speech-recognition"],
@@ -199,6 +200,18 @@ test("community ASR only offers checkpoints the Transformers Whisper sidecar can
   assert.equal(
     communityAudioRowIsRunnable({
       isStt: true,
+      isTts: false,
+      isGguf: false,
+      id: "community/speech-finetune",
+      tags: ["whisper"],
+      libraryName: "transformers",
+    }),
+    true,
+  );
+  assert.equal(
+    communityAudioRowIsRunnable({
+      isStt: true,
+      isTts: false,
       isGguf: false,
       id: "nvidia/parakeet-tdt-0.6b-v2",
       tags: ["automatic-speech-recognition"],
@@ -209,18 +222,60 @@ test("community ASR only offers checkpoints the Transformers Whisper sidecar can
   assert.equal(
     communityAudioRowIsRunnable({
       isStt: true,
+      isTts: false,
       isGguf: true,
       id: "community/whisper-GGUF",
     }),
     false,
   );
+  for (const id of [
+    "canopylabs/orpheus-3b-0.1-ft",
+    "sesame/csm-1b",
+    "SparkAudio/Spark-TTS-0.5B",
+    "OuteAI/Llama-OuteTTS-1.0-1B",
+    "HKUSTAudio/Llasa-1B",
+  ]) {
+    assert.equal(
+      communityAudioRowIsRunnable({
+        isStt: false,
+        isTts: true,
+        isGguf: false,
+        id,
+      }),
+      true,
+    );
+  }
+  for (const id of [
+    "suno/bark",
+    "microsoft/speecht5_tts",
+    "facebook/mms-tts-eng",
+    "hexgrad/Kokoro-82M",
+  ]) {
+    assert.equal(
+      communityAudioRowIsRunnable({
+        isStt: false,
+        isTts: true,
+        isGguf: false,
+        id,
+      }),
+      false,
+    );
+  }
   assert.equal(
     communityAudioRowIsRunnable({
       isStt: false,
-      isGguf: false,
-      id: "hexgrad/Kokoro-82M",
+      isTts: true,
+      isGguf: true,
+      id: "community/csm-1b-GGUF",
     }),
-    true,
+    false,
+  );
+});
+
+test("cached community Whisper survives the narrow Audio on-device trust gate", () => {
+  assert.match(
+    pickerSource,
+    /c\.task === "automatic-speech-recognition"[\s\S]*communityAudioRowIsRunnable\(\{[\s\S]*isStt: true,[\s\S]*id: c\.repo_id,[\s\S]*tags: c\.tags,[\s\S]*libraryName: c\.library_name/,
   );
 });
 

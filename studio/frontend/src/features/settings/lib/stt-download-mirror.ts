@@ -149,7 +149,7 @@ export function isTrackingSttDownload(
   model: SttModel,
   engine?: SttEngine,
 ): boolean {
-  return trackers.has(trackerKey(model, engine));
+  return trackers.has(trackerKey(model, engine ?? sttEngineFor(model)));
 }
 
 /**
@@ -164,10 +164,8 @@ export function trackSttDownload(
     repoId?: string;
   } = {},
 ): void {
-  const explicitEngine =
-    options.engine === "transformers" ? undefined : options.engine;
-  const resolvedEngine = explicitEngine ?? sttEngineFor(model);
-  const key = trackerKey(model, explicitEngine);
+  const resolvedEngine = options.engine ?? sttEngineFor(model);
+  const key = trackerKey(model, resolvedEngine);
   // Starting/adopting the same transfer from another surface must not reset
   // its visible progress or replace its poller/completion policy.
   if (trackers.has(key)) {
@@ -180,7 +178,7 @@ export function trackSttDownload(
     options.warmSelectedVoiceModelOnComplete ?? true,
   );
   startExternalJob({
-    key: jobKey(model, explicitEngine),
+    key: jobKey(model, resolvedEngine),
     repoId: options.repoId ?? getSttModelRepo(model),
     variant: sttModelName(model),
     expectedBytes: 0,
@@ -200,8 +198,8 @@ export function trackSttDownload(
   });
   const startedAt = Date.now();
   const timer = window.setInterval(() => {
-    void poll(model, startedAt, explicitEngine);
+    void poll(model, startedAt, resolvedEngine);
   }, POLL_MS);
   trackers.start(key, () => window.clearInterval(timer));
-  void poll(model, startedAt, explicitEngine);
+  void poll(model, startedAt, resolvedEngine);
 }

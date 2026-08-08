@@ -50,6 +50,8 @@ function toCachedModelRepo(row: CachedInventoryRow): CachedModelRepo {
     size_bytes: row.bytes,
     last_modified: row.lastModified ?? undefined,
     task: row.task ?? null,
+    tags: row.tags,
+    library_name: row.libraryName,
     // Carried through: the diffusion picker drops single-file checkpoint repos (loading one as a pipeline fails after the handoff), and undefined reads as "full pipeline".
     single_file: row.singleFile ?? false,
   };

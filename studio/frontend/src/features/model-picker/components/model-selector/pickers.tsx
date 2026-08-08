@@ -2462,9 +2462,11 @@ export function HubModelPicker({
       const isStt = Boolean(
         task && taskMatchesFilter("automatic-speech-recognition", task),
       );
+      const isTts = Boolean(task && taskMatchesFilter("text-to-speech", task));
       return (
         communityAudioRowIsRunnable({
           isStt,
+          isTts,
           isGguf: result.isGguf,
           id: result.id,
           baseModel: result.baseModel,
@@ -2473,7 +2475,7 @@ export function HubModelPicker({
         }) &&
         macTtsHubRowIsRunnable({
           isMac,
-          isTts: Boolean(task && taskMatchesFilter("text-to-speech", task)),
+          isTts,
           isGguf: result.isGguf,
           hasRunnableGgufSibling: Boolean(
             catalog &&
@@ -2835,6 +2837,15 @@ export function HubModelPicker({
             // An unsloth repo must also be a full pipeline: the fall-through loads uncataloged rows as "pipeline", and from_pretrained on a single-file checkpoint repo fails. Curated single-file artifacts stay, since loadSpecFor carries their filename.
             (!task ||
               (isUnslothRepoId(c.repo_id) && !c.single_file) ||
+              (c.task === "automatic-speech-recognition" &&
+                communityAudioRowIsRunnable({
+                  isStt: true,
+                  isTts: false,
+                  isGguf: false,
+                  id: c.repo_id,
+                  tags: c.tags,
+                  libraryName: c.library_name,
+                })) ||
               (catalog
                 ? artifactForRepoId(c.repo_id, catalog) !== null
                 : false)),

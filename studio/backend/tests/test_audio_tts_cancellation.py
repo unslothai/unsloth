@@ -141,6 +141,14 @@ def test_audio_response_cancellation_signals_worker_and_drains_terminal_response
     assert orchestrator._executing_cancel_events == []
 
 
+def test_audio_generation_timeout_scales_with_requested_tokens(monkeypatch):
+    monkeypatch.setattr(orchestrator_module, "_AUDIO_GENERATION_TIMEOUT", 10.0)
+
+    assert orchestrator_module._audio_generation_timeout(512) == 10.0
+    assert orchestrator_module._audio_generation_timeout(2048) == 10.0
+    assert orchestrator_module._audio_generation_timeout(8192) == 40.0
+
+
 def test_audio_response_timeout_cancels_and_drains_before_releasing(monkeypatch):
     orchestrator = _bare_orchestrator()
     orchestrator._resp_queue = queue.Queue()

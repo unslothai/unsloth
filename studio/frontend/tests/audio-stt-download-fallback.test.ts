@@ -54,14 +54,14 @@ test("hidden STT preparation resumes once only for the same selected repo", () =
   );
 });
 
-test("default Transformers transfers share one tracker identity", () => {
+test("resolved Transformers transfers share one tracker identity", () => {
   assert.match(
     mirrorSource,
     /engine && engine !== "transformers" \? `\$\{engine\}:\$\{model\}` : model/,
   );
   assert.match(
     mirrorSource,
-    /options\.engine === "transformers" \? undefined : options\.engine/,
+    /const resolvedEngine = options\.engine \?\? sttEngineFor\(model\);[\s\S]*trackerKey\(model, resolvedEngine\)/,
   );
   assert.match(
     mirrorSource,

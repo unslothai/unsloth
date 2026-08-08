@@ -285,6 +285,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   activeRef.current = active;
   const modeRef = useRef(mode);
   modeRef.current = mode;
+  const sttStatusRefreshGeneration = useRef(0);
   const sttLoadGeneration = useRef(0);
   const sttLoadingGeneration = useRef<number | null>(null);
   const deferredSttLoad = useRef<{
@@ -355,6 +356,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   }, []);
 
   const refreshSttStatus = useCallback(async () => {
+    const generation = ++sttStatusRefreshGeneration.current;
     try {
       const selectedRepo = selectedSttRepoRef.current;
       const selectedKey = selectedRepo ? sttSidecarKeyFor(selectedRepo) : null;
@@ -367,6 +369,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           ? (selectedKey ?? undefined)
           : undefined,
       );
+      if (generation !== sttStatusRefreshGeneration.current) return;
       const nextDownloadedArtifacts = sttDownloadedArtifacts(
         stt,
         sttRepoIdForSidecarKey,
@@ -411,6 +414,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       selectedSttRepoRef.current = reconciled;
       setSelectedSttRepo(reconciled);
     } catch {
+      if (generation !== sttStatusRefreshGeneration.current) return;
       setSttLoadedModel(null);
       setSttLoadedEngine(null);
     }
@@ -1318,13 +1322,13 @@ export function AudioPage({ active = true }: { active?: boolean }) {
 
   /** Download from a history row, whose bytes are only fetched once selected. */
   const handleDownloadClipById = useCallback(async (clip: AudioGalleryClip) => {
+    let temporaryUrl: string | null = null;
     try {
       let src = galleryCache.srcById.get(clip.id);
       if (!src) {
         const fetched = await fetchClipObjectUrl(clip.url);
-        galleryCache.srcById.set(clip.id, fetched.url, fetched.bytes);
-        setSrcById(galleryCache.srcById.toRecord());
         src = fetched.url;
+        temporaryUrl = fetched.url;
       }
       const anchor = document.createElement("a");
       anchor.href = src;
@@ -1332,6 +1336,14 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       anchor.click();
     } catch {
       toast.error("Could not download the clip.");
+    } finally {
+      // A history-row download does not need to become resident playback state.
+      // Revoke it after the browser has consumed the synthetic click instead of
+      // bypassing the persistent gallery cache's 64 MB budget.
+      if (temporaryUrl) {
+        const url = temporaryUrl;
+        window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      }
     }
   }, []);
 

@@ -61,11 +61,18 @@ _DISPATCH_IDLE_TIMEOUT = 30.0
 _DISPATCH_DRAIN_TIMEOUT = 5.0
 
 _AUDIO_GENERATION_TIMEOUT = 120.0
+_AUDIO_GENERATION_BASE_TOKENS = 2048
 _AUDIO_CANCEL_DRAIN_TIMEOUT = 5.0
 
 # Max wait for a cancelled generation to release _gen_lock before unload_model
 # tears the subprocess down. Only bounds a wedged worker.
 _UNLOAD_GEN_LOCK_TIMEOUT = 15.0
+
+
+def _audio_generation_timeout(max_new_tokens: int) -> float:
+    """Keep the existing floor, but give longer requested audio room to finish."""
+    token_scale = max(1.0, float(max_new_tokens) / _AUDIO_GENERATION_BASE_TOKENS)
+    return _AUDIO_GENERATION_TIMEOUT * token_scale
 
 
 _MLX_RUNTIME_MIRROR_FIELDS = (
@@ -2086,7 +2093,8 @@ class InferenceOrchestrator:
                         self._claim_worker(cancel_event)
                         self._send_cmd(cmd)
 
-                    deadline = time.monotonic() + _AUDIO_GENERATION_TIMEOUT
+                    generation_timeout = _audio_generation_timeout(max_new_tokens)
+                    deadline = time.monotonic() + generation_timeout
                     cancel_signalled = False
                     worker_started = False
                     while time.monotonic() < deadline:
@@ -2152,7 +2160,7 @@ class InferenceOrchestrator:
                     if not _drain(timeout = _AUDIO_CANCEL_DRAIN_TIMEOUT):
                         self._shutdown_subprocess(timeout = _AUDIO_CANCEL_DRAIN_TIMEOUT)
                     raise RuntimeError(
-                        f"Timeout waiting for audio generation ({_AUDIO_GENERATION_TIMEOUT:g}s)"
+                        f"Timeout waiting for audio generation ({generation_timeout:g}s)"
                     )
                 finally:
                     self._release_worker(cancel_event)

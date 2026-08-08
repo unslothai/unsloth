@@ -16,7 +16,7 @@ const source = readFileSync(
 test("an adopted STT transfer keeps progress and merges its Voice owner", () => {
   assert.match(
     source,
-    /const key = trackerKey\(model, explicitEngine\);[\s\S]*if \(trackers\.has\(key\)\) \{[\s\S]*warmSelectedVoiceModelOnComplete\.set\(key, true\);[\s\S]*return;[\s\S]*\}/,
+    /const resolvedEngine = options\.engine \?\? sttEngineFor\(model\);[\s\S]*const key = trackerKey\(model, resolvedEngine\);[\s\S]*if \(trackers\.has\(key\)\) \{[\s\S]*warmSelectedVoiceModelOnComplete\.set\(key, true\);[\s\S]*return;[\s\S]*\}/,
   );
 });
 
@@ -38,4 +38,17 @@ test("non-default STT engines have independent jobs", () => {
     /engine === undefined \|\| engine === "transformers" \? model : undefined/,
   );
   assert.match(source, /sttEngineStatusFor\(status, model, engine\)/);
+});
+
+test("an explicit Transformers transfer keeps its serving engine", () => {
+  assert.match(
+    source,
+    /const resolvedEngine = options\.engine \?\? sttEngineFor\(model\)/,
+  );
+  assert.match(source, /cancelSttDownload\(model, resolvedEngine\)/);
+  assert.match(source, /poll\(model, startedAt, resolvedEngine\)/);
+  assert.doesNotMatch(
+    source,
+    /options\.engine === "transformers" \? undefined/,
+  );
 });

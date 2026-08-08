@@ -281,3 +281,21 @@ test("Audio transcription uses backend language auto-detection", () => {
     /transcribeAudioBlob\(blob, \{[\s\S]*model: key,[\s\S]*engine,[\s\S]*language: ""/,
   );
 });
+
+test("older STT status requests cannot overwrite newer residency", () => {
+  assert.match(
+    audioPageSource,
+    /const generation = \+\+sttStatusRefreshGeneration\.current;[\s\S]*await fetchSttStatus[\s\S]*generation !== sttStatusRefreshGeneration\.current\) return;[\s\S]*catch \{[\s\S]*generation !== sttStatusRefreshGeneration\.current\) return;/,
+  );
+});
+
+test("history-only downloads revoke their temporary blob URL", () => {
+  assert.match(
+    audioPageSource,
+    /handleDownloadClipById[\s\S]*temporaryUrl = fetched\.url;[\s\S]*anchor\.click\(\);[\s\S]*URL\.revokeObjectURL\(url\)/,
+  );
+  assert.doesNotMatch(
+    audioPageSource,
+    /handleDownloadClipById[\s\S]{0,500}galleryCache\.srcById\.set/,
+  );
+});

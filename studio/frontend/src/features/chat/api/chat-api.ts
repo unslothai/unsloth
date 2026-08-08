@@ -43,9 +43,9 @@ export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 export const CHAT_PROJECTS_UPDATED_EVENT = "unsloth-chat-projects-updated";
 
 /**
-* Thrown when the chat SSE stream ends without a terminal signal (`[DONE]` or a finish_reason
-* chunk): the connection dropped mid-generation, surfaced as an explicit interrupted state.
-*/
+ * Thrown when the chat SSE stream ends without a terminal signal (`[DONE]` or a finish_reason
+ * chunk): the connection dropped mid-generation, surfaced as an explicit interrupted state.
+ */
 export class StreamInterruptedError extends Error {
   constructor() {
     super(
@@ -57,9 +57,9 @@ export class StreamInterruptedError extends Error {
 }
 
 /**
-* Thrown when a reasoning model consumes its output budget before emitting any standard
-* content, so the chat UI can explain a completed stream holding only a thinking panel.
-*/
+ * Thrown when a reasoning model consumes its output budget before emitting any standard
+ * content, so the chat UI can explain a completed stream holding only a thinking panel.
+ */
 export class GenerationLengthError extends Error {
   constructor() {
     super(
@@ -95,24 +95,32 @@ function parseErrorText(status: number, body: unknown): string {
 }
 
 /**
-* `/api/inference/load` and `/unload` pad their body so a proxy cannot time the request out,
-* which commits the status early: a later failure can only arrive in-band as `_deferred_error`.
-*/
-function deferredError(body: unknown): { status: number; message: string } | null {
+ * `/api/inference/load` and `/unload` pad their body so a proxy cannot time the request out,
+ * which commits the status early: a later failure can only arrive in-band as `_deferred_error`.
+ */
+function deferredError(
+  body: unknown,
+): { status: number; message: string } | null {
   const deferred =
     body && typeof body === "object"
-      ? (body as { _deferred_error?: { status_code?: unknown; detail?: unknown } })
-          ._deferred_error
+      ? (
+          body as {
+            _deferred_error?: { status_code?: unknown; detail?: unknown };
+          }
+        )._deferred_error
       : undefined;
   if (!deferred || typeof deferred !== "object") return null;
   const status =
     typeof deferred.status_code === "number" ? deferred.status_code : 500;
-  return { status, message: parseErrorText(status, { detail: deferred.detail }) };
+  return {
+    status,
+    message: parseErrorText(status, { detail: deferred.detail }),
+  };
 }
 
 /**
-* `paddedLabel` opts a caller into `assertCompletedPaddedBody`; only the two padded routes may,
-* since a truncated body means unfinished there but is legitimate elsewhere. */
+ * `paddedLabel` opts a caller into `assertCompletedPaddedBody`; only the two padded routes may,
+ * since a truncated body means unfinished there but is legitimate elsewhere. */
 async function parseJsonOrThrow<T>(
   response: Response,
   paddedLabel?: string,
@@ -182,9 +190,9 @@ export interface ActiveGenerationsResponse {
 }
 
 /**
-* Chats generating on the backend right now. Authoritative where `runningByThreadId` is not:
-* that map is per-tab, empty after a reload and blind to a second tab, and /load 409s on these.
-*/
+ * Chats generating on the backend right now. Authoritative where `runningByThreadId` is not:
+ * that map is per-tab, empty after a reload and blind to a second tab, and /load 409s on these.
+ */
 export async function getActiveGenerations(): Promise<ActiveGenerationsResponse> {
   const response = await authFetch("/api/inference/active-generations");
   return parseJsonOrThrow<ActiveGenerationsResponse>(response);
@@ -273,11 +281,11 @@ export async function validateModel(
 }
 
 /**
-* Read a GGUF's header dims (native context length, layer count, MoE expert-layer count) from
-* its local file (no GPU load, no download). All null when the file isn't downloaded, isn't a
-* GGUF, or is gated. For a native (drag-drop) file, pass `nativePathToken`. Used by the
-* deferred-load staging flow to size the context, GPU-layers and MoE sliders before the load.
-*/
+ * Read a GGUF's header dims (native context length, layer count, MoE expert-layer count) from
+ * its local file (no GPU load, no download). All null when the file isn't downloaded, isn't a
+ * GGUF, or is gated. For a native (drag-drop) file, pass `nativePathToken`. Used by the
+ * deferred-load staging flow to size the context, GPU-layers and MoE sliders before the load.
+ */
 export async function fetchGgufStagedMetadata(payload: {
   model_path: string;
   gguf_variant?: string | null;
@@ -341,10 +349,10 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
 }
 
 /**
-* Allow or deny a tool call paused awaiting user confirmation. Identified by the backend
-* ``approvalId`` echoed in the tool_start event; ``sessionId`` is a scope check. Resolves to
-* ``true`` only when the backend matched a pending call, so a stale post can offer a retry.
-*/
+ * Allow or deny a tool call paused awaiting user confirmation. Identified by the backend
+ * ``approvalId`` echoed in the tool_start event; ``sessionId`` is a scope check. Resolves to
+ * ``true`` only when the backend matched a pending call, so a stale post can offer a retry.
+ */
 export async function resolveToolConfirmation(
   sessionId: string,
   approvalId: string,
@@ -419,8 +427,8 @@ export interface DownloadProgressResponse {
   expected_bytes: number;
   progress: number;
   /**
-  * On-disk path of the snapshot dir (or cache repo root if no snapshot yet); null when
-  * nothing has been written to the cache for this repo. */
+   * On-disk path of the snapshot dir (or cache repo root if no snapshot yet); null when
+   * nothing has been written to the cache for this repo. */
   cache_path: string | null;
 }
 
@@ -446,8 +454,8 @@ export type ModelLoadPhase = "mmap" | "ready" | null;
 
 export interface LoadProgressResponse {
   /**
-  * Load phase: "mmap" while llama-server pages weight shards into RAM, "ready" once
-  * healthy, or null when no load is in flight. */
+   * Load phase: "mmap" while llama-server pages weight shards into RAM, "ready" once
+   * healthy, or null when no load is in flight. */
   phase: ModelLoadPhase;
   bytes_loaded: number;
   bytes_total: number;
@@ -455,9 +463,9 @@ export interface LoadProgressResponse {
 }
 
 /**
-* Fetch the active GGUF load's mmap/upload progress. Complements the download progress
-* endpoints for the "download complete" -> "chat ready" window, minutes for large MoE models.
-*/
+ * Fetch the active GGUF load's mmap/upload progress. Complements the download progress
+ * endpoints for the "download complete" -> "chat ready" window, minutes for large MoE models.
+ */
 export async function getLoadProgress(): Promise<LoadProgressResponse> {
   const response = await authFetch(`/api/inference/load-progress`);
   return parseJsonOrThrow(response);
@@ -519,6 +527,8 @@ export interface CachedModelRepo {
    * cache. Optional for older-backend compatibility. */
   cache_path?: string | null;
   capabilities?: CachedRepoCapabilities | null;
+  tags?: string[];
+  library_name?: string | null;
 }
 
 export async function listCachedModels(
@@ -873,8 +883,8 @@ export async function listChatMessages(
 }
 
 /**
-* Fetch messages for many threads in one HTTP call. Falls back to per-thread
-* listChatMessages on 404/405 (older servers without the batch route). */
+ * Fetch messages for many threads in one HTTP call. Falls back to per-thread
+ * listChatMessages on 404/405 (older servers without the batch route). */
 export async function batchListChatMessages(
   threadIds: string[],
 ): Promise<Map<string, MessageRecord[]>> {

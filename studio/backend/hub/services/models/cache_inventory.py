@@ -907,6 +907,11 @@ def _scan_cached_models() -> list[dict]:
                 )
                 if is_whisper_stt:
                     local_metadata["pipeline_tag"] = "automatic-speech-recognition"
+                    local_metadata["library_name"] = "transformers"
+                    tags = list(local_metadata.get("tags", []))
+                    if not any(tag.lower() == "whisper" for tag in tags):
+                        tags.append("whisper")
+                    local_metadata["tags"] = tags
                 row = {
                     "repo_id": repo_id,
                     "size_bytes": payload.size_bytes,

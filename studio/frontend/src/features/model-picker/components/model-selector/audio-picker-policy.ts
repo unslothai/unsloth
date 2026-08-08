@@ -25,6 +25,7 @@ export function shouldRecommendCommunityModels(
  * uncurated row must therefore identify a non-GGUF Whisper checkpoint. */
 export function communityAudioRowIsRunnable({
   isStt,
+  isTts,
   isGguf,
   id,
   baseModel,
@@ -32,24 +33,37 @@ export function communityAudioRowIsRunnable({
   libraryName,
 }: {
   isStt: boolean;
+  isTts: boolean;
   isGguf: boolean;
   id: string;
   baseModel?: string | null;
   tags?: readonly string[] | null;
   libraryName?: string | null;
 }): boolean {
-  if (!isStt) {
+  if (!isStt && !isTts) {
     return true;
   }
-  if (isGguf) {
-    return false;
-  }
-  if (libraryName && libraryName.toLowerCase() !== "transformers") {
-    return false;
-  }
-  return [id, baseModel ?? "", ...(tags ?? [])].some((value) =>
-    value.toLowerCase().includes("whisper"),
+  const evidence = [id, baseModel ?? "", ...(tags ?? [])].map((value) =>
+    value.toLowerCase(),
   );
+  if (isStt) {
+    if (isGguf) return false;
+    if (libraryName && libraryName.toLowerCase() !== "transformers")
+      return false;
+    return evidence.some((value) => value.includes("whisper"));
+  }
+
+  // The main-slot TTS backend decodes only the four codec families below.
+  // Hub's text-to-speech tag also covers Bark, VITS, SpeechT5, and many other
+  // architectures that can load as language models but cannot emit a WAV here.
+  const family = evidence.find((value) =>
+    /(?:^|[-_./])(orpheus|csm|spark-?tts|outetts|oute-?tts|llasa)(?:$|[-_./])/.test(
+      value,
+    ),
+  );
+  if (!family) return false;
+  // llama.cpp intentionally has no CSM decoder; CSM is Transformers-only.
+  return !(isGguf && /(?:^|[-_./])csm(?:$|[-_./])/.test(family));
 }
 
 /** The macOS audio runtime can execute TTS only through llama.cpp GGUF. Curated
