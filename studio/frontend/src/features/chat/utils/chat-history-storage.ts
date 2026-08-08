@@ -568,10 +568,40 @@ export async function ensureStoredChatThread(
   return importLegacyThread(legacyThread).catch(() => legacyThread);
 }
 
+// authFetch sets no timeout, so a wedged request would block a delete or a clear
+// for as long as the browser takes to give up. Bounded instead: the tombstone the
+// delete writes masks a row that lands late, and the next delete removes it.
+const THREAD_RECORD_DRAIN_TIMEOUT_MS = 5000;
+
+/** Resolve when `promise` settles, or after `ms`, whichever comes first. */
+function settleWithin(promise: Promise<unknown>, ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, Math.max(ms, 0));
+    const finish = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    promise.then(finish, finish);
+  });
+}
+
+/** Wait for a thread's row write, bounded, so a wedged request cannot stall a delete. */
+function awaitStoredChatThreadRecordBounded(threadId: string): Promise<void> {
+  return settleWithin(
+    awaitStoredChatThreadRecord(threadId),
+    THREAD_RECORD_DRAIN_TIMEOUT_MS,
+  );
+}
+
 /** Wait for every tracked row write, so a clear cannot race one that is still in flight. */
 async function drainPendingStoredChatThreadRecords(): Promise<void> {
-  while (pendingThreadRecordByThreadId.size > 0) {
-    await Promise.allSettled([...pendingThreadRecordByThreadId.values()]);
+  const deadline = Date.now() + THREAD_RECORD_DRAIN_TIMEOUT_MS;
+  // A write that never settles must not turn "clear all chats" into a hang.
+  while (pendingThreadRecordByThreadId.size > 0 && Date.now() < deadline) {
+    await settleWithin(
+      Promise.allSettled([...pendingThreadRecordByThreadId.values()]),
+      deadline - Date.now(),
+    );
   }
   // Retrying one of these later would recreate a thread the clear just removed.
   failedThreadRecordByThreadId.clear();
@@ -846,12 +876,9 @@ export async function deleteStoredChatThreads(
   // event it would fire) when the active temporary chat is closed.
   const ids = idsToDelete.filter((id) => !isThreadIncognito(id));
   if (ids.length === 0) return;
-  // A row write already in flight would land after the delete and resurrect the thread.
-  await Promise.all(
-    ids.map((id) =>
-      awaitStoredChatThreadRecord(id).catch(() => undefined),
-    ),
-  );
+  // A row write already in flight would land after the delete and resurrect the
+  // thread. Bounded: a wedged request must not leave the user unable to delete.
+  await Promise.all(ids.map((id) => awaitStoredChatThreadRecordBounded(id)));
   await deleteChatThreads(ids);
   await db
     .transaction("rw", db.threads, db.messages, async () => {
