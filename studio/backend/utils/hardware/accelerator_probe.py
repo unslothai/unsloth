@@ -293,17 +293,41 @@ def _device_type() -> str:
     return os.environ.get("UNSLOTH_PROBE_DEVICE_TYPE", "cuda").strip().lower() or "cuda"
 
 
-def _load_bnb_availability():
-    """``unsloth.bnb_availability`` loaded standalone, or None when it cannot be found."""
+def _bnb_availability_path():
+    """Where ``unsloth/bnb_availability.py`` lives, or None.
+
+    Two ways of asking, because either can come up empty. ``find_spec`` is the right answer
+    for an INSTALLED unsloth, but it needs the package to be importable from this child --
+    which it is not when the backend runs from a checkout whose root is not on the child's
+    path, and the probe then silently reported bitsandbytes as unknown on every host. This
+    file's own location settles that case: studio/backend/utils/hardware -> repo root.
+    """
+    candidates = []
     try:
         import importlib.util
 
         spec = importlib.util.find_spec("unsloth")
         origin = getattr(spec, "origin", None) if spec is not None else None
-        if not origin:
-            return None
-        path = os.path.join(os.path.dirname(origin), "bnb_availability.py")
-        if not os.path.isfile(path):
+        if origin:
+            candidates.append(os.path.join(os.path.dirname(origin), "bnb_availability.py"))
+    except BaseException:  # noqa: BLE001 -- an unimportable unsloth is not an error here
+        pass
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.abspath(os.path.join(here, "..", "..", "..", ".."))
+    candidates.append(os.path.join(root, "unsloth", "bnb_availability.py"))
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _load_bnb_availability():
+    """``unsloth.bnb_availability`` loaded standalone, or None when it cannot be found."""
+    try:
+        import importlib.util
+
+        path = _bnb_availability_path()
+        if path is None:
             return None
         leaf = importlib.util.spec_from_file_location("_unsloth_bnb_availability", path)
         if leaf is None or leaf.loader is None:
