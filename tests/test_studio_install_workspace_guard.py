@@ -657,10 +657,8 @@ def test_install_sh_publishes_the_id_without_clobbering():
     assert (
         'ln "$_css_id_tmp" "$_css_id_file"' in block
     ), "install.sh must publish the id with ln (EEXIST on a race), not a clobbering mv"
-    assert (
-        'mv "$_css_id_tmp" "$_css_id_file"' not in block.replace(
-            '[ -s "$_css_id_file" ] || mv "$_css_id_tmp" "$_css_id_file"', ""
-        )
+    assert 'mv "$_css_id_tmp" "$_css_id_file"' not in block.replace(
+        '[ -s "$_css_id_file" ] || mv "$_css_id_tmp" "$_css_id_file"', ""
     ), "the only remaining mv must be the no-hard-link fallback, guarded on the destination"
     assert (
         '[ -s "$_css_id_file" ] || mv' in block
@@ -685,7 +683,7 @@ def test_install_sh_id_publish_adopts_the_winner_of_a_race(tmp_path):
         'printf "%s" "$_css_new_id" > "$_css_id_tmp"\n'
         'if ! ln "$_css_id_tmp" "$_css_id_file" 2>/dev/null; then\n'
         '    [ -s "$_css_id_file" ] || mv "$_css_id_tmp" "$_css_id_file"\n'
-        'fi\n'
+        "fi\n"
         'rm -f "$_css_id_tmp"\n'
         'cat "$_css_id_file"\n'
     )
@@ -711,8 +709,8 @@ def test_install_ps1_publishes_the_id_without_clobbering():
         "catch [System.IO.IOException]" in block
     ), "install.ps1 must catch the destination-exists IOException"
     assert (
-        "$_studioRootId = ([System.IO.File]::ReadAllText($_studioIdFile)).Trim()" in
-        block[block.index("catch [System.IO.IOException]"):]
+        "$_studioRootId = ([System.IO.File]::ReadAllText($_studioIdFile)).Trim()"
+        in block[block.index("catch [System.IO.IOException]") :]
     ), "on a lost race install.ps1 must adopt the winner's id, since it never re-reads it later"
 
 
