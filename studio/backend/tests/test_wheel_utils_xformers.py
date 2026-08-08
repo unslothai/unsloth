@@ -1,0 +1,185 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""wheel_utils must resolve a CUDA-matched xFormers wheel, on Windows too.
+
+``linux_wheel_platform_tag`` returned None for Windows, so nothing in the backend could
+resolve a Windows wheel URL at all -- which is why the on-demand xFormers install fell
+back to an unpinned ``pip install xformers`` and landed the PyPI CUDA-12.8 build next to
+a cu130 torch.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+
+
+_BACKEND = Path(__file__).resolve().parent.parent
+if str(_BACKEND) not in sys.path:
+    sys.path.insert(0, str(_BACKEND))
+
+from utils import wheel_utils  # noqa: E402
+
+
+def _env(**overrides) -> dict[str, str]:
+    env = {
+        "python_tag": "cp313",
+        "torch_mm": "2.10",
+        "torch_version": "2.10.0+cu130",
+        "cuda_version": "13.0",
+        "cuda_major": "13",
+        "hip_version": "",
+        "cxx11abi": "TRUE",
+        "platform_tag": "win_amd64",
+    }
+    env.update(overrides)
+    return env
+
+
+class TestWheelPlatformTag:
+    def test_windows_x64_emits_win_amd64(self, monkeypatch):
+        monkeypatch.setattr(wheel_utils.sys, "platform", "win32")
+        monkeypatch.setattr(wheel_utils.platform, "machine", lambda: "AMD64")
+        assert wheel_utils.wheel_platform_tag() == "win_amd64"
+
+    def test_windows_on_arm_has_no_wheel(self, monkeypatch):
+        """No CUDA and no win_arm64 asset on any index -- must stay None."""
+        monkeypatch.setattr(wheel_utils.sys, "platform", "win32")
+        monkeypatch.setattr(wheel_utils.platform, "machine", lambda: "ARM64")
+        assert wheel_utils.wheel_platform_tag() is None
+
+    @pytest.mark.parametrize(
+        ("machine", "expected"),
+        [("x86_64", "linux_x86_64"), ("aarch64", "linux_aarch64")],
+    )
+    def test_linux_tags_are_unchanged(self, monkeypatch, machine, expected):
+        monkeypatch.setattr(wheel_utils.sys, "platform", "linux")
+        monkeypatch.setattr(wheel_utils.platform, "machine", lambda: machine)
+        assert wheel_utils.wheel_platform_tag() == expected
+
+    def test_macos_still_has_no_wheel(self, monkeypatch):
+        monkeypatch.setattr(wheel_utils.sys, "platform", "darwin")
+        monkeypatch.setattr(wheel_utils.platform, "machine", lambda: "arm64")
+        assert wheel_utils.wheel_platform_tag() is None
+
+    def test_probe_stays_linux_only_by_default(self, monkeypatch):
+        """flash-attn / causal-conv1d / mamba-ssm publish no win_amd64 assets, so the
+        existing callers must keep getting None on Windows even though the platform tag
+        now resolves. Guarded here because the probe shells out otherwise."""
+        monkeypatch.setattr(wheel_utils, "wheel_platform_tag", lambda: "win_amd64")
+        assert wheel_utils.probe_torch_wheel_env() is None
+        assert wheel_utils.probe_torch_wheel_env(timeout = 5) is None
+
+
+class TestXformersCudaFamily:
+    @pytest.mark.parametrize(
+        ("cuda_version", "expected"),
+        [
+            ("13.0", "cu130"),
+            ("12.8", "cu128"),
+            ("12.6", "cu126"),
+            ("12.9", "cu129"),
+            ("11.8", "cu118"),
+        ],
+    )
+    def test_maps_torch_cuda_to_the_index_leaf(self, cuda_version, expected):
+        assert wheel_utils.xformers_cuda_family(cuda_version) == expected
+
+    @pytest.mark.parametrize("value", ["", None, "rocm6.4", "abc"])
+    def test_non_cuda_builds_have_no_family(self, value):
+        assert wheel_utils.xformers_cuda_family(value) is None
+
+
+class TestXformersWheelUrl:
+    @pytest.mark.parametrize(
+        ("torch_version", "cuda_version", "expected_family", "expected_version"),
+        [
+            ("2.10.0+cu130", "13.0", "cu130", "0.0.34"),
+            ("2.10.0+cu128", "12.8", "cu128", "0.0.34"),
+            ("2.10.0+cu126", "12.6", "cu126", "0.0.34"),
+            ("2.9.1+cu130", "13.0", "cu130", "0.0.33.post2"),
+            ("2.9.0+cu128", "12.8", "cu128", "0.0.33.post1"),
+            ("2.8.0+cu129", "12.9", "cu129", "0.0.32.post2"),
+        ],
+    )
+    def test_windows_url_matches_the_resident_cuda_build(
+        self, torch_version, cuda_version, expected_family, expected_version
+    ):
+        url = wheel_utils.xformers_wheel_url(
+            _env(torch_version = torch_version, cuda_version = cuda_version)
+        )
+        assert url == (
+            f"https://download.pytorch.org/whl/{expected_family}"
+            f"/xformers-{expected_version}-cp39-abi3-win_amd64.whl"
+        )
+
+    def test_linux_keeps_its_own_platform_leaf(self):
+        url = wheel_utils.xformers_wheel_url(_env(platform_tag = "linux_x86_64"))
+        assert url == (
+            "https://download.pytorch.org/whl/cu130"
+            "/xformers-0.0.34-cp39-abi3-manylinux_2_28_x86_64.whl"
+        )
+
+    def test_pre_abi3_releases_use_the_interpreter_tag(self):
+        """0.0.30 and earlier publish one wheel per cpXY, not a single stable-ABI wheel."""
+        url = wheel_utils.xformers_wheel_url(
+            _env(
+                torch_version = "2.7.0+cu128",
+                cuda_version = "12.8",
+                python_tag = "cp312",
+                platform_tag = "linux_x86_64",
+            )
+        )
+        assert url == (
+            "https://download.pytorch.org/whl/cu128"
+            "/xformers-0.0.30-cp312-cp312-manylinux_2_28_x86_64.whl"
+        )
+
+    @pytest.mark.parametrize(
+        ("torch_version", "cuda_version", "why"),
+        [
+            ("2.8.0+cu130", "13.0", "no cu130 xFormers build exists for torch 2.8"),
+            ("2.9.0+cu118", "11.8", "cu118 publishes no win_amd64 xFormers wheel at all"),
+            ("2.10.0+cu124", "12.4", "cu124 stopped at xFormers 0.0.29"),
+            ("2.11.0+cu130", "13.0", "torch 2.11 has no xFormers wheel on any index"),
+            ("2.10.0.dev20260101+cu130", "13.0", "a nightly torch has no matching wheel"),
+            ("2.6.0+cu126", "12.6", "below the oldest row"),
+        ],
+    )
+    def test_unmatched_pairs_resolve_to_nothing(self, torch_version, cuda_version, why):
+        """The whole point: no match must mean "install nothing", never "install the
+        closest thing" -- a neighbouring CUDA family is exactly the reported bug."""
+        assert (
+            wheel_utils.xformers_wheel_url(
+                _env(torch_version = torch_version, cuda_version = cuda_version)
+            )
+            is None
+        ), why
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"cuda_version": "", "cuda_major": ""},  # CPU / ROCm torch
+            {"platform_tag": "linux_aarch64"},       # no aarch64 xFormers wheels
+            {"platform_tag": ""},
+            {"torch_version": ""},
+        ],
+    )
+    def test_missing_inputs_resolve_to_nothing(self, overrides):
+        assert wheel_utils.xformers_wheel_url(_env(**overrides)) is None
+
+    def test_none_env_is_tolerated(self):
+        assert wheel_utils.xformers_wheel_url(None) is None
+
+
+def test_flash_attn_resolution_is_untouched():
+    """direct_wheel_url / flash_attn_wheel_url share the env dict; the two new keys must
+    not change a single flash-attn URL."""
+    env = _env(platform_tag = "linux_x86_64", python_tag = "cp312", cuda_major = "12")
+    assert wheel_utils.flash_attn_wheel_url(env) == (
+        "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1"
+        "/flash_attn-2.8.1+cu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl"
+    )

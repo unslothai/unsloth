@@ -164,6 +164,26 @@ def test_windows_extra_documents_the_cuda_matched_route():
     assert "unsloth[cu128-torch2100]" in header
 
 
+def test_xformers_matrix_agrees_with_wheel_utils():
+    """One matrix, three consumers (pyproject, wheel_utils, install.ps1). Drift here is
+    exactly the bug: a runtime resolver that disagrees with the packaged pin."""
+    source = (
+        REPO_ROOT / "studio" / "backend" / "utils" / "wheel_utils.py"
+    ).read_text(encoding = "utf-8")
+    body = re.search(
+        r"_XFORMERS_WHEEL_VERSIONS[^=]*=\s*\{(.*?)^\}", source, re.DOTALL | re.MULTILINE
+    )
+    assert body, "could not find _XFORMERS_WHEEL_VERSIONS in wheel_utils.py"
+    for (family, torch_tag), version in XFORMERS_WHEEL_MATRIX.items():
+        release = f"{torch_tag[0]}.{torch_tag[1:-1]}.{torch_tag[-1]}"  # "2100" -> "2.10.0"
+        row = re.search(rf'^\s*"{re.escape(release)}":\s*\{{(.*?)\}}', body.group(1), re.MULTILINE)
+        assert row, f"wheel_utils has no row for torch {release}"
+        assert f'"{family}": "{version}"' in row.group(1), (
+            f"wheel_utils torch {release} row must map {family} -> {version}, got "
+            f"{row.group(1)!r}"
+        )
+
+
 def test_install_ps1_matrix_agrees_with_pyproject():
     source = (REPO_ROOT / "install.ps1").read_text(encoding = "utf-8")
     body = re.search(
