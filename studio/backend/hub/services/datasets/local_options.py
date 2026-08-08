@@ -80,7 +80,9 @@ def _keyword_patterns(bases: tuple[str, ...]) -> _KeywordPatterns:
 
 _DIR_NAME_SPLITS = _keyword_patterns(_DIR_NAME_KEYWORD_PATTERNS)
 _FILENAME_SPLITS = _keyword_patterns(_FILENAME_KEYWORD_PATTERNS)
-_SHARDED_DATA_RE = re.compile(r"^data/(?P<split>[^/]+)-[0-9]{5}-of-[0-9]{5}[^/]*\.[^/]+$")
+# The loader globs data/{split}-NNNNN-of-NNNNN*.*, and a * matches nothing as happily as
+# something, so an empty split or suffix still puts the sharded stage in charge.
+_SHARDED_DATA_RE = re.compile(r"^data/(?P<split>[^/]*)-[0-9]{5}-of-[0-9]{5}[^/]*\.[^/]*$")
 # datasets drops these by basename (FILES_TO_IGNORE) before it infers anything, so a
 # metadata-only cache is empty rather than a bogus train split.
 _IGNORED_DATA_FILENAMES = frozenset(
@@ -209,6 +211,10 @@ def _safe_data_dir(value: Any) -> Optional[str]:
     # Only a real traversal component escapes; a directory merely spelled release..v2 does not.
     if ".." in PurePosixPath(value).parts:
         return None
+    # The loader globs the string as written, so b// finds nothing while b does. Rewriting it
+    # would offer splits under a directory it never looks in.
+    if value and value != PurePosixPath(value).as_posix():
+        return None
     return value
 
 
@@ -232,6 +238,9 @@ def _valid_declared_data_files(entries: Any) -> bool:
 
 def _collapsed_configs(payload: Any) -> Any:
     """Declared configs keyed by name the way datasets keys them, or _UNPARSABLE_METADATA."""
+    if not payload:
+        # datasets reads the field only when it is truthy, so anything falsy is no configs.
+        return {}
     if not isinstance(payload, list):
         return _UNPARSABLE_METADATA
     # Every entry is checked, including past the cap: one unusable name anywhere makes
@@ -244,6 +253,13 @@ def _collapsed_configs(payload: Any) -> Any:
         if name is None:
             # datasets raises InvalidConfigName on these rather than skipping the config,
             # so nothing in the snapshot is loadable and inference must not step in.
+            return _UNPARSABLE_METADATA
+        features = item.get("features")
+        if features is not None and not (
+            isinstance(features, list) and all(isinstance(field, dict) for field in features)
+        ):
+            # datasets parses these into Features while it builds the configs, and anything
+            # it cannot read raises there rather than when the config is chosen.
             return _UNPARSABLE_METADATA
         entries = item.get("data_files")
         if not _valid_declared_data_files(entries):
@@ -264,11 +280,11 @@ def _declared_configs(payload: Any) -> Any:
     Only a config with no data_files field at all is inferred; an empty one resolves to
     nothing and raises.
     """
-    if payload is None or payload == []:
-        return {}
     collapsed = _collapsed_configs(payload)
     if collapsed is _UNPARSABLE_METADATA:
         return _UNPARSABLE_METADATA
+    if not collapsed:
+        return {}
     first = next(iter(collapsed.values()))
     if "data_files" in first and first["data_files"] is None:
         # datasets sanitizes the first config's declaration before it looks at a file, and a
@@ -505,6 +521,10 @@ def _snapshot_card_data(snapshot: Path) -> Any:
     if _snapshot_metadata_is_oversized(snapshot, _STANDALONE_YAML):
         return _UNPARSABLE_METADATA
     standalone = _snapshot_metadata_file(snapshot, _STANDALONE_YAML)
+    if standalone is None and (snapshot / _STANDALONE_YAML).exists():
+        # The loader tests os.path.exists and then opens it, so a directory here raises
+        # IsADirectoryError before it ever looks for data.
+        return _UNPARSABLE_METADATA
     if standalone is not None:
         try:
             from yaml import YAMLError, safe_load
@@ -733,6 +753,18 @@ def _declared_module(payload: Any) -> Optional[str]:
     return _paths_module(_declared_paths(next(iter(collapsed.values()))))
 
 
+def _unresolvable_configs(collapsed: dict[str, dict[str, Any]], files: Any) -> set[str]:
+    """Configs naming a literal file the snapshot does not hold. The loader resolves every
+    declared pattern and raises FileNotFoundError on the ones that match nothing."""
+    present = {path.as_posix() for path, _module in files or ()}
+    return {
+        name
+        for name, item in collapsed.items()
+        for path in _declared_paths(item)
+        if not any(character in path for character in "*?[") and path.strip("/") not in present
+    }
+
+
 def _mismatched_configs(payload: Any, required: str) -> set[str]:
     """Declared configs whose own files the settled builder could not read."""
     collapsed = _collapsed_configs(payload)
@@ -853,6 +885,12 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
             # error out. The singular one is an ignored data filename it never reads here.
             return set()
         if filename == "dataset_infos.json":
+            if not isinstance(payload, dict) or not all(
+                isinstance(entry, dict) for entry in payload.values()
+            ):
+                # The factory iterates this payload and builds a DatasetInfo per entry, so
+                # any other shape raises before a split could start.
+                return set()
             _add_dataset_info_options(options, payload)
         else:
             _add_info_options(options, payload)
@@ -864,11 +902,19 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
         if data_dir is not None and not any(existing == config for existing, _split in options)
     ]
     if declared_configs:
+        collapsed = _collapsed_configs(card_data.get("configs"))
+        if "" not in scans:
+            scans[""] = _snapshot_data_files(snapshot)
+        unresolvable = _unresolvable_configs(collapsed, scans[""])
+        if next(iter(collapsed)) in unresolvable:
+            # The first config is resolved before any module is chosen, so its missing file
+            # takes the whole snapshot down with it.
+            return set()
         required = _declared_module(card_data.get("configs")) or _snapshot_module(snapshot, scans)
         # One builder serves every config, so a config declaring another format is dead:
         # it either fails to generate or silently misreads its own files.
-        mismatched = _mismatched_configs(card_data.get("configs"), required)
-        options = {(config, split) for config, split in options if config not in mismatched}
+        dead = unresolvable | _mismatched_configs(card_data.get("configs"), required)
+        options = {(config, split) for config, split in options if config not in dead}
         if pending:
             options.update(_inferred_snapshot_options(snapshot, pending, required, scans))
     elif not options:

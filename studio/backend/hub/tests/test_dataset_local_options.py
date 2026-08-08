@@ -149,7 +149,8 @@ Dataset card.
     ] == [
         {"dataset": "", "config": "default", "split": "holdout"},
         {"dataset": "", "config": "card", "split": "train"},
-        {"dataset": "", "config": "implicit-list", "split": "train"},
+        # implicit-list names two literal parquet files that are not in the snapshot, and
+        # the loader raises FileNotFoundError resolving them.
         {"dataset": "", "config": "implicit-train", "split": "train"},
         {"dataset": "", "config": "legacy", "split": "test"},
         {"dataset": "", "config": "measured", "split": "validation"},
@@ -1161,3 +1162,68 @@ def test_snapshot_data_files_come_back_in_resolved_order(tmp_path):
     files = local_options._snapshot_data_files(snapshot)
     paths = [path.as_posix() for path, _module in files]
     assert paths == sorted(paths)
+
+
+@pytest.mark.parametrize("value", ["{}", "false", '""'])
+def test_snapshot_options_infer_past_a_falsy_configs_field(tmp_path, value):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, f"configs: {value}\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_reject_features_the_loader_cannot_parse(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features: oops\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+@pytest.mark.parametrize("payload", ["[]", '"x"', '{"default": 1}'])
+def test_snapshot_options_reject_a_legacy_dataset_infos_that_is_not_a_mapping(tmp_path, payload):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "dataset_infos.json").write_text(payload, encoding = "utf-8")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_first_config_whose_file_is_missing(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: a\n  data_files: missing.jsonl\n- config_name: b\n  data_dir: b\n")
+    (snapshot / "b").mkdir()
+    (snapshot / "b" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_data_dir_the_loader_would_not_normalise(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: b//\n")
+    (snapshot / "b").mkdir()
+    (snapshot / "b" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_standalone_yaml_that_is_a_directory(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    (snapshot / ".huggingface.yaml").mkdir(parents = True)
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+@pytest.mark.parametrize("name", ["foo-00000-of-00001.", "-00000-of-00001.jsonl"])
+def test_snapshot_options_let_an_empty_sharded_wildcard_take_the_stage(tmp_path, name):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    (snapshot / "data").mkdir(parents = True)
+    (snapshot / "data" / name).write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # The loader's * matches the empty component, so the sharded stage wins and then fails.
+    assert local_options._snapshot_options(snapshot) == set()
