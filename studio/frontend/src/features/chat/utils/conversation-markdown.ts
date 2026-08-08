@@ -55,18 +55,8 @@ const AUDIO_DATA_URI_PATTERN = /<audio-player\s+src="data:[^"]*"\s*\/>/g;
 // element would otherwise keep its opener, hand its closer to the entity, and
 // leave this block's own closer to the inner element, hiding every later turn.
 const DETAILS_TAG_PATTERN = /<(\/?)(details)((?:\s[^>]*)?)>/gi;
-// details is a condition 6 tag, so its markdown block ends at the blank line
-// between two turns, but the element the browser opened does not: an unmatched
-// opener collapses every later turn inside it. Counted rather than escaped,
-// because a matched details element is a disclosure widget the chat itself
-// renders and the transcript has to keep it. Ends the way the html tokenizer
-// ends a tag name, not the way DETAILS_TAG_PATTERN does: <details/> and a bare
-// <details at the end of a line both still open an element.
-const DETAILS_TAG_SCAN_PATTERN = /<(\/?)details(?=[\s/>]|$)/gi;
 // A code span is literal text, so a <!-- inside one opens nothing.
 const CODE_SPAN_PATTERN = /(`+)[^`]*\1/g;
-// Same for a comment: <!-- <details> --> opens nothing either.
-const CLOSED_COMMENT_PATTERN = /<!--[\s\S]*?-->/g;
 // Four spaces of indentation is an indented code block, so a fence or a raw
 // html block only starts within the first three columns. Splitting the
 // indentation off once keeps the opener's container context, which the
@@ -74,125 +64,459 @@ const CLOSED_COMMENT_PATTERN = /<!--[\s\S]*?-->/g;
 // [\s\S] rather than .: a line separator is an ordinary character to a
 // markdown parser, and . would drop the whole line here.
 const INDENT_PATTERN = /^( {0,3})([\s\S]*)$/;
-const FENCE_PATTERN = /^(`{3,}|~{3,})(.*)$/;
-const EOL_PATTERN = /\r\n|[\r\n]/;
+// Same [\s\S], and for the same reason: U+2028 in an info string is an
+// ordinary character to a markdown parser but a line terminator to a
+// JavaScript dot, so . misses the opener and leaves the fence unrepaired.
+const FENCE_PATTERN = /^(`{3,}|~{3,})([\s\S]*)$/;
+const EOL_PATTERN = /\r\n|[\r\n]/g;
+const BLANK_LINE_PATTERN = /^[ \t]*$/;
+const INDENTED_CODE_PATTERN = /^(?: {4}|\t)/;
+// A list marker or a block quote owns the indentation that follows it, so a
+// four-space line inside one is that container's content and not a code block.
+// Whether the message has such a marker at all is the test, because reading
+// prose as code would stop scanning text a viewer really does render as html,
+// while reading code as prose only adds a repair the message did not need.
+const CONTAINER_MARKER_PATTERN =
+  /^ {0,3}(?:[-*+](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|>)/;
+// The html tokenizer ends a tag name at whitespace, a solidus or >, so
+// <details/> and a bare <details at the end of a line are both this tag.
+const TAG_PATTERN = /<(\/?)([A-Za-z][^\s/>]*)/g;
+// The renderer strips block quote markers, so their > is not a > the tokenizer
+// ever sees. Left in, it would close a tag the browser still has open and hide
+// the closer the message went on to write.
+const BLOCK_QUOTE_PREFIX_PATTERN = /^ {0,3}(?:> ?)+/;
+const NON_BREAK_PATTERN = /[^\r\n]/g;
+// Everything that begins a tag or a bogus comment, and so everything that
+// needs a > the message may never write.
+const TAG_OPENER_PATTERN = /<[A-Za-z!/?]/g;
 
-type HtmlBlockRule = {
-  readonly start: RegExp;
-  readonly end: RegExp;
-  readonly close: (match: RegExpExecArray) => string;
-};
+// Elements whose content the html tokenizer reads as text rather than markup,
+// so nothing but their own end tag closes them (WHATWG 13.2.5, the RAWTEXT,
+// RCDATA and script data states). CommonMark start condition 1 ends its block
+// at whichever of pre, script, style and textarea closes first, which is a
+// different answer, and the element is the one that hides the next turn.
+const RAW_TEXT_ELEMENTS: ReadonlySet<string> = new Set([
+  "script",
+  "style",
+  "textarea",
+  "title",
+  "xmp",
+  "iframe",
+  "noembed",
+  "noframes",
+]);
+// pre is ordinary content to the tokenizer, but CommonMark condition 1 still
+// runs its markdown block to the end of the document; details is condition 6,
+// whose block ends at the blank line between two turns while the element does
+// not. Both are closed rather than escaped, because both are things the chat
+// renders and a transcript has to keep.
+const CLOSED_ELEMENTS: ReadonlySet<string> = new Set([
+  ...RAW_TEXT_ELEMENTS,
+  "pre",
+  "details",
+]);
+// The four whose markdown block also runs to the end of the document, so
+// nothing inside one is a fence or an indented code block either.
+const CONDITION_1_ELEMENTS: ReadonlySet<string> = new Set([
+  "pre",
+  "script",
+  "style",
+  "textarea",
+]);
+// CommonMark start condition 1 (4.6), which is a separate question from which
+// element the browser has open: the block ends at the first line holding any
+// of the four end tags, and the spec says outright that it "need not match the
+// start tag". A message that ends inside one turns every later role heading
+// into raw text even where the element itself is closed.
+const HTML_BLOCK_START_PATTERN = /^<(pre|script|style|textarea)(?=[ \t>]|$)/i;
+const HTML_BLOCK_END_PATTERN = /<\/(?:pre|script|style|textarea)>/i;
 
-// Raw html blocks that a blank line does not close (CommonMark 4.6, start
-// conditions 1, 3, 4 and 5): they run to the end of the document. Condition 2
-// is the comment tracked below; 6 and 7 end at the blank line that already
-// separates every turn, so they need no repair.
-const HTML_BLOCK_RULES: readonly HtmlBlockRule[] = [
-  {
-    start: /^<(pre|script|style|textarea)(?=[ \t>]|$)/i,
-    end: /<\/(?:pre|script|style|textarea)>/i,
-    // Any of the four end tags satisfies the parser, but a viewer that renders
-    // the raw html needs the tag that was actually opened.
-    close: (match) => `</${(match[1] ?? "pre").toLowerCase()}>`,
-  },
-  { start: /^<\?/, end: /\?>/, close: () => "?>" },
-  { start: /^<![A-Za-z]/, end: />/, close: () => ">" },
-  { start: /^<!\[CDATA\[/, end: /\]\]>/, close: () => "]]>" },
-];
+type OpenElement = { readonly name: string; readonly indent: string };
 
-function openedHtmlBlock(
-  rest: string,
-  line: string,
-): { readonly rule: HtmlBlockRule; readonly close: string } | null {
-  for (const rule of HTML_BLOCK_RULES) {
-    const match = rule.start.exec(rest);
-    // A line that meets the start and the end condition is the whole block.
-    if (!match || rule.end.test(line)) continue;
-    return { rule, close: rule.close(match) };
-  }
-  return null;
+// Only this element's own end tag closes it, and the tokenizer ends the name
+// at whitespace, a solidus or >, so </scriptx> is not it.
+function endTagIndex(line: string, name: string, from: number): number {
+  const pattern = new RegExp(`</${name}(?=[\\s/>]|$)`, "gi");
+  pattern.lastIndex = from;
+  return pattern.exec(line)?.index ?? -1;
 }
 
-// A message that ends mid-fence, mid-comment, inside a raw html block or
-// inside a details element swallows everything after it, including the next
-// role heading, so each turn closes what it opened. The first three are
-// tracked as one state: inside any of them, the other two are literal, and so
-// is a details tag.
-function closeOpenBlocks(text: string): string {
-  let open: string | null = null;
-  let openIndent = "";
+// Everything a message can leave open that would run on into the next turn.
+type OpenState = {
+  readonly escapes: readonly number[];
+  readonly open: readonly OpenElement[];
+  readonly comment: boolean;
+  readonly fence: OpenElement | null;
+  readonly block: OpenElement | null;
+  readonly bogus: OpenElement | null;
+};
+
+// One pass over a message, tracking both machines that decide whether it can
+// hide the turn after it.
+//
+// CommonMark decides where a raw html BLOCK ends; the browser decides where
+// the ELEMENT ends; and the two disagree. <script> ... </pre> ends the block
+// and not the element (4.6 condition 1 says the end tag "need not match the
+// start tag", WHATWG 13.2.5 wants the appropriate one). A <script> written
+// after prose opens the element and no block at all. A message that stops
+// inside an unfinished tag reads whatever is written after it as attributes,
+// closer included. So the element is tracked by name, wherever it was opened,
+// and the block is tracked beside it.
+function scanOpenBlocks(text: string): OpenState {
+  const escapes: number[] = [];
+  const open: OpenElement[] = [];
+  let raw: string | null = null;
   let comment = false;
-  let html: HtmlBlockRule | null = null;
-  let htmlClose = "";
-  let htmlIndent = "";
-  let details = 0;
-  // Split the way a parser does. Splitting on \n alone hides a fence opened in
-  // a body that uses bare carriage returns.
-  for (const line of text.split(EOL_PATTERN)) {
-    if (comment) {
-      if (line.includes("-->")) comment = false;
-      continue;
-    }
-    if (html) {
-      if (html.end.test(line)) html = null;
-      continue;
-    }
-    const [, indent = "", rest = ""] = INDENT_PATTERN.exec(line) ?? [];
-    const [, run, info] = FENCE_PATTERN.exec(rest) ?? [];
-    if (open !== null) {
-      // A closer repeats the opener's character, is at least as long, and
-      // carries no info string.
-      if (run && run[0] === open[0] && run.length >= open.length && !info?.trim()) {
-        open = null;
+  let fence: OpenElement | null = null;
+  let block: OpenElement | null = null;
+  // A tag runs to its >, which can be lines away, so where it started and what
+  // it is are carried across them, as is the quote an attribute value is
+  // inside: a > within one is part of the value, not the end of the tag.
+  let tag: {
+    readonly at: number;
+    readonly name: string;
+    readonly closing: boolean;
+    // Set on the end tag that took the tokenizer out of a raw text element:
+    // inside one a &lt; is the literal four characters, so an unfinished one
+    // there has to be terminated rather than neutralised.
+    readonly fromRaw: boolean;
+    readonly indent: string;
+    readonly close: string;
+  } | null = null;
+  let quote = "";
+  let indentedCode = false;
+  let blankBefore = true;
+  let container = false;
+  // The message with every literal region blanked to spaces: what a renderer
+  // will actually hand to the browser as markup, indexed exactly like the
+  // message itself.
+  let live = "";
+
+  const closeTo = (name: string): void => {
+    for (let index = open.length - 1; index >= 0; index -= 1) {
+      if (open[index]?.name === name) {
+        open.length = index;
+        return;
       }
-      continue;
     }
-    if (run) {
-      // A backtick opener cannot carry a backtick in its info string; that
-      // line is a paragraph, and treating it as a fence would open a real one.
-      if (run[0] === "~" || !info?.includes("`")) {
-        open = run;
-        openIndent = indent;
-      }
-      continue;
-    }
-    const opened = openedHtmlBlock(rest, line);
-    if (opened) {
-      html = opened.rule;
-      htmlClose = opened.close;
-      htmlIndent = indent;
-      continue;
-    }
-    // Deliberately not limited to a line-initial <!--: a mid-line one inside a
-    // raw html block still opens a comment in the browser.
-    const prose = line.replace(CODE_SPAN_PATTERN, "");
-    const commentStart = prose.lastIndexOf("<!--");
-    comment = commentStart > prose.lastIndexOf("-->");
-    // Mid-line too, and for the same reason: `hello <details>` opens the
-    // element even though no line here begins a raw html block.
-    const tags = (comment ? prose.slice(0, commentStart) : prose).replace(
-      CLOSED_COMMENT_PATTERN,
-      "",
+    // An end tag with no open element is inert in every html parser, so it
+    // must not license an opener later in the message.
+  };
+
+  // Walked the way a parser does. Splitting on \n alone hides a fence opened
+  // in a body that uses bare carriage returns.
+  EOL_PATTERN.lastIndex = 0;
+  let lineStart = 0;
+  for (;;) {
+    const lineBreak = EOL_PATTERN.exec(text);
+    const line = text.slice(
+      lineStart,
+      lineBreak ? lineBreak.index : text.length,
     );
-    for (const [, slash] of tags.matchAll(DETAILS_TAG_SCAN_PATTERN)) {
-      // Clamped, not signed: a stray closer is inert in every html parser, so
-      // it must not license an opener later in the message.
-      details = slash ? Math.max(0, details - 1) : details + 1;
+    const [, indent = "", rest = ""] = INDENT_PATTERN.exec(line) ?? [];
+    const blankLine = BLANK_LINE_PATTERN.test(line);
+    let literal = false;
+
+    // Block structure, suspended only while the markdown parser itself is
+    // inside something that stops it reading markdown. A tag it has not
+    // finished reading is a state the browser has and it does not: a <script>
+    // on the next line still opens a block for it, and a fence still opens a
+    // fence, so neither may be suspended on that account.
+    const insideRawBlock = comment || block !== null;
+    if (!insideRawBlock) {
+      if (fence !== null) {
+        literal = true;
+        const [, run, info] = FENCE_PATTERN.exec(rest) ?? [];
+        // A closer repeats the opener's character, is at least as long, and
+        // carries no info string.
+        if (
+          run &&
+          run[0] === fence.name[0] &&
+          run.length >= fence.name.length &&
+          !info?.trim()
+        ) {
+          fence = null;
+        }
+      } else {
+        // An indented code block runs until a non-blank line that is not
+        // itself indented.
+        if (indentedCode && !blankLine && !INDENTED_CODE_PATTERN.test(line)) {
+          indentedCode = false;
+        }
+        const [, run, info] = FENCE_PATTERN.exec(rest) ?? [];
+        if (indentedCode) {
+          literal = true;
+        } else if (run && (run[0] === "~" || !info?.includes("`"))) {
+          // A backtick opener cannot carry a backtick in its info string; that
+          // line is a paragraph, and treating it as a fence would open a real
+          // one.
+          fence = { name: run, indent };
+          literal = true;
+        } else if (
+          !container &&
+          blankBefore &&
+          INDENTED_CODE_PATTERN.test(line)
+        ) {
+          // An indented code block cannot interrupt a paragraph (CommonMark
+          // 4.4), so it only starts after a blank line.
+          indentedCode = true;
+          literal = true;
+        }
+      }
+    }
+
+    // Code spans, block quote markers and anything markdown reads as literal
+    // are blanked rather than removed, so an index into what is scanned is
+    // still an index into the message. Annotated because raw is assigned from
+    // this scan, which would otherwise make the inference circular.
+    const prose: string =
+      literal && raw === null
+        ? line.replace(NON_BREAK_PATTERN, " ")
+        : line
+            .replace(CODE_SPAN_PATTERN, (span) => " ".repeat(span.length))
+            .replace(BLOCK_QUOTE_PREFIX_PATTERN, (marker) =>
+              " ".repeat(marker.length),
+            );
+    live += prose;
+    // Raw text is scanned even where markdown calls the line literal: a fence
+    // inside an <xmp> is a fence to the parser and text to the tokenizer, and
+    // the end tag hiding in it is the only thing that closes the element.
+    if (!literal || raw !== null) {
+      let index = 0;
+      for (;;) {
+        if (tag !== null) {
+          let end = index;
+          while (end < prose.length) {
+            const character = prose[end] as string;
+            if (quote) {
+              if (character === quote) quote = "";
+            } else if (character === '"' || character === "'") {
+              quote = character;
+            } else if (character === ">") {
+              break;
+            }
+            end += 1;
+          }
+          // The tag is unfinished: it continues on the next line, or, if there
+          // is none, it is still open when the message ends.
+          if (end >= prose.length) break;
+          if (tag.name === "") {
+            // A bogus comment opened nothing.
+          } else if (tag.closing) {
+            if (raw === null || raw === tag.name) {
+              raw = null;
+              closeTo(tag.name);
+            }
+          } else if (raw === null) {
+            if (tag.name === "plaintext") {
+              // No end tag exists for it in any parser: the rest of the
+              // document is its text, so the opener itself has to go.
+              escapes.push(tag.at);
+            } else if (CLOSED_ELEMENTS.has(tag.name)) {
+              open.push({ name: tag.name, indent: tag.indent });
+              if (RAW_TEXT_ELEMENTS.has(tag.name)) raw = tag.name;
+            }
+          }
+          tag = null;
+          index = end + 1;
+          continue;
+        }
+        if (comment) {
+          const end = line.indexOf("-->", index);
+          if (end < 0) break;
+          comment = false;
+          index = end + 3;
+          continue;
+        }
+        if (raw !== null) {
+          // Inside a condition 1 block markdown parses no inlines, so the
+          // backticks are literal and an end tag between them is a real one.
+          // Opened from inline html instead, the same code span is rendered as
+          // an escaped <code>, and the browser never sees a closer at all.
+          const end = endTagIndex(block !== null ? line : prose, raw, index);
+          if (end < 0) break;
+          // The raw text ends here, but the end tag itself still has to reach
+          // its >, and everything before that is eaten as its attributes, so
+          // it goes through the same machinery as any other tag.
+          index = end + 2 + raw.length;
+          tag = {
+            at: lineStart + end,
+            name: raw,
+            closing: true,
+            fromRaw: true,
+            indent,
+            close: ">",
+          };
+          quote = "";
+          raw = null;
+          continue;
+        }
+        const start = prose.indexOf("<", index);
+        if (start < 0) break;
+        if (prose.startsWith("<!--", start)) {
+          comment = true;
+          index = start + 4;
+          continue;
+        }
+        TAG_PATTERN.lastIndex = start;
+        const match = TAG_PATTERN.exec(prose);
+        if (match && match.index === start) {
+          tag = {
+            at: lineStart + start,
+            name: (match[2] ?? "").toLowerCase(),
+            closing: match[1] === "/",
+            fromRaw: false,
+            indent,
+            close: "",
+          };
+          quote = "";
+          index = start + match[0].length;
+          continue;
+        }
+        // <!, <? and </ before anything that is not a tag name are a bogus
+        // comment, which the tokenizer ends at the first > (CommonMark start
+        // conditions 3, 4 and 5 end their blocks there too). Its terminator
+        // carries that >, so an unfinished one can be closed rather than
+        // escaped.
+        const opener = prose.slice(start, start + 2);
+        if (opener === "<!" || opener === "<?" || opener === "</") {
+          tag = {
+            at: lineStart + start,
+            name: "",
+            closing: false,
+            fromRaw: false,
+            indent,
+            close: prose.startsWith("<![CDATA[", start)
+              ? "]]>"
+              : opener === "<?"
+                ? "?>"
+                : ">",
+          };
+          quote = "";
+          index = start + 2;
+          continue;
+        }
+        index = start + 1;
+      }
+    }
+
+    if (block !== null) {
+      if (HTML_BLOCK_END_PATTERN.test(line)) block = null;
+    } else if (!insideRawBlock && !literal) {
+      const start = HTML_BLOCK_START_PATTERN.exec(rest);
+      // A line meeting both conditions is the whole block.
+      if (start && !HTML_BLOCK_END_PATTERN.test(line)) {
+        block = { name: (start[1] ?? "pre").toLowerCase(), indent };
+      }
+    }
+
+    blankBefore = blankLine;
+    if (!blankLine && CONTAINER_MARKER_PATTERN.test(line)) container = true;
+    if (!lineBreak) break;
+    live += lineBreak[0];
+    lineStart = lineBreak.index + lineBreak[0].length;
+  }
+
+  // An unfinished tag consumes every closer written after it as attribute
+  // text, and no terminator can be appended past a quote it left open, so the
+  // opener is neutralised: escaping its < makes the rest of the message
+  // ordinary text again. Two kinds are left alone. A bogus comment is
+  // terminated below instead, because its terminator carries the > it is
+  // waiting for. An unfinished end tag that took the tokenizer out of a raw
+  // text element is left to the element closer, which supplies that > as well:
+  // escaping there would produce the literal characters &lt;, since a raw text
+  // element resolves no character references.
+  if (tag !== null && tag.name !== "" && !tag.fromRaw) {
+    // Nothing behind an unfinished tag can be finished either: it is unfinished
+    // because no > follows it, and every tag, comment and bogus comment after
+    // it needs that same >. So the whole tail is neutralised here, in one
+    // linear pass, rather than one rescan per opener hiding inside it. This is
+    // also what a renderer prints for that tail anyway, since CommonMark
+    // passes through only complete tags and escapes the rest.
+    TAG_OPENER_PATTERN.lastIndex = tag.at;
+    for (
+      let opener = TAG_OPENER_PATTERN.exec(live);
+      opener !== null;
+      opener = TAG_OPENER_PATTERN.exec(live)
+    ) {
+      escapes.push(opener.index);
     }
   }
+  return {
+    escapes,
+    open,
+    comment,
+    fence,
+    block,
+    bogus:
+      tag !== null && tag.name === ""
+        ? { name: tag.close, indent: tag.indent }
+        : null,
+  };
+}
+
+// A message that ends mid-fence, mid-comment or inside an html element
+// swallows everything after it, including the next role heading, so each turn
+// closes what it opened. What can be closed gets its own closer; what cannot
+// -- an unfinished tag, or <plaintext>, which no parser ever closes -- has its
+// opening < escaped instead, so it opens nothing and still reads back as the
+// text the message contained. That is also what GFM's own tagfilter extension
+// does with this set of tags, and for the same stated reason: they change how
+// the html after them is interpreted.
+function closeOpenBlocks(text: string): string {
   let out = text;
+  let state = scanOpenBlocks(out);
+  // Neutralising an opener hands back the text the tokenizer had swallowed
+  // into it, which can reveal another opener that was hiding inside, so the
+  // scan repeats until a pass finds nothing left to neutralise. It terminates:
+  // every pass removes at least one < and no pass adds one.
+  while (state.escapes.length > 0) {
+    // Rebuilt once rather than spliced per position, so a message carrying
+    // thousands of them costs one pass over it rather than one each.
+    const at = [...new Set(state.escapes)].sort(
+      (first, second) => first - second,
+    );
+    const parts: string[] = [];
+    let read = 0;
+    for (const index of at) {
+      parts.push(out.slice(read, index), "&lt;");
+      read = index + 1;
+    }
+    parts.push(out.slice(read));
+    out = parts.join("");
+    state = scanOpenBlocks(out);
+  }
+  const { open, comment, fence, block, bogus } = state;
   if (comment) out += "-->";
   // Close on the body's own line ending. A renderer that ignores bare carriage
   // returns would read a \n-prefixed closer as a fresh fence instead.
   const eol = !text.includes("\n") && text.includes("\r") ? "\r" : "\n";
+  // Before every element closer: an unfinished bogus comment would otherwise
+  // swallow them all.
+  if (bogus !== null) out += `${eol}${bogus.indent}${bogus.name}`;
   // Indented back to the opener's column: a closer written at column zero ends
   // the list the opener sits in, and then opens a block of its own instead.
-  if (open !== null) out += `${eol}${openIndent}${open}`;
-  if (html) out += `${eol}${htmlIndent}${htmlClose}`;
-  // Last, and after a blank line: the closer has to sit outside every other
-  // construct repaired above, and at column zero as its own html block rather
-  // than as a lazy continuation of the paragraph it follows.
-  out += `${eol}${eol}</details>`.repeat(details);
+  if (fence !== null) out += `${eol}${fence.indent}${fence.name}`;
+  // Any of the four end tags satisfies condition 1, so an element closer
+  // written below already ends the block; only a block still open without one
+  // needs a closer of its own.
+  if (
+    block !== null &&
+    !open.some((element) => CONDITION_1_ELEMENTS.has(element.name))
+  ) {
+    out += `${eol}${block.indent}</${block.name}>`;
+  }
+  // Innermost first, so the closers nest the way the openers did. details is
+  // written last and after a blank line: its closer has to sit outside every
+  // other construct repaired above, and at column zero as its own html block
+  // rather than as a lazy continuation of the paragraph it follows.
+  for (let index = open.length - 1; index >= 0; index -= 1) {
+    const element = open[index] as OpenElement;
+    out +=
+      element.name === "details"
+        ? `${eol}${eol}</details>`
+        : `${eol}${element.indent}</${element.name}>`;
+  }
   return out;
 }
 
@@ -285,7 +609,8 @@ function renderValue(label: string, value: unknown): string[] {
   // tool call with four of them reads as a wall of fences instead of a call.
   if (value === null || typeof value !== "object") {
     const text = typeof value === "string" ? value : String(value);
-    if (LINE_BREAK_PATTERN.test(text)) return [`**${escapedLabel}:**`, fence(text)];
+    if (LINE_BREAK_PATTERN.test(text))
+      return [`**${escapedLabel}:**`, fence(text)];
     // A code span rather than escaping: tool values are data, and any list of
     // markdown metacharacters to escape is one another syntax slips past.
     return [`**${escapedLabel}:** ${inlineCode(text)}`];

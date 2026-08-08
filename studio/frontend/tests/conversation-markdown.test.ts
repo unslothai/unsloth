@@ -797,3 +797,120 @@ test("leaves an ordinary query separator in a citation readable", () => {
     "**source:** [Search](<https://x.test/search?q=lora&page=2&sort=new>)",
   );
 });
+
+test("neutralises an opener the message never finished writing", () => {
+  // A synthesized </script> written after a bare <script> is read as that
+  // tag's attributes, so the element stays open and eats the next turn;
+  // escaping the < opens nothing at all.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "<script" }]),
+    "&lt;script",
+  );
+  // Any tag, not only a raw text one: an unterminated attribute value runs to
+  // the first > anywhere in the document.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: '<div class="x' }]),
+    '&lt;div class="x',
+  );
+  // Handing back what the unfinished tag had swallowed can reveal an opener
+  // that was hiding inside it, so the repair repeats until nothing is left.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "<details\n<script" }]),
+    "&lt;details\n&lt;script",
+  );
+  // plaintext has no end tag in any parser, so it can only be neutralised.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "<plaintext>" }]),
+    "&lt;plaintext>",
+  );
+});
+
+test("closes the element that was opened, not the one markdown ended on", () => {
+  // CommonMark 4.6 condition 1 ends the block at any of the four end tags,
+  // "it need not match the start tag", but the html tokenizer needs this
+  // element's own end tag (WHATWG 13.2.5, appropriate end tag token).
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "text", text: "<script>\nvar x = 1;\n</pre>" },
+    ]),
+    "<script>\nvar x = 1;\n</pre>\n</script>",
+  );
+  // A </script> inside a code span is rendered as an escaped <code>, so the
+  // browser never sees a closer there.
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "text", text: "hello <script> world `</script>`" },
+    ]),
+    "hello <script> world `</script>`\n</script>",
+  );
+});
+
+test("closes a persistent element opened part way through a line", () => {
+  // CommonMark emits this as inline html and starts no block at all, but the
+  // browser is in script data from here to the end of the document.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "hello <script>" }]),
+    "hello <script>\n</script>",
+  );
+  // The tokenizer's raw text set is wider than condition 1: an unmatched
+  // <iframe> or <xmp> renders nothing of what follows it either.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "<iframe>" }]),
+    "<iframe>\n</iframe>",
+  );
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "see <xmp>" }]),
+    "see <xmp>\n</xmp>",
+  );
+});
+
+test("leaves an indented code block exactly as the message wrote it", () => {
+  // Four spaces of indentation is code, so the delimiter in it opens nothing
+  // and a repair glued to the line would change the sample being exported.
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "text", text: "Template:\n\n    <!-- TODO fill this in" },
+    ]),
+    "Template:\n\n    <!-- TODO fill this in",
+  );
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "text", text: "Example:\n\n    <details>" },
+    ]),
+    "Example:\n\n    <details>",
+  );
+  // It cannot interrupt a paragraph, so this one really is prose.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "note\n    <!-- x" }]),
+    "note\n    <!-- x-->",
+  );
+});
+
+test("reads a fence opener whose info string carries a line separator", () => {
+  // U+2028 is an ordinary character to a markdown parser but a line terminator
+  // to a JavaScript dot, and the fence it opens absorbs every later turn.
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "```js x\nvar a = 1;" }]),
+    "```js x\nvar a = 1;\n```",
+  );
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "~~~a b\nsketch" }]),
+    "~~~a b\nsketch\n~~~",
+  );
+});
+
+test("does not read a block quote marker as the end of a tag", () => {
+  // The renderer strips the marker, so its > is not one the tokenizer sees:
+  // the start tag runs on and swallows the message's own </script> as its
+  // attributes, which leaves the element open and needing a closer.
+  assert.equal(
+    renderConversationBlocks([
+      { kind: "text", text: "> <script\n> </script>" },
+    ]),
+    "> <script\n> </script>\n</script>",
+  );
+  assert.equal(
+    renderConversationBlocks([{ kind: "text", text: "> <script>\n> body" }]),
+    "> <script>\n> body\n</script>",
+  );
+});
