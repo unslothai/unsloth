@@ -2749,7 +2749,7 @@ extra_eos_tokens = None,
 
     # Check if system part is the same!
     jinja_template = re.sub(
-        r"\{\% if messages\[0\]\['role'\] \=\= 'system' \%\}\{\{ '(.+?)' \}\}"\
+        r"\{\% if messages\[0\]\['role'\] \=\= 'system' \%\}\{\{ '(.*?)' \}\}"\
         r"\{\% set loop\_messages \= messages\[1\:\] \%\}"\
         r"\{\% else \%\}\{\{ '\1' \}\}\{\% set loop\_messages \= messages \%\}\{\% endif \%\}"\
         r"\{\% for message in loop\_messages \%\}",

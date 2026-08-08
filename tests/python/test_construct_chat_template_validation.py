@@ -331,3 +331,22 @@ def test_bos_token_with_quote_or_backslash_is_not_emitted_twice():
     ):
         rendered = _render(jinja_template, messages, bos_token = bos)
         assert rendered.count(bos) == 1, rendered
+
+
+def test_bos_only_prefix_still_rejects_system_message():
+    bos = _BosFakeTokenizer.bos_token
+    _, jinja_template, _, _ = construct_chat_template(
+        tokenizer = _BosFakeTokenizer(),
+        chat_template = bos + _NO_SYSTEM_CHAT_TEMPLATE.removeprefix("PREAMBLE\n"),
+        default_system_message = None,
+        extra_eos_tokens = ["</s>"],
+    )
+    with pytest.raises(RuntimeError, match = "Only user and assistant roles are supported!"):
+        _render(
+            jinja_template,
+            [
+                {"role": "system", "content": "Be terse."},
+                {"role": "user", "content": "Hi"},
+            ],
+            bos_token = bos,
+        )
