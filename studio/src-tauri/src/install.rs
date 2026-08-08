@@ -467,6 +467,10 @@ fn spawn_script(
 
     let stdout = child.stdout().take();
     let stderr = child.stderr().take();
+    // Mirrored out of the lock so force quit can reach the tree once a wedged `stop_install`
+    // has taken this handle out of the state. `cleanup_child_processes` stops the installer
+    // before it ever reaches the backend, so this is the tree a quit is most likely stuck on.
+    crate::process::INSTALLER_TREE.record(child.id());
     install.child = Some(child);
     Ok((stdout, stderr))
 }
@@ -614,17 +618,27 @@ fn wait_for_exit(state: &InstallState) -> Result<(ExitStatus, bool), String> {
         let intentional = install.intentional_stop;
 
         match install.child.as_mut() {
-            Some(child) => match child.try_wait() {
-                Ok(Some(status)) => {
-                    install.child = None;
-                    return Ok((status, intentional));
+            Some(child) => {
+                // Both arms below drop the handle, and the pid record is only sound while we
+                // hold it: on Windows an open process handle is what stops the kernel from
+                // handing that pid to a stranger for force quit's `taskkill /T /F` to find.
+                let pid = child.id();
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        crate::process::INSTALLER_TREE.retire(pid);
+                        install.child = None;
+                        return Ok((status, intentional));
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        // Not a confirmed exit, but the handle goes anyway, so the record has
+                        // to go with it rather than outlive the pid it was pinning.
+                        crate::process::INSTALLER_TREE.retire(pid);
+                        install.child = None;
+                        return Err(format!("Error waiting for installer: {}", e));
+                    }
                 }
-                Ok(None) => {}
-                Err(e) => {
-                    install.child = None;
-                    return Err(format!("Error waiting for installer: {}", e));
-                }
-            },
+            }
             None if intentional => return Err("Installation stopped.".to_string()),
             None => return Err("Installer process disappeared unexpectedly.".to_string()),
         }
@@ -909,6 +923,7 @@ pub fn stop_install(state: &InstallState) -> Result<(), String> {
             warn!("PID {} exceeds i32 range, using direct kill", pid);
             let _ = child.kill();
             let _ = child.wait();
+            crate::process::INSTALLER_TREE.retire(pid);
             return Ok(());
         }
         unsafe {
@@ -919,6 +934,7 @@ pub fn stop_install(state: &InstallState) -> Result<(), String> {
             match child.try_wait() {
                 Ok(Some(status)) => {
                     info!("Installer exited gracefully with status: {:?}", status);
+                    crate::process::INSTALLER_TREE.retire(pid);
                     return Ok(());
                 }
                 Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
@@ -928,9 +944,13 @@ pub fn stop_install(state: &InstallState) -> Result<(), String> {
         warn!("Installer did not exit gracefully, force killing");
     }
 
+    // Each branch retires the pid as soon as its child is done with, and always before this
+    // function returns and drops the handle. Leaving it on record past that point would aim
+    // force quit's `taskkill /T /F` at whatever inherits the pid next.
     #[cfg(windows)]
     {
         crate::process::force_kill_process_tree(pid, child, "Installer");
+        crate::process::INSTALLER_TREE.retire(pid);
         return Ok(());
     }
 
@@ -939,6 +959,7 @@ pub fn stop_install(state: &InstallState) -> Result<(), String> {
         // Force kill (SIGKILL on Unix)
         let _ = child.kill();
         let _ = child.wait();
+        crate::process::INSTALLER_TREE.retire(pid);
         info!("Installer process group force stopped");
         Ok(())
     }
@@ -1530,5 +1551,101 @@ mod tests {
             .output_tail
             .iter()
             .all(|line| line.text.is_char_boundary(line.text.len())));
+    }
+}
+
+// `cleanup_child_processes` stops the installer first, before the updater and long before
+// the backend, so on Windows a quit can wedge on the installer's unbounded `taskkill` wait
+// and never reach either of the others. Force quit therefore has to know this tree's pid,
+// which means the record has to be accurate: still standing while the stop is stuck, and
+// gone the moment the child is done with. A stale entry aims `taskkill /T /F` at whatever
+// inherits the pid next.
+//
+// Real processes, because what is being pinned is when the record is retired relative to
+// the reap, which no mock of the child would reproduce.
+#[cfg(test)]
+#[cfg(unix)]
+mod installer_pid_record_tests {
+    use super::*;
+    use crate::process::{lock_tracked_child_trees_for_test, INSTALLER_TREE};
+
+    fn state_with_sleeper() -> (InstallState, u32) {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "exec sleep 30"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut wrap = CommandWrap::from(cmd);
+        wrap.wrap(ProcessGroup::leader());
+        let child = wrap.spawn().expect("spawn test installer");
+
+        let pid = child.id();
+        let state = new_install_state();
+        state.lock().unwrap().child = Some(child);
+        (state, pid)
+    }
+
+    #[test]
+    fn stopping_the_installer_retires_its_pid() {
+        let _turn = lock_tracked_child_trees_for_test();
+
+        let (state, pid) = state_with_sleeper();
+        INSTALLER_TREE.record(pid);
+
+        stop_install(&state).expect("stopping a sleeper must succeed");
+
+        let recorded = INSTALLER_TREE.pid();
+        INSTALLER_TREE.retire(pid);
+        assert_eq!(
+            recorded, None,
+            "the installer is done with, so its pid must stop being a kill target before \
+             the handle that kept it ours is dropped"
+        );
+    }
+
+    #[test]
+    fn the_installer_pid_stays_on_record_while_it_is_still_running() {
+        let _turn = lock_tracked_child_trees_for_test();
+
+        let (state, pid) = state_with_sleeper();
+        INSTALLER_TREE.record(pid);
+
+        assert_eq!(
+            INSTALLER_TREE.pid(),
+            Some(pid),
+            "a running installer is exactly the tree force quit has to be able to reap"
+        );
+
+        stop_install(&state).expect("stopping a sleeper must succeed");
+        INSTALLER_TREE.retire(pid);
+    }
+
+    // The ordinary end of an install, not a quit. Nothing kills this child, it just exits,
+    // and leaving its pid on record would hand force quit a target that has since been
+    // recycled into somebody else's process.
+    #[test]
+    fn an_installer_that_exits_on_its_own_retires_its_pid() {
+        let _turn = lock_tracked_child_trees_for_test();
+
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "exit 0"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut wrap = CommandWrap::from(cmd);
+        wrap.wrap(ProcessGroup::leader());
+        let child = wrap.spawn().expect("spawn test installer");
+
+        let pid = child.id();
+        let state = new_install_state();
+        state.lock().unwrap().child = Some(child);
+        INSTALLER_TREE.record(pid);
+
+        wait_for_exit(&state).expect("a child that exits cleanly must be reported");
+
+        let recorded = INSTALLER_TREE.pid();
+        INSTALLER_TREE.retire(pid);
+        assert_eq!(
+            recorded, None,
+            "a finished install must not leave a kill target behind for force quit"
+        );
     }
 }

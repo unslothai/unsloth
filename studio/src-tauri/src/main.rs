@@ -865,16 +865,21 @@ impl<E: Fn(&str)> Drop for ClosingOverlay<E> {
 /// on exactly the machines where the job could not be created.
 ///
 /// So the branch is on the reaper, not the platform, and the no-job branch terminates the
-/// tree itself instead of declining. Declining would be worse than the orphan: force quit is
+/// trees itself instead of declining. Declining would be worse than the orphan: force quit is
 /// only ever offered after the reap has blown through its own timeouts, and a button that
 /// does nothing is the dead-control state this overlay work exists to remove.
 ///
-/// `kill_tree` and `cleanup` come in injected, the way `quit_sequence` takes its blocking
+/// Trees, plural, because the overlay covers the whole of `cleanup_child_processes`, not just
+/// its last step. That runs `stop_install`, then `stop_update`, then `stop_backend`, and on
+/// Windows the first two go straight to an unbounded `taskkill` wait, so the quit can be
+/// wedged on the installer or the updater and never reach the backend at all.
+///
+/// `kill_trees` and `cleanup` come in injected, the way `quit_sequence` takes its blocking
 /// parts, so every branch stays testable on whichever platform is running the tests.
 fn force_quit_sequence(
     windows: bool,
     job_active: bool,
-    kill_tree: impl FnOnce(),
+    kill_trees: impl FnOnce(),
     cleanup: impl FnOnce(),
 ) -> bool {
     if !windows {
@@ -885,11 +890,11 @@ fn force_quit_sequence(
         warn!("Force quit requested, exiting without waiting for the backend reap");
     } else {
         warn!(
-            "Force quit requested with no app job object; terminating the backend tree before \
-             exiting so it is not orphaned"
+            "Force quit requested with no app job object; terminating our child process trees \
+             before exiting so they are not orphaned"
         );
-        // First, so a cleanup that wedges in turn cannot cost us the kill as well.
-        kill_tree();
+        // First, so a cleanup that wedges in turn cannot cost us the kills as well.
+        kill_trees();
     }
     // Before the exit, the way Tauri itself pairs them in `AppHandle::exit`. `process::exit`
     // runs no destructors, and the tray icon only sends its `NIM_DELETE` from `Drop`, so
@@ -908,10 +913,11 @@ fn force_quit(app: tauri::AppHandle) {
     if force_quit_sequence(
         cfg!(target_os = "windows"),
         windows_job::has_active_job(),
-        // Reads a pid out of an atomic and shells out to taskkill. It deliberately does not
-        // go through `BackendState`: the reap being escaped has already taken the handle out
-        // of it, and waiting on anything that reap touches would hang the escape hatch.
-        process::force_kill_spawned_backend_tree,
+        // Reads pids out of atomics and shells out to taskkill. It deliberately does not go
+        // through `InstallState` / `UpdateState` / `BackendState`: the stop being escaped has
+        // already taken the handle out of whichever one it was on, and waiting on anything
+        // that stop touches would hang the escape hatch.
+        process::force_kill_tracked_child_trees,
         || app.cleanup_before_exit(),
     ) {
         std::process::exit(0);
