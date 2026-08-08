@@ -106,11 +106,18 @@ export function repairAssistantParentIds<T extends ParentChainMessage>(
   const parentForOrphanAssistant = (index: number): string | null => {
     for (let i = index - 1; i >= 0; i--) {
       const prev = sorted[i];
-      if (prev.role === "assistant" && prev.parentId) {
-        return prev.parentId;
-      }
       if (prev.role === "user") {
-        return prev.id;
+        if (prev.parentId == null) {
+          return prev.id;
+        }
+        continue;
+      }
+      if (prev.role === "assistant" && prev.parentId != null) {
+        const parent = sorted.find((m) => m.id === prev.parentId);
+        if (parent?.role === "user" && parent.parentId != null) {
+          continue;
+        }
+        return prev.parentId;
       }
     }
     return null;
@@ -128,7 +135,7 @@ export function repairAssistantParentIds<T extends ParentChainMessage>(
   });
 }
 
-/** Leaf on the branch anchored by the latest user turn (active conversation). */
+/** Leaf on the active branch (continued thread beats newer regen siblings). */
 export function resolveHeadMessageId(
   messages: Array<
     Pick<ParentChainMessage, "id" | "parentId" | "createdAt" | "role">
@@ -143,9 +150,23 @@ export function resolveHeadMessageId(
     childrenOf.get(parentId)!.push(message);
   }
 
-  const users = sorted.filter((message) => message.role === "user");
-  const anchor =
-    users.length > 0 ? users[users.length - 1] : sorted[sorted.length - 1];
+  const continuationUsers = sorted.filter(
+    (message) => message.role === "user" && message.parentId != null,
+  );
+  let anchor: ParentChainMessage;
+  if (continuationUsers.length > 0) {
+    anchor = continuationUsers.reduce((a, b) =>
+      (a.createdAt ?? 0) >= (b.createdAt ?? 0) ? a : b,
+    );
+  } else {
+    const rootUsers = sorted.filter(
+      (message) => message.role === "user" && message.parentId == null,
+    );
+    anchor =
+      rootUsers.length > 0
+        ? rootUsers[rootUsers.length - 1]
+        : sorted[sorted.length - 1];
+  }
 
   let currentId = anchor.id;
   while (true) {

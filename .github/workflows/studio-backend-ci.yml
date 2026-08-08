@@ -140,6 +140,9 @@ jobs:
       - name: Install uv (for tests/python/* sandboxed venvs)
         run: pip install uv
 
+      - name: Install frontend deps (chat tree harness tests)
+        run: npm ci --prefix studio/frontend --no-fund --no-audit
+
       - name: Install deps (shared shape with backend pytest job)
         run: |
           python -m pip install --upgrade pip

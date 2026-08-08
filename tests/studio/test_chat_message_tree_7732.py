@@ -50,8 +50,23 @@ def _ensure_harness():
     )
 
 
+def _ensure_frontend_deps():
+    marker = FRONTEND_DIR / "node_modules" / "@assistant-ui" / "core" / "package.json"
+    if marker.exists():
+        return
+    if shutil.which("npm") is None:
+        pytest.skip("npm not available for frontend harness")
+    subprocess.run(
+        ["npm", "ci", "--no-fund", "--no-audit"],
+        cwd = str(FRONTEND_DIR),
+        check = True,
+        timeout = 600,
+    )
+
+
 def _run(script: str) -> dict:
     _require_node()
+    _ensure_frontend_deps()
     _ensure_harness()
     script_path = FRONTEND_DIR / "temp_chat_message_tree_run.mts"
     script_path.write_text(script, encoding = "utf-8")
