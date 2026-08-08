@@ -14,22 +14,18 @@
 
 """Flex attention must not be chosen on a card that cannot run its kernel.
 
-`Gemma3_(4B)-Vision-GRPO` passes on A100 and dies on both a Colab T4 and a
-Kaggle T4 with `RuntimeError: expected scalar type Half but found Float`, raised
-by torch's own eager fallback:
+`Gemma3_(4B)-Vision-GRPO` passes on A100 and dies on a Colab and a Kaggle T4 with
+`RuntimeError: expected scalar type Half but found Float`, from torch's own eager
+fallback in `sdpa_dense_backward`:
 
-    torch/_higher_order_ops/flex_attention.py, sdpa_dense_backward
     grad_value = softmax_scores.to(query.dtype).transpose(-2, -1) @ grad_out
 
-That line casts the scores to the query dtype and leaves `grad_out` alone. It is
-only reached when the HOP runs uncompiled, which is what happens on sm75, and a
-T4 also forces fp16, so query is Half against a Float grad.
+which casts the scores and not `grad_out`. Only reached when the HOP runs
+uncompiled, which is what sm75 gets, and such a card also forces fp16.
 
-`gemma3` is in `_FLEX_PREFERRED_MODELS` and its sdpa is disabled, so flex is
-exactly the path it took there, while the only availability question asked was
-`is_torch_flex_attn_available()` -- a torch-version check with nothing to say
-about the card. Verified by running the notebook on a Colab T4 with flex off:
-PASS in 1007s, against the failure at 1180s with it on.
+`gemma3` is in `_FLEX_PREFERRED_MODELS` with sdpa disabled, so flex is the path
+it took, while the only availability question asked was the torch-version one.
+Measured on a Colab T4: PASS in 1007s with flex off, failure at 1180s with it on.
 """
 
 import sys
@@ -70,24 +66,23 @@ def test_a_pre_ampere_card_does_not_get_flex(capability):
 
 @pytest.mark.parametrize("capability", [(8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0)])
 def test_ampere_and_newer_are_untouched(capability):
-    """A100, A10, L4, H100, B200, RTX 50xx. The notebook passes on A100 with
-    flex on, so the fix must not take it away from them."""
+    """A100, A10, L4, H100, B200, RTX 50xx. The notebook passes on A100 with flex
+    on, so this must not take it away from them."""
     cuda, hip = _cuda([capability])
     with cuda, hip:
         assert U._flex_attention_gpu_is_supported() is True
 
 
 def test_a_mixed_box_follows_its_weakest_card():
-    """One process, one attn_implementation. A T4 beside an A100 still cannot
-    run the kernel, so the pair has to fall back together."""
+    """One process picks one attn_implementation, so the pair falls back together."""
     cuda, hip = _cuda([(8, 0), (7, 5)])
     with cuda, hip:
         assert U._flex_attention_gpu_is_supported() is False
 
 
 def test_rocm_is_not_judged_by_a_cuda_capability():
-    """`get_device_capability` answers on ROCm too, and its numbers are not
-    CUDA's. Reading them would disable flex on AMD cards for no reason."""
+    """`get_device_capability` answers on ROCm too, with numbers that are not
+    CUDA's, so reading them would disable flex on AMD for no reason."""
     cuda, hip = _cuda([(7, 5)], hip = "6.2.0")
     with cuda, hip:
         assert U._flex_attention_gpu_is_supported() is True
@@ -101,8 +96,7 @@ def test_no_cuda_device_is_left_alone():
 
 
 def test_an_unreadable_device_fails_open():
-    """A probe that raises must not silently switch every user's attention
-    backend. Same stance as the `is_torch_flex_attn_available` guard below it."""
+    """Same stance as the `is_torch_flex_attn_available` guard below it."""
 
     def _boom(index = 0):
         raise RuntimeError("no CUDA driver")
@@ -114,8 +108,8 @@ def test_an_unreadable_device_fails_open():
 
 
 def test_the_gate_runs_before_the_torch_version_check():
-    """`is_torch_flex_attn_available` is a torch-version answer and says yes on
-    a T4. If it were consulted first the card check could never refuse."""
+    """It answers yes on a T4, so consulting it first would mean the card check
+    could never refuse."""
     stub = types.ModuleType("transformers.utils.import_utils")
     stub.is_torch_flex_attn_available = lambda: True
     cuda, hip = _cuda([(7, 5)])

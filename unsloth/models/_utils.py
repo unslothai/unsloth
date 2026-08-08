@@ -451,20 +451,18 @@ def _is_eager_only(model_type):
     return any(model_type.startswith(p) for p in _EAGER_ONLY_PREFIXES)
 
 
-# Ampere. Below it, torch's flex attention has no Triton kernel to lower to and
-# the HOP runs its eager `sdpa_dense` fallback instead, whose backward does
-#     grad_value = softmax_scores.to(query.dtype).transpose(-2, -1) @ grad_out
-# casting the scores but not `grad_out`. On a pre-Ampere card Unsloth also forces
-# fp16, so query is Half against a Float grad and CUDA refuses the matmul.
+# Ampere. Below it the flex HOP runs its eager `sdpa_dense` fallback, whose
+# backward does `softmax_scores.to(query.dtype) @ grad_out` -- casting the scores
+# but not `grad_out`. Such a card also forces fp16 here, so query is Half against
+# a Float grad and the matmul is refused.
 _FLEX_ATTENTION_MIN_CAPABILITY = (8, 0)
 
 
 def _flex_attention_gpu_is_supported():
     """False only for NVIDIA cards below Ampere.
 
-    ROCm, XPU, MPS and CPU are left alone: a card whose vendor is not judged
-    here keeps exactly the behaviour it had. Any failure to read the device
-    also leaves it alone, so this can only ever remove a broken path.
+    ROCm, XPU, MPS, CPU and an unreadable device are left alone, so this can
+    only ever remove a path that was already broken.
     """
     try:
         if getattr(torch.version, "hip", None):
