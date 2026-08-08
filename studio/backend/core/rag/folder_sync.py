@@ -233,9 +233,10 @@ def _reauthorize_folder(folder_id: str, identity: tuple[int, int]) -> dict:
         conn = rag_db.get_connection()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            if conn.execute(
-                "SELECT 1 FROM linked_folders WHERE id=?", (folder_id,)
-            ).fetchone() is None:
+            if (
+                conn.execute("SELECT 1 FROM linked_folders WHERE id=?", (folder_id,)).fetchone()
+                is None
+            ):
                 raise ValueError("Linked folder changed while it was reauthorized")
             conn.execute(
                 "UPDATE linked_folders SET root_device=?, root_inode=?, updated_at=? WHERE id=?",
