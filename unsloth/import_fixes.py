@@ -1012,7 +1012,19 @@ def _is_broken_torchvision_error(error) -> bool:
     return False
 
 
-def _torchvision_repair_command(required = None):
+# PyPI carries exactly one torchvision build per release and it is the CUDA
+# one: its `_C.so` links libcudart.so.12, libc10_cuda.so and libtorch_cuda.so.
+# The ROCm, XPU and CPU builds link libamdhip64/libc10_hip/libtorch_hip (or
+# nothing) instead, and live only on download.pytorch.org under an index named
+# after torch's own local tag. `--no-deps` keeps the installed torch, so on
+# those hosts an unqualified pin swaps a working wheel for a CUDA one and
+# raises the very `operator torchvision::nms does not exist` this command is
+# handed out to clear. CUDA tags are left alone: PyPI already ships that build
+# and the sonames match across cu12x.
+_TORCH_NON_PYPI_BACKEND = re.compile(r"rocm\d[\d.]*|xpu|cpu", re.IGNORECASE)
+
+
+def _torchvision_repair_command(required = None, torch_version_raw = None):
     """The pip command to repair a broken torchvision binary in place.
 
     Pinned and `--no-deps`, both deliberately. Every torchvision wheel requires
@@ -1034,7 +1046,12 @@ def _torchvision_repair_command(required = None):
         spec = f"torchvision=={required[0]}.{required[1]}.{required[2]}"
     else:
         spec = f"torchvision=={required[0]}.{required[1]}.*"
-    return f'pip install --force-reinstall --no-deps --no-cache-dir "{spec}"'
+    index = ""
+    if torch_version_raw and "+" in torch_version_raw:
+        local = torch_version_raw.split("+", 1)[1]
+        if _TORCH_NON_PYPI_BACKEND.fullmatch(local):
+            index = f" --index-url https://download.pytorch.org/whl/{local.lower()}"
+    return f'pip install --force-reinstall --no-deps --no-cache-dir{index} "{spec}"'
 
 
 def _probe_torchvision_binary(
@@ -1065,7 +1082,7 @@ def _probe_torchvision_binary(
             f"Unsloth: torchvision=={torchvision_version_raw} claims to match "
             f"torch=={torch_version_raw}, but its compiled operators do not "
             f"load ({type(error).__name__}: {error}). Reinstall it with "
-            f"`{_torchvision_repair_command(required)}`. "
+            f"`{_torchvision_repair_command(required, torch_version_raw)}`. "
             f"Set UNSLOTH_SKIP_TORCHVISION_CHECK=1 to skip this check."
         ) from error
 

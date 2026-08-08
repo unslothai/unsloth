@@ -82,7 +82,12 @@ def test_a_chained_cause_is_followed():
     assert import_fixes._is_broken_torchvision_error(outer)
 
 
-def _probe_with_import_raising(error, required = (0, 26)):
+def _probe_with_import_raising(
+    error,
+    required = (0, 26),
+    torch_version_raw = "2.11.0",
+    torchvision_version_raw = "0.26.0",
+):
     """Run the probe with `import torchvision` raising `error`."""
     real_import = builtins.__import__
 
@@ -95,7 +100,9 @@ def _probe_with_import_raising(error, required = (0, 26)):
         for name in [n for n in sys.modules if n.startswith("torchvision")]:
             sys.modules.pop(name, None)
         with mock.patch.object(builtins, "__import__", fake_import):
-            import_fixes._probe_torchvision_binary("2.11.0", "0.26.0", required)
+            import_fixes._probe_torchvision_binary(
+                torch_version_raw, torchvision_version_raw, required
+            )
 
 
 def test_a_broken_binary_raises_something_actionable():
@@ -218,3 +225,35 @@ def test_the_pairing_this_relies_on_is_what_pypi_publishes():
         assert (
             torch_requirement in requirements
         ), f"torchvision {torchvision_version} no longer requires {torch_requirement}"
+
+
+def test_the_repair_command_keeps_the_backend_torch_was_built_for():
+    """PyPI carries one torchvision build per release and it is the CUDA one:
+    `torchvision-0.22.0-cp310-manylinux_2_28_x86_64.whl` links libcudart.so.12,
+    libc10_cuda.so and libtorch_cuda.so, while `0.22.0+rocm6.3` links
+    libamdhip64.so.6, libc10_hip.so and libtorch_hip.so. `--no-deps` keeps the
+    installed torch, so on a ROCm, XPU or CPU host an unqualified pin swaps the
+    working wheel for the CUDA one and reproduces the exact `operator
+    torchvision::nms does not exist` this command is handed out to clear
+    (reproduced end to end on torch 2.7.1+cpu with torchvision 0.22.1+cpu)."""
+
+    def advice(torch_raw):
+        """The message a user on `torch_raw` is actually shown."""
+        with pytest.raises(ImportError) as excinfo:
+            _probe_with_import_raising(
+                _NMS,
+                required = (0, 22, 0),
+                torch_version_raw = torch_raw,
+                torchvision_version_raw = "0.22.0",
+            )
+        return str(excinfo.value)
+
+    for tag in ("rocm6.3", "rocm6.2.4", "xpu", "cpu"):
+        command = advice(f"2.7.0+{tag}")
+        assert f"--index-url https://download.pytorch.org/whl/{tag}" in command, command
+        assert "torchvision==0.22.0" in command, command
+
+    # PyPI already ships the CUDA build, a plain release has no backend tag, and
+    # a source build has no index to point at: all three keep the plain command.
+    for raw in ("2.7.0+cu128", "2.7.0", "2.7.0+git1a2b3c"):
+        assert "--index-url" not in advice(raw), raw
