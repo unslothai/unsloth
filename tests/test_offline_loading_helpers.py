@@ -749,3 +749,118 @@ def test_a_network_error_wrapped_in_a_runtimeerror_keeps_its_cause(monkeypatch):
     assert L._is_offline_related_error(
         caught.value
     ), "the surfaced error is no longer recognisable as network-related"
+
+
+def test_a_wrapped_online_error_does_not_pin_the_failed_attempt(monkeypatch):
+    """Same pinning as above, but through the wrapper path the retry already supports:
+    the loader re-raises the connection error as its own type, so the partial model is
+    held by the CAUSE's traceback, not the top-level one."""
+    import gc
+    import weakref
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+
+    class _PartialModel:
+        pass
+
+    def _download():
+        raise ConnectionError("connection reset while downloading model.safetensors")
+
+    witness = {}
+    calls = []
+
+    @L._offline_aware_load
+    def fake(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            partial = _PartialModel()  # what the failed load already built
+            witness["ref"] = weakref.ref(partial)
+            try:
+                _download()
+            except ConnectionError as connection_error:
+                raise RuntimeError("could not load model") from connection_error
+        witness["alive_during_retry"] = witness["ref"]() is not None
+        return "loaded"
+
+    monkeypatch.setattr(gc, "collect", lambda *a, **k: 0)  # only refcounts, no cycles
+    assert fake("model") == "loaded"
+    assert (
+        witness["alive_during_retry"] is False
+    ), "the wrapper's cause still held the first attempt's model while the retry reloaded"
+
+
+def test_an_implicitly_chained_network_error_stays_recognisable(monkeypatch):
+    """Loaders also chain implicitly (`raise RuntimeError(...)` inside an except, no
+    `from`), so the network error is in `__context__`. Any raise inside the retry's
+    except block overwrites `__context__`, so it has to be kept before that."""
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    calls = []
+
+    @L._offline_aware_load
+    def fake(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            try:
+                raise ConnectionError("connection reset")
+            except ConnectionError:
+                raise RuntimeError("could not load model")  # implicit chaining
+        raise AttributeError("'NoneType' object has no attribute 'endswith'")
+
+    with pytest.raises(RuntimeError) as caught:
+        fake("model")
+    assert L._is_offline_related_error(
+        caught.value
+    ), "the retry replaced the implicitly chained connection error that made this classifiable"
+    # The retry failure is still attached, so it is not lost either.
+    assert isinstance(caught.value.__context__, AttributeError)
+
+
+def test_the_vlm_tokenizer_fallback_does_not_pin_the_built_model(monkeypatch):
+    """The real path this matters on (vision.py:1683-1708): the model is already built,
+    `patch_tokenizer` fails, the AutoTokenizer fallback then hits the network, and the
+    network error is re-raised with the patch failure implicitly chained onto it. The
+    patch failure's traceback is the frame holding the model, so clearing only the
+    network error's own traceback leaves the whole model allocated for the retry."""
+    import gc
+    import weakref
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+
+    class _BuiltModel:
+        pass
+
+    def _patch_tokenizer(model, tok):
+        raise TypeError("Unsloth: this VLM processor cannot be patched")
+
+    def _fallback_auto_tokenizer():
+        raise ConnectionError("Max retries exceeded with url: /api/models")
+
+    witness = {}
+    calls = []
+
+    @L._offline_aware_load
+    def fake(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            model = _BuiltModel()  # already allocated by the weight load
+            witness["ref"] = weakref.ref(model)
+            try:
+                model, tokenizer = _patch_tokenizer(model, object())
+            except Exception as patch_error:
+                try:
+                    _fallback_auto_tokenizer()
+                except Exception as fallback_error:
+                    if L._is_offline_related_error(fallback_error):
+                        raise
+                    raise patch_error
+        witness["alive_during_retry"] = witness["ref"]() is not None
+        return "loaded"
+
+    monkeypatch.setattr(gc, "collect", lambda *a, **k: 0)  # only refcounts, no cycles
+    assert fake("model") == "loaded"
+    assert (
+        witness["alive_during_retry"] is False
+    ), "the implicitly chained patch failure still held the built model during the retry"

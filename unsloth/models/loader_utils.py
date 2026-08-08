@@ -36,6 +36,7 @@ from transformers import __version__ as transformers_version
 from unsloth.models._utils import TorchAOConfig
 from unsloth_zoo.utils import Version, get_quant_type
 import gc
+import traceback as _traceback
 
 transformers_version = Version(transformers_version)
 SUPPORTS_FOURBIT = transformers_version >= Version("4.37")
@@ -1230,6 +1231,15 @@ def _offline_aware_load(fn):
             # those frames hold the half-built model, so the collect below could not
             # free it and a large VLM OOMed on the reload the retry exists to make.
             online_error = e.with_traceback(None)
+            # A wrapper keeps its own cause/context, and those carry tracebacks over the
+            # SAME failed-attempt frames, so dropping only the top one still pins the
+            # half-built model. Clear the locals along the chain; file/line is kept.
+            _chained = online_error.__cause__ or online_error.__context__
+            _depth = 0
+            while _chained is not None and _depth < 8:
+                _traceback.clear_frames(_chained.__traceback__)
+                _chained = _chained.__cause__ or _chained.__context__
+                _depth += 1
         # Retry OUTSIDE the except so the failed attempt's traceback (a partial model)
         # is freed before reallocating, else a large VLM can OOM on the second load.
         try:
@@ -1260,13 +1270,18 @@ def _offline_aware_load(fn):
                 pass
             if surfaced is e:
                 raise
-            # `from e` only where there is no cause to lose. A wrapper classified as
+            # `from e` only where there is no chain to lose. A wrapper classified as
             # network-related THROUGH its `__cause__` would otherwise have that cause
             # replaced by the retry, and nothing downstream could classify it again.
             # The retry still reaches the user either way: implicit chaining sets
             # `__context__` because this raise is inside the except block.
             if online_error.__cause__ is None:
-                raise surfaced from e
+                if online_error.__context__ is None:
+                    raise surfaced from e
+                # Classified through an implicit chain: promote it to `__cause__` first,
+                # because the raise below is inside this except block and so overwrites
+                # `__context__` with the retry failure either way.
+                online_error.__cause__ = online_error.__context__
             raise surfaced
 
     return _wrapper
