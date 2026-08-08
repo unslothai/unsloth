@@ -177,17 +177,17 @@ export const ContextUsageBar: FC<{
             <div className="mt-1 max-w-64 text-ui-11 leading-snug text-muted-foreground/90">
               {advice === "mlx-past-limit" ? (
                 <>
-                  Past the context limit. The chat keeps working — replies
-                  won't be cut off — but the model can no longer hold the whole
-                  conversation, so answers get slower and less accurate the
-                  further past it you go. Increase{" "}
+                  Past the context limit. The chat keeps going rather than
+                  stopping here, but the model can no longer hold the whole
+                  conversation: answers get slower and less accurate, and a
+                  long enough chat can still run out of memory. Increase{" "}
                   <span className="font-medium">Context Length</span> in the
                   chat Settings panel to fit it all.
                 </>
               ) : advice === "mlx-near-limit" ? (
                 <>
-                  Close to the context limit. Past it the chat keeps working,
-                  but answers get slower and less accurate. Increase{" "}
+                  Close to the context limit. Past it the chat keeps going, but
+                  answers get slower and less accurate. Increase{" "}
                   <span className="font-medium">Context Length</span> in the
                   chat Settings panel to fit the whole conversation.
                 </>

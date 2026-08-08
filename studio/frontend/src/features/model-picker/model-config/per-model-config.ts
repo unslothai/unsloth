@@ -132,15 +132,18 @@ export function isServedByLlamaCpp(x: {
 
 /** The store's record of the context window a load left behind.
  *
- *  A non-GGUF response contributes one only when it carries a native length, which is how
- *  MLX reports having measured the model; the transformers path never does, and its
- *  `context_length` is the requested max_seq_length rather than a window anyone sized.
+ *  A window counts when the backend that reported it sized one. MLX always does, so its
+ *  `context_length` stands on its own -- a model whose config declares no trained window
+ *  still serves, and bounds its cache at, whatever length the load resolved. The
+ *  transformers path sizes nothing and reports the requested max_seq_length there, so
+ *  without a native length it contributes no window at all.
  *
  *  One constructor because the four move together: a window without the backend that
  *  produced it is what made a context length read as proof of a GGUF.
  */
 export function loadedContextFields(resp: {
   is_gguf?: boolean;
+  is_mlx?: boolean;
   context_length?: number | null;
   native_context_length?: number | null;
   max_context_length?: number | null;
@@ -161,7 +164,7 @@ export function loadedContextFields(resp: {
   const isGguf = resp.is_gguf ?? false;
   // Unknown, not a default: a response omits it when reading the model's window failed.
   const loaded = resp.context_length ?? null;
-  if (!isGguf && resp.native_context_length == null) {
+  if (!isGguf && !resp.is_mlx && resp.native_context_length == null) {
     return {
       loadedContextLength: null,
       maxContextLength: null,
