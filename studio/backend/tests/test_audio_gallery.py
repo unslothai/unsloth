@@ -137,9 +137,7 @@ def test_gallery_file_route_streams_the_owned_wav(monkeypatch):
         "read_bytes",
         lambda self: pytest.fail("the route must not buffer the WAV before responding"),
     )
-    response = asyncio.run(
-        get_gallery_audio_file(record["id"], current_subject = "tester")
-    )
+    response = asyncio.run(get_gallery_audio_file(record["id"], current_subject = "tester"))
 
     assert isinstance(response, FileResponse)
     assert Path(response.path) == gallery.gallery_dir() / f"{record['id']}.wav"

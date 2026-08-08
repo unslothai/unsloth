@@ -999,9 +999,7 @@ class MtmdSttSidecar:
 
 
 def _close_connection_on_cancel(
-    connection: http.client.HTTPConnection,
-    cancel_event: threading.Event,
-    done: threading.Event,
+    connection: http.client.HTTPConnection, cancel_event: threading.Event, done: threading.Event
 ) -> None:
     while not done.is_set():
         if not cancel_event.wait(0.05):

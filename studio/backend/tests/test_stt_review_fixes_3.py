@@ -447,13 +447,15 @@ def test_audio_is_never_sent_to_a_server_another_client_swapped_in(spawned, monk
     monkeypatch.setattr(
         MtmdSttSidecar,
         "_post_transcribe",
-        lambda self, port, model_id, wav, seconds = None, **kwargs: posted.append(
-            (port, model_id)
-        )
+        lambda self, port, model_id, wav, seconds = None, **kwargs: posted.append((port, model_id))
         or "hi",
     )
 
-    def swap_after_load(self, model = None, request_cancel_event = None):
+    def swap_after_load(
+        self,
+        model = None,
+        request_cancel_event = None,
+    ):
         # Stands in for another client switching the singleton in the gap.
         with self._lock:
             self._process = _FakeProcess()
@@ -545,7 +547,14 @@ def test_disconnecting_one_mtmd_request_does_not_kill_its_sibling(monkeypatch):
     started = 0
     release_second = threading.Event()
 
-    def post(_port, _model, _wav, _seconds = None, *, cancel_event = None):
+    def post(
+        _port,
+        _model,
+        _wav,
+        _seconds = None,
+        *,
+        cancel_event = None,
+    ):
         nonlocal started
         with started_lock:
             started += 1
@@ -565,9 +574,9 @@ def test_disconnecting_one_mtmd_request_does_not_kill_its_sibling(monkeypatch):
     def run(cancel_event):
         try:
             results.append(
-                sidecar.transcribe(
-                    b"audio", model = "qwen3-asr-0.6b", cancel_event = cancel_event
-                )["text"]
+                sidecar.transcribe(b"audio", model = "qwen3-asr-0.6b", cancel_event = cancel_event)[
+                    "text"
+                ]
             )
         except Exception as exc:
             errors.append(exc)
