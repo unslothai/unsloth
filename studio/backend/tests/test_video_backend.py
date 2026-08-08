@@ -369,6 +369,102 @@ class _FakeHV15Pipeline:
         return _FakeHV15Pipeline.instance
 
 
+# MiniMax-H3 BF16 fakes: the Modular Diffusers workflow. ModularPipeline takes no step callback
+# (an unknown input is only warned about) and its denoise loop drives components.scheduler.step,
+# i.e. pipe.scheduler, once per step -- exactly what the HV15 wrapper hooks.
+
+
+class _FakeH3Scheduler:
+    def __init__(self) -> None:
+        self.calls = 0
+        # Fired from the ORIGINAL step, so a test can cancel mid-denoise as a user request would.
+        self.on_step = None
+
+    def step(self, *args, **kwargs):
+        self.calls += 1
+        if self.on_step is not None:
+            self.on_step(self.calls)
+        return object()
+
+
+class _FakeComponentsManager:
+    def __init__(self) -> None:
+        self.offload = None
+
+    def enable_auto_cpu_offload(self, **kwargs):
+        self.offload = kwargs
+
+
+class _FakeModularPipe:
+    def __init__(self) -> None:
+        self.scheduler = _FakeH3Scheduler()
+        self.load_kwargs = None
+        self.last_kwargs = None
+
+    def load_components(self, **kwargs):
+        self.load_kwargs = kwargs
+
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        num_inference_steps = None,
+        width = None,
+        height = None,
+        num_frames = None,
+        generator = None,
+        output = None,
+        **kwargs,
+    ):
+        self.last_kwargs = {
+            "prompt": prompt,
+            "num_inference_steps": num_inference_steps,
+            "width": width,
+            "height": height,
+            "num_frames": num_frames,
+            "output": output,
+            **kwargs,
+        }
+        for _ in range(int(num_inference_steps or 1)):
+            self.scheduler.step(object(), 0, object())
+        return {"videos": [[object() for _ in range(int(num_frames or 1))]], "audio": None}
+
+
+class _FakeModularPipeline:
+    last: dict = {}
+    instance = None
+
+    @classmethod
+    def from_pretrained(cls, path, **kwargs):
+        _FakeModularPipeline.last = {"path": path, **kwargs}
+        _FakeModularPipeline.instance = _FakeModularPipe()
+        return _FakeModularPipeline.instance
+
+
+def _load_h3_modular(backend, *, hf_token = None):
+    """Commit the H3 BF16 state exactly as load_pipeline's Modular Diffusers branch does."""
+    diffusers = sys.modules["diffusers"]
+    diffusers.ComponentsManager = _FakeComponentsManager
+    diffusers.ModularPipeline = _FakeModularPipeline
+    fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+    assert fam is not None
+    backend._load_h3_modular_pipeline(
+        diffusers = diffusers,
+        torch = sys.modules["torch"],
+        fam = fam,
+        repo_id = "MiniMaxAI/MiniMax-H3",
+        base = fam.base_repo,
+        kind = "pipeline",
+        dtype = sys.modules["torch"].bfloat16,
+        device = "cpu",
+        hf_token = hf_token,
+        memory_mode = None,
+        _load_token = None,
+        _base_local_dir = None,
+    )
+    return _FakeModularPipeline.instance
+
+
 @pytest.fixture
 def fake_runtime(monkeypatch):
     torch = types.ModuleType("torch")
@@ -2158,6 +2254,72 @@ def test_h3_native_generation_dispatch_does_not_import_torch(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", _no_torch_import)
     assert backend.generate(prompt = "a fox") is expected
+
+
+def test_h3_native_loaded_repo_ids_cover_the_companion_repos():
+    # The delete guard reads repo_id + base_repo, but the native runtime keeps paths into the GGUF
+    # mirror (Qwen encoder) and the component repo (both VAEs) and re-reads them every generation,
+    # so deleting either On Device while H3 is loaded must be refused.
+    from core.inference.video import _VideoLoadState
+    from core.inference.video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
+
+    backend = VideoBackend()
+    assert backend.loaded_repo_ids() == ()
+    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+    backend._state = _VideoLoadState(
+        pipe = object(),
+        family = fam,
+        repo_id = "leejet/MiniMax-H3-GGUF",
+        base_repo = fam.base_repo,
+        device = "cpu",
+        dtype = "Q4_K_M",
+        kind = "gguf",
+        engine = "sd_cpp",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+    )
+    assert backend.loaded_repo_ids() == (
+        "leejet/MiniMax-H3-GGUF",
+        H3_GGUF_REPO,
+        H3_COMPONENT_REPO,
+    )
+    # A diffusers load holds its weights in memory, and base_repo already names its repo.
+    object.__setattr__(backend._state, "engine", "diffusers")
+    assert backend.loaded_repo_ids() == ()
+
+
+def test_h3_modular_load_forwards_the_hub_token_to_the_component_loads(fake_runtime):
+    # The index load and the component from_pretrained calls are separate hub trips; the token has
+    # to reach both, or gated/private components load anonymously (and only warn on failure).
+    pipe = _load_h3_modular(VideoBackend(), hf_token = "hf_secret")
+    assert _FakeModularPipeline.last["token"] == "hf_secret"
+    assert pipe.load_kwargs["token"] == "hf_secret"
+    # Without a configured token nothing extra is passed, so the hub's own resolution still applies.
+    pipe = _load_h3_modular(VideoBackend())
+    assert "token" not in pipe.load_kwargs
+
+
+def test_h3_modular_generation_ticks_and_cancels_through_the_scheduler(fake_runtime):
+    backend = VideoBackend()
+    pipe = _load_h3_modular(backend)
+    steps_seen: list = []
+    pipe.scheduler.on_step = lambda n: steps_seen.append(backend._gen.get("step"))
+    result = backend.generate(prompt = "a fox", steps = 4)
+    assert "callback_on_step_end" not in pipe.last_kwargs
+    # One wrapped tick per denoise step, then the original method back in place.
+    assert steps_seen == [1, 2, 3, 4]
+    assert pipe.scheduler.step.__func__ is _FakeH3Scheduler.step
+    assert result["num_frames"] == 124 and result["has_audio"] is False
+
+    backend = VideoBackend()
+    pipe = _load_h3_modular(backend)
+    # The cancel lands during the FIRST step; the next wrapped call must unwind the modular denoise
+    # instead of leaving Cancel to take effect only after the whole multi-minute run returns.
+    pipe.scheduler.on_step = lambda n: backend.cancel_generate() if n == 1 else None
+    with pytest.raises(RuntimeError, match = VIDEO_CANCELLED_MSG):
+        backend.generate(prompt = "a fox", steps = 4)
+    assert pipe.scheduler.calls == 1
+    assert pipe.scheduler.step.__func__ is _FakeH3Scheduler.step
 
 
 def test_h3_native_transcode_is_torch_free_and_keeps_audio(monkeypatch, tmp_path):

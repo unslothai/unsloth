@@ -1365,6 +1365,22 @@ class VideoBackend:
                 return ()
             return tuple(r for r in (loading.repo_id, loading.base_repo) if r)
 
+    def loaded_repo_ids(self) -> tuple[str, ...]:
+        """Repo ids the COMMITTED model reads from disk (empty unless a native model is loaded).
+
+        The one-shot sd-cli re-reads H3's Qwen encoder and both VAEs from the cache on every
+        generation, and those live in companion repos that are neither ``repo_id`` nor the BF16
+        ``base_repo`` ``status()`` publishes, so the delete-cached guard must refuse them too.
+        Mirrors the image backend's guard (SdCppBackend.loaded_repo_ids)."""
+        with self._lock:
+            state = self._state
+            if state is None or state.engine != "sd_cpp":
+                return ()
+            repo_id = state.repo_id
+        from .video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
+
+        return (repo_id, H3_GGUF_REPO, H3_COMPONENT_REPO)
+
     # ── the load itself ──────────────────────────────────────────────────────
 
     def load_pipeline(
@@ -1923,7 +1939,10 @@ class VideoBackend:
         if hf_token:
             load_kwargs["token"] = hf_token
         pipe = diffusers.ModularPipeline.from_pretrained(_base_local_dir or repo_id, **load_kwargs)
-        pipe.load_components(dtype = dtype)
+        # The token above only opens the modular index. Every component's own from_pretrained runs
+        # here, against the repos that index names, so it has to be passed again or a gated/private
+        # component load goes out anonymously (load_components only WARNS on a failed component).
+        pipe.load_components(dtype = dtype, **({"token": hf_token} if hf_token else {}))
         # The video VAE loads at float32 and the decode runs under float16 autocast, so both
         # copies are resident for the whole decode. Pre-casting removes the pair without
         # changing a single output value, and t2va never uses the encoder half at all.
@@ -2359,13 +2378,14 @@ class VideoBackend:
                         raise _VideoGenerationCancelled()
                     _tick(done)
 
-                if fam.modular_workflow:
-                    progress_ctx = contextlib.nullcontext()
-                elif "callback_on_step_end" in call_params:
+                if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
                     progress_ctx = contextlib.nullcontext()
                 else:
                     # HunyuanVideo-1.5 has no step callback, so wrap scheduler.step for progress + cancel and restore afterwards.
+                    # Same for H3's modular workflow: ModularPipeline takes no callback (an unknown input is only warned
+                    # about), but MiniMaxH3LoopSchedulerStep calls components.scheduler.step -- pipe.scheduler -- once per
+                    # denoise step, so the wrapper ticks and can unwind a multi-minute run on Cancel.
                     progress_ctx = _scheduler_step_progress(pipe, _on_scheduler_step)
 
                 # Re-check an AUTO cache decision against the ACTUAL step count; explicit choices never toggle.

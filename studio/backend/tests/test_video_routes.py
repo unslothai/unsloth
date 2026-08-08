@@ -785,6 +785,30 @@ def test_delete_guard_protects_the_loaded_video_companion_base(monkeypatch):
     assert deletion._video_blocks_delete("unsloth/something-else") is None
 
 
+def test_delete_guard_protects_the_native_video_companion_repos(monkeypatch):
+    # The native H3 runtime re-reads its Qwen encoder and both VAEs from companion repos that are
+    # neither repo_id nor the BF16 base_repo the status publishes, so the guard needs loaded_repo_ids().
+    from hub.services.models import deletion
+
+    class _Backend:
+        def status(self):
+            return {
+                "loaded": True,
+                "repo_id": "unsloth/MiniMax-H3-GGUF",
+                "base_repo": "MiniMaxAI/MiniMax-H3",
+            }
+
+        def loaded_repo_ids(self):
+            return ("unsloth/MiniMax-H3-GGUF", "Comfy-Org/MiniMax-H3")
+
+        def loading_repo_ids(self):
+            return ()
+
+    monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
+    assert deletion._video_blocks_delete("Comfy-Org/MiniMax-H3") is not None
+    assert deletion._video_blocks_delete("unsloth/something-else") is None
+
+
 def test_video_download_plan_forwards_the_encoder_policy(client, monkeypatch):
     # The plan drives the staged download, so it must use the encoder policy the load will run with: an fp8 request takes a hosted pre-cast encoder, and staging the dense one pulls ~49 GB of Gemma3.
     backend = video_module.get_video_backend()
