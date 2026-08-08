@@ -132,30 +132,36 @@ def test_a_pair_the_build_covers_is_still_working(monkeypatch):
     assert probe.probe_xformers()["runs"] is True
 
 
-def test_flash_attn_on_a_card_no_prebuilt_wheel_covers_is_unknown(monkeypatch):
-    """The extension can load and the first launch still fail, because no kernel image in
-    the build covers the card. Our own installer refuses to fetch a prebuilt wheel on
-    sm_100+, so one that got there another way is not something to call Working -- and this
-    child must not launch a kernel to find out."""
+@pytest.mark.parametrize("capabilities", [((12, 0),), ((9, 0),), ((8, 6),), ()])
+def test_flash_attn_kernel_coverage_is_unknown_without_a_launch(monkeypatch, capabilities):
+    """Importing the extension is not the question, on any card.
+
+    A build with no cubin or PTX image for this architecture imports fine and fails its
+    first launch with "no kernel image is available" -- true of source builds and of older
+    wheels, not only of the sm_100+ cards our installer refuses to fetch a wheel for.
+    flash-attn exposes no list of the architectures it was compiled for, and this child
+    never launches a kernel, so nothing here can establish support."""
     monkeypatch.setitem(sys.modules, "flash_attn", types.ModuleType("flash_attn"))
     monkeypatch.setitem(
         sys.modules, "flash_attn.flash_attn_interface", types.ModuleType("iface")
     )
-    monkeypatch.setattr(probe, "_device_compute_capabilities", lambda: ((12, 0),))
+    monkeypatch.setattr(probe, "_device_compute_capabilities", lambda: capabilities)
 
     entry = probe.probe_flash_attn()
     assert entry["imports"] is True
     assert entry["runs"] is None, "unknown, not a verdict either way"
-    assert "12.0" in entry["error"]
+    assert "without launching one" in entry["error"]
 
 
-def test_flash_attn_on_a_supported_card_still_reports_working(monkeypatch):
+def test_a_flash_attn_that_cannot_import_is_still_broken(monkeypatch):
+    # Unknown is for "cannot be established", never for "it raised". A None entry in
+    # sys.modules is how the import system spells a submodule that will not load.
     monkeypatch.setitem(sys.modules, "flash_attn", types.ModuleType("flash_attn"))
-    monkeypatch.setitem(
-        sys.modules, "flash_attn.flash_attn_interface", types.ModuleType("iface")
-    )
-    monkeypatch.setattr(probe, "_device_compute_capabilities", lambda: ((9, 0),))
-    assert probe.probe_flash_attn()["runs"] is True
+    monkeypatch.setitem(sys.modules, "flash_attn.flash_attn_interface", None)
+
+    entry = probe.probe_flash_attn()
+    assert entry["imports"] is True
+    assert entry["runs"] is False and entry["error"]
 
 
 def test_the_capability_is_parsed_from_the_override(monkeypatch):
@@ -229,16 +235,21 @@ def test_the_bitsandbytes_check_is_the_one_the_loader_gates_on():
     assert hasattr(module, "check_native_kernels")
 
 
-def test_torchao_without_native_operators_is_not_working(monkeypatch):
-    # The dispatcher's table, NOT dir(torch.ops.torchao): touching that attribute creates an
-    # empty _OpNamespace whose dir() already lists __name__, __spec__ and friends, so the
-    # no-native-operators case -- the one this exists to catch -- read as healthy.
+def test_torchao_without_native_operators_is_unknown_not_broken(monkeypatch):
+    """The dispatcher's table, NOT dir(torch.ops.torchao): touching that attribute creates an
+    empty _OpNamespace whose dir() already lists __name__, __spec__ and friends, so the
+    no-native-operators case -- the one this exists to catch -- read as healthy.
+
+    And the verdict is UNKNOWN, not broken: the managed stack pins torchao 0.17 on torch
+    2.10+cu130 knowing its extension is cleanly skipped, and torchao keeps working through
+    its Python fallbacks. Calling that degraded would put a destructive banner on the
+    standard configuration."""
     monkeypatch.setitem(sys.modules, "torchao", types.ModuleType("torchao"))
     monkeypatch.setattr(probe, "_registered_ops", lambda namespace: 0)
 
     entry = probe.probe_torchao()
     assert entry["imports"] is True
-    assert entry["runs"] is False
+    assert entry["runs"] is None
     assert "registered no native operators" in entry["error"]
 
 

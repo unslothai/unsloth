@@ -380,3 +380,50 @@ def test_mistral_hands_the_dispatcher_its_configured_window():
     assert contexts, "AttentionContext construction not found in mistral.py"
     for call in contexts:
         assert "sliding_window" in {kw.arg for kw in call.keywords}
+
+
+def test_a_zero_configured_window_is_full_causal_not_a_blank_mask():
+    """`sliding_window = 0` means "no local attention", the same as absent -- which is how
+    Mistral's own mask builders read it. Passing the 0 through makes the SDPA lower bound
+    `q_pos - (0 - 1)` sit above the causal upper bound, so every position is masked and the
+    layer returns nothing at all."""
+    import ast
+    from pathlib import Path
+
+    src = Path(attention_dispatch.__file__).resolve().parents[1] / "models" / "mistral.py"
+    text = src.read_text(encoding = "utf-8")
+    assert "isinstance(sw_cfg, int) and sw_cfg <= 0" in text, (
+        "a non-positive configured window must be normalised before it reaches window_size "
+        "or the dispatcher"
+    )
+    ast.parse(text)
+
+
+def test_run_attention_sdpa_ignores_a_zero_window(monkeypatch):
+    # Belt and braces at the dispatcher: even handed a zero, it must not build a mask that
+    # hides everything.
+    captured = {}
+    monkeypatch.setattr(
+        attention_dispatch,
+        "scaled_dot_product_attention",
+        lambda Q, K, V, **kw: (captured.update(kw), torch.zeros_like(Q))[1],
+    )
+    config = attention_dispatch.AttentionConfig(
+        backend = attention_dispatch.SDPA, n_kv_heads = 1, n_groups = 1
+    )
+    context = attention_dispatch.AttentionContext(
+        bsz = 1,
+        q_len = 4,
+        kv_seq_len = 4,
+        n_heads = 1,
+        head_dim = 1,
+        requires_grad = True,
+        seq_info = None,
+        attention_mask = None,
+        causal_mask = None,
+        sliding_window = 0,
+    )
+    Q = torch.zeros(1, 1, 4, 1)
+    attention_dispatch.run_attention(config = config, context = context, Q = Q, K = Q, V = Q)
+    mask = captured["attn_mask"]
+    assert mask is None or bool(mask.any()), "a zero window must not mask everything"

@@ -383,3 +383,48 @@ def test_the_model_code_reads_the_probed_verdict_not_the_bare_import():
     from unsloth.utils import attention_dispatch
 
     assert llama.HAS_XFORMERS is attention_dispatch.HAS_XFORMERS
+
+
+def test_an_exclusive_mode_refusal_keeps_xformers_on(monkeypatch):
+    """"device is currently in use by another process" is the driver saying the GPU is
+    someone else's right now, not that the wheel is broken. Recorded as conclusive, it turned
+    a transient into a process-wide 2x memory regression -- caused by the diagnostic."""
+    monkeypatch.setattr(
+        ad.torch.cuda,
+        "get_device_capability",
+        lambda index = None: (_ for _ in ()).throw(
+            RuntimeError("CUDA error: device is currently in use by another process")
+        ),
+    )
+    assert ad._xformers_runs_on_device() is False
+    assert ad.XFORMERS_PROBE_INCONCLUSIVE is True, (
+        "an inconclusive failure must leave xformers enabled for the real forward to decide"
+    )
+
+
+def test_the_probed_device_follows_the_caller_selection(monkeypatch):
+    """A single-process app that calls torch.cuda.set_device(1) before importing us has said
+    where its work goes. Probing 0 anyway can disable xformers over a card nothing will
+    touch, and creates a context on it to do so. LOCAL_RANK still wins when it is usable."""
+    monkeypatch.setattr(ad.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(ad.torch.cuda, "device_count", lambda: 4)
+    monkeypatch.setattr(ad.torch.cuda, "current_device", lambda: 1)
+
+    monkeypatch.delenv("LOCAL_RANK", raising = False)
+    assert ad._resolve_probe_device_index() == 1
+
+    monkeypatch.setenv("LOCAL_RANK", "3")
+    assert ad._resolve_probe_device_index() == 3
+
+    # Out of range, the not-distributed sentinel, and junk all fall back to the selection.
+    for value in ("9", "-1", "not a rank", ""):
+        monkeypatch.setenv("LOCAL_RANK", value)
+        assert ad._resolve_probe_device_index() == 1
+
+    # And a current_device that raises still lands on 0 rather than propagating.
+    monkeypatch.setattr(
+        ad.torch.cuda,
+        "current_device",
+        lambda: (_ for _ in ()).throw(RuntimeError("no context")),
+    )
+    assert ad._resolve_probe_device_index() == 0

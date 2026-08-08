@@ -64,6 +64,12 @@ _INCONCLUSIVE_PROBE_ERRORS = (
     # must not be recorded as "your xformers is broken" and disable it process-wide.
     "invalid device ordinal",
     "invalid device id",
+    # EXCLUSIVE_PROCESS wording that the phrases above do not cover. The driver says this
+    # when another process holds the device; the wheel was never tested, so turning
+    # xformers off process-wide on the strength of it is the same silent regression.
+    "currently in use",
+    "in use by another process",
+    "exclusive",
 )
 
 # Which device to probe. Under torchrun each rank owns a different GPU, and on a mixed box
@@ -78,12 +84,29 @@ _INCONCLUSIVE_PROBE_ERRORS = (
 # an invalid ordinal, and that call is at module scope, so an unclamped index turns
 # `import unsloth` into a crash on an ordinary launch. Fall back to 0, which is the only
 # device such a rank has.
-try:
-    _PROBE_DEVICE_INDEX = int(os.environ.get("LOCAL_RANK", "") or 0)
-except ValueError:
-    _PROBE_DEVICE_INDEX = 0
-if not (0 <= _PROBE_DEVICE_INDEX < (torch.cuda.device_count() if torch.cuda.is_available() else 0)):
-    _PROBE_DEVICE_INDEX = 0
+#
+# With no usable LOCAL_RANK, the device the CALLER already selected: a single-process
+# application that runs torch.cuda.set_device(1) before importing us is telling us where its
+# work goes, and probing 0 anyway can disable xformers over a card nothing will touch -- and
+# creates a context on it while doing so.
+def _resolve_probe_device_index() -> int:
+    count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    if count <= 0:
+        return 0
+    try:
+        rank = int(os.environ.get("LOCAL_RANK", "") or -1)
+    except ValueError:
+        rank = -1
+    if 0 <= rank < count:
+        return rank
+    try:
+        current = int(torch.cuda.current_device())
+    except Exception:
+        return 0
+    return current if 0 <= current < count else 0
+
+
+_PROBE_DEVICE_INDEX = _resolve_probe_device_index()
 
 
 def _xformers_runs_on_device() -> bool:
@@ -369,6 +392,11 @@ def run_attention(
     kv_seq_len = context.kv_seq_len
     requires_grad = context.requires_grad
     sliding_window = context.sliding_window
+    # A non-positive window means "no local attention", not "a window of nothing": a config
+    # spelling it 0 would otherwise put the mask's lower bound above its causal upper bound
+    # and hide every position from every other.
+    if sliding_window is not None and sliding_window <= 0:
+        sliding_window = None
 
     # DoRA promotes q/k/v_proj outputs to fp32, which FlashAttention rejects (and so does
     # the xformers flash-2 op on sm_100+, see _XFORMERS_FP32_UNSUPPORTED), so downcast any

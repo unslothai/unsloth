@@ -109,7 +109,14 @@ def MistralAttention_fast_forward(
 
     # Attention module
     sw_cfg = getattr(self.config, "sliding_window", None)
-    sw = kv_seq_len if (sw_cfg is None or sw_cfg == "null") else sw_cfg
+    # A non-positive window means "no local attention", the same as absent -- which is how
+    # the mask builders above read it. Passing 0 through made window_size (0, 0) for flash
+    # and, once the dispatcher started honouring the window, an all-false SDPA mask: the
+    # lower bound q_pos - (0 - 1) sits above the causal upper bound, so nothing is visible.
+    if sw_cfg is None or sw_cfg == "null" or (isinstance(sw_cfg, int) and sw_cfg <= 0):
+        sw = kv_seq_len
+    else:
+        sw = sw_cfg
     window_size = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
 
     use_varlen = seq_info is not None and past_key_value is None and window_size == (-1, -1)

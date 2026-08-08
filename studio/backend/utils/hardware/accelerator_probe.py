@@ -196,11 +196,6 @@ def _device_compute_capabilities():
     return tuple(capabilities)
 
 
-# sm_100 (B200) and up: no prebuilt flash-attn wheel exists, which is why
-# install_python_stack refuses to fetch one there.
-_FLASH_ATTN_PREBUILT_CEILING = (10, 0)
-
-
 def probe_flash_attn() -> Dict[str, Any]:
     """flash-attn, forced past the lazy bit: the CUDA extension lives in the interface."""
     entry = probe_import("flash_attn")
@@ -212,21 +207,18 @@ def probe_flash_attn() -> Dict[str, Any]:
         entry["runs"] = False
         entry["error"] = _error(exc)
         return entry
-    # The extension can load and the first kernel launch still fail, because no kernel image
-    # in the build covers this card. Our own installer skips prebuilt FlashAttention on
-    # sm_100+ for exactly that reason (studio/install_python_stack.py), so a wheel that got
-    # there another way is not something to call Working -- and this child must not launch a
-    # kernel to find out. Unknown, with the reason, rather than a verdict either way.
-    unsupported = [c for c in _device_compute_capabilities() if c >= _FLASH_ATTN_PREBUILT_CEILING]
-    if unsupported:
-        entry["runs"] = None
-        entry["error"] = (
-            "flash-attn imported, but no prebuilt wheel covers compute capability "
-            f"{unsupported[0][0]}.{unsupported[0][1]}; whether its kernels launch here "
-            "cannot be established without running one"
-        )
-        return entry
-    entry["runs"] = True
+    # Importing the extension is not the question. A build with no cubin or PTX image for
+    # this architecture imports fine and fails its first launch with "no kernel image is
+    # available" -- true of source builds and of older wheels, not only of the sm_100+ cards
+    # our own installer refuses to fetch a prebuilt wheel for. flash-attn exposes no list of
+    # the architectures it was compiled for, and this child deliberately never launches a
+    # kernel, so support cannot be established here. Unknown, with the reason, is the honest
+    # answer; a failed import above is still broken.
+    entry["runs"] = None
+    entry["error"] = (
+        "flash-attn imported; whether its kernels cover this GPU cannot be established "
+        "without launching one, which this probe does not do"
+    )
     return entry
 
 
@@ -288,10 +280,14 @@ def _load_bnb_availability():
 def probe_torchao() -> Dict[str, Any]:
     """torchao, past the import: did its C++/CUDA extension actually load?
 
-    A supported install can import torchao while its kernels are absent -- the Python
-    stack pins 0.17.0 on torch 2.10+cu130 precisely because its torch-2.11 extensions are
-    "cleanly skipped" rather than crashed -- and the quantization kernels are then not
-    there. Reporting that as "Working" is the false all-clear this report exists to avoid.
+    A supported install can import torchao while its native operators are absent -- the
+    Python stack pins 0.17.0 on torch 2.10+cu130 precisely because its torch-2.11 extension
+    is "cleanly skipped" rather than crashed. Reporting THAT as "Working" is a false
+    all-clear; reporting it as broken is a false alarm on the managed stack, since torchao
+    keeps working through its supported fallbacks and only the optimized kernels are gone.
+
+    So: unknown, with the reason. It shows in the About row without lighting the banner,
+    which is reserved for an install that genuinely cannot load.
     """
     entry = probe_import("torchao")
     if not entry["imports"]:
@@ -301,13 +297,15 @@ def probe_torchao() -> Dict[str, Any]:
         # Cannot tell (an unfamiliar torch): leave the import-only answer rather than invent
         # a verdict.
         return entry
-    entry["runs"] = registered > 0
-    if not entry["runs"]:
-        entry["error"] = (
-            "torchao imported but registered no native operators: its C++/CUDA extension was "
-            "skipped for this torch build, so the optimized quantization kernels are not "
-            "available"
-        )
+    if registered > 0:
+        entry["runs"] = True
+        return entry
+    entry["runs"] = None
+    entry["error"] = (
+        "torchao imported but registered no native operators: its C++/CUDA extension was "
+        "skipped for this torch build, so the optimized quantization kernels are not "
+        "available and it falls back to its Python paths"
+    )
     return entry
 
 
