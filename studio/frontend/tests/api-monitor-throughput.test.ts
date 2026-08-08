@@ -26,7 +26,6 @@ function queuedEntry(overrides: Partial<ApiMonitorEntry> = {}): ApiMonitorEntry 
     duration_ms: 10_000,
     ttft_ms: 9_000,
     decode_ms: 1_000,
-    decode_ms_authoritative: true,
     completion_tokens: 50,
     ...overrides,
   } as ApiMonitorEntry;
@@ -39,18 +38,12 @@ test("throughput rates the decode window, not the queue wait", () => {
   assert.equal(stats.avgDurationMs, 10_000);
 });
 
-test("a streamed window without engine timings is not rated", () => {
-  // How many tokens rode in the first chunk is unknowable here, and reasoning tokens
-  // are counted in the usage but generated before the window opens. Both inflate.
-  const stats = computeStats([
-    queuedEntry({ decode_ms_authoritative: false }),
-  ]);
-  assert.equal(stats.tokensPerSecond, null);
-});
-
 test("a reply with no decode window is left out of the rate", () => {
+  // How many tokens rode in the first chunk is unknowable, and reasoning tokens are
+  // counted in the usage but generated before the window opens. Both inflate, so a
+  // request the engine did not time is skipped rather than guessed at.
   const stats = computeStats([
-    queuedEntry({ ttft_ms: null, decode_ms: null, decode_ms_authoritative: false }),
+    queuedEntry({ ttft_ms: null, decode_ms: null }),
   ]);
   // Not folded back in at the whole-request rate, which would report 5 tok/s.
   assert.equal(stats.tokensPerSecond, null);

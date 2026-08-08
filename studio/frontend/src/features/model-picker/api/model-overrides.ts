@@ -34,6 +34,10 @@ export interface ApiModelOverride {
   // biome-ignore lint/style/useNamingConvention: API schema
   n_parallel?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
+  n_batch?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  n_ubatch?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
   tensor_parallel?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   chat_template_override?: string;
@@ -106,6 +110,13 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   // Blank follows the server-wide --parallel default, which is the app default here.
   if (config.nParallel && config.nParallel > 0) {
     payload.n_parallel = config.nParallel;
+  }
+  // blank follows the llama.cpp defaults (2048 / 512)
+  if (config.nBatch && config.nBatch > 0) {
+    payload.n_batch = config.nBatch;
+  }
+  if (config.nUbatch && config.nUbatch > 0) {
+    payload.n_ubatch = config.nUbatch;
   }
   if (config.tensorParallel) {
     payload.tensor_parallel = true;

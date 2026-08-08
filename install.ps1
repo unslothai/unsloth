@@ -48,6 +48,27 @@ function Install-UnslothStudio {
         }
     }
 
+    # Same UTF-8 invariant as studio/setup.ps1, same ordering constraint: this
+    # rebuilds [Console]::Out, so it precedes the first write.
+    $_UnslothUtf8NoBom = New-Object System.Text.UTF8Encoding $false
+    try {
+        [Console]::OutputEncoding = $_UnslothUtf8NoBom
+    } catch {
+        # No console: the setter drops the cached writer before throwing, so
+        # bind UTF-8 ones explicitly. Same fallback as studio/setup.ps1.
+        try {
+            $_UnslothStdout = New-Object System.IO.StreamWriter -ArgumentList ([Console]::OpenStandardOutput()), $_UnslothUtf8NoBom
+            $_UnslothStdout.AutoFlush = $true
+            [Console]::SetOut($_UnslothStdout)
+            $_UnslothStderr = New-Object System.IO.StreamWriter -ArgumentList ([Console]::OpenStandardError()), $_UnslothUtf8NoBom
+            $_UnslothStderr.AutoFlush = $true
+            [Console]::SetError($_UnslothStderr)
+        } catch { }
+    }
+    $OutputEncoding = $_UnslothUtf8NoBom
+    $env:PYTHONUTF8 = '1'
+    $env:PYTHONIOENCODING = 'utf-8'
+
     # ── Tauri structured output ──
     function Write-TauriLog {
         param([string]$Tag, [string]$Message)
@@ -244,20 +265,163 @@ function Install-UnslothStudio {
         $envOverrideVar = "STUDIO_HOME"
         $envOverride = $env:STUDIO_HOME.Trim()
     }
+    $defaultProfile = $null
+    try { $defaultProfile = [Environment]::GetFolderPath("UserProfile") } catch {}
+    $tauriProfile = if ($defaultProfile) { $defaultProfile } else { $env:USERPROFILE }
 
-    # Custom Unsloth roots are not supported with --tauri (desktop app still
-    # resolves %USERPROFILE%\.unsloth\studio). Pass through if override == legacy.
+    function Get-StudioFinalPath {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        $fullPath = [System.IO.Path]::GetFullPath($Path)
+        $fullRoot = [System.IO.Path]::GetPathRoot($fullPath)
+        if (-not $fullRoot -or $fullPath.Length -gt $fullRoot.Length) {
+            $fullPath = $fullPath.TrimEnd('\', '/')
+        }
+        $existingPath = $fullPath
+        $missingSegments = @()
+        while (-not (Test-Path -LiteralPath $existingPath)) {
+            $leaf = [System.IO.Path]::GetFileName($existingPath)
+            $parent = [System.IO.Path]::GetDirectoryName($existingPath)
+            if ([string]::IsNullOrEmpty($leaf) -or [string]::IsNullOrEmpty($parent)) {
+                return $fullPath
+            }
+            $missingSegments = @($leaf) + $missingSegments
+            $existingPath = $parent
+        }
+        if (-not ("UnslothStudioFinalPathV2" -as [type])) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+public static class UnslothStudioFinalPathV2
+{
+    private const uint FileShareRead = 0x00000001;
+    private const uint FileShareWrite = 0x00000002;
+    private const uint FileShareDelete = 0x00000004;
+    private const uint OpenExisting = 3;
+    private const uint FileFlagBackupSemantics = 0x02000000;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFileW(
+        string fileName,
+        uint desiredAccess,
+        uint shareMode,
+        IntPtr securityAttributes,
+        uint creationDisposition,
+        uint flagsAndAttributes,
+        IntPtr templateFile);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint GetFinalPathNameByHandleW(
+        SafeFileHandle file,
+        StringBuilder path,
+        uint pathLength,
+        uint flags);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(
+        uint desiredAccess,
+        bool inheritHandle,
+        int processId);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool QueryFullProcessImageNameW(
+        IntPtr process,
+        uint flags,
+        StringBuilder path,
+        ref uint pathLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    public static string Resolve(string path)
+    {
+        using (SafeFileHandle handle = CreateFileW(
+            path,
+            0,
+            FileShareRead | FileShareWrite | FileShareDelete,
+            IntPtr.Zero,
+            OpenExisting,
+            FileFlagBackupSemantics,
+            IntPtr.Zero))
+        {
+            if (handle.IsInvalid)
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+
+            StringBuilder buffer = new StringBuilder(512);
+            uint length = GetFinalPathNameByHandleW(
+                handle, buffer, (uint)buffer.Capacity, 0);
+            if (length == 0)
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            if (length >= buffer.Capacity)
+            {
+                buffer = new StringBuilder((int)length + 1);
+                length = GetFinalPathNameByHandleW(
+                    handle, buffer, (uint)buffer.Capacity, 0);
+                if (length == 0)
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            if (length >= buffer.Capacity)
+                throw new InvalidOperationException("Final path exceeded the allocated buffer");
+            return buffer.ToString();
+        }
+  }
+
+    public static string GetProcessImagePath(int processId)
+    {
+        const uint ProcessQueryLimitedInformation = 0x1000;
+        IntPtr process = OpenProcess(ProcessQueryLimitedInformation, false, processId);
+        if (process == IntPtr.Zero)
+        {
+            return null;
+        }
+        try
+        {
+            StringBuilder path = new StringBuilder(32768);
+            uint pathLength = (uint)path.Capacity;
+            return QueryFullProcessImageNameW(process, 0, path, ref pathLength)
+                ? path.ToString()
+                : null;
+        }
+        finally
+        {
+            CloseHandle(process);
+        }
+  }
+}
+'@
+        }
+        $resolved = [UnslothStudioFinalPathV2]::Resolve($existingPath)
+        if ($resolved.StartsWith('\\?\UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $resolved = '\\' + $resolved.Substring(8)
+        } elseif ($resolved.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $resolved = $resolved.Substring(4)
+        }
+        foreach ($segment in $missingSegments) {
+            $resolved = [System.IO.Path]::Combine($resolved, $segment)
+        }
+        $resolvedRoot = [System.IO.Path]::GetPathRoot($resolved)
+        if ($resolvedRoot -and $resolved.Length -le $resolvedRoot.Length) {
+            return $resolvedRoot
+        }
+        return $resolved.TrimEnd('\', '/')
+    }
+
+    # Custom Unsloth roots are not supported with --tauri (the desktop app uses
+    # the Windows profile folder). Pass through if the override is that same root.
     if ($TauriMode -and $envOverride) {
         $_tauriOverride = $envOverride
         if ($_tauriOverride -eq "~" -or $_tauriOverride -like "~/*" -or $_tauriOverride -like "~\*") {
             $_tauriOverride = (Join-Path $env:USERPROFILE $_tauriOverride.Substring(1).TrimStart('/','\'))
         }
         try {
-            $_tauriOverride = [System.IO.Path]::GetFullPath($_tauriOverride)
+            $_tauriOverride = Get-StudioFinalPath -Path $_tauriOverride
         } catch {}
-        $_legacyTauriRoot = Join-Path $env:USERPROFILE ".unsloth\studio"
+        $_legacyTauriRoot = Join-Path $tauriProfile ".unsloth\studio"
         try {
-            $_legacyTauriRoot = [System.IO.Path]::GetFullPath($_legacyTauriRoot)
+            $_legacyTauriRoot = Get-StudioFinalPath -Path $_legacyTauriRoot
         } catch {}
         # Strip trailing separators so ".../studio\" matches ".../studio".
         $_trimSeps = @(
@@ -268,15 +432,13 @@ function Install-UnslothStudio {
         $_legacyTauriRoot = $_legacyTauriRoot.TrimEnd($_trimSeps)
         if ($_tauriOverride -ne $_legacyTauriRoot) {
             Write-Host "ERROR: $envOverrideVar is not supported with --tauri." -ForegroundColor Red
-            Write-Host "       The desktop app still uses the legacy %USERPROFILE%\.unsloth\studio root." -ForegroundColor Red
+            Write-Host "       The desktop app uses the Windows profile .unsloth\studio root." -ForegroundColor Red
             Write-Host "       Run install.ps1 without --tauri for custom-root shell installs," -ForegroundColor Yellow
             Write-Host "       or unset the env var for default desktop installs." -ForegroundColor Yellow
             throw "$envOverrideVar is not supported with --tauri."
         }
     }
 
-    $defaultProfile = $null
-    try { $defaultProfile = [Environment]::GetFolderPath("UserProfile") } catch {}
 
     # LOCALAPPDATA may be unset in service / CI contexts; Join-Path would abort
     # under ErrorActionPreference=Stop without this guard.
@@ -501,7 +663,6 @@ function Install-UnslothStudio {
             Write-Host ("  {0}{1}{2}{3}{4}{2}" -f $dim, $padded, $rst, $val, $Value)
         } else {
             $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
-            Write-Host ("  {0}" -f $padded) -NoNewline -ForegroundColor DarkGray
             $fc = switch ($Color) {
                 'Green' { 'DarkGreen' }
                 'Yellow' { 'Yellow' }
@@ -509,7 +670,10 @@ function Install-UnslothStudio {
                 'DarkGray' { 'DarkGray' }
                 default { 'DarkGreen' }
             }
-            Write-Host $Value -ForegroundColor $fc
+            # One composed record: two Write-Host calls are two Information
+            # records, and a redirected consumer splits the label from the value
+            # at the boundary. No mirror here, so this is the only sink.
+            Write-Host ("  {0}{1}" -f $padded, $Value) -ForegroundColor $fc
         }
     }
 
@@ -535,6 +699,180 @@ function Install-UnslothStudio {
             Write-Host ("  {0,-15}{1}" -f "", $Message) -ForegroundColor $fc
         }
     }
+
+    # Managed llama.cpp access check. This script cannot dot-source setup.ps1, so
+    # it holds byte-identical copies; test_denied_llama_cpp_preflight.py enforces that.
+    # ── BEGIN SHARED WITH studio/setup.ps1 ──
+
+    # Recognize ERROR_ACCESS_DENIED through PowerShell's wrapper exceptions.
+    function Test-AccessDeniedError {
+        param($ErrorRecord)
+
+        $ex = if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { $ErrorRecord.Exception } else { $ErrorRecord }
+        while ($ex) {
+            if ($ex -is [System.UnauthorizedAccessException]) { return $true }
+            # IOException uses HRESULT; Win32Exception uses NativeErrorCode.
+            if ($ex.HResult -eq -2147024891) { return $true }
+            if ($ex -is [System.ComponentModel.Win32Exception] -and $ex.NativeErrorCode -eq 5) { return $true }
+            $ex = $ex.InnerException
+        }
+        if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) {
+            return ($ErrorRecord.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::PermissionDenied)
+        }
+        return $false
+    }
+
+    # Keep denied ACLs distinct from absent paths instead of letting Test-Path throw.
+    function Get-PathState {
+        param(
+            [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path,
+            [ValidateSet("Any", "Leaf", "Container")][string]$PathType = "Any"
+        )
+
+        if ([string]::IsNullOrWhiteSpace($Path)) { return "Absent" }
+        try {
+            if (Test-Path -LiteralPath $Path -PathType $PathType -ErrorAction Stop) { return "Present" }
+            return "Absent"
+        } catch {
+            if (Test-AccessDeniedError $_) { return "Denied" }
+            # Malformed path, offline drive, dangling link: nothing usable there.
+            return "Absent"
+        }
+    }
+
+    # Dir, marker and listing: no single probe separates readable/absent/denied.
+    function Get-LlamaCppInstallReadState {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+
+        $dirState = Get-PathState -Path $Path -PathType Container
+        if ($dirState -eq "Denied") { return "Denied" }
+        if ($dirState -ne "Present") { return "Absent" }
+        switch (Get-PathState -Path (Join-Path $Path "UNSLOTH_PREBUILT_INFO.json") -PathType Leaf) {
+            "Denied"  { return "Denied" }
+        }
+        try { $null = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop | Select-Object -First 1) }
+        catch {
+            if (Test-AccessDeniedError $_) { return "Denied" }
+            # Nonfatal here: nothing has been installed yet.
+        }
+        return "Readable"
+    }
+
+    # Describe a denied link target without risking another reporting failure.
+    function Get-PathDenialDetail {
+        param([Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Path)
+
+        if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+        if (-not $item) { return "" }
+        # Non-filesystem providers do not expose FileSystemInfo attributes.
+        if ($item -isnot [System.IO.FileSystemInfo]) { return "" }
+        if (-not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return "" }
+        $target = $null
+        try { $target = $item.Target } catch { $target = $null }
+        # PS 5.1 exposes .Target as a collection; PS 7 as a string.
+        if ($target) { return " (it is a link to $(@($target) -join ', '))" }
+        return " (it is a link)"
+    }
+
+    # Print guidance; returns the failure reason as its only pipeline output.
+    function Write-PathAccessDenied {
+        param(
+            [Parameter(Mandatory = $true)][AllowNull()][AllowEmptyString()][string]$Path,
+            [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Label,
+            # Never tell users to delete a build they supplied.
+            [switch]$UserSupplied,
+            # Unreadable custom homes cannot be identified as managed caches.
+            [switch]$OwnershipUnverified
+        )
+
+        step "permissions" "$Label at $Path cannot be read: access is denied$(Get-PathDenialDetail -Path $Path)" "Red"
+        if ($UserSupplied) {
+            substep "Unsloth will not touch a directory you pointed it at, so this has to be fixed at the source" "Yellow"
+            substep "Restore access with these two in an elevated PowerShell, or point UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build:" "Yellow"
+        } elseif ($OwnershipUnverified) {
+            substep "Unsloth cannot confirm this folder is its own install while it is unreadable, so it will not tell you to remove it" "Yellow"
+            substep "Restore access with these two in an elevated PowerShell, or move the folder aside and re-run setup:" "Yellow"
+        } else {
+            substep "This folder lives outside the app, so reinstalling Unsloth Studio, to any drive, reuses it and fails the same way" "Yellow"
+            substep "Simplest fix: close Unsloth, delete or rename $Path, then re-run setup (it is a managed cache and gets reinstalled)" "Yellow"
+            substep "If deleting is also denied, run these two in an elevated PowerShell, then re-run setup:" "Yellow"
+        }
+        substep "takeown /F `"$Path`" /R /D Y" "Yellow"
+        substep "icacls `"$Path`" /reset /T" "Yellow"
+        substep "Antivirus or Controlled folder access can deny this path too; allow or exclude it, then retry" "Yellow"
+        if ($UserSupplied) {
+            return "Access denied reading $Label at $Path. Restore access with takeown/icacls, or point UNSLOTH_LOCAL_LLAMA_CPP_DIR at a readable build, then re-run setup."
+        }
+        if ($OwnershipUnverified) {
+            return "Access denied reading $Label at $Path. Unsloth cannot confirm that folder is its own install while it is unreadable: restore access with takeown/icacls, or move it aside, then re-run setup."
+        }
+        return "Access denied reading the existing $Label at $Path. Delete or rename that folder (Unsloth reinstalls it) or restore access with takeown/icacls, then re-run setup. Reinstalling the app does not reset it."
+    }
+
+    # Canonicalize a directory for comparison; unresolvable ones are only normalized.
+    function Get-CanonicalDir {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+
+        $trimmedPath = $Path.Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmedPath)) { return $trimmedPath }
+        $resolvedPath = $null
+        if ((Get-PathState -Path $trimmedPath -PathType Container) -eq "Present") {
+            try { $resolvedPath = (Resolve-Path -LiteralPath $trimmedPath).Path } catch {}
+        }
+        if (-not $resolvedPath) {
+            try {
+                $resolvedPath =
+                    $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($trimmedPath)
+            } catch {
+                $resolvedPath = [System.Environment]::ExpandEnvironmentVariables($trimmedPath)
+            }
+            try { $resolvedPath = [System.IO.Path]::GetFullPath($resolvedPath) } catch {}
+        }
+        # Resolve-Path keeps a trailing separator, so trim after both branches (never a root).
+        try {
+            $root = [System.IO.Path]::GetPathRoot($resolvedPath)
+            if ($root -and $resolvedPath.Length -gt $root.Length) { return $resolvedPath.TrimEnd('\', '/') }
+        } catch {}
+        return $resolvedPath
+    }
+
+    # Compare canonical homes so path spelling does not change ownership policy.
+    function Test-StudioHomeIsCustom {
+        return ((Get-CanonicalDir -Path $StudioHome) -ne
+            (Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth\studio")))
+    }
+
+    # Shared default cache, or the custom Studio home's llama.cpp tree.
+    function Get-ManagedLlamaCppDir {
+        if (-not (Test-StudioHomeIsCustom)) {
+            return (Join-Path $env:USERPROFILE ".unsloth\llama.cpp")
+        }
+        return (Join-Path (Get-CanonicalDir -Path $StudioHome) "llama.cpp")
+    }
+
+    # Failure reason when the managed tree is denied; never touches its ACLs.
+    function Invoke-ManagedLlamaCppPreflight {
+        # Let the existing profile validation handle a missing USERPROFILE later.
+        if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { return $null }
+        $dir = Get-ManagedLlamaCppDir
+        if ((Get-LlamaCppInstallReadState -Path $dir) -ne "Denied") { return $null }
+        Write-Host ""
+        # A denied custom home cannot be claimed as an Unsloth-managed cache.
+        $homeIsCustom = Test-StudioHomeIsCustom
+        # Preserve user-supplied wording when either override names this tree.
+        $suppliedDir = if ($WithLlamaCppDir) { $WithLlamaCppDir } else { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR }
+        $userSupplied = (-not [string]::IsNullOrWhiteSpace($suppliedDir)) -and
+            ((Get-CanonicalDir -Path $suppliedDir) -eq (Get-CanonicalDir -Path $dir))
+        $reason = Write-PathAccessDenied -Path $dir -Label "llama.cpp install" `
+            -UserSupplied:$userSupplied -OwnershipUnverified:$homeIsCustom
+        substep "Stopping here, before phase 1: nothing has been downloaded or installed" "Yellow"
+        substep "Fix access, then run the same install, setup, or update command again" "Yellow"
+        Write-Host ""
+        return "$reason Nothing was installed."
+    }
+
+    # ── END SHARED WITH studio/setup.ps1 ──
 
     # Redact index-URL credentials (userinfo + ?query= + #fragment) from captured installer
     # output before printing on failure; uv/pip errors echo the failing --index-url verbatim.
@@ -727,18 +1065,8 @@ function Install-UnslothStudio {
             # through one global mutex on 8888..8908. Default installs get an
             # empty prefix to match pre-PR behavior.
             $studioHomeExport = if ($StudioRedirectMode -eq 'env') {
-                # When override == legacy default, llama.cpp stays at
-                # ~/.unsloth/llama.cpp (one shared build). Canonicalize the
-                # legacy side so the comparison survives path normalization.
-                $_legacyStudio = Join-Path $env:USERPROFILE ".unsloth\studio"
-                if (Test-Path -LiteralPath $_legacyStudio -PathType Container) {
-                    $_legacyStudio = (Resolve-Path -LiteralPath $_legacyStudio).Path
-                }
-                $_llamaPath = if ($StudioHome -eq $_legacyStudio) {
-                    Join-Path $env:USERPROFILE ".unsloth\llama.cpp"
-                } else {
-                    Join-Path $StudioHome "llama.cpp"
-                }
+                # Reuse the preflight's managed path for legacy-home overrides.
+                $_llamaPath = Get-ManagedLlamaCppDir
                 $_sq = $StudioHome -replace "'", "''"
                 $_llama = $_llamaPath -replace "'", "''"
                 $_appDirSq = $appDir -replace "'", "''"
@@ -1244,6 +1572,13 @@ exit 0
         }
     }
 
+    # ── Preflight the managed llama.cpp cache ──
+    # After System32 relocation (it picks the profile), before any download.
+    $llamaPreflightFailure = Invoke-ManagedLlamaCppPreflight
+    if ($llamaPreflightFailure) {
+        return (Exit-InstallFailure $llamaPreflightFailure)
+    }
+
     # ── Check winget ──
     # winget is only needed to install Python or uv. If both are
     # already on PATH (Windows ARM64 GitHub-hosted runners, manual
@@ -1251,6 +1586,292 @@ exit 0
     # without the Store, etc.) the script can proceed without it.
     # We defer the hard failure to the Python / uv install branches
     # below, where winget is actually invoked.
+    function Enter-StudioNamedMutex {
+        param([Parameter(Mandatory = $true)][string]$Name)
+        $mutex = [System.Threading.Mutex]::new($false, $Name)
+        $acquired = $false
+        try {
+            $acquired = $mutex.WaitOne(0)
+        } catch [System.Threading.AbandonedMutexException] {
+            $acquired = $true
+        }
+        if (-not $acquired) {
+            $mutex.Dispose()
+            return $null
+        }
+        return $mutex
+    }
+
+    function Get-StudioPathHash {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        $canonical = (Get-StudioFinalPath -Path $Path).ToUpperInvariant()
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($canonical)
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $digest = $sha256.ComputeHash($bytes)
+        } finally {
+            $sha256.Dispose()
+        }
+        $hex = -join ($digest | ForEach-Object { $_.ToString('x2') })
+        return $hex
+    }
+
+    function Test-StudioPathEqual {
+        param(
+            [Parameter(Mandatory = $true)][string]$Left,
+            [Parameter(Mandatory = $true)][string]$Right
+        )
+        try {
+            $leftFull = Get-StudioFinalPath -Path $Left
+            $rightFull = Get-StudioFinalPath -Path $Right
+        } catch {
+            Write-Host "[WARN] Could not resolve Studio path identity; using the runtime lock." -ForegroundColor Yellow
+            return $null
+        }
+        return [string]::Equals(
+            $leftFull, $rightFull, [System.StringComparison]::OrdinalIgnoreCase
+        )
+    }
+
+    function Get-StudioInstallMutexName {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        return "Global\UnslothStudioInstall-$(Get-StudioPathHash -Path $Path)"
+    }
+
+    function Get-StudioRuntimeMutexNameForSid {
+        param([Parameter(Mandatory = $true)][string]$Sid)
+        return "Global\UnslothStudioManagedEnvironment-$Sid"
+    }
+
+    function Get-StudioRuntimePathHash {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        # Byte-for-byte spelling: .NET and Python disagree on Unicode case (ß).
+        $canonical = Get-StudioFinalPath -Path $Path
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($canonical)
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $digest = $sha256.ComputeHash($bytes)
+        } finally {
+            $sha256.Dispose()
+        }
+        return (-join ($digest | ForEach-Object { $_.ToString('x2') }))
+    }
+
+    function Get-StudioRuntimeMutexNameForPath {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        return "Global\UnslothStudioManagedEnvironmentPath-$(Get-StudioRuntimePathHash -Path $Path)"
+    }
+
+    function Get-StudioCurrentUserSid {
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        if ($null -eq $identity) {
+            throw "Could not determine the Windows user for the Studio runtime lock"
+        }
+        try {
+            $sid = if ($identity.User) { $identity.User.Value } else { $null }
+        } finally {
+            $identity.Dispose()
+        }
+        if ([string]::IsNullOrWhiteSpace($sid)) {
+            throw "Could not determine the Windows user SID for the Studio runtime lock"
+        }
+        return $sid
+    }
+
+    function Get-StudioRuntimeMutexName {
+        return (Get-StudioRuntimeMutexNameForSid -Sid (Get-StudioCurrentUserSid))
+    }
+
+    function Get-StudioRuntimeMutexNames {
+        param(
+            [AllowNull()]$TauriRootMatch,
+            [Parameter(Mandatory = $true)][string]$Path
+        )
+        $names = @()
+        # true: Tauri default -> SID lock. false: custom root -> path lock.
+        # null: identity unresolved -> take both and fail closed.
+        if ($TauriRootMatch -ne $false) {
+            $names += Get-StudioRuntimeMutexName
+        }
+        if ($TauriRootMatch -ne $true) {
+            $names += Get-StudioRuntimeMutexNameForPath -Path $Path
+        }
+        return $names
+    }
+
+    function Enter-StudioInstallMutex {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        return (Enter-StudioNamedMutex -Name (Get-StudioInstallMutexName -Path $Path))
+    }
+
+    function Exit-StudioInstallMutex {
+        param([System.Threading.Mutex]$Mutex)
+        if ($null -eq $Mutex) { return }
+        try { $Mutex.ReleaseMutex() } catch {} finally { $Mutex.Dispose() }
+    }
+
+    function Test-StudioProtectedPathMatch {
+        param(
+            [Parameter(Mandatory = $true)][string]$Candidate,
+            [Parameter(Mandatory = $true)][string]$ProtectedPath,
+            [switch]$Exact
+        )
+        $candidateKey = $Candidate.TrimEnd('\', '/')
+        $protectedKey = $ProtectedPath.TrimEnd('\', '/')
+        if ([string]::Equals(
+            $candidateKey, $protectedKey, [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+            return $true
+        }
+        if ($Exact) { return $false }
+        $prefix = $protectedKey + [System.IO.Path]::DirectorySeparatorChar
+        return $candidateKey.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+
+    function Get-StudioDesktopProcessesForCurrentUser {
+        $currentSid = Get-StudioCurrentUserSid
+        try {
+            $candidates = @(
+                Get-CimInstance -ClassName Win32_Process `
+                    -Filter "Name = 'unsloth-studio.exe'" -ErrorAction Stop
+            )
+        } catch {
+            return
+        }
+        foreach ($candidate in $candidates) {
+            try {
+                $owner = Invoke-CimMethod -InputObject $candidate `
+                    -MethodName GetOwnerSid -ErrorAction Stop
+            } catch {
+                continue
+            }
+            if ($null -eq $owner -or $owner.ReturnValue -ne 0) { continue }
+            if ([string]::Equals(
+                $owner.Sid, $currentSid, [System.StringComparison]::OrdinalIgnoreCase
+            )) {
+                [pscustomobject]@{
+                    ProcessName = [System.IO.Path]::GetFileNameWithoutExtension($candidate.Name)
+                    Id = [int]$candidate.ProcessId
+                }
+            }
+        }
+    }
+
+    function Get-RunningStudioVenvProcesses {
+        param(
+            [Parameter(Mandatory = $true)][string]$VenvPath,
+            [switch]$Exact
+        )
+        try {
+            $resolvedPath = (Get-StudioFinalPath -Path $VenvPath).TrimEnd('\', '/')
+        } catch {
+            throw "Could not resolve managed Studio process path '$VenvPath': $($_.Exception.Message)"
+        }
+
+        # Block only confirmed executable identities: a command line or working
+        # directory that merely mentions the path is not proof of an open file.
+        foreach ($process in @(Get-Process -ErrorAction SilentlyContinue)) {
+            $executable = $null
+            try { $executable = [UnslothStudioFinalPathV2]::GetProcessImagePath($process.Id) } catch { continue }
+            if (-not $executable) { continue }
+            try { $executable = Get-StudioFinalPath -Path $executable } catch { continue }
+            if (Test-StudioProtectedPathMatch -Candidate $executable -ProtectedPath $resolvedPath -Exact:$Exact) {
+                [pscustomobject]@{
+                    ProcessName = $process.ProcessName
+                    Id = $process.Id
+                    Path = $executable
+                }
+            }
+        }
+    }
+    try {
+        $studioInstallMutex = Enter-StudioInstallMutex -Path $StudioHome
+    } catch {
+        Write-Host "[ERROR] Could not create the Studio install lock: $($_.Exception.Message)" -ForegroundColor Red
+        return (Exit-InstallFailure "Could not create the Studio install lock")
+    }
+    if ($null -eq $studioInstallMutex) {
+        Write-Host "[ERROR] Another Unsloth Studio install or repair is already running." -ForegroundColor Red
+        Write-Host "        Wait for it to finish, then re-run install.ps1." -ForegroundColor Yellow
+        return (Exit-InstallFailure "Another Unsloth Studio install or repair is already running")
+    }
+
+    $studioRuntimeMutexes = @()
+    $tauriManagedStudioHome = if ($tauriProfile) {
+        Join-Path $tauriProfile ".unsloth\studio"
+    } else { $null }
+    $studioTauriRootMatch = if ($tauriManagedStudioHome) {
+        Test-StudioPathEqual -Left $StudioHome -Right $tauriManagedStudioHome
+    } else { $false }
+    $studioUsesTauriManagedRoot = ($studioTauriRootMatch -eq $true)
+    $studioNeedsRuntimeLock = $true
+    $studioUsesLegacyLayout = ($StudioRedirectMode -ne 'env') -or $studioUsesTauriManagedRoot
+    $studioAutoStartProcess = $null
+    try {
+        if ($studioNeedsRuntimeLock) {
+            try {
+                $studioRuntimeMutexNames = @(
+                    Get-StudioRuntimeMutexNames -TauriRootMatch $studioTauriRootMatch -Path $StudioHome
+                )
+                foreach ($studioRuntimeMutexName in $studioRuntimeMutexNames) {
+                    $mutex = Enter-StudioNamedMutex -Name $studioRuntimeMutexName
+                    if ($null -eq $mutex) {
+                        Write-Host "[ERROR] Unsloth Studio is starting or installation is already running." -ForegroundColor Red
+                        Write-Host "        Close Unsloth Studio completely, wait for the other operation, then re-run install.ps1." -ForegroundColor Yellow
+                        return (Exit-InstallFailure "The managed Studio environment is busy")
+                    }
+                    $studioRuntimeMutexes += $mutex
+                }
+            } catch {
+                Write-Host "[ERROR] Could not create the Studio runtime lock: $($_.Exception.Message)" -ForegroundColor Red
+                return (Exit-InstallFailure "Could not create the Studio runtime lock")
+            }
+        }
+
+        $protectedProcessPaths = @(
+            [pscustomobject]@{ Path = $VenvDir; Exact = $false }
+            [pscustomobject]@{ Path = (Join-Path $StudioHome "bin\unsloth.exe"); Exact = $true }
+        )
+        if ($studioUsesLegacyLayout) {
+            $protectedProcessPaths += [pscustomobject]@{
+                Path = (Join-Path $StudioHome ".venv")
+                Exact = $false
+            }
+            $protectedProcessPaths += [pscustomobject]@{
+                Path = (Join-Path $env:USERPROFILE "unsloth_studio")
+                Exact = $false
+            }
+        }
+        $runningVenvProcessesById = @{}
+        foreach ($candidate in $protectedProcessPaths) {
+            foreach ($process in @(
+                Get-RunningStudioVenvProcesses -VenvPath $candidate.Path -Exact:$candidate.Exact
+            )) {
+                $processId = [string]$process.Id
+                if (-not $runningVenvProcessesById.ContainsKey($processId)) {
+                    $runningVenvProcessesById[$processId] = $process
+                }
+            }
+        }
+        $runningVenvProcesses = @($runningVenvProcessesById.Values)
+        if ($runningVenvProcesses.Count -gt 0) {
+            $runningSummary = ($runningVenvProcesses | ForEach-Object { "$($_.ProcessName) (PID $($_.Id))" }) -join ", "
+            Write-Host "[ERROR] Unsloth Studio is using the managed Python environment." -ForegroundColor Red
+            Write-Host "        Active processes: $runningSummary" -ForegroundColor Yellow
+            Write-Host "        Close Unsloth Studio completely, including its tray process, then re-run install.ps1." -ForegroundColor Yellow
+            return (Exit-InstallFailure "The managed Python environment is still in use")
+        }
+
+        if (-not $TauriMode -and $studioUsesLegacyLayout) {
+            $runningDesktopApps = @(Get-StudioDesktopProcessesForCurrentUser)
+            if ($runningDesktopApps.Count -gt 0) {
+                $desktopSummary = ($runningDesktopApps | ForEach-Object { "PID $($_.Id)" }) -join ", "
+                Write-Host "[ERROR] The Unsloth Studio desktop app is still running ($desktopSummary)." -ForegroundColor Red
+                Write-Host "        Close the app completely, including its tray process, then re-run install.ps1." -ForegroundColor Yellow
+                return (Exit-InstallFailure "The Unsloth Studio desktop app is still running")
+            }
+        }
+
     Write-TauriLog "STEP" "Checking system dependencies"
     $script:WingetAvailable = [bool](Get-Command winget -ErrorAction SilentlyContinue)
     if ($script:WingetAvailable) {
@@ -2108,12 +2729,12 @@ exit 0
             return (Exit-InstallFailure "Could not prepare existing environment for reinstall")
         }
     } elseif (
-        $StudioRedirectMode -ne 'env' `
+        $studioUsesLegacyLayout `
         -and (Test-Path -LiteralPath (Join-Path $StudioHome ".venv\Scripts\python.exe"))
     ) {
         # Old layout (~/.unsloth/studio/.venv) exists -- validate before migrating.
-        # Skip in env-mode so we don't blow away an unrelated .venv at the
-        # workspace root (e.g. user's existing project Python venv).
+        # Skip custom-root env-mode installs so we do not replace an unrelated
+        # project .venv; an override of the managed default root still migrates.
         $OldVenv = Join-Path $StudioHome ".venv"
         $OldPy = Join-Path $OldVenv "Scripts\python.exe"
         substep "found legacy Unsloth environment, validating..."
@@ -2139,12 +2760,11 @@ exit 0
             Move-Item -LiteralPath $OldVenv -Destination $invalidVenv -Force -ErrorAction SilentlyContinue
         }
     } elseif (
-        $StudioRedirectMode -ne 'env' `
+        $studioUsesLegacyLayout `
         -and (Test-Path -LiteralPath (Join-Path $env:USERPROFILE "unsloth_studio\Scripts\python.exe"))
     ) {
         # CWD-relative venv from old install.ps1 -> migrate to absolute path.
-        # Skip in env-mode so we don't relocate the default-install venv into
-        # the workspace root.
+        # Skip custom-root env-mode so it is not relocated into a workspace root.
         $CwdVenv = Join-Path $env:USERPROFILE "unsloth_studio"
         substep "found CWD-relative Unsloth environment, migrating to $VenvDir..."
         Move-Item -LiteralPath $CwdVenv -Destination $VenvDir -Force
@@ -3183,7 +3803,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.7" "unsloth-zoo>=2026.8.5" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.8" "unsloth-zoo>=2026.8.5" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -3197,7 +3817,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.7" "unsloth-zoo>=2026.8.5" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.8" "unsloth-zoo>=2026.8.5" }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -3324,7 +3944,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.8.7" "unsloth-zoo>=2026.8.5" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.8.8" "unsloth-zoo>=2026.8.5" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
@@ -3336,7 +3956,7 @@ exit 0
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.7" "unsloth-zoo>=2026.8.5" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.8" "unsloth-zoo>=2026.8.5" }
         } else {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
@@ -3364,7 +3984,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.8.5" "unsloth>=2026.8.7" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.8.5" "unsloth>=2026.8.8" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -3559,6 +4179,11 @@ exit 0
     # can trip over an unsupported `python` 3.14 or a Store stub on PATH even
     # though the venv is fine). setup.ps1 Test-Path-guards this before use.
     $env:UNSLOTH_SETUP_PYTHON = Join-Path $VenvDir "Scripts\python.exe"
+    # Installer already owns the runtime mutex; the child inherits it rather
+    # than deadlocking trying to reacquire it.
+    $previousSetupRuntimeGateHandoff = $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF
+    $hadPreviousSetupRuntimeGateHandoff = ($null -ne $previousSetupRuntimeGateHandoff)
+    $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = "1"
     try {
         & $UnslothExe @studioArgs
         $setupExit = $LASTEXITCODE
@@ -3572,6 +4197,11 @@ exit 0
             $env:UNSLOTH_TAURI_MODE = $previousTauriMode
         } else {
             Remove-Item Env:UNSLOTH_TAURI_MODE -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousSetupRuntimeGateHandoff) {
+            $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = $previousSetupRuntimeGateHandoff
+        } else {
+            Remove-Item Env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF -ErrorAction SilentlyContinue
         }
         Remove-Item Env:UNSLOTH_LOCAL_LLAMA_CPP_DIR -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
@@ -3730,7 +4360,21 @@ exit 0
         Write-Host ""
         $reply = Read-Host "  Start Unsloth Studio now? [Y/n]"
         if ([string]::IsNullOrWhiteSpace($reply) -or $reply -match '^[Yy]') {
-            & $UnslothExe studio -p 8888
+            # Keep both locks until the process exists: a second installer can
+            # then take them, but its scan sees Studio before it mutates.
+            $_runtimeGateHandoff = $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF
+            try {
+                $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = "1"
+                $studioAutoStartProcess = Start-Process -FilePath $UnslothExe `
+                    -ArgumentList @("studio", "-p", "8888") `
+                    -NoNewWindow -PassThru
+            } finally {
+                if ($null -eq $_runtimeGateHandoff) {
+                    Remove-Item Env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF -ErrorAction SilentlyContinue
+                } else {
+                    $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = $_runtimeGateHandoff
+                }
+            }
         } else {
             step "launch" "to start later, run:"
             substep "unsloth studio -p 8888"
@@ -3758,6 +4402,15 @@ exit 0
         substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
         substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"
         Write-Host ""
+    }
+    } finally {
+        for ($i = $studioRuntimeMutexes.Count - 1; $i -ge 0; $i--) {
+            Exit-StudioInstallMutex -Mutex $studioRuntimeMutexes[$i]
+        }
+        Exit-StudioInstallMutex -Mutex $studioInstallMutex
+    }
+    if ($null -ne $studioAutoStartProcess) {
+        $studioAutoStartProcess.WaitForExit()
     }
 }
 

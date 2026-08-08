@@ -39,18 +39,21 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Iterator, Optional, Sequence
+from typing import Iterable, Iterator, Optional, Sequence
 from urllib.parse import unquote
 
 from loggers import get_logger
 
 from hub.utils.state_dir import (
     RepoType,
+    cache_scope_name,
     cancelled_dir,
     manifest_path,
     manifests_dir,
     marker_path,
+    state_filename_is_ambiguous,
     variant_filename_prefix,
+    variant_key_fragments,
 )
 
 logger = get_logger(__name__)
@@ -92,6 +95,61 @@ class Manifest:
     metadata_derived: bool = False
 
 
+class VariantState:
+    def __init__(
+        self,
+        manifests: Optional[dict[str, tuple[str, Optional[Manifest]]]] = None,
+        markers: Optional[dict[str, str]] = None,
+    ) -> None:
+        self._manifests = manifests or {}
+        self._markers = markers or {}
+
+    def manifests(self) -> Iterator[tuple[str, Optional[Manifest]]]:
+        yield from self._manifests.values()
+
+    def marker_variants(self) -> Iterator[str]:
+        yield from self._markers.values()
+
+    def manifest_for(self, variant: str) -> Optional[Manifest]:
+        entry = self._manifests.get(variant.lower())
+        return entry[1] if entry is not None else None
+
+    def has_marker(self, variant: str) -> bool:
+        if variant.lower() in self._markers:
+            return True
+        # An unreadable marker keeps its entry fail-closed but loses the payload,
+        # so its only remaining identity is the filename. For a variant that has to
+        # be stored hashed (slashes, spaces, `--`, an existing hash prefix) that
+        # identity is the digest, not the variant, and a plain lookup misses it --
+        # leaving a cancelled variant advertised as complete even though
+        # has_cancel_marker still finds the file by rebuilding the same digest.
+        # Match the spellings the variant could have been written under, as that
+        # per-variant lookup does.
+        try:
+            fragments = variant_key_fragments(variant)
+        except (UnicodeError, ValueError):
+            return False
+        return any(fragment in self._markers for fragment in fragments)
+
+    def summary(self) -> tuple[bool, int]:
+        return bool(self._manifests or self._markers), sum(
+            sum(max(0, int(file.size or 0)) for file in manifest.expected_files)
+            for _variant, manifest in self._manifests.values()
+            if manifest is not None
+        )
+
+
+class VariantStateIndex:
+    def __init__(self, states: dict[tuple[str, RepoType, str], VariantState]) -> None:
+        self._states = states
+
+    def for_repo(self, repo_type: RepoType, repo_id: str, *, hub_cache: str | Path) -> VariantState:
+        cache = _canonical_hub_cache(hub_cache)
+        if cache is None:
+            return VariantState()
+        return self._states.get((cache, repo_type, repo_id.lower()), VariantState())
+
+
 @dataclass(frozen = True)
 class VerifyResult:
     ok: bool
@@ -116,10 +174,80 @@ def _canonical_hub_cache(hub_cache: Optional[str | Path] = None) -> Optional[str
 def _read_state_payload(path: Path) -> Optional[dict]:
     try:
         data = json.loads(path.read_text(encoding = "utf-8"))
-    except (OSError, ValueError) as exc:
+    # The decoder raises RecursionError for adversarially deep JSON. One corrupt
+    # state file must not abort the shared one-pass index: returning None lets
+    # manifests fail open and cancellation markers retain their fail-closed path.
+    except (OSError, ValueError, RecursionError) as exc:
         logger.debug("Could not read Hub state %s: %s", path, exc)
         return None
     return data if isinstance(data, dict) else None
+
+
+def _manifest_from_payload(
+    data: Optional[dict], repo_type: RepoType, repo_id: str
+) -> Optional[Manifest]:
+    if data is None:
+        return None
+    version = data.get("version")
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version not in _SUPPORTED_MANIFEST_VERSIONS
+    ):
+        return None
+    payload_repo_id = _payload_text(data.get("repo_id"))
+    variant_value = data.get("variant")
+    raw_variant = _payload_text(variant_value)
+    if variant_value is not None and raw_variant is None:
+        return None
+    has_metadata_attestation = data.get("metadata_derived") is True
+    if version == _MANIFEST_VERSION or has_metadata_attestation:
+        if (
+            data.get("repo_type") != repo_type
+            or payload_repo_id is None
+            or payload_repo_id.casefold() != repo_id.casefold()
+        ):
+            return None
+    raw_files = data.get("expected_files")
+    if not isinstance(raw_files, list):
+        return None
+    expected: list[ExpectedFile] = []
+    for item in raw_files:
+        if not isinstance(item, dict):
+            return None
+        file_path = _payload_file_path(item.get("path"))
+        size = item.get("size")
+        if (
+            file_path is None
+            or not expected_path_is_safe(file_path)
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+            or size < 0
+        ):
+            return None
+        sha256 = item.get("sha256")
+        expected.append(
+            ExpectedFile(
+                path = file_path,
+                size = size,
+                sha256 = sha256 if isinstance(sha256, str) and sha256 else None,
+            )
+        )
+    transport = data.get("transport")
+    commit_hash = normalized_commit_hash(data.get("commit_hash"))
+    metadata_derived = bool(has_metadata_attestation and commit_hash is not None)
+    return Manifest(
+        repo_type = repo_type,
+        repo_id = payload_repo_id or repo_id,
+        variant = raw_variant if raw_variant else None,
+        started_at = str(data.get("started_at", "")),
+        expected_files = tuple(expected),
+        transport = transport if transport in ("http", "xet") else None,
+        hub_cache = _payload_cache_path(data.get("hub_cache")),
+        version = version,
+        commit_hash = commit_hash if metadata_derived else None,
+        metadata_derived = metadata_derived,
+    )
 
 
 def _legacy_state_applies(
@@ -137,9 +265,12 @@ def _legacy_state_applies(
     """
     data = _read_state_payload(path)
     if data is not None:
-        recorded = data.get("hub_cache")
-        if isinstance(recorded, str) and recorded:
+        raw_recorded = data.get("hub_cache")
+        recorded = _payload_cache_path(raw_recorded)
+        if recorded:
             return _canonical_hub_cache(recorded) == requested_hub_cache
+        if "hub_cache" in data and raw_recorded not in (None, ""):
+            return fail_closed and requested_hub_cache == _canonical_hub_cache()
     elif not fail_closed:
         return False
     return requested_hub_cache == _canonical_hub_cache()
@@ -154,22 +285,71 @@ def _state_read_path(
     *,
     fail_closed: bool = False,
 ) -> Optional[Path]:
+    def applies(path: Path) -> bool:
+        payload = _read_state_payload(path)
+        plausible = _state_payload_identity_matches_entry(path, payload, repo_type)
+        # Cancellation remains fail-closed when a marker cannot identify its
+        # owner. Parseable state from another repository is never borrowed.
+        if fail_closed and not plausible:
+            return True
+        if plausible and variant is not None:
+            recorded_variant = _payload_text(payload.get("variant"))
+            if recorded_variant is None:
+                return fail_closed
+            if recorded_variant.strip().lower() != variant.strip().lower():
+                return False
+        return _state_entry_belongs_to_repo(path, payload, repo_type, repo_id, variant)
+
     requested = _canonical_hub_cache(hub_cache)
-    scoped = path_factory(repo_type, repo_id, variant, hub_cache = requested)
-    try:
-        if scoped is not None and scoped.is_file():
-            return scoped
-    except OSError:
-        pass
-    legacy = path_factory(repo_type, repo_id, variant)
-    if legacy is None or legacy == scoped:
-        return None
-    try:
-        if not legacy.is_file():
-            return None
-    except OSError:
-        return None
-    return legacy if _legacy_state_applies(legacy, requested, fail_closed = fail_closed) else None
+    scoped = _state_paths(path_factory, repo_type, repo_id, variant, requested)
+    for path in scoped:
+        try:
+            if path.is_file() and applies(path):
+                return path
+        except OSError:
+            continue
+    for path in _state_paths(path_factory, repo_type, repo_id, variant, None):
+        if path in scoped:
+            continue
+        try:
+            if not path.is_file():
+                continue
+        except OSError:
+            continue
+        if _legacy_state_applies(path, requested, fail_closed = fail_closed) and applies(path):
+            return path
+    return None
+
+
+def _state_paths(
+    path_factory,
+    repo_type: RepoType,
+    repo_id: str,
+    variant: Optional[str],
+    hub_cache: Optional[str | Path],
+) -> tuple[Path, ...]:
+    """Canonical-first read/delete paths across the filename migration.
+
+    Writers use only the default state-dir path. Readers and cleanup also probe
+    the prior repository and double-hyphen variant encodings, deduplicating when
+    a repository or variant never needed migration.
+    """
+    kwargs = {"hub_cache": hub_cache, "create": False}
+    paths = [
+        path_factory(
+            repo_type,
+            repo_id,
+            variant,
+            legacy_variant_key = legacy_variant,
+            legacy_repo_key = legacy_repo,
+            legacy_hash_key = legacy_hash,
+            **kwargs,
+        )
+        for legacy_repo in (False, True)
+        for legacy_variant in ((False, True) if variant is not None else (False,))
+        for legacy_hash in (False, True)
+    ]
+    return tuple(path for path in dict.fromkeys(paths) if path is not None)
 
 
 def _atomic_write_json(path: Path, payload: dict) -> bool:
@@ -203,6 +383,21 @@ def _atomic_write_json(path: Path, payload: dict) -> bool:
     return True
 
 
+def _unlink_state_paths(paths: Iterable[Optional[Path]]) -> bool:
+    removed = False
+    for path in dict.fromkeys(paths):
+        if path is None:
+            continue
+        try:
+            path.unlink()
+            removed = True
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.debug("Could not remove Hub state %s: %s", path, exc)
+    return removed
+
+
 def write_manifest(
     repo_type: RepoType,
     repo_id: str,
@@ -227,6 +422,7 @@ def write_manifest(
         repo_id,
         variant,
         hub_cache = recorded_hub_cache,
+        create = True,
     )
     if path is None:
         return False
@@ -293,81 +489,27 @@ def read_manifest(
         variant,
         hub_cache,
     )
-    if path is None or not path.is_file():
+    if path is None:
         return None
     data = _read_state_payload(path)
     if data is None:
         return None
-    version = data.get("version")
-    if (
-        not isinstance(version, int)
-        or isinstance(version, bool)
-        or version not in _SUPPORTED_MANIFEST_VERSIONS
-    ):
-        logger.debug(
-            "Manifest %s has unknown version %r; ignoring.",
-            path,
-            data.get("version"),
-        )
+    payload_identity = _state_payload_identity(data)
+    if payload_identity is None or not _state_payload_identity_matches_entry(path, data, repo_type):
         return None
-    has_metadata_attestation = data.get("metadata_derived") is True
-    if version == _MANIFEST_VERSION or has_metadata_attestation:
-        recorded_repo_type = data.get("repo_type")
-        recorded_repo_id = data.get("repo_id")
-        recorded_variant = data.get("variant")
-        if (
-            recorded_repo_type != repo_type
-            or not isinstance(recorded_repo_id, str)
-            or recorded_repo_id.casefold() != repo_id.casefold()
-            or not (recorded_variant is None or isinstance(recorded_variant, str))
-            or (
-                recorded_variant.strip().casefold()
-                if isinstance(recorded_variant, str) and recorded_variant.strip()
-                else None
-            )
-            != (variant.strip().casefold() if variant and variant.strip() else None)
-        ):
-            return None
-    raw_files = data.get("expected_files")
-    if not isinstance(raw_files, list):
+    recorded_type, recorded_id = payload_identity
+    if recorded_id != repo_id.lower() or recorded_type not in (None, repo_type):
         return None
-    expected: list[ExpectedFile] = []
-    for item in raw_files:
-        if not isinstance(item, dict):
-            return None
-        file_path = item.get("path")
-        size = item.get("size")
-        if (
-            not isinstance(file_path, str)
-            or not isinstance(size, int)
-            or isinstance(size, bool)
-            or size < 0
-        ):
-            return None
-        sha256 = item.get("sha256")
-        expected.append(
-            ExpectedFile(
-                path = file_path,
-                size = size,
-                sha256 = sha256 if isinstance(sha256, str) and sha256 else None,
-            )
-        )
-    raw_variant = data.get("variant")
-    transport = data.get("transport")
-    commit_hash = normalized_commit_hash(data.get("commit_hash"))
-    metadata_derived = bool(has_metadata_attestation and commit_hash is not None)
-    return Manifest(
-        repo_type = repo_type,
-        repo_id = str(data.get("repo_id", repo_id)),
-        variant = raw_variant if raw_variant else None,
-        started_at = str(data.get("started_at", "")),
-        expected_files = tuple(expected),
-        transport = transport if transport in ("http", "xet") else None,
-        hub_cache = data.get("hub_cache") if isinstance(data.get("hub_cache"), str) else None,
-        version = version,
-        commit_hash = commit_hash if metadata_derived else None,
-        metadata_derived = metadata_derived,
+    manifest = _manifest_from_payload(data, repo_type, repo_id)
+    if manifest is None:
+        return None
+    recorded_variant = (
+        manifest.variant.strip().casefold()
+        if manifest.variant and manifest.variant.strip()
+        else None
     )
+    requested_variant = variant.strip().casefold() if variant and variant.strip() else None
+    return manifest if recorded_variant == requested_variant else None
 
 
 def _dataset_completion_variant(commit_hash: str) -> str:
@@ -674,6 +816,7 @@ def write_cancel_marker(
         repo_id,
         variant,
         hub_cache = recorded_hub_cache,
+        create = True,
     )
     if path is None:
         return False
@@ -718,7 +861,7 @@ def read_cancel_marker_transport(
         variant,
         hub_cache,
     )
-    if path is None or not path.is_file():
+    if path is None:
         return None
     data = _read_state_payload(path)
     if data is None:
@@ -739,17 +882,35 @@ def _all_matching_state_paths(
 ) -> tuple[Path, ...]:
     if parent is None:
         return ()
-    legacy_path = (
-        manifest_path(repo_type, repo_id, variant)
-        if parent.name == "manifests"
-        else marker_path(repo_type, repo_id, variant)
-    )
-    if legacy_path is None:
+    path_factory = manifest_path if parent.name == "manifests" else marker_path
+    probes = _state_paths(path_factory, repo_type, repo_id, variant, None)
+    if not probes:
         return ()
     try:
-        return tuple(path for path in parent.rglob(legacy_path.name) if path.is_file())
+        return tuple(
+            path for probe in probes for path in parent.rglob(probe.name) if path.is_file()
+        )
     except OSError:
         return ()
+
+
+def _owned_state_paths(
+    path_factory,
+    repo_type: RepoType,
+    repo_id: str,
+    variant: Optional[str],
+    requested: Optional[str],
+    *,
+    fail_closed: bool,
+) -> list[Path]:
+    scoped = list(_state_paths(path_factory, repo_type, repo_id, variant, requested))
+    paths = list(scoped)
+    for legacy in _state_paths(path_factory, repo_type, repo_id, variant, None):
+        if legacy not in scoped and _legacy_state_applies(
+            legacy, requested, fail_closed = fail_closed
+        ):
+            paths.append(legacy)
+    return paths
 
 
 def clear_cancel_marker(
@@ -766,27 +927,27 @@ def clear_cancel_marker(
     again at successful completion (cleans up if the start clear failed).
     """
     requested = _canonical_hub_cache(hub_cache)
-    path = marker_path(
+    paths = _owned_state_paths(
+        marker_path,
         repo_type,
         repo_id,
         variant,
-        hub_cache = requested,
+        requested,
+        fail_closed = True,
     )
-    legacy = marker_path(repo_type, repo_id, variant)
-    paths = [path]
-    if (
-        legacy is not None
-        and legacy != path
-        and _legacy_state_applies(legacy, requested, fail_closed = True)
-    ):
-        paths.append(legacy)
-    for target in paths:
-        if target is None:
-            continue
-        try:
-            target.unlink(missing_ok = True)
-        except OSError as exc:
-            logger.debug("Could not clear cancel marker %s: %s", target, exc)
+    paths = [
+        candidate
+        for candidate in paths
+        if candidate is not None
+        and _state_entry_belongs_to_repo(
+            candidate,
+            _read_state_payload(candidate),
+            repo_type,
+            repo_id,
+            variant,
+        )
+    ]
+    _unlink_state_paths(paths)
 
 
 def has_cancel_marker(
@@ -805,10 +966,7 @@ def has_cancel_marker(
         hub_cache,
         fail_closed = True,
     )
-    try:
-        return path is not None and path.is_file()
-    except OSError:
-        return False
+    return path is not None
 
 
 def delete_manifest(
@@ -819,27 +977,27 @@ def delete_manifest(
     hub_cache: Optional[str | Path] = None,
 ) -> bool:
     requested = _canonical_hub_cache(hub_cache)
-    path = manifest_path(
+    paths = _owned_state_paths(
+        manifest_path,
         repo_type,
         repo_id,
         variant,
-        hub_cache = requested,
+        requested,
+        fail_closed = False,
     )
-    legacy = manifest_path(repo_type, repo_id, variant)
-    paths = [path]
-    if legacy is not None and legacy != path and _legacy_state_applies(legacy, requested):
-        paths.append(legacy)
-    removed = False
-    for target in paths:
-        if target is None:
-            continue
-        try:
-            if target.is_file():
-                target.unlink()
-                removed = True
-        except OSError as exc:
-            logger.debug("Could not delete manifest %s: %s", target, exc)
-    return removed
+    paths = [
+        candidate
+        for candidate in paths
+        if candidate is not None
+        and _state_entry_belongs_to_repo(
+            candidate,
+            _read_state_payload(candidate),
+            repo_type,
+            repo_id,
+            variant,
+        )
+    ]
+    return _unlink_state_paths(paths)
 
 
 def purge_state(
@@ -862,27 +1020,38 @@ def purge_state(
         )
     else:
         requested = _canonical_hub_cache(hub_cache)
-        candidates = [
-            manifest_path(repo_type, repo_id, variant, hub_cache = hub_cache),
-            marker_path(repo_type, repo_id, variant, hub_cache = hub_cache),
-        ]
-        # Legacy unscoped state is shared: an unowned file belongs to the active cache, so only purge
-        # it when it belongs to the cache being deleted, else deleting an inactive cache erases the
-        # active cache's resume/cancel state.
-        for path_factory in (manifest_path, marker_path):
-            legacy = path_factory(repo_type, repo_id, variant)
-            if legacy is not None and _legacy_state_applies(legacy, requested):
-                candidates.append(legacy)
-        paths = tuple(p for p in candidates if p is not None)
-    removed = False
-    for path in paths:
-        try:
-            if path.is_file():
-                path.unlink()
-                removed = True
-        except OSError as exc:
-            logger.debug("Could not purge Hub state %s: %s", path, exc)
-    return removed
+        candidates: list[Path] = []
+        # Legacy unscoped state is shared: an unowned file belongs to the active
+        # cache (per _legacy_state_applies), so only purge it when it belongs to
+        # the cache being deleted -- else deleting an inactive cache would erase
+        # the active cache's resume/cancel state.
+        for path_factory, fail_closed in (
+            (manifest_path, False),
+            (marker_path, True),
+        ):
+            candidates.extend(
+                _owned_state_paths(
+                    path_factory,
+                    repo_type,
+                    repo_id,
+                    variant,
+                    requested,
+                    fail_closed = fail_closed,
+                )
+            )
+        paths = tuple(dict.fromkeys(candidates))
+    paths = tuple(
+        path
+        for path in paths
+        if _state_entry_belongs_to_repo(
+            path,
+            _read_state_payload(path),
+            repo_type,
+            repo_id,
+            variant,
+        )
+    )
+    return _unlink_state_paths(paths)
 
 
 def purge_all_state_for_repo(
@@ -898,52 +1067,407 @@ def purge_all_state_for_repo(
 
     With ``hub_cache`` set, only that cache's scoped state (plus any legacy
     unscoped file) is enumerated and removed, so deleting one cache's copy does
-    not clear another cache's resumable/cancel state."""
+    not clear another cache's resumable/cancel state.
+
+    Variant entries are unlinked by their enumerated paths, never by
+    reconstructing the paired manifest/marker name. The legacy filename scheme
+    is not injective when repository IDs or variants contain ``variant``
+    delimiters, so a reconstructed counterpart can belong to another repo.
+    Valid payload identity decides ownership. Corrupt delimiter-ambiguous state
+    is retained as a safe orphan instead of risking an active download marker."""
     removed = 0
     if purge_state(repo_type, repo_id, None, hub_cache = hub_cache):
         removed += 1
-    variants: set[str] = set()
-    prefix = variant_filename_prefix(repo_type, repo_id)
+    variant_paths: dict[str, set[Path]] = {}
+    prefixes = tuple(
+        dict.fromkeys(
+            variant_filename_prefix(
+                repo_type,
+                repo_id,
+                legacy_repo_key = legacy_repo,
+                legacy_hash_key = legacy_hash,
+            )
+            for legacy_repo in (False, True)
+            for legacy_hash in (False, True)
+        )
+    )
+    requested = _canonical_hub_cache(hub_cache)
     if hub_cache is None:
-        search = [(p, True) for p in (manifests_dir(), cancelled_dir()) if p is not None]
+        search = [
+            (parent, True, False, cancel_markers)
+            for parent, cancel_markers in (
+                (manifests_dir(), False),
+                (cancelled_dir(), True),
+            )
+            if parent is not None
+        ]
     else:
         # This cache's scoped dir plus the legacy unscoped base; glob (not rglob) so other caches are untouched.
         search = []
-        for scoped, base in (
-            (manifest_path(repo_type, repo_id, None, hub_cache = hub_cache), manifests_dir()),
-            (marker_path(repo_type, repo_id, None, hub_cache = hub_cache), cancelled_dir()),
+        for scoped, base, cancel_markers in (
+            (
+                manifest_path(
+                    repo_type,
+                    repo_id,
+                    None,
+                    hub_cache = hub_cache,
+                    create = False,
+                ),
+                manifests_dir(create = False),
+                False,
+            ),
+            (
+                marker_path(
+                    repo_type,
+                    repo_id,
+                    None,
+                    hub_cache = hub_cache,
+                    create = False,
+                ),
+                cancelled_dir(create = False),
+                True,
+            ),
         ):
             if scoped is not None:
-                search.append((scoped.parent, False))
+                search.append((scoped.parent, False, False, cancel_markers))
             if base is not None:
-                search.append((base, False))
-    for parent, recursive in search:
+                search.append((base, False, True, cancel_markers))
+    for parent, recursive, legacy, cancel_markers in search:
         try:
             entries = tuple(
-                parent.rglob(f"{prefix}*.json") if recursive else parent.glob(f"{prefix}*.json")
+                dict.fromkeys(
+                    entry
+                    for prefix in prefixes
+                    for entry in (
+                        parent.rglob(f"{prefix}*.json")
+                        if recursive
+                        else parent.glob(f"{prefix}*.json")
+                    )
+                )
             )
         except OSError:
             continue
         for entry in entries:
             if not entry.is_file():
                 continue
+            if legacy and not _legacy_state_applies(
+                entry,
+                requested,
+                fail_closed = cancel_markers,
+            ):
+                continue
+            prefix = next(
+                candidate for candidate in prefixes if entry.stem.lower().startswith(candidate)
+            )
             fallback = entry.stem[len(prefix) :]
-            variants.add(fallback)
-    for variant in variants:
-        if purge_state(repo_type, repo_id, variant, hub_cache = hub_cache):
+            payload = _read_state_payload(entry)
+            if not _state_entry_belongs_to_repo(entry, payload, repo_type, repo_id):
+                continue
+            variant = _variant_from_state_payload(payload, fallback)
+            variant_paths.setdefault(variant.lower(), set()).add(entry)
+    for paths in variant_paths.values():
+        if _unlink_state_paths(paths):
             removed += 1
     return removed
 
 
-def _variant_from_state_file(path: Path, fallback: str) -> str:
+def _variant_from_state_payload(data: Optional[dict], fallback: str) -> str:
+    if data is None:
+        return fallback
+    variant = _payload_text(data.get("variant"))
+    return variant if variant else fallback
+
+
+def _payload_text(value: object) -> Optional[str]:
+    """Return only text safe for the filename hashing and path helpers."""
+    if not isinstance(value, str):
+        return None
     try:
-        data = json.loads(path.read_text(encoding = "utf-8"))
-    except (OSError, ValueError):
-        return fallback
-    if not isinstance(data, dict):
-        return fallback
-    variant = data.get("variant")
-    return variant if isinstance(variant, str) and variant else fallback
+        value.encode("utf-8")
+    except UnicodeError:
+        return None
+    return value
+
+
+def _payload_file_path(value: object) -> Optional[str]:
+    """Accept only path text that Python filesystem APIs can consume.
+
+    Rejecting the whole malformed manifest preserves its fail-open contract.
+    """
+    text = _payload_text(value)
+    if text is None or "\0" in text or text in ("", "."):
+        return None
+    posix, windows = PurePosixPath(text), PureWindowsPath(text)
+    if (
+        posix.is_absolute()
+        or windows.is_absolute()
+        or windows.drive
+        or windows.root
+        or ".." in posix.parts
+        or ".." in windows.parts
+    ):
+        return None
+    return text
+
+
+def _payload_cache_path(value: object) -> Optional[str]:
+    """Return cache ownership only when it is safe for path normalization."""
+    text = _payload_text(value)
+    if text is None or "\0" in text:
+        return None
+    if not (PurePosixPath(text).is_absolute() or PureWindowsPath(text).is_absolute()):
+        return None
+    return text
+
+
+def _state_payload_identity(payload: Optional[dict]) -> Optional[tuple[Optional[RepoType], str]]:
+    if payload is None:
+        return None
+    recorded_type = payload.get("repo_type")
+    recorded_id = _payload_text(payload.get("repo_id"))
+    if recorded_id is None:
+        return None
+    repo_type = recorded_type if recorded_type in ("model", "dataset") else None
+    return repo_type, recorded_id.lower()
+
+
+def _state_payload_identity_matches_entry(
+    entry: Path, payload: Optional[dict], fallback_repo_type: RepoType
+) -> bool:
+    """Whether payload ownership could have generated this exact state name.
+
+    False means corrupt ownership, not automatically foreign ownership; callers
+    retain fail-closed or ambiguity-safe behavior according to their operation.
+    """
+    identity = _state_payload_identity(payload)
+    if identity is None:
+        return False
+    recorded_type, recorded_id = identity
+    recorded_variant = _payload_text(payload.get("variant")) if payload is not None else None
+    expected = _state_paths(
+        marker_path,
+        recorded_type or fallback_repo_type,
+        recorded_id,
+        recorded_variant,
+        None,
+    )
+    return any(path.name == entry.name for path in expected)
+
+
+def _state_entry_belongs_to_repo(
+    entry: Path,
+    payload: Optional[dict],
+    repo_type: RepoType,
+    repo_id: str,
+    variant: Optional[str] = None,
+) -> bool:
+    """Attribute an exact state path without guessing across legacy delimiter
+    collisions; unreadable ambiguous names are retained rather than deleted."""
+    payload_identity = _state_payload_identity(payload)
+    # A parseable payload is authoritative even when its filename has multiple splits.
+    if payload_identity is not None and _state_payload_identity_matches_entry(
+        entry, payload, repo_type
+    ):
+        recorded_type, recorded_id = payload_identity
+        if recorded_id != repo_id.lower() or recorded_type not in (None, repo_type):
+            return False
+        if variant is None:
+            return True
+        recorded_variant = _payload_text(payload.get("variant"))
+        return recorded_variant is not None and (
+            recorded_variant.strip().lower() == variant.strip().lower()
+        )
+    return not state_filename_is_ambiguous(entry.name)
+
+
+def _state_file_records(
+    entry: Path, repo_keys: dict[str, set[tuple[RepoType, str]]], *, fail_closed: bool
+) -> tuple[tuple[RepoType, str, str, Optional[dict]], ...]:
+    name = entry.name
+    if not name.endswith(".json"):
+        return ()
+    stem = name[: -len(".json")]
+    try:
+        if not entry.is_file():
+            return ()
+    except OSError:
+        return ()
+    payload = _read_state_payload(entry)
+    lower_stem, separator = stem.lower(), "--variant--"
+    matches: list[tuple[tuple[RepoType, str], str]] = []
+    offset = lower_stem.find(separator)
+    while offset >= 0:
+        repos = repo_keys.get(stem[:offset].lower(), ())
+        fallback = stem[offset + len(separator) :]
+        if fallback:
+            matches.extend((repo, fallback) for repo in sorted(repos))
+        offset = lower_stem.find(separator, offset + 1)
+    if not matches:
+        return ()
+    payload_identity = _state_payload_identity(payload)
+    payload_identified = False
+    if payload_identity is not None:
+        if _state_payload_identity_matches_entry(entry, payload, matches[0][0][0]):
+            recorded_type, recorded_id = payload_identity
+            identified = [
+                match
+                for match in matches
+                if match[0][1] == recorded_id
+                and (recorded_type is None or match[0][0] == recorded_type)
+            ]
+            matches = identified
+            payload_identified = bool(identified)
+        elif not fail_closed:
+            matches = []
+    elif not fail_closed:
+        matches = []
+    variant_payload = payload if not fail_closed or payload_identified else None
+    return tuple(
+        (repo[0], repo[1], _variant_from_state_payload(variant_payload, fallback), payload)
+        for repo, fallback in matches
+    )
+
+
+def build_variant_state_index(
+    repositories: Iterable[tuple[RepoType, str, str | Path]], *, active_hub_cache: str | Path
+) -> VariantStateIndex:
+    targets: set[tuple[str, RepoType, str]] = set()
+    repo_keys: dict[str, set[tuple[RepoType, str]]] = {}
+    caches_by_scope: dict[str, set[str]] = {}
+    for repo_type, repo_id, hub_cache in repositories:
+        canonical_cache = _canonical_hub_cache(hub_cache)
+        if canonical_cache is None:
+            continue
+        normalized_repo = repo_id.lower()
+        targets.add((canonical_cache, repo_type, normalized_repo))
+        for legacy_repo in (False, True):
+            for legacy_hash in (False, True):
+                prefix = variant_filename_prefix(
+                    repo_type,
+                    repo_id,
+                    legacy_repo_key = legacy_repo,
+                    legacy_hash_key = legacy_hash,
+                )
+                repo_keys.setdefault(prefix[: -len("--variant--")], set()).add(
+                    (repo_type, normalized_repo)
+                )
+        caches_by_scope.setdefault(cache_scope_name(canonical_cache), set()).add(canonical_cache)
+
+    active_cache = _canonical_hub_cache(active_hub_cache)
+    mutable: dict[
+        tuple[str, RepoType, str],
+        tuple[dict[str, tuple[str, Optional[Manifest], tuple[bool, bool]]], dict[str, str]],
+    ] = {}
+
+    def add_entry(
+        cache: Optional[str],
+        record: tuple[RepoType, str, str, Optional[dict]],
+        *,
+        cancel_marker: bool,
+        priority: tuple[bool, bool],
+    ) -> None:
+        if cache is None:
+            return
+        repo_type, repo_id, variant, payload = record
+        target = (cache, repo_type, repo_id)
+        if target not in targets:
+            return
+        manifests, markers = mutable.setdefault(target, ({}, {}))
+        key = variant.lower()
+        if cancel_marker:
+            markers.setdefault(key, variant)
+        elif key not in manifests or priority > manifests[key][2]:
+            manifests[key] = (
+                variant,
+                _manifest_from_payload(payload, repo_type, repo_id),
+                priority,
+            )
+
+    def add_path(
+        cache: Optional[str], entry: Path, record, *, cancel_marker: bool, scoped: bool
+    ) -> None:
+        repo_type, repo_id, variant, _payload = record
+        try:
+            canonical = marker_path(repo_type, repo_id, variant, create = False)
+        except (UnicodeError, ValueError, OSError):
+            # A state filename can carry a byte the filesystem encoding cannot
+            # decode, which iterdir() surfaces as a lone surrogate; hashing that
+            # for the canonical spelling raises UnicodeEncodeError. Per-repo
+            # reads used to contain the damage to the one repo that owned the
+            # file. This index is built once for the whole scan and outside the
+            # per-repo try, so letting it escape turns one corrupt filename into
+            # a 500 that hides every cached model. `canonical` only decides the
+            # "is this the canonical filename" half of `priority`, so treat the
+            # entry as non-canonical and keep indexing.
+            canonical = None
+        add_entry(
+            cache,
+            record,
+            cancel_marker = cancel_marker,
+            priority = (scoped, canonical is not None and canonical.name == entry.name),
+        )
+
+    def index_directory(parent: Optional[Path], *, cancel_markers: bool) -> None:
+        if parent is None:
+            return
+        try:
+            entries = list(parent.iterdir())
+        except OSError:
+            return
+        scoped = {entry.name: entry for entry in entries if entry.name in caches_by_scope}
+        for scope, caches in caches_by_scope.items():
+            directory = scoped.get(scope)
+            if directory is None:
+                continue
+            try:
+                scoped_entries = list(directory.iterdir())
+            except OSError:
+                continue
+            for entry in scoped_entries:
+                for record in _state_file_records(entry, repo_keys, fail_closed = cancel_markers):
+                    for cache in caches:
+                        add_path(
+                            cache,
+                            entry,
+                            record,
+                            cancel_marker = cancel_markers,
+                            scoped = True,
+                        )
+        for entry in entries:
+            for record in _state_file_records(entry, repo_keys, fail_closed = cancel_markers):
+                payload = record[3]
+                raw_cache = payload.get("hub_cache") if payload is not None else None
+                recorded_cache = _payload_cache_path(raw_cache)
+                if recorded_cache:
+                    cache = _canonical_hub_cache(recorded_cache)
+                elif payload is not None and "hub_cache" in payload and raw_cache not in (None, ""):
+                    cache = active_cache if cancel_markers else None
+                elif payload is not None or cancel_markers:
+                    cache = active_cache
+                else:
+                    cache = None
+                add_path(
+                    cache,
+                    entry,
+                    record,
+                    cancel_marker = cancel_markers,
+                    scoped = False,
+                )
+
+    index_directory(manifests_dir(create = False), cancel_markers = False)
+    index_directory(cancelled_dir(create = False), cancel_markers = True)
+    return VariantStateIndex(
+        {
+            key: VariantState(
+                {
+                    variant: (name, manifest)
+                    for variant, (name, manifest, _priority) in manifests.items()
+                },
+                markers,
+            )
+            for key, (manifests, markers) in mutable.items()
+        }
+    )
 
 
 def _iter_variant_state_files(
@@ -963,11 +1487,23 @@ def _iter_variant_state_files(
         repo_id,
         None,
         hub_cache = requested,
+        create = False,
     )
     if scoped_probe is None:
         return
-    prefix = variant_filename_prefix(repo_type, repo_id)
-    seen: set[str] = set()
+    prefixes = tuple(
+        dict.fromkeys(
+            variant_filename_prefix(
+                repo_type,
+                repo_id,
+                legacy_repo_key = legacy_repo,
+                legacy_hash_key = legacy_hash,
+            )
+            for legacy_repo in (False, True)
+            for legacy_hash in (False, True)
+        )
+    )
+    selected: dict[str, tuple[tuple[bool, bool], str, Path]] = {}
     for directory, legacy in ((scoped_probe.parent, False), (parent, True)):
         if legacy and directory == scoped_probe.parent:
             continue
@@ -976,10 +1512,19 @@ def _iter_variant_state_files(
         except OSError:
             continue
         for entry in entries:
-            if not entry.is_file() or not entry.name.endswith(".json"):
+            if not entry.name.endswith(".json"):
                 continue
             stem = entry.name[: -len(".json")]
-            if not stem.lower().startswith(prefix) or entry.name in seen:
+            prefix = next(
+                (candidate for candidate in prefixes if stem.lower().startswith(candidate)),
+                None,
+            )
+            if prefix is None:
+                continue
+            try:
+                if not entry.is_file():
+                    continue
+            except OSError:
                 continue
             if legacy and not _legacy_state_applies(
                 entry,
@@ -989,8 +1534,42 @@ def _iter_variant_state_files(
                 continue
             fallback = stem[len(prefix) :]
             if fallback:
-                seen.add(entry.name)
-                yield _variant_from_state_file(entry, fallback), entry
+                payload = _read_state_payload(entry)
+                payload_identity = _state_payload_identity(payload)
+                variant_payload = payload
+                if payload_identity is not None:
+                    if _state_payload_identity_matches_entry(entry, payload, repo_type):
+                        recorded_type, recorded_id = payload_identity
+                        if recorded_id != repo_id.lower() or recorded_type not in (None, repo_type):
+                            continue
+                    elif cancel_markers:
+                        variant_payload = None
+                    else:
+                        continue
+                elif cancel_markers:
+                    variant_payload = None
+                variant = _variant_from_state_payload(variant_payload, fallback)
+                try:
+                    canonical = path_factory(
+                        repo_type,
+                        repo_id,
+                        variant,
+                        hub_cache = None if legacy else requested,
+                        create = False,
+                    )
+                except (UnicodeError, ValueError, OSError):
+                    # Same undecodable-filename case guarded in add_path: a lone
+                    # surrogate from iterdir() cannot be hashed for the canonical
+                    # spelling. Before, this loop yielded such an entry as-is;
+                    # letting the hash escape would instead abort the whole
+                    # iteration and lose the repo's valid state alongside it.
+                    canonical = None
+                priority = (not legacy, canonical is not None and canonical.name == entry.name)
+                key = variant.lower()
+                if key not in selected or priority > selected[key][0]:
+                    selected[key] = (priority, variant, entry)
+    for _priority, variant, entry in selected.values():
+        yield variant, entry
 
 
 def iter_variant_manifests(
@@ -1003,7 +1582,7 @@ def iter_variant_manifests(
     written for this repo. Used by is_gguf_repo_partial to enumerate all
     variants present on disk so the all-variants-broken gate can run."""
     yield from _iter_variant_state_files(
-        manifests_dir(),
+        manifests_dir(create = False),
         repo_type,
         repo_id,
         hub_cache,
@@ -1021,7 +1600,7 @@ def iter_variant_markers(
     Companion to iter_variant_manifests: catches variants cancelled
     before download-start ever wrote a manifest (very early failures)."""
     yield from _iter_variant_state_files(
-        cancelled_dir(),
+        cancelled_dir(create = False),
         repo_type,
         repo_id,
         hub_cache,

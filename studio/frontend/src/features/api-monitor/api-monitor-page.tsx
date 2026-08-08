@@ -79,14 +79,15 @@ function formatDuration(value?: number | null): string {
   return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)} s`;
 }
 
-// formatDuration reads a missing value as "running", which is wrong for the timing
-// split: it is absent on a non-streamed reply that has already finished.
-function formatOptionalDuration(value?: number | null): string {
-  return value == null ? "–" : formatDuration(value);
-}
-
 function formatCount(value: number): string {
   return value.toLocaleString();
+}
+
+function formatTokPerSec(value?: number | null): string | null {
+  if (value == null || value <= 0) {
+    return null;
+  }
+  return `${value >= 100 ? Math.round(value) : value.toFixed(1)} tok/s`;
 }
 
 function compactEndpoint(endpoint: string): string {
@@ -304,8 +305,11 @@ function RequestRow({
         <span className="truncate text-ui-11 text-muted-foreground">
           {entry.model}
         </span>
-        <span className="ml-auto shrink-0 text-ui-11 tabular-nums text-muted-foreground">
-          {formatTime(entry.started_at)}
+        <span className="ml-auto flex shrink-0 items-center gap-2 text-ui-11 tabular-nums text-muted-foreground">
+          {formatTokPerSec(entry.tok_per_sec) ? (
+            <span>{formatTokPerSec(entry.tok_per_sec)}</span>
+          ) : null}
+          <span>{formatTime(entry.started_at)}</span>
         </span>
       </div>
       <p
@@ -419,10 +423,6 @@ function RequestDetail({
         {[
           { label: "Started", value: formatTime(entry.started_at) },
           { label: "Duration", value: formatDuration(entry.duration_ms) },
-          // Splitting out the wait keeps a queue behind a busy slot from reading as a
-          // slow model.
-          { label: "To first token", value: formatOptionalDuration(entry.ttft_ms) },
-          { label: "Generating", value: formatOptionalDuration(entry.decode_ms) },
           {
             label: "Prompt tokens",
             value:
@@ -450,6 +450,24 @@ function RequestDetail({
               entry.context_length != null
                 ? formatCount(entry.context_length)
                 : "–",
+          },
+          {
+            label: "First token",
+            value: entry.ttft_ms != null ? formatDuration(entry.ttft_ms) : "–",
+          },
+          // Duration minus this is the wait, which keeps a queue behind a busy slot
+          // from reading as a slow model.
+          {
+            label: "Generating",
+            value: entry.decode_ms != null ? formatDuration(entry.decode_ms) : "–",
+          },
+          {
+            label: "Speed",
+            value: formatTokPerSec(entry.tok_per_sec) ?? "–",
+          },
+          {
+            label: "Stop reason",
+            value: entry.stop_reason ?? "–",
           },
         ].map((item) => (
           <div key={item.label} className="flex min-w-0 flex-col gap-0.5">
@@ -790,6 +808,22 @@ export function ApiMonitorPage(): ReactElement {
             {statusCopy}
           </span>
         </div>
+        {data?.queue ? (
+          <div className="flex min-w-0 flex-col">
+            <span className="text-ui-10 font-medium uppercase tracking-wider text-muted-foreground">
+              Slots
+            </span>
+            <span
+              className={cn(
+                "text-ui-12 tabular-nums text-foreground",
+                data.queue.queued > 0 && "text-amber-700 dark:text-amber-500",
+              )}
+            >
+              {data.queue.active}/{data.queue.capacity} busy
+              {data.queue.queued > 0 ? ` · ${data.queue.queued} queued` : ""}
+            </span>
+          </div>
+        ) : null}
         <div className="flex min-w-0 flex-1 flex-col">
           <span className="text-ui-10 font-medium uppercase tracking-wider text-muted-foreground">
             Loaded model

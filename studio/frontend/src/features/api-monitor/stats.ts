@@ -87,20 +87,12 @@ export function computeStats(entries: ApiMonitorEntry[]): MonitorStats {
       // Rate the engine's decode window, not the whole request: duration_ms carries
       // queue wait and prefill, which reports a model generating at 50 tok/s as 5
       // behind a busy slot.
-      // Only predicted_ms is used. Timing the stream instead cannot say how many
-      // tokens rode in the first chunk (providers coalesce deltas, speculative
-      // decoding accepts several at once) and never sees reasoning tokens, which are
-      // generated before the first visible one but still counted in the usage.
-      // Guessing there inflates the rate, so a request without engine timings is left
-      // out rather than dragged in at the old whole-request rate.
+      // decode_ms is set only from engine timings, so a request without them is left
+      // out rather than dragged in at the old whole-request rate. tok_per_sec is not
+      // used here: it can come from the streamed window, and summing rates would let
+      // one tiny request outweigh a long one.
       const decodeMs = entry.decode_ms;
-      if (
-        entry.decode_ms_authoritative &&
-        decodeMs != null &&
-        decodeMs > 0 &&
-        generated != null &&
-        generated > 0
-      ) {
+      if (decodeMs != null && decodeMs > 0 && generated != null && generated > 0) {
         generatedTokens += generated;
         generatedDurationMs += decodeMs;
       }
