@@ -11,7 +11,8 @@ or capability limit forces it, and never as a policy choice.
 
 Flagged inside `studio/backend` (tests excluded):
 
-1.  `n_parallel = 1` in a function body -- a downgrade, not a default.
+1.  `n_parallel = 1` in a function body, annotated or not -- a downgrade, not a
+    default.
 2.  `n_parallel = <name>` where the name is a saved pre-clamp count, which is
     how a clamp hands slots back to itself across a retry.
 
@@ -58,9 +59,15 @@ def _findings_for_tree(
         if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         for node in ast.walk(func):
-            if not isinstance(node, ast.Assign) or not any(
-                _is_slot_target(t) for t in node.targets
-            ):
+            # AnnAssign too: `n_parallel: int = 1` is a local clamp Python spells
+            # differently, and a rule that missed it could be walked straight past.
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                targets = [node.target]
+            else:
+                continue
+            if not any(_is_slot_target(t) for t in targets):
                 continue
             if isinstance(node.value, ast.Constant) and node.value.value == 1:
                 what = "clamped to a single slot"
@@ -102,6 +109,9 @@ def scan_paths(root: Path) -> tuple[list[tuple[str, int, str]], int]:
 _SELF_TEST_CASES: tuple[tuple[str, int], ...] = (
     # (source, expected finding count)
     ("def load():\n    n_parallel = 1\n", 1),
+    ("def load():\n    n_parallel: int = 1\n", 1),
+    ("def load():\n    n_parallel: int = 1  # allow-slot-clamp: ok\n", 0),
+    ("def load(x):\n    n_parallel: int = x\n", 0),
     ("def load():\n    n_parallel = 1  # allow-slot-clamp: no --kv-unified\n", 0),
     ("def load():\n    n_parallel = _mtp_clamped_slots\n", 1),
     ("def load(n_parallel: int = 1):\n    return n_parallel\n", 0),

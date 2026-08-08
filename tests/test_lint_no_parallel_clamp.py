@@ -26,6 +26,9 @@ _spec.loader.exec_module(lint)
 
 CLAMPS = (
     "def load():\n    n_parallel = 1\n",
+    # The annotated spelling of the same clamp: a different AST node, same regression.
+    "def load():\n    n_parallel: int = 1\n",
+    "async def load():\n    n_parallel: int = 1\n",
     "def load():\n    n_parallel = _mtp_clamped_slots\n",
     "async def load():\n    n_parallel = 1\n",
     "def load():\n    if mtp:\n        n_parallel = 1\n",
@@ -34,7 +37,9 @@ CLAMPS = (
 ALLOWED = (
     # The two shapes that survive: a real capability limit, and a real resource limit.
     "def load():\n    n_parallel = 1  # allow-slot-clamp: no --kv-unified\n",
+    "def load():\n    n_parallel: int = 1  # allow-slot-clamp: no --kv-unified\n",
     "def load(fit):\n    n_parallel = fit.slots\n",
+    "def load(x):\n    n_parallel: int = x\n",
     # Structurally distinct, so no marker is needed for any of these.
     "def load(n_parallel: int = 1):\n    return n_parallel\n",
     "class A:\n    n_parallel: int = 1\n",
