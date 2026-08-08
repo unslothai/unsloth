@@ -696,8 +696,11 @@ def test_images_header_clears_collapsed_tauri_titlebar_controls():
     assert marker
     opening = before.rsplit("<div", 1)[1] + marker + after.split(">", 1)[0]
 
-    assert "const { pinned } = useSidebar();" in source
+    assert "const { isMobile, pinned } = useSidebar();" in source
+    assert "isMobile" in opening
+    assert "pl-12" in opening
     assert "!pinned && isTauri" in opening
+    assert opening.index("isMobile") < opening.index("!pinned && isTauri")
     assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in opening
     assert "pl-[var(--studio-media-header-left-inset,1.5rem)]" in opening
 

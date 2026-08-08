@@ -1056,7 +1056,7 @@ type LoadAdvanced = Pick<
 >;
 
 export function ImagesPage({ active = true }: { active?: boolean }) {
-  const { pinned } = useSidebar();
+  const { isMobile, pinned } = useSidebar();
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
     "a tiny ginger sloth coding in a sunlit treehouse, photorealistic",
@@ -2464,9 +2464,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       <div
         className={cn(
           "pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start justify-between pr-2 pt-[var(--studio-chat-header-padding-top,11px)]",
-          !pinned && isTauri
-            ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
-            : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
+          isMobile
+            ? "pl-12"
+            : !pinned && isTauri
+              ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
+              : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
         )}
       >
         <div className="pointer-events-auto flex items-center gap-2">
