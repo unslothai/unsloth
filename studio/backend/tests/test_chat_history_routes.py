@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import asyncio
+import inspect
 import os
 import re
 import sys
@@ -28,6 +28,16 @@ def _message(message_id: str, thread_id: str) -> chat_history.ChatMessage:
     )
 
 
+def test_route_handlers_are_sync():
+    """An async handler would run studio.db's blocking sqlite on the event loop."""
+    coroutine_handlers = sorted(
+        route.endpoint.__name__
+        for route in chat_history.router.routes
+        if inspect.iscoroutinefunction(route.endpoint)
+    )
+    assert coroutine_handlers == []
+
+
 def test_replace_thread_messages_rejects_body_thread_mismatch(monkeypatch):
     called = False
 
@@ -43,15 +53,13 @@ def test_replace_thread_messages_rejects_body_thread_mismatch(monkeypatch):
     monkeypatch.setattr(chat_history, "sync_chat_messages", fake_sync_chat_messages)
 
     with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(
-            chat_history.replace_thread_messages(
-                "thread-1",
-                chat_history.ChatMessageSyncRequest(
-                    messages = [_message("msg-1", "thread-2")],
-                    pruneMissing = True,
-                ),
-                current_subject = "test-user",
-            )
+        chat_history.replace_thread_messages(
+            "thread-1",
+            chat_history.ChatMessageSyncRequest(
+                messages = [_message("msg-1", "thread-2")],
+                pruneMissing = True,
+            ),
+            current_subject = "test-user",
         )
 
     assert exc_info.value.status_code == 400
@@ -70,12 +78,10 @@ def test_replace_thread_messages_reports_protected_research_turn(monkeypatch):
     monkeypatch.setattr(chat_history, "sync_chat_messages", reject_prune)
 
     with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(
-            chat_history.replace_thread_messages(
-                "thread-1",
-                chat_history.ChatMessageSyncRequest(messages = [], pruneMissing = True),
-                current_subject = "test-user",
-            )
+        chat_history.replace_thread_messages(
+            "thread-1",
+            chat_history.ChatMessageSyncRequest(messages = [], pruneMissing = True),
+            current_subject = "test-user",
         )
 
     assert exc_info.value.status_code == 409
@@ -244,11 +250,11 @@ def test_get_import_ledger_round_trips_through_storage(monkeypatch):
 
     monkeypatch.setattr(chat_history, "list_chat_legacy_imports", fake_list)
 
-    response = asyncio.run(chat_history.get_import_ledger(current_subject = "test-user"))
+    response = chat_history.get_import_ledger(current_subject = "test-user")
     assert response.threadIds == []
 
     seen.extend(["legacy-a", "legacy-b"])
-    response = asyncio.run(chat_history.get_import_ledger(current_subject = "test-user"))
+    response = chat_history.get_import_ledger(current_subject = "test-user")
     assert response.threadIds == ["legacy-a", "legacy-b"]
 
 
@@ -262,13 +268,11 @@ def test_record_import_ledger_returns_accepted_and_inserted(monkeypatch):
 
     monkeypatch.setattr(chat_history, "upsert_chat_legacy_imports", fake_upsert)
 
-    response = asyncio.run(
-        chat_history.record_import_ledger(
-            payload = chat_history.ChatImportLedgerRecordRequest(
-                threadIds = ["a", "b", "c"],
-            ),
-            current_subject = "test-user",
-        )
+    response = chat_history.record_import_ledger(
+        payload = chat_history.ChatImportLedgerRecordRequest(
+            threadIds = ["a", "b", "c"],
+        ),
+        current_subject = "test-user",
     )
     assert response.accepted == 3
     assert response.inserted == 1
@@ -291,16 +295,14 @@ def test_record_import_ledger_rejects_oversize_payload():
 def test_fork_thread_404_when_source_missing(monkeypatch):
     monkeypatch.setattr(chat_history, "get_chat_thread", lambda _id: None)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(
-            chat_history.fork_thread(
-                thread_id = "missing",
-                payload = chat_history.ChatForkRequest(
-                    messageId = "m1",
-                    newThreadId = "new",
-                    createdAt = 1,
-                ),
-                current_subject = "test-user",
-            )
+        chat_history.fork_thread(
+            thread_id = "missing",
+            payload = chat_history.ChatForkRequest(
+                messageId = "m1",
+                newThreadId = "new",
+                createdAt = 1,
+            ),
+            current_subject = "test-user",
         )
     assert exc.value.status_code == 404
 
@@ -309,16 +311,14 @@ def test_fork_thread_404_when_branch_message_missing(monkeypatch):
     monkeypatch.setattr(chat_history, "get_chat_thread", lambda _id: {"id": _id, "title": "T"})
     monkeypatch.setattr(chat_history, "get_chat_message", lambda _t, _m: None)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(
-            chat_history.fork_thread(
-                thread_id = "src",
-                payload = chat_history.ChatForkRequest(
-                    messageId = "missing",
-                    newThreadId = "new",
-                    createdAt = 1,
-                ),
-                current_subject = "test-user",
-            )
+        chat_history.fork_thread(
+            thread_id = "src",
+            payload = chat_history.ChatForkRequest(
+                messageId = "missing",
+                newThreadId = "new",
+                createdAt = 1,
+            ),
+            current_subject = "test-user",
         )
     assert exc.value.status_code == 404
 
@@ -372,16 +372,14 @@ def test_fork_thread_happy_path(monkeypatch):
             }
         ],
     )
-    response = asyncio.run(
-        chat_history.fork_thread(
-            thread_id = "src",
-            payload = chat_history.ChatForkRequest(
-                messageId = "m1",
-                newThreadId = "new",
-                createdAt = 2,
-            ),
-            current_subject = "test-user",
-        )
+    response = chat_history.fork_thread(
+        thread_id = "src",
+        payload = chat_history.ChatForkRequest(
+            messageId = "m1",
+            newThreadId = "new",
+            createdAt = 2,
+        ),
+        current_subject = "test-user",
     )
     assert response.thread.id == "new"
     assert response.thread.title == "fork · Original"
@@ -430,16 +428,14 @@ def test_fork_thread_warns_when_parent_had_container(monkeypatch):
         },
     )
     monkeypatch.setattr(chat_history, "list_chat_messages", lambda _id: [])
-    response = asyncio.run(
-        chat_history.fork_thread(
-            thread_id = "src",
-            payload = chat_history.ChatForkRequest(
-                messageId = "m1",
-                newThreadId = "new",
-                createdAt = 2,
-            ),
-            current_subject = "test-user",
-        )
+    response = chat_history.fork_thread(
+        thread_id = "src",
+        payload = chat_history.ChatForkRequest(
+            messageId = "m1",
+            newThreadId = "new",
+            createdAt = 2,
+        ),
+        current_subject = "test-user",
     )
     assert response.containerSnapshotWarning is not None
     assert "fresh" in response.containerSnapshotWarning.lower()
@@ -447,11 +443,9 @@ def test_fork_thread_warns_when_parent_had_container(monkeypatch):
 
 def test_get_fork_count(monkeypatch):
     monkeypatch.setattr(chat_history, "count_forks_for_message", lambda _t, _m: 3)
-    response = asyncio.run(
-        chat_history.get_fork_count(
-            thread_id = "t",
-            message_id = "m",
-            current_subject = "test-user",
-        )
+    response = chat_history.get_fork_count(
+        thread_id = "t",
+        message_id = "m",
+        current_subject = "test-user",
     )
     assert response.count == 3

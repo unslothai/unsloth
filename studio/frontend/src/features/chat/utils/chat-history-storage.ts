@@ -70,6 +70,36 @@ const LEGACY_CHAT_IMPORT_KEY = "unsloth_chat_legacy_imported_to_studio_db";
 
 let legacyChatImportPromise: Promise<void> | null = null;
 
+// Bumped whenever the legacy import creates a backend thread row, so a listing can tell whether its read raced one.
+let legacyChatImportGeneration = 0;
+
+// Thread rows whose write is still in flight, keyed by thread id. The runtime starts one without
+// waiting so a new chat's first message can render, so every read-modify-write below has to.
+const pendingThreadRecordByThreadId = new Map<string, Promise<void>>();
+
+/** Register an in-flight thread row write so later writes to that thread wait for it. */
+export function trackStoredChatThreadRecord(
+  threadId: string,
+  create: Promise<void>,
+): void {
+  pendingThreadRecordByThreadId.set(threadId, create);
+  // A chat abandoned before its first send leaves nobody to await this.
+  create.catch(() => undefined);
+  const forget = () => {
+    if (pendingThreadRecordByThreadId.get(threadId) === create) {
+      pendingThreadRecordByThreadId.delete(threadId);
+    }
+  };
+  create.then(forget, forget);
+}
+
+/** Resolves once the thread's row is written, or immediately when nothing is in flight. */
+export async function awaitStoredChatThreadRecord(
+  threadId: string,
+): Promise<void> {
+  await pendingThreadRecordByThreadId.get(threadId);
+}
+
 interface ExportedChat {
   exportedAt: string;
   version: 1;
@@ -389,6 +419,7 @@ async function importLegacyChatsIfNeeded(): Promise<void> {
       if (!backendThread) {
         await saveChatThread(thread);
         backendThreadsById.set(thread.id, thread);
+        legacyChatImportGeneration += 1;
       } else {
         backendThreadsById.set(
           thread.id,
@@ -473,6 +504,7 @@ export async function ensureStoredChatThread(
   // on every autosave (runStart/runEnd) and message append.
   if (isThreadIncognito(threadId)) return undefined;
   if (isChatThreadDeleted(threadId)) return undefined;
+  await awaitStoredChatThreadRecord(threadId);
   const legacyThread = fallback ?? (await db.threads.get(threadId));
   let backendThread: ThreadRecord | null;
   try {
@@ -566,6 +598,7 @@ export async function getStoredChatMessage(
 export async function listStoredChatThreads(
   args: ThreadListArgs = {},
 ): Promise<ThreadRecord[]> {
+  const importGenerationBeforeRead = legacyChatImportGeneration;
   const legacyThreads = await listLegacyThreads(args);
   let backendThreads = await listChatThreads(args).catch((error) => {
     if (legacyThreads.length > 0) {
@@ -575,7 +608,10 @@ export async function listStoredChatThreads(
   });
   if (backendThreads) {
     await importLegacyChatsIfNeeded().catch(() => undefined);
-    backendThreads = await listChatThreads(args).catch(() => backendThreads);
+    // Re-read only when the import created threads the read above could not see.
+    if (legacyChatImportGeneration !== importGenerationBeforeRead) {
+      backendThreads = await listChatThreads(args).catch(() => backendThreads);
+    }
   }
   const includeLegacyOnly =
     !backendThreads ||

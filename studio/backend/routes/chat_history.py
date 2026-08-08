@@ -3,6 +3,9 @@
 
 """
 Chat history API routes backed by studio.db.
+
+Handlers are sync defs so Starlette runs studio.db's blocking sqlite in its threadpool
+instead of on the event loop, where it would stall every other request.
 """
 
 from typing import Annotated, Any, Literal, Optional
@@ -254,7 +257,7 @@ class ChatImportLedgerRecordResponse(BaseModel):
 
 
 @router.get("/threads", response_model = ChatThreadListResponse)
-async def list_threads(
+def list_threads(
     model_type: Optional[str] = Query(None),
     pair_id: Optional[str] = Query(None),
     project_id: Optional[str] = Query(None),
@@ -271,7 +274,7 @@ async def list_threads(
 
 
 @router.post("/threads", response_model = ChatThread)
-async def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_subject)):
+def save_thread(payload: ChatThread, current_subject: str = Depends(get_current_subject)):
     if payload.projectId and get_chat_project(payload.projectId) is None:
         raise HTTPException(
             status_code = 404,
@@ -281,7 +284,7 @@ async def save_thread(payload: ChatThread, current_subject: str = Depends(get_cu
 
 
 @router.get("/threads/{thread_id}", response_model = ChatThread)
-async def get_thread(thread_id: str, current_subject: str = Depends(get_current_subject)):
+def get_thread(thread_id: str, current_subject: str = Depends(get_current_subject)):
     thread = get_chat_thread(thread_id)
     if thread is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
@@ -289,7 +292,7 @@ async def get_thread(thread_id: str, current_subject: str = Depends(get_current_
 
 
 @router.patch("/threads/{thread_id}", response_model = ChatThread)
-async def patch_thread(
+def patch_thread(
     thread_id: str,
     payload: ChatThreadPatch,
     current_subject: str = Depends(get_current_subject),
@@ -355,7 +358,7 @@ def _cancel_active_research(request: Request, thread_ids: list[str]) -> None:
 
 
 @router.delete("/threads")
-async def delete_threads(
+def delete_threads(
     payload: ChatDeleteRequest,
     request: Request,
     current_subject: str = Depends(get_current_subject),
@@ -501,7 +504,7 @@ def delete_attachment(
 
 
 @router.get("/projects", response_model = ChatProjectListResponse)
-async def list_projects(
+def list_projects(
     include_archived: bool = Query(False), current_subject: str = Depends(get_current_subject)
 ):
     return ChatProjectListResponse(
@@ -513,12 +516,12 @@ async def list_projects(
 
 
 @router.post("/projects", response_model = ChatProject)
-async def save_project(payload: ChatProject, current_subject: str = Depends(get_current_subject)):
+def save_project(payload: ChatProject, current_subject: str = Depends(get_current_subject)):
     return ChatProject(**upsert_chat_project(payload.model_dump()))
 
 
 @router.get("/projects/{project_id}", response_model = ChatProject)
-async def get_project(project_id: str, current_subject: str = Depends(get_current_subject)):
+def get_project(project_id: str, current_subject: str = Depends(get_current_subject)):
     project = ensure_chat_project_workspace(project_id)
     if project is None:
         raise HTTPException(
@@ -529,7 +532,7 @@ async def get_project(project_id: str, current_subject: str = Depends(get_curren
 
 
 @router.patch("/projects/{project_id}", response_model = ChatProject)
-async def patch_project(
+def patch_project(
     project_id: str,
     payload: ChatProjectPatch,
     current_subject: str = Depends(get_current_subject),
@@ -550,7 +553,7 @@ async def patch_project(
 
 
 @router.delete("/projects/{project_id}", response_model = ChatProject)
-async def delete_project(
+def delete_project(
     project_id: str,
     request: Request,
     delete_files: bool = Query(False),
@@ -598,7 +601,7 @@ async def delete_project(
 
 
 @router.get("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
-async def get_thread_messages(thread_id: str, current_subject: str = Depends(get_current_subject)):
+def get_thread_messages(thread_id: str, current_subject: str = Depends(get_current_subject)):
     if get_chat_thread(thread_id) is None:
         raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     return ChatMessageListResponse(
@@ -607,7 +610,7 @@ async def get_thread_messages(thread_id: str, current_subject: str = Depends(get
 
 
 @router.post("/messages:batch", response_model = ChatMessagesBatchResponse)
-async def batch_thread_messages(
+def batch_thread_messages(
     payload: ChatMessagesBatchRequest, current_subject: str = Depends(get_current_subject)
 ):
     """One round-trip per sidebar/search rebuild instead of N. Unknown thread ids return empty lists."""
@@ -620,7 +623,7 @@ async def batch_thread_messages(
 
 
 @router.get("/threads/{thread_id}/messages/{message_id}", response_model = ChatMessage)
-async def get_thread_message(
+def get_thread_message(
     thread_id: str,
     message_id: str,
     current_subject: str = Depends(get_current_subject),
@@ -695,12 +698,12 @@ def replace_thread_messages(
 
 
 @router.get("/count", response_model = ChatCountResponse)
-async def count_threads(current_subject: str = Depends(get_current_subject)):
+def count_threads(current_subject: str = Depends(get_current_subject)):
     return ChatCountResponse(count = count_chat_threads())
 
 
 @router.get("/import-ledger", response_model = ChatImportLedgerResponse)
-async def get_import_ledger(current_subject: str = Depends(get_current_subject)):
+def get_import_ledger(current_subject: str = Depends(get_current_subject)):
     """Legacy-Dexie import ledger: legacy thread ids already copied into chat tables.
 
     The frontend checks this on tab open to decide whether to re-run the Dexie -> studio.db import.
@@ -709,7 +712,7 @@ async def get_import_ledger(current_subject: str = Depends(get_current_subject))
 
 
 @router.post("/import-ledger", response_model = ChatImportLedgerRecordResponse)
-async def record_import_ledger(
+def record_import_ledger(
     payload: ChatImportLedgerRecordRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Mark each legacy thread id as imported. Idempotent."""
@@ -718,19 +721,19 @@ async def record_import_ledger(
 
 
 @router.delete("")
-async def clear_history(request: Request, current_subject: str = Depends(get_current_subject)):
+def clear_history(request: Request, current_subject: str = Depends(get_current_subject)):
     _cancel_active_research(request, [thread["id"] for thread in list_chat_threads()])
     clear_chat_history()
     return {"status": "deleted"}
 
 
 @router.get("/settings", response_model = ChatSettingsResponse)
-async def get_settings(current_subject: str = Depends(get_current_subject)):
+def get_settings(current_subject: str = Depends(get_current_subject)):
     return ChatSettingsResponse(settings = list_chat_settings())
 
 
 @router.put("/settings", response_model = ChatSettingsResponse)
-async def put_settings(
+def put_settings(
     payload: dict[str, Any], current_subject: str = Depends(get_current_subject)
 ):
     try:
@@ -769,7 +772,7 @@ class ChatForkCountResponse(BaseModel):
 
 
 @router.post("/threads/{thread_id}/fork", response_model = ChatForkResponse)
-async def fork_thread(
+def fork_thread(
     thread_id: str,
     payload: ChatForkRequest,
     current_subject: str = Depends(get_current_subject),
@@ -823,7 +826,7 @@ async def fork_thread(
     "/threads/{thread_id}/messages/{message_id}/forks",
     response_model = ChatForkCountResponse,
 )
-async def get_fork_count(
+def get_fork_count(
     thread_id: str,
     message_id: str,
     current_subject: str = Depends(get_current_subject),
@@ -832,7 +835,7 @@ async def get_fork_count(
 
 
 @router.get("/export", response_model = ChatExportResponse)
-async def export_history(current_subject: str = Depends(get_current_subject)):
+def export_history(current_subject: str = Depends(get_current_subject)):
     from datetime import datetime, timezone
 
     threads = list_chat_threads(include_archived = True)
