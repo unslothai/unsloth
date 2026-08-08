@@ -25,6 +25,9 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+# stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
+from core._torchao_stub import is_stubbed
+
 TQ_INT8 = "int8"
 TQ_FP8 = "fp8"
 TQ_NVFP4 = "nvfp4"
@@ -67,9 +70,31 @@ _QWENIMAGE_INT8_EXCLUDES = (
     "to_add_out",
     "txt_mlp",
 )
+# HunyuanVideo-1.5's attention trim (this PR) shrinks the text / image streams from their padded
+# lengths to the VALID token counts, so every text-stream Linear runs at a tiny M the int8 dynamic
+# path cannot handle. Both failures measured on B200:
+#   - M = 0 (t2v byt5 / image streams trim to zero tokens): torchao returns the input UNPROJECTED
+#     (a quantized 1472 -> 2048 Linear maps [1, 0, 1472] to [1, 0, 1472]), so the 2048-wide
+#     cond-type add crashes -> context_embedder_2 / image_embedder;
+#   - M <= 16 (a short prompt, or the empty negative prompt's ~6 tokens): torch._int_mm requires
+#     M > 16 and raises -> the TokenRefiner and every block's context-stream projections.
+# These run at M = text tokens (tens) against the video stream's M ~ 32k+, so bf16 here costs
+# nothing measurable and the video-stream linears keep full int8 coverage. "context_embedder"
+# also matches "context_embedder_2" (substring check).
+_HUNYUAN15_INT8_EXCLUDES = (
+    "context_embedder",
+    "image_embedder",
+    "add_q_proj",
+    "add_k_proj",
+    "add_v_proj",
+    "to_add_out",
+    "ff_context",
+)
 _INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
     "qwen-image": _QWENIMAGE_INT8_EXCLUDES,
     "qwen-image-edit": _QWENIMAGE_INT8_EXCLUDES,  # same DiT class + unpadded text stream
+    "hunyuanvideo-1.5": _HUNYUAN15_INT8_EXCLUDES,
+    "hunyuanvideo-1.5-720p": _HUNYUAN15_INT8_EXCLUDES,
 }
 
 
@@ -90,9 +115,13 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
 
 # Per-arch preference for ``auto``, best first. On Blackwell fp8 leads: on B200 plain fp8 dynamic is faster AND more accurate at DiT shapes,
 # while mxfp8 block scaling only adds overhead. nvfp4's FP4 GEMM is real with torch>=2.11 but wins only on very large GEMMs (0.81x on Z-Image
-# 1024px, LPIPS 0.166 vs fp8 0.044), so it stays an explicit opt-in. Consumer / workstation GPUs move int8 first: they halve fp8/fp16 FP32-accumulate.
+# 1024px, LPIPS 0.166 vs fp8 0.044), so it is kept OUT of the ladder below and stays an explicit opt-in (transformer_quant="nvfp4"): auto must
+# never silently drop to a scheme that is both slower and less accurate. Restore the commented Blackwell tier to re-enable it once the FP4
+# tensor-core GEMM wins at the DiT's real shapes (hidden ~3072, MLP ~12288, M ~4096) and its accuracy is validated by the prequant gate.
+# Consumer / workstation GPUs move int8 first: they halve fp8/fp16 FP32-accumulate.
 _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
-    ((10, 0), (TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8)),  # Blackwell sm_100+
+    ((10, 0), (TQ_FP8, TQ_MXFP8, TQ_INT8)),  # Blackwell sm_100+ (nvfp4 is explicit opt-in only)
+    # ((10, 0), (TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8)),  # restore to re-enable nvfp4 under auto
     ((8, 9), (TQ_FP8, TQ_INT8)),  # Ada sm_89 / Hopper sm_90
     ((8, 0), (TQ_INT8,)),  # Ampere sm_80 / sm_86
 )
@@ -193,6 +222,11 @@ def dense_transformer_supported(target: Any) -> bool:
     dtype (the only config any torchao dynamic scheme accelerates). Cheap loader pre-check."""
     if getattr(target, "device", None) != "cuda":
         return False
+    # The Windows-ROCm torchao stub's quantize_ is a no-op, so the smoke probe passes on a
+    # still-dense Linear and the transformer gets MARKED quantised without being quantised,
+    # giving the wrong VRAM budget and compile policy.
+    if is_stubbed("torchao"):
+        return False
     try:
         import torch
         return getattr(target, "dtype", None) is torch.bfloat16
@@ -266,9 +300,22 @@ def _scheme_supported(scheme: str, device: str) -> bool:
 
 
 def _smoke_probe(scheme: str, device: str) -> bool:
-    """True iff a tiny Linear quantised with ``scheme`` runs one M=32 forward. Cached per
-    (scheme, device). Makes ``auto`` robust to a build lacking a prototype kernel: it fails
-    here and the ladder moves on, rather than crashing at the first real denoise step."""
+    """True iff a tiny Linear quantised with ``scheme`` runs one M=32 forward and returns
+    finite values. Cached per (scheme, device). Makes ``auto`` robust to a build lacking a
+    prototype kernel: it fails here and the ladder moves on, rather than crashing at the first
+    real denoise step.
+
+    Half the input is all-zero rows and the output is checked for finiteness, because a kernel
+    that runs is not the same as one that is usable. torchao's ``_choose_scale_float8`` has no
+    eps clamp, so a zero row yields scale 0 and NaN qdata; that is the root cause behind
+    qwen-image's fp8 black frames (its txt stream emits all-zero token rows through a set of
+    ``txt_mlp.net.2`` linears that changes run to run, which is why keeping a fixed subset bf16
+    does not fix it). ``_make_quant_config`` floors it with ``activation_value_lb``, but only
+    when the installed torchao exposes that kwarg, and without a zero row the probe passed on a
+    build lacking it. Zero rows are not exotic: every Wan pipeline pads prompt embeddings with
+    ``new_zeros`` out to 226 or 512, so the tail rows reaching the DiT are exactly zero.
+    Measured on B200, 4096-wide Linear: 412 of 512 rows non-finite without the floor, 0 of 512
+    with it. Failing here costs one ladder step down to int8 instead."""
     key = (scheme, device)
     if key in _SMOKE_CACHE:
         return _SMOKE_CACHE[key]
@@ -279,11 +326,13 @@ def _smoke_probe(scheme: str, device: str) -> bool:
 
         lin = torch.nn.Linear(512, 512, bias = False).to(device = device, dtype = torch.bfloat16)
         quantize_(lin, _make_quant_config(scheme), filter_fn = make_filter_fn(0))
+        # M stays 32 (scaled_mm wants 16-aligned dims); the zero rows go inside it, not after it.
         x = torch.randn(32, 512, device = device, dtype = torch.bfloat16)
+        x[16:] = 0
         with torch.no_grad():
-            lin(x)
+            out = lin(x)
         torch.cuda.synchronize()
-        ok = True
+        ok = bool(torch.isfinite(out).all().item())
     except Exception:
         ok = False
     _SMOKE_CACHE[key] = ok

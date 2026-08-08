@@ -41,6 +41,8 @@ from core.inference.diffusion_families import (
     detect_family_for_pick,
     family_sd_cpp_supported,
     mirror_repo,
+    legacy_source_repo,
+    prefer_cached_legacy_source,
     prefer_ungated_mirror,
     resolve_base_repo,
     resolve_local_gguf_child,
@@ -326,20 +328,27 @@ def _fetch_repo_map(assets: list[tuple[str, str, str]], hf_token: Optional[str])
     """upstream asset repo -> the repo to actually fetch from (its ungated mirror, or itself).
 
     Decided per REPO over its whole file list, the same input ``download_plan`` uses, so staging
-    and the load agree even when a repo carries several assets."""
+    and the load agree even when a repo carries several assets.
+
+    Two swaps, in order: a GATED vendor base goes to its ungated mirror, then a mirror whose
+    community repack is already cached goes back to the repack. The second only ever spares an
+    existing install a re-download of bytes it already holds under the old repo key; a fresh one
+    still pulls the mirror."""
     by_repo: dict[str, list[str]] = {}
     for repo, filename, _kind in assets:
         by_repo.setdefault(repo, []).append(filename)
     return {
-        repo: prefer_ungated_mirror(repo, hf_token, files = names) for repo, names in by_repo.items()
+        repo: prefer_cached_legacy_source(prefer_ungated_mirror(repo, hf_token, files = names), names)
+        for repo, names in by_repo.items()
     }
 
 
 def _with_mirrors(repo_ids) -> tuple[str, ...]:
-    """``repo_ids`` plus the ungated mirror of each, de-duplicated, order preserved.
+    """``repo_ids`` plus the ungated mirror and the community repack of each, de-duplicated, order
+    preserved.
 
-    The delete-cached guard must protect whichever of the pair the bytes landed in, and that
-    decision is re-taken per load; naming both is cheap and cannot under-protect."""
+    The delete-cached guard must protect whichever of the set the bytes landed in, and that
+    decision is re-taken per load; naming all of them is cheap and cannot under-protect."""
     out: list[str] = []
     for rid in repo_ids:
         if not rid:
@@ -348,6 +357,9 @@ def _with_mirrors(repo_ids) -> tuple[str, ...]:
         mirror = mirror_repo(rid)
         if mirror:
             out.append(mirror)
+        legacy = legacy_source_repo(rid)
+        if legacy:
+            out.append(legacy)
     return tuple(dict.fromkeys(out))
 
 
@@ -548,10 +560,9 @@ class SdCppDiffusionBackend:
             specs = self._asset_specs(repo_id, gguf_filename, fam)
             fetch_repo = _fetch_repo_map(specs, hf_token)
             assets = [(fetch_repo[repo], fn, kind) for repo, fn, kind in specs]
-            # Same preflight the plan runs, and on the POST-swap repos: catch a gated companion
-            # here, not 15 GiB into the prefetch, but do not refuse one whose ungated mirror is
-            # standing in for it. The plan alone is not enough -- the images page falls back to
-            # calling this load directly when the plan call fails, skipping the check entirely.
+            # Same preflight the plan runs, on POST-swap repos: catch a gated companion here, not
+            # 15 GiB into the prefetch, without refusing one an ungated mirror stands in for. The
+            # plan alone is not enough: the images page falls back to this load when it fails.
             self._preflight_companion_repos(
                 self._assets_by_repo(assets), fetch_repo.get(repo_id, repo_id), hf_token
             )
@@ -712,8 +723,8 @@ class SdCppDiffusionBackend:
         fetch_repo = _fetch_repo_map(specs, hf_token)
         by_repo = {fetch_repo[repo]: names for repo, names in by_repo.items()}
         fetch_repo_id = fetch_repo.get(repo_id, repo_id)
-        # AFTER the swap: the point of the mirror is that a gated companion no longer blocks the
-        # load, so preflighting the upstream id would refuse the very picks the mirror rescues.
+        # AFTER the swap: preflighting the upstream id would refuse the very picks the ungated
+        # mirror exists to rescue.
         self._preflight_companion_repos(by_repo, fetch_repo_id, hf_token)
         sizes = self._plan_file_sizes(by_repo, hf_token)
         entries: list[dict[str, Any]] = []
@@ -759,16 +770,14 @@ class SdCppDiffusionBackend:
         The native asset list carries its own companion repos (flux.1's VAE is the gated
         black-forest-labs/FLUX.1-schnell), and neither ``_plan_file_sizes`` nor the size probe
         surfaces the 401: the entry is planned at 0 bytes and the fetch dies on the bare Hub token
-        error this preflight exists to replace. Run from BOTH the plan and ``_run_load``, as the
-        diffusers backend does, because the UI falls back to /images/load when the plan call
-        fails, so a 400 raised only at plan time is swallowed."""
+        error this replaces. Run from BOTH the plan and ``_run_load``, as the diffusers backend
+        does, because the UI falls back to /images/load when the plan call fails."""
         from core.inference.diffusion import _assert_base_repo_accessible
         for repo, names in by_repo.items():
-            # Companions only, mirroring the diffusers plan: the picker only lists repos it could
-            # already read.
+            # Companions only: the picker only lists repos it could already read.
             if repo != repo_id and names:
-                # Probe an asset THIS pick stages: a repo read only for its VAE has no pipeline
-                # manifest, so the default name would neither verify access nor see the cache.
+                # Probe an asset THIS pick stages: a VAE-only repo has no pipeline manifest, so the
+                # default name would neither verify access nor see the cache.
                 _assert_base_repo_accessible(repo, hf_token, names[0])
 
     def preflight_base_access(
@@ -783,15 +792,12 @@ class SdCppDiffusionBackend:
     ) -> None:
         """The companion refusal ``_run_load`` makes, run by the route BEFORE it takes the GPU.
 
-        Same signature and reason as the diffusers backend's: ``_run_load`` runs on the load
-        thread, after a forced-native load on a GPU host already evicted chat, so a pick refused
-        only there unloads the resident model first. Nothing to check without a family or a
-        checkpoint name -- the asset list needs both, and the route already rejected those picks."""
+        Same signature and reason as the diffusers backend's: ``_run_load`` runs on the load thread,
+        after a forced-native load on a GPU host already evicted chat, so a pick refused only there
+        unloads the resident model first. Nothing to check without a family or checkpoint name."""
         if fam is None or not gguf_filename:
             return
-        # Post-swap, as the plan and the load both are: probing the upstream id would refuse
-        # exactly the gated companions the ungated mirror stands in for. The swap is pure, so all
-        # three take the same decision.
+        # Post-swap, as the plan and the load are: the swap is pure, so all three decide alike.
         specs = self._asset_specs(repo_id, gguf_filename, fam)
         fetch_repo = _fetch_repo_map(specs, hf_token)
         self._preflight_companion_repos(
@@ -884,10 +890,9 @@ class SdCppDiffusionBackend:
             if kind == "diffusion_model" and local_root.exists():
                 path = str(resolve_local_gguf_child(local_root, fn))
             else:
-                # An asset cached only under huggingface_hub's import-time root resolves through
-                # that root, matching the preflight, which clears a base found under EITHER root.
-                # Pinned to the live one, a cache-folder change re-downloads every moved asset and
-                # turns an already-downloaded gated base into the bare Hub token error.
+                # Resolve an asset cached only under huggingface_hub's import-time root through
+                # that root, as the preflight does. Pinned to the live root, a cache-folder change
+                # re-downloads every moved asset and 401s on an already-downloaded gated base.
                 path = hf_hub_download_with_xet_fallback(
                     repo, fn, hf_token, cancel_event = cancel, reuse_other_cache_root = True
                 )

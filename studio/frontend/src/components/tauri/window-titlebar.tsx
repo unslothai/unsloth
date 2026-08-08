@@ -6,18 +6,13 @@ import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import {
-  Cancel01Icon,
-  LayoutAlignLeftIcon,
-  MinusSignIcon,
-  SquareIcon,
-  SquareSquareIcon,
-} from "@hugeicons/core-free-icons";
+import { CopyIcon, LayoutAlignLeftIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowLeft, ArrowRight } from "lucide-react";
 import type { Window as TauriWindow } from "@tauri-apps/api/window";
+import { ArrowLeft, ArrowRight, Minus, Square, X } from "lucide-react";
 import {
   type MouseEvent,
+  type PointerEvent,
   type ReactElement,
   type ReactNode,
   useCallback,
@@ -122,7 +117,7 @@ export function DesktopTitlebarNavigation({
     event.stopPropagation();
   };
   const buttonClass =
-    "inline-flex size-[30px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+    "inline-flex size-[30px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
   return (
     <div
@@ -149,7 +144,7 @@ export function DesktopTitlebarNavigation({
           <HugeiconsIcon
             icon={LayoutAlignLeftIcon}
             strokeWidth={1.75}
-            className="size-icon"
+            className="size-icon !size-[calc(var(--icon-size)+1px)]"
           />
         </button>
       ) : (
@@ -170,7 +165,7 @@ export function DesktopTitlebarNavigation({
         <ArrowLeft
           aria-hidden="true"
           strokeWidth={1.75}
-          className="size-icon"
+          className="size-icon !size-[calc(var(--icon-size)+1px)]"
         />
       </button>
       <button
@@ -188,7 +183,7 @@ export function DesktopTitlebarNavigation({
         <ArrowRight
           aria-hidden="true"
           strokeWidth={1.75}
-          className="size-icon"
+          className="size-icon !size-[calc(var(--icon-size)+1px)]"
         />
       </button>
     </div>
@@ -326,9 +321,11 @@ export function WindowTitlebar({
     [runWindowAction],
   );
 
-  const handleResizeMouseDown = useCallback(
+  // pointerdown, not mousedown: Radix dismisses modals on pointerdown, which fires first,
+  // so a mousedown handler starts the resize but the dialog closes underneath it.
+  const handleResizePointerDown = useCallback(
     (direction: WindowResizeDirection) =>
-      (event: MouseEvent<HTMLDivElement>) => {
+      (event: PointerEvent<HTMLDivElement>) => {
         if (event.button !== 0) {
           return;
         }
@@ -414,11 +411,7 @@ export function WindowTitlebar({
             label="Minimize window"
             onClick={() => runWindowAction((appWindow) => appWindow.minimize())}
           >
-            <HugeiconsIcon
-              icon={MinusSignIcon}
-              strokeWidth={1.75}
-              className="size-[15px]"
-            />
+            <Minus aria-hidden="true" strokeWidth={1.75} className="w-[18px]" />
           </WindowControlButton>
           <WindowControlButton
             label={maximized ? "Restore window" : "Maximize window"}
@@ -426,64 +419,73 @@ export function WindowTitlebar({
               runWindowAction((appWindow) => appWindow.toggleMaximize())
             }
           >
-            <HugeiconsIcon
-              icon={maximized ? SquareSquareIcon : SquareIcon}
-              strokeWidth={1.75}
-              className="size-[14px]"
-            />
+            {maximized ? (
+              <HugeiconsIcon
+                icon={CopyIcon}
+                strokeWidth={1.75}
+                className="size-[17px] rotate-180"
+              />
+            ) : (
+              <Square
+                aria-hidden="true"
+                strokeWidth={1.75}
+                className="size-[16px]"
+              />
+            )}
           </WindowControlButton>
           <WindowControlButton
             label="Close window"
+            // No optimistic overlay here. Rust raises it only once the quit confirmations
+            // have passed, and one of those can be a dialog asking whether to keep
+            // training: painting "Closing Unsloth Desktop..." behind that question would
+            // answer it before the user does. The wait this covers is the reap, and Rust's
+            // app-closing arrives well ahead of that.
             onClick={() => runWindowAction((appWindow) => appWindow.close())}
             className="hover:bg-destructive/10 hover:text-destructive focus-visible:ring-destructive/70 dark:hover:bg-destructive/20"
           >
-            <HugeiconsIcon
-              icon={Cancel01Icon}
-              strokeWidth={1.75}
-              className="size-[15px]"
-            />
+            <X aria-hidden="true" strokeWidth={1.75} className="size-[18px]" />
           </WindowControlButton>
         </div>
       </header>
       <div
         aria-hidden="true"
-        className="fixed inset-x-2 top-0 z-[70] h-1 cursor-n-resize"
-        onMouseDown={handleResizeMouseDown("North")}
+        className="pointer-events-auto fixed inset-x-2 top-0 z-[70] h-1 cursor-n-resize"
+        onPointerDown={handleResizePointerDown("North")}
       />
       <div
         aria-hidden="true"
-        className="fixed inset-x-2 bottom-0 z-[70] h-1 cursor-s-resize"
-        onMouseDown={handleResizeMouseDown("South")}
+        className="pointer-events-auto fixed inset-x-2 bottom-0 z-[70] h-1 cursor-s-resize"
+        onPointerDown={handleResizePointerDown("South")}
       />
       <div
         aria-hidden="true"
-        className="fixed inset-y-2 left-0 z-[70] w-1 cursor-w-resize"
-        onMouseDown={handleResizeMouseDown("West")}
+        className="pointer-events-auto fixed inset-y-2 left-0 z-[70] w-1 cursor-w-resize"
+        onPointerDown={handleResizePointerDown("West")}
       />
       <div
         aria-hidden="true"
-        className="fixed inset-y-2 right-0 z-[70] w-1 cursor-e-resize"
-        onMouseDown={handleResizeMouseDown("East")}
+        className="pointer-events-auto fixed inset-y-2 right-0 z-[70] w-1 cursor-e-resize"
+        onPointerDown={handleResizePointerDown("East")}
       />
       <div
         aria-hidden="true"
-        className="fixed left-0 top-0 z-[70] size-3 cursor-nw-resize"
-        onMouseDown={handleResizeMouseDown("NorthWest")}
+        className="pointer-events-auto fixed left-0 top-0 z-[70] size-3 cursor-nw-resize"
+        onPointerDown={handleResizePointerDown("NorthWest")}
       />
       <div
         aria-hidden="true"
-        className="fixed right-0 top-0 z-[70] size-3 cursor-ne-resize"
-        onMouseDown={handleResizeMouseDown("NorthEast")}
+        className="pointer-events-auto fixed right-0 top-0 z-[70] size-3 cursor-ne-resize"
+        onPointerDown={handleResizePointerDown("NorthEast")}
       />
       <div
         aria-hidden="true"
-        className="fixed bottom-0 left-0 z-[70] size-3 cursor-sw-resize"
-        onMouseDown={handleResizeMouseDown("SouthWest")}
+        className="pointer-events-auto fixed bottom-0 left-0 z-[70] size-3 cursor-sw-resize"
+        onPointerDown={handleResizePointerDown("SouthWest")}
       />
       <div
         aria-hidden="true"
-        className="fixed bottom-0 right-0 z-[70] size-3 cursor-se-resize"
-        onMouseDown={handleResizeMouseDown("SouthEast")}
+        className="pointer-events-auto fixed bottom-0 right-0 z-[70] size-3 cursor-se-resize"
+        onPointerDown={handleResizePointerDown("SouthEast")}
       />
     </>
   );

@@ -42,7 +42,11 @@ from typing import Any, Optional
 
 from loggers import get_logger
 
-from .diffusion_attention import apply_attention_backend, select_attention_backend
+from .diffusion_attention import (
+    apply_attention_backend,
+    install_hunyuan_attention_trim,
+    select_attention_backend,
+)
 from .diffusion_cache import (
     FBCACHE_MIN_STEPS,
     TC_AUTO,
@@ -64,6 +68,7 @@ from .diffusion_memory import (
 )
 from .diffusion_speed import (
     SPEED_DEFAULT,
+    SPEED_MAX,
     SPEED_OFF,
     apply_speed_optims,
     resolve_speed_mode,
@@ -90,6 +95,7 @@ from .video_families import (
     snap_num_frames,
     snap_video_size,
     supported_video_family_names,
+    validate_video_request_shape,
 )
 from utils.hardware import clear_gpu_cache
 
@@ -1429,6 +1435,16 @@ class VideoBackend:
         else:
             cache_reason = "requested"
         attention_engaged = None
+        # HunyuanVideo-1.5 only, and once for the whole pipe (the installer fans out over every
+        # denoiser DiT itself). Before apply_attention_backend below, so the requested kernel pins
+        # onto the new processors. Held off on SPEED_OFF (which must stay bit-identical) and on
+        # SPEED_MAX (its blocks compile with dynamic=False, and the trimmed text length varies per
+        # prompt, so every prompt would be a fresh graph).
+        attention_trim_engaged = (
+            install_hunyuan_attention_trim(pipe, fam, logger = logger)
+            if effective_speed not in (SPEED_OFF, SPEED_MAX)
+            else False
+        )
         speed_optims: tuple = ()
         for view in views:
             # Both helpers act on ``view.transformer``; call once per view (engaged values match, so record the first). is_gguf needs kind==gguf AND no quant engaged.
@@ -1453,6 +1469,8 @@ class VideoBackend:
             if view is pipe:
                 attention_engaged = engaged
                 speed_optims = tuple(k for k, v in applied.items() if v)
+                if attention_trim_engaged:
+                    speed_optims += ("hunyuan_attn_trim",)
         with self._generate_lock:
             # A cancelled/superseded load must not place weights on a GPU the arbiter may have reassigned; recheck before placement.
             if _load_token is not None and _load_token != self._load_token:
@@ -1580,6 +1598,18 @@ class VideoBackend:
 
     # ── generation ───────────────────────────────────────────────────────────
 
+    def loaded_family(self) -> Optional[VideoFamily]:
+        """The resident pipeline's family, or None when nothing is loaded.
+
+        The generate route reads it to enforce that family's shape rules (resolution
+        presets + frame lattice) at the API boundary, before the request reaches the
+        worker. ``getattr`` rather than ``state.family`` on purpose: a state object
+        that carries no family degrades to the old snapping path instead of raising.
+        """
+        with self._lock:
+            state = self._state
+        return getattr(state, "family", None) if state is not None else None
+
     @staticmethod
     def _reset_step_cache(pipe: Any) -> None:
         """Clear FBCache residuals on the resident DiT(s) before a generation.
@@ -1632,6 +1662,14 @@ class VideoBackend:
                 raise RuntimeError(VIDEO_NOT_LOADED_MSG)
             if self._generate_job_active:
                 raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
+            # Under the SAME lock that reserves the state this job will run against. A load
+            # commits its new state here too, so judging the shape from a separate earlier read
+            # could accept a size for the family being replaced and then denoise it with the new
+            # one, or reject a size the new family supports. getattr, so a state carrying no
+            # family degrades to the old snapping rather than raising.
+            fam = getattr(self._state, "family", None)
+            if fam is not None:
+                validate_video_request_shape(fam, width = width, height = height, num_frames = num_frames)
             self._generate_job_active = True
             # Register BEFORE the worker starts so a cancel/unload in the spawn window still stops the run.
             self._active_generate_cancel = cancel

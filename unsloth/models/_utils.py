@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.8.5"
+__version__ = "2026.8.9"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -76,6 +76,7 @@ __all__ = [
     "RaiseUninitialized",
     "fast_inference_setup",
     "patch_peft_fast_inference",
+    "save_lora_adapter",
     "error_out_no_vllm",
     "dequantize_module_weight",
     "patch_hf_quantizer",
@@ -451,12 +452,40 @@ def _is_eager_only(model_type):
     return any(model_type.startswith(p) for p in _EAGER_ONLY_PREFIXES)
 
 
+# Ampere. Below it the flex HOP runs its eager `sdpa_dense` fallback, whose
+# backward does `softmax_scores.to(query.dtype) @ grad_out` -- casting the scores
+# but not `grad_out`. Such a card also forces fp16 here, so query is Half against
+# a Float grad and the matmul is refused.
+_FLEX_ATTENTION_MIN_CAPABILITY = (8, 0)
+
+
+def _flex_attention_gpu_is_supported():
+    """False only for NVIDIA cards below Ampere.
+
+    ROCm, XPU, MPS, CPU and an unreadable device are left alone, so this can
+    only ever remove a path that was already broken.
+    """
+    try:
+        if getattr(torch.version, "hip", None):
+            return True
+        if not torch.cuda.is_available():
+            return True
+        return all(
+            torch.cuda.get_device_capability(index) >= _FLEX_ATTENTION_MIN_CAPABILITY
+            for index in range(torch.cuda.device_count())
+        )
+    except Exception:
+        return True
+
+
 def _supports_flex_attention(model_class, config, model_type):
     if os.environ.get("UNSLOTH_ENABLE_FLEX_ATTENTION", "1") == "0":
         return False
     if not getattr(model_class, "_supports_flex_attn", False):
         return False
     if _is_flex_excluded(model_type):
+        return False
+    if not _flex_attention_gpu_is_supported():
         return False
     for attention_config in _iter_attention_configs(config):
         attention_dropout = _config_get(attention_config, "attention_dropout", 0) or 0
@@ -3198,6 +3227,34 @@ def patch_gradient_accumulation_fix(Trainer):
         exec(function, globals())
         Trainer.training_step = _unsloth_training_step
 
+    # Settle any deferred compile-mode switch at the start of every step.
+    # On recompile-limit exhaustion unsloth_zoo defers the switch to eager
+    # instead of flipping mid-call: non-reentrant checkpointing packs the
+    # forward compiled and would recompute it eagerly, aborting the backward
+    # with "Something went unexpectedly wrong in activation checkpoint".
+    # Between steps nothing is half-packed, so the switch is free.
+    if not getattr(Trainer, "_unsloth_settles_eager_fallbacks", False):
+        try:
+            from unsloth_zoo.temporary_patches.utils import (
+                apply_pending_eager_fallbacks as _apply_pending_eager_fallbacks,
+            )
+        except Exception:
+            # Older unsloth_zoo has no deferred switch, so nothing to settle.
+            _apply_pending_eager_fallbacks = None
+        if _apply_pending_eager_fallbacks is not None:
+            _training_step_before_settle = Trainer.training_step
+
+            @functools.wraps(_training_step_before_settle)
+            def _unsloth_training_step_settling_fallbacks(self, *args, **kwargs):
+                try:
+                    _apply_pending_eager_fallbacks()
+                except Exception:
+                    pass
+                return _training_step_before_settle(self, *args, **kwargs)
+
+            Trainer.training_step = _unsloth_training_step_settling_fallbacks
+            Trainer._unsloth_settles_eager_fallbacks = True
+
     # Wrap Trainer.__init__: (1) pre-init, shadow accepts_loss_kwargs on whatever
     # model was passed in (covers PEFT wrapping done after FastModel.from_pretrained);
     # (2) post-init, clamp accelerator GA to 1 for the transformers 5.0-5.5
@@ -3591,6 +3648,28 @@ def fast_inference_setup(model_name, model_config):
     return fast_inference, model_name
 
 
+def save_lora_adapter(model, save_directory, *args, **kwargs):
+    """`save_pretrained` over the adapter, cast to the embedding dtype.
+
+    PEFT's own selection decides what an adapter contains, so it is handed the
+    whole state dict and only the adapter tensors are cast. Filtering down to
+    `.lora_A.`/`.lora_B.` first is what the Zoo helper does, and PEFT then looks
+    up `modules_to_save.<adapter>.weight` in what it was given and raises
+    `KeyError`; a DoRA run loses its `lora_magnitude_vector` the same way. Both
+    are reachable here without vLLM: `get_peft_model` adds `embed_tokens` and
+    `lm_head` to `modules_to_save` on its own once new tokens are trained.
+
+    The non-adapter entries are passed through by reference, so nothing is
+    copied that PEFT is going to drop anyway.
+    """
+    dtype = model.get_input_embeddings().weight.dtype
+    kwargs["state_dict"] = {
+        key: (value.to(dtype) if "lora_" in key else value)
+        for key, value in model.state_dict().items()
+    }
+    return model.save_pretrained(save_directory, *args, **kwargs)
+
+
 def patch_peft_fast_inference(model):
     vllm_engine = getattr(model.model, "vllm_engine", None)
     if vllm_engine is not None:
@@ -3598,11 +3677,29 @@ def patch_peft_fast_inference(model):
         model.fast_generate = model.model.fast_generate
         model.fast_generate_batches = model.model.fast_generate_batches
 
-        # Also saving and loading LoRA
-        from unsloth_zoo.vllm_utils import save_lora, load_lora
+        # load_lora copies into vLLM's own adapter tensors, so it needs an engine.
+        from unsloth_zoo.vllm_utils import load_lora
 
-        model.save_lora = functools.partial(save_lora, model)
         model.load_lora = functools.partial(load_lora, model)
+
+        # An engine keeps the Zoo helper it has always had: vLLM reads the saved
+        # adapter back through its own LoRA loader, so what that file may carry
+        # is its call, not one to change here.
+        if not hasattr(model, "save_lora"):
+            try:
+                from unsloth_zoo.vllm_utils import save_lora
+            except Exception:
+                save_lora = None
+            if save_lora is not None:
+                model.save_lora = functools.partial(save_lora, model)
+
+    # Without an engine there was no `save_lora` at all, and `save_lora` needs
+    # none: it is `save_pretrained` over the adapter. Gating it on the engine
+    # gave `fast_inference = False` GRPO runs `AttributeError:
+    # 'Lfm2ForCausalLM' object has no attribute 'save_lora'`.
+    # Set only when absent, so a model carrying its own keeps it.
+    if not hasattr(model, "save_lora"):
+        model.save_lora = functools.partial(save_lora_adapter, model)
 
 
 def error_out_no_vllm(*args, **kwargs):

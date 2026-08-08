@@ -32,6 +32,8 @@ _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 _JobObjectExtendedLimitInformation = 9
 
 _lock = threading.Lock()
+_spawner_lock = threading.Lock()
+_spawner: "Optional[_Spawner]" = None
 _initialized = False
 _win_job_handle: Optional[int] = None  # retained for the interpreter's lifetime
 _tracked_pids: "dict[int, Optional[str]]" = {}  # pid -> identity, reaped by terminate_all
@@ -215,6 +217,98 @@ def compose_preexec(
             existing()
 
     return _composed
+
+
+_fork_reset_installed = False
+
+
+def _reset_after_fork() -> None:
+    """A fork child inherits _spawner_lock in whatever state it was in and a
+    _spawner whose thread does not exist here. Start clean instead of deadlocking."""
+    global _spawner, _spawner_lock
+    _spawner_lock = threading.Lock()
+    _spawner = None
+
+
+def _adopt_fork_reset() -> None:
+    """Register the child-side reset once, lazily. Best-effort like the rest of
+    this module: os.register_at_fork is POSIX-only and absent on Windows."""
+    global _fork_reset_installed
+    if _fork_reset_installed:
+        return
+    _fork_reset_installed = True
+    try:
+        os.register_at_fork(after_in_child = _reset_after_fork)
+    except (AttributeError, RuntimeError):  # no fork support; nothing to guard
+        pass
+
+
+def spawn_on_lifetime_thread(spawn: Callable[[], object]) -> object:
+    """Run *spawn* (a Popen call) on a thread that lives as long as the process.
+
+    PR_SET_PDEATHSIG fires when the forking THREAD exits, not the process, so a
+    child spawned from a short-lived worker dies as soon as that worker returns.
+    Forking from one process-lifetime thread restores "die with the parent
+    process". Non-Linux arms no per-thread signal, so it spawns directly.
+    """
+    if not _is_linux():
+        return spawn()
+    global _spawner
+    _adopt_fork_reset()
+    with _spawner_lock:
+        if _spawner is None or not _spawner.usable():
+            candidate = _Spawner()
+            _spawner = candidate if candidate.usable() else None
+        spawner = _spawner
+    # No helper thread available (only when threading.Thread is replaced, as
+    # some tests do): spawn inline, the pre-existing behaviour, rather than block.
+    return spawn() if spawner is None else spawner.run(spawn)
+
+
+class _Spawner:
+    """One daemon thread that forks on behalf of any caller. Daemon is correct:
+    the process dies at interpreter exit, which is when children should die."""
+
+    def __init__(self) -> None:
+        import queue
+
+        self._jobs: "queue.Queue" = queue.Queue()
+        self._ready = threading.Event()
+        self._thread = None
+        try:
+            self._thread = threading.Thread(
+                target = self._run, name = "unsloth-child-spawner", daemon = True
+            )
+            self._thread.start()
+        except Exception:  # noqa: BLE001 - fall back to an inline spawn
+            self._thread = None
+
+    def usable(self) -> bool:
+        """True only once the helper has actually begun running."""
+        if self._thread is None:
+            return False
+        return self._ready.wait(5.0) and bool(getattr(self._thread, "is_alive", bool)())
+
+    def _run(self) -> None:
+        self._ready.set()
+        while True:
+            spawn, box, done = self._jobs.get()
+            try:
+                box.append((True, spawn()))
+            except BaseException as exc:  # noqa: BLE001 - re-raised in the caller
+                box.append((False, exc))
+            finally:
+                done.set()
+
+    def run(self, spawn: Callable[[], object]) -> object:
+        box: list = []
+        done = threading.Event()
+        self._jobs.put((spawn, box, done))
+        done.wait()
+        ok, value = box[0]
+        if not ok:
+            raise value
+        return value
 
 
 def child_popen_kwargs(preexec_fn: Optional[Callable[[], None]] = None) -> dict:

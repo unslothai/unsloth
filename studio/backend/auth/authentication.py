@@ -186,6 +186,17 @@ async def authenticated_via_api_key(
     return bool(credentials and credentials.credentials.startswith(API_KEY_PREFIX))
 
 
+async def authenticated_via_desktop_jwt(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> bool:
+    """True when the caller is the local desktop app, not a browser session or API key.
+
+    Lets routes treat the desktop as an authority of its own: it authenticates
+    with a local secret rather than the account password.
+    """
+    return is_desktop_access_token(credentials.credentials)
+
+
 async def get_current_subject_allow_password_change(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> str:

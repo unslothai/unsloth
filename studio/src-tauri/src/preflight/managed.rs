@@ -308,11 +308,7 @@ async fn run_cli_probe(bin: &Path, args: &[&str]) -> bool {
     cmd.args(args).stdout(Stdio::null()).stderr(Stdio::null());
 
     #[cfg(target_os = "linux")]
-    if std::env::var_os("APPIMAGE").is_some() {
-        cmd.env_remove("LD_LIBRARY_PATH");
-        cmd.env_remove("PYTHONHOME");
-        cmd.env_remove("PYTHONPATH");
-    }
+    crate::process::scrub_appimage_python_env_tokio(&mut cmd);
 
     // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
     // probe subprocesses must follow the same isolation as process.rs.
@@ -325,7 +321,9 @@ async fn run_cli_probe(bin: &Path, args: &[&str]) -> bool {
         cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
     }
 
-    let Ok(mut child) = cmd.spawn() else {
+    let Ok(mut child) = crate::process::with_studio_runtime_launch_guard(|| {
+        cmd.spawn().map_err(|error| error.to_string())
+    }) else {
         info!(
             "Managed preflight probe {:?} failed to spawn in {}ms",
             args,
@@ -359,11 +357,7 @@ async fn probe_cli_capability(bin: &Path) -> Option<DesktopCapability> {
         .stderr(Stdio::null());
 
     #[cfg(target_os = "linux")]
-    if std::env::var_os("APPIMAGE").is_some() {
-        cmd.env_remove("LD_LIBRARY_PATH");
-        cmd.env_remove("PYTHONHOME");
-        cmd.env_remove("PYTHONPATH");
-    }
+    crate::process::scrub_appimage_python_env_tokio(&mut cmd);
 
     // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
     // probe subprocesses must follow the same isolation as process.rs.
@@ -376,16 +370,16 @@ async fn probe_cli_capability(bin: &Path) -> Option<DesktopCapability> {
         cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
     }
 
-    let Ok(mut child) = cmd.spawn() else {
+    let Ok(mut child) = crate::process::with_studio_runtime_launch_guard(|| {
+        cmd.spawn().map_err(|error| error.to_string())
+    }) else {
         info!(
             "Managed desktop-capabilities probe failed to spawn in {}ms",
             started.elapsed().as_millis()
         );
         return None;
     };
-    let Some(mut stdout) = child.stdout.take() else {
-        return None;
-    };
+    let mut stdout = child.stdout.take()?;
 
     match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
         Ok(Ok(status)) if status.success() => {}

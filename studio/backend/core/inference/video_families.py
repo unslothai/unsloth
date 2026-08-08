@@ -21,6 +21,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+# The request model's ceiling on num_frames, declared HERE so the shape gate and the bound cannot
+# drift: the gate's refusal names the lattice point above the request, and suggesting one the
+# request model would itself reject is a dead end. VideoGenerateRequest imports this for its `le`.
+MAX_VIDEO_NUM_FRAMES = 1024
+
 # Runtime->route contract: routes match these EXACTLY for a 409 instead of a 500.
 VIDEO_NOT_LOADED_MSG = "No video model is loaded."
 VIDEO_CANCELLED_MSG = "Video generation was cancelled."
@@ -120,7 +125,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # bf16-RESIDENT. transformer + VAE ship FP32 on disk (20.0 GB = 5B x 4), so bf16 transformer ~10.0; UMT5 TE bf16 (11.4); VAE fp32 (2.8).
         bf16_components_gb = (10.0, 11.4, 2.8),
         vae_force_fp32 = True,
-        gguf_repo = "QuantStack/Wan2.2-TI2V-5B-GGUF",
+        # Byte-identical mirror of QuantStack/Wan2.2-TI2V-5B-GGUF (13 quants + companion VAE).
+        gguf_repo = "unsloth/Wan2.2-TI2V-5B-GGUF",
     ),
     # Wan2.2-T2V-A14B (diffusers >= 0.35, verified on 0.39): the dual-expert MoE. Both transformers are WanTransformer3DModel with boundary_ratio 0.875; high-noise steps route through transformer, low-noise through transformer_2, so cfg2_kwarg is threaded only here.
     VideoFamily(
@@ -262,6 +268,81 @@ def snap_video_size(fam: VideoFamily, width: int, height: int) -> tuple[int, int
     multiple = max(1, fam.resolution_multiple)
     snap = lambda v: max(multiple, (max(1, v) // multiple) * multiple)  # noqa: E731
     return snap(width), snap(height)
+
+
+def format_video_resolution_presets(fam: VideoFamily) -> str:
+    """The family's presets as '768x512, 1216x704, ...' for messages and logs."""
+    return ", ".join(f"{w}x{h}" for w, h in fam.resolution_presets)
+
+
+class VideoShapeError(ValueError):
+    """A shape this family cannot render. A ValueError subclass so the existing
+    ``except ValueError`` callers keep catching it, and a distinct type so the generate
+    route can answer 422 (the body is in range, the shape is not supported) without
+    widening the 400 it gives every other bad-input ValueError."""
+
+
+def validate_video_request_shape(
+    fam: VideoFamily,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    num_frames: Optional[int] = None,
+) -> None:
+    """Raise ``ValueError`` when a request asks for a shape ``fam`` does not support.
+
+    The generate route calls this at the API boundary so HTTP enforces exactly the
+    rules the Desktop interface offers: its resolution select lists only
+    ``resolution_presets`` and its duration select only lattice frame counts, while
+    the API took anything inside the coarse request bounds and then SNAPPED it. The
+    snap is silent and floors, so a 256x256 request survived untouched (256 divides
+    both 16 and 32) and denoised at a size no checkpoint was ever trained for.
+
+    This is a separate, explicit check rather than a change to ``snap_video_size`` /
+    ``snap_num_frames``, which internal callers still need. It stays silent for
+    anything it cannot judge -- a family that declares no presets keeps the old SIZE
+    snapping, since there is no table to judge a size against -- and ``None`` means
+    "use the family default", which is valid by construction. The frame lattice is
+    deliberately NOT part of that escape hatch: every family declares a ``frame_step``
+    whether or not it declares presets, so an off-lattice count is always refused.
+    """
+    # Normalised to int pairs so membership holds however a family spelled its presets (the status payload
+    # hands them out as lists, and a round-trip through it must not silently stop matching).
+    presets = tuple((int(w), int(h)) for w, h in fam.resolution_presets)
+    # No declared presets: no table to judge a SIZE against, so leave that to the snap (unusual/custom
+    # families). The frame check below still runs either way -- frame_step is always declared.
+    if presets and (width is not None or height is not None):
+        # Resolve a half-specified request against the default preset first, as generate() does, then judge the pair.
+        # Keyed on None, where generate() keys on falsiness: a 0 is judged as 0 here rather than
+        # replaced by the default. The route cannot deliver one (the request model bounds it at 32),
+        # and refusing an explicit 0 beats silently rendering something else, so the two agree on
+        # every value that can actually arrive.
+        want_w = presets[0][0] if width is None else int(width)
+        want_h = presets[0][1] if height is None else int(height)
+        if (want_w, want_h) not in presets:
+            raise VideoShapeError(
+                f"{want_w}x{want_h} is not a supported resolution for {fam.name}. "
+                f"Supported resolutions: {format_video_resolution_presets(fam)}."
+            )
+    if num_frames is not None:
+        step = max(1, fam.frame_step)
+        count = int(num_frames)
+        if count < 1 or (count - 1) % step != 0:
+            # The two lattice points straddling the request say more than a prefix of the lattice would, and stay short.
+            below = snap_num_frames(fam, count)
+            above = below + step
+            # ...but only name the upper one if the request model would accept it. Near the ceiling
+            # (1018-1024 on an 8-step family) it lands past `le`, and advising a count that answers
+            # with a second, differently-shaped 422 is worse than naming one that works.
+            nearest = (
+                f"the nearest supported counts are {below} and {above}"
+                if above <= MAX_VIDEO_NUM_FRAMES
+                else f"the nearest supported count is {below}"
+            )
+            raise VideoShapeError(
+                f"{count} is not a supported frame count for {fam.name}. Its VAE compresses time by "
+                f"{step}, so a frame count must be k * {step} + 1; {nearest} "
+                f"(the default is {fam.default_num_frames})."
+            )
 
 
 # Default (steps, guidance) per checkpoint variant, matched by substring (picked id then base repo), most specific first.
