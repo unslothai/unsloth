@@ -1145,19 +1145,26 @@ def test_a_hidden_diffusion_page_does_not_load_when_its_download_lands():
         # Deferred, not dropped: something has to fire the held pick when the page returns.
         assert "stagedLoadDeferred" in ready.group(0), f"{rel}: the pick is discarded"
         # The dependency array grew when the load body moved into runStagedLoad, so match
-        # the effect by its guard and let the deps be whatever they need to be.
+        # the effect by its guard and let the deps be whatever they need to be. Stop at the
+        # first effect boundary and check the deps separately: keying the boundary on
+        # `[active` instead lets a reordered array run the match on into the next hook,
+        # where loadOrStage's own handleLoadRef call would satisfy the loader assertion
+        # below for a flush that loads nothing.
         flush = re.search(
-            r"if \(!active \|\| !stagedLoadDeferred\.current\) return;.*?\n  \}, \[active[^\]]*\]\);",
+            r"if \(!active \|\| !stagedLoadDeferred\.current\) return;(.*?)\n  \}, \[([^\]]*)\]\);",
             src,
             re.S,
         )
         assert flush, f"{rel}: nothing flushes the deferred load when the page is shown"
+        deps = [dep.strip() for dep in flush.group(2).split(",")]
+        assert "active" in deps, f"{rel}: the flush does not re-run when the page is shown"
+        body = flush.group(1)
         # Either the flush calls the loader itself or it calls the same helper the visible
         # path uses. What it may not do is clear the flag and stop there.
-        assert "runStagedLoad()" in flush.group(0) or "handleLoadRef.current(" in flush.group(
-            0
+        assert (
+            "runStagedLoad()" in body or "handleLoadRef.current(" in body
         ), f"{rel}: deferred load never runs"
-        if "runStagedLoad()" in flush.group(0):
+        if "runStagedLoad()" in body:
             runner = re.search(r"const runStagedLoad = useCallback\(.*?\n  \}, \[", src, re.S)
             assert runner, f"{rel}: runStagedLoad not found"
             assert "handleLoadRef.current(" in runner.group(
