@@ -98,7 +98,6 @@ def _run_step(
             "COMMAND_LOG": str(log),
             "DESKTOP_RELEASE_TAG": RELEASE_TAG,
             "GH_REPO": "unslothai/unsloth",
-
             "GITHUB_OUTPUT": str(tmp_path / "github-output"),
             "GH_TOKEN": "masked-token",
             "PATH": f"{fake_bin}:{env['PATH']}",
@@ -162,7 +161,9 @@ def _run_create_release(workflow, tmp_path: Path, **kwargs):
         "Create versioned release",
     )
     create_step = _step(workflow, "publish-release", "Create versioned release")
-    create_step["run"] = "\n".join(_step(workflow, "publish-release", name)["run"] for name in names)
+    create_step["run"] = "\n".join(
+        _step(workflow, "publish-release", name)["run"] for name in names
+    )
     return _run_step(
         workflow, "publish-release", "Create versioned release", tmp_path, extra_env = env, **kwargs
     )
@@ -206,7 +207,10 @@ def test_a_used_version_fails_the_guard_before_any_build_work(tmp_path):
             assert RELEASE_TAG in result.stderr
             # Avoid leaving a tag that fails the next attempt.
             assert f"gh release delete {RELEASE_TAG} --cleanup-tag" in result.stderr
-            assert f"gh api --method DELETE repos/unslothai/unsloth/git/refs/tags/{RELEASE_TAG}" in result.stderr
+            assert (
+                f"gh api --method DELETE repos/unslothai/unsloth/git/refs/tags/{RELEASE_TAG}"
+                in result.stderr
+            )
 
 
 def test_a_failed_guard_probe_fails_closed_before_any_build_work(tmp_path):
@@ -232,7 +236,10 @@ def test_publish_refuses_to_reuse_an_existing_release(tmp_path):
         assert result.returncode == 1, case
         assert "Refusing to republish" in result.stderr
         assert f"gh release delete {RELEASE_TAG} --cleanup-tag" in result.stderr
-        assert f"gh api --method DELETE repos/unslothai/unsloth/git/refs/tags/{RELEASE_TAG}" in result.stderr
+        assert (
+            f"gh api --method DELETE repos/unslothai/unsloth/git/refs/tags/{RELEASE_TAG}"
+            in result.stderr
+        )
         assert not [line for line in commands if line.startswith("gh release create")]
 
 
