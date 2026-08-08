@@ -215,6 +215,6 @@ def test_the_pairing_this_relies_on_is_what_pypi_publishes():
         except (urllib.error.URLError, TimeoutError, OSError) as error:
             pytest.skip(f"pypi.org unreachable: {error}")
         requirements = metadata["info"].get("requires_dist") or []
-        assert torch_requirement in requirements, (
-            f"torchvision {torchvision_version} no longer requires {torch_requirement}"
-        )
+        assert (
+            torch_requirement in requirements
+        ), f"torchvision {torchvision_version} no longer requires {torch_requirement}"
