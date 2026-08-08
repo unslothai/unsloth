@@ -201,7 +201,7 @@ def _hf_token_in_play(hf_token: Optional[str]) -> bool:
         from huggingface_hub.utils import get_token_to_send
         return bool(get_token_to_send(None))
     except Exception:  # noqa: BLE001 -- unreadable or an unknown hub layout: assume none, which
-        return False   # only costs the user the "add a token" half of the message
+        return False  # only costs the user the "add a token" half of the message
 
 
 def hub_access_message(exc: BaseException, *, had_token: bool) -> Optional[str]:
