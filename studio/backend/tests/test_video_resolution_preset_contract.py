@@ -30,7 +30,7 @@ from core.inference.video_families import (
     snap_video_size,
     supported_video_family_names,
 )
-from models.inference import VideoGenerationDefaults
+from models.inference import VideoGenerationDefaults, VideoStatusResponse
 
 _BACKEND = Path(__file__).resolve().parent.parent
 _VIDEO_PAGE = _BACKEND.parent / "frontend" / "src" / "features" / "video" / "video-page.tsx"
@@ -109,10 +109,13 @@ def test_presets_are_unique_and_land_in_the_status_payload(name):
         dtype = "bfloat16",
         kind = "pipeline",
     )
-    defaults_payload = backend.status()["defaults"]
-    assert defaults_payload is not None, "status() stopped emitting defaults"
+    # Through VideoStatusResponse, the model GET /video/status actually declares, not just the
+    # inner VideoGenerationDefaults: the outer model dropping or renaming `defaults` leaves the
+    # inner assertion perfectly happy while the browser receives no presets at all.
+    wire = VideoStatusResponse(**backend.status()).model_dump()
+    defaults_payload = wire.get("defaults")
+    assert defaults_payload is not None, "the status response model no longer carries defaults"
 
-    # ...and through the response model the route declares, which is what reaches the browser.
     defaults = VideoGenerationDefaults(**defaults_payload)
     assert (
         [tuple(p) for p in defaults.resolution_presets] == presets

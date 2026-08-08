@@ -51,7 +51,10 @@ _FRONTEND = Path(__file__).resolve().parents[2] / "frontend" / "src"
 
 # The build fields the recipe carries beyond the plain generation settings. All sourced from
 # the committed load state, all optional on an older PNG.
-_BUILD_KEYS = ("model_kind", "gguf_filename", "transformer_quant")
+# Load-time build identity the route persists and GalleryImage defaults for older records.
+# baked_loras belongs here for the same reason the other three do: promoting any of them into
+# image_gallery._REQUIRED_META would stop every PNG written before it existed from listing.
+_BUILD_KEYS = ("model_kind", "gguf_filename", "transformer_quant", "baked_loras")
 
 
 # ── stub runtime (pared-down twin of test_diffusion_backend's) ────────────────

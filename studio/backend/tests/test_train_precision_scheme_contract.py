@@ -33,7 +33,7 @@ import core.training.diffusion_train_common as common
 from core.inference.diffusion_lora import _DIFFUSERS_LORA_BLOCKED_QUANT
 from core.inference.diffusion_precision import TE_QUANT_MODES, TE_QUANT_NVFP4
 from core.training.diffusion_train_common import DiffusionLoraConfig, train_precision_modes
-from models.inference import DiffusionLoadRequest
+from models.inference import DiffusionLoadRequest, VideoLoadRequest
 from models.training import DiffusionTrainingStartRequest
 
 _BACKEND = Path(__file__).resolve().parent.parent
@@ -79,16 +79,19 @@ def _probe(
     *,
     cuda = True,
     torchao = True,
-) -> list[str]:
-    """train_precision_modes() as it would answer on the given machine."""
+) -> tuple[list[str], str]:
+    """(modes, recommended) as train_precision_modes() would answer on the given machine.
+
+    The recommendation is returned, not discarded: the Train panel seeds basePrecision from it,
+    so a recommendation outside the reported list is an option the user starts on and the select
+    never offered."""
     import torch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
     monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *a, **k: True)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: capability)
     monkeypatch.setattr(common, "has_functional_torchao", lambda: torchao)
-    modes, _recommended = train_precision_modes()
-    return modes
+    return train_precision_modes()
 
 
 def _every_advertisable_mode(monkeypatch) -> frozenset[str]:
@@ -97,8 +100,8 @@ def _every_advertisable_mode(monkeypatch) -> frozenset[str]:
     seen: set[str] = set()
     for capability in _CAPABILITIES:
         for torchao in (True, False):
-            seen.update(_probe(monkeypatch, capability, torchao = torchao))
-    seen.update(_probe(monkeypatch, (10, 0), cuda = False))
+            seen.update(_probe(monkeypatch, capability, torchao = torchao)[0])
+    seen.update(_probe(monkeypatch, (10, 0), cuda = False)[0])
     return frozenset(seen)
 
 
@@ -127,7 +130,7 @@ def test_nvfp4_is_a_real_inference_scheme_and_not_a_training_one():
 def test_train_precision_modes_never_offers_an_inference_only_scheme(
     monkeypatch, capability, torchao
 ):
-    modes = _probe(monkeypatch, capability, torchao = torchao)
+    modes, recommended = _probe(monkeypatch, capability, torchao = torchao)
     leaked = sorted(_INFERENCE_ONLY.intersection(modes))
     assert not leaked, (
         f"train_precision_modes() on sm{capability[0]}{capability[1]} (torchao={torchao}) "
@@ -137,6 +140,14 @@ def test_train_precision_modes_never_offers_an_inference_only_scheme(
     # Anything advertised must also clear the request schema, or the UI offers a guaranteed 422.
     assert set(modes) <= _TRAIN_PRECISIONS, sorted(set(modes) - _TRAIN_PRECISIONS)
     assert "nf4" in modes  # the floor is always available
+    # The recommendation is what the panel seeds basePrecision with, so one outside the reported
+    # list is an option the user starts on and the select never offered -- and one outside the
+    # schema is a guaranteed 422 on the first start.
+    assert recommended in modes, (
+        f"the recommendation {recommended!r} is not in the modes reported for "
+        f"sm{capability[0]}{capability[1]} (torchao={torchao}): {sorted(modes)}"
+    )
+    assert recommended in _TRAIN_PRECISIONS
 
 
 def test_the_advertisable_vocabulary_is_exactly_the_schema_vocabulary(monkeypatch):
@@ -190,11 +201,13 @@ def test_the_trainer_accepts_exactly_what_the_schema_advertises():
         )
         try:
             config.normalized()
-        except ValueError as exc:
-            # Only a base_precision verdict counts; an unrelated validation error is not one.
-            if "base_precision must be one of" in str(exc):
-                refused[mode] = str(exc)
-                continue
+        except Exception as exc:  # noqa: BLE001 - anything that stops a start counts as a refusal
+            # The mode-name message is the expected shape, but it is not the only way a start
+            # dies: a dense-base check, a mixed-precision check or a new dataset-path check would
+            # block the same advertised mode just as completely. Swallowing those would keep this
+            # green for a precision the UI offers and the trainer refuses.
+            refused[mode] = f"{type(exc).__name__}: {exc}"
+            continue
         accepted.add(mode)
 
     assert not refused, (
@@ -307,6 +320,20 @@ def test_the_reported_mode_filter_is_a_subset_of_what_the_backend_can_report(mon
         "has to name every other advertisable mode exactly"
     )
     assert not _INFERENCE_ONLY.intersection(whitelist)
+    # ...and Auto has to survive the memo. Subtracting it above is only sound while the memo
+    # prepends it: change `return ["auto", ...reported]` to `return reported` and this file
+    # would still pass while the user loses the backend-recommended option the moment a report
+    # arrives. Both return paths, since the fallback is what a backendless first paint renders.
+    # `return []` for an untrainable family offers nothing at all, deliberately; every return
+    # that offers anything has to lead with Auto.
+    returns = [
+        line
+        for line in block.splitlines()
+        if "return [" in line and line.strip() not in ("return [];", "if (familyUntrainable) return [];")
+    ]
+    assert returns, f"parsed no return arrays out of the memo: {block!r}"
+    for line in returns:
+        assert '"auto"' in line, f"the memo returns a list with no Auto option: {line.strip()!r}"
 
 
 # ── inference keeps NVFP4 ─────────────────────────────────────────────────────
@@ -321,6 +348,12 @@ def test_inference_still_offers_nvfp4_end_to_end():
         text_encoder_quant = "nvfp4",
     )
     assert req.transformer_quant == "nvfp4" and req.text_encoder_quant == "nvfp4"
+
+    # The video load form too, through the schema rather than its source: video-page.tsx can
+    # keep offering NVFP4 long after VideoLoadRequest stopped accepting it, and the only symptom
+    # is a 422 from /video/load.
+    video = VideoLoadRequest(model_path = "unsloth/Wan2.2-TI2V-5B", transformer_quant = "nvfp4")
+    assert video.transformer_quant == "nvfp4"
 
     for rel in (
         ("features", "images", "images-page.tsx"),
