@@ -81,10 +81,16 @@ async function settled<T>(
 }
 
 /**
- * The same bound for the eject path, but the failure is raised rather than
- * swallowed. Without it a runtime that accepts the connection and never answers
- * leaves the eject pending forever, so the row keeps its spinner and stays
- * disabled until the page is reloaded.
+ * The same bound for the eject path's *reads*, but the failure is raised rather
+ * than swallowed. Without it a runtime that accepts the connection and never
+ * answers leaves the eject pending forever, so the row keeps its spinner and
+ * stays disabled until the page is reloaded.
+ *
+ * Deliberately not applied to the unloads themselves. Those block on the
+ * runtime's generate lock while the in-flight denoise or clip winds down, which
+ * is routinely tens of seconds, and aborting the fetch would not cancel the
+ * teardown: the eject would report a failure while the memory was being freed.
+ * A stale read is cheap to retry; a half-reported unload is not.
  */
 async function bounded<T>(
   read: (signal: AbortSignal) => Promise<T>,
