@@ -286,7 +286,8 @@ class TestPlatformMatrix:
         binary = self._install(monkeypatch, tmp_path, os_key, runtime)
         backend = LlamaCppBackend()
         backend._llama_server_env_for_binary = lambda _binary: {
-            "PATH": "/staged", "LD_LIBRARY_PATH": "/staged"
+            "PATH": "/staged",
+            "LD_LIBRARY_PATH": "/staged",
         }
 
         prepared = backend._prepare_cpu_fallback_launch(
@@ -309,12 +310,12 @@ class TestPlatformMatrix:
     @pytest.mark.parametrize(
         "marker,eligible",
         [
-            ({"llama_backend": None}, True),          # auto Intel, post-#7188
-            ({"llama_backend": "auto"}, True),        # auto AMD, post-#8050
-            ({}, True),                               # pre-#7188, key absent
+            ({"llama_backend": None}, True),  # auto Intel, post-#7188
+            ({"llama_backend": "auto"}, True),  # auto AMD, post-#8050
+            ({}, True),  # pre-#7188, key absent
             ({"llama_backend": ""}, True),
-            ({"llama_backend": "vulkan"}, False),     # explicit choice
-            ({"llama_backend": "cuda"}, False),       # unknown/future value
+            ({"llama_backend": "vulkan"}, False),  # explicit choice
+            ({"llama_backend": "cuda"}, False),  # unknown/future value
             ({"llama_backend": None, "force_cpu": True}, False),
         ],
     )
@@ -329,9 +330,12 @@ class TestPlatformMatrix:
         for name in ("UNSLOTH_FORCE_VULKAN", "UNSLOTH_LLAMA_CPP_BACKEND"):
             monkeypatch.delenv(name, raising = False)
 
-        assert LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
-            str(binary), GgufLoadIntent(model_identifier = "owner/model"), None, {}
-        ) is eligible
+        assert (
+            LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
+                str(binary), GgufLoadIntent(model_identifier = "owner/model"), None, {}
+            )
+            is eligible
+        )
 
     @pytest.mark.parametrize("marker_text", ["not json", "", "[]", '{"llama_backend": 7}'])
     def test_a_corrupt_marker_is_ineligible_and_never_raises(
@@ -343,9 +347,12 @@ class TestPlatformMatrix:
 
         monkeypatch.setattr(update, "_llama_install_root", lambda _binary: tmp_path)
 
-        assert LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
-            str(binary), GgufLoadIntent(model_identifier = "owner/model"), None, {}
-        ) is False
+        assert (
+            LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
+                str(binary), GgufLoadIntent(model_identifier = "owner/model"), None, {}
+            )
+            is False
+        )
 
 
 class TestAutoVulkanCpuFallbackGate:
