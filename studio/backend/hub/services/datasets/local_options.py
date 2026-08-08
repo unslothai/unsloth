@@ -37,6 +37,9 @@ _MAX_OPTION_LENGTH = 128
 # Only names are read during the scan, so this can sit well above any real snapshot. Past it
 # the scan is truncated and cannot be compared with the loader, so nothing is offered.
 _MAX_SNAPSHOT_DATA_FILES = 200_000
+# Declared globs are the one part that is not linear in the snapshot. Past this much
+# matching work nothing is determinate, so the picker offers nothing rather than stall.
+_MAX_RESOLUTION_WORK = 10_000_000
 # Only what fsspec can actually decompress in a Studio install. zstd and lz4 are named by
 # datasets but need optional codecs we do not ship, so they raise "Compression type not
 # supported" and offering them would put a dead split in the picker.
@@ -49,10 +52,13 @@ _VALUE_DTYPES = frozenset(
     "time32 time64 timestamp date32 date64 duration decimal128 decimal256 binary "
     "large_binary string large_string".split()
 )
+# Compared with the underscores stripped, since a card may spell these in snake case.
 _FEATURE_TYPE_NAMES = frozenset(
-    "Value Classlabel Translation Translationvariablelanguages Largelist List Array2d "
-    "Array3d Array4d Array5d Audio Image Video Pdf".split()
+    "value classlabel translation translationvariablelanguages largelist list array2d "
+    "array3d array4d array5d audio image video pdf".split()
 )
+# datasets' own version grammar. Anything else raises when it builds the cache directory.
+_VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 # Ordered, because datasets resolves a split's keyword patterns in this order and samples
 # the first files it gets back.
 _SPLIT_KEYWORDS = {
@@ -249,21 +255,27 @@ def _normalized_dir(value: str) -> Optional[str]:
     return "/".join(parts)
 
 
+def _valid_dtype(dtype: Any) -> bool:
+    """One dtype, as Features reads it: a value alias, a feature class, or a nested one."""
+    if isinstance(dtype, dict):
+        return all(_valid_dtype(value) for value in dtype.values())
+    if not isinstance(dtype, str):
+        return True
+    base = re.split(r"[\[(]", dtype, maxsplit = 1)[0]
+    return base in _VALUE_DTYPES or dtype.replace("_", "").lower() in _FEATURE_TYPE_NAMES
+
+
 def _valid_features(features: Any) -> bool:
     """datasets turns this field into Features while it builds the configs, and anything it
     cannot read raises there, so a card carrying one is not loadable at all."""
     if not isinstance(features, list):
         return False
-    for field in features:
-        if not isinstance(field, dict) or not isinstance(field.get("name"), str):
-            return False
-        dtype = field.get("dtype")
-        if dtype is None or not isinstance(dtype, str):
-            continue
-        base = re.split(r"[\[(]", dtype, maxsplit = 1)[0]
-        if base not in _VALUE_DTYPES and dtype.capitalize() not in _FEATURE_TYPE_NAMES:
-            return False
-    return True
+    return all(
+        isinstance(field, dict)
+        and isinstance(field.get("name"), str)
+        and all(_valid_dtype(value) for key, value in field.items() if key != "name")
+        for field in features
+    )
 
 
 def _valid_declared_data_files(entries: Any) -> bool:
@@ -322,9 +334,10 @@ def _collapsed_configs(payload: Any) -> Any:
         entries = item.get("data_files")
         if not _valid_declared_data_files(entries):
             return _UNPARSABLE_METADATA
-        if entries is not None and not entries:
-            # Resolved while the builder is picked, so this raises whichever config the
-            # caller asks for and every sibling option is dead too.
+        if entries is not None and not entries and not collapsed:
+            # The first config's declaration is resolved while the builder is picked, so an
+            # empty one there raises for every config. A later one only kills itself, and
+            # _unresolvable_configs drops it.
             return _UNPARSABLE_METADATA
         collapsed[name] = item
     return collapsed
@@ -618,9 +631,11 @@ def _snapshot_card_data(snapshot: Path) -> Any:
             except (YAMLError, OSError, UnicodeError, ValueError):
                 # The loader opens this file unconditionally and lets the error out.
                 return _UNPARSABLE_METADATA
-        if payload and not isinstance(payload, dict):
-            # The loader skips a falsy block and feeds anything else straight to dict.update,
-            # which raises on a scalar.
+        if payload and not (
+            isinstance(payload, dict) and all(isinstance(key, str) for key in payload)
+        ):
+            # The loader skips a falsy block and merges anything else into the card, which
+            # then becomes keyword arguments: a scalar or a non-string key raises there.
             return _UNPARSABLE_METADATA
         if payload:
             card.update(payload)
@@ -860,19 +875,19 @@ def _declared_paths(item: dict[str, Any]) -> list[str]:
     return [path for group in _declared_path_groups(item) for path in group]
 
 
-def _paths_module(patterns: Iterable[str], files: Iterable[PurePosixPath]) -> Optional[str]:
+def _paths_module(item: dict[str, Any], files: _DeclaredFiles) -> Optional[str]:
     """The module a config's declaration votes for, counting the files it resolves to the
     way datasets does rather than counting the pattern strings."""
-    files = list(files)
+    root = _config_root(item)
     named = [
         (path, _file_module(path.name))
-        for pattern in patterns
-        for path in _resolved_paths(pattern, files)
+        for pattern in _declared_paths(item)
+        for path in files.resolve(pattern, root)
     ]
     return _split_module(named) if named else None
 
 
-def _declared_module(payload: Any, files: Iterable[PurePosixPath]) -> Optional[str]:
+def _declared_module(payload: Any, files: _DeclaredFiles) -> Optional[str]:
     """The builder datasets picks for the whole dataset, or None when the snapshot picks it.
 
     It settles one module before it builds any config, and only the first effective config's
@@ -882,7 +897,7 @@ def _declared_module(payload: Any, files: Iterable[PurePosixPath]) -> Optional[s
     collapsed = _collapsed_configs(payload)
     if collapsed is _UNPARSABLE_METADATA or not collapsed:
         return None
-    return _paths_module(_declared_paths(next(iter(collapsed.values()))), files)
+    return _paths_module(next(iter(collapsed.values())), files)
 
 
 def _glob_matcher(pattern: str) -> "Optional[re.Pattern[str]]":
@@ -935,44 +950,83 @@ def _explicit_parts(value: str, prefix: str) -> int:
     return sum(1 for part in parts if part.startswith(prefix) and set(part) != {"."})
 
 
-def _resolved_paths(pattern: str, files: Iterable[PurePosixPath]) -> list[PurePosixPath]:
-    """What a declared pattern actually resolves to, hidden and __ rules included.
+class _DeclaredFiles:
+    """The snapshot as declared patterns see it: every file, indexed once.
 
-    The loader keeps a hidden or __ path only when the pattern names as many such parts as
-    the path has, and it drops anything without a suffix it recognises.
+    Resolution is the one part of this module that is not linear in the snapshot, so a
+    literal goes through a lookup and the globs share a work budget. Past the budget nothing
+    is determinate and the caller offers nothing rather than guessing.
     """
-    if pattern.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", pattern):
-        # The loader resolves this off the snapshot entirely, so nothing here can match it.
-        return []
-    # The filesystem normalises ./x to x before it globs, so the matcher has to as well.
-    pattern = PurePosixPath(pattern.strip("/")).as_posix()
-    matcher = _glob_matcher(pattern)
-    if matcher is None:
-        return []
-    ignored = _IGNORED_DATA_FILENAMES - {PurePosixPath(pattern).name}
-    return [
-        path
-        for path in files
-        if matcher.match(path.as_posix())
-        and path.name not in ignored
-        and _explicit_parts(path.as_posix(), "__") == _explicit_parts(pattern, "__")
-        and _explicit_parts(path.as_posix(), ".") == _explicit_parts(pattern, ".")
-        and _file_modules(path.name)
-    ]
+
+    def __init__(self, paths: list[PurePosixPath]) -> None:
+        self.paths = paths
+        self.index = {path.as_posix(): path for path in paths}
+        self.budget = _MAX_RESOLUTION_WORK
+        self.exhausted = False
+
+    def resolve(self, pattern: str, root: str = "") -> list[PurePosixPath]:
+        """What a declared pattern resolves to, under its config's data_dir.
+
+        The loader keeps a hidden or __ path only when the pattern names as many such parts
+        as the path has, and it drops anything without a suffix it recognises.
+        """
+        if pattern.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", pattern):
+            # The loader resolves this off the snapshot entirely, so nothing can match it.
+            return []
+        # The filesystem normalises ./x to x before it globs, so the matcher has to as well.
+        joined = f"{root}/{pattern}" if root else pattern
+        pattern = PurePosixPath(joined.strip("/")).as_posix()
+        ignored = _IGNORED_DATA_FILENAMES - {PurePosixPath(pattern).name}
+        special = _explicit_parts(pattern, "__")
+        hidden = _explicit_parts(pattern, ".")
+
+        def keep(path: PurePosixPath) -> bool:
+            return (
+                path.name not in ignored
+                and _explicit_parts(path.as_posix(), "__") == special
+                and _explicit_parts(path.as_posix(), ".") == hidden
+                and bool(_file_modules(path.name))
+            )
+
+        if not any(character in pattern for character in "*?["):
+            found = self.index.get(pattern)
+            return [found] if found is not None and keep(found) else []
+        matcher = _glob_matcher(pattern)
+        if matcher is None:
+            return []
+        self.budget -= len(self.paths)
+        if self.budget < 0:
+            self.exhausted = True
+            return []
+        return [path for path in self.paths if matcher.match(path.as_posix()) and keep(path)]
+
+
+def _config_root(item: dict[str, Any]) -> str:
+    """The directory a config's declared patterns are resolved under."""
+    return _normalized_dir(_safe_data_dir(item.get("data_dir") or "") or "") or ""
 
 
 def _unresolvable_configs(
-    collapsed: dict[str, dict[str, Any]], files: Iterable[PurePosixPath]
+    collapsed: dict[str, dict[str, Any]], files: _DeclaredFiles
 ) -> set[str]:
-    """Configs the loader cannot resolve. It lets a wildcard match nothing, so only a literal
+    """Configs the loader cannot build. It lets a wildcard match nothing, so only a literal
     that is missing raises on its own; a whole group matching nothing raises either way."""
-    files = list(files)
     dead = set()
     for name, item in collapsed.items():
+        version = item.get("version")
+        if version is not None and (
+            not isinstance(version, str) or _VERSION_RE.fullmatch(version) is None
+        ):
+            # datasets parses this into a Version for the cache directory and raises there.
+            dead.add(name)
+        entries = item.get("data_files")
+        if entries is not None and not entries:
+            dead.add(name)
+        root = _config_root(item)
         for group in _declared_path_groups(item):
             matched = False
             for pattern in group:
-                if _resolved_paths(pattern, files):
+                if files.resolve(pattern, root):
                     matched = True
                 elif not any(character in pattern for character in "*?["):
                     dead.add(name)
@@ -992,16 +1046,16 @@ def _readable_by(path: PurePosixPath, module: str) -> bool:
 
 
 def _mismatched_configs(
-    collapsed: dict[str, dict[str, Any]], required: str, files: Iterable[PurePosixPath]
+    collapsed: dict[str, dict[str, Any]], required: str, files: _DeclaredFiles
 ) -> set[str]:
     """Declared configs the settled builder could not read. One builder serves every config,
     so a config voting for another module, or holding one file that builder chokes on, is
     dead however it is selected."""
-    files = list(files)
     mismatched = set()
     for name, item in collapsed.items():
+        root = _config_root(item)
         resolved = [
-            path for pattern in _declared_paths(item) for path in _resolved_paths(pattern, files)
+            path for pattern in _declared_paths(item) for path in files.resolve(pattern, root)
         ]
         if not resolved:
             continue
@@ -1153,9 +1207,10 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     # naming only an unshowable config still stops datasets inferring a default one.
     collapsed = _collapsed_configs(card_data.get("configs"))
     if collapsed:
-        declared_files = _snapshot_all_files(snapshot)
-        if declared_files is None:
+        walked = _snapshot_all_files(snapshot)
+        if walked is None:
             return set()
+        declared_files = _DeclaredFiles(walked)
         unresolvable = _unresolvable_configs(collapsed, declared_files)
         if next(iter(collapsed)) in unresolvable:
             # The first config is resolved before any module is chosen, so a declaration that
@@ -1166,6 +1221,8 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
         )
         # One builder serves every config, so a config declaring another format is dead:
         # it either fails to generate or silently misreads its own files.
+        if declared_files.exhausted:
+            return set()
         dead = (
             unresolvable
             | _mismatched_configs(collapsed, required, declared_files)
