@@ -834,6 +834,94 @@ class TestResponsesNonStreamingAdapter:
         assert entry["completion_tokens"] == 3
         assert request.state.skip_api_monitor is False
 
+    @staticmethod
+    def _run_in_process_completion(monkeypatch, monitor, timings):
+        """Drive the wrapper over an in-process chat completion: its own monitor row is
+        suppressed and a ``ChatCompletion`` has no ``timings`` field to carry them out."""
+        import routes.inference as inf_mod
+        from models.inference import (
+            ChatCompletion,
+            CompletionChoice,
+            CompletionMessage,
+            CompletionUsage,
+        )
+
+        usage = {"prompt_tokens": 11, "completion_tokens": 50, "total_tokens": 61}
+
+        async def fake_chat_completions(chat_req, request):
+            assert request.state.skip_api_monitor is True
+            # monitor_id is None here: this call's own row is the suppressed one.
+            inf_mod._monitor_usage(None, usage, 4096, timings = timings)
+            return inf_mod._model_json_response(
+                ChatCompletion(
+                    model = "test-model",
+                    choices = [
+                        CompletionChoice(
+                            index = 0,
+                            message = CompletionMessage(content = "answer"),
+                            finish_reason = "stop",
+                        )
+                    ],
+                    usage = CompletionUsage(**usage),
+                )
+            )
+
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
+        request = SimpleNamespace(
+            state = SimpleNamespace(),
+            url = SimpleNamespace(path = "/v1/responses"),
+            method = "POST",
+        )
+
+        async def run():
+            response = await _responses_non_streaming(
+                ResponsesRequest(input = "hi"),
+                [ChatMessage(role = "user", content = "hi")],
+                request,
+            )
+            return json.loads(response.body.decode())
+
+        return asyncio.run(run())
+
+    def test_in_process_engine_timings_reach_the_monitor(self, monkeypatch):
+        """A local non-streamed /v1/responses never reached the Throughput tile: the
+        wrapper read decode_ms off the body, which a ChatCompletion cannot carry."""
+        from models.inference import ChatCompletion
+
+        # Asserted, not assumed: pydantic drops undeclared fields, so a body lookup finds nothing.
+        assert "timings" not in json.loads(
+            ChatCompletion(choices = [], timings = {"predicted_ms": 1000.0}).model_dump_json()
+        )
+
+        monitor = ApiMonitor(max_entries = 3)
+        body = self._run_in_process_completion(
+            monkeypatch,
+            monitor,
+            {"prompt_ms": 9000.0, "predicted_ms": 1000.0, "predicted_per_second": 50.0},
+        )
+
+        assert body["output"][0]["content"][0]["text"] == "answer"
+        [entry] = monitor.snapshot()
+        assert entry["completion_tokens"] == 50
+        assert entry["decode_ms"] == 1000
+        # 9s of that request was queue wait and prefill; the model generated at 50 tok/s.
+        assert entry["completion_tokens"] / (entry["decode_ms"] / 1000) == 50.0
+
+    def test_a_relayed_decode_span_does_not_outlive_its_request(self, monkeypatch):
+        """The relay is scoped to one inner call, so a timing-less request inherits nothing."""
+        monitor = ApiMonitor(max_entries = 3)
+        self._run_in_process_completion(
+            monkeypatch,
+            monitor,
+            {"predicted_ms": 1000.0},
+        )
+        self._run_in_process_completion(monkeypatch, monitor, None)
+
+        newest, previous = monitor.snapshot()
+        assert previous["decode_ms"] == 1000
+        assert newest["decode_ms"] is None
+
     def test_monitor_records_tool_only_reply(self, monkeypatch):
         import routes.inference as inf_mod
 
@@ -1174,6 +1262,44 @@ class TestResponsesStreamAdapter:
         assert entry["completion_tokens"] == 3
         assert entry["total_tokens"] == 5
         assert entry["context_length"] == 4096
+
+    def test_final_chunk_timings_reach_the_monitor(self, monkeypatch):
+        """Responses recorded usage but never timings, so a local request never reached
+        the Throughput tile. The final chunk can carry timings with no usage of its own."""
+        import routes.inference as inf_mod
+
+        chunks = [
+            {"choices": [{"delta": {"content": "33"}}]},
+            {"choices": [], "usage": {"prompt_tokens": 11, "completion_tokens": 50}},
+            {"choices": [], "timings": {"prompt_ms": 9000.0, "predicted_ms": 1000.0}},
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/responses",
+            method = "POST",
+            model = "m",
+            prompt = "hi",
+        )
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(
+                payload,
+                messages,
+                self._Request(),
+                monitor_id = monitor_id,
+            )
+            return await self._collect(response)
+
+        asyncio.run(run())
+
+        [entry] = monitor.snapshot()
+        assert entry["decode_ms"] == 1000
+        assert entry["completion_tokens"] == 50
+        assert entry["completion_tokens"] / (entry["decode_ms"] / 1000) == 50.0
 
     def test_function_call_chunk_updates_monitor_reply(self, monkeypatch):
         import routes.inference as inf_mod

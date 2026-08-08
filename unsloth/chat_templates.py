@@ -2702,6 +2702,7 @@ extra_eos_tokens = None,
             system_part = system_part.replace(tokenizer.bos_token, "", 1)
         partial_system = process(system_part, "{SYSTEM}", "messages[0]['content']")
         partial_system = partial_system.replace("{SYSTEM}", "")
+        system_expr = partial_system
 
         if "{SYSTEM}" in partial_system:
             if default_system_message is None:
@@ -2726,7 +2727,12 @@ extra_eos_tokens = None,
                 "{% set loop_messages = messages %}"\
             "{% endif %}"
         else:
-            partial_system += "{% endif %}"
+            # Emit a static prefix on both branches so the collapse below
+            # makes it unconditional.
+            partial_system += "{% else %}"\
+                "{{ " + system_expr + " }}"\
+                "{% set loop_messages = messages %}"\
+            "{% endif %}"
 
         jinja_template = partial_system + jinja_template
 
@@ -2743,7 +2749,7 @@ extra_eos_tokens = None,
 
     # Check if system part is the same!
     jinja_template = re.sub(
-        r"\{\% if messages\[0\]\['role'\] \=\= 'system' \%\}\{\{ '(.+?)' \}\}"\
+        r"\{\% if messages\[0\]\['role'\] \=\= 'system' \%\}\{\{ '(.*?)' \}\}"\
         r"\{\% set loop\_messages \= messages\[1\:\] \%\}"\
         r"\{\% else \%\}\{\{ '\1' \}\}\{\% set loop\_messages \= messages \%\}\{\% endif \%\}"\
         r"\{\% for message in loop\_messages \%\}",

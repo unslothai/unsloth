@@ -660,7 +660,7 @@ def test_pruning_messages_preserves_runs_whose_user_message_survives(research_ho
 
 
 @pytest.mark.parametrize("removed_id", ["user-1", "assistant-1"])
-def test_pruning_rejects_deleting_research_turn_messages(research_home, removed_id):
+def test_pruning_skips_research_turn_messages(research_home, removed_id):
     _create()
     plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
     research_db.approve("run-1", 1, plan["planHash"])
@@ -672,18 +672,37 @@ def test_pruning_rejects_deleting_research_turn_messages(research_home, removed_
         if message["id"] != removed_id
     ]
 
-    with pytest.raises(studio_db.ChatMessageProtectedError, match = "cannot be deleted"):
-        studio_db.sync_chat_messages("thread-1", survivors, prune_missing = True)
+    studio_db.sync_chat_messages("thread-1", survivors, prune_missing = True)
 
     assert research_db.get_run("run-1") is not None
     assert research_db.has_thread_claim("thread-1") is True
-    assert studio_db.get_chat_message("thread-1", "user-1") is not None
+    assert studio_db.get_chat_message("thread-1", removed_id) is not None
 
 
-def test_sync_rejects_editing_research_message_but_allows_noop(research_home):
+@pytest.mark.parametrize("removed_id", ["user-1", "assistant-1"])
+def test_pruning_exempts_research_messages_even_when_updates_allowed(research_home, removed_id):
+    _create()
+    plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
+    research_db.approve("run-1", 1, plan["planHash"])
+    research_db.claim_next("worker-1")
+    research_db.finish("run-1", "worker-1", "completed")
+    survivors = [
+        message
+        for message in studio_db.list_chat_messages("thread-1")
+        if message["id"] != removed_id
+    ]
+
+    studio_db.sync_chat_messages(
+        "thread-1", survivors, prune_missing = True, allow_research_update = True
+    )
+
+    assert research_db.get_run("run-1") is not None
+    assert studio_db.get_chat_message("thread-1", removed_id) is not None
+
+
+def test_sync_ignores_client_edits_to_research_messages(research_home):
     _create()
     unchanged = studio_db.list_chat_messages("thread-1")
-    # Re-syncing identical content is a no-op and must still be allowed.
     studio_db.sync_chat_messages("thread-1", unchanged)
     edited = [
         {**message, "content": [{"type": "text", "text": "HIJACKED"}]}
@@ -691,11 +710,48 @@ def test_sync_rejects_editing_research_message_but_allows_noop(research_home):
         else message
         for message in unchanged
     ]
-    with pytest.raises(studio_db.ChatMessageProtectedError, match = "server-managed"):
-        studio_db.sync_chat_messages("thread-1", edited)
+    studio_db.sync_chat_messages("thread-1", edited)
     assert studio_db.get_chat_message("thread-1", "user-1")["content"] == [
         {"type": "text", "text": "What changed?"}
     ]
+
+
+def test_autosave_round_trip_with_client_drift_saves_other_messages(research_home):
+    # The frontend autosave re-serializes messages lossily; that drift must not 409 the
+    # batch or roll back unrelated messages.
+    _create()
+    replayed = []
+    for message in studio_db.list_chat_messages("thread-1"):
+        replayed.append(
+            {
+                **message,
+                "content": message["content"] or [{"type": "text", "text": ""}],
+                "metadata": {
+                    **(message.get("metadata") or {}),
+                    "researchRun": {"id": "run-1", "status": "planning"},
+                    "serverRevision": 7,
+                }
+                if message["role"] == "assistant"
+                else None,
+            }
+        )
+    replayed.append(
+        {
+            "id": "followup",
+            "threadId": "thread-1",
+            "parentId": "assistant-1",
+            "role": "user",
+            "content": [{"type": "text", "text": "And then?"}],
+            "createdAt": 4,
+        }
+    )
+
+    studio_db.sync_chat_messages("thread-1", replayed)
+
+    assert studio_db.get_chat_message("thread-1", "followup") is not None
+    assistant = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert assistant["content"] == []
+    assert "researchRun" not in (assistant.get("metadata") or {})
 
 
 def test_upsert_rejects_client_edit_but_allows_internal_writer(research_home):
@@ -715,7 +771,7 @@ def test_upsert_rejects_client_edit_but_allows_internal_writer(research_home):
     assert studio_db.get_chat_message("thread-1", "assistant-1") is not None
 
 
-def test_sync_rejects_changing_research_message_attachments(research_home):
+def test_sync_ignores_research_message_attachment_changes(research_home):
     _create()
     messages = studio_db.list_chat_messages("thread-1")
     edited = [
@@ -724,23 +780,20 @@ def test_sync_rejects_changing_research_message_attachments(research_home):
         else message
         for message in messages
     ]
-    with pytest.raises(studio_db.ChatMessageProtectedError, match = "server-managed"):
-        studio_db.sync_chat_messages("thread-1", edited)
+    studio_db.sync_chat_messages("thread-1", edited)
+    assert studio_db.get_chat_message("thread-1", "user-1").get("attachments") is None
 
 
-def test_sync_rejects_reordering_research_message_via_created_at(research_home):
+def test_sync_ignores_research_message_created_at_changes(research_home):
     _create()
     messages = studio_db.list_chat_messages("thread-1")
-    # Same body, different timestamp: this would silently reorder the server-managed prompt/response
-    # pair (messages are ordered by created_at), so the guard must reject it.
+    # A changed timestamp would reorder the pair (ordered by created_at), so the server wins.
     edited = [
         {**message, "createdAt": 999999} if message["id"] == "user-1" else message
         for message in messages
     ]
-    with pytest.raises(studio_db.ChatMessageProtectedError, match = "server-managed"):
-        studio_db.sync_chat_messages("thread-1", edited)
-    # A faithful re-sync (unchanged createdAt) is still a no-op and must be allowed.
-    studio_db.sync_chat_messages("thread-1", messages)
+    studio_db.sync_chat_messages("thread-1", edited)
+    assert studio_db.get_chat_message("thread-1", "user-1")["createdAt"] == 2
 
 
 def test_delete_thread_cancels_active_research_run(research_home):
@@ -3277,3 +3330,323 @@ def test_merge_scraped_evidence_handles_empty_sides():
     assert _merge_scraped_evidence("only snippets", "") == "only snippets"
     # no raw snippets -> the scraped section is returned
     assert _merge_scraped_evidence("", "only chunk") == "only chunk"
+
+
+def _route_sync(messages, *, prune_missing = False):
+    """Drive the real PUT /threads/{id}/messages against the real database."""
+    from routes import chat_history
+    return chat_history.replace_thread_messages(
+        "thread-1",
+        chat_history.ChatMessageSyncRequest(
+            messages = [chat_history.ChatMessage(**message) for message in messages],
+            pruneMissing = prune_missing,
+        ),
+        current_subject = "alice",
+    )
+
+
+def test_route_autosave_survives_drifted_research_content(research_home):
+    # Through the route autosave actually calls: one drifted row used to 409 the batch.
+    _create()
+    replayed = [
+        {**message, "content": [{"type": "text", "text": "HIJACKED"}]}
+        for message in studio_db.list_chat_messages("thread-1")
+    ]
+    replayed.append(
+        {
+            "id": "followup",
+            "threadId": "thread-1",
+            "parentId": "assistant-1",
+            "role": "user",
+            "content": [{"type": "text", "text": "And then?"}],
+            "createdAt": 4,
+        }
+    )
+
+    response = _route_sync(replayed)
+
+    assert {message.id for message in response.messages} == {"user-1", "assistant-1", "followup"}
+    # Unrelated message saved; the server's copy of the research turn wins.
+    assert studio_db.get_chat_message("thread-1", "followup") is not None
+    assert studio_db.get_chat_message("thread-1", "user-1")["content"] == [
+        {"type": "text", "text": "What changed?"}
+    ]
+
+
+def test_route_prune_cannot_delete_research_messages(research_home):
+    _create()
+    studio_db.upsert_chat_message(
+        {
+            "id": "chatter",
+            "threadId": "thread-1",
+            "parentId": "assistant-1",
+            "role": "user",
+            "content": [{"type": "text", "text": "unrelated"}],
+            "createdAt": 4,
+        }
+    )
+
+    # Client asks to keep nothing: the research turn survives, the rest goes.
+    _route_sync([], prune_missing = True)
+
+    assert studio_db.get_chat_message("thread-1", "user-1") is not None
+    assert studio_db.get_chat_message("thread-1", "assistant-1") is not None
+    assert studio_db.get_chat_message("thread-1", "chatter") is None
+    assert research_db.get_run("run-1") is not None
+
+
+def _thread_imports_cleanly(thread_id = "thread-1") -> bool:
+    """Whether every parent link resolves, which is what MessageRepository.import needs.
+
+    assistant-ui's addOrUpdateMessage raises "Parent message not found" on a dangling
+    parent, and the whole thread stops opening, not just the affected turn.
+    """
+    rows = studio_db.list_chat_messages(thread_id)
+    ids = {row["id"] for row in rows}
+    return all(row["parentId"] is None or row["parentId"] in ids for row in rows)
+
+
+def test_deleting_an_ancestor_reseats_the_protected_prompt(research_home):
+    # The research prompt hangs off an earlier turn. Deleting that ancestor relinks the
+    # prompt in the client's repository, but its content is server-owned, so the whole
+    # message is dropped here: without carrying the relink, the stored prompt keeps a
+    # parent the prune then deletes and the thread can never be opened again.
+    for message_id, parent_id, created_at in (
+        ("root", None, 1),
+        ("ancestor", "root", 2),
+    ):
+        studio_db.upsert_chat_message(
+            {
+                "id": message_id,
+                "threadId": "thread-1",
+                "parentId": parent_id,
+                "role": "user",
+                "content": [{"type": "text", "text": message_id}],
+                "createdAt": created_at,
+            }
+        )
+    _create()
+    studio_db.upsert_chat_message(
+        {
+            "id": "user-1",
+            "threadId": "thread-1",
+            "parentId": "ancestor",
+            "role": "user",
+            "content": [{"type": "text", "text": "What changed?"}],
+            "createdAt": 3,
+        },
+        allow_research_update = True,
+    )
+
+    # What the client sends after deleting "ancestor": survivors only, the research content
+    # lossily re-serialized as always, and a parent claim that is deliberately wrong here.
+    # The reseat is walked from the stored chain, so the client's claim must not decide it.
+    _route_sync(
+        [
+            {
+                "id": "root",
+                "threadId": "thread-1",
+                "parentId": None,
+                "role": "user",
+                "content": [{"type": "text", "text": "root"}],
+                "createdAt": 1,
+            },
+            {
+                "id": "user-1",
+                "threadId": "thread-1",
+                "parentId": "smuggled",
+                "role": "user",
+                "content": [],
+                "createdAt": 3,
+            },
+        ],
+        prune_missing = True,
+    )
+
+    assert studio_db.get_chat_message("thread-1", "ancestor") is None
+    prompt = studio_db.get_chat_message("thread-1", "user-1")
+    assert prompt is not None
+    assert prompt["parentId"] == "root"
+    # Content is still the server's.
+    assert prompt["content"] == [{"type": "text", "text": "What changed?"}]
+    assert _thread_imports_cleanly()
+
+
+def test_a_protected_prompt_roots_when_the_whole_chain_is_pruned(research_home):
+    # Nothing above it survives, so the walk ends at the root. Rooting the prompt keeps the
+    # thread openable, which a dangling parent would not.
+    studio_db.upsert_chat_message(
+        {
+            "id": "ancestor",
+            "threadId": "thread-1",
+            "parentId": None,
+            "role": "user",
+            "content": [{"type": "text", "text": "ancestor"}],
+            "createdAt": 1,
+        }
+    )
+    _create()
+    studio_db.upsert_chat_message(
+        {
+            "id": "user-1",
+            "threadId": "thread-1",
+            "parentId": "ancestor",
+            "role": "user",
+            "content": [{"type": "text", "text": "What changed?"}],
+            "createdAt": 3,
+        },
+        allow_research_update = True,
+    )
+
+    _route_sync(
+        [
+            {
+                "id": "user-1",
+                "threadId": "thread-1",
+                "parentId": "also-gone",
+                "role": "user",
+                "content": [],
+                "createdAt": 3,
+            }
+        ],
+        prune_missing = True,
+    )
+
+    assert studio_db.get_chat_message("thread-1", "ancestor") is None
+    assert studio_db.get_chat_message("thread-1", "user-1")["parentId"] is None
+    assert _thread_imports_cleanly()
+
+
+def test_omitting_the_whole_research_pair_keeps_the_turn_joined(research_home):
+    # The prune exempts protected messages, so a payload that omits both of them deletes
+    # neither. The reseat has to agree: counting the prompt as pruned would walk the report
+    # past it to the root and silently split the turn while both rows still exist.
+    studio_db.upsert_chat_message(
+        {
+            "id": "root",
+            "threadId": "thread-1",
+            "parentId": None,
+            "role": "user",
+            "content": [{"type": "text", "text": "root"}],
+            "createdAt": 1,
+        }
+    )
+    _create()
+    for message_id, parent_id, role, created_at in (
+        ("user-1", "root", "user", 2),
+        ("assistant-1", "user-1", "assistant", 3),
+    ):
+        studio_db.upsert_chat_message(
+            {
+                "id": message_id,
+                "threadId": "thread-1",
+                "parentId": parent_id,
+                "role": role,
+                "content": [{"type": "text", "text": message_id}],
+                "createdAt": created_at,
+            },
+            allow_research_update = True,
+        )
+
+    # Both protected ids omitted, which is exactly what a lossy re-serialize of a research
+    # turn can produce.
+    _route_sync(
+        [
+            {
+                "id": "root",
+                "threadId": "thread-1",
+                "parentId": None,
+                "role": "user",
+                "content": [{"type": "text", "text": "root"}],
+                "createdAt": 1,
+            }
+        ],
+        prune_missing = True,
+    )
+
+    assert studio_db.get_chat_message("thread-1", "user-1")["parentId"] == "root"
+    assert studio_db.get_chat_message("thread-1", "assistant-1")["parentId"] == "user-1"
+    assert _thread_imports_cleanly()
+
+
+def _ancestor_and_research_prompt() -> None:
+    """`ancestor -> user-1`, with the pair claimed by a run. `ancestor` is prunable."""
+    studio_db.upsert_chat_message(
+        {
+            "id": "ancestor",
+            "threadId": "thread-1",
+            "parentId": None,
+            "role": "user",
+            "content": [{"type": "text", "text": "ancestor"}],
+            "createdAt": 1,
+        }
+    )
+    _create()
+    studio_db.upsert_chat_message(
+        {
+            "id": "user-1",
+            "threadId": "thread-1",
+            "parentId": "ancestor",
+            "role": "user",
+            "content": [{"type": "text", "text": "What changed?"}],
+            "createdAt": 3,
+        },
+        allow_research_update = True,
+    )
+
+
+def test_an_authorized_sync_still_reseats_a_research_row_it_omits(research_home):
+    # allow_research_update empties `protected`, but the delete exempts research rows either
+    # way. An omitted research row therefore survives with a parent the same batch deleted,
+    # so the reseat has to be derived from the research ids, not from `protected`.
+    _ancestor_and_research_prompt()
+
+    studio_db.sync_chat_messages("thread-1", [], prune_missing = True, allow_research_update = True)
+
+    assert studio_db.get_chat_message("thread-1", "ancestor") is None
+    assert studio_db.get_chat_message("thread-1", "user-1")["parentId"] is None
+    assert _thread_imports_cleanly()
+
+
+def test_an_authorized_reparent_of_a_research_row_is_not_overwritten(research_home):
+    # The other half: when the batch carries the research row, that write is authorized and
+    # the repair must not clobber it, even though the row's stored parent is being pruned.
+    _ancestor_and_research_prompt()
+    studio_db.upsert_chat_message(
+        {
+            "id": "keeper",
+            "threadId": "thread-1",
+            "parentId": None,
+            "role": "user",
+            "content": [{"type": "text", "text": "keeper"}],
+            "createdAt": 2,
+        }
+    )
+
+    studio_db.sync_chat_messages(
+        "thread-1",
+        [
+            {
+                "id": "keeper",
+                "threadId": "thread-1",
+                "parentId": None,
+                "role": "user",
+                "content": [{"type": "text", "text": "keeper"}],
+                "createdAt": 2,
+            },
+            {
+                "id": "user-1",
+                "threadId": "thread-1",
+                "parentId": "keeper",
+                "role": "user",
+                "content": [{"type": "text", "text": "What changed?"}],
+                "createdAt": 3,
+            },
+        ],
+        prune_missing = True,
+        allow_research_update = True,
+    )
+
+    assert studio_db.get_chat_message("thread-1", "ancestor") is None
+    assert studio_db.get_chat_message("thread-1", "user-1")["parentId"] == "keeper"
+    assert _thread_imports_cleanly()

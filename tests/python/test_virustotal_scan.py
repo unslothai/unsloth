@@ -839,20 +839,22 @@ class TestWorkflowOrdering:
         )
 
     def test_release_notes_are_written_unconditionally(self):
-        # The updater metadata step reads this file on every run, including a
-        # rerun against an existing release where creation is skipped.
+        # Validation writes the notes before the advisory scan; metadata and
+        # provenance consume that same file before the release is created.
         steps = self._publish_step_map()
         assert "desktop-release-notes.md" in steps["Validate versioned release state"]["run"]
-        metadata = steps["Generate and publish versioned updater metadata"]["run"]
+        metadata = steps["Generate versioned updater metadata and provenance"]["run"]
         assert "desktop-release-notes.md" in metadata
 
     def test_a_failed_lookup_is_not_treated_as_a_missing_release(self):
-        # `gh` exits non-zero for any failure, so a transient API or auth error
-        # would otherwise disclose the bundles for a run that cannot publish.
+        # A transient GraphQL/auth failure must stop before the workflow marks
+        # the version clean and discloses its bundles to VirusTotal.
         run = self._publish_step_map()["Validate versioned release state"]["run"]
-        assert "release not found" in run
-        assert "create=true" in run.split("release not found", 1)[1]
-        assert "exit 1" in run
+        assert "if ! gh release list" in run
+        failed_lookup = run.split("if ! gh release list", 1)[1].split("release_state=", 1)[0]
+        assert "Could not list releases, including drafts" in failed_lookup
+        assert "exit 1" in failed_lookup
+        assert "create=true" not in failed_lookup
 
     def test_release_creation_is_gated_on_the_validation_step(self):
         yaml = pytest.importorskip("yaml")
