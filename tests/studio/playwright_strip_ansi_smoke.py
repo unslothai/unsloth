@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Browser smoke for #7962: tool output panes strip ANSI before render."""
+"""Browser smoke for #7962: production tool-output panes strip ANSI before render."""
 
 from __future__ import annotations
 
@@ -22,19 +22,26 @@ from _playwright_robust import chromium_launch_args  # noqa: E402
 FRONTEND = Path(__file__).resolve().parents[2] / "studio" / "frontend"
 BASE = os.environ.get("SMOKE_BASE_URL", "http://127.0.0.1:8000")
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright-ansi-smoke"))
+SECTIONS = (
+    "tool-result-output",
+    "tool-fallback-result",
+    "tool-live-output",
+    "code-execution-result",
+)
 ESC = "\u001b"
 
 
 def info(msg: str) -> None:
-    print(f"[ansi-smoke] {msg}", flush = True)
+    print(f"[ansi-smoke] {msg}", flush=True)
 
 
-def wait_for_vite(url: str, timeout_s: float = 120.0) -> None:
+def wait_for_vite(timeout_s: float = 120.0) -> None:
+    url = f"{BASE}/smoke-ansi.html"
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(f"{url}/smoke-ansi.html", timeout = 2) as resp:
-                if resp.status == 200:
+            with urllib.request.urlopen(url, timeout=2) as response:
+                if response.status == 200:
                     return
         except (urllib.error.URLError, TimeoutError):
             pass
@@ -43,62 +50,64 @@ def wait_for_vite(url: str, timeout_s: float = 120.0) -> None:
 
 
 def drain_process_output(proc: subprocess.Popen[str]) -> None:
-    if proc.stdout is None:
-        return
-    for _ in proc.stdout:
-        pass
+    if proc.stdout is not None:
+        for _ in proc.stdout:
+            pass
 
 
-def start_logged_process(args: list[str], *, cwd: Path) -> subprocess.Popen[str]:
+def start_vite() -> subprocess.Popen[str]:
     proc = subprocess.Popen(
-        args,
-        cwd = cwd,
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        text = True,
+        ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", "8000", "--strictPort"],
+        cwd=FRONTEND,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
     )
-    threading.Thread(target = drain_process_output, args = (proc,), daemon = True).start()
+    threading.Thread(target=drain_process_output, args=(proc,), daemon=True).start()
     return proc
 
 
-def main() -> None:
-    ART.mkdir(parents = True, exist_ok = True)
-    info(f"starting vite dev server in {FRONTEND}")
-    vite = start_logged_process(
-        ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", "8000", "--strictPort"],
-        cwd = FRONTEND,
-    )
+def stop_process(proc: subprocess.Popen[str]) -> None:
+    proc.terminate()
     try:
-        wait_for_vite(BASE)
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
+def main() -> None:
+    ART.mkdir(parents=True, exist_ok=True)
+    info(f"starting vite dev server in {FRONTEND}")
+    vite = start_vite()
+    try:
+        wait_for_vite()
         info(f"vite ready at {BASE}")
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless = True,
-                args = chromium_launch_args(),
-            )
+        with sync_playwright() as playwright:
+            browser_name = os.environ.get("PW_BROWSER", "chromium").lower()
+            if browser_name not in {"chromium", "firefox", "webkit"}:
+                raise ValueError(f"unsupported PW_BROWSER: {browser_name}")
+            browser_type = getattr(playwright, browser_name)
+            launch_args = chromium_launch_args() if browser_name == "chromium" else []
+            browser = browser_type.launch(headless=True, args=launch_args)
             page = browser.new_page()
-            page.goto(f"{BASE}/smoke-ansi.html", wait_until = "networkidle")
-            page.screenshot(path = str(ART / "smoke-ansi.png"), full_page = True)
+            page.goto(f"{BASE}/smoke-ansi.html", wait_until="networkidle")
+            page.screenshot(path=str(ART / "smoke-ansi.png"), full_page=True)
 
-            for section in ("tool-result-output", "tool-fallback-result"):
+            for section in SECTIONS:
                 pane = page.locator(f'section[data-smoke="{section}"] pre').first
-                expect(pane).to_be_visible(timeout = 10_000)
+                expect(pane).to_be_visible(timeout=15_000)
                 text = pane.inner_text()
                 info(f"{section} text: {text!r}")
+                assert text == "file.txt\nerror", f"{section} rendered unexpected text: {text!r}"
                 assert ESC not in text, f"{section} still contains ESC"
-                assert "file.txt" in text, f"{section} missing visible filename"
-                assert "error" in text, f"{section} missing visible error word"
                 assert "[32m" not in text, f"{section} still shows SGR garbage"
 
-            info("all panes rendered clean text (no ANSI escapes)")
+            info("all production panes rendered clean text (no ANSI escapes)")
             browser.close()
     finally:
-        vite.terminate()
-        try:
-            vite.wait(timeout = 10)
-        except subprocess.TimeoutExpired:
-            vite.kill()
+        stop_process(vite)
 
 
 if __name__ == "__main__":

@@ -4,10 +4,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { stripAnsi, stringifyToolResult } from "../src/lib/strip-ansi.ts";
+import {
+  stripAnsi,
+  stringifyToolResult,
+  tailToolOutput,
+} from "../src/lib/strip-ansi.ts";
 
 const ESC = String.fromCharCode(27);
 const BEL = String.fromCharCode(7);
+
+const CAN = String.fromCharCode(0x18);
+const SUB = String.fromCharCode(0x1a);
+
+const C1_DCS = String.fromCharCode(0x90);
+const C1_CSI = String.fromCharCode(0x9b);
+const C1_ST = String.fromCharCode(0x9c);
+const C1_OSC = String.fromCharCode(0x9d);
 
 test("strips SGR colour sequences from ls --color / grep --color output", () => {
   const coloured = `${ESC}[32mfile.txt${ESC}[0m\n${ESC}[01;31mmatch${ESC}[0m`;
@@ -36,6 +48,23 @@ test("shrinks colourised output so tailing counts visible glyphs not escapes", (
   assert.ok(cleaned.length < coloured.length);
 });
 
+
+test("tailing uses cleaned glyph counts and enforces both boundaries", () => {
+  const visible = "x".repeat(200_000);
+  const coloured = `${ESC}[32m${visible}${ESC}[0m`;
+  assert.equal(tailToolOutput(coloured).hiddenChars > 0, true);
+  assert.deepEqual(tailToolOutput(stripAnsi(coloured)), {
+    visible,
+    hiddenLines: 0,
+    hiddenChars: 0,
+  });
+
+  const lines = Array.from({ length: 2001 }, (_, index) => String(index)).join("\n");
+  const tail = tailToolOutput(lines);
+  assert.equal(tail.hiddenLines, 1);
+  assert.equal(tail.visible.startsWith("1\n"), true);
+});
+
 test("strips OSC terminal hyperlinks terminated by BEL", () => {
   const linked = `${ESC}]8;;file:///tmp/demo${BEL}file.txt${ESC}]8;;${BEL}`;
   assert.equal(stripAnsi(linked), "file.txt");
@@ -61,9 +90,41 @@ test("hides partial OSC payloads while a hyperlink is still streaming", () => {
   assert.equal(stripAnsi(partial), "");
 });
 
+
+test("streaming controls stay hidden until complete and reveal later text", () => {
+  let accumulated = `${ESC}]8;;file:///tmp/demo`;
+  assert.equal(stripAnsi(accumulated), "");
+  accumulated += `${BEL}link${ESC}]8;;${BEL}`;
+  assert.equal(stripAnsi(accumulated), "link");
+
+  accumulated = `${ESC}[31`;
+  assert.equal(stripAnsi(accumulated), "");
+  accumulated += `mred${ESC}[0m`;
+  assert.equal(stripAnsi(accumulated), "red");
+});
+
+test("CAN and SUB cancel control strings without hiding following text", () => {
+  assert.equal(stripAnsi(`${ESC}]0;title${CAN}visible`), "visible");
+  assert.equal(stripAnsi(`${C1_OSC}0;title${SUB}visible`), "visible");
+  assert.equal(stripAnsi(`${ESC}[31${CAN}visible`), "visible");
+});
+
+
+test("malformed SCS leaves its violating byte and following text visible", () => {
+  assert.equal(stripAnsi(`${ESC}(\nplain`), "\nplain");
+});
+
 test("strips DCS payloads terminated by ST", () => {
   const dcs = `${ESC}Pfake-sixel${ESC}\\ok`;
   assert.equal(stripAnsi(dcs), "ok");
+});
+
+
+test("strips SOS payloads and 8-bit C1 control forms", () => {
+  assert.equal(stripAnsi(`${ESC}Xprivate${ESC}\\ok`), "ok");
+  assert.equal(stripAnsi(`${C1_CSI}32mgreen${C1_CSI}0m`), "green");
+  assert.equal(stripAnsi(`${C1_OSC}0;title${C1_ST}ok`), "ok");
+  assert.equal(stripAnsi(`${C1_DCS}payload${C1_ST}ok`), "ok");
 });
 
 test("strips DEC save, restore, and full reset controls", () => {
@@ -90,6 +151,21 @@ test("stringifyToolResult strips ANSI out of object keys too", () => {
   const rendered = stringifyToolResult({ [`${ESC}[32mstdout`]: "ok" });
   assert.equal(rendered.includes("\\u001b"), false);
   assert.match(rendered, /"stdout": "ok"/);
+});
+
+
+test("stringifyToolResult preserves fields whose cleaned keys collide", () => {
+  const rendered = stringifyToolResult({
+    [`${ESC}[31mkey`]: "ansi",
+    key: "plain",
+    [`${ESC}[32mkey`]: "second ansi",
+  });
+  const parsed = JSON.parse(rendered);
+  assert.deepEqual(parsed, {
+    "key [ansi]": "ansi",
+    key: "plain",
+    "key [ansi 2]": "second ansi",
+  });
 });
 
 test("stringifyToolResult keeps toJSON serialization (Date stays an ISO string)", () => {

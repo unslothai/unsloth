@@ -5,6 +5,8 @@
 
 import { getAuthToken } from "@/features/auth/session";
 import { apiUrl } from "@/lib/api-base";
+
+import { stringifyToolResult } from "@/lib/strip-ansi";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { useToolArgsStatus } from "@assistant-ui/react";
 import { CodeIcon } from "lucide-react";
@@ -63,10 +65,8 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
     output = result.text;
     images = result.images;
     sessionId = result.sessionId;
-  } else if (typeof result === "string") {
-    output = result;
-  } else if (result) {
-    output = JSON.stringify(result, null, 2);
+  } else if (result != null) {
+    output = stringifyToolResult(result);
   } else {
     output = "";
   }

@@ -5,9 +5,8 @@
 
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useToolOutputFor, useToolPaneScope } from "@/features/chat";
-import { stripAnsi } from "@/lib/strip-ansi";
+import { stripAnsi, tailToolOutput } from "@/lib/strip-ansi";
 import { useEffect, useMemo, useRef } from "react";
-import { tailText } from "./tool-result-output";
 
 /**
  * Live-scrolling stdout/stderr pane for a running server-side tool, backed by
@@ -22,15 +21,19 @@ export function ToolLiveOutput({ toolCallId }: { toolCallId: string }) {
     paneScope,
     toolCallId,
   );
+  return output ? <ToolLiveOutputPane output={output} /> : null;
+}
+
+/** Presentational production pane, exported so browser smoke tests this exact path. */
+export function ToolLiveOutputPane({ output }: { output: string }) {
   const scrollRef = useRef<HTMLPreElement>(null);
   // Pinned to the bottom until the user scrolls up (handler below), so
   // streaming chunks no longer yank them down.
   const pinnedToBottom = useRef(true);
 
-  // The stream can reach hundreds of KB; render only the tail while live.
-  // Strip ANSI so colourised CLIs stay readable mid-stream (#7962).
+  // The stream can reach hundreds of KB; render only the clean tail while live.
   const visible = useMemo(
-    () => tailText(stripAnsi(output)).visible,
+    () => tailToolOutput(stripAnsi(output)).visible,
     [output],
   );
 
@@ -50,10 +53,6 @@ export function ToolLiveOutput({ toolCallId }: { toolCallId: string }) {
       el.scrollTop = el.scrollHeight;
     }
   }, [visible]);
-
-  if (!output) {
-    return null;
-  }
 
   return (
     <div className="aui-tool-live-output mt-2 border-t border-dashed pt-2">

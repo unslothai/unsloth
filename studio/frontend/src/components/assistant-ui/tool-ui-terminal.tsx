@@ -17,6 +17,8 @@ import { CopyBtn, ToolCodeCell } from "./tool-code-cell";
 import { ToolLiveOutput } from "./tool-live-output";
 import { ToolResultOutput } from "./tool-result-output";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+
+import { stringifyToolResult } from "@/lib/strip-ansi";
 import {
   preferFullToolOutput,
   useToolAwaitingApproval,
@@ -35,12 +37,7 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
   // Args still streaming = the model is WRITING the command, not running it yet.
   const { propStatus } = useToolArgsStatus();
   const isWritingCommand = isRunning && propStatus.command === "streaming";
-  const output =
-    typeof result === "string"
-      ? result
-      : result
-        ? JSON.stringify(result, null, 2)
-        : "";
+  const output = result == null ? "" : stringifyToolResult(result);
 
   // Show the fuller live stream over a truncated result, keeping its exit
   // status. Session-transient: after a reload only the result remains.
