@@ -30,6 +30,7 @@ from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError, version as pkg_version
 import structlog
 from loggers import get_logger
+from utils.child_stdio import utf8_child_env
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -1066,8 +1067,13 @@ def _run_probe_subprocess(names, timeout: int = 180) -> Optional[Dict[str, Any]]
             timeout = timeout,
             # The child imports torch; keep it off the GPUs entirely. bitsandbytes and
             # xformers both report their load status without one, and this way the probe
-            # cannot take VRAM from a run in progress.
-            env = {**os.environ, "CUDA_VISIBLE_DEVICES": "", "UNSLOTH_ALLOW_CPU": "1"},
+            # cannot take VRAM from a run in progress. Through utf8_child_env because we
+            # decode as UTF-8 above and the child would otherwise emit the Windows ANSI
+            # code page -- which is precisely where the DLL paths this probe exists to
+            # report carry non-ASCII.
+            env = utf8_child_env(
+                {**os.environ, "CUDA_VISIBLE_DEVICES": "", "UNSLOTH_ALLOW_CPU": "1"}
+            ),
         )
     except Exception as e:
         logger.debug(f"Accelerator probe subprocess failed: {e}")
