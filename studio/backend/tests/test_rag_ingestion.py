@@ -83,6 +83,42 @@ def test_ingestion_dedupe_by_hash(rag_home, stub_embeddings, tmp_path):
         conn.close()
 
 
+def test_manual_upload_does_not_dedupe_to_linked_folder_document(
+    rag_home, stub_embeddings, tmp_path
+):
+    path = _write(tmp_path, "manual.txt", "alpha bravo charlie")
+    scope = store.kb_scope("K1")
+    sha = ingestion._sha256_file(path)
+    conn = rag_db.get_connection()
+    try:
+        linked_id = store.create_document(
+            conn,
+            scope = scope,
+            filename = "linked.txt",
+            sha256 = sha,
+            kb_id = "K1",
+            status = "completed",
+            linked_folder_id = "folder-1",
+            linked_relative_path = "linked.txt",
+        )
+        store.set_document_status(conn, linked_id, "completed", num_chunks = 1)
+    finally:
+        conn.close()
+
+    manual_id, job_id = ingestion.start_ingestion(scope, "K1", None, "manual.txt", path)
+    events = _drain(job_id)
+    _wait_completed(job_id)
+
+    assert manual_id != linked_id
+    assert not any(event.get("deduped") for event in events)
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, linked_id) is not None
+        assert store.get_document(conn, manual_id)["linked_folder_id"] is None
+    finally:
+        conn.close()
+
+
 def test_ingestion_reingests_when_existing_has_zero_chunks(rag_home, stub_embeddings, tmp_path):
     # A prior ingest of identical bytes that yielded no chunks (e.g. a scanned PDF
     # before a vision model loaded) must re-ingest, not dedupe to the empty record.

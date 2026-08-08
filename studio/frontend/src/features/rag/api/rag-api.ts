@@ -6,9 +6,13 @@ import { apiUrl } from "@/lib/api-base";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import type {
   DocumentUploadResult,
+  FolderSyncJob,
+  FolderSyncJobEvent,
   IndexJob,
   JobEvent,
   KnowledgeBase,
+  LinkedFolder,
+  LinkedFolderScope,
   PreviewTarget,
   RagDocument,
   UploadedDocument,
@@ -218,6 +222,75 @@ export function invalidateProjectSources(projectId: string): void {
   projectSourcesCache.delete(projectId);
 }
 
+export async function listLinkedFolders(
+  scope?: LinkedFolderScope,
+): Promise<LinkedFolder[]> {
+  const query = scope
+    ? `?scope_type=${encodeURIComponent(scope.type)}&scope_id=${encodeURIComponent(scope.id)}`
+    : "";
+  const data = await ragRequest<{ linkedFolders: LinkedFolder[] }>(
+    `/linked-folders${query}`,
+  );
+  return data.linkedFolders ?? [];
+}
+
+interface LinkedFolderMutationResult {
+  linkedFolder: LinkedFolder;
+  job: FolderSyncJob;
+}
+
+export function createLinkedFolder(
+  scope: LinkedFolderScope,
+  nativePathLease: string,
+  displayName: string,
+): Promise<LinkedFolderMutationResult> {
+  const parent =
+    scope.type === "knowledge_base" ? "knowledge-bases" : "projects";
+  return ragRequest(
+    `/${parent}/${encodeURIComponent(scope.id)}/linked-folders`,
+    {
+      method: "POST",
+      body: { nativePathLease, displayName },
+    },
+  );
+}
+
+export function deleteLinkedFolder(
+  linkedFolderId: string,
+  removeIndex: boolean,
+): Promise<{ ok: boolean }> {
+  return ragRequest(
+    `/linked-folders/${encodeURIComponent(linkedFolderId)}?remove_index=${removeIndex}`,
+    { method: "DELETE" },
+  );
+}
+
+function startLinkedFolderJob(
+  linkedFolderId: string,
+  action: "sync" | "rebuild",
+): Promise<{ job: FolderSyncJob }> {
+  return ragRequest(
+    `/linked-folders/${encodeURIComponent(linkedFolderId)}/${action}`,
+    { method: "POST" },
+  );
+}
+
+export function syncLinkedFolder(
+  linkedFolderId: string,
+): Promise<{ job: FolderSyncJob }> {
+  return startLinkedFolderJob(linkedFolderId, "sync");
+}
+
+export function rebuildLinkedFolder(
+  linkedFolderId: string,
+): Promise<{ job: FolderSyncJob }> {
+  return startLinkedFolderJob(linkedFolderId, "rebuild");
+}
+
+export function getFolderSyncJob(jobId: string): Promise<FolderSyncJob> {
+  return ragRequest(`/linked-folder-jobs/${encodeURIComponent(jobId)}`);
+}
+
 export async function listAllDocuments(): Promise<UploadedDocument[]> {
   const data = await ragRequest<{ documents: UploadedDocument[] }>(
     "/documents",
@@ -295,6 +368,58 @@ export async function* streamJobEvents(
     }
   } finally {
     // Release the stream lock now instead of leaking the reader until GC.
+    try {
+      await reader.cancel();
+    } catch {
+      // already closed
+    }
+  }
+}
+
+export async function* streamFolderSyncJobEvents(
+  jobId: string,
+  signal?: AbortSignal,
+): AsyncGenerator<FolderSyncJobEvent> {
+  const response = await authFetch(
+    `${RAG_BASE}/linked-folder-jobs/${encodeURIComponent(jobId)}/events`,
+    signal ? { signal } : undefined,
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(parseErrorText(response.status, body));
+  }
+  if (!response.body) throw new Error("Stream response missing body");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let separatorIndex = buffer.search(/\r?\n\r?\n/);
+      while (separatorIndex >= 0) {
+        const rawEvent = buffer.slice(0, separatorIndex);
+        const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
+        buffer = buffer.slice(separatorIndex + separatorLength);
+        const data = rawEvent
+          .split(/\r?\n/)
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trimStart())
+          .join("\n");
+        if (data === "[DONE]") return;
+        if (data) {
+          try {
+            yield JSON.parse(data) as FolderSyncJobEvent;
+          } catch {
+            // Ignore malformed frames and continue to the terminal event.
+          }
+        }
+        separatorIndex = buffer.search(/\r?\n\r?\n/);
+      }
+    }
+  } finally {
     try {
       await reader.cancel();
     } catch {

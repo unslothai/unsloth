@@ -5,6 +5,7 @@
 Chat history API routes backed by studio.db.
 """
 
+import asyncio
 from typing import Annotated, Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -549,6 +550,52 @@ async def patch_project(
     return ChatProject(**project)
 
 
+def _retire_project_rag_sources(project_id: str) -> list[dict]:
+    """Prevent new RAG sources from being linked while a project is deleted."""
+    from storage import rag_db
+
+    if not rag_db.rag_available():
+        return []
+    from core.rag import folder_sync, store as rag_store
+
+    return folder_sync.retire_scope(rag_store.project_scope(project_id))
+
+
+def _delete_project_rag_sources(project_id: str, folders: list[dict] | None = None) -> None:
+    """Synchronously remove retired project RAG state; callers run this in a worker thread."""
+    import os
+
+    from storage import rag_db
+
+    if not rag_db.rag_available():
+        return
+    from core.rag import folder_sync, store as rag_store
+    from utils.paths import rag_uploads_root
+
+    uploads = os.path.realpath(str(rag_uploads_root()))
+    scope = rag_store.project_scope(project_id)
+    if folders is None:
+        folders = folder_sync.retire_scope(scope)
+    for folder in folders:
+        try:
+            folder_sync.delete_folder(folder["id"])
+        except Exception:
+            # The registration remains durably disabled and a later cleanup can retry it.
+            logger.warning("failed to delete retired linked folder %s", folder["id"], exc_info = True)
+    conn = rag_db.get_connection()
+    try:
+        for doc in rag_store.list_documents(conn, scope):
+            full = rag_store.get_document(conn, doc["id"]) or {}
+            rag_store.delete_document(conn, doc["id"])
+            stored = full.get("stored_path")
+            if stored:
+                target = os.path.realpath(stored)
+                if os.path.isfile(target) and os.path.commonpath([uploads, target]) == uploads:
+                    os.remove(target)
+    finally:
+        conn.close()
+
+
 @router.delete("/projects/{project_id}", response_model = ChatProject)
 async def delete_project(
     project_id: str,
@@ -556,9 +603,15 @@ async def delete_project(
     delete_files: bool = Query(False),
     current_subject: str = Depends(get_current_subject),
 ):
+    if get_chat_project(project_id) is None:
+        raise HTTPException(
+            status_code = 404,
+            detail = f"Project {project_id} not found",
+        )
     _cancel_active_research(
         request, [thread["id"] for thread in list_chat_threads(project_id = project_id)]
     )
+    retired_folders = await asyncio.to_thread(_retire_project_rag_sources, project_id)
     project = delete_chat_project(project_id, delete_files = delete_files)
     if project is None:
         raise HTTPException(
@@ -567,31 +620,7 @@ async def delete_project(
         )
     # Best-effort: drop the project's RAG sources (lazy import keeps RAG optional).
     try:
-        import os
-
-        from storage import rag_db
-        if rag_db.RAG_AVAILABLE:
-            from core.rag import store as rag_store
-            from utils.paths import rag_uploads_root
-
-            uploads = os.path.realpath(str(rag_uploads_root()))
-            conn = rag_db.get_connection()
-            try:
-                scope = rag_store.project_scope(project_id)
-                for doc in rag_store.list_documents(conn, scope):
-                    full = rag_store.get_document(conn, doc["id"]) or {}
-                    rag_store.delete_document(conn, doc["id"])
-                    stored = full.get("stored_path")
-                    # Also remove the uploaded file; confined to the uploads root.
-                    if stored:
-                        target = os.path.realpath(stored)
-                        if (
-                            os.path.isfile(target)
-                            and os.path.commonpath([uploads, target]) == uploads
-                        ):
-                            os.remove(target)
-            finally:
-                conn.close()
+        await asyncio.to_thread(_delete_project_rag_sources, project_id, retired_folders)
     except Exception:  # noqa: BLE001 - source cleanup must not block project deletion
         logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
     return ChatProject(**project)

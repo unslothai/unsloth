@@ -276,6 +276,9 @@ def start_ingestion(
     model_name: str | None = None,
     ocr: bool | None = None,
     caption: bool | None = None,
+    dedupe: bool = True,
+    linked_folder_id: str | None = None,
+    linked_relative_path: str | None = None,
 ) -> tuple[str, str]:
     """Create the document + job rows and spawn the worker, returning
     ``(document_id, job_id)``. A duplicate content hash in this scope returns the
@@ -295,7 +298,7 @@ def start_ingestion(
         # the worker only after the replacement completes, so a failed re-index
         # never destroys the still-searchable original.
         replaces: tuple[str, str | None] | None = None
-        existing = store.document_by_hash(conn, scope, sha)
+        existing = store.document_by_hash(conn, scope, sha) if dedupe else None
         if existing is not None:
             doc = store.get_document(conn, existing)
             empty_completed = (
@@ -327,9 +330,10 @@ def start_ingestion(
                 )
                 _emit(job_id, None)
                 return existing, job_id
-        for failed in store.failed_documents_by_hash(conn, scope, sha):
-            store.delete_document(conn, failed["id"])
-            _remove_upload(failed.get("stored_path"), keep_path = stored_path)
+        if dedupe:
+            for failed in store.failed_documents_by_hash(conn, scope, sha):
+                store.delete_document(conn, failed["id"])
+                _remove_upload(failed.get("stored_path"), keep_path = stored_path)
 
         document_id = store.create_document(
             conn,
@@ -342,6 +346,8 @@ def start_ingestion(
             status = "pending",
             stored_path = stored_path,
             embedding_model = effective_model,
+            linked_folder_id = linked_folder_id,
+            linked_relative_path = linked_relative_path,
         )
         job_id = _new_job(conn, document_id, scope)
     finally:
@@ -403,6 +409,24 @@ def _reap_finished_jobs() -> None:
         if row is not None and row.get("status") in _TERMINAL_JOB_STATUSES:
             with _jobs_lock:
                 _jobs.pop(jid, None)
+
+
+def delete_terminal_job(job_id: str) -> bool:
+    """Remove a consumed internal job without racing an active ingestion worker."""
+    conn = rag_db.get_connection()
+    try:
+        cursor = conn.execute(
+            "DELETE FROM ingestion_jobs WHERE id=? AND status IN ('completed','failed')",
+            (job_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    if cursor.rowcount:
+        with _jobs_lock:
+            _jobs.pop(job_id, None)
+        return True
+    return False
 
 
 def job_events(job_id: str):

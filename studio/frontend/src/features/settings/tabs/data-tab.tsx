@@ -38,14 +38,19 @@ import {
   useChatRuntimeStore,
   useChatSidebarItems,
 } from "@/features/chat";
+import {
+  LinkedFoldersManager,
+  listKnowledgeBases,
+  useRagAvailabilityStore,
+} from "@/features/rag";
 import { useT } from "@/i18n";
 
 import { isTauri } from "@/lib/api-base";
-import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import {
   ChevronDownStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
+import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
   Archive02Icon,
@@ -104,6 +109,10 @@ export function DataTab() {
   // the Train tab would upload it and then strand the user; gate the action
   // the same way the sidebar gates Train.
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
+  const ragAvailabilityUnknown = useRagAvailabilityStore((s) =>
+    s.availabilityUnknown(),
+  );
   const storedFineTuneAction = useSettingsPanelPrefsStore(
     (s) => s.fineTuneAction,
   );
@@ -132,6 +141,13 @@ export function DataTab() {
       cancelled = true;
     };
   }, [archivedChatsRequested, consumeArchivedChatsRequest]);
+
+  useEffect(() => {
+    if (!ragAvailabilityUnknown) return;
+    void listKnowledgeBases().catch(() => {
+      // Transient failures are not capability verdicts; a later mount can retry.
+    });
+  }, [ragAvailabilityUnknown]);
 
   const confirmDeleteChats = useChatPreferencesStore(
     (state) => state.confirmDeleteChats,
@@ -704,6 +720,11 @@ export function DataTab() {
             {t("settings.data.manageAction")}
           </Button>
         </SettingsRow>
+        {!ragAvailabilityUnknown && !ragUnavailable ? (
+          <div className="py-3">
+            <LinkedFoldersManager />
+          </div>
+        ) : null}
       </SettingsSection>
 
       <Dialog open={archiveConfirmOpen} onOpenChange={setArchiveConfirmOpen}>

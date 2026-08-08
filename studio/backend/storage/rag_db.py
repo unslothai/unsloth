@@ -156,6 +156,67 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS linked_folders (
+            id TEXT NOT NULL PRIMARY KEY,
+            scope_type TEXT NOT NULL,
+            scope_id TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            path TEXT NOT NULL,
+            name TEXT NOT NULL,
+            root_device INTEGER,
+            root_inode INTEGER,
+            auto_sync INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'pending',
+            last_error TEXT,
+            last_scan_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(scope, path)
+        );
+        CREATE INDEX IF NOT EXISTS idx_linked_folders_scope ON linked_folders(scope);
+
+        CREATE TABLE IF NOT EXISTS linked_folder_retired_scopes (
+            scope TEXT NOT NULL PRIMARY KEY,
+            retired_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS linked_folder_files (
+            folder_id TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            mtime_ns INTEGER NOT NULL,
+            device INTEGER,
+            inode INTEGER,
+            document_id TEXT NOT NULL,
+            content_hash TEXT,
+            synced_at TEXT NOT NULL,
+            PRIMARY KEY(folder_id, relative_path)
+        );
+        CREATE INDEX IF NOT EXISTS idx_linked_folder_files_document
+            ON linked_folder_files(document_id);
+
+        CREATE TABLE IF NOT EXISTS linked_folder_sync_jobs (
+            id TEXT NOT NULL PRIMARY KEY,
+            folder_id TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'sync',
+            status TEXT NOT NULL DEFAULT 'pending',
+            stage TEXT,
+            progress REAL NOT NULL DEFAULT 0.0,
+            discovered INTEGER NOT NULL DEFAULT 0,
+            added INTEGER NOT NULL DEFAULT 0,
+            changed INTEGER NOT NULL DEFAULT 0,
+            deleted INTEGER NOT NULL DEFAULT 0,
+            renamed INTEGER NOT NULL DEFAULT 0,
+            failed INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            rebuild_requested INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_linked_folder_jobs_queue
+            ON linked_folder_sync_jobs(status, created_at);
+
         CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
             text,
             chunk_id UNINDEXED,
@@ -172,6 +233,46 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # assumed current). Dedupe re-ingests when it no longer matches.
     if "embedding_model" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN embedding_model TEXT")
+    # Folder ownership makes crash cleanup unambiguous without changing retrieval.
+    if "linked_folder_id" not in cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN linked_folder_id TEXT")
+    if "linked_relative_path" not in cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN linked_relative_path TEXT")
+    folder_cols = {r[1] for r in conn.execute("PRAGMA table_info(linked_folders)").fetchall()}
+    if "root_device" not in folder_cols:
+        conn.execute("ALTER TABLE linked_folders ADD COLUMN root_device INTEGER")
+    if "root_inode" not in folder_cols:
+        conn.execute("ALTER TABLE linked_folders ADD COLUMN root_inode INTEGER")
+    folder_file_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(linked_folder_files)").fetchall()
+    }
+    if "content_hash" not in folder_file_cols:
+        conn.execute("ALTER TABLE linked_folder_files ADD COLUMN content_hash TEXT")
+    conn.execute(
+        "UPDATE linked_folder_files SET content_hash=("
+        "SELECT d.sha256 FROM documents d WHERE d.id=linked_folder_files.document_id) "
+        "WHERE content_hash IS NULL"
+    )
+    job_cols = {r[1] for r in conn.execute("PRAGMA table_info(linked_folder_sync_jobs)").fetchall()}
+    if "rebuild_requested" not in job_cols:
+        conn.execute(
+            "ALTER TABLE linked_folder_sync_jobs "
+            "ADD COLUMN rebuild_requested INTEGER NOT NULL DEFAULT 0"
+        )
+    # Retire duplicate active jobs from older schemas before enforcing atomic
+    # per-folder scheduling for manual and periodic requests.
+    conn.execute(
+        "UPDATE linked_folder_sync_jobs SET status='failed', stage='error', "
+        "error='Superseded duplicate job', completed_at=COALESCE(completed_at, created_at) "
+        "WHERE status IN ('pending','running') AND id NOT IN ("
+        "SELECT MIN(id) FROM linked_folder_sync_jobs WHERE status IN ('pending','running') "
+        "GROUP BY folder_id)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_linked_folder_jobs_active "
+        "ON linked_folder_sync_jobs(folder_id) WHERE status IN ('pending','running')"
+    )
+    conn.commit()
 
 
 def get_connection() -> sqlite3.Connection:

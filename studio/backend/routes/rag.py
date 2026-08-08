@@ -33,7 +33,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject
-from core.rag import config, ingestion, retrieval, store
+from core.rag import config, folder_sync, ingestion, retrieval, store
 from storage import rag_db
 from utils.paths import ensure_dir, rag_uploads_root
 
@@ -211,6 +211,15 @@ def _remove_stored_upload(stored_path: str | None) -> None:
         logger.warning("failed to remove RAG upload %s", stored_path, exc_info = True)
 
 
+def _is_managed_preview_path(stored_path: str) -> bool:
+    uploads = os.path.realpath(str(rag_uploads_root()))
+    try:
+        common = os.path.commonpath([uploads, os.path.realpath(stored_path)])
+        return os.path.normcase(common) == os.path.normcase(uploads)
+    except ValueError:
+        return False
+
+
 def _doc_view(row: dict) -> dict:
     return {
         "id": row["id"],
@@ -221,6 +230,8 @@ def _doc_view(row: dict) -> dict:
         "kbId": row.get("kb_id"),
         "threadId": row.get("thread_id"),
         "projectId": row.get("project_id"),
+        "linkedFolderId": row.get("linked_folder_id"),
+        "managed": bool(row.get("linked_folder_id")),
         "createdAt": row.get("created_at"),
     }
 
@@ -243,6 +254,75 @@ class SearchRequest(BaseModel):
     top_k: int = Field(default = config.TOP_K_HYBRID, ge = 1, le = 50)
     min_score: float = 0.0
     mode: str = "hybrid"  # hybrid | lexical | dense
+
+
+class LinkFolderRequest(BaseModel):
+    name: str | None = Field(default = None, alias = "displayName", max_length = 200)
+    auto_sync: bool = Field(default = True, alias = "autoSync")
+    native_path_lease: str = Field(alias = "nativePathLease", min_length = 1)
+
+
+class UpdateFolderRequest(BaseModel):
+    name: str | None = Field(default = None, max_length = 200)
+    auto_sync: bool | None = Field(default = None, alias = "autoSync")
+
+
+def _resolve_linked_folder_path(native_path_lease: str, *, verifier = None) -> str:
+    """Resolve a desktop grant; the injectable verifier keeps resolution unit-testable."""
+    from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
+
+    verify = verifier or verify_native_path_lease
+    try:
+        grant = verify(
+            native_path_lease,
+            operation = "link-documents",
+            expected_kind = "document-folder",
+            expected_path_type = "directory",
+        )
+        return folder_sync.validate_folder_path(str(grant.canonical_path))
+    except NativePathLeaseError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+
+def _folder_view(row: dict) -> dict:
+    status = (
+        "syncing"
+        if row["status"] == "syncing"
+        else "error"
+        if row["status"] in {"error", "retired"}
+        else "idle"
+    )
+    return {
+        "id": row["id"],
+        "displayName": row["name"],
+        "scopeType": row["scope_type"],
+        "scopeId": row["scope_id"],
+        "status": status,
+        "error": row.get("last_error"),
+        "lastSyncedAt": row.get("last_scan_at"),
+        "documentCount": row.get("file_count", 0),
+        "activeJobId": row.get("active_job_id"),
+        "scopeName": row.get("scope_name"),
+        "createdAt": row["created_at"],
+    }
+
+
+def _create_linked_folder(scope_type: str, scope_id: str, payload: LinkFolderRequest) -> dict:
+    path = _resolve_linked_folder_path(payload.native_path_lease)
+    try:
+        folder, job_id = folder_sync.create_folder_with_sync(
+            scope_type = scope_type,
+            scope_id = scope_id,
+            path = path,
+            name = payload.name,
+            auto_sync = payload.auto_sync,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    job = folder_sync.get_job(job_id)
+    return {"linkedFolder": _folder_view(folder), "job": _folder_job_view(job)}
 
 
 @router.get("/knowledge-bases")
@@ -330,10 +410,30 @@ def delete_knowledge_base(kb_id: str, subject: str = Depends(get_current_subject
     try:
         if store.get_kb(conn, kb_id) is None:
             raise HTTPException(status_code = 404, detail = "Knowledge base not found")
+        scope = store.kb_scope(kb_id)
+        folders = folder_sync.retire_scope(scope)
+        stored_paths = [
+            row["stored_path"]
+            for row in conn.execute("SELECT stored_path FROM documents WHERE scope=?", (scope,))
+        ]
+        for folder in folders:
+            try:
+                folder_sync.delete_folder(folder["id"])
+            except Exception:
+                logger.warning(
+                    "failed to delete retired linked folder %s", folder["id"], exc_info = True
+                )
         store.delete_kb(conn, kb_id)
+        for stored_path in stored_paths:
+            _remove_stored_upload(stored_path)
         return {"ok": True}
     finally:
         conn.close()
+
+
+def _raise_if_scope_retired(scope: str) -> None:
+    if folder_sync.scope_retired(scope):
+        raise HTTPException(status_code = 409, detail = "Knowledge base is being deleted")
 
 
 @router.post("/knowledge-bases/{kb_id}/documents")
@@ -352,11 +452,19 @@ async def upload_kb_document(
             raise HTTPException(status_code = 404, detail = "Knowledge base not found")
     finally:
         conn.close()
+    scope = store.kb_scope(kb_id)
+    _raise_if_scope_retired(scope)
     stored_path, filename = _resolve_document_upload(file, native_path_lease)
-    with _rag_unavailable_as_503(stored_path):
-        document_id, job_id = ingestion.start_ingestion(
-            store.kb_scope(kb_id), kb_id, None, filename, stored_path, ocr = ocr, caption = caption
-        )
+    try:
+        with folder_sync.scope_lock(scope):
+            _raise_if_scope_retired(scope)
+            with _rag_unavailable_as_503(stored_path):
+                document_id, job_id = ingestion.start_ingestion(
+                    scope, kb_id, None, filename, stored_path, ocr = ocr, caption = caption
+                )
+    except HTTPException:
+        _remove_stored_upload(stored_path)
+        raise
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
 
@@ -369,6 +477,22 @@ def list_kb_documents(kb_id: str, subject: str = Depends(get_current_subject)) -
         return {"documents": [_doc_view(d) for d in docs]}
     finally:
         conn.close()
+
+
+@router.post("/knowledge-bases/{kb_id}/linked-folders")
+def link_kb_folder(
+    kb_id: str,
+    payload: LinkFolderRequest,
+    subject: str = Depends(get_current_subject),
+) -> dict:
+    _require_rag()
+    conn = rag_db.get_connection()
+    try:
+        if store.get_kb(conn, kb_id) is None:
+            raise HTTPException(status_code = 404, detail = "Knowledge base not found")
+    finally:
+        conn.close()
+    return _create_linked_folder("knowledge_base", kb_id, payload)
 
 
 @router.post("/threads/{thread_id}/documents")
@@ -446,6 +570,111 @@ def list_project_documents(project_id: str, subject: str = Depends(get_current_s
         conn.close()
 
 
+@router.post("/projects/{project_id}/linked-folders")
+def link_project_folder(
+    project_id: str,
+    payload: LinkFolderRequest,
+    subject: str = Depends(get_current_subject),
+) -> dict:
+    _require_rag()
+    from storage.studio_db import get_chat_project
+
+    if get_chat_project(project_id) is None:
+        raise HTTPException(status_code = 404, detail = "Project not found")
+    return _create_linked_folder("project", project_id, payload)
+
+
+@router.get("/linked-folders")
+def list_linked_folders(
+    scope_type: str | None = Query(default = None),
+    scope_id: str | None = Query(default = None),
+    subject: str = Depends(get_current_subject),
+) -> dict:
+    _require_rag()
+    if bool(scope_type) != bool(scope_id):
+        raise HTTPException(
+            status_code = 400, detail = "scope_type and scope_id must be provided together"
+        )
+    if scope_type:
+        if scope_type not in {"knowledge_base", "project"}:
+            raise HTTPException(status_code = 400, detail = "Unsupported linked-folder scope")
+        scope = (
+            store.kb_scope(scope_id)
+            if scope_type == "knowledge_base"
+            else store.project_scope(scope_id)
+        )
+        rows = folder_sync.list_folders(scope)
+    else:
+        conn = rag_db.get_connection()
+        try:
+            scopes = [
+                row["scope"] for row in conn.execute("SELECT DISTINCT scope FROM linked_folders")
+            ]
+            kb_names = {row["id"]: row["name"] for row in store.list_kbs(conn)}
+        finally:
+            conn.close()
+        from storage.studio_db import list_chat_projects
+
+        project_names = {
+            row["id"]: row["name"] for row in list_chat_projects(include_archived = True)
+        }
+        rows = [row for scope in scopes for row in folder_sync.list_folders(scope)]
+        for row in rows:
+            names = kb_names if row["scope_type"] == "knowledge_base" else project_names
+            row["scope_name"] = names.get(row["scope_id"])
+    return {"linkedFolders": [_folder_view(row) for row in rows]}
+
+
+@router.patch("/linked-folders/{folder_id}")
+def update_linked_folder(
+    folder_id: str,
+    payload: UpdateFolderRequest,
+    subject: str = Depends(get_current_subject),
+) -> dict:
+    _require_rag()
+    try:
+        row = folder_sync.update_folder(folder_id, name = payload.name, auto_sync = payload.auto_sync)
+    except KeyError as exc:
+        raise HTTPException(status_code = 404, detail = "Linked folder not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return {"linkedFolder": _folder_view(row)}
+
+
+@router.delete("/linked-folders/{folder_id}")
+def unlink_folder(
+    folder_id: str,
+    remove_index: bool = Query(default = True),
+    subject: str = Depends(get_current_subject),
+) -> dict:
+    _require_rag()
+    if not folder_sync.delete_folder(folder_id, remove_index = remove_index):
+        raise HTTPException(status_code = 404, detail = "Linked folder not found")
+    return {"ok": True}
+
+
+@router.post("/linked-folders/{folder_id}/sync")
+def sync_folder(folder_id: str, subject: str = Depends(get_current_subject)) -> dict:
+    _require_rag()
+    try:
+        return {"job": _folder_job_view(folder_sync.get_job(folder_sync.request_sync(folder_id)))}
+    except KeyError as exc:
+        raise HTTPException(status_code = 404, detail = "Linked folder not found") from exc
+
+
+@router.post("/linked-folders/{folder_id}/rebuild")
+def rebuild_folder(folder_id: str, subject: str = Depends(get_current_subject)) -> dict:
+    _require_rag()
+    try:
+        return {
+            "job": _folder_job_view(
+                folder_sync.get_job(folder_sync.request_sync(folder_id, rebuild = True))
+            )
+        }
+    except KeyError as exc:
+        raise HTTPException(status_code = 404, detail = "Linked folder not found") from exc
+
+
 @router.get("/documents")
 def list_all_uploaded_documents(subject: str = Depends(get_current_subject)) -> dict:
     """Every uploaded file across chats, projects, and knowledge bases (settings
@@ -487,6 +716,11 @@ def delete_document(document_id: str, subject: str = Depends(get_current_subject
         doc = store.get_document(conn, document_id)
         if doc is None:
             raise HTTPException(status_code = 404, detail = "Document not found")
+        if doc.get("linked_folder_id"):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Linked-folder documents are managed by folder synchronization",
+            )
         store.delete_document(conn, document_id)
         _remove_stored_upload(doc.get("stored_path"))
         return {"ok": True}
@@ -522,6 +756,68 @@ def job_events(job_id: str, subject: str = Depends(get_current_subject)) -> Stre
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as exc:  # noqa: BLE001
             yield f"data: {json.dumps({'type': 'error', 'error': str(exc)})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        gen(),
+        media_type = "text/event-stream",
+        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _folder_job_view(row: dict) -> dict:
+    processed = (
+        (row.get("added") or 0)
+        + (row.get("changed") or 0)
+        + (row.get("deleted") or 0)
+        + (row.get("failed") or 0)
+    )
+    return {
+        "id": row["id"],
+        "linkedFolderId": row["folder_id"],
+        "mode": row["kind"],
+        "status": row["status"],
+        "stage": row.get("stage"),
+        "progress": row.get("progress") or 0.0,
+        "discoveredFiles": row.get("discovered") or 0,
+        "processedFiles": processed,
+        "indexedFiles": (row.get("added") or 0) + (row.get("changed") or 0),
+        "removedFiles": row.get("deleted") or 0,
+        "failedFiles": row.get("failed") or 0,
+        "error": row.get("error"),
+        "createdAt": row.get("created_at"),
+        "completedAt": row.get("completed_at"),
+    }
+
+
+@router.get("/linked-folder-jobs/{job_id}")
+def folder_job_status(job_id: str, subject: str = Depends(get_current_subject)) -> dict:
+    _require_rag()
+    row = folder_sync.get_job(job_id)
+    if row is None:
+        raise HTTPException(status_code = 404, detail = "Folder sync job not found")
+    return _folder_job_view(row)
+
+
+@router.get("/linked-folder-jobs/{job_id}/events")
+def folder_job_events(
+    job_id: str, subject: str = Depends(get_current_subject)
+) -> StreamingResponse:
+    _require_rag()
+    if folder_sync.get_job(job_id) is None:
+        raise HTTPException(status_code = 404, detail = "Folder sync job not found")
+
+    def gen():
+        for event in folder_sync.job_events(job_id):
+            view = _folder_job_view(event)
+            view["type"] = (
+                "complete"
+                if event["status"] == "completed"
+                else "error"
+                if event["status"] == "failed"
+                else "progress"
+            )
+            yield f"data: {json.dumps(view)}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
@@ -693,8 +989,7 @@ def document_file_signed(document_id: str, token: str = Query(...)) -> FileRespo
     if not doc or not stored_path or not os.path.isfile(stored_path):
         raise HTTPException(status_code = 404, detail = "Document file not found")
     # Confine to the uploads root (defense in depth).
-    uploads = os.path.realpath(str(rag_uploads_root()))
-    if not os.path.realpath(stored_path).startswith(uploads):
+    if not _is_managed_preview_path(stored_path):
         raise HTTPException(status_code = 403, detail = "Forbidden")
     ext = os.path.splitext(doc["filename"])[1].lower()
     return FileResponse(
