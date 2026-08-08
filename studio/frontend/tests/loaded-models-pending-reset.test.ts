@@ -58,16 +58,16 @@ test("a stale pending entry outlives every poll, so it must not survive a disabl
   assert.deepEqual(withPendingLoads(polled, new Map()), polled);
 });
 
-test("the hook drops pending loads while the indicator is disabled", () => {
+test("the hook drops pending loads once recording is turned off", () => {
   const guard = SOURCE.slice(
-    SOURCE.indexOf("if (wasEnabled !== enabled)"),
+    SOURCE.indexOf("if (wasTracking !== track)"),
     SOURCE.indexOf("// The load call announces itself"),
   );
   assert.ok(guard.length > 0, "expected the enable-transition guard");
   assert.match(
     guard,
-    /if \(!enabled && pending\.size > 0\) setPending\(new Map\(\)\)/,
-    "the disable transition must empty the pending map",
+    /if \(!track && pending\.size > 0\) setPending\(new Map\(\)\)/,
+    "turning recording off must empty the pending map",
   );
 });
 
@@ -76,20 +76,20 @@ test("the clear runs once per transition, not on every render", () => {
   // in the value it tracks; an unguarded setPending would re-render forever.
   assert.match(
     SOURCE,
-    /const \[wasEnabled, setWasEnabled\] = useState\(enabled\);\s*if \(wasEnabled !== enabled\) \{\s*setWasEnabled\(enabled\);/,
-    "the adjustment must be gated on the previous enabled value",
+    /const \[wasTracking, setWasTracking\] = useState\(track\);\s*if \(wasTracking !== track\) \{\s*setWasTracking\(track\);/,
+    "the adjustment must be gated on the previous tracking value",
   );
 });
 
-test("pending rows are cleared on disable, not on enable", () => {
+test("pending rows are cleared when recording stops, not when it starts", () => {
   // Clearing on the way back in would race the subscription: a load started
   // from another tab could be announced and then wiped.
   const guard = SOURCE.slice(
-    SOURCE.indexOf("if (wasEnabled !== enabled)"),
+    SOURCE.indexOf("if (wasTracking !== track)"),
     SOURCE.indexOf("// The load call announces itself"),
   );
-  assert.doesNotMatch(guard, /if \(enabled\) setPending/);
-  assert.match(guard, /!enabled &&/);
+  assert.doesNotMatch(guard, /if \(track\) setPending/);
+  assert.match(guard, /!track &&/);
 });
 
 // A replacement load is the case the source-only suppression got wrong. The
@@ -163,4 +163,47 @@ test("an unnamed announcement defers to any row for its runtime", () => {
   ];
   const pending = new Map<LoadedModelSource, string | null>([["video", null]]);
   assert.deepEqual(withPendingLoads(resident, pending), resident);
+});
+
+// Closing the card means "not now", so the next load reopens it. That only
+// works if the announcement is still being RECORDED while the card is closed:
+// the indicator clears the dismissal from its own subscription, but the rows
+// come from this hook's, and gating that one on `enabled` lost the very event
+// that was meant to bring the card back. Chat and dictation would have limped
+// on, since the poll synthesises their loading rows; images and video have no
+// such fallback, so the card stayed hidden for the whole load.
+test("recording is gated on the preference, not on whether the card shows", () => {
+  const SOURCE = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/loaded-models/use-loaded-models.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  assert.match(
+    SOURCE,
+    /track: boolean = enabled/,
+    "the hook must take a recording flag distinct from the showing flag",
+  );
+  const subscribe = SOURCE.slice(
+    SOURCE.indexOf("// The load call announces itself"),
+    SOURCE.indexOf("}, [track, refresh]);") + 22,
+  );
+  assert.match(subscribe, /if \(!track\) return;/);
+  assert.doesNotMatch(subscribe, /if \(!enabled\) return;/);
+
+  const INDICATOR = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/loaded-models/loaded-models-indicator.tsx",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  // showIndicator is the Settings toggle alone: dismissal and route gating must
+  // not stop the recording, or the card cannot reopen for the load.
+  assert.match(INDICATOR, /useLoadedModels\(enabled, showIndicator\)/);
 });

@@ -25,8 +25,19 @@ export type UseLoadedModels = {
   refresh: () => void;
 };
 
-/** Poll every runtime for what it holds. Paused while disabled or hidden. */
-export function useLoadedModels(enabled: boolean): UseLoadedModels {
+/**
+ * Poll every runtime for what it holds. Paused while disabled or hidden.
+ *
+ * `track` is the narrower of the two: it says whether to RECORD the loads the
+ * API calls announce, where `enabled` says whether to show anything. They come
+ * apart for a card the user closed, which must still hear the load that reopens
+ * it, and for a route the card is hidden on. Only the Settings toggle turns
+ * recording off, since that is the one that means "stop telling me".
+ */
+export function useLoadedModels(
+  enabled: boolean,
+  track: boolean = enabled,
+): UseLoadedModels {
   const [polled, setEntries] = useState<LoadedModelEntry[]>([]);
   // Reported empty rather than cleared: clearing would be a setState in an
   // effect, and the last read is right again the moment the pref returns.
@@ -107,25 +118,27 @@ export function useLoadedModels(enabled: boolean): UseLoadedModels {
     refreshRef.current = refresh;
   }, [refresh]);
 
-  // Nothing is listening while disabled, so the terminal event for a load in
-  // flight is missed and its optimistic row would come back on re-enable as one
-  // no poll can retire: `withPendingLoads` only yields to a status row for the
-  // same runtime, and a failed or since-unloaded load has none. Drop them and
-  // let the poll say what is really resident.
+  // Nothing is listening once recording stops, so the terminal event for a load
+  // in flight is missed and its optimistic row would come back as one no poll
+  // can retire: `withPendingLoads` only yields to a status row for the same
+  // runtime, and a failed or since-unloaded load has none. Drop them and let the
+  // poll say what is really resident. Keyed on `track`, not `enabled`: a closed
+  // card is still recording, and clearing there would throw away the very load
+  // that is about to reopen it.
   //
   // Adjusted during render rather than in an effect: React re-runs this render
   // before committing, so the stale rows never reach the DOM, and the guard
   // makes it run once per transition.
-  const [wasEnabled, setWasEnabled] = useState(enabled);
-  if (wasEnabled !== enabled) {
-    setWasEnabled(enabled);
-    if (!enabled && pending.size > 0) setPending(new Map());
+  const [wasTracking, setWasTracking] = useState(track);
+  if (wasTracking !== track) {
+    setWasTracking(track);
+    if (!track && pending.size > 0) setPending(new Map());
   }
 
   // The load call announces itself, so the row and the toast appear together
   // and a finished load is re-read at once instead of on the next tick.
   useEffect(() => {
-    if (!enabled) return;
+    if (!track) return;
     return subscribeModelLifecycle(({ runtime, loading, model }) => {
       if (loading) {
         settledRef.current.delete(runtime);
@@ -138,7 +151,7 @@ export function useLoadedModels(enabled: boolean): UseLoadedModels {
       settledRef.current.add(runtime);
       refresh();
     });
-  }, [enabled, refresh]);
+  }, [track, refresh]);
 
   useEffect(() => {
     if (!enabled) return;

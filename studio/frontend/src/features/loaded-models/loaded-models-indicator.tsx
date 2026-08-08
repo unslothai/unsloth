@@ -175,7 +175,9 @@ export function LoadedModelsIndicator({
   const showIndicator = useShowLoadedModels();
   const dismissed = useLoadedModelsDismissed();
   const enabled = showIndicator && !dismissed && canShowIndicator(pathname);
-  const { entries, ejecting, eject } = useLoadedModels(enabled);
+  // Recording is gated on the preference alone: a card that is closed, or on a
+  // route that hides it, must still hear the load that brings it back.
+  const { entries, ejecting, eject } = useLoadedModels(enabled, showIndicator);
   const [collapsed, setCollapsed] = usePersistedToggle(COLLAPSED_KEY);
   const navigate = useNavigate();
   const openEntry = useCallback(
