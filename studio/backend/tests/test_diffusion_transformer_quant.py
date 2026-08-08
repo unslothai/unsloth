@@ -620,19 +620,27 @@ def test_quantize_transformer_tolerates_failure(monkeypatch):
 # ── family scheme deny (measured model-level breakage) ────────────────────────
 
 
-def test_family_deny_auto_skips_fp8_for_qwen(monkeypatch):
-    # B200 with every scheme available: per-row fp8 renders black frames on the Qwen DiT, so auto skips fp8 / nvfp4 / mxfp8 and falls to int8.
+def test_family_deny_auto_skips_mx_and_nvfp4_for_qwen(monkeypatch):
+    # B200 with every scheme available: mxfp8 and nvfp4 still damage the Qwen DiT, so auto skips
+    # them. fp8 is no longer denied (activation_value_lb fixed the black frames), so auto now
+    # takes fp8 first on a data-center part rather than falling all the way to int8.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8})
+    assert select_transformer_quant_scheme(_target(), "auto", family = "qwen-image") == TQ_FP8
+    assert select_transformer_quant_scheme(_target(), "auto", family = "qwen-image-edit") == TQ_FP8
+    # With fp8 unavailable the deny still bites: mxfp8 / nvfp4 are skipped and int8 is the pick.
+    _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto", family = "qwen-image") == TQ_INT8
-    assert select_transformer_quant_scheme(_target(), "auto", family = "qwen-image-edit") == TQ_INT8
 
 
-def test_family_deny_refuses_explicit_fp8_for_qwen(monkeypatch):
-    # An explicit fp8 on qwen-image returns None (same contract as an unsupported scheme); int8 stays honored on qwen, and fp8 outside the deny table.
+def test_family_deny_refuses_explicit_mxfp8_and_nvfp4_for_qwen(monkeypatch):
+    # An explicit denied scheme returns None (same contract as an unsupported scheme). fp8 and int8
+    # are both honored on qwen now, and fp8 outside the deny table is unaffected.
     _stub_torch(monkeypatch, cc = (10, 0))
-    _allow(monkeypatch, {TQ_FP8, TQ_INT8})
-    assert select_transformer_quant_scheme(_target(), "fp8", family = "qwen-image") is None
+    _allow(monkeypatch, {TQ_FP8, TQ_MXFP8, TQ_NVFP4, TQ_INT8})
+    assert select_transformer_quant_scheme(_target(), "mxfp8", family = "qwen-image") is None
+    assert select_transformer_quant_scheme(_target(), "nvfp4", family = "qwen-image") is None
+    assert select_transformer_quant_scheme(_target(), "fp8", family = "qwen-image") == TQ_FP8
     assert select_transformer_quant_scheme(_target(), "int8", family = "qwen-image") == TQ_INT8
     assert select_transformer_quant_scheme(_target(), "fp8", family = "z-image") == TQ_FP8
 
@@ -647,6 +655,7 @@ def test_family_deny_no_family_keeps_ladder(monkeypatch):
 
 def test_quantize_transformer_threads_family(monkeypatch):
     # quantize_transformer passes the family down to the selector, so a denied (family, scheme) pair never reaches torchao.
+    # mxfp8, not fp8: fp8 on qwen-image is no longer denied, so it would reach torchao and prove nothing.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_FP8, TQ_INT8})
     pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
@@ -665,7 +674,7 @@ def test_quantize_transformer_threads_family(monkeypatch):
     tqz.Float8DynamicActivationFloat8WeightConfig = lambda **kw: "fp8-cfg"
     tqz.PerRow = lambda: "per-row"
     monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
-    assert quantize_transformer(pipe, _target(), mode = "fp8", family = "qwen-image") is None
+    assert quantize_transformer(pipe, _target(), mode = "mxfp8", family = "qwen-image") is None
     assert called == {}
 
 
@@ -697,3 +706,66 @@ def test_the_attention_trim_families_exclude_their_small_m_text_streams():
 
     assert exclude_tokens_for_scheme("fp8", "hunyuanvideo-1.5") == ()
     assert exclude_tokens_for_scheme(TQ_INT8, "ltx-2") == _INT8_EXCLUDE_NAME_TOKENS
+
+
+def test_the_training_deny_is_a_superset_of_the_inference_deny():
+    # The two tables are separate because rendering evidence is not training evidence, but the
+    # relationship must only ever go one way: anything inference refuses, training refuses too.
+    # A regression making training MORE permissive than inference would let a scheme that cannot
+    # even render reach a trainer, which is the one direction this split must not allow.
+    from core.inference.diffusion_transformer_quant import (
+        _FAMILY_SCHEME_DENY,
+        TQ_SCHEMES,
+        _family_denied,
+        _family_train_denied,
+    )
+
+    families = set(_FAMILY_SCHEME_DENY) | {"qwen-image", "qwen-image-edit", "z-image", "sdxl", ""}
+    for fam in families:
+        for scheme in TQ_SCHEMES:
+            if _family_denied(fam, scheme):
+                assert _family_train_denied(fam, scheme), (fam, scheme)
+
+    # And the specific split this change introduces: qwen-image fp8 renders (gate 28/28) but is not
+    # cleared for training, so inference allows it and training does not.
+    for fam in ("qwen-image", "qwen-image-edit"):
+        assert not _family_denied(fam, TQ_FP8)
+        assert _family_train_denied(fam, TQ_FP8)
+        # int8 was never denied on either side and must stay available.
+        assert not _family_train_denied(fam, TQ_INT8)
+
+
+def test_auto_scheme_candidates_lists_the_whole_ladder_not_just_the_winner(monkeypatch):
+    # select_transformer_quant_scheme returns one winner. When that winner has no hosted prequant
+    # AND cannot fit dense, the loader needs to know what auto would have picked NEXT, or the pick
+    # drops to GGUF even though a lower rung would have loaded. Same ladder, deny list and probe.
+    from core.inference.diffusion_transformer_quant import auto_scheme_candidates
+
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_FP8, TQ_MXFP8, TQ_INT8})
+    assert auto_scheme_candidates(_target()) == (TQ_FP8, TQ_MXFP8, TQ_INT8)
+    # The deny list still applies: qwen-image keeps mxfp8 out, so fp8 then int8.
+    assert auto_scheme_candidates(_target(), "qwen-image") == (TQ_FP8, TQ_INT8)
+    # Whatever the probe refuses is absent, so the list can never offer an unusable scheme.
+    _allow(monkeypatch, {TQ_INT8})
+    assert auto_scheme_candidates(_target(), "qwen-image") == (TQ_INT8,)
+    # A target the dense path cannot use has no candidates at all.
+    assert auto_scheme_candidates(_target(device = "cpu")) == ()
+
+
+def test_the_candidate_list_agrees_with_the_selector_on_the_winner(monkeypatch):
+    # The two must never disagree about what auto is allowed to pick, so the selector's answer is
+    # always the head of the candidate list. A drift here would let the retry path propose a scheme
+    # auto itself would refuse.
+    from core.inference.diffusion_transformer_quant import auto_scheme_candidates
+    for cc, allowed, family in (
+        ((10, 0), {TQ_FP8, TQ_MXFP8, TQ_INT8}, None),
+        ((10, 0), {TQ_FP8, TQ_MXFP8, TQ_INT8}, "qwen-image"),
+        ((8, 9), {TQ_FP8, TQ_INT8}, "qwen-image-edit"),
+        ((8, 0), {TQ_INT8}, None),
+    ):
+        _stub_torch(monkeypatch, cc = cc)
+        _allow(monkeypatch, allowed)
+        chosen = select_transformer_quant_scheme(_target(), "auto", family = family)
+        candidates = auto_scheme_candidates(_target(), family)
+        assert (candidates[0] if candidates else None) == chosen, (cc, family)

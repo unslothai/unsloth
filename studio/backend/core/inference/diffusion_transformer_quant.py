@@ -127,16 +127,41 @@ _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
 )
 
 # Families whose activation ranges break specific schemes at the MODEL level (the smoke probe only proves the GEMM runs). Measured with the
-# 28-pair prequant accuracy gate on B200: qwen-image + fp8 renders every frame black, + mxfp8 does semantic damage at 1024px, + nvfp4 is
-# unusable (LPIPS 0.51). int8 dynamic is excellent on Qwen, so auto falls through to it. The deny also applies to an EXPLICIT request.
+# 28-pair prequant accuracy gate on B200: qwen-image + mxfp8 does semantic damage at 1024px, + nvfp4 is unusable (LPIPS 0.51). Neither has a
+# known fix, so both stay denied and auto falls through to int8 (excellent on Qwen). The deny also applies to an EXPLICIT request.
+#
+# fp8 was denied here too, for black frames. That cause is gone: it was torchao's fp8 scale chooser having no eps clamp, so qwen's all-zero
+# text rows gave scale 0 and NaN, and ``_make_quant_config`` now floors it with ``activation_value_lb``. Re-measured on B200 with the floor,
+# and BOTH paths the deny governs clear the 0.10 LPIPS bar, which is why it is safe to drop rather than just the checkpoint half:
+#   prequant checkpoint, full 28-pair gate  -> 28/28 PASS (SSIM 0.87-0.99, LPIPS 0.027-0.228, CLIP delta <= 0.019)
+#   on-the-fly quantize_, gate's simple_object prompt at its own seeds -> LPIPS 0.048 / 0.033 / 0.027 / 0.063
+# against pre-floor plain fp8 at LPIPS 0.712 with SSIM 0.016 and mean luma 0. Keeping the deny cost real speed: it pinned qwen to int8 at
+# 1.10x bf16 when compiled fp8 measures 1.21x.
 _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
-    "qwen-image": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),
-    "qwen-image-edit": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),  # same DiT
+    "qwen-image": frozenset({TQ_MXFP8, TQ_NVFP4}),
+    "qwen-image-edit": frozenset({TQ_MXFP8, TQ_NVFP4}),  # same DiT
+}
+
+
+# Schemes denied for TRAINING on top of the inference table. Training holds a stricter bar because
+# the evidence above is rendering evidence: it says a frozen fp8 forward reconstructs the bf16 image,
+# not that a LoRA converges when its frozen linears are fp8. Nobody has run that, so qwen fp8 stays
+# out of the Train UI until someone does. Delete the entry once a training run is measured.
+_FAMILY_TRAIN_SCHEME_DENY: dict[str, frozenset[str]] = {
+    "qwen-image": frozenset({TQ_FP8}),
+    "qwen-image-edit": frozenset({TQ_FP8}),
 }
 
 
 def _family_denied(family, scheme: str) -> bool:
     return scheme in _FAMILY_SCHEME_DENY.get(str(family or "").strip().lower(), ())
+
+
+def _family_train_denied(family, scheme: str) -> bool:
+    """``_family_denied`` plus the training-only additions. Every inference deny also applies to
+    training (a scheme that cannot render cannot train), so this is a superset, never a bypass."""
+    key = str(family or "").strip().lower()
+    return _family_denied(family, scheme) or scheme in _FAMILY_TRAIN_SCHEME_DENY.get(key, ())
 
 
 # Cache of (scheme, device) -> bool so the quantise+matmul smoke test runs once.
@@ -266,6 +291,30 @@ def select_transformer_quant_scheme(
                     return scheme
             return None
     return None
+
+
+def auto_scheme_candidates(target: Any, family: Optional[str] = None) -> tuple[str, ...]:
+    """Every scheme ``auto`` would accept on this device, best first.
+
+    ``select_transformer_quant_scheme`` returns only the winner, which is all the load needs
+    until the winner turns out to have no hosted prequant AND not to fit dense. The caller then
+    needs to know what auto would have picked NEXT, so it can reach a scheme that does have a
+    checkpoint instead of dropping to GGUF. Same ladder, same deny list, same smoke probe as the
+    auto branch of the selector, so the two can never disagree about what is allowed."""
+    if not dense_transformer_supported(target):
+        return ()
+    device = str(getattr(target, "device", "cuda"))
+    cap = _capability()
+    if cap is None:
+        return ()
+    for floor, schemes in _AUTO_LADDER:
+        if cap >= floor:
+            return tuple(
+                scheme
+                for scheme in _prefer_consumer_scheme(schemes, device)
+                if not _family_denied(family, scheme) and _scheme_supported(scheme, device)
+            )
+    return ()
 
 
 def _prefer_consumer_scheme(schemes: tuple[str, ...], device: Any) -> tuple[str, ...]:

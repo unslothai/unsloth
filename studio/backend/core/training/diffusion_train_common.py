@@ -464,7 +464,7 @@ def family_train_infos() -> list[dict[str, Any]]:
     base repos, the recommended starting hyperparameters, and a VRAM/access note. Built from
     the family registry so it stays in sync with what the trainers actually support."""
     from core.inference.diffusion_families import detect_family
-    from core.inference.diffusion_transformer_quant import _family_denied
+    from core.inference.diffusion_transformer_quant import _family_train_denied
 
     dit_modes, dit_recommended = train_precision_modes()
     infos: list[dict[str, Any]] = []
@@ -476,7 +476,8 @@ def family_train_infos() -> list[dict[str, Any]]:
         # base_precision applies to the DiT trainer only; SDXL keeps its mixed_precision lever. compile applies everywhere.
         is_dit = name in _DIT_TRAIN_FAMILIES
         # On a non-bf16 CUDA GPU the start preflight rejects EVERY DiT family, so advertise no precision, else /info offers an
-        # nf4 DiT option that always 400s. Otherwise drop any scheme this family's DiT corrupts (fp8 on Qwen-Image).
+        # nf4 DiT option that always 400s. Otherwise drop any scheme this family's DiT corrupts, plus any the TRAINING bar
+        # holds back even though inference passes (fp8 on Qwen-Image: rendering is validated, a training run is not).
         dit_block = (
             bf16_unsupported_reason(name) or dit_accelerator_missing_reason(name)
             if is_dit
@@ -485,7 +486,7 @@ def family_train_infos() -> list[dict[str, Any]]:
         if not is_dit or dit_block:
             fam_modes: list[str] = []
         else:
-            fam_modes = [m for m in dit_modes if not _family_denied(name, m)]
+            fam_modes = [m for m in dit_modes if not _family_train_denied(name, m)]
         spec = _FAMILY_TRAIN_SPECS.get(name, {})
         infos.append(
             {
@@ -643,15 +644,15 @@ class DiffusionLoraConfig:
                     f"base_precision={base_precision!r} trains in bf16 compute; set "
                     f"mixed_precision to bf16."
                 )
-            # Some DiT families are corrupted by fp8 activation range: outliers exceed even per-row fp8, so the frozen linears
-            # learn against a garbage forward. The inference path denies these too; mirror it so the run fails fast. int8 is unaffected.
-            from core.inference.diffusion_transformer_quant import _family_denied
+            # Refuse a scheme this family's DiT is known to corrupt, and also one the training bar holds back while
+            # inference allows it: qwen-image fp8 now renders inside the accuracy gate, but no one has measured whether a
+            # LoRA converges against fp8-frozen linears, so it fails fast here rather than silently training on faith.
+            from core.inference.diffusion_transformer_quant import _family_train_denied
 
-            if _family_denied(resolved_family, base_precision):
+            if _family_train_denied(resolved_family, base_precision):
                 raise ValueError(
-                    f"base_precision={base_precision!r} is not supported for "
-                    f"{resolved_family}: its activations exceed fp8's range and corrupt the "
-                    f"trained result. Use 'nf4', 'int8', 'bf16', or 'auto'."
+                    f"base_precision={base_precision!r} is not validated for training "
+                    f"{resolved_family}. Use 'nf4', 'int8', 'bf16', or 'auto'."
                 )
         # flow_shift: None resolves to the family default ("auto" only for qwen-image, whose scheduler skips its static shift under use_dynamic_shifting); an explicit value is validated and kept.
         flow_shift = self.flow_shift

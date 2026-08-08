@@ -148,6 +148,88 @@ def test_candidate_disk_gate_skips_when_cache_disk_low(monkeypatch):
     )
 
 
+def test_candidate_disk_gate_spares_an_already_cached_prequant(monkeypatch):
+    """A cached checkpoint downloads nothing, so the space gate has no claim on it.
+
+    The gate's own comment said a cached re-download is a no-op, but it ran regardless. That
+    discarded exactly the candidate the auto retry exists to find: the retry only ever proposes a
+    rung whose checkpoint is already cached, so on a low-disk or moved-cache install every retry
+    fell back to the GGUF despite a resident-fit local artifact.
+    """
+    import core.inference.diffusion_auto_policy as ap
+    import core.inference.diffusion_prequant as pq
+
+    _patch_selector(monkeypatch, scheme = "int8")
+    monkeypatch.setattr(
+        pq, "usable_prequant_source", lambda *a, **k: type("S", (), {"kind": "repo"})()
+    )
+    monkeypatch.setattr(pq, "prequant_checkpoint_cached", lambda *a, **k: True)
+    # Far too little space for the checkpoint, which is precisely the case being excused.
+    monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: 1024)
+    est = resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "auto")
+    assert isinstance(est, DenseQuantEstimate)
+    assert est.prequant is True
+
+    # Uncached on the same low disk still trips the gate: this excuses a cached artifact, not
+    # every prequant.
+    monkeypatch.setattr(pq, "prequant_checkpoint_cached", lambda *a, **k: False)
+    assert (
+        resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "auto")
+        is None
+    )
+
+
+def test_a_local_override_is_never_gated_on_disk_space(monkeypatch):
+    """A local path override downloads nothing, so the space gate has no claim on it.
+
+    prequant_checkpoint_cached only answers for hosted repos (_cached_in_root returns None for any
+    other kind), so probing a path source there reports False and re-applies the gate to a file
+    already on disk. The retry treats a local override as costing no bytes; this has to agree, or a
+    low-disk host drops the local rung to GGUF.
+    """
+    import core.inference.diffusion_auto_policy as ap
+    import core.inference.diffusion_prequant as pq
+
+    _patch_selector(monkeypatch, scheme = "int8")
+    monkeypatch.setattr(
+        pq, "usable_prequant_source", lambda *a, **k: type("S", (), {"kind": "path"})()
+    )
+    # Would say "not cached" for a path source, exactly as the real one does.
+    monkeypatch.setattr(pq, "prequant_checkpoint_cached", lambda *a, **k: False)
+    monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: 1024)
+    est = resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "auto")
+    assert isinstance(est, DenseQuantEstimate)
+
+
+def test_the_cached_probe_is_pinned_to_the_active_cache_root(monkeypatch):
+    """Unpinned, cached_checkpoint_path reads only huggingface_hub's import-time constant.
+
+    Studio's cache folder is a setting, so after it changes the retry proves the checkpoint cached
+    in the LIVE root while an unpinned probe here still calls it uncached and re-applies the gate,
+    defeating the moved-cache retry this excuse exists for. The retry and the loader both pin the
+    active root; so must this.
+    """
+    import core.inference.diffusion_auto_policy as ap
+    import core.inference.diffusion_prequant as pq
+    import utils.hf_cache_settings as cache_settings
+
+    seen: list = []
+
+    _patch_selector(monkeypatch, scheme = "int8")
+    monkeypatch.setattr(
+        pq, "usable_prequant_source", lambda *a, **k: type("S", (), {"kind": "repo"})()
+    )
+    monkeypatch.setattr(cache_settings, "active_hf_hub_cache", lambda: "/live-root")
+    monkeypatch.setattr(
+        pq,
+        "prequant_checkpoint_cached",
+        lambda _src, **kw: (seen.append(kw.get("cache_dir")), True)[1],
+    )
+    monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: 1024)
+    resolve_dense_quant_candidate(fam = _fam("z-image"), target = object(), requested = "auto")
+    assert seen == ["/live-root"], seen
+
+
 def test_candidate_disk_gate_unprobeable_disk_passes(monkeypatch):
     # Disk probing must never sink the candidate: unprobeable (None) passes through.
     import core.inference.diffusion_auto_policy as ap

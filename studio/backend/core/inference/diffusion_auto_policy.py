@@ -192,18 +192,35 @@ def resolve_dense_quant_candidate(
     if scheme is None:
         return None
     prequant_available = False
+    prequant_cached = False
     # force_dense: the loader will SKIP the prequant shortcut (e.g. a LoRA bake), so size the candidate for the dense build.
     if not force_dense:
         try:
-            from .diffusion_prequant import usable_prequant_source
+            from .diffusion_prequant import prequant_checkpoint_cached, usable_prequant_source
 
             # usable_ (not resolve_): a local path override counts only when the loader will accept it (allowlisted AND present), else it rebuilds dense after eviction.
             src = usable_prequant_source(
                 fam, scheme, path_override = prequant_path, base_repo = base_repo
             )
             prequant_available = src is not None
+            if src is not None and getattr(src, "kind", None) == "path":
+                # A local override is the operator's own file on disk: it downloads nothing, so the
+                # space gate has no claim on it. prequant_checkpoint_cached only answers for hosted
+                # repos (_cached_in_root returns None for any other kind), so asking it here would
+                # report False and re-apply the gate to a file that costs no bytes, which is the
+                # opposite of what the retry assumes about local paths.
+                prequant_cached = True
+            elif src is not None:
+                # Pin the ACTIVE root, as the retry and the loader both do. Unpinned,
+                # cached_checkpoint_path searches only huggingface_hub's import-time constant, so
+                # after a cache-folder change the retry proves the checkpoint cached in the live
+                # root and this would still call it uncached and re-apply the gate. Imported from
+                # utils rather than diffusion.hub_cache_dir, which would be a circular import.
+                from utils.hf_cache_settings import active_hf_hub_cache
+                prequant_cached = prequant_checkpoint_cached(src, cache_dir = active_hf_hub_cache())
         except Exception:  # noqa: BLE001 -- prequant probing must never sink the candidate
             prequant_available = False
+            prequant_cached = False
     estimate = estimate_dense_quant(
         fam, scheme, base_repo = base_repo, prequant_available = prequant_available
     )
@@ -217,9 +234,12 @@ def resolve_dense_quant_candidate(
             estimate.companions_mib,
             prequant_available,
         )
-    if estimate is not None:
-        # The dense path may DOWNLOAD the artifact into the HF cache, which must never wedge a nearly full disk; a cached re-download is a no-op, so
-        # this only trips on an already-critical disk. Size it by what lands on DISK: a prequant fetches the quantised checkpoint, else the base repo's.
+    # A cached prequant checkpoint downloads nothing, so the space gate has no claim on it. The
+    # gate used to run anyway, which discarded exactly the candidate the auto retry exists to find:
+    # that retry only ever proposes a rung whose checkpoint is already cached, so on a low-disk or
+    # moved-cache install every retry fell back to the GGUF despite a resident-fit local artifact.
+    if estimate is not None and not (estimate.prequant and prequant_cached):
+        # The dense path may DOWNLOAD the artifact into the HF cache, which must never wedge a nearly full disk. Size it by what lands on DISK: a prequant fetches the quantised checkpoint, else the base repo's.
         needed_mib = (
             estimate.steady_transformer_mib
             if estimate.prequant

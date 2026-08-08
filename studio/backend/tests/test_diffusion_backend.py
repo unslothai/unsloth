@@ -5424,6 +5424,373 @@ def test_a_superseding_load_fences_queued_generations_too(fake_runtime, tmp_path
     assert backend._teardown_waiters == 0
 
 
+# ── auto retry to a scheme that has a hosted prequant ────────────────────────────
+
+
+def test_auto_retries_a_lower_scheme_that_has_a_prequant(monkeypatch):
+    # Qwen-Image is the live case. auto picks fp8, but only an int8 DiT checkpoint is published,
+    # so usable_prequant_source(fp8) is empty; on a host that rejects the ~40 GB dense transient
+    # the pick used to drop to GGUF even though the int8 checkpoint would have loaded. The retry
+    # walks the rest of auto's ladder for a rung that HAS one.
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setattr(
+        "core.inference.diffusion_transformer_quant.auto_scheme_candidates",
+        lambda target, family = None: ("fp8", "mxfp8", "int8"),
+    )
+    have = {"int8"}
+    monkeypatch.setattr(
+        "core.inference.diffusion.usable_prequant_source",
+        lambda fam, scheme, path_override = None, base_repo = None: (
+            types.SimpleNamespace(kind = "repo", location = f"unsloth/{scheme}")
+            if scheme in have
+            else None
+        ),
+    )
+    cached = {"int8"}
+    monkeypatch.setattr(
+        "core.inference.diffusion.prequant_checkpoint_cached",
+        lambda source, cache_dir = None: source.location.rsplit("/", 1)[-1] in cached,
+    )
+    fam = types.SimpleNamespace(name = "qwen-image")
+    retry = DiffusionBackend._auto_prequant_retry_scheme(
+        object(),
+        fam,
+        "auto",
+        "fp8",
+        base_repo = "Qwen/Qwen-Image",
+        path_override = None,
+        loras = None,
+    )
+    assert retry == "int8"
+
+    # An UNCACHED hosted repo is not a retry: for a GGUF pick the policy is cached-only, since
+    # fetching one means downloading a second multi-GB denoiser for a pick that already has its
+    # GGUF. _uncached_prequant_repo enforces that for auto's winner and only ever sees the winner,
+    # so without this check the retry would smuggle an uncached repo straight past it.
+    cached.clear()
+    assert (
+        DiffusionBackend._auto_prequant_retry_scheme(
+            object(),
+            fam,
+            "auto",
+            "fp8",
+            base_repo = "Qwen/Qwen-Image",
+            path_override = None,
+            loras = None,
+        )
+        is None
+    )
+    # A local override is the operator's own file, so it costs no bytes and needs no cache hit.
+    monkeypatch.setattr(
+        "core.inference.diffusion.usable_prequant_source",
+        lambda fam, scheme, path_override = None, base_repo = None: (
+            types.SimpleNamespace(kind = "path", location = "/tmp/int8.pt")
+            if scheme == "int8"
+            else None
+        ),
+    )
+    assert (
+        DiffusionBackend._auto_prequant_retry_scheme(
+            object(),
+            fam,
+            "auto",
+            "fp8",
+            base_repo = "Qwen/Qwen-Image",
+            path_override = None,
+            loras = None,
+        )
+        == "int8"
+    )
+
+    # An EXPLICIT scheme is never swapped: same contract as select_transformer_quant_scheme.
+    assert (
+        DiffusionBackend._auto_prequant_retry_scheme(
+            object(),
+            fam,
+            "fp8",
+            "fp8",
+            base_repo = "Qwen/Qwen-Image",
+            path_override = None,
+            loras = None,
+        )
+        is None
+    )
+
+    # Nothing below the winner has a checkpoint -> no retry, and the caller declines dense.
+    monkeypatch.setattr(
+        "core.inference.diffusion.usable_prequant_source",
+        lambda fam, scheme, path_override = None, base_repo = None: None,
+    )
+    assert (
+        DiffusionBackend._auto_prequant_retry_scheme(
+            object(),
+            fam,
+            "auto",
+            "fp8",
+            base_repo = "Qwen/Qwen-Image",
+            path_override = None,
+            loras = None,
+        )
+        is None
+    )
+
+
+def test_the_retry_never_climbs_above_the_scheme_auto_already_chose(monkeypatch):
+    # Rungs ABOVE the winner were already rejected by the ladder (denied, or the probe refused
+    # them), so offering one back would hand the loader a scheme auto itself would not pick.
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setattr(
+        "core.inference.diffusion_transformer_quant.auto_scheme_candidates",
+        lambda target, family = None: ("fp8", "mxfp8", "int8"),
+    )
+    # fp8 (above the chosen mxfp8) has a prequant; int8 (below) does not.
+    monkeypatch.setattr(
+        "core.inference.diffusion.usable_prequant_source",
+        lambda fam, scheme, path_override = None, base_repo = None: (
+            types.SimpleNamespace(kind = "path", location = "/tmp/fp8.pt") if scheme == "fp8" else None
+        ),
+    )
+    assert (
+        DiffusionBackend._auto_prequant_retry_scheme(
+            object(),
+            types.SimpleNamespace(name = "qwen-image"),
+            "auto",
+            "mxfp8",
+            base_repo = "Qwen/Qwen-Image",
+            path_override = None,
+            loras = None,
+        )
+        is None
+    )
+
+
+def test_the_offload_retry_runs_when_the_auto_winner_had_no_candidate_at_all(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The retry exists for exactly this case: auto's winner yields NO DenseQuantEstimate (the
+    # free-disk gate skips its uncached dense download) while a lower rung whose checkpoint is
+    # already cached would have loaded resident. The replan helper used to be defined inside the
+    # `candidate is not None` block, so reaching the retry from here raised UnboundLocalError
+    # under the load lock instead of loading that cached rung.
+    import dataclasses
+
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+    )
+    monkeypatch.setattr(dmod, "_uncached_prequant_repo", lambda *a, **k: None)
+    monkeypatch.setattr(
+        DiffusionBackend, "_auto_prequant_retry_scheme", staticmethod(lambda *a, **k: "int8")
+    )
+
+    resolved = []
+
+    def fake_resolve(**kw):
+        resolved.append(kw.get("requested"))
+        # The winner has no candidate; the retried rung does.
+        if len(resolved) == 1:
+            return None
+        return types.SimpleNamespace(
+            transient_transformer_mib = 12_000, companions_mib = 8_000, prequant = True
+        )
+
+    monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", fake_resolve)
+
+    orig_plan = DiffusionBackend._plan_memory
+
+    def spy_plan(
+        self,
+        *a,
+        transformer_resident_override_mib = None,
+        **k,
+    ):
+        real = orig_plan(
+            self, *a, transformer_resident_override_mib = transformer_resident_override_mib, **k
+        )
+        if transformer_resident_override_mib is None:
+            # Initial GGUF plan wants offload, which is the branch the retry lives in.
+            return dataclasses.replace(real, offload_policy = "model")
+        return dataclasses.replace(real, offload_policy = "none")
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
+
+    attempted = []
+
+    def fake_dense_load(self, *a, **k):
+        attempted.append(k.get("allow_dense_fallback"))
+        raise RuntimeError("test: stop after reaching the fast path")
+
+    monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "qwen-image",
+        transformer_quant = "auto",
+    )
+
+    # Both resolves ran, so the retry was actually taken rather than dying on the way in.
+    assert len(resolved) == 2
+    # A prequant-sized plan never licenses the unbudgeted dense bf16 build as a fallback.
+    assert attempted == [False]
+
+
+def test_the_resident_retry_runs_when_the_dense_shards_were_never_staged(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The fresh-Qwen-cache path this PR exists for. The prefetch capacity gate declines the base
+    # transformer/ shards, so _dense_transformer_resident_bytes reads 0. Treating that as "no
+    # information" and skipping the retry left the load running fp8 with no published prequant and
+    # no dense fallback, which drops straight back to GGUF.
+    import dataclasses
+
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+    )
+    monkeypatch.setattr(dmod, "_uncached_prequant_repo", lambda *a, **k: None)
+    # The winner has no usable checkpoint, and no shards were staged, so no dense build either.
+    monkeypatch.setattr(dmod, "usable_prequant_source", lambda *a, **k: None)
+    monkeypatch.setattr(
+        DiffusionBackend, "_dense_transformer_resident_bytes", lambda self, *a, **k: 0
+    )
+    monkeypatch.setattr(
+        DiffusionBackend, "_auto_prequant_retry_scheme", staticmethod(lambda *a, **k: "int8")
+    )
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: types.SimpleNamespace(
+            transient_transformer_mib = 12_000, companions_mib = 8_000, prequant = True
+        ),
+    )
+
+    orig_plan = DiffusionBackend._plan_memory
+
+    def spy_plan(
+        self,
+        *a,
+        transformer_resident_override_mib = None,
+        **k,
+    ):
+        real = orig_plan(
+            self, *a, transformer_resident_override_mib = transformer_resident_override_mib, **k
+        )
+        # The GGUF plan is RESIDENT here: this is the other branch from the offload retry.
+        return dataclasses.replace(real, offload_policy = "none")
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
+
+    seen = []
+
+    def fake_dense_load(self, *a, **k):
+        seen.append(a[7] if len(a) > 7 else k.get("transformer_quant"))
+        raise RuntimeError("test: stop after reaching the fast path")
+
+    monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "qwen-image",
+        transformer_quant = "auto",
+        _transformer_prefetched = False,
+    )
+    # Retried down to the cached rung rather than attempting the unbuildable winner.
+    assert seen == ["int8"]
+
+
+def test_the_resident_retry_declines_a_rung_that_does_not_plan_resident(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Existence is not fit: an int8 checkpoint can outweigh the Q4 GGUF that planned resident, so a
+    # host that fits the GGUF need not fit the rung being retried. Without the replan the loader
+    # moves it onto CUDA after eviction under a GGUF-sized budget.
+    import dataclasses
+
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+    )
+    monkeypatch.setattr(dmod, "_uncached_prequant_repo", lambda *a, **k: None)
+    monkeypatch.setattr(dmod, "usable_prequant_source", lambda *a, **k: None)
+    monkeypatch.setattr(
+        DiffusionBackend, "_dense_transformer_resident_bytes", lambda self, *a, **k: 0
+    )
+    monkeypatch.setattr(
+        DiffusionBackend, "_auto_prequant_retry_scheme", staticmethod(lambda *a, **k: "int8")
+    )
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: types.SimpleNamespace(
+            transient_transformer_mib = 900_000, companions_mib = 8_000, prequant = True
+        ),
+    )
+
+    orig_plan = DiffusionBackend._plan_memory
+
+    def spy_plan(
+        self,
+        *a,
+        transformer_resident_override_mib = None,
+        **k,
+    ):
+        real = orig_plan(
+            self, *a, transformer_resident_override_mib = transformer_resident_override_mib, **k
+        )
+        if transformer_resident_override_mib is None:
+            return dataclasses.replace(real, offload_policy = "none")
+        # The retried rung does NOT fit.
+        return dataclasses.replace(real, offload_policy = "model")
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
+
+    attempted = []
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_load_dense_quant_pipeline",
+        lambda self, *a, **k: attempted.append(True),
+    )
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "qwen-image",
+        transformer_quant = "auto",
+        _transformer_prefetched = False,
+    )
+    # Declined: neither the winner nor the retried rung is loadable, so the GGUF stands.
+    assert attempted == []
+
+
+def test_an_auto_pick_that_retried_a_lower_rung_is_still_badged_auto():
+    # build_resolved_record calls anything but None/""/"auto" an explicit request, so handing it the
+    # pinned retry value would badge a backend decision as the user's own choice.
+    from core.inference.diffusion_auto_policy import build_resolved_record
+
+    record = build_resolved_record({"transformer_quant": ("auto", "int8", "retried")})
+    assert record["transformer_quant"]["source"] == "auto"
+    assert record["transformer_quant"]["value"] == "int8"
+    # And the contrast: a user who really typed int8 is not relabelled.
+    explicit = build_resolved_record({"transformer_quant": ("int8", "int8", "requested")})
+    assert explicit["transformer_quant"]["source"] == "explicit"
+
+
 def test_download_plan_skips_files_already_in_the_cache(monkeypatch):
     # Entries are what the Downloads panel lists, so a model fully on disk must plan nothing.
     _fake_hf_api(
