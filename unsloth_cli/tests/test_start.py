@@ -514,17 +514,43 @@ def test_hermes_install_hint_is_windows_native_on_windows(monkeypatch):
     )
 
 
-def test_vibe_install_hint_is_uv_tool_on_windows(monkeypatch):
-    # `curl | bash` cannot run under PowerShell (no native curl+bash); Vibe's
-    # upstream README documents `uv tool install mistral-vibe` for Windows,
-    # after installing uv separately via `irm https://astral.sh/uv/install.ps1`.
+def test_vibe_install_hint_bootstraps_uv_on_windows(monkeypatch):
+    # `curl | bash` cannot run under PowerShell (no native curl+bash), so vibe's
+    # upstream README pairs `uv tool install mistral-vibe` with a preceding
+    # `irm https://astral.sh/uv/install.ps1 | iex` bootstrap. If we only prompted
+    # the second half, a first-time Windows user without uv would see the install
+    # attempt fail silently. Chain both in one PowerShell statement so
+    # `_install_command` (which wraps the hint in `powershell -Command ...`) runs
+    # the bootstrap first, then the tool install.
     monkeypatch.setattr(start.os, "name", "nt")
-    assert start._vibe_install_hint() == "uv tool install mistral-vibe"
+    assert start._vibe_install_hint() == (
+        "irm https://astral.sh/uv/install.ps1 | iex; uv tool install mistral-vibe"
+    )
 
 
 def test_vibe_install_hint_is_bash_on_posix(monkeypatch):
     monkeypatch.setattr(start.os, "name", "posix")
     assert start._vibe_install_hint() == "curl -LsSf https://mistral.ai/vibe/install.sh | bash"
+
+
+def test_vibe_provider_and_alias_are_session_unique():
+    # Vibe merges [[providers]] by name and [[models]] by alias. A trusted
+    # project ./.vibe/config.toml that also defines `name = "unsloth-studio"` or
+    # `alias = "unsloth-local"` would win those merges even with
+    # VIBE_ACTIVE_MODEL pinned via the env layer, resolving our session's
+    # active_model to the project's endpoint. Mint session-unique names with an
+    # unpredictable suffix at import time so a preregistered collision is not
+    # possible.
+    assert start._VIBE_PROVIDER.startswith(start._VIBE_PROVIDER_PREFIX)
+    assert start._VIBE_MODEL_ALIAS.startswith(start._VIBE_MODEL_ALIAS_PREFIX)
+    provider_suffix = start._VIBE_PROVIDER[len(start._VIBE_PROVIDER_PREFIX) :]
+    alias_suffix = start._VIBE_MODEL_ALIAS[len(start._VIBE_MODEL_ALIAS_PREFIX) :]
+    # secrets.token_hex(4) => 8 lowercase hex chars.
+    assert re.fullmatch(r"[0-9a-f]{8}", provider_suffix)
+    assert re.fullmatch(r"[0-9a-f]{8}", alias_suffix)
+    # Both names carry the same per-session token so the [[models]] entry and
+    # its [[providers]] reference stay in agreement.
+    assert provider_suffix == alias_suffix == start._VIBE_SESSION_TOKEN
 
 
 def test_hermes_install_hint_is_bash_on_posix(monkeypatch):

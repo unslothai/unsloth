@@ -10,6 +10,7 @@ import errno
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import signal
@@ -121,21 +122,34 @@ _PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
 # OpenCode selects a model by "<providerID>/<modelID>". Use a dedicated id to avoid
 # colliding with a user's providers; provider filters are set in the launch-time overlay.
 _OPENCODE_PROVIDER = "unsloth-studio"
-# Vibe (Mistral) selects a model by its `alias` field. Use a dedicated provider
-# name and alias so they never collide with an entry the user already has in
-# ~/.vibe/config.toml. VIBE_HOME relocates the whole home dir (like HERMES_HOME),
-# so this session's config.toml and .env never touch the user's real ~/.vibe.
-_VIBE_PROVIDER = "unsloth-studio"
-_VIBE_MODEL_ALIAS = "unsloth-local"
+# Vibe (Mistral) selects a model by its `alias` field. VIBE_HOME relocates the
+# whole home dir (like HERMES_HOME) so this session's config.toml and .env never
+# touch the user's real ~/.vibe. Vibe's config merge is not just union-by-name:
+# providers use WithUnionMerge(merge_key="name") and models are deep-merged by
+# alias key, so a project ./.vibe/config.toml holding [[providers]] name =
+# "unsloth-studio" or [[models]] alias = "unsloth-local" would win the merge and
+# resolve our session's active_model to the project's endpoint. To make the
+# collision impossible we mint session-unique provider + alias names at import
+# time — a fresh, unpredictable suffix that a project TOML cannot preregister.
+_VIBE_PROVIDER_PREFIX = "unsloth-studio-"
+_VIBE_MODEL_ALIAS_PREFIX = "unsloth-local-"
+_VIBE_SESSION_TOKEN = secrets.token_hex(4)
+_VIBE_PROVIDER = f"{_VIBE_PROVIDER_PREFIX}{_VIBE_SESSION_TOKEN}"
+_VIBE_MODEL_ALIAS = f"{_VIBE_MODEL_ALIAS_PREFIX}{_VIBE_SESSION_TOKEN}"
 _VIBE_ENV_KEY = "UNSLOTH_API_KEY"
-# Vibe's README documents two install paths: `curl | bash` for POSIX, and a
-# two-step PowerShell + `uv tool install mistral-vibe` for Windows. Piping the
-# POSIX recipe into PowerShell won't work (curl/bash are not native shells on
-# Windows), so gate on os.name like _hermes_install_hint does. `uv tool install`
-# assumes uv is already installed; Windows users without uv see the two-step
-# recipe printed in _install_agent's failure message.
+# Vibe's upstream README ships two install recipes: POSIX pipes the install.sh
+# through bash, Windows first bootstraps uv via PowerShell (irm | iex) and then
+# runs `uv tool install mistral-vibe`. If we only prompt the second half on
+# Windows, a first-time user without uv sees the install prompt fail silently
+# (uv missing) even though the README's two-step recipe would have worked. Fold
+# both steps into one PowerShell command; `_install_command` on os.name == 'nt'
+# already runs the hint under `powershell -NoProfile -ExecutionPolicy Bypass`,
+# so the two statements chain cleanly with a semicolon. On POSIX we keep the
+# one-liner curl-into-bash form documented for Linux/macOS.
 _VIBE_POSIX_INSTALL_HINT = "curl -LsSf https://mistral.ai/vibe/install.sh | bash"
-_VIBE_WINDOWS_INSTALL_HINT = "uv tool install mistral-vibe"
+_VIBE_WINDOWS_INSTALL_HINT = (
+    "irm https://astral.sh/uv/install.ps1 | iex; uv tool install mistral-vibe"
+)
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
 
