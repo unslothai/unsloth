@@ -110,7 +110,7 @@ def validate_folder_path(path: str) -> str:
     """Apply the existing model scan-folder policy without persisting there."""
     if not path or not path.strip() or "\x00" in path:
         raise ValueError("Path cannot be empty")
-    expanded = os.path.abspath(os.path.expanduser(path.strip()))
+    expanded = os.path.abspath(os.path.expanduser(path))
     try:
         if stat.S_ISLNK(os.lstat(expanded).st_mode):
             raise ValueError("Symbolic-link folders are not allowed")
@@ -441,6 +441,21 @@ def retire_scope(scope: str) -> list[dict]:
             raise
         finally:
             conn.close()
+
+
+def scope_retired(scope: str) -> bool:
+    with _scope_lock(scope):
+        conn = rag_db.get_connection()
+        try:
+            return conn.execute(
+                "SELECT 1 FROM linked_folder_retired_scopes WHERE scope=?", (scope,)
+            ).fetchone() is not None
+        finally:
+            conn.close()
+
+
+def scope_lock(scope: str) -> threading.RLock:
+    return _scope_lock(scope)
 
 
 def request_sync(folder_id: str, *, rebuild: bool = False) -> str:

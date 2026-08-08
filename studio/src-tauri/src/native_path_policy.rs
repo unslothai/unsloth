@@ -367,10 +367,11 @@ fn reject_sensitive_document_folder(path: &Path) -> Result<(), String> {
         }
     }
 
-    if sensitive_roots
-        .iter()
-        .any(|sensitive| same_path_or_descendant(path, sensitive))
-    {
+    if sensitive_roots.iter().any(|sensitive| {
+        same_path_or_descendant(path, sensitive)
+            && !(is_linux_removable_media_path(path)
+                && same_native_path(sensitive, Path::new("/run")))
+    }) {
         Err(
             "Sensitive system or application folders cannot be linked as document sources."
                 .to_string(),
@@ -378,6 +379,17 @@ fn reject_sensitive_document_folder(path: &Path) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+#[cfg(target_os = "linux")]
+fn is_linux_removable_media_path(path: &Path) -> bool {
+    let media_root = Path::new("/run/media");
+    path != media_root && path.starts_with(media_root)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn is_linux_removable_media_path(_path: &Path) -> bool {
+    false
 }
 
 fn same_native_path(left: &Path, right: &Path) -> bool {
@@ -565,6 +577,16 @@ mod tests {
         assert!(reject_sensitive_document_folder(&home.join("work").join(".local")).is_err());
         assert!(reject_sensitive_document_folder(&home.join("work").join("keyrings")).is_err());
         assert!(reject_sensitive_document_folder(&home.join(".unsloth").join("studio")).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn document_folder_policy_allows_linux_removable_media_under_run() {
+        assert!(
+            reject_sensitive_document_folder(Path::new("/run/media/user/USB/Documents")).is_ok()
+        );
+        assert!(reject_sensitive_document_folder(Path::new("/run/media")).is_err());
+        assert!(reject_sensitive_document_folder(Path::new("/run/secrets")).is_err());
     }
 
     #[cfg(windows)]

@@ -431,6 +431,11 @@ def delete_knowledge_base(kb_id: str, subject: str = Depends(get_current_subject
         conn.close()
 
 
+def _raise_if_scope_retired(scope: str) -> None:
+    if folder_sync.scope_retired(scope):
+        raise HTTPException(status_code = 409, detail = "Knowledge base is being deleted")
+
+
 @router.post("/knowledge-bases/{kb_id}/documents")
 async def upload_kb_document(
     kb_id: str,
@@ -447,11 +452,19 @@ async def upload_kb_document(
             raise HTTPException(status_code = 404, detail = "Knowledge base not found")
     finally:
         conn.close()
+    scope = store.kb_scope(kb_id)
+    _raise_if_scope_retired(scope)
     stored_path, filename = _resolve_document_upload(file, native_path_lease)
-    with _rag_unavailable_as_503(stored_path):
-        document_id, job_id = ingestion.start_ingestion(
-            store.kb_scope(kb_id), kb_id, None, filename, stored_path, ocr = ocr, caption = caption
-        )
+    try:
+        with folder_sync.scope_lock(scope):
+            _raise_if_scope_retired(scope)
+            with _rag_unavailable_as_503(stored_path):
+                document_id, job_id = ingestion.start_ingestion(
+                    scope, kb_id, None, filename, stored_path, ocr = ocr, caption = caption
+                )
+    except HTTPException:
+        _remove_stored_upload(stored_path)
+        raise
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
 

@@ -603,6 +603,20 @@ def test_directory_lease_contract_is_purpose_bound_and_testable(rag_home):
     ]
 
 
+def test_signed_linked_folder_path_is_not_trimmed(rag_home):
+    source = rag_home / "source "
+    sibling = rag_home / "source"
+    source.mkdir()
+    sibling.mkdir()
+
+    def verify(lease, **kwargs):
+        return SimpleNamespace(canonical_path = source)
+
+    from routes.rag import _resolve_linked_folder_path
+
+    assert _resolve_linked_folder_path("signed", verifier = verify) == str(source)
+
+
 def test_validate_folder_rejects_symlink_root(rag_home):
     source = rag_home / "source"
     source.mkdir()
@@ -1316,6 +1330,27 @@ def test_kb_deletion_retires_scope_before_best_effort_folder_cleanup(
         folder_sync.create_folder(
             scope_type = "knowledge_base", scope_id = "knowledge", path = str(replacement)
         )
+
+
+@requires_sqlite_vec
+def test_kb_upload_rejects_retired_scope_before_saving(rag_home, monkeypatch):
+    from routes import rag as rag_routes
+
+    conn = rag_db.get_connection()
+    try:
+        store.create_kb(conn, name = "Knowledge", kb_id = "knowledge")
+    finally:
+        conn.close()
+    folder_sync.retire_scope(store.kb_scope("knowledge"))
+    monkeypatch.setattr(
+        rag_routes,
+        "_resolve_document_upload",
+        lambda *args, **kwargs: pytest.fail("retired KB upload must be rejected before saving"),
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        asyncio.run(rag_routes.upload_kb_document("knowledge", subject = "test"))
+    assert getattr(exc_info.value, "status_code", None) == 409
 
 
 def test_preview_containment_is_component_aware(rag_home):
