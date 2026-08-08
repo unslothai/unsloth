@@ -77,6 +77,7 @@ _mlx_vlm_resized_image_layout = _worker._mlx_vlm_resized_image_layout
 _copy_mlx_vlm_image_processor = _worker._copy_mlx_vlm_image_processor
 _resize_mlx_vlm_image = _worker._resize_mlx_vlm_image
 _adapt_for_mlx_vlm = _worker._adapt_for_mlx_vlm
+_completion_masking_notifier = _worker._completion_masking_notifier
 
 
 def test_mlx_studio_optimizer_aliases_are_explicit():
@@ -111,9 +112,9 @@ def test_mlx_wandb_run_config_excludes_subject_and_secrets():
         encoding = "utf-8"
     )
 
-    assert (
-        '_wandb_sensitive = {"hf_token", "wandb_token", "s3_config", "subject"}' in source
-    ), "MLX W&B run config must exclude subject and the token/s3 secrets"
+    assert '_wandb_sensitive = {"hf_token", "wandb_token", "s3_config", "subject"}' in source, (
+        "MLX W&B run config must exclude subject and the token/s3 secrets"
+    )
 
 
 def test_mlx_vlm_resize_uses_max_dimension_like_torch_trainer():
@@ -288,3 +289,35 @@ def test_activate_transformers_version_or_warn_silent_on_success(monkeypatch):
     _worker._activate_transformers_version_or_warn("meta-llama/Llama-3-8B")
 
     assert warnings_logged == [], "should not warn when activation succeeds"
+
+
+def test_completion_masking_warning_reaches_the_warning_channel():
+    """A masking miss must be a sticky warning, not a status line that scrolls past.
+
+    apply_completion_masking reports a double miss at level "warning" and then returns
+    applied=False, so the run continues training on full sequences. Flattening the level
+    to a status message leaves no durable record that the training objective changed.
+    """
+    sent = []
+    notify = _completion_masking_notifier(
+        lambda event_type, **kwargs: sent.append((event_type, kwargs))
+    )
+
+    notify("info", "Train on responses only configured via chat template auto-detection")
+    notify("warning", "'Train on completions' could not be applied: no markers.")
+
+    assert sent[0][0] == "status"
+    assert sent[0][1]["status_message"].startswith("Train on responses only configured")
+    assert sent[1][0] == "warning"
+    assert sent[1][1]["message"].startswith("'Train on completions' could not be applied")
+
+
+def test_completion_masking_notifier_routes_only_warnings_to_warning():
+    """Anything that is not a warning stays a status update."""
+    sent = []
+    notify = _completion_masking_notifier(lambda event_type, **kwargs: sent.append(event_type))
+
+    for level in ("info", "debug", "", None):
+        notify(level, "progress")
+
+    assert set(sent) == {"status"}

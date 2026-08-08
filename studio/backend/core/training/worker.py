@@ -2232,6 +2232,25 @@ def _resolve_mlx_max_grad_norm(value):
     return value
 
 
+def _completion_masking_notifier(send):
+    """Route completion-masking notices by level.
+
+    A masking miss changes the training objective for the whole run -- the model trains on
+    prompts as well as responses -- so it belongs in the sticky warning list, the same
+    channel the eval-split fallback already uses. Flattening every level to a status
+    message leaves that failure as a line that scrolls past, and the run then finishes
+    looking like an ordinary success.
+    """
+
+    def notify(level, message):
+        if level == "warning":
+            send("warning", message = message)
+        else:
+            send("status", status_message = message)
+
+    return notify
+
+
 def _run_mlx_training(event_queue, stop_queue, config):
     """Self-contained MLX training path for Apple Silicon.
 
@@ -2791,12 +2810,21 @@ def _run_mlx_training(event_queue, stop_queue, config):
         # No catch: the helper handles detection failures and double misses, so an exception here
         # is a real masking failure that must fail the run, not silently train full sequences.
         from utils.datasets.completion_masking import apply_completion_masking
-        trainer, _masking_applied = apply_completion_masking(
+
+        trainer, masking_applied = apply_completion_masking(
             trainer,
             model_name,
             train_on_responses_only,
-            notify = lambda level, message: _send("status", status_message = message),
+            notify = _completion_masking_notifier(_send),
         )
+        if not masking_applied:
+            # Mirrors the CUDA path, which drops train_on_responses_enabled here so the run
+            # reports what it actually did rather than what was asked for.
+            logger.warning(
+                "Train on completions was requested for %s but no markers applied; "
+                "training on full sequences (prompts included)",
+                model_name,
+            )
 
     # ── 8. Setup wandb / tensorboard ──
     wandb_run = None
