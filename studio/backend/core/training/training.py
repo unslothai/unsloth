@@ -1462,15 +1462,14 @@ class TrainingBackend:
             len(self._start_cancel_tombstones) + len(self._start_cancel_tombstone_reservations)
             >= _MAX_START_CANCEL_TOMBSTONES
         ):
-            if not reclaim_capacity or not self._start_cancel_tombstones:
+            if not reclaim_capacity:
                 raise TrainingStartCancellationCapacityError(
                     "Too many training start cancellations are pending"
                 )
-            reclaimed_request_id = min(
-                self._start_cancel_tombstones,
-                key = lambda request_id: self._start_cancel_tombstones[request_id][0],
-            )
-            del self._start_cancel_tombstones[reclaimed_request_id]
+            # Everything left is unexpired (pruned above), so evicting one would forget a
+            # live cancellation and let its delayed /start spawn the job we just cancelled.
+            # Overshoot instead: only the owner of the active start reaches this, and there
+            # is at most one of those, so the table stays bounded.
         self._start_cancel_tombstone_reservations[start_request_id] = 1
         return True
 

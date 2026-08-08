@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 from core.training.training import (
+    _MAX_START_CANCEL_TOMBSTONES,
     TrainingBackend,
     TrainingStartCancellationCapacityError,
 )
@@ -969,3 +970,77 @@ def test_cancelled_route_during_spawn_keeps_the_worker_result_authoritative():
     assert record.state == "accepted"
     assert backend.current_job_id == record.job_id
     assert backend.is_training_active() is True
+
+
+def test_owner_can_cancel_its_active_start_when_tombstone_capacity_is_full():
+    """Exhausted unknown-request tombstone capacity must not make the currently active
+    start uncancellable: the UI's Stop button routes to /start-requests/{id}/cancel while
+    a start request owns the run, so a 429 there would leave the worker running."""
+    backend = TrainingBackend()
+    backend.reserve_start_request("request-owned", "job-owned")
+    backend.resolve_start_request(
+        "request-owned",
+        state = "accepted",
+        message = "Training queued",
+    )
+    backend.current_start_request_id = "request-owned"
+    backend.current_job_id = "job-owned"
+    backend._progress.is_training = True
+
+    calls = []
+    backend._stop_training_with_lifecycle_reserved = (
+        lambda **kwargs: calls.append(("stop", kwargs)) or True
+    )
+    backend.reset_training_state = (
+        lambda expected_job_id = None: calls.append(("reset", expected_job_id)) or "reset"
+    )
+
+    for index in range(_MAX_START_CANCEL_TOMBSTONES):
+        backend.cancel_start_request(f"unknown-{index}")
+    assert len(backend._start_cancel_tombstones) == _MAX_START_CANCEL_TOMBSTONES
+
+    # Unregistered ids still hit the hard cap ...
+    with pytest.raises(TrainingStartCancellationCapacityError):
+        backend.cancel_start_request("unknown-overflow")
+
+    # ... but the owner of the active start reclaims a slot and really stops the run.
+    outcome, record = backend.cancel_start_request("request-owned")
+
+    assert outcome == "cancelled"
+    assert record.error_code == "training_start_cancelled"
+    assert calls == [
+        ("stop", {"save": False, "expected_job_id": "job-owned"}),
+        ("reset", "job-owned"),
+    ]
+    assert backend.current_start_request_id is None
+    # The owner overshoots the cap by its own slot rather than evicting a live cancellation.
+    assert len(backend._start_cancel_tombstones) <= _MAX_START_CANCEL_TOMBSTONES + 1
+    assert backend._start_cancel_tombstone_reservations == {}
+
+
+def test_owner_cancel_at_capacity_keeps_other_live_cancellations():
+    """Reclaiming a slot by evicting the soonest-expiring tombstone would forget a live
+    cancellation, so a delayed /start for that id could spawn the job we just cancelled.
+    The owner overshoots the cap instead; there is only ever one active start."""
+    backend = TrainingBackend()
+    backend.cancel_start_request("victim-race")          # cancel-before-start race
+    backend.reserve_start_request("owner", "job-owner")
+    backend.resolve_start_request("owner", state = "accepted", message = "Training queued")
+    backend.current_start_request_id = "owner"
+    backend.current_job_id = "job-owner"
+    backend._progress.is_training = True
+    backend._stop_training_with_lifecycle_reserved = lambda **kwargs: True
+    backend.reset_training_state = lambda expected_job_id = None: "reset"
+
+    while len(backend._start_cancel_tombstones) < _MAX_START_CANCEL_TOMBSTONES:
+        backend.cancel_start_request(f"unknown-{len(backend._start_cancel_tombstones)}")
+
+    outcome, _ = backend.cancel_start_request("owner")
+
+    assert outcome == "cancelled"
+    assert "victim-race" in backend._start_cancel_tombstones
+    # The delayed start for the cancelled id must not spawn.
+    assert backend.reserve_start_request("victim-race", "job-victim")[0] == "existing"
+    # Unregistered ids keep hitting the hard cap.
+    with pytest.raises(TrainingStartCancellationCapacityError):
+        backend.cancel_start_request("stranger")

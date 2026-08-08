@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import io
 import importlib
@@ -691,6 +692,27 @@ def test_exact_legacy_dac_weights_migrate_to_active_cache_offline(monkeypatch, t
     assert calls == []
     legacy.write_bytes(b"tampered")
     assert source.ensure_dac_speech_weights(legacy) == result
+
+
+def test_full_disk_falls_back_to_the_verified_legacy_dac_weights(monkeypatch, tmp_path):
+    """Migrating the 295 MB file is an optimisation, so a hub cache that cannot absorb a
+    second copy must not reject weights that already passed the size and sha256 check."""
+    payload = b"legacy pinned DAC weights"
+    _configure_dac_artifact(monkeypatch, tmp_path, payload)
+    legacy = tmp_path / "legacy" / source._DAC_FILENAME
+    legacy.parent.mkdir()
+    legacy.write_bytes(payload)
+    monkeypatch.setattr(utils, "hf_env_offline", lambda: True)
+
+    def no_space(*args, **kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(source, "_install_verified_artifact", no_space)
+
+    result = source.ensure_dac_speech_weights(legacy)
+
+    assert result == legacy.resolve()
+    assert result.read_bytes() == payload
 
 
 def test_default_legacy_dac_path_matches_windows_appdata(monkeypatch, tmp_path):

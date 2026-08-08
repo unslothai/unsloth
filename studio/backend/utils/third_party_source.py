@@ -897,7 +897,12 @@ def ensure_dac_speech_weights(legacy_path: Path | str | None = None) -> Path:
                 expected_size = _DAC_SIZE,
                 expected_sha256 = _DAC_SHA256,
             ):
-                _install_verified_artifact(legacy, destination)
+                # Same as the download branch below: the copy is an optimisation, so a full
+                # disk must not reject weights that already passed the size and sha256 check.
+                try:
+                    _install_verified_artifact(legacy, destination)
+                except OSError:
+                    return legacy.resolve()
                 return destination.resolve()
 
             offline = hf_env_offline()
