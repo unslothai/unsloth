@@ -480,9 +480,11 @@ def test_load_uses_model_hub_cache_without_implicit_download(monkeypatch):
 
     WhisperSttSidecar(keep_alive_seconds = 0).load("small")
 
+    # str(Path(...)), so the separator is the platform's.
+    cached = str(Path("/cached/model"))
     assert {(kind, repo) for kind, repo, _ in calls} == {
-        ("processor", "/cached/model"),
-        ("model", "/cached/model"),
+        ("processor", cached),
+        ("model", cached),
     }
     # Never fetch weights implicitly; the Model Hub owns downloads.
     assert all(kwargs.get("local_files_only") is True for _, _, kwargs in calls)

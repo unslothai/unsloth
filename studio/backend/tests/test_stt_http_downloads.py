@@ -24,6 +24,16 @@ def _repo_dir(root: Path, repo: str) -> Path:
     return root / f"models--{repo.replace('/', '--')}"
 
 
+def _case_insensitive(root: Path) -> bool:
+    """macOS and Windows fold case, so two case variants are one directory there."""
+    probe = root / "CaseProbe"
+    probe.mkdir()
+    try:
+        return (root / "caseprobe").is_dir()
+    finally:
+        probe.rmdir()
+
+
 def test_http_cache_preparation_fails_closed_when_blob_directory_is_unreadable(
     monkeypatch, tmp_path
 ):
@@ -71,6 +81,8 @@ def test_http_cache_preparation_requires_marker_readback(monkeypatch, tmp_path):
 def test_http_cache_preparation_requires_every_case_variant_marker(
     monkeypatch, tmp_path, canonical_first
 ):
+    if _case_insensitive(tmp_path):
+        pytest.skip("case-folding filesystem: the alias and the canonical dir are one entry")
     repo = "Org/Repo"
     alias = _repo_dir(tmp_path, "org/repo")
     canonical = _repo_dir(tmp_path, repo)
