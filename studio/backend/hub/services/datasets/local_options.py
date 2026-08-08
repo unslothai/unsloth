@@ -6,8 +6,8 @@ from __future__ import annotations
 import json
 import os
 import re
-from pathlib import Path
-from typing import Any, Iterable, Optional
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, Iterable, Optional
 
 from hub.schemas.datasets import (
     DatasetSplitOption,
@@ -15,6 +15,7 @@ from hub.schemas.datasets import (
     LocalDatasetOptionsResponse,
 )
 from hub.utils.dataset_cache import (
+    TRAINING_DATA_EXTS,
     dataset_cache_path_from_cache_path,
     dataset_snapshot_from_cache_path,
     latest_cached_dataset_path,
@@ -33,7 +34,129 @@ _MAX_PROCESSED_METADATA_FILES = 256
 _MAX_PROCESSED_WALK_DEPTH = 4
 _MAX_OPTIONS = 2048
 _MAX_OPTION_LENGTH = 128
+# Only names are read during the scan, so this can sit well above any real snapshot. Past it
+# the scan is truncated and cannot be compared with the loader, so nothing is offered.
+_MAX_SNAPSHOT_DATA_FILES = 200_000
+# Only what fsspec can actually decompress in a Studio install. zstd and lz4 are named by
+# datasets but need optional codecs we do not ship, so they raise "Compression type not
+# supported" and offering them would put a dead split in the picker.
+_COMPRESSION_EXTENSIONS = ("", ".gz", ".gzip", ".bz2", ".xz", ".lzma", ".zip")
+# Ordered, because datasets resolves a split's keyword patterns in this order and samples
+# the first files it gets back.
+_SPLIT_KEYWORDS = {
+    "train": ("train", "training"),
+    "validation": ("validation", "valid", "dev", "val"),
+    "test": ("test", "testing", "eval", "evaluation"),
+}
+# datasets' keyword globs, as regexes, in the order it resolves them. "sep" is its
+# NON_WORDS_CHARS, "**/" leads every pattern and "*" never crosses a directory.
+_SEP = "[-._ 0-9]"
+_FILENAME_KEYWORD_PATTERNS = (
+    r"(?:.*/)?{keyword}%s[^/]*" % _SEP,
+    r"(?:.*/)?[^/]*%s{keyword}%s[^/]*" % (_SEP, _SEP),
+)
+_DIR_NAME_KEYWORD_PATTERNS = (
+    r"(?:.*/)?{keyword}/.*",
+    r"(?:.*/)?{keyword}%s[^/]*/.*" % _SEP,
+    r"(?:.*/)?[^/]*%s{keyword}/.*" % _SEP,
+    r"(?:.*/)?[^/]*%s{keyword}%s[^/]*/.*" % (_SEP, _SEP),
+)
+_KeywordPatterns = dict[str, list[tuple[tuple[int, int], "re.Pattern[str]"]]]
+
+
+def _keyword_patterns(bases: tuple[str, ...]) -> _KeywordPatterns:
+    return {
+        split: [
+            (
+                (keyword_index, base_index),
+                re.compile(base.format(keyword = re.escape(keyword)) + r"\Z"),
+            )
+            for keyword_index, keyword in enumerate(keywords)
+            for base_index, base in enumerate(bases)
+        ]
+        for split, keywords in _SPLIT_KEYWORDS.items()
+    }
+
+
+_DIR_NAME_SPLITS = _keyword_patterns(_DIR_NAME_KEYWORD_PATTERNS)
+_FILENAME_SPLITS = _keyword_patterns(_FILENAME_KEYWORD_PATTERNS)
+# The loader globs data/{split}-NNNNN-of-NNNNN*.*, and a * matches nothing as happily as
+# something, so an empty split or suffix still puts the sharded stage in charge.
+_SHARDED_DATA_RE = re.compile(r"^data/(?P<split>[^/]*)-[0-9]{5}-of-[0-9]{5}[^/]*\.[^/]*$")
+# datasets drops these by basename (FILES_TO_IGNORE) before it infers anything, so a
+# metadata-only cache is empty rather than a bogus train split.
+_IGNORED_DATA_FILENAMES = frozenset(
+    {
+        "README.md",
+        "config.json",
+        "dataset_info.json",
+        "dataset_infos.json",
+        "dataset_dict.json",
+        "dummy_data.zip",
+    }
+)
+_INDETERMINATE_MODULE = "?"
+
+
+def _exts(names: str) -> frozenset:
+    return frozenset(names.split())
+
+
+# datasets' own extension table, by builder. The folder builders are the only ones it
+# registers in both cases, so those match case-insensitively and the rest stay case-exact.
+_MODULE_EXTENSIONS = {
+    "arrow": ".arrow",
+    "csv": ".csv",
+    # datasets compares the whole builder result and tsv carries sep="\t", so it is not csv.
+    "csv+tab": ".tsv",
+    "hdf5": ".h5 .hdf5",
+    "json": ".json .jsonl .ndjson",
+    "parquet": ".parquet .geoparquet .gpq",
+    "text": ".txt",
+    "webdataset": ".tar",
+    "xml": ".xml",
+    "imagefolder": (
+        ".apng .blp .bmp .bufr .bw .cur .dcx .dds .dib .emf .eps .fit .fits .flc .fli .ftc "
+        ".ftu .gbr .gif .grib .icb .icns .ico .iim .im .j2c .j2k .jfif .jp2 .jpc .jpe .jpeg "
+        ".jpf .jpg .jpx .msp .pbm .pcd .pcx .pgm .png .pnm .ppm .ps .psd .pxr .ras .rgb "
+        ".rgba .sgi .tga .tif .tiff .vda .vst .webp .wmf .xbm .xpm"
+    ),
+    "audiofolder": (
+        ".3g2 .3gp .aiff .asf .au .avr .caf .f4v .flac .flv .htk .ircam .m4v .mat4 .mat5 "
+        ".mp3 .mpc2k .mpg .mxf .nist .nut .ogg .ogm .opus .paf .pvf .raw .rf64 .sd2 .sds "
+        ".svx .voc .w64 .wav .wavex .webm .wma .wmv .wve .xi"
+    ),
+    "videofolder": ".avi .mkv .mov .mp4 .mpeg",
+    "pdffolder": ".pdf",
+    # datasets reads a zip to pick its module. We do not open archives, so a split a zip
+    # would decide is unknowable and the snapshot is left alone.
+    _INDETERMINATE_MODULE: ".zip",
+}
+_EXTENSION_MODULES = {
+    extension: module for module, names in _MODULE_EXTENSIONS.items() for extension in names.split()
+}
+# The folder builders. They are the only ones datasets registers in both letter cases and
+# the only ones with a non-empty metadata allow-list.
+_FOLDER_MODULES = _exts("imagefolder audiofolder videofolder pdffolder")
+# datasets' tie-break after the count, before falling back to the extension string itself.
+_EXTENSION_PRIORITY = (".parquet", ".jsonl", ".json", ".csv")
+# Folder-builder metadata loses every tie-break in datasets, so it never picks a split's
+# module. This is the pinned 4.3 list; 3.4 flagged only the csv and jsonl names.
+_METADATA_FILENAMES = frozenset({"metadata.csv", "metadata.jsonl", "metadata.parquet"})
+# datasets infers a split's module from its first 200 files, in resolved (sorted) order.
+_MAX_MODULE_INFERENCE_FILES = 200
+# _read_card_metadata returns this when a card exists but its YAML does not parse. datasets
+# lets that error out of DatasetCard.load, so nothing in the snapshot is loadable.
+_UNPARSABLE_METADATA = object()
+_STANDALONE_YAML = ".huggingface.yaml"
+# huggingface_hub's REGEX_YAML_BLOCK, which is what actually decides whether a README has
+# front matter, as pinned at 0.36.2. Neither delimiter tolerates trailing spaces there; 1.x
+# added them to the closing one, so a padded close is a card we deliberately do not read.
+_CARD_BLOCK_RE = re.compile(r"^(\s*---[\r\n]+)([\S\s]*?)([\r\n]+---(\r\n|\n|$))")
+# A snapshot file and the module datasets would build it with, None when it is not data.
+_DataFile = tuple[PurePosixPath, Optional[str]]
 _CONFIG_RE = re.compile(r"[^<>:/\\|?*\x00-\x1f\x7f]+")
+# Also datasets' own _split_re, so a sharded name it would reject never reaches the picker.
 _SPLIT_RE = HF_DATASET_SPLIT_NAME_PATTERN
 
 
@@ -45,7 +168,11 @@ def _valid_option(
 ) -> Optional[str]:
     if not isinstance(value, str):
         return None
-    normalized = value.strip()
+    # The loader keeps the name it was given, so a padded one is only ever addressable
+    # padded, and we cannot offer that.
+    normalized = value
+    if normalized != normalized.strip():
+        return None
     if not normalized or len(normalized) > _MAX_OPTION_LENGTH:
         return None
     if has_unsafe_hf_dataset_option_characters(normalized):
@@ -71,6 +198,117 @@ def _split_names(value: Any) -> list[str]:
         for item in candidates
         if (name := _valid_option(item, _SPLIT_RE, reject_dotdot = True)) is not None
     ]
+
+
+def _safe_data_dir(value: Any) -> Optional[str]:
+    """A data_dir we can scan, or None. An absolute one resolves off the snapshot entirely."""
+    if not isinstance(value, str):
+        return None
+    if value.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", value):
+        return None
+    if "\\" in value or "\x00" in value:
+        return None
+    # Only a real traversal component escapes; a directory merely spelled release..v2 does not.
+    if ".." in PurePosixPath(value).parts:
+        return None
+    # The loader joins the string as written and globs it. ./a, a/. and a/ all still find
+    # the directory; only a doubled separator at the end does not.
+    if value.endswith("//"):
+        return None
+    return value
+
+
+def _valid_declared_data_files(entries: Any) -> bool:
+    """datasets checks every config's data_files shape before it builds any of them."""
+    if entries is None or isinstance(entries, str):
+        return True
+    if not isinstance(entries, list):
+        return False
+    declared_splits = []
+    for item in entries:
+        if isinstance(item, str):
+            continue
+        if not isinstance(item, dict) or len(item) != 2 or "split" not in item:
+            return False
+        if not isinstance(item["split"], str) or _SPLIT_RE.fullmatch(item["split"]) is None:
+            return False
+        if not isinstance(item.get("path"), (str, list)):
+            return False
+        declared_splits.append(item["split"])
+    # sanitize_patterns refuses a split named twice, while the module is still being chosen.
+    return len(declared_splits) == len(set(declared_splits))
+
+
+def _collapsed_configs(payload: Any) -> Any:
+    """Declared configs keyed by name the way datasets keys them, or _UNPARSABLE_METADATA."""
+    if not payload:
+        # datasets reads the field only when it is truthy, so anything falsy is no configs.
+        return {}
+    if not isinstance(payload, list):
+        return _UNPARSABLE_METADATA
+    # Every entry is checked, including past the cap: one unusable name anywhere makes
+    # datasets reject the whole list, while the cap only bounds what we go on to offer.
+    collapsed: dict[str, dict[str, Any]] = {}
+    for item in payload:
+        if not isinstance(item, dict) or not isinstance(item.get("config_name"), str):
+            return _UNPARSABLE_METADATA
+        name = _valid_option(item["config_name"], _CONFIG_RE)
+        if name is None:
+            # datasets raises InvalidConfigName on these rather than skipping the config,
+            # so nothing in the snapshot is loadable and inference must not step in.
+            return _UNPARSABLE_METADATA
+        features = item.get("features")
+        if features is not None and not (
+            isinstance(features, list) and all(isinstance(field, dict) for field in features)
+        ):
+            # datasets parses these into Features while it builds the configs, and anything
+            # it cannot read raises there rather than when the config is chosen.
+            return _UNPARSABLE_METADATA
+        entries = item.get("data_files")
+        if not _valid_declared_data_files(entries):
+            return _UNPARSABLE_METADATA
+        if entries is not None and not entries:
+            # Resolved while the builder is picked, so this raises whichever config the
+            # caller asks for and every sibling option is dead too.
+            return _UNPARSABLE_METADATA
+        collapsed[name] = item
+    return collapsed
+
+
+def _declared_configs(payload: Any) -> Any:
+    """Declared config -> data_dir for configs datasets would infer, or _UNPARSABLE_METADATA.
+
+    datasets keys its metadata configs by name, so a repeated name is last-wins, it infers
+    each config under its own data_dir, and it treats an empty configs list as no configs.
+    Only a config with no data_files field at all is inferred; an empty one resolves to
+    nothing and raises.
+    """
+    collapsed = _collapsed_configs(payload)
+    if collapsed is _UNPARSABLE_METADATA:
+        return _UNPARSABLE_METADATA
+    if not collapsed:
+        return {}
+    first = next(iter(collapsed.values()))
+    if "data_files" in first and first["data_files"] is None:
+        # datasets sanitizes the first config's declaration before it looks at a file, and a
+        # null one raises TypeError there.
+        return _UNPARSABLE_METADATA
+    # A config called default is a default too, so it conflicts with a flagged sibling and
+    # get_default_config_name raises before anything loads.
+    defaults = sum(
+        1 for name, item in collapsed.items() if item.get("default") or name == "default"
+    )
+    if defaults > 1:
+        return _UNPARSABLE_METADATA
+    declared: dict[str, Optional[str]] = {}
+    for name, item in list(collapsed.items())[:_MAX_OPTIONS]:
+        if item.get("data_files") is not None:
+            # Declared, so _add_config_options owns it.
+            declared[name] = None
+        else:
+            # Rewriting an unusable data_dir would silently change the config's scope.
+            declared[name] = _safe_data_dir(item.get("data_dir", ""))
+    return declared
 
 
 def _config_name(value: Any, fallback: Any = None) -> Optional[str]:
@@ -217,42 +455,578 @@ def _snapshot_metadata_file(snapshot: Path, name: str) -> Optional[Path]:
     return path if 0 < size <= _MAX_METADATA_BYTES else None
 
 
-def _read_card_metadata(path: Path) -> Optional[dict[str, Any]]:
-    try:
-        lines = path.read_text(encoding = "utf-8").splitlines()
-        if not lines or lines[0].strip() != "---":
-            return None
-        end = next(index for index, line in enumerate(lines[1:], start = 1) if line.strip() == "---")
-        from yaml import YAMLError, safe_load
+def _snapshot_metadata_exists(snapshot: Path, name: str) -> bool:
+    """The file is there for the loader, whether or not we were willing to read it."""
+    return (snapshot / name).is_file()
 
-        try:
-            payload = safe_load("\n".join(lines[1:end]))
-        except YAMLError:
-            return None
-    except (ImportError, OSError, UnicodeError, ValueError, StopIteration):
+
+def _snapshot_metadata_is_unsafe(snapshot: Path, name: str) -> bool:
+    """The loader will read this file and we will not, so we cannot say what it declares."""
+    return _snapshot_metadata_exists(snapshot, name) and (
+        resolved_dataset_snapshot_file(snapshot, name) is None
+    )
+
+
+def _snapshot_metadata_is_oversized(snapshot: Path, name: str) -> bool:
+    path = resolved_dataset_snapshot_file(snapshot, name)
+    try:
+        return path is not None and path.stat().st_size > _MAX_METADATA_BYTES
+    except OSError:
+        return False
+
+
+def _read_card_metadata(path: Path) -> Any:
+    try:
+        content = path.read_text(encoding = "utf-8")
+    except (OSError, UnicodeError, ValueError):
+        # DatasetCard.load opens the file whenever it is there and lets the error out.
+        return _UNPARSABLE_METADATA
+    block = _CARD_BLOCK_RE.search(content)
+    if block is None:
+        # RepoCard's own grammar, so a delimiter it will not accept leaves the card empty
+        # here too rather than handing us configs the loader never saw.
         return None
-    return payload if isinstance(payload, dict) else None
+    try:
+        from yaml import YAMLError, safe_load
+    except ImportError:
+        return None
+    try:
+        payload = safe_load(block.group(2))
+    except YAMLError:
+        return _UNPARSABLE_METADATA
+    # DatasetCard.load turns a null block into empty metadata but raises on anything else
+    # that is not a mapping.
+    if payload is None:
+        return {}
+    if not isinstance(payload, dict) or not all(isinstance(key, str) for key in payload):
+        # DatasetCardData takes the mapping as keyword arguments, so a non-string key is a
+        # TypeError there rather than a card we could read.
+        return _UNPARSABLE_METADATA
+    return payload
+
+
+def _snapshot_card_data(snapshot: Path) -> Any:
+    """The card datasets would build: README front matter, then .huggingface.yaml over it."""
+    card: dict[str, Any] = {}
+    if _snapshot_metadata_is_unsafe(snapshot, "README.md") or _snapshot_metadata_is_unsafe(
+        snapshot, _STANDALONE_YAML
+    ):
+        # datasets follows the symlink and builds that card's configs, so inferring here
+        # would offer a config it never created.
+        return _UNPARSABLE_METADATA
+    if _snapshot_metadata_is_oversized(snapshot, "README.md"):
+        # datasets parses it whatever its size, so treating it as absent invents options.
+        return _UNPARSABLE_METADATA
+    readme = _snapshot_metadata_file(snapshot, "README.md")
+    if readme is not None:
+        payload = _read_card_metadata(readme)
+        if payload is _UNPARSABLE_METADATA:
+            return _UNPARSABLE_METADATA
+        if isinstance(payload, dict):
+            card.update(payload)
+
+    if _snapshot_metadata_is_oversized(snapshot, _STANDALONE_YAML):
+        return _UNPARSABLE_METADATA
+    standalone = _snapshot_metadata_file(snapshot, _STANDALONE_YAML)
+    path = snapshot / _STANDALONE_YAML
+    if standalone is None and path.exists() and not path.is_file():
+        # The loader tests os.path.exists and then opens it, so a directory here raises
+        # IsADirectoryError. An empty file just parses to nothing and is skipped.
+        return _UNPARSABLE_METADATA
+    if standalone is not None:
+        try:
+            from yaml import YAMLError, safe_load
+        except ImportError:
+            payload = None
+        else:
+            try:
+                payload = safe_load(standalone.read_text(encoding = "utf-8"))
+            except (YAMLError, OSError, UnicodeError, ValueError):
+                # The loader opens this file unconditionally and lets the error out.
+                return _UNPARSABLE_METADATA
+        if payload and not isinstance(payload, dict):
+            # The loader skips a falsy block and feeds anything else straight to dict.update,
+            # which raises on a scalar.
+            return _UNPARSABLE_METADATA
+        if payload:
+            card.update(payload)
+    return card
+
+
+def _has_snapshot_data_extension(filename: str) -> bool:
+    # Case-sensitive on every platform: datasets globs through fsspec, whose matcher is a
+    # plain regex with no normcase, so a .JSONL file is unsupported even on Windows.
+    return any(
+        filename.endswith(extension + compression)
+        for extension in TRAINING_DATA_EXTS
+        for compression in _COMPRESSION_EXTENSIONS
+    )
+
+
+def _extension_module(extension: str) -> Optional[str]:
+    """The builder datasets registers for one suffix, honouring its case rules."""
+    module = _EXTENSION_MODULES.get(extension)
+    if module is not None:
+        return module
+    module = _EXTENSION_MODULES.get(extension.lower())
+    return module if module in _FOLDER_MODULES else None
+
+
+def _file_modules(filename: str) -> set:
+    """Every builder this name maps to. datasets weighs all suffixes, not just the first."""
+    return {
+        module
+        for suffix in filename.split(".")[1:]
+        if (module := _extension_module("." + suffix)) is not None
+    }
+
+
+def _file_module(filename: str) -> Optional[str]:
+    """Whether datasets sees data here at all; _split_module decides which builder wins."""
+    return next(iter(_file_modules(filename)), None)
+
+
+def _snapshot_data_files(snapshot: Path) -> Optional[list[_DataFile]]:
+    """Every file datasets would see, or None when the snapshot is too large to judge.
+
+    Nothing is resolved here. datasets picks a split pattern over all non-ignored files and
+    only then drops the unsupported ones, so a `test/notes.bin` decides which stage wins even
+    though it can never be trained on. Resolution is deferred to the files actually offered.
+    """
+    files: list[_DataFile] = []
+    try:
+        root = snapshot.resolve(strict = True)
+    except (OSError, RuntimeError, ValueError):
+        return files
+
+    for directory, dirnames, filenames in os.walk(root, followlinks = False):
+        base = Path(directory)
+        try:
+            relative = base.relative_to(root)
+        except ValueError:
+            dirnames[:] = []
+            continue
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if not name.startswith((".", "__")) and not (base / name).is_symlink()
+        ]
+        for filename in filenames:
+            # datasets hides dot files and `__` directories, but not `__` filenames.
+            if filename.startswith(".") or filename in _IGNORED_DATA_FILENAMES:
+                continue
+            if len(files) >= _MAX_SNAPSHOT_DATA_FILES:
+                return None
+            files.append((PurePosixPath((relative / filename).as_posix()), _file_module(filename)))
+    # os.walk yields directory order, but the loader globs through fsspec and sorts, and
+    # only the first files of a split decide its module.
+    files.sort(key = lambda entry: entry[0].as_posix())
+    return files
+
+
+def _snapshot_all_files(snapshot: Path) -> list[PurePosixPath]:
+    """Every file in the snapshot, hidden and __ ones included. Default inference skips
+    those, but a declared pattern is allowed to name them, so resolution needs them all."""
+    found: list[PurePosixPath] = []
+    try:
+        root = snapshot.resolve(strict = True)
+    except (OSError, RuntimeError, ValueError):
+        return found
+
+    for directory, dirnames, filenames in os.walk(root, followlinks = False):
+        base = Path(directory)
+        try:
+            relative = base.relative_to(root)
+        except ValueError:
+            dirnames[:] = []
+            continue
+        dirnames[:] = [name for name in dirnames if not (base / name).is_symlink()]
+        for filename in filenames:
+            if len(found) >= _MAX_SNAPSHOT_DATA_FILES:
+                return found
+            found.append(PurePosixPath((relative / filename).as_posix()))
+    return found
+
+
+def _keyword_splits(path: str, patterns: _KeywordPatterns) -> dict[str, list[tuple[int, int]]]:
+    """Splits this path is named for, each with the patterns that matched it.
+
+    datasets resolves every keyword pattern separately and concatenates, so a path a pattern
+    set matches twice is listed twice and counts twice when the module is inferred.
+    """
+    matched = {}
+    for split, compiled in patterns.items():
+        hits = [order for order, matcher in compiled if matcher.match(path)]
+        if hits:
+            matched[split] = hits
+    return matched
+
+
+def _sharded_split_files(files: Iterable[_DataFile]) -> Optional[dict[str, list[_DataFile]]]:
+    """Sharded splits, or None when a name datasets rejects makes the snapshot unloadable."""
+    grouped: dict[str, list[_DataFile]] = {}
+    for entry in files:
+        match = _SHARDED_DATA_RE.fullmatch(entry[0].as_posix())
+        if match is None:
+            continue
+        raw = match.group("split")
+        split = _valid_option(raw, _SPLIT_RE, reject_dotdot = True)
+        if split is None or split != raw:
+            # Trimming would hand the picker a different split than the loader rejects.
+            return None
+        grouped.setdefault(split, []).append(entry)
+    return {split: sorted(entries) for split, entries in grouped.items()}
+
+
+def _keyword_split_files(
+    files: Iterable[_DataFile], patterns: _KeywordPatterns
+) -> dict[str, list[_DataFile]]:
+    ordered: dict[str, list[tuple[int, PurePosixPath, _DataFile]]] = {}
+    for entry in files:
+        for split, hits in _keyword_splits(entry[0].as_posix(), patterns).items():
+            ordered.setdefault(split, []).extend((order, entry[0], entry) for order in hits)
+    return {
+        split: [entry for _order, _path, entry in sorted(rows, key = lambda row: row[:2])]
+        for split, rows in ordered.items()
+    }
+
+
+def _split_module(files: Iterable[_DataFile]) -> Optional[str]:
+    """The one module datasets would build this split with, counting and ranking as it does."""
+    counts: dict[tuple[bool, str], int] = {}
+    for path, module in list(files)[:_MAX_MODULE_INFERENCE_FILES]:
+        if module is None:
+            continue
+        is_metadata = path.name in _METADATA_FILENAMES
+        # Every suffix counts, not just the first that resolves, and the counter is folded to
+        # lower case even though what may reach it is not.
+        for suffix in path.name.split(".")[1:]:
+            if _extension_module("." + suffix) is None:
+                continue
+            key = (is_metadata, "." + suffix.lower())
+            counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return None
+    best = max(
+        counts,
+        key = lambda key: (
+            not key[0],
+            counts[key],
+            *(key[1] == extension for extension in _EXTENSION_PRIORITY),
+            key[1],
+        ),
+    )
+    return _EXTENSION_MODULES[best[1]]
+
+
+def _offerable_split(
+    entries: Iterable[_DataFile], snapshot: Path, root: str, module: str
+) -> Optional[bool]:
+    """True when the split holds trainable data, False when it holds none, None when a file
+    the builder would read escapes the cache. One safe file is not enough: datasets loads
+    them all, so an escape anywhere condemns the whole config rather than the one split."""
+    trainable = False
+    for path, _file_module in entries:
+        # datasets keeps every zip, and folder metadata for its own builders, whatever module
+        # won, so those are read as well and have to clear the resolver too.
+        retained = (
+            module in _file_modules(path.name)
+            or _INDETERMINATE_MODULE in _file_modules(path.name)
+            # The metadata allow-list is empty for every non-folder builder, so a csv builder
+            # never reads metadata.csv the way an imagefolder one does.
+            or (module in _FOLDER_MODULES and path.name in _METADATA_FILENAMES)
+        )
+        if not retained:
+            continue
+        if resolved_dataset_snapshot_file(snapshot, root + path.as_posix()) is None:
+            return None
+        trainable = trainable or _has_snapshot_data_extension(path.name)
+    return trainable
+
+
+def _declared_paths(item: dict[str, Any]) -> list[str]:
+    """The globs a config declares, flattened. A declared path is one glob or a list."""
+    entries = item.get("data_files")
+    if isinstance(entries, str):
+        values: list[Any] = [entries]
+    elif isinstance(entries, list):
+        values = []
+        for entry in entries:
+            value = entry.get("path") if isinstance(entry, dict) else entry
+            values.extend(value if isinstance(value, list) else [value])
+    else:
+        return []
+    return [value for value in values if isinstance(value, str)]
+
+
+def _paths_module(patterns: Iterable[str], files: Iterable[PurePosixPath]) -> Optional[str]:
+    """The module a config's declaration votes for, counting the files it resolves to the
+    way datasets does rather than counting the pattern strings."""
+    files = list(files)
+    named = [
+        (path, _file_module(path.name))
+        for pattern in patterns
+        for path in _resolved_paths(pattern, files)
+    ]
+    return _split_module(named) if named else None
+
+
+def _declared_module(payload: Any, files: Iterable[PurePosixPath]) -> Optional[str]:
+    """The builder datasets picks for the whole dataset, or None when the snapshot picks it.
+
+    It settles one module before it builds any config, and only the first effective config's
+    data_files feed that choice. If the first one declares none, the module comes from the
+    snapshot's own patterns instead and every config is still built with it.
+    """
+    collapsed = _collapsed_configs(payload)
+    if collapsed is _UNPARSABLE_METADATA or not collapsed:
+        return None
+    return _paths_module(_declared_paths(next(iter(collapsed.values()))), files)
+
+
+def _glob_matcher(pattern: str) -> "re.Pattern[str]":
+    """One fsspec glob as a regex. ** crosses directories, * and ? never do."""
+    parts = []
+    index = 0
+    while index < len(pattern):
+        character = pattern[index]
+        if character == "*":
+            double = pattern[index + 1 : index + 2] == "*"
+            parts.append(".*" if double else "[^/]*")
+            index += 2 if double else 1
+        elif character == "?":
+            parts.append("[^/]")
+            index += 1
+        elif character == "[" and "]" in pattern[index + 1 :]:
+            end = pattern.index("]", index + 1)
+            body = pattern[index + 1 : end]
+            parts.append("[" + ("^" + body[1:] if body.startswith("!") else body) + "]")
+            index = end + 1
+        else:
+            parts.append(re.escape(character))
+            index += 1
+    return re.compile("".join(parts) + r"\Z")
+
+
+def _explicit_parts(value: str, prefix: str) -> int:
+    """How many parts the loader treats as deliberately named rather than skipped."""
+    parts = PurePosixPath(value).parts if prefix == "." else PurePosixPath(value).parent.parts
+    return sum(1 for part in parts if part.startswith(prefix) and set(part) != {"."})
+
+
+def _resolved_paths(pattern: str, files: Iterable[PurePosixPath]) -> list[PurePosixPath]:
+    """What a declared pattern actually resolves to, hidden and __ rules included.
+
+    The loader keeps a hidden or __ path only when the pattern names as many such parts as
+    the path has, and it drops anything without a suffix it recognises.
+    """
+    matcher = _glob_matcher(pattern.strip("/"))
+    ignored = _IGNORED_DATA_FILENAMES - {PurePosixPath(pattern).name}
+    return [
+        path
+        for path in files
+        if matcher.match(path.as_posix())
+        and path.name not in ignored
+        and _explicit_parts(path.as_posix(), "__") == _explicit_parts(pattern, "__")
+        and _explicit_parts(path.as_posix(), ".") == _explicit_parts(pattern, ".")
+        and _file_modules(path.name)
+    ]
+
+
+def _unresolvable_configs(
+    collapsed: dict[str, dict[str, Any]], files: Iterable[PurePosixPath]
+) -> set[str]:
+    """Configs with a declared pattern the snapshot cannot satisfy. The loader resolves every
+    one of them and raises on any that matches nothing."""
+    files = list(files)
+    return {
+        name
+        for name, item in collapsed.items()
+        for pattern in _declared_paths(item)
+        if not _resolved_paths(pattern, files)
+    }
+
+
+def _readable_by(path: PurePosixPath, module: str) -> bool:
+    modules = _file_modules(path.name)
+    # A zip is opened whatever won, and folder metadata only by the folder builders.
+    return (
+        module in modules
+        or _INDETERMINATE_MODULE in modules
+        or (module in _FOLDER_MODULES and path.name in _METADATA_FILENAMES)
+    )
+
+
+def _mismatched_configs(
+    collapsed: dict[str, dict[str, Any]], required: str, files: Iterable[PurePosixPath]
+) -> set[str]:
+    """Declared configs the settled builder could not read. One builder serves every config,
+    so a config voting for another module, or holding one file that builder chokes on, is
+    dead however it is selected."""
+    files = list(files)
+    mismatched = set()
+    for name, item in collapsed.items():
+        resolved = [
+            path for pattern in _declared_paths(item) for path in _resolved_paths(pattern, files)
+        ]
+        if not resolved:
+            continue
+        module = _split_module([(path, _file_module(path.name)) for path in resolved])
+        if module != required or not all(_readable_by(path, required) for path in resolved):
+            mismatched.add(name)
+    return mismatched
+
+
+def _grouped_splits(files: list[_DataFile]) -> Optional[dict[str, list[_DataFile]]]:
+    """The splits datasets would resolve, by the first stage that names any."""
+    grouped = _sharded_split_files(files)
+    if grouped is None:
+        return None
+    if not grouped:
+        grouped = _keyword_split_files(files, _DIR_NAME_SPLITS)
+    if not grouped:
+        grouped = _keyword_split_files(files, _FILENAME_SPLITS)
+    if not grouped:
+        grouped = {"train": files}
+    return grouped
+
+
+def _grouped_module(grouped: dict[str, list[_DataFile]]) -> Optional[str]:
+    """The one module these splits agree on. A split with no data at all makes datasets
+    raise, and one whose module we cannot pin down could disagree with the others."""
+    modules = {_split_module(entries) for entries in grouped.values()}
+    if len(modules) != 1 or modules & {None, _INDETERMINATE_MODULE}:
+        return None
+    return modules.pop()
+
+
+def _snapshot_module(snapshot: Path, scans: dict[str, Optional[list]]) -> str:
+    """The module datasets settles on from the snapshot's own patterns, or one no config can
+    match when it would not settle on any."""
+    if "" not in scans:
+        scans[""] = _snapshot_data_files(snapshot)
+    files = scans[""]
+    grouped = _grouped_splits(files) if files else None
+    return (grouped and _grouped_module(grouped)) or _INDETERMINATE_MODULE
+
+
+def _inferred_snapshot_options(
+    snapshot: Path,
+    configs: Iterable[tuple[str, str]] = (("default", ""),),
+    required_module: Optional[str] = None,
+    scans: Optional[dict[str, Optional[list]]] = None,
+) -> set[tuple[str, str]]:
+    """Mirror datasets' default local-file split inference without importing it.
+
+    Known gaps, all of which hide an option rather than offer a dead one: names longer than
+    _MAX_OPTION_LENGTH are dropped because the picker cannot start them, splits made only of
+    files outside TRAINING_DATA_EXTS are not offered, a zip's module is left unknown rather
+    than read out of the archive, and external symlinks stay rejected for cache safety.
+    """
+    options: set[tuple[str, str]] = set()
+    scans = {} if scans is None else scans
+    for config, data_dir in configs:
+        root = data_dir.strip("/")
+        if root not in scans:
+            scans[root] = _snapshot_data_files(snapshot / root if root else snapshot)
+        files = scans[root]
+        if not files:
+            continue
+
+        grouped = _grouped_splits(files)
+        if grouped is None:
+            continue
+        module = _grouped_module(grouped)
+        if module is None:
+            continue
+        if required_module is not None and module != required_module:
+            # One module is chosen for the whole dataset, so this config would be built with
+            # a builder that cannot read its files.
+            continue
+        prefix = root + "/" if root else ""
+        offerable = {
+            split: _offerable_split(entries, snapshot, prefix, module)
+            for split, entries in grouped.items()
+        }
+        if any(state is None for state in offerable.values()):
+            continue
+        options.update((config, split) for split, state in offerable.items() if state)
+    return options
 
 
 def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     options: set[tuple[str, str]] = set()
+    # Cards may name thousands of configs; one scan per directory serves them all.
+    scans: dict[str, Optional[list]] = {}
 
-    readme = _snapshot_metadata_file(snapshot, "README.md")
-    if readme is not None:
-        card_data = _read_card_metadata(readme)
-        if isinstance(card_data, dict):
-            _add_config_options(options, card_data.get("configs"))
-            _add_dataset_info_options(options, card_data.get("dataset_info"))
+    card_data = _snapshot_card_data(snapshot)
+    if card_data is _UNPARSABLE_METADATA:
+        # datasets raises out of DatasetCard.load, so no option here would ever start.
+        return options
+    declared_configs = _declared_configs(card_data.get("configs"))
+    if declared_configs is _UNPARSABLE_METADATA:
+        # datasets raises building MetadataConfigs, well before it ever looks at a file.
+        return options
+    info = card_data.get("dataset_info")
+    if info is not None and not (
+        isinstance(info, dict)
+        or (isinstance(info, list) and all(isinstance(entry, dict) for entry in info))
+    ):
+        # DatasetInfosDict calls .get on each entry, so anything else raises before a split
+        # could start.
+        return options
+    _add_config_options(options, card_data.get("configs"))
+    _add_dataset_info_options(options, info)
 
     for filename in ("dataset_infos.json", "dataset_info.json"):
         metadata = _snapshot_metadata_file(snapshot, filename)
         if metadata is None:
+            if filename == "dataset_infos.json" and _snapshot_metadata_exists(snapshot, filename):
+                # Present but empty or too big to read. The loader still opens it and lets the
+                # decode error out, so there is nothing here we could offer.
+                return set()
             continue
         payload = _safe_json_file(metadata, snapshot, allow_snapshot_symlink = True)
+        if payload is None and filename == "dataset_infos.json":
+            # The local factory opens the plural file whenever it exists and lets the decode
+            # error out. The singular one is an ignored data filename it never reads here.
+            return set()
         if filename == "dataset_infos.json":
+            if not isinstance(payload, dict) or not all(
+                isinstance(entry, dict) for entry in payload.values()
+            ):
+                # The factory iterates this payload and builds a DatasetInfo per entry, so
+                # any other shape raises before a split could start.
+                return set()
             _add_dataset_info_options(options, payload)
         else:
             _add_info_options(options, payload)
+    # datasets infers patterns per config, so a config with no data_files still gets them even
+    # when a sibling config declared its own, and it builds under that config's name.
+    pending = [
+        (config, data_dir)
+        for config, data_dir in declared_configs.items()
+        if data_dir is not None and not any(existing == config for existing, _split in options)
+    ]
+    if declared_configs:
+        collapsed = _collapsed_configs(card_data.get("configs"))
+        declared_files = _snapshot_all_files(snapshot)
+        unresolvable = _unresolvable_configs(collapsed, declared_files)
+        if next(iter(collapsed)) in unresolvable:
+            # The first config is resolved before any module is chosen, so a declaration that
+            # matches nothing takes the whole snapshot down with it.
+            return set()
+        required = _declared_module(card_data.get("configs"), declared_files) or _snapshot_module(
+            snapshot, scans
+        )
+        # One builder serves every config, so a config declaring another format is dead:
+        # it either fails to generate or silently misreads its own files.
+        dead = unresolvable | _mismatched_configs(collapsed, required, declared_files)
+        options = {(config, split) for config, split in options if config not in dead}
+        if pending:
+            options.update(_inferred_snapshot_options(snapshot, pending, required, scans))
+    elif not options:
+        options.update(_inferred_snapshot_options(snapshot, scans = scans))
     return options
 
 
