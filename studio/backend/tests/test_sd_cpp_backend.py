@@ -693,6 +693,25 @@ def test_h3_binary_gate_keeps_a_binary_it_cannot_probe(monkeypatch):
     assert bk.ensure_h3_sd_cpp_binary() == "/usr/bin/sd-cli"
 
 
+def test_lists_accelerator_device_reads_the_ggml_device_list(monkeypatch):
+    # --list-devices is the only way to tell a reused CPU prebuilt from an accelerator build after
+    # the fact: the finder returns whichever binary is installed, whatever accelerator was asked for.
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: "CPU\tIntel(R) Xeon(R) Platinum\n")
+    assert bk.sd_cpp_lists_accelerator_device("/existing/sd-cli") is False
+
+    monkeypatch.setattr(
+        bk,
+        "_sd_cpp_probe_output",
+        lambda *_a: "CUDA0\tNVIDIA GeForce RTX 4090\nCPU\tIntel(R) Xeon(R) Platinum\n",
+    )
+    assert bk.sd_cpp_lists_accelerator_device("/existing/sd-cli") is True
+
+    # An older build rejects the flag with a non-zero exit: "cannot tell", not "no accelerator".
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: None)
+    assert bk.sd_cpp_lists_accelerator_device("/existing/sd-cli") is True
+    assert bk.sd_cpp_lists_accelerator_device(None) is False
+
+
 def test_unload_clears_state_and_signals_cancel():
     cancel = threading.Event()
     b = _loaded_backend()

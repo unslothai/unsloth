@@ -699,7 +699,11 @@ class VideoBackend:
 
         from .sd_cpp_args import SdCppModelFiles, offload_flags
         from .diffusion_engine_router import _install_accelerator_for
-        from .sd_cpp_backend import _install_allowed, ensure_h3_sd_cpp_binary
+        from .sd_cpp_backend import (
+            _install_allowed,
+            ensure_h3_sd_cpp_binary,
+            sd_cpp_lists_accelerator_device,
+        )
         from .sd_cpp_engine import SdCppEngine
         from .video_minimax_h3 import (
             H3_AUDIO_VAE,
@@ -767,10 +771,17 @@ class VideoBackend:
             accelerator = _install_accelerator_for(target.backend),
         )
         native_device = target.device
-        if not binary and target.backend not in ("cpu", "mps"):
+        if target.backend not in ("cpu", "mps") and not sd_cpp_lists_accelerator_device(binary):
             # Upstream currently publishes no Linux CUDA archive. Keep the picker
             # functional with the CPU prebuilt when the user has not supplied a
             # locally compiled CUDA binary through the normal sd.cpp discovery path.
+            #
+            # The test is what the binary actually offers, not whether one was returned: the
+            # accelerator install fails only ONCE, and every later load finds the CPU binary this
+            # branch put there and gets it back unchanged. "binary is truthy" therefore skipped
+            # the fallback from the second load on, left native_device on the GPU, and applied GPU
+            # offload policy and held the VIDEO claim while sd-cli ran wholly on the CPU -- so the
+            # next chat/image acquire evicted a model to make room for one that was never there.
             binary = ensure_h3_sd_cpp_binary(allow_install = allow_install, accelerator = "cpu")
             native_device = "cpu"
         engine = SdCppEngine(binary)

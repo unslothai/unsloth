@@ -2225,6 +2225,80 @@ def test_h3_native_accelerator_load_keeps_the_video_gpu_claim(monkeypatch, tmp_p
     assert gpu_arbiter.current_owner() == gpu_arbiter.VIDEO
 
 
+def test_h3_native_reused_cpu_binary_still_commits_to_cpu(monkeypatch, tmp_path):
+    """The second load on a Linux CUDA host. The first one installed the CPU prebuilt (upstream
+    publishes no Linux CUDA asset for the pinned tag), and from then on ensure_sd_cpp_binary finds
+    that binary and returns it whatever accelerator it is asked for -- so the fallback below it was
+    skipped, native_device stayed "cuda", and Studio kept the VIDEO claim and applied GPU offload
+    policy while sd-cli ran wholly on the CPU. This is the common path, not an edge case."""
+    from core.inference import gpu_arbiter
+    from core.inference import video as video_mod
+    from core.inference import sd_cpp_backend, sd_cpp_engine
+
+    class _Api:
+        def __init__(self, **_kwargs):
+            pass
+
+        def model_info(self, *_args, **_kwargs):
+            return _PlanInfo([])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr(
+        video_mod,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = None),
+    )
+    monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
+    # The reuse itself: the already-installed binary comes back for every accelerator.
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "ensure_sd_cpp_binary",
+        lambda *, allow_install, accelerator: "/existing/sd-cli",
+    )
+
+    def _probe(_binary, *args):
+        if args == ("--list-devices",):
+            # What the CPU prebuilt answers: the one ggml device it was built with.
+            return "CPU\tIntel(R) Xeon(R) Platinum 8559C\n"
+        return "  --ref-video   MiniMax-H3 Ref2VA reference video frame directory at 24 fps\n"
+
+    monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", _probe)
+
+    class _Engine:
+        def __init__(self, binary):
+            self.binary = binary
+
+        def version(self):
+            return "stub-version"
+
+    monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
+
+    def _download(_repo, wanted, *_args, **_kwargs):
+        path = tmp_path / Path(wanted).name
+        path.write_bytes(b"x")
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
+
+    backend = VideoBackend()
+    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+    backend._run_load_h3_native(
+        fam = fam,
+        token = None,
+        cancel_event = threading.Event(),
+        repo_id = "leejet/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+    )
+
+    assert backend._state is not None
+    assert backend._state.device == "cpu"
+    assert backend._state.offload_policy == "none"
+    # Reaching "cpu" is what lets the existing release_if drop the claim on this path too.
+    assert gpu_arbiter.current_owner() is None
+
+
 def test_h3_native_load_refuses_a_binary_that_predates_h3(monkeypatch, tmp_path):
     """ensure_sd_cpp_binary probes runnability only, so an sd.cpp build older than H3 support is
     handed back and clears the version() gate: the load reported ready and the first generation

@@ -207,6 +207,29 @@ def sd_cpp_supports_minimax_h3(binary: str) -> bool:
     return _H3_HELP_MARKER in text
 
 
+def sd_cpp_lists_accelerator_device(binary: Optional[str]) -> bool:
+    """True unless ``binary`` demonstrably enumerates the CPU ggml device and nothing else.
+
+    ``sd-cli --list-devices`` prints one ``name<TAB>description`` line per available ggml backend
+    device and exits 0, a format its own help text documents, so a CPU-only prebuilt answers
+    ``CPU\t<cpu model>`` while a CUDA / ROCm / Vulkan / Metal build adds its own device. That is the
+    only way to tell the two apart after the fact: ``find_sd_cpp_binary`` returns whatever is
+    installed regardless of which accelerator it was asked for.
+
+    Conservative everywhere else -- unreadable output, or an older build that rejects the flag --
+    because neither is evidence that the accelerator is missing. A missing binary is False: there
+    is nothing to run on the GPU at all."""
+    if not binary:
+        return False
+    text = _sd_cpp_probe_output(binary, "--list-devices")
+    if text is None:
+        return True
+    names = [line.split("\t", 1)[0].strip() for line in text.splitlines() if "\t" in line]
+    if not names:
+        return True
+    return any(name.upper() != "CPU" for name in names)
+
+
 def ensure_h3_sd_cpp_binary(
     *, allow_install: bool = True, accelerator: str = "cpu"
 ) -> Optional[str]:
