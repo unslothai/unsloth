@@ -8,7 +8,7 @@ time, so a shared working directory would let one overwrite the other's files.
 The session id is the chat's thread id (or project-<id> for project chats), and
 the dir is derived from it here.
 
-HOME is redirected at import time, so nothing touches the real ~/studio_sandbox.
+UNSLOTH_STUDIO_HOME is redirected per test, so nothing touches the real install.
 """
 
 import os
@@ -21,12 +21,21 @@ sys.path.insert(0, _backend)
 
 
 @pytest.fixture
+def sandbox_root(tmp_path):
+    """Where the sandboxes live for these tests: under the studio home."""
+    return tmp_path / "sandbox"
+
+
+@pytest.fixture
 def workdir(tmp_path, monkeypatch):
-    """_get_workdir with HOME pointed at tmp_path and its cache cleared."""
+    """_get_workdir against a throwaway studio home, with its cache cleared."""
     from core.inference import tools
 
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
     monkeypatch.setattr(os.path, "expanduser", lambda path: str(tmp_path))
     monkeypatch.setattr(tools, "_workdirs", {})
+    monkeypatch.setattr(tools, "_legacy_sandbox_migrated", True)
     return tools._get_workdir
 
 
@@ -37,7 +46,7 @@ def test_two_conversations_get_two_directories(workdir, tmp_path):
     assert os.path.basename(a) == "thread-alpha"
     assert os.path.basename(b) == "thread-beta"
     assert os.path.isdir(a) and os.path.isdir(b)
-    assert os.path.dirname(a) == os.path.dirname(b) == str(tmp_path / "studio_sandbox")
+    assert os.path.dirname(a) == os.path.dirname(b) == str(tmp_path / "sandbox")
 
 
 def test_the_same_conversation_keeps_its_directory(workdir):
@@ -66,7 +75,7 @@ def test_project_chats_deliberately_share_one_workspace(workdir, monkeypatch):
 )
 def test_a_session_id_cannot_escape_the_sandbox_root(workdir, tmp_path, session_id):
     resolved = workdir(session_id) if session_id else workdir(None)
-    root = os.path.realpath(str(tmp_path / "studio_sandbox"))
+    root = os.path.realpath(str(tmp_path / "sandbox"))
     assert os.path.realpath(resolved).startswith(root + os.sep)
     assert os.path.basename(resolved) in {"_invalid", "_default"}
 

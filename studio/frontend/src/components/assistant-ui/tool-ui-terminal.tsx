@@ -16,6 +16,8 @@ import {
 import { CopyBtn, ToolCodeCell } from "./tool-code-cell";
 import { ToolLiveOutput } from "./tool-live-output";
 import { ToolResultOutput } from "./tool-result-output";
+import { SandboxFiles } from "./sandbox-files-view";
+import type { SandboxFile } from "./sandbox-files";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import {
   preferFullToolOutput,
@@ -35,8 +37,17 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
   // Args still streaming = the model is WRITING the command, not running it yet.
   const { propStatus } = useToolArgsStatus();
   const isWritingCommand = isRunning && propStatus.command === "streaming";
-  const output =
-    typeof result === "string"
+  // A command that wrote files arrives as the python tool's structured shape;
+  // a plain string means it wrote none.
+  const structured =
+    typeof result === "object" && result !== null && "text" in result
+      ? (result as { text: string; sessionId?: string; files?: SandboxFile[] })
+      : null;
+  const files = structured?.files ?? [];
+  const sessionId = structured?.sessionId ?? "";
+  const output = structured
+    ? structured.text
+    : typeof result === "string"
       ? result
       : result
         ? JSON.stringify(result, null, 2)
@@ -99,6 +110,8 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
               <ToolResultOutput text={displayOutput} />
             </div>
           ) : null}
+          {/* Files the command wrote; this card used to show nothing for them */}
+          <SandboxFiles sessionId={sessionId} files={files} />
         </div>
       </ToolFallbackContent>
     </ToolFallbackRoot>

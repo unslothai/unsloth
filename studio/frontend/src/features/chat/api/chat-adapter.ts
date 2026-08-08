@@ -21,6 +21,10 @@ import { resolveInitialConfig } from "@/features/model-picker";
 import { isMlxId } from "@/features/model-picker/components/model-selector/recommended-fit";
 import { usePlatformStore } from "@/config/env";
 import { projectHasSources } from "@/features/rag/api/rag-api";
+import {
+  extractCreatedFiles,
+  type SandboxFile,
+} from "@/components/assistant-ui/sandbox-files";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
@@ -5284,14 +5288,23 @@ export function createOpenAIStreamAdapter(
                     (p) => p.toolCallId === id,
                   );
                   if (idx !== -1) {
-                    const rawResult = (toolEvent.result as string) ?? "";
+                    const rawEvent = (toolEvent.result as string) ?? "";
+                    // Pulled out first: it sits ahead of __IMAGES__ so the
+                    // image slice below is unchanged.
+                    const { text: rawResult, files: createdFiles } =
+                      extractCreatedFiles(rawEvent);
                     const imgMarker = "\n__IMAGES__:";
                     const imgIdx = rawResult.lastIndexOf(imgMarker);
                     const mcpImgMarker = "\n__MCP_IMAGES__:";
                     const mcpImgIdx = rawResult.lastIndexOf(mcpImgMarker);
                     let parsedResult:
                       | string
-                      | { text: string; images: string[]; sessionId: string }
+                      | {
+                          text: string;
+                          images: string[];
+                          sessionId: string;
+                          files?: SandboxFile[];
+                        }
                       | McpImageToolResult
                       | {
                           image_b64: string;
@@ -5348,10 +5361,24 @@ export function createOpenAIStreamAdapter(
                         const images = JSON.parse(
                           rawResult.slice(imgIdx + imgMarker.length),
                         ) as string[];
-                        parsedResult = { text, images, sessionId };
+                        parsedResult = {
+                          text,
+                          images,
+                          sessionId,
+                          files: createdFiles,
+                        };
                       } catch {
                         parsedResult = rawResult;
                       }
+                    } else if (createdFiles.length > 0) {
+                      // Files but no images: still structured, so the card can
+                      // offer downloads.
+                      parsedResult = {
+                        text: rawResult,
+                        images: [],
+                        sessionId: sandboxSessionId || "_default",
+                        files: createdFiles,
+                      };
                     } else {
                       parsedResult = rawResult;
                     }

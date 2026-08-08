@@ -7138,13 +7138,77 @@ def _get_project_workdir(session_id: str) -> str | None:
     return sandbox_real
 
 
+def _legacy_sandbox_root() -> str:
+    """Where the sandbox used to live: a third folder in the user's home."""
+    return os.path.join(os.path.expanduser("~"), "studio_sandbox")
+
+
+def sandbox_root() -> str:
+    """Root of the per-session tool sandboxes.
+
+    Under the studio home, so UNSLOTH_STUDIO_HOME keeps everything in one place
+    instead of leaving a stray ~/studio_sandbox. Falls back to the legacy path
+    only if the studio root cannot be resolved.
+    """
+    override = (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip()
+    if override:
+        return os.path.expanduser(override)
+    try:
+        from utils.paths.storage_roots import studio_root
+
+        return os.path.join(str(studio_root()), "sandbox")
+    except Exception:
+        return _legacy_sandbox_root()
+
+
+_legacy_sandbox_migrated = False
+
+
+def _migrate_legacy_sandbox(root: str) -> None:
+    """Move sessions from ~/studio_sandbox into the studio home, once.
+
+    Those files are the user's, so they move rather than being dropped. A
+    session already present at the new root wins and its legacy copy is left
+    alone, so nothing is silently overwritten.
+    """
+    global _legacy_sandbox_migrated
+    if _legacy_sandbox_migrated:
+        return
+    _legacy_sandbox_migrated = True
+    legacy = _legacy_sandbox_root()
+    try:
+        if os.path.realpath(legacy) == os.path.realpath(root) or not os.path.isdir(legacy):
+            return
+        os.makedirs(root, exist_ok = True)
+        moved = 0
+        for name in os.listdir(legacy):
+            source = os.path.join(legacy, name)
+            target = os.path.join(root, name)
+            if os.path.exists(target):
+                continue
+            try:
+                shutil.move(source, target)
+                moved += 1
+            except OSError as error:
+                logger.warning("Could not move sandbox %s: %s", name, error)
+        if moved:
+            logger.info("Moved %d chat sandbox folder(s) from %s to %s", moved, legacy, root)
+        # Empty only: a leftover is a collision the user should still find.
+        try:
+            os.rmdir(legacy)
+        except OSError:
+            pass
+    except Exception as error:
+        logger.warning("Sandbox migration skipped: %s", error)
+
+
 def _get_workdir(session_id: str | None = None) -> str:
     """Return a per-session sandbox dir at mode 0o700."""
     global _workdirs
     key = session_id or "_default"
     if key not in _workdirs or not os.path.isdir(_workdirs[key]):
-        home = os.path.expanduser("~")
-        sandbox_root = os.path.join(home, "studio_sandbox")
+        sandbox_root_path = sandbox_root()
+        _migrate_legacy_sandbox(sandbox_root_path)
         project_workdir = (
             _get_project_workdir(session_id)
             if session_id and _SESSION_ID_RE.match(session_id)
@@ -7153,16 +7217,16 @@ def _get_workdir(session_id: str | None = None) -> str:
         if project_workdir:
             workdir = project_workdir
         elif session_id and _SESSION_ID_RE.match(session_id):
-            workdir = os.path.join(sandbox_root, session_id)
-            if not os.path.realpath(workdir).startswith(os.path.realpath(sandbox_root) + os.sep):
-                workdir = os.path.join(sandbox_root, "_invalid")
+            workdir = os.path.join(sandbox_root_path, session_id)
+            if not os.path.realpath(workdir).startswith(os.path.realpath(sandbox_root_path) + os.sep):
+                workdir = os.path.join(sandbox_root_path, "_invalid")
         elif session_id:
-            workdir = os.path.join(sandbox_root, "_invalid")
+            workdir = os.path.join(sandbox_root_path, "_invalid")
         else:
-            workdir = os.path.join(sandbox_root, "_default")
+            workdir = os.path.join(sandbox_root_path, "_default")
         os.makedirs(workdir, exist_ok = True)
         try:
-            os.chmod(sandbox_root, 0o700)
+            os.chmod(sandbox_root_path, 0o700)
         except OSError:
             pass
         try:
@@ -7175,6 +7239,33 @@ def _get_workdir(session_id: str | None = None) -> str:
 
 def get_sandbox_workdir(session_id: str | None = None) -> str:
     return _get_workdir(session_id)
+
+
+def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
+    """Drop a deleted chat's sandbox. True when something was removed.
+
+    The chat was the only handle on that directory, so leaving it behind means
+    one unreachable folder per chat forever. Empty folders always go; files
+    need ``delete_files``, since they are the user's and are downloadable from
+    the chat. Project workspaces are shared and have their own delete flow.
+    """
+    if not session_id or not _SESSION_ID_RE.match(session_id):
+        return False
+    if session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return False
+    root = os.path.realpath(sandbox_root())
+    target = os.path.realpath(os.path.join(root, session_id))
+    if os.path.dirname(target) != root or not os.path.isdir(target):  # contained
+        return False
+    _workdirs.pop(session_id, None)
+    try:
+        if delete_files:
+            shutil.rmtree(target, ignore_errors = True)
+            return not os.path.isdir(target)
+        os.rmdir(target)  # raises when non-empty, which is the intent
+        return True
+    except OSError:
+        return False
 
 
 WEB_SEARCH_TOOL = {
@@ -7213,16 +7304,23 @@ def _build_sandbox_paths_note() -> str:
     instead: without it a model assumes the pipe is its only output and declines
     to open a window it believes nobody can see.
     """
+    # Without this a model assumes its output vanished into a scratch dir and
+    # says so, which reads as "the file was not really created".
+    created = (
+        " Any file you create here is kept and shown to the user with a download "
+        "link, so name the files you created in your reply -- by file name only, "
+        "since you do not know their absolute path."
+    )
     if sys.platform != "win32":
         return (
             " Read and write files using relative paths in the current working "
             "directory, which persists for this conversation; absolute paths like "
-            "/mnt/data or /tmp/outputs do not exist."
+            "/mnt/data or /tmp/outputs do not exist." + created
         )
     return (
         " You are on Windows, and this runs on the user's own machine. Read and "
         "write files using relative paths in the current working directory, which "
-        "persists for this conversation."
+        "persists for this conversation." + created
     )
 
 
@@ -10043,9 +10141,9 @@ _MISSING_PATH_PREFIXES = (
 _QUOTED_ABS_PATH_RE = re.compile(r"""['"](/[^'"\n]+)['"]""")
 _BASH_ABS_PATH_RE = re.compile(r"(/[^\s:'\"]+):\s*No such file or directory")
 
-# The sandbox CWD is a per-thread dir under ~/studio_sandbox; an absolute path
+# The sandbox CWD is a per-session dir under the studio home; an absolute path
 # under it is a genuine local miss, not a hallucinated out-of-sandbox write.
-_SANDBOX_ROOT = os.path.join(os.path.expanduser("~"), "studio_sandbox")
+# Resolved through the same helper as _get_workdir so the two cannot drift.
 
 
 def _missing_error_lines(output: str) -> list[str]:
@@ -10082,7 +10180,7 @@ def _is_outside_workdir(abs_path: str, workdir: str | None = None) -> bool:
     or it is wrongly classed as an external habit path.
     """
     try:
-        root = os.path.realpath(workdir or _SANDBOX_ROOT)
+        root = os.path.realpath(workdir or sandbox_root())
         rp = os.path.realpath(abs_path)
     except (OSError, ValueError):
         return True
@@ -10208,6 +10306,69 @@ def _drain_process_output(
     return "".join(chunks), timed_out
 
 
+_INTERNAL_FILE_PREFIXES = ("studio_exec_",)  # the sandbox's own scratch files
+_MAX_REPORTED_FILES = 25  # a shard-writing script must not blow up the result
+
+
+def _snapshot_workdir_files(workdir: str | None) -> "dict[str, int]":
+    """name -> mtime_ns for every regular file, for the post-run diff.
+
+    All files, not just images: a .csv the model wrote used to be invisible.
+    """
+    snapshot: "dict[str, int]" = {}
+    if not workdir or not os.path.isdir(workdir):
+        return snapshot
+    try:
+        names = os.listdir(workdir)
+    except OSError:
+        return snapshot
+    for name in names:
+        if name.startswith(".") or name.startswith(_INTERNAL_FILE_PREFIXES):
+            continue
+        path = os.path.join(workdir, name)
+        try:
+            if not os.path.isfile(path):
+                continue
+            snapshot[name] = os.stat(path).st_mtime_ns
+        except OSError:
+            continue
+    return snapshot
+
+
+def _created_file_sentinels(workdir: str | None, before: "dict[str, int]") -> str:
+    """Sentinels naming the files this call created or overwrote.
+
+    ``__IMAGES__`` renders inline as before; ``__FILES__`` carries every file
+    with its size so the UI can offer a download. Both are stripped before the
+    model sees the result.
+    """
+    after = _snapshot_workdir_files(workdir)
+    changed = sorted(
+        name for name, mtime in after.items()
+        if name not in before or before[name] != mtime
+    )
+    if not changed:
+        return ""
+
+    import json as _json
+
+    images = [n for n in changed if os.path.splitext(n)[1].lower() in _IMAGE_EXTS]
+    entries = []
+    for name in changed[:_MAX_REPORTED_FILES]:
+        try:
+            size = os.stat(os.path.join(workdir, name)).st_size
+        except OSError:
+            size = None
+        entries.append({"name": name, "size": size})
+
+    # __IMAGES__ stays LAST: older clients slice from it to the end of the
+    # string, so anything after would land inside their JSON.
+    out = f"\n__FILES__:{_json.dumps(entries)}"
+    if images:
+        out += f"\n__IMAGES__:{_json.dumps(images)}"
+    return out
+
+
 def _python_exec(
     code: str,
     cancel_event = None,
@@ -10246,17 +10407,8 @@ def _python_exec(
 
     tmp_path = None
     workdir = _get_workdir(session_id)
-    # Snapshot image mtimes to detect new and overwritten files.
-    _before: dict[str, int] = {}
-    if os.path.isdir(workdir):
-        for _name in os.listdir(workdir):
-            if os.path.splitext(_name)[1].lower() in _IMAGE_EXTS:
-                _p = os.path.join(workdir, _name)
-                if os.path.isfile(_p):
-                    try:
-                        _before[_name] = os.stat(_p).st_mtime_ns
-                    except OSError:
-                        pass
+    # Snapshot mtimes to detect new and overwritten files.
+    _before = _snapshot_workdir_files(workdir)
     try:
         fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_", dir = workdir)
         # utf-8 so non-ASCII in model-written code survives the OS default codec
@@ -10327,24 +10479,9 @@ def _python_exec(
         result = _truncate(result) if result.strip() else "(no output)"
         result += hint
 
-        # Detect new/overwritten images and append sentinel for the frontend
-        if session_id and os.path.isdir(workdir):
-            new_images = []
-            for _name in os.listdir(workdir):
-                if os.path.splitext(_name)[1].lower() not in _IMAGE_EXTS:
-                    continue
-                _p = os.path.join(workdir, _name)
-                if not os.path.isfile(_p):
-                    continue
-                try:
-                    _mtime = os.stat(_p).st_mtime_ns
-                except OSError:
-                    continue
-                if _name not in _before or _mtime != _before[_name]:
-                    new_images.append(_name)
-            if new_images:
-                import json as _json
-                result += f"\n__IMAGES__:{_json.dumps(sorted(new_images))}"
+        # Tell the frontend what this call created, so the user can open it.
+        if session_id:
+            result += _created_file_sentinels(workdir, _before)
 
         return result
 
@@ -10396,6 +10533,9 @@ def _bash_exec(
 
     try:
         workdir = _get_workdir(session_id)
+        # Same pre-run snapshot as _python_exec. A command that writes a file used
+        # to produce "(no output)" and no other trace anywhere in the product.
+        _before = _snapshot_workdir_files(workdir)
         safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
@@ -10446,7 +10586,10 @@ def _bash_exec(
         # Same missing-path healing as _python_exec.
         hint = _missing_path_hint(result, workdir)
         result = _truncate(result) if result.strip() else "(no output)"
-        return result + hint
+        result += hint
+        if session_id:
+            result += _created_file_sentinels(workdir, _before)
+        return result
 
     except Exception as e:
         return f"Execution error: {e}"

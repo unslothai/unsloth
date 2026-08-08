@@ -28,9 +28,41 @@ _CACHE_DIRS = [
 ]
 
 
+def _configured_cache_dirs() -> List[Path]:
+    """Cache dirs outside the source tree: the configured one, and the CWD.
+
+    The candidates above are all source-tree relative, so a cache created in
+    the launcher's CWD (the user profile on Windows) was invisible to cleanup.
+    The CWD is still checked for installs that predate the pinned location.
+    """
+    import os
+
+    dirs: List[Path] = []
+    configured = (os.environ.get("UNSLOTH_COMPILE_LOCATION") or "").strip()
+    if configured:
+        dirs.append(Path(configured).expanduser())
+    try:
+        dirs.append(Path.cwd() / "unsloth_compiled_cache")
+    except OSError:
+        pass
+    return dirs
+
+
 def get_existing_cache_dirs() -> List[Path]:
     """Return known compiled-cache directories that currently exist on disk."""
-    return [d for d in _CACHE_DIRS if d.exists()]
+    seen: set = set()
+    found: List[Path] = []
+    for candidate in [*_CACHE_DIRS, *_configured_cache_dirs()]:
+        try:
+            key = candidate.resolve()
+        except OSError:
+            key = candidate
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.exists():
+            found.append(candidate)
+    return found
 
 
 def register_compiled_cache_on_path() -> None:

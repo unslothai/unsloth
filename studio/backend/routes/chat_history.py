@@ -135,6 +135,9 @@ class ChatMessageSyncRequest(BaseModel):
 
 class ChatDeleteRequest(BaseModel):
     ids: list[str]
+    # Files a tool call wrote. Off by default: they are the user's and the chat
+    # card offers them as downloads. An empty sandbox is removed either way.
+    delete_files: bool = False
 
 
 class ChatCountResponse(BaseModel):
@@ -362,7 +365,18 @@ async def delete_threads(
 ):
     _cancel_active_research(request, payload.ids)
     delete_chat_threads(payload.ids)
-    return {"status": "deleted"}
+    # Keyed by thread id, so nothing can reference the folder once the thread
+    # is gone. Clean it up rather than leaking one per chat.
+    removed = 0
+    try:
+        from core.inference.tools import remove_session_sandbox
+
+        for thread_id in payload.ids:
+            if remove_session_sandbox(thread_id, delete_files = payload.delete_files):
+                removed += 1
+    except Exception:
+        logger.warning("chat_history.sandbox_cleanup_failed", exc_info = True)
+    return {"status": "deleted", "sandboxes_removed": removed}
 
 
 @router.get("/attachments")
