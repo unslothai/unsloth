@@ -1246,13 +1246,14 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       // Every Hub pick needs the plan, not just an undownloaded one: a cached checkpoint can
       // still be missing its base repo's text encoder or VAE, and only the plan can see that.
       // The plan is cache-aware, so a fully cached pick comes back with no entries.
-      if (source !== "hub") return handleLoadRef.current(repoId, opts);
-      // Read before the await: a pick made while the plan resolves replaces quantRevert, and this job must not revert it.
-      const ownRevert = quantRevert.current;
       // Staging never sets `busy`, so a second pick passes handleModelSelect's guard while this
       // plan is still in flight. Plans then resolve in response order, not pick order: without
       // this the older one restages over the newer queue, or loads the model the user left.
+      // Bumped before the non-hub return too: a local pick must invalidate an in-flight hub plan.
       const pick = ++pickSeq.current;
+      if (source !== "hub") return handleLoadRef.current(repoId, opts);
+      // Read before the await: a pick made while the plan resolves replaces quantRevert, and this job must not revert it.
+      const ownRevert = quantRevert.current;
       try {
         const plan = await getVideoDownloadPlan({
           model_path: repoId,
@@ -1283,6 +1284,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       } catch {
         // No plan (older backend, metadata hiccup): fall back to the load's own download.
       }
+      // Re-checked: a plan that REJECTED after a newer pick would otherwise reach the fallback load.
+      if (pick !== pickSeq.current) return true;
       return handleLoadRef.current(repoId, opts);
     },
     [stage],

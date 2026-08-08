@@ -1382,6 +1382,63 @@ class DiffusionBackend:
             logger.warning("diffusion.te_prequant_plan_failed: %s", exc)
             return {}
 
+    def _dit_prequant_plan_bytes(
+        self, fam: Any, kind: str, hf_token: Optional[str], kwargs: dict[str, Any]
+    ) -> int:
+        """Declared size of the hosted PRE-QUANTIZED transformer this pick loads INSTEAD of the
+        base repo's dense shards, or 0 when no such artifact is used.
+
+        Those shards are already excluded for a GGUF pick, so without this ``required_bytes``
+        reports a footprint missing the multi-GB denoiser the load really keeps on disk. Mirrors
+        the prequant gates in ``_load_dense_quant_pipeline`` so the plan and the load agree."""
+        if kind != "gguf" or fam is None:
+            return 0
+        try:
+            raw = kwargs.get("transformer_quant")
+            # Same tri-state as load_pipeline: unset or "auto" means the hardware ladder decides.
+            auto = raw is None or str(raw).strip().lower() in ("", "auto")
+            mode = TQ_AUTO if auto else normalize_transformer_quant(raw)
+            if mode is None:
+                return 0
+            # A LoRA bake forces the DENSE path, so no prequant is fetched.
+            if _has_active_lora(kwargs.get("loras")):
+                return 0
+            target = self._resolve_device_target(fam)
+            # An auto quant DECLINES an uncached hosted checkpoint and runs the GGUF as-is, so
+            # those bytes never land. Only a cached one, or an explicit request, counts.
+            if auto and _uncached_prequant_repo(
+                fam,
+                target,
+                mode,
+                base_repo = kwargs.get("base_repo"),
+                prequant_path = kwargs.get("transformer_prequant_path"),
+            ) is not None:
+                return 0
+            scheme = select_transformer_quant_scheme(target, mode, family = getattr(fam, "name", None))
+            if scheme is None:
+                return 0
+            source = usable_prequant_source(
+                fam,
+                scheme,
+                path_override = kwargs.get("transformer_prequant_path"),
+                base_repo = kwargs.get("base_repo"),
+            )
+            # A local override is the operator's own file: already on disk, never downloaded.
+            if source is None or source.kind != "repo":
+                return 0
+            from huggingface_hub import HfApi
+
+            info = HfApi(token = hf_token or None).model_info(source.location, files_metadata = True)
+            sizes = {s.rfilename: int(getattr(s, "size", 0) or 0) for s in (info.siblings or [])}
+            # Primary name first, then the legacy one, in the order the loader tries them.
+            for name in (source.filename, source.fallback_filename):
+                if name and name in sizes:
+                    return sizes[name]
+            return 0
+        except Exception as exc:  # noqa: BLE001 -- an unsizable prequant must not fail the plan
+            logger.warning("diffusion.dit_prequant_plan_failed: %s", exc)
+            return 0
+
     @staticmethod
     def _estimate_download_bytes(
         repo_id: str,
@@ -1583,6 +1640,12 @@ class DiffusionBackend:
                 file_sizes.get(repo_id, {}).get(gguf_filename, sizes.get(repo_id, 0))
             )
         required_total += sum(int(size) for files in te_files.values() for _name, size in files[1])
+        # The dense transformer/ shards are excluded for a GGUF pick, so a hosted prequant that
+        # replaces them is real footprint the plan would otherwise never report. Sized against the
+        # RESOLVED base, as the load passes it: a variant base picks its own prequant repo.
+        required_total += self._dit_prequant_plan_bytes(
+            fam, kind, hf_token, {**load_kwargs, "base_repo": base}
+        )
 
         def add_missing_entry(
             repo: str,
@@ -1603,11 +1666,25 @@ class DiffusionBackend:
             same repo would fight the first over progress, manifest and cancellation.
             """
             revision = revisions.get(repo)
-            missing = [
-                name
-                for name in files
-                if not self._hub_file_is_cached(repo, name, revision, declared_sizes.get(name))
-            ]
+            live = hub_cache_dir()
+
+            def _where(name: str) -> Optional[str]:
+                size = declared_sizes.get(name)
+                if self._hub_file_is_cached(repo, name, revision, size, roots = (live,)):
+                    return "live"
+                if self._hub_file_is_cached(repo, name, revision, size, roots = (None,)):
+                    return "other"
+                return None
+
+            where = {name: _where(name) for name in files}
+            # A repo whose files STRADDLE the two roots cannot be handed to from_pretrained as one
+            # snapshot: _prefetch_files returns no _base_local_dir in that state and the assembly is
+            # pinned to hub_cache_dir(), so the old-root subset is invisible to it. Stage that subset
+            # instead, or the load re-pulls it inline past the plan's own progress, cancel and disk
+            # preflight, and fails offline after a plan that reported nothing left to do. A repo
+            # living entirely in the other root is fine, which is what reuse_other_cache_root is for.
+            split = {w for w in where.values() if w} == {"live", "other"}
+            missing = [n for n, w in where.items() if w is None or (split and w != "live")]
             if not missing:
                 return
             for entry in entries:
@@ -1662,8 +1739,11 @@ class DiffusionBackend:
         filename: str,
         revision: Optional[str] = None,
         expected_size: Optional[int] = None,
+        roots: Optional[tuple[Optional[str], ...]] = None,
     ) -> bool:
         """Whether ``filename`` is complete in either cache root the loader reuses.
+
+        ``roots`` narrows the search; the default asks both, as the loader's own fetches do.
 
         ``try_to_load_from_cache`` is network-free. Two probes, because neither alone is safe:
 
@@ -1684,10 +1764,10 @@ class DiffusionBackend:
         try:
             from huggingface_hub import try_to_load_from_cache
 
-            roots = (hub_cache_dir(), None)
+            search = (hub_cache_dir(), None) if roots is None else roots
 
             def hits(rev: Optional[str]):
-                for root in roots:
+                for root in search:
                     hit = try_to_load_from_cache(repo_id, filename, cache_dir = root, revision = rev)
                     if isinstance(hit, str) and Path(hit).is_file():
                         yield hit

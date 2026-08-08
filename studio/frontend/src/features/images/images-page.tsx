@@ -1932,15 +1932,16 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string },
       source: ModelSelectorChangeMeta["source"] = "hub",
     ): Promise<boolean> => {
+      // Staging never sets `busy`, so a second pick passes handleModelSelect's guard while this
+      // plan is still in flight. Plans then resolve in response order, not pick order: without
+      // this the older one restages over the newer queue, or loads the model the user left.
+      // Bumped before the non-hub return too: a local pick must invalidate an in-flight hub plan.
+      const pick = ++pickSeq.current;
       if (source !== "hub") return handleLoadRef.current(repoId, opts);
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
       const advanced = currentLoadAdvanced(repoId);
       // Read before the await: a pick made while the plan resolves replaces quantRevert, and this job must not revert it.
       const ownRevert = quantRevert.current;
-      // Staging never sets `busy`, so a second pick passes handleModelSelect's guard while this
-      // plan is still in flight. Plans then resolve in response order, not pick order: without
-      // this the older one restages over the newer queue, or loads the model the user left.
-      const pick = ++pickSeq.current;
       try {
         const plan = await requestDownloadPlan(repoId, opts, advanced);
         // Superseded. Report started so this pick's `.then` leaves the newer label alone.
@@ -1965,6 +1966,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       } catch {
         // No plan (older backend, metadata hiccup): fall back to the load's own download.
       }
+      // Re-checked: a plan that REJECTED after a newer pick would otherwise reach the fallback load.
+      if (pick !== pickSeq.current) return true;
       return handleLoadRef.current(repoId, opts);
     },
     [stage, currentLoadAdvanced, requestDownloadPlan],

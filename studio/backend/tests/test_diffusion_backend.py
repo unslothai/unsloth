@@ -5083,7 +5083,7 @@ def _fake_hf_api(
     monkeypatch.setattr(
         DiffusionBackend,
         "_hub_file_is_cached",
-        staticmethod(lambda repo_id, filename, revision = None, expected_size = None: False),
+        staticmethod(lambda repo_id, filename, revision = None, expected_size = None, **kwargs: False),
     )
 
 
@@ -5150,7 +5150,7 @@ def test_download_plan_omits_a_cached_gguf_but_keeps_missing_companions(monkeypa
         DiffusionBackend,
         "_hub_file_is_cached",
         staticmethod(
-            lambda repo_id, filename, revision = None, expected_size = None: repo_id
+            lambda repo_id, filename, revision = None, expected_size = None, **kwargs: repo_id
             == "unsloth/FLUX.1-dev-GGUF"
             and filename == "flux1-dev-Q4_K_M.gguf"
         ),
@@ -5187,7 +5187,7 @@ def test_download_plan_is_empty_when_every_required_file_is_cached(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend,
         "_hub_file_is_cached",
-        staticmethod(lambda repo_id, filename, revision = None, expected_size = None: True),
+        staticmethod(lambda repo_id, filename, revision = None, expected_size = None, **kwargs: True),
     )
 
     plan = DiffusionBackend().download_plan(
@@ -5308,7 +5308,7 @@ def test_download_plan_probes_the_cache_at_the_revision_it_sized(monkeypatch):
         DiffusionBackend,
         "_hub_file_is_cached",
         staticmethod(
-            lambda repo_id, filename, revision = None, expected_size = None: bool(seen.append(revision))
+            lambda repo_id, filename, revision = None, expected_size = None, **kwargs: bool(seen.append(revision))
         ),
     )
 
@@ -5507,6 +5507,61 @@ def test_download_plan_stages_no_second_denoiser_for_an_uncached_prequant(monkey
     assert plan["total_bytes"] == 4 * GB + base["bytes"] < 17 * GB
 
 
+def test_download_plan_counts_the_hosted_prequant_in_the_required_footprint(monkeypatch):
+    # An explicit fp8 request loads the hosted prequant INSTEAD of the base transformer/ shards,
+    # which the plan already excludes. required_bytes is the on-disk footprint the picker renders
+    # as "Full required size", so leaving the prequant out under-reports it by the whole denoiser.
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/Z-Image-GGUF": [_FakeSibling("Z-Image-Turbo-Q4_K_M.gguf", 4 * GB)],
+            "Tongyi-MAI/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
+            "unsloth/Z-Image-Turbo-FP8": [_FakeSibling("Z-Image-Turbo-FP8.pt", 6 * GB)],
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo", lambda *a, **k: "Tongyi-MAI/Z-Image-Turbo"
+    )
+    _stub_hosted_prequant(monkeypatch, cached = False)
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/Z-Image-GGUF",
+        gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf",
+        transformer_quant = "fp8",
+    )
+
+    # Staging is unchanged: this is a footprint correction, not a new download entry.
+    assert not any(f.endswith(".pt") for e in plan["entries"] for f in e["files"])
+    assert plan["required_bytes"] == plan["total_bytes"] + 6 * GB
+
+
+def test_download_plan_omits_a_prequant_an_auto_pick_would_decline(monkeypatch):
+    # Auto runs the GGUF as-is rather than download an uncached hosted checkpoint, so those bytes
+    # never land and must not inflate the figure either. Only an explicit request pays for it.
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/Z-Image-GGUF": [_FakeSibling("Z-Image-Turbo-Q4_K_M.gguf", 4 * GB)],
+            "Tongyi-MAI/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
+            "unsloth/Z-Image-Turbo-FP8": [_FakeSibling("Z-Image-Turbo-FP8.pt", 6 * GB)],
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo", lambda *a, **k: "Tongyi-MAI/Z-Image-Turbo"
+    )
+    _stub_hosted_prequant(monkeypatch, cached = False)
+    monkeypatch.setattr(
+        "core.inference.diffusion._uncached_prequant_repo",
+        lambda *a, **k: "unsloth/Z-Image-Turbo-FP8",
+    )
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/Z-Image-GGUF", gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf"
+    )
+
+    assert plan["required_bytes"] == plan["total_bytes"]
+
+
 def test_download_plan_for_a_pipeline_kind_ignores_the_prequant_cache(monkeypatch):
     # Only a GGUF pick is restricted: a full pipeline's transformer IS the repo's.
     _fake_hf_api(monkeypatch, {"unsloth/some-pipeline": _ZIMAGE_BASE_SIBLINGS})
@@ -5515,6 +5570,44 @@ def test_download_plan_for_a_pipeline_kind_ignores_the_prequant_cache(monkeypatc
     plan = DiffusionBackend().download_plan("unsloth/some-pipeline", model_kind = "pipeline")
 
     assert any(f.startswith("transformer/") for f in plan["entries"][0]["files"])
+
+
+def test_download_plan_restages_a_base_split_across_both_cache_roots(monkeypatch):
+    # Studio's cache folder is a setting, so a base can end up half in the old root and half in the
+    # new one. _prefetch_files refuses to name a snapshot in that state and the assembly is pinned
+    # to hub_cache_dir(), so the old-root half is invisible to from_pretrained. Staging nothing
+    # there means the load re-pulls it inline, past the plan's progress, cancel and disk preflight.
+    _fake_hf_api(monkeypatch, {"unsloth/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS})
+    old_root_only = {"model_index.json"}
+
+    def probe(repo_id, filename, revision = None, expected_size = None, roots = None, **kwargs):
+        # roots=(live,) asks the active root; roots=(None,) asks huggingface_hub's import-time one.
+        asks_live = roots is not None and roots != (None,)
+        return (filename not in old_root_only) if asks_live else (filename in old_root_only)
+
+    monkeypatch.setattr(DiffusionBackend, "_hub_file_is_cached", staticmethod(probe))
+
+    plan = DiffusionBackend().download_plan("unsloth/Z-Image-Turbo", model_kind = "pipeline")
+
+    staged = {f for entry in plan["entries"] for f in entry["files"]}
+    assert staged == old_root_only, (
+        "a split base must restage exactly the files the active root cannot see"
+    )
+
+
+def test_download_plan_stages_nothing_for_a_base_wholly_in_the_other_root(monkeypatch):
+    # The case reuse_other_cache_root exists for: one root holds the WHOLE base, so _prefetch_files
+    # hands back that snapshot and the load reads it off disk. Nothing to restage.
+    _fake_hf_api(monkeypatch, {"unsloth/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS})
+
+    def probe(repo_id, filename, revision = None, expected_size = None, roots = None, **kwargs):
+        return roots is None or roots == (None,)
+
+    monkeypatch.setattr(DiffusionBackend, "_hub_file_is_cached", staticmethod(probe))
+
+    plan = DiffusionBackend().download_plan("unsloth/Z-Image-Turbo", model_kind = "pipeline")
+
+    assert plan["entries"] == [], "a base living entirely in one root is already loadable"
 
 
 def test_download_plan_declines_an_unrecognised_gguf_instead_of_raising(monkeypatch):

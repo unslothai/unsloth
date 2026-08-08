@@ -1229,20 +1229,41 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
     first plan is still in flight. Plans then resolve in RESPONSE order, not pick order: the older
     one would restage over the newer queue, or fall through and load the model the user left.
 
-    So each pick takes a sequence number before awaiting its plan and gives up if a newer one has
-    been made since. It must report started, not failed: returning false would send this pick's
-    `.then` rollback at a label the newer pick now owns."""
+    So each pick takes a sequence number and gives up if a newer one has been made since. It must
+    report started, not failed: returning false would send this pick's `.then` rollback at a label
+    the newer pick now owns. Every exit that acts on the pick is covered, not just the one after a
+    successful plan -- a rejected plan falls through to the load, and a pick that never asks for a
+    plan at all (local, exported) must still invalidate one already in flight."""
     for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(rel)
-        assert "const pick = ++pickSeq.current;" in src, f"{rel}: no pick sequence is taken"
-        # Taken before the await, or two picks can share a number.
-        head = re.search(r"const pick = \+\+pickSeq\.current;\n(.*?)await ", src, re.S)
-        assert head and "await" not in head.group(1), f"{rel}: the sequence is taken after an await"
-        guard = re.search(r"if \(pick !== pickSeq\.current\) return (\w+);", src)
-        assert guard, f"{rel}: a superseded plan is not dropped"
-        assert (
-            guard.group(1) == "true"
-        ), f"{rel}: a superseded pick reports failure, so its rollback fires at the newer pick's label"
+        body = re.search(
+            r"const loadOrStage = useCallback\(\n(.*?)\n  \);", src, re.S
+        )
+        assert body, f"{rel}: loadOrStage not found"
+        text = body.group(1)
+        assert "const pick = ++pickSeq.current;" in text, f"{rel}: no pick sequence is taken"
+        # Before any real await, or two picks can share a number.
+        seq = text.index("const pick = ++pickSeq.current;")
+        first_await = min(
+            (text.index(tok) for tok in ("await requestDownloadPlan", "await getVideoDownloadPlan")
+             if tok in text),
+            default = len(text),
+        )
+        assert seq < first_await, f"{rel}: the sequence is taken after the plan await"
+        # Before the non-hub return, so a local pick invalidates an in-flight hub plan.
+        assert seq < text.index('if (source !== "hub")'), (
+            f"{rel}: a non-hub pick returns without invalidating an in-flight hub plan"
+        )
+        guards = re.findall(r"if \(pick !== pickSeq\.current\) return (\w+);", text)
+        assert guards, f"{rel}: a superseded plan is not dropped"
+        assert set(guards) == {"true"}, (
+            f"{rel}: a superseded pick reports failure, so its rollback fires at the newer pick's label"
+        )
+        # The fallback load after a rejected plan is guarded too.
+        tail = text[text.rindex("} catch {"):]
+        assert re.search(
+            r"if \(pick !== pickSeq\.current\) return true;\n\s*return handleLoadRef", tail
+        ), f"{rel}: a plan that rejected after a newer pick still reaches the fallback load"
 
 
 def test_a_pick_that_never_loads_restores_its_generation_recipe():

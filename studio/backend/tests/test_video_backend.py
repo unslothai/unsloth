@@ -1890,7 +1890,7 @@ def _plan_api(monkeypatch, repos):
     monkeypatch.setattr(
         DiffusionBackend,
         "_hub_file_is_cached",
-        staticmethod(lambda repo_id, filename, revision = None, expected_size = None: False),
+        staticmethod(lambda repo_id, filename, revision = None, expected_size = None, **kwargs: False),
     )
 
 
@@ -1900,7 +1900,7 @@ def _plan_cache(monkeypatch, cached):
     monkeypatch.setattr(
         DiffusionBackend,
         "_hub_file_is_cached",
-        staticmethod(lambda repo_id, filename, revision = None, expected_size = None: cached(filename)),
+        staticmethod(lambda repo_id, filename, revision = None, expected_size = None, **kwargs: cached(filename)),
     )
 
 
