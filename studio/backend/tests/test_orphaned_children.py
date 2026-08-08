@@ -1252,14 +1252,15 @@ def test_the_update_hook_asks_the_native_side_after_a_remount():
     """A webview reload rebuilds the hook with its ref back at true while the
     native job can still be disarmed."""
     hook = (
-        Path(__file__).resolve().parents[2]
-        / "frontend" / "src" / "hooks" / "use-tauri-update.ts"
+        Path(__file__).resolve().parents[2] / "frontend" / "src" / "hooks" / "use-tauri-update.ts"
     ).read_text(encoding = "utf-8")
     assert "cleanupCheckedRef" in hook
-    gate = hook[hook.index("async function crashCleanupReady"):]
+    gate = hook[hook.index("async function crashCleanupReady") :]
     gate = gate[: gate.index("\n  }")]
     assert '"desktop_update_cleanup_armed"' in gate, "the gate still trusts the ref alone"
-    assert gate.index("cleanupCheckedRef") < gate.index("if (cleanupRearmedRef.current) return true")
+    assert gate.index("cleanupCheckedRef") < gate.index(
+        "if (cleanupRearmedRef.current) return true"
+    )
 
     tauri = Path(__file__).resolve().parents[2] / "src-tauri" / "src"
     assert "desktop_update_cleanup_armed" in (tauri / "main.rs").read_text(encoding = "utf-8")
