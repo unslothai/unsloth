@@ -95,8 +95,12 @@ def _run_cpu_fallback_load(
     cpu_fallback = False,
     resident_fallback = False,
     cancel_after = None,
+    cancel_in_prepare = False,
+    platform = None,
     sink = None,
 ):
+    if platform is not None:
+        monkeypatch.setattr(llama_cpp.sys, "platform", platform)
     def _gguf_string(value: str) -> bytes:
         encoded = value.encode()
         return struct.pack("<Q", len(encoded)) + encoded
@@ -177,8 +181,13 @@ def _run_cpu_fallback_load(
             backend._cancel_event.set()
         return returncodes[len(launches) - 1] is None
 
+    cleanups = []
+
     def _prepare_cpu_fallback(_binary, failed_cmd, _env, _server_caps, **_kwargs):
         fallback_sources.append(list(failed_cmd))
+        if cancel_in_prepare:
+            # An /unload landing while the runtime is being staged.
+            backend._cancel_event.set()
         # A callable decides per command, for builds that can only replay some.
         available = (
             cpu_fallback_available(failed_cmd)
@@ -191,11 +200,13 @@ def _run_cpu_fallback_load(
 
     backend._wait_for_health = _wait_for_health
     backend._prepare_cpu_fallback_launch = _prepare_cpu_fallback
+    backend._cleanup_cpu_fallback_runtime = lambda: cleanups.append(True)
     monkeypatch.setattr(subprocess, "Popen", _popen)
     # Lets a test that expects the load to raise still read what was spawned.
     if sink is not None:
         sink["launches"] = launches
         sink["fallback_sources"] = fallback_sources
+        sink["cleanups"] = cleanups
     if resident_fallback:
         backend._cpu_fallback_reason = "vulkan_startup_crash"
 
@@ -1008,6 +1019,62 @@ def test_a_cancelled_load_never_spawns_the_cpu_replay(monkeypatch, tmp_path):
         )
 
     assert sink["fallback_sources"] == []
+
+
+def test_the_exit_handler_removes_the_runtime_after_the_kill():
+    """TemporaryDirectory's exit hook is registered later, so it runs first and
+    cannot delete a runtime whose server is still holding the files open."""
+    backend = LlamaCppBackend()
+    order = []
+    backend._kill_process = lambda: order.append("kill")
+    backend._cleanup_cpu_fallback_runtime = lambda: order.append("clean")
+
+    backend._cleanup()
+
+    assert order == ["kill", "clean"]
+
+
+def test_an_unload_during_staging_takes_the_runtime_back(monkeypatch, tmp_path):
+    """Staging copies a whole runtime, so /unload can land after the first gate
+    and find nothing registered to clean up."""
+    sink = {}
+    with pytest.raises(Exception):
+        _run_cpu_fallback_load(
+            monkeypatch,
+            tmp_path,
+            returncodes = [-11, -11, None],
+            cancel_in_prepare = True,
+            sink = sink,
+        )
+
+    assert len(sink["fallback_sources"]) == 1  # staged
+    assert len(sink["launches"]) == 2          # never spawned
+    assert sink["cleanups"]                    # and handed back
+
+
+def test_a_windows_ggml_assert_reaches_the_cpu_replay(monkeypatch, tmp_path):
+    """MSVC turns GGML_ASSERT into a CRT abort (exit 3), not a signal."""
+    _backend, loaded, launches, fallback_sources = _run_cpu_fallback_load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [3, None],
+        platform = "win32",
+    )
+
+    assert loaded is True
+    assert len(fallback_sources) == 1
+    assert "--device" in launches[-1][0]
+
+
+def test_a_posix_exit_three_is_not_a_crash(monkeypatch, tmp_path):
+    """Exit 3 is an ordinary failure everywhere except the MSVC runtime."""
+    with pytest.raises(Exception):
+        _run_cpu_fallback_load(
+            monkeypatch,
+            tmp_path,
+            returncodes = [3, None],
+            platform = "linux",
+        )
 
 
 def test_an_accepted_replay_request_normalizes_the_placement(monkeypatch, tmp_path):

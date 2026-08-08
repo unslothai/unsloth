@@ -12041,8 +12041,13 @@ class LlamaCppBackend:
                     nonlocal tensor_parallel, tensor_split, gpu_indices, use_fit, _spawn_cwd
                     # Cancel check like every other retry here: an /unload racing
                     # the crash must not leave a CPU server running behind it.
+                    # GGML_ASSERT is a signal on POSIX and a CRT abort (exit 3) on
+                    # MSVC, so Windows needs both to reach the same recovery.
+                    _crashed = self._is_signal_crash(failed_rc) or (
+                        sys.platform == "win32" and self._is_abort_exit(failed_rc)
+                    )
                     if (
-                        not self._is_signal_crash(failed_rc)
+                        not _crashed
                         or not _cpu_fallback_eligible
                         or self._cancel_event.is_set()
                     ):
@@ -12056,6 +12061,12 @@ class LlamaCppBackend:
                         drop_full_offload_threads = _drop_full_offload_threads,
                     )
                     if prepared is None:
+                        return False
+                    if self._cancel_event.is_set():
+                        # Staging copies a whole runtime, so an /unload can land
+                        # after the gate above. unload_model() saw no runtime to
+                        # remove yet, so this one has to take it back itself.
+                        self._cleanup_cpu_fallback_runtime()
                         return False
                     replay, _spawn_cwd = prepared
 
@@ -13797,6 +13808,10 @@ class LlamaCppBackend:
         logging.raiseExceptions = False
         try:
             self._kill_process()
+            # TemporaryDirectory's own exit hook is registered after this one, so
+            # it runs first and cannot delete a staged runtime whose server is
+            # still alive (Windows locks the running exe). Retry after the kill.
+            self._cleanup_cpu_fallback_runtime()
         except Exception:
             # atexit swallows this anyway, and there is nowhere left to report it.
             pass
