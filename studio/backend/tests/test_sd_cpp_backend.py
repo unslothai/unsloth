@@ -265,6 +265,41 @@ def test_download_plan_skips_assets_already_in_the_cache(monkeypatch):
     assert plan["checkpoint_bytes"] == 4_000
 
 
+def test_download_plan_restages_a_native_asset_that_changed_size(monkeypatch):
+    # A same-named republish is what the cache probe cannot see from the ref alone. The plan
+    # already knows the declared size, so pass it: otherwise the stale copy reads as complete and
+    # the load fetches it inline, outside the manager's progress, cancel and disk preflight.
+    from core.inference.diffusion import DiffusionBackend
+
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    seen = {}
+    monkeypatch.setattr(
+        SdCppDiffusionBackend,
+        "_plan_file_sizes",
+        staticmethod(lambda by_repo, token: {
+            ("unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q4_K_M.gguf"): 4_000,
+            ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors"): 300,
+            ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/text_encoders/qwen_3_4b.safetensors"): 8_000,
+        }),
+    )
+
+    def probe(repo_id, filename, revision = None, expected_size = None):
+        seen[filename] = expected_size
+        return True
+
+    monkeypatch.setattr(DiffusionBackend, "_hub_file_is_cached", staticmethod(probe))
+
+    b.download_plan(
+        "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        model_kind = "gguf",
+    )
+
+    assert seen["z-image-turbo-Q4_K_M.gguf"] == 4_000
+    assert seen["split_files/vae/ae.safetensors"] == 300
+    assert all(size for size in seen.values()), "an unsized probe trusts the local ref alone"
+
+
 def test_download_plan_is_empty_when_every_native_asset_is_cached(monkeypatch):
     from core.inference.diffusion import DiffusionBackend
 

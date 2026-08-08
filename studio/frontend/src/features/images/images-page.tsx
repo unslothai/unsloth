@@ -1862,6 +1862,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // companion must not leave that intent behind for a late completion/deferred effect to load.
       pendingStagedLoad.current = null;
       stagedLoadDeferred.current = false;
+      // Staging starts no load, so nothing polls and the poll's own rollback never runs: the
+      // optimistic label has to come back here or the selector keeps describing the resident
+      // model with a quant that was never loaded (and the gallery cache persists it).
+      if (quantRevert.current) {
+        setQuant(quantRevert.current.prev);
+        quantRevert.current = null;
+      }
     },
   });
 

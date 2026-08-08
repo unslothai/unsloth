@@ -1199,6 +1199,13 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       // leave an intent for a late completion or a deferred activation to act on.
       pendingStagedLoad.current = null;
       stagedLoadDeferred.current = false;
+      // No load started, so the poll that owns the after-start rollback never runs: put the
+      // optimistic quant label back, or the selector describes the resident model with a
+      // quant nothing ever loaded.
+      if (quantRevert.current) {
+        setQuant(quantRevert.current.prev);
+        quantRevert.current = null;
+      }
     },
   });
 

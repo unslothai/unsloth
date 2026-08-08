@@ -738,7 +738,13 @@ class SdCppDiffusionBackend:
             # Same missing-file filter the diffusers planner applies: _fetch_assets already reads
             # both cache roots, so staging an asset it can resolve re-downloads it for nothing and
             # fails offline. required_bytes keeps the UNFILTERED sum -- it is the disk footprint.
-            missing = [n for n in names if not DiffusionBackend._hub_file_is_cached(repo, n)]
+            # Sized, so a republished asset under the same name is a miss rather than a silent
+            # inline fetch during the load. Without it the probe trusts the local ref alone.
+            missing = [
+                n
+                for n in names
+                if not DiffusionBackend._hub_file_is_cached(repo, n, None, sizes.get((repo, n)))
+            ]
             if not missing:
                 continue
             entries.append(

@@ -1167,6 +1167,29 @@ def test_a_hidden_diffusion_page_does_not_load_when_its_download_lands():
         assert "handleLoadRef.current(" in flush.group(0), f"{rel}: deferred load never runs"
 
 
+def test_a_staged_download_that_ends_rolls_back_the_optimistic_quant():
+    """A quant pick sets its label optimistically and hands the rollback to whoever learns the
+    load did not take: the `.then` when the load never STARTS, the progress poll when it fails
+    after starting. A staged pick has neither -- staging starts no load, so nothing polls, and
+    `loadOrStage` returns true when it stages, so the `.then` treats it as started.
+
+    So the label has to come back where the plan dies (cancelled, failed, or never started), or
+    the selector goes on describing the still-resident model with a quant nothing ever loaded --
+    and images-page writes that label into the gallery cache, so it survives a remount too."""
+    for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
+        src = _read(rel)
+        cancelled = re.search(r"onCancelled: \(\) => \{.*?\n    \},", src, re.S)
+        assert cancelled, f"{rel}: staged-download onCancelled not found"
+        region = cancelled.group(0)
+        # The pick itself still has to go, or a late completion loads a model nobody asked for.
+        assert "pendingStagedLoad.current = null" in region, f"{rel}: the dead pick is kept"
+        assert "quantRevert.current" in region, f"{rel}: the pending quant rollback is ignored"
+        assert re.search(
+            r"setQuant\(quantRevert\.current\.prev\)", region
+        ), f"{rel}: the optimistic quant outlives the download that was supposed to justify it"
+        assert "quantRevert.current = null" in region, f"{rel}: the rollback is never consumed"
+
+
 def test_staged_downloads_always_scope_their_files():
     """Every staged entry must go out as a scoped job carrying its file list, GGUF
     checkpoints included. A plain snapshot job drops *.gguf via the Hub's ignore list, so
