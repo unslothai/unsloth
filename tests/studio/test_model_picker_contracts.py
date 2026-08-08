@@ -1415,19 +1415,17 @@ def test_a_local_gguf_still_shows_its_remote_companion_footprint():
     The arithmetic differs though: a local checkpoint is not part of `required_bytes` at all, so
     nothing may be subtracted for it, where a hub pick carries its checkpoint inside that total."""
     src = _read("features/model-picker/components/model-selector/pickers.tsx")
-    effect = re.search(
-        r"setCompanionBytesByKey\(new Map\(\)\);(.*?)\n  \}, \[", src, re.S
-    )
+    effect = re.search(r"setCompanionBytesByKey\(new Map\(\)\);(.*?)\n  \}, \[", src, re.S)
     assert effect, "footprint resolution effect not found"
     body = effect.group(1)
     guard = re.search(r"if \(!resolveDownloadFootprint([^)]*)\) \{", body)
     assert guard, "the footprint effect has no bail-out guard"
-    assert "isLocalPath" not in guard.group(1), (
-        "a local pick skips the footprint request, hiding its remote companion set"
-    )
-    assert re.search(r"const checkpoint = isLocalPath\n?\s*\? 0", body), (
-        "a local checkpoint is subtracted from a total it was never part of"
-    )
+    assert "isLocalPath" not in guard.group(
+        1
+    ), "a local pick skips the footprint request, hiding its remote companion set"
+    assert re.search(
+        r"const checkpoint = isLocalPath\n?\s*\? 0", body
+    ), "a local checkpoint is subtracted from a total it was never part of"
 
 
 def test_staged_downloads_always_scope_their_files():
