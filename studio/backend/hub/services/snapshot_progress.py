@@ -34,6 +34,9 @@ logger = get_logger(__name__)
 
 # (repo_id, hf_token) -> (expected_total_bytes, expected_blob_hashes)
 SnapshotMetadataResolver = Callable[[str, Optional[str]], "tuple[int, frozenset[str]]"]
+# repo-relative snapshot path -> whether it belongs to the variant being polled.
+# Supplied per repo kind, so this module keeps knowing nothing about quant labels.
+VariantFileMatcher = Callable[[str], bool]
 
 # One progress log per 10% step per job, so an active download reports progress
 # without emitting a line on every poll.
@@ -69,40 +72,119 @@ def _empty_progress(expected_bytes: int) -> dict:
     }
 
 
+class _EntryManifest:
+    """One manifest read per cache entry, taken only once something asks for it.
+
+    Two callers want it -- the unknown-hash byte fallback and the completion
+    check -- and the completion check only wants it once its cheap byte guards
+    have passed. Reading it up front would put a state-dir lookup on every poll
+    of every repo that is still mid-download.
+    """
+
+    __slots__ = ("_read", "_value", "_loaded")
+
+    def __init__(self, read: Callable[[], Optional[download_manifest.Manifest]]) -> None:
+        self._read = read
+        self._value: Optional[download_manifest.Manifest] = None
+        self._loaded = False
+
+    def get(self) -> Optional[download_manifest.Manifest]:
+        if not self._loaded:
+            self._value = self._read()
+            self._loaded = True
+        return self._value
+
+
+def _variant_bytes_on_disk(
+    manifest: Optional[download_manifest.Manifest],
+    snapshot_dir: Optional[Path],
+    variant_file_matcher: Optional["VariantFileMatcher"],
+) -> int:
+    """Bytes a variant owns, read from the snapshot dir instead of ``blobs/``.
+
+    Only used when the expected blob hashes could not be resolved. The snapshot
+    dir is the one variant-scoped view of the cache: its entries are named per
+    file, so a sibling quant is excluded by name, whereas in the shared
+    ``blobs/`` dir a sibling's bytes are indistinguishable from this variant's
+    and counting them wholesale is the "instant ~900 MB" bug. ``stat`` follows
+    HF's symlink layout and reads the Windows copy layout directly.
+    """
+    if snapshot_dir is None:
+        return 0
+    total = 0
+    if manifest is not None:
+        for expected in manifest.expected_files:
+            if not download_manifest.expected_path_is_safe(expected.path):
+                continue
+            try:
+                total += (snapshot_dir / expected.path).stat().st_size
+            except OSError:
+                continue
+        return total
+    if variant_file_matcher is None:
+        return 0
+    try:
+        entries = sorted(snapshot_dir.rglob("*"))
+    except OSError:
+        return 0
+    for path in entries:
+        try:
+            relative = path.relative_to(snapshot_dir).as_posix()
+            if not variant_file_matcher(relative) or not path.is_file():
+                continue
+            total += path.stat().st_size
+        except (OSError, ValueError):
+            continue
+    return total
+
+
 def _snapshot_complete_on_disk(
     *,
     repo_type: RepoType,
     repo_id: str,
     variant: Optional[str],
     entry: Path,
+    snapshot_dir: Optional[Path],
+    entry_manifest: _EntryManifest,
     expected_total: int,
     completed_bytes: int,
     in_progress_bytes: int,
+    expected_hashes: frozenset[str],
+    matched_hashes: frozenset[str],
+    metadata_total: int,
 ) -> bool:
     if expected_total <= 0 or completed_bytes < expected_total or in_progress_bytes > 0:
         return False
-    snapshot_dir = latest_snapshot_dir(entry)
     if snapshot_dir is None:
         return False
     if variant is None and hf_cache_scan.repo_cache_dir_has_incomplete_blobs(entry):
         return False
-    hub_cache = entry.parent
     if download_manifest.has_cancel_marker(
         repo_type,
         repo_id,
         variant,
-        hub_cache = hub_cache,
+        hub_cache = entry.parent,
     ):
         return False
-    manifest = download_manifest.read_manifest(
-        repo_type,
-        repo_id,
-        variant,
-        hub_cache = hub_cache,
+    manifest = entry_manifest.get()
+    if manifest is not None:
+        return download_manifest.verify_against_disk(manifest, snapshot_dir).ok
+    # No manifest, but the download can still be provably finished: HF metadata
+    # named every blob this revision expects, all of them are on disk finalized,
+    # and their declared sizes are accounted for. That is the same evidence a
+    # manifest verify collects, so refusing it only kept a materialized snapshot
+    # partial forever -- a manifest that was never written (metadata was
+    # unreachable at the end of the run), was deleted, or was filed under a
+    # cache scope this reader can no longer name is not evidence of an
+    # unfinished download. Requires the expected set to have come from metadata:
+    # an empty hash set means "unknown", and a caller's catalog-hinted total is
+    # not something completion may be judged against.
+    return bool(
+        expected_hashes
+        and metadata_total > 0
+        and completed_bytes >= metadata_total
+        and expected_hashes <= matched_hashes
     )
-    if manifest is None:
-        return False
-    return download_manifest.verify_against_disk(manifest, snapshot_dir).ok
 
 
 def compute_snapshot_progress(
@@ -115,6 +197,7 @@ def compute_snapshot_progress(
     registry,
     metadata_resolver: SnapshotMetadataResolver,
     variant: Optional[str] = None,
+    variant_file_matcher: Optional[VariantFileMatcher] = None,
 ) -> dict:
     """Synchronous progress reading. Safe to run under ``asyncio.to_thread``."""
     empty = _empty_progress(expected_bytes)
@@ -138,13 +221,22 @@ def compute_snapshot_progress(
     # when metadata is unavailable (e.g. offline). Take the larger total so a low
     # caller hint can't cap the bar below the revision's real size.
     meta_total, expected_hashes = metadata_resolver(repo_id, hf_token)
+    meta_total = max(0, meta_total)
     expected_total = max(expected_total, meta_total)
 
     # Without resolved hashes, a variant must not count unscoped blobs: sibling
     # quants share one blobs/ dir, so a sibling's bytes (or .incomplete) would be
     # misattributed and make the bar jump backward. A no-variant snapshot owns
     # the whole dir, so it counts unscoped.
-    count_finalized_unscoped = variant is None
+    count_unscoped = variant is None
+    # An empty hash set is "the expected file set could not be determined", not
+    # "this variant has no bytes" -- model_info failing (offline, or a 401 on a
+    # gated repo) is negatively cached, so one failed lookup keeps the set empty
+    # for the whole TTL. Filtering every blob out then reports a finished 33 GB
+    # variant as "0 B of 33 GB" and, because completion is never observed, leaves
+    # Retry/Resume on the card. Fall back to the variant's own files in the
+    # snapshot dir, which stay attributable when the blob hashes do not.
+    variant_file_set_unknown = variant is not None and not expected_hashes
 
     readings: list[tuple[int, int, Optional[str], bool]] = []
     cache_dirs = (
@@ -160,6 +252,7 @@ def compute_snapshot_progress(
     for entry in cache_dirs:
         completed_bytes = 0
         in_progress_bytes = 0
+        matched_hashes: set[str] = set()
         cache_path = hf_cache_scan.resolve_hf_cache_realpath(entry)
         blobs_dir = entry / "blobs"
         if blobs_dir.is_dir():
@@ -177,18 +270,37 @@ def compute_snapshot_progress(
                         if expected_hashes:
                             if blob_hash not in expected_hashes:
                                 continue
-                        elif not count_finalized_unscoped:
+                        elif not count_unscoped:
                             continue
                         in_progress_bytes += blob_bytes_present(f)
                     else:
                         if expected_hashes:
                             if f.name not in expected_hashes:
                                 continue
-                        elif not count_finalized_unscoped:
+                            matched_hashes.add(f.name)
+                        elif not count_unscoped:
                             continue
                         completed_bytes += f.stat().st_size
                 except OSError:
                     continue
+        snapshot_dir = latest_snapshot_dir(entry)
+        entry_manifest = _EntryManifest(
+            lambda entry = entry: download_manifest.read_manifest(
+                repo_type,
+                repo_id,
+                variant,
+                hub_cache = entry.parent,
+            )
+        )
+        if variant_file_set_unknown:
+            completed_bytes = max(
+                completed_bytes,
+                _variant_bytes_on_disk(
+                    entry_manifest.get(),
+                    snapshot_dir,
+                    variant_file_matcher,
+                ),
+            )
         readings.append(
             (
                 completed_bytes,
@@ -199,9 +311,14 @@ def compute_snapshot_progress(
                     repo_id = repo_id,
                     variant = variant,
                     entry = entry,
+                    snapshot_dir = snapshot_dir,
+                    entry_manifest = entry_manifest,
                     expected_total = expected_total,
                     completed_bytes = completed_bytes,
                     in_progress_bytes = in_progress_bytes,
+                    expected_hashes = expected_hashes,
+                    matched_hashes = frozenset(matched_hashes),
+                    metadata_total = meta_total,
                 ),
             )
         )
@@ -279,6 +396,7 @@ async def snapshot_progress_response(
     registry,
     metadata_resolver: SnapshotMetadataResolver,
     variant: Optional[str] = None,
+    variant_file_matcher: Optional[VariantFileMatcher] = None,
 ) -> dict:
     """Async wrapper: offloads the blocking cache walk and never raises."""
     try:
@@ -292,6 +410,7 @@ async def snapshot_progress_response(
             registry = registry,
             metadata_resolver = metadata_resolver,
             variant = variant,
+            variant_file_matcher = variant_file_matcher,
         )
     except Exception as e:
         logger.warning(

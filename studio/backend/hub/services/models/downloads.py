@@ -19,6 +19,7 @@ from hub.schemas.downloads import (
 )
 from hub.utils import download_registry
 from hub.utils import download_manifest
+from hub.utils import gguf_plan
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.hf_cache_state import has_active_incomplete_blobs, preferred_repo_cache_dirs
 from hub.utils.snapshot_filters import blob_hashes_for_siblings
@@ -565,6 +566,17 @@ async def get_gguf_download_progress_response(
             ),
         )
 
+    def _variant_file_matcher(path: str) -> bool:
+        # Which snapshot files a quant owns, for the reading snapshot_progress
+        # falls back to when the blob hashes cannot be resolved. Main shards are
+        # matched by quant label; mmproj and the MTP drafter are downloaded with
+        # every variant, so they belong to whichever one is being polled.
+        if progress_variant is None:
+            return False
+        return gguf_plan.is_main_gguf_variant_path(
+            path, progress_variant
+        ) or gguf_plan.is_companion_gguf_path(path)
+
     return await snapshot_progress.snapshot_progress_response(
         repo_type = "model",
         repo_id = repo_id,
@@ -574,6 +586,7 @@ async def get_gguf_download_progress_response(
         registry = _registry,
         metadata_resolver = _metadata_resolver,
         variant = progress_variant,
+        variant_file_matcher = _variant_file_matcher,
     )
 
 
