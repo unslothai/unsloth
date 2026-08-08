@@ -599,10 +599,11 @@ def _truncate_middle_messages(messages: list, keep_ratio: float):
     if len(groups) <= 1 + protected_tail:
         return messages, 0
 
-    # Size on what the template renders: an unrendered trace in a protected turn would
-    # otherwise be undroppable weight and force the whole middle out to hit the target.
+    # Memoize: the drop loop re-sizes each victim, and json.dumps of a message
+    # carrying a reasoning trace is not cheap. Sum over the list, not the memo,
+    # so a message object appearing twice still counts twice.
     est_of = {id(msg): _estimate_message_tokens(msg) for msg in messages}
-    total_est = sum(est_of.values())
+    total_est = sum(est_of[id(m)] for m in messages)
     target_est = int(total_est * keep_ratio)
 
     anchor = groups[0]
@@ -691,11 +692,21 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     counts = _parse_overflow_counts(err_text)
     messages = body.get("messages") or []
     # Before sizing: see _clip_reasoning_contents for why this cannot wait for a target.
+    pre_clip_est = _estimate_messages_tokens(messages)
     clipped = _clip_reasoning_contents(messages)
     total_est = _estimate_messages_tokens(messages)
     if counts:
         n_prompt, n_ctx = counts
-        keep_ratio = min(0.95, (_OVERFLOW_PROMPT_TARGET_FRACTION * n_ctx) / max(1, n_prompt))
+        prompt_target = _OVERFLOW_PROMPT_TARGET_FRACTION * n_ctx
+        # n_prompt counts the body as sent, i.e. before the clip above. Rescale it by
+        # the estimator's own pre/post-clip ratio (char-vs-token units cancel) so
+        # keep_ratio measures what is still on the wire, not what already went away.
+        if clipped:
+            n_prompt = n_prompt * total_est / max(1, pre_clip_est)
+        if clipped and n_prompt <= prompt_target:
+            keep_ratio = 1.0  # the clip alone fits; evicting history too would be gratuitous
+        else:
+            keep_ratio = min(0.95, prompt_target / max(1.0, n_prompt))
     else:
         n_ctx = None
         keep_ratio = 0.6  # no counts in the error; cut conservatively
@@ -13091,7 +13102,9 @@ async def openai_chat_completions(
         # message (templates reject "developer") and clear prompt to avoid a dup.
         gen_kwargs["messages"] = _set_or_prepend_system_message(
             _structured_tool_history_for_local_template(
-                _flatten_content_parts_for_local_template(_openai_messages_for_passthrough(payload))
+                _flatten_content_parts_for_local_template(
+                    _drop_reasoning_for_local_template(_openai_messages_for_passthrough(payload))
+                )
             ),
             system_prompt,
         )
@@ -18552,7 +18565,12 @@ def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
         else:
             m_clean.pop("tool_calls", None)
         if not m_clean.get("content") and not m_clean.get("tool_calls"):
-            continue  # assistant turn now empty, drop
+            if not m_clean.get("reasoning_content"):
+                continue  # assistant turn now empty, drop
+            # Reasoning-only once the synthetic calls are gone. Pad it the way
+            # _drop_empty_assistant_sentinels would have, which it could not:
+            # that pass ran before the tool_calls were stripped.
+            m_clean["content"] = ""
         sanitized_assistant.append(m_clean)
 
     if not dropped_ids:
@@ -18676,6 +18694,22 @@ def _structured_tool_history_for_local_template(messages: list[dict]) -> list[di
             msg = {**msg, "tool_calls": new_calls}
         out.append(msg)
     return out
+
+
+def _drop_reasoning_for_local_template(messages: list[dict]) -> list[dict]:
+    """Drop ``reasoning_content`` before local (safetensors / MLX) templating.
+
+    llama-server renders a prior trace only where the template gates on
+    ``preserve_thinking``, but a local template is rendered here directly and
+    some read ``message.reasoning_content`` unconditionally, so forwarding it
+    would replay thinking with no opt-in. Reasoning passthrough stays
+    llama-server-only until this path grows the same gate."""
+    return [
+        {k: v for k, v in msg.items() if k != "reasoning_content"}
+        if "reasoning_content" in msg
+        else msg
+        for msg in messages
+    ]
 
 
 def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict], bool]:

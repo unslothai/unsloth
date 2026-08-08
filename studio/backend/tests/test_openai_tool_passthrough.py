@@ -1950,6 +1950,60 @@ class TestDropEmptyAssistantSentinels:
         assert kept.get("reasoning_content") == "i thought about it"
         assert "extra_content" not in kept
 
+    def test_strip_synthetic_tool_calls_keeps_reasoning_only_turn(self):
+        """A turn whose only tool_calls were provider-synthetic is reasoning-only
+        once they are stripped. _drop_empty_assistant_sentinels ran before the
+        strip, so the padding has to happen here or the trace is lost."""
+        from routes.inference import _strip_provider_synthetic_tool_history
+
+        msgs = [
+            {"role": "user", "content": "search for it"},
+            {
+                "role": "assistant",
+                "reasoning_content": "i should search",
+                "tool_calls": [
+                    {
+                        "id": "call_0",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"_server_tool": true}',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_0", "content": "results"},
+        ]
+        out = _strip_provider_synthetic_tool_history(msgs)
+        assistant = [m for m in out if m["role"] == "assistant"]
+        assert len(assistant) == 1
+        assert assistant[0]["reasoning_content"] == "i should search"
+        # llama.cpp needs a content or tool_calls key before it reads reasoning_content.
+        assert assistant[0]["content"] == ""
+        assert "tool_calls" not in assistant[0]
+        # The orphaned synthetic tool reply is still dropped.
+        assert not [m for m in out if m["role"] == "tool"]
+
+    def test_strip_synthetic_tool_calls_still_drops_turn_without_reasoning(self):
+        from routes.inference import _strip_provider_synthetic_tool_history
+
+        msgs = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_0",
+                        "type": "function",
+                        "function": {
+                            "name": "web_search",
+                            "arguments": '{"_server_tool": true}',
+                        },
+                    }
+                ],
+            }
+        ]
+        assert _strip_provider_synthetic_tool_history(msgs) == []
+
 
 class TestGgufVisionMessages:
     _PNG_B64 = (

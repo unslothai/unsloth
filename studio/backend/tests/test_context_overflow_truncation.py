@@ -316,23 +316,82 @@ def test_reasoning_clip_leaves_short_traces_alone():
     assert msgs[0]["reasoning_content"] == "short"
 
 
+def _overflow_error(n_prompt: int, n_ctx: int) -> str:
+    """An exceed_context_size_error body in the shape llama-server actually sends.
+
+    The counts have to parse: on a body _parse_overflow_counts cannot read,
+    _apply_overflow_truncation falls back to a flat keep_ratio and never
+    exercises the n_ctx sizing at all.
+    """
+    return (
+        '{"detail":"llama-server error: {\\"error\\":{\\"code\\":400,'
+        '\\"message\\":\\"the request exceeds the available context size\\",'
+        '\\"type\\":\\"exceed_context_size_error\\",'
+        f'\\"n_prompt_tokens\\":{n_prompt},\\"n_ctx\\":{n_ctx}}}}}"}}'
+    )
+
+
 def test_big_trace_no_longer_evicts_the_whole_middle():
     # Regression: the trace sat in a protected turn, so the drop loop could never shed its
     # weight and evicted extra history chasing a target the trace itself had inflated.
     # Clipping reasoning first makes the outcome independent of the trace.
-    err = (
-        "the request exceeds the available context size. try increasing the context size "
-        "or enable context shift: n_prompt_tokens = 9000, n_ctx = 4096"
-    )
+    err = _overflow_error(9000, 4096)
     with_trace = {"messages": _conversation_with_big_trace()}
     without_trace = {"messages": _conversation_with_big_trace(trace_chars = 0)}
     without_trace["messages"][-2].pop("reasoning_content", None)
 
     assert routes_mod._apply_overflow_truncation(with_trace, err) is True
     assert routes_mod._apply_overflow_truncation(without_trace, err) is True
-    # Within one turn-group of the trace-free run: the trace is no longer what drives
-    # eviction. It was 6 groups worse before the clip moved ahead of the sizing.
-    assert abs(len(with_trace["messages"]) - len(without_trace["messages"])) <= 2
+    # The trace-free control is a different, genuinely overflowing conversation, so it
+    # is a floor and not a convergence target: the trace must never cost MORE history.
+    # It was 6 groups worse before the clip moved ahead of the sizing.
+    assert len(with_trace["messages"]) >= len(without_trace["messages"])
     # The trace was clipped rather than paid for by dropping conversation.
     traces = [m for m in with_trace["messages"] if m.get("reasoning_content")]
     assert traces and _CLIP_MARKER in traces[0]["reasoning_content"]
+
+
+def test_reasoning_clip_alone_prevents_middle_eviction():
+    # Overflow driven almost entirely by the trace: once it is clipped the body fits,
+    # so keep_ratio must be recomputed against the clipped body. Dividing by the
+    # pre-clip n_prompt charged the shrink twice and evicted history anyway.
+    err = _overflow_error(12000, 8192)
+    body = {"messages": _conversation_with_big_trace()}
+    before = len(body["messages"])
+    assert routes_mod._apply_overflow_truncation(body, err) is True
+    assert len(body["messages"]) == before  # nothing dropped, the clip alone was enough
+    assert _CLIP_MARKER in body["messages"][-2]["reasoning_content"]
+    assert body["max_tokens"] == max(1024, int(8192 * (1.0 - routes_mod._OVERFLOW_PROMPT_TARGET_FRACTION)))
+
+
+def test_overflow_without_reasoning_keeps_legacy_keep_ratio():
+    # No trace to clip means no rescale: the drop behaviour must be byte-identical
+    # to before reasoning passthrough existed.
+    err = _overflow_error(9000, 4096)
+    msgs = _conversation_with_big_trace(trace_chars = 0)
+    msgs[-2].pop("reasoning_content", None)
+    body = {"messages": list(msgs)}
+    assert routes_mod._apply_overflow_truncation(body, err) is True
+    keep_ratio = min(0.95, (routes_mod._OVERFLOW_PROMPT_TARGET_FRACTION * 4096) / 9000)
+    expected, dropped = routes_mod._truncate_middle_messages(list(msgs), keep_ratio)
+    assert dropped > 0
+    assert len(body["messages"]) == len(expected)
+
+
+def test_truncate_middle_total_est_counts_aliased_messages():
+    # The per-message estimate is memoized by id(); the total must still sum over the
+    # list so a message object appearing twice is not silently counted once.
+    shared = {"role": "user", "content": "x" * 4000}
+    tail = [
+        {"role": "assistant", "content": "a"},
+        {"role": "user", "content": "b"},
+        {"role": "assistant", "content": "c"},
+        {"role": "user", "content": "d"},
+    ]
+    head = [{"role": "system", "content": "sys"}, {"role": "user", "content": "task"}]
+    aliased = head + [shared, shared] + tail
+    copied = head + [dict(shared), dict(shared)] + tail
+    # Two equal turns must size the same whether or not they are the same object.
+    assert routes_mod._truncate_middle_messages(aliased, 0.5)[1] == (
+        routes_mod._truncate_middle_messages(copied, 0.5)[1]
+    )

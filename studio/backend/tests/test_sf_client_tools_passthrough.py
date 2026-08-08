@@ -883,6 +883,30 @@ def test_unparseable_arguments_string_left_untouched(monkeypatch):
     assert assistant["tool_calls"][0]["function"]["arguments"] == "not json {"
 
 
+def test_reasoning_content_scrubbed_for_local_template(monkeypatch):
+    # reasoning_content is forwarded to llama-server only, where the template gates
+    # it on preserve_thinking. A local template renders here directly, so the field
+    # must not reach it until that path grows the same gate.
+    backend = _ScriptedBackend(_fixed("ok"))
+    payload = _request(
+        tools = [LOOKUP_TOOL],
+        stream = False,
+        messages = [
+            ChatMessage(role = "user", content = "weather?"),
+            ChatMessage(
+                role = "assistant",
+                content = "sunny",
+                reasoning_content = "let me check the forecast",
+            ),
+            ChatMessage(role = "user", content = "and tomorrow?"),
+        ],
+    )
+    _json_body(_call(payload, monkeypatch, backend))
+    templated = backend.calls[0]["messages"]
+    assert all("reasoning_content" not in m for m in templated)
+    assert any(m.get("content") == "sunny" for m in templated)
+
+
 def test_mcp_enabled_without_server_tools_uses_passthrough(monkeypatch):
     # mcp_enabled=true with an empty registry must not silently drop the
     # declared tools; the gate keys on the server-side path claiming the request.
