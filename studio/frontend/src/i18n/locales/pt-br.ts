@@ -405,6 +405,9 @@ export const ptBR = {
         showLlamaUpdates: "Notificações de atualização do llama.cpp",
         showLlamaUpdatesDescription:
           "Notifica quando uma versão mais recente do llama.cpp está disponível para executar novos modelos. Desative se você só treina modelos.",
+        showLoadedModels: "Indicador de modelos carregados",
+        showLoadedModelsDescription:
+          "Mostra um pequeno cartão no canto inferior direito listando todos os modelos atualmente na memória (chat, fala, imagem, vídeo), com um botão para liberar cada um.",
       },
       startup: {
         sectionTitle: "Inicialização",
