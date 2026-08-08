@@ -562,9 +562,8 @@ fn open_attachment_file(path: &Path) -> Result<fs::File, String> {
             .open(path)
             .map_err(|_| unavailable())
     }
-    // The Windows analogue: open the reparse point itself rather than its
-    // target, then refuse it. Literals because windows-sys is not built with
-    // Win32_Storage_FileSystem here, and both are stable std otherwise.
+    // Windows analogue: open the reparse point itself, then refuse it. Literals
+    // because windows-sys is not built with Win32_Storage_FileSystem here.
     #[cfg(windows)]
     {
         use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
@@ -628,9 +627,8 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
     })
 }
 
-// Async, because a sync command runs on the main thread and this one stats,
-// opens and base64s up to 20 MiB per dropped image. Only the token lookup stays
-// here: State is not 'static, and validation itself hits the filesystem.
+// Async: a sync command would base64 up to 20 MiB on the main thread. Only the
+// token lookup stays here; State is not 'static and validation hits the disk.
 #[tauri::command]
 pub async fn read_native_attachment_file(
     window: WebviewWindow,

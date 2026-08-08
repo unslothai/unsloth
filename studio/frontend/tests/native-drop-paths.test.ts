@@ -282,8 +282,7 @@ test("the drop image list matches the composer's file picker", () => {
   assert.deepEqual([...new Set(dropped)], picker);
 });
 
-// A fresh chat persisting remounts the composer, so the instance that queued
-// the batch cannot hand it over itself.
+// A remount means the instance that queued the batch cannot hand it over.
 test("a remounted composer claims the batch its predecessor left behind", () => {
   const store = useNativeIntentStore.getState();
   const intent = {
@@ -315,8 +314,7 @@ test("a remounted composer claims the batch its predecessor left behind", () => 
   assert.deepEqual(after.imageDropOwners, {});
 });
 
-// The ordering the first claim missed: the predecessor's requeue can land after
-// the replacement composer has already claimed once.
+// The predecessor's requeue can land after the replacement has claimed once.
 test("ownership recorded after a claim is still picked up", () => {
   const store = useNativeIntentStore.getState();
   const intent = {

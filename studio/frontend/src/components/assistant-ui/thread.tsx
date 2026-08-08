@@ -2202,8 +2202,7 @@ const Composer: FC<{
         ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
         : targetKey;
     // A fresh chat persisting remounts this composer, so the key it moves to is
-    // not visible from here. Leave the batch tagged with the identity instead;
-    // the next instance with that identity claims it on mount.
+    // not visible here. Tag the batch instead; the next instance claims it.
     const requeue = (intents: NativeIntent[]) => {
       const key = requeueKey();
       const store = useNativeIntentStore.getState();
@@ -2237,9 +2236,8 @@ const Composer: FC<{
             try {
               file = await nativeAttachmentIntentToFile(intent);
             } catch (error) {
-              // Carry on to the next image and report once below: a whole batch
-              // going unreadable at once (volume ejected, tokens expired) would
-              // otherwise be one toast per file.
+              // Report once below rather than one toast per file: a whole batch
+              // can go unreadable at once (volume ejected, tokens expired).
               readFailures += 1;
               lastReadError = error;
               continue;
@@ -2254,9 +2252,8 @@ const Composer: FC<{
             try {
               await aui.composer().addAttachment(file);
             } catch {
-              // Chat-wide, not per file: no vision model, or none loaded. The
-              // adapter has already toasted, and the rest of the batch would
-              // fail the same way, so stop here quietly.
+              // Chat-wide, not per file (no vision model, or none loaded). The
+              // adapter toasted, and the rest would fail alike: stop quietly.
               if (stillThisComposer()) cancelQueuedSendRef.current?.();
               return;
             }
@@ -2271,8 +2268,7 @@ const Composer: FC<{
                 ? lastReadError.message
                 : String(lastReadError),
           });
-          // A re-key is still this composer, so its parked send is ours to drop;
-          // a real thread switch is not.
+          // A re-key still owns the parked send; a real thread switch does not.
           if (stillThisComposer()) cancelQueuedSendRef.current?.();
         }
         // A drain for a target the composer has already left must not touch the
@@ -2293,8 +2289,7 @@ const Composer: FC<{
 
     const unsubscribe = useNativeIntentStore.subscribe((state) => {
       // The predecessor's requeue can land after the claim at setup, so keep
-      // watching rather than claiming once. Owners are keyed by the queue they
-      // left behind, with the composer identity as the value.
+      // watching rather than claiming once.
       const orphaned = Object.entries(state.imageDropOwners).some(
         ([key, owner]) => owner === identityAtSetup && key !== targetKey,
       );
@@ -2835,13 +2830,13 @@ const Composer: FC<{
 
   // Declared here because cancelQueuedSend has to clear the dictation hold too.
   const sendAfterDictationRef = useRef(false);
+  // Composer text while a send waits on dictationBlocked, so an edit can drop it.
   const heldTextRef = useRef<string | null>(null);
 
   const cancelQueuedSend = useCallback(() => {
     pendingSendRef.current = false;
     setPendingSend(false);
-    // A dictation send held behind the same block is the same intent. Leave it
-    // and it fires the transcript on its own once the block clears.
+    // A dictation send held behind the same block would otherwise fire alone.
     sendAfterDictationRef.current = false;
     heldTextRef.current = null;
     dismissWaitToast();
@@ -2866,9 +2861,8 @@ const Composer: FC<{
     [cancelQueuedSend],
   );
 
-  // A materializing image is a wait, not a refusal: park the send so it fires
-  // when the image lands. Both send gates route through here so they cannot
-  // disagree about which blocked submit is recoverable.
+  // A materializing image is a wait, not a refusal: park the send. Both gates
+  // route through here so they cannot disagree on what is recoverable.
   const parkIfWaitingOnImages = useCallback(() => {
     if (
       disabled ||
@@ -3046,7 +3040,6 @@ const Composer: FC<{
     hasPendingAudio,
   });
   const wasDictatingRef = useRef(false);
-  // Composer text while a send waits on dictationBlocked, so an edit can drop it.
   useEffect(() => {
     if (isDictating) {
       if (wasDictatingRef.current) return;

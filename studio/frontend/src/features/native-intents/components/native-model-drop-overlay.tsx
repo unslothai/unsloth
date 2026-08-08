@@ -10,8 +10,7 @@ function overlayCopy(state: NativeModelDropState): { title: string; description:
     };
   }
   if (state.status === "attach") {
-    // Images become vision attachments on the next message; only documents are
-    // indexed, so the mixed drop has to say both.
+    // Only documents are indexed; images ride the next message, so mixed says both.
     const description =
       state.kind === "images"
         ? "Attached to your next message."

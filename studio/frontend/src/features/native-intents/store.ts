@@ -19,9 +19,8 @@ interface NativeIntentState {
   // Bumped, per chat, when a drop fails before it reaches a queue. The composer
   // watches its own key so a failure elsewhere cannot cancel its parked send.
   imageDropFailures: Record<string, number>;
-  // Who a queued image batch belongs to, by composer identity. A fresh chat
-  // persisting remounts the composer, so the outgoing instance cannot hand the
-  // batch over itself: it leaves this note and the new instance claims it.
+  // Owner of a queued image batch, by composer identity. A remount means the
+  // outgoing instance cannot hand the batch over itself, so it leaves a note.
   imageDropOwners: Record<string, string>;
   addIntent: (intent: NativeIntent) => void;
   addAttachments: (targetKey: string, intents: NativeIntent[]) => void;
