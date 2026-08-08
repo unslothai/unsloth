@@ -577,6 +577,9 @@ class VideoBackend:
                         kwargs["gguf_filename"],
                         kwargs.get("hf_token"),
                         cancel_event = cancel_event,
+                        # The plan counts a file cached under EITHER root and stages neither, so the
+                        # load has to resolve through both or it re-pulls what the planner skipped.
+                        reuse_other_cache_root = True,
                     )
                 )
             # An LTX-2.3 checkpoint supplies the VAEs/vocoder/connectors, so the base pull shrinks to scheduler + TE + tokenizer; recompute the estimate.
@@ -967,6 +970,8 @@ class VideoBackend:
                     source.filename,
                     hf_token,
                     cancel_event = cancel,
+                    # Pre-quant encoders are planned with the same both-roots probe.
+                    reuse_other_cache_root = True,
                 )
             except Exception as exc:  # noqa: BLE001 -- no pre-cast file just means the dense encoder
                 if cancel.is_set():
@@ -1020,7 +1025,11 @@ class VideoBackend:
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 local = Path(
-                    hf_hub_download_with_xet_fallback(base, name, hf_token, cancel_event = cancel)
+                    hf_hub_download_with_xet_fallback(
+                        base, name, hf_token, cancel_event = cancel,
+                        # Same reason as the checkpoint: the plan already treats either root as cached.
+                        reuse_other_cache_root = True,
+                    )
                 )
                 if name == "model_index.json":
                     snapshot_root = local.parent
@@ -1613,7 +1622,13 @@ class VideoBackend:
             return root
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
-        return Path(hf_hub_download_with_xet_fallback(repo_id, gguf_filename or "", hf_token))
+        return Path(
+            hf_hub_download_with_xet_fallback(
+                repo_id, gguf_filename or "", hf_token,
+                # Matches the planner's both-roots cache probe, as the diffusion fetches already do.
+                reuse_other_cache_root = True,
+            )
+        )
 
     # ── generation ───────────────────────────────────────────────────────────
 

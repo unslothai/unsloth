@@ -1185,7 +1185,7 @@ def test_a_staged_download_that_ends_rolls_back_the_optimistic_quant():
         assert "pendingStagedLoad.current = null" in region, f"{rel}: the dead pick is kept"
         assert "quantRevert.current" in region, f"{rel}: the pending quant rollback is ignored"
         assert re.search(
-            r"setQuant\(quantRevert\.current\.prev\)", region
+            r"revertPick\(quantRevert\.current\)", region
         ), f"{rel}: the optimistic quant outlives the download that was supposed to justify it"
         assert "quantRevert.current = null" in region, f"{rel}: the rollback is never consumed"
 
@@ -1222,6 +1222,50 @@ def test_a_dying_staged_download_only_rolls_back_its_own_pick():
         assert (
             "stagedQuantRevert.current = null" in region
         ), f"{rel}: the staged owner is never released"
+
+
+def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
+    """Staging never sets `busy`, so a second Hub pick passes handleModelSelect's guard while the
+    first plan is still in flight. Plans then resolve in RESPONSE order, not pick order: the older
+    one would restage over the newer queue, or fall through and load the model the user left.
+
+    So each pick takes a sequence number before awaiting its plan and gives up if a newer one has
+    been made since. It must report started, not failed: returning false would send this pick's
+    `.then` rollback at a label the newer pick now owns."""
+    for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
+        src = _read(rel)
+        assert "const pick = ++pickSeq.current;" in src, f"{rel}: no pick sequence is taken"
+        # Taken before the await, or two picks can share a number.
+        head = re.search(r"const pick = \+\+pickSeq\.current;\n(.*?)await ", src, re.S)
+        assert head and "await" not in head.group(1), f"{rel}: the sequence is taken after an await"
+        guard = re.search(r"if \(pick !== pickSeq\.current\) return (\w+);", src)
+        assert guard, f"{rel}: a superseded plan is not dropped"
+        assert guard.group(1) == "true", (
+            f"{rel}: a superseded pick reports failure, so its rollback fires at the newer pick's label"
+        )
+
+
+def test_a_pick_that_never_loads_restores_its_generation_recipe():
+    """A pick applies its model's step/guidance recipe at the same moment it sets the quant label,
+    optimistically. If the load never takes, the previous pipeline stays resident: restoring only
+    the label leaves a distilled model's low-step, guidance-0 recipe pointed at a non-distilled
+    model, and the next generation silently runs with the wrong settings.
+
+    So the rollback token carries the recipe and every rollback path puts all of it back."""
+    for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
+        src = _read(rel)
+        assert "type PickRevert = { prev: string | null; steps: number; guidance: number };" in src, (
+            f"{rel}: the rollback token does not carry the generation recipe"
+        )
+        revert = re.search(r"const revertPick = useCallback\(\(r: PickRevert\) => \{(.*?)\}, \[\]\);", src, re.S)
+        assert revert, f"{rel}: no shared rollback helper"
+        body = revert.group(1)
+        for setter in ("setQuant(r.prev)", "setSteps(r.steps)", "setGuidance(r.guidance)"):
+            assert setter in body, f"{rel}: rollback does not restore {setter}"
+        # No rollback path may still put back the label alone.
+        assert "setQuant(quantRevert.current.prev)" not in src, (
+            f"{rel}: a rollback path restores the label without its recipe"
+        )
 
 
 def test_staged_downloads_always_scope_their_files():

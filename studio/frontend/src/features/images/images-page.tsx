@@ -1045,6 +1045,10 @@ function RecipePopover({
 
 type Busy = "loading" | "unloading" | "generating" | null;
 
+// What a pick optimistically replaced, so a load that never takes can put all of it back. The quant
+// label and the generation recipe move together at pick time, so they have to roll back together too.
+type PickRevert = { prev: string | null; steps: number; guidance: number };
+
 // The Advanced controls a load sends, with "auto" sentinels resolved to omitted. A staged download pins one at pick time.
 type LoadAdvanced = Pick<
   DiffusionLoadRequest,
@@ -1079,6 +1083,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // Z-Image-Turbo official defaults: 9 steps (= 8 DiT forwards), guidance 0 (distilled, CFG-free).
   const [steps, setSteps] = useState(DEFAULT_GEN.steps);
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
+  // Put back everything a pick optimistically applied. Setters are stable, so this never re-renders on its own.
+  const revertPick = useCallback((r: PickRevert) => {
+    setQuant(r.prev);
+    setSteps(r.steps);
+    setGuidance(r.guidance);
+  }, []);
   const [seed, setSeed] = useState("");
   // Batch size = images per forward pass (VRAM-heavy); count = sequential loops.
   const [batchSize, setBatchSize] = useState(1);
@@ -1188,10 +1198,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const lastLoadSig = useRef<string | null>(null);
   // The quant to restore if the optimistic swap fails: a same-repo change sets `quant` immediately for picker feedback, but a
   // load failing AFTER starting leaves the old pipeline. `{ prev }` distinguishes "revert to null" from "nothing pending".
-  const quantRevert = useRef<{ prev: string | null } | null>(null);
+  // A pick also applies its own step/guidance recipe, so the rollback carries those too: a cancelled Turbo pick
+  // otherwise leaves a 4-step, guidance-0 recipe applied to the non-distilled model that is still resident.
+  const quantRevert = useRef<PickRevert | null>(null);
   // Which quantRevert entry the live staged download belongs to. Staging does not set `busy`, so a second pick can overwrite
   // quantRevert while the first plan is still resolving; without this the dying first job reverts the newer pick's label.
-  const stagedQuantRevert = useRef<{ prev: string | null } | null>(null);
+  const stagedQuantRevert = useRef<PickRevert | null>(null);
+  // Bumped per Hub pick, so a plan that resolves after a newer pick can tell it has been superseded.
+  const pickSeq = useRef(0);
   // The Reapply target to restore if the optimistic swap fails: handleLoad overwrites lastLoad.current at load start, and a
   // load failing after that leaves the previous pipeline resident. Mirrors quantRevert.
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current } | null>(null);
@@ -1580,7 +1594,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         setBusy(null);
         // A load that failed AFTER starting leaves the previous pipeline loaded, so roll the optimistic quant label back.
         if (quantRevert.current) {
-          setQuant(quantRevert.current.prev);
+          revertPick(quantRevert.current);
           quantRevert.current = null;
         }
         // Same rollback for the Reapply target: the previous pipeline is still resident.
@@ -1599,7 +1613,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         setBusy(null);
         // Same optimistic-quant rollback as the error path: the swap did not take.
         if (quantRevert.current) {
-          setQuant(quantRevert.current.prev);
+          revertPick(quantRevert.current);
           quantRevert.current = null;
         }
         // Restore the Reapply target too, so it never lingers on the failed pick after a cancel or eviction.
@@ -1870,7 +1884,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // model with a quant that was never loaded (and the gallery cache persists it). Only for
       // the pick that staged THIS job: a newer pick owns the label from the moment it is made.
       if (quantRevert.current && quantRevert.current === stagedQuantRevert.current) {
-        setQuant(quantRevert.current.prev);
+        revertPick(quantRevert.current);
         quantRevert.current = null;
       }
       stagedQuantRevert.current = null;
@@ -1923,8 +1937,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       const advanced = currentLoadAdvanced(repoId);
       // Read before the await: a pick made while the plan resolves replaces quantRevert, and this job must not revert it.
       const ownRevert = quantRevert.current;
+      // Staging never sets `busy`, so a second pick passes handleModelSelect's guard while this
+      // plan is still in flight. Plans then resolve in response order, not pick order: without
+      // this the older one restages over the newer queue, or loads the model the user left.
+      const pick = ++pickSeq.current;
       try {
         const plan = await requestDownloadPlan(repoId, opts, advanced);
+        // Superseded. Report started so this pick's `.then` leaves the newer label alone.
+        if (pick !== pickSeq.current) return true;
         if (plan.entries.length > 0) {
           pendingStagedLoad.current = { repoId, opts, advanced };
           stagedQuantRevert.current = ownRevert;
@@ -2020,8 +2040,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // GGUF quant pick from the variant expander. Optimistic for instant picker feedback, but revert if the load fails to START
       // or LATER in the poll: the old pipeline stays loaded either way. The poll owns the after-start revert via quantRevert.
       if (meta.ggufVariant && meta.ggufFilename) {
-        const prevQuant = quant;
-        quantRevert.current = { prev: prevQuant };
+        const revert: PickRevert = { prev: quant, steps, guidance };
+        quantRevert.current = revert;
         setQuant(meta.ggufVariant);
         const dq = defaultsFor(id);
         setSteps(dq.steps);
@@ -2032,7 +2052,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           meta.source,
         ).then((started) => {
           if (!started) {
-            setQuant(prevQuant);
+            revertPick(revert);
             quantRevert.current = null;
           }
         });
@@ -2051,15 +2071,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         }
         // A direct pick carries no curated variant label; surface the filename so the selector stops advertising the old quant.
         // Optimistic, reverted if the load fails to start OR later in the poll (mirrors the curated branch above).
-        const prevQuant = quant;
-        quantRevert.current = { prev: prevQuant };
+        const revert: PickRevert = { prev: quant, steps, guidance };
+        quantRevert.current = revert;
         setQuant(filename);
         const dq2 = defaultsFor(id);
         setSteps(dq2.steps);
         setGuidance(dq2.guidance);
         void handleLoad(dir, { kind: "gguf", filename }).then((started) => {
           if (!started) {
-            setQuant(prevQuant);
+            revertPick(revert);
             quantRevert.current = null;
           }
         });
@@ -2072,15 +2092,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const slash = norm.lastIndexOf("/");
         const filename = slash >= 0 ? norm.slice(slash + 1) : norm;
         const dir = slash >= 0 ? norm.slice(0, slash) : ".";
-        const prevQuant = quant;
-        quantRevert.current = { prev: prevQuant };
+        const revert: PickRevert = { prev: quant, steps, guidance };
+        quantRevert.current = revert;
         setQuant(filename);
         const dsf = defaultsFor(id);
         setSteps(dsf.steps);
         setGuidance(dsf.guidance);
         void handleLoad(dir, { kind: "single_file", filename }).then((started) => {
           if (!started) {
-            setQuant(prevQuant);
+            revertPick(revert);
             quantRevert.current = null;
           }
         });
@@ -2092,20 +2112,20 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         return;
       }
       // Optimistically clear the quant label, revert it if the load never starts.
-      const prevQuant = quant;
-      quantRevert.current = { prev: prevQuant };
+      const revert: PickRevert = { prev: quant, steps, guidance };
+      quantRevert.current = revert;
       setQuant(null);
       const d = defaultsFor(id);
       setSteps(d.steps);
       setGuidance(d.guidance);
       void loadOrStage(id, { kind: "pipeline" }, meta.source).then((started) => {
         if (!started) {
-          setQuant(prevQuant);
+          revertPick(revert);
           quantRevert.current = null;
         }
       });
     },
-    [busy, handleLoad, loadOrStage, quant],
+    [busy, handleLoad, loadOrStage, quant, steps, guidance, revertPick],
   );
 
   // Deploy a freshly-trained adapter from the Train tab: switch to Create, load the base, and queue the adapter for the LoRA discovery effect.

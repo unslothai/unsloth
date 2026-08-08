@@ -7,6 +7,7 @@ the signature-gated kwargs actually exercise, sys.modules stubs so no real ML
 stack loads."""
 
 import contextlib
+from pathlib import Path
 import sys
 import threading
 import time
@@ -2105,6 +2106,7 @@ def test_fetch_te_prequant_only_reports_what_it_downloaded(monkeypatch):
         filename,
         token,
         cancel_event = None,
+        **kwargs,
     ):
         raise OSError("404")
 
@@ -2113,7 +2115,7 @@ def test_fetch_te_prequant_only_reports_what_it_downloaded(monkeypatch):
 
     monkeypatch.setattr(
         "utils.hf_xet_fallback.hf_hub_download_with_xet_fallback",
-        lambda repo, filename, token, cancel_event = None: "/tmp/precast.pt",
+        lambda repo, filename, token, cancel_event = None, **kwargs: "/tmp/precast.pt",
     )
     assert backend._fetch_te_prequant({"text_encoder": source}, None) == ("text_encoder",)
     # A local path override is the injection's business (allowlist), and nothing is fetched for it.
@@ -2385,3 +2387,20 @@ def test_attention_trim_skipped_for_static_shape_and_off_tiers(fake_runtime, mon
         assert status["loaded"] is True, mode
         assert calls == [], mode
         assert "hunyuan_attn_trim" not in status["speed_optims"], mode
+
+
+def test_every_video_fetch_resolves_both_cache_roots():
+    """The plan probe accepts a file cached under EITHER root (Studio's cache folder is a
+    setting, so a pre-move download sits under huggingface_hub's import-time root) and stages
+    neither. So every fetch on the load path has to resolve both roots as well, or the file the
+    planner skipped is re-pulled inside the load, outside the manager's progress, cancel and disk
+    preflight -- and fails outright offline. The diffusion and sd.cpp fetches already opt in."""
+    src = (Path(__file__).resolve().parents[1] / "core/inference/video.py").read_text()
+    # The bare `from ... import name` has no trailing paren, so this counts call sites only.
+    calls = src.count("hf_hub_download_with_xet_fallback(")
+    optins = src.count("reuse_other_cache_root = True")
+    assert calls > 0, "no video fetch call sites found; this guard has gone stale"
+    assert optins == calls, (
+        f"{calls - optins} of {calls} video fetches resolve only the active cache root, "
+        "so the planner's both-roots probe can drop a file the load cannot then find"
+    )
