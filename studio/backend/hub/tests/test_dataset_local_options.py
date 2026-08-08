@@ -903,7 +903,10 @@ def test_local_options_rejects_an_arbitrary_supplied_path(tmp_path):
 
 def test_snapshot_options_reject_a_named_default_beside_a_flagged_one(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: default\n  data_files: a.jsonl\n- config_name: other\n  default: true\n  data_files: b.jsonl\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: default\n  data_files: a.jsonl\n- config_name: other\n  default: true\n  data_files: b.jsonl\n",
+    )
     (snapshot / "a.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
     (snapshot / "b.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -912,7 +915,10 @@ def test_snapshot_options_reject_a_named_default_beside_a_flagged_one(tmp_path):
 
 def test_snapshot_options_keep_a_named_default_without_a_flagged_one(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: default\n  data_files: a.jsonl\n- config_name: other\n  data_files: b.jsonl\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: default\n  data_files: a.jsonl\n- config_name: other\n  data_files: b.jsonl\n",
+    )
     (snapshot / "a.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
     (snapshot / "b.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -921,7 +927,9 @@ def test_snapshot_options_keep_a_named_default_without_a_flagged_one(tmp_path):
 
 def test_snapshot_options_reject_an_empty_declared_data_files(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: a\n  data_files: []\n- config_name: b\n  data_dir: b\n")
+    _card(
+        snapshot, "configs:\n- config_name: a\n  data_files: []\n- config_name: b\n  data_dir: b\n"
+    )
     (snapshot / "b").mkdir()
     (snapshot / "b" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 

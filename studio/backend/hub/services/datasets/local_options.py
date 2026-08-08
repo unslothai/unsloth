@@ -51,7 +51,10 @@ _SPLIT_KEYWORDS = {
 # datasets' keyword globs, as regexes, in the order it resolves them. "sep" is its
 # NON_WORDS_CHARS, "**/" leads every pattern and "*" never crosses a directory.
 _SEP = "[-._ 0-9]"
-_FILENAME_KEYWORD_PATTERNS = (r"(?:.*/)?{keyword}%s[^/]*" % _SEP, r"(?:.*/)?[^/]*%s{keyword}%s[^/]*" % (_SEP, _SEP))
+_FILENAME_KEYWORD_PATTERNS = (
+    r"(?:.*/)?{keyword}%s[^/]*" % _SEP,
+    r"(?:.*/)?[^/]*%s{keyword}%s[^/]*" % (_SEP, _SEP),
+)
 _DIR_NAME_KEYWORD_PATTERNS = (
     r"(?:.*/)?{keyword}/.*",
     r"(?:.*/)?{keyword}%s[^/]*/.*" % _SEP,
@@ -64,7 +67,10 @@ _KeywordPatterns = dict[str, list[tuple[tuple[int, int], "re.Pattern[str]"]]]
 def _keyword_patterns(bases: tuple[str, ...]) -> _KeywordPatterns:
     return {
         split: [
-            ((keyword_index, base_index), re.compile(base.format(keyword = re.escape(keyword)) + r"\Z"))
+            (
+                (keyword_index, base_index),
+                re.compile(base.format(keyword = re.escape(keyword)) + r"\Z"),
+            )
             for keyword_index, keyword in enumerate(keywords)
             for base_index, base in enumerate(bases)
         ]
