@@ -70,7 +70,7 @@ const LEGACY_CHAT_IMPORT_KEY = "unsloth_chat_legacy_imported_to_studio_db";
 
 let legacyChatImportPromise: Promise<void> | null = null;
 
-// Bumped whenever the legacy import creates a backend thread row, so a listing can tell whether its read raced one.
+// Bumped whenever a backend thread row is created or backfilled, so a listing can tell whether its read raced one.
 let legacyChatImportGeneration = 0;
 
 // Thread rows whose write is still in flight, keyed by thread id. The runtime starts one without
@@ -82,15 +82,26 @@ export function trackStoredChatThreadRecord(
   threadId: string,
   create: Promise<void>,
 ): void {
-  pendingThreadRecordByThreadId.set(threadId, create);
+  const inFlight = pendingThreadRecordByThreadId.get(threadId);
+  // Overlapping initializations chain rather than replace: waiting on only the newest upsert lets
+  // the slower one land afterwards and overwrite the row a caller has since corrected.
+  const tracked = inFlight
+    ? Promise.allSettled([inFlight, create]).then((results) => {
+        // Only a thread nobody managed to write is a failure worth propagating.
+        if (results.every((result) => result.status === "rejected")) {
+          throw (results[0] as PromiseRejectedResult).reason;
+        }
+      })
+    : create;
+  pendingThreadRecordByThreadId.set(threadId, tracked);
   // A chat abandoned before its first send leaves nobody to await this.
-  create.catch(() => undefined);
+  tracked.catch(() => undefined);
   const forget = () => {
-    if (pendingThreadRecordByThreadId.get(threadId) === create) {
+    if (pendingThreadRecordByThreadId.get(threadId) === tracked) {
       pendingThreadRecordByThreadId.delete(threadId);
     }
   };
-  create.then(forget, forget);
+  tracked.then(forget, forget);
 }
 
 /** Resolves once the thread's row is written, or immediately when nothing is in flight. */
@@ -301,6 +312,8 @@ async function backfillLegacyThreadFields(
       legacyThread.anthropicCodeExecContainerId;
   }
   if (Object.keys(patch).length === 0) return backendThread;
+  // A restored container binding changes what a listing should report, same as a new row.
+  legacyChatImportGeneration += 1;
   try {
     return (
       (await updateChatThread(backendThread.id, patch)) ?? {
@@ -775,6 +788,12 @@ export async function deleteStoredChatThreads(
   // event it would fire) when the active temporary chat is closed.
   const ids = idsToDelete.filter((id) => !isThreadIncognito(id));
   if (ids.length === 0) return;
+  // A row write already in flight would land after the delete and resurrect the thread.
+  await Promise.all(
+    ids.map((id) =>
+      awaitStoredChatThreadRecord(id).catch(() => undefined),
+    ),
+  );
   await deleteChatThreads(ids);
   await db
     .transaction("rw", db.threads, db.messages, async () => {
