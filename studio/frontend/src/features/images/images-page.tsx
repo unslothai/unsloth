@@ -1189,6 +1189,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // The quant to restore if the optimistic swap fails: a same-repo change sets `quant` immediately for picker feedback, but a
   // load failing AFTER starting leaves the old pipeline. `{ prev }` distinguishes "revert to null" from "nothing pending".
   const quantRevert = useRef<{ prev: string | null } | null>(null);
+  // Which quantRevert entry the live staged download belongs to. Staging does not set `busy`, so a second pick can overwrite
+  // quantRevert while the first plan is still resolving; without this the dying first job reverts the newer pick's label.
+  const stagedQuantRevert = useRef<{ prev: string | null } | null>(null);
   // The Reapply target to restore if the optimistic swap fails: handleLoad overwrites lastLoad.current at load start, and a
   // load failing after that leaves the previous pipeline resident. Mirrors quantRevert.
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current } | null>(null);
@@ -1864,11 +1867,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       stagedLoadDeferred.current = false;
       // Staging starts no load, so nothing polls and the poll's own rollback never runs: the
       // optimistic label has to come back here or the selector keeps describing the resident
-      // model with a quant that was never loaded (and the gallery cache persists it).
-      if (quantRevert.current) {
+      // model with a quant that was never loaded (and the gallery cache persists it). Only for
+      // the pick that staged THIS job: a newer pick owns the label from the moment it is made.
+      if (quantRevert.current && quantRevert.current === stagedQuantRevert.current) {
         setQuant(quantRevert.current.prev);
         quantRevert.current = null;
       }
+      stagedQuantRevert.current = null;
     },
   });
 
@@ -1916,10 +1921,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       if (source !== "hub") return handleLoadRef.current(repoId, opts);
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
       const advanced = currentLoadAdvanced(repoId);
+      // Read before the await: a pick made while the plan resolves replaces quantRevert, and this job must not revert it.
+      const ownRevert = quantRevert.current;
       try {
         const plan = await requestDownloadPlan(repoId, opts, advanced);
         if (plan.entries.length > 0) {
           pendingStagedLoad.current = { repoId, opts, advanced };
+          stagedQuantRevert.current = ownRevert;
           stage(
             plan.entries.map((e) => ({
               repoId: e.repo_id,

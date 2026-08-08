@@ -1190,6 +1190,33 @@ def test_a_staged_download_that_ends_rolls_back_the_optimistic_quant():
         assert "quantRevert.current = null" in region, f"{rel}: the rollback is never consumed"
 
 
+def test_a_dying_staged_download_only_rolls_back_its_own_pick():
+    """Staging leaves `busy` null on purpose, so a second Hub pick can be made while the first
+    job is still alive. `quantRevert` is a single ref, so by the time the first job dies it can
+    already hold the SECOND pick's entry: rolling back then reverts a label the newer, still-live
+    pick owns, and nothing restores it when that pick goes on to stage and load.
+
+    So the rollback has to be bound to the pick that staged the job. `loadOrStage` reads the
+    entry BEFORE awaiting its plan (the await is the window in which a newer pick lands) and
+    records it when it stages; the cancel path reverts only on an identity match."""
+    for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
+        src = _read(rel)
+        # Captured before the plan await, otherwise it is the newer pick's entry that gets stored.
+        own = re.search(r"const ownRevert = quantRevert\.current;\n(.*?)await ", src, re.S)
+        assert own, f"{rel}: loadOrStage does not capture its own rollback entry"
+        assert "await" not in own.group(1), f"{rel}: ownRevert is read after an await, so it can be the newer pick's"
+        assert "stagedQuantRevert.current = ownRevert" in src, f"{rel}: the staged job records no owner"
+
+        cancelled = re.search(r"onCancelled: \(\) => \{.*?\n    \},", src, re.S)
+        assert cancelled, f"{rel}: staged-download onCancelled not found"
+        region = cancelled.group(0)
+        assert re.search(
+            r"if \(quantRevert\.current && quantRevert\.current === stagedQuantRevert\.current\)", region
+        ), f"{rel}: a dead job can roll back a newer pick's quant label"
+        # Cleared either way, or a later job inherits this one's owner and reverts on its behalf.
+        assert "stagedQuantRevert.current = null" in region, f"{rel}: the staged owner is never released"
+
+
 def test_staged_downloads_always_scope_their_files():
     """Every staged entry must go out as a scoped job carrying its file list, GGUF
     checkpoints included. A plain snapshot job drops *.gguf via the Hub's ignore list, so

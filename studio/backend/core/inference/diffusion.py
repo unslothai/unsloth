@@ -1542,6 +1542,12 @@ class DiffusionBackend:
         kind = resolve_model_kind(gguf_filename, model_kind)
         if kind == "pipeline":
             base = repo_id  # the full pipeline IS the repo
+        elif fam is None and not (base_repo or "").strip():
+            # An unrecognised GGUF (a neutral repo whose id and filename match no family) has no
+            # companion set to resolve, and the family fallback would raise. The pick still loads:
+            # an empty plan just means nothing to pre-stage. The picker asks for a plan on EVERY
+            # hub pick, so raising here would 500 the route rather than plan no work.
+            return {"entries": [], "total_bytes": 0, "required_bytes": 0, "checkpoint_bytes": 0}
         else:
             base = _resolve_base_repo(repo_id, base_repo, fam, hf_token)
         # Only a checkpoint that really resolves on the Hub earns the right to drop dense shards.

@@ -5517,6 +5517,39 @@ def test_download_plan_for_a_pipeline_kind_ignores_the_prequant_cache(monkeypatc
     assert any(f.startswith("transformer/") for f in plan["entries"][0]["files"])
 
 
+def test_download_plan_declines_an_unrecognised_gguf_instead_of_raising(monkeypatch):
+    # A neutral repo whose id AND filename match no family resolves no companions, and the family
+    # fallback used to raise on None. The picker asks for a plan on every hub pick, so that 500s
+    # the route; planning no work is the honest answer and the load still handles its own fetch.
+    _fake_hf_api(monkeypatch, {})
+
+    plan = DiffusionBackend().download_plan(
+        "someone/mixed-gguf-collection",
+        gguf_filename = "totally-unknown-thing-Q4_K_M.gguf",
+        model_kind = "gguf",
+    )
+
+    assert plan == {"entries": [], "total_bytes": 0, "required_bytes": 0, "checkpoint_bytes": 0}
+
+
+def test_download_plan_still_plans_an_unrecognised_gguf_given_an_explicit_base(monkeypatch):
+    # An explicit base_repo supplies what family detection could not, so the pick must still plan.
+    _fake_hf_api(monkeypatch, {
+        "someone/mixed-gguf-collection": [_FakeSibling("totally-unknown-thing-Q4_K_M.gguf", 4_000)],
+        "unsloth/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
+    })
+    _no_cache(monkeypatch)
+
+    plan = DiffusionBackend().download_plan(
+        "someone/mixed-gguf-collection",
+        gguf_filename = "totally-unknown-thing-Q4_K_M.gguf",
+        model_kind = "gguf",
+        base_repo = "unsloth/Z-Image-Turbo",
+    )
+
+    assert plan["entries"], "an explicit base still has a companion set to stage"
+
+
 # ── teardown fence ────────────────────────────────────────────────────────────
 
 

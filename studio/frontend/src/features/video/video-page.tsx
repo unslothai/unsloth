@@ -628,6 +628,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const lastLoadSig = useRef<string | null>(null);
   // The quant to restore if the current optimistic swap fails.
   const quantRevert = useRef<{ prev: string | null } | null>(null);
+  // Which quantRevert entry the live staged download belongs to. Staging does not set `busy`, so a second pick can overwrite
+  // quantRevert while the first plan is still resolving; without this the dying first job reverts the newer pick's label.
+  const stagedQuantRevert = useRef<{ prev: string | null } | null>(null);
   // The Reapply target (and its canReapply flag) to restore if the optimistic swap fails: handleLoad overwrites lastLoad at
   // load start, and a load failing AFTER that leaves the previous model resident, so the poll rolls it back.
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current; canReapply: boolean } | null>(null);
@@ -1201,11 +1204,13 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       stagedLoadDeferred.current = false;
       // No load started, so the poll that owns the after-start rollback never runs: put the
       // optimistic quant label back, or the selector describes the resident model with a
-      // quant nothing ever loaded.
-      if (quantRevert.current) {
+      // quant nothing ever loaded. Only for the pick that staged THIS job: a newer pick owns
+      // the label from the moment it is made.
+      if (quantRevert.current && quantRevert.current === stagedQuantRevert.current) {
         setQuant(quantRevert.current.prev);
         quantRevert.current = null;
       }
+      stagedQuantRevert.current = null;
     },
   });
 
@@ -1228,6 +1233,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       // still be missing its base repo's text encoder or VAE, and only the plan can see that.
       // The plan is cache-aware, so a fully cached pick comes back with no entries.
       if (source !== "hub") return handleLoadRef.current(repoId, opts);
+      // Read before the await: a pick made while the plan resolves replaces quantRevert, and this job must not revert it.
+      const ownRevert = quantRevert.current;
       try {
         const plan = await getVideoDownloadPlan({
           model_path: repoId,
@@ -1238,6 +1245,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         });
         if (plan.entries.length > 0) {
           pendingStagedLoad.current = { repoId, opts };
+          stagedQuantRevert.current = ownRevert;
           stage(
             plan.entries.map((e) => ({
               repoId: e.repo_id,
