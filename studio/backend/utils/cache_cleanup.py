@@ -97,13 +97,12 @@ def _holds_generated_modules(path: Path) -> bool:
 
 
 def _builtin_cache_paths() -> set:
-    """Paths that are ours by construction, so they need no marker."""
-    paths = {str(p) for p in _CACHE_DIRS}
-    try:
-        paths.add(str(Path.cwd() / "unsloth_compiled_cache"))
-    except OSError:
-        pass
-    return paths
+    """Paths that are ours by construction, so they need no marker.
+
+    The CWD candidate is deliberately not one: Studio is launched from wherever
+    the shell happens to be, and a directory there is only ours if it says so.
+    """
+    return {str(p) for p in _CACHE_DIRS}
 
 
 def _cleanable_cache_dirs() -> "List[tuple]":

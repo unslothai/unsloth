@@ -659,16 +659,17 @@ def test_a_symlinked_session_cannot_serve_files_outside_the_sandbox(tmp_path, mo
     assert not str(Path(resolved).resolve()).startswith(str(outside.resolve()))
 
 
-def test_leftover_executor_scratch_does_not_leak_the_folder(tmp_path, monkeypatch):
-    """A tool call that just finished can leave studio_exec_ behind, and rmdir
-    would then keep the folder forever."""
+def test_the_executor_leaves_nothing_in_the_sandbox(tmp_path, monkeypatch):
+    """Its scratch script lives outside the sandbox, so a chat whose tools only
+    printed is still an empty folder and removable without the opt-in."""
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
 
     from core.inference import tools
 
     tools._workdirs.clear()
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_scratch"))
-    (workdir / "studio_exec_abc123.py").write_text("print(1)")
+    tools._python_exec("print('hi')", session_id = "__LOCALID_scratch")
+    assert list(workdir.iterdir()) == []
 
     assert tools.remove_session_sandbox("__LOCALID_scratch") is True
     assert not workdir.exists()
@@ -711,8 +712,7 @@ def test_the_listing_drops_a_directory_the_route_would_refuse(tmp_path, monkeypa
 
 
 def test_a_user_file_named_like_scratch_is_kept(tmp_path, monkeypatch):
-    """Only the generated studio_exec_<random>.py is internal; a tool may
-    legitimately write studio_exec_results.csv."""
+    """No filename is reserved: everything in the sandbox is the user's."""
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
 
     from core.inference import tools
@@ -722,12 +722,13 @@ def test_a_user_file_named_like_scratch_is_kept(tmp_path, monkeypatch):
     (workdir / "studio_exec_results.csv").write_text("a,b\n")
     (workdir / "studio_exec_ab12cd.py").write_text("print(1)")
 
-    # Reported, because it is the user's.
-    assert "studio_exec_results.csv" in tools._snapshot_workdir_files(str(workdir))
-    # And it blocks removal without the opt-in, unlike the generated script.
+    snapshot = tools._snapshot_workdir_files(str(workdir))
+    assert "studio_exec_results.csv" in snapshot
+    assert "studio_exec_ab12cd.py" in snapshot
+    # Both block removal without the opt-in.
     assert tools.remove_session_sandbox("__LOCALID_prefix1") is False
     assert (workdir / "studio_exec_results.csv").is_file()
-    assert not (workdir / "studio_exec_ab12cd.py").exists()
+    assert (workdir / "studio_exec_ab12cd.py").is_file()
 
 
 def test_an_existing_sandbox_override_keeps_its_permissions(tmp_path, monkeypatch):
@@ -955,8 +956,7 @@ def test_the_listing_walk_is_bounded_like_the_snapshot(tmp_path, monkeypatch):
 
 
 def test_the_listing_shows_a_user_file_named_like_scratch(tmp_path):
-    """studio_exec_results.csv is the user's; only studio_exec_<token>.py is ours,
-    and the snapshot and download route already agree on that."""
+    """Nothing in the sandbox belongs to the executor, so nothing is hidden."""
     from routes import inference
 
     sandbox = tmp_path / "sb"
@@ -965,7 +965,7 @@ def test_the_listing_shows_a_user_file_named_like_scratch(tmp_path):
     (sandbox / "studio_exec_ab12cd.py").write_text("print(1)")
 
     names = inference._sandbox_listing_names(str(sandbox))
-    assert names == ["studio_exec_results.csv"], names
+    assert names == ["studio_exec_ab12cd.py", "studio_exec_results.csv"], names
 
 
 def test_clear_all_chats_can_take_the_files_too(tmp_path, monkeypatch):
@@ -1109,6 +1109,109 @@ def test_the_first_turn_of_a_chat_still_reports_its_files(tmp_path, monkeypatch)
     workdir = Path(tools.resolve_sandbox_workdir("_default"))
     assert (workdir / "first.csv").is_file()
     assert workdir == Path(tools.resolve_sandbox_workdir(None))
+
+
+def test_an_unrelated_cache_named_folder_in_the_cwd_is_not_ours(tmp_path, monkeypatch):
+    """Studio is launched from wherever the shell happens to be, so the name
+    alone cannot license an rmtree."""
+    launch_dir = tmp_path / "someproject"
+    cache = launch_dir / "unsloth_compiled_cache"
+    cache.mkdir(parents = True)
+    (cache / "notes.txt").write_text("keep me")
+    monkeypatch.chdir(launch_dir)
+    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
+
+    from utils import cache_cleanup
+
+    cache_cleanup.clear_unsloth_compiled_cache()
+    assert (cache / "notes.txt").read_text() == "keep me"
+
+
+def test_a_marked_cwd_cache_is_still_cleared(tmp_path, monkeypatch):
+    launch_dir = tmp_path / "studioproject"
+    cache = launch_dir / "unsloth_compiled_cache"
+    cache.mkdir(parents = True)
+    monkeypatch.chdir(launch_dir)
+    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
+
+    from utils import cache_cleanup
+
+    (cache / cache_cleanup.CACHE_MARKER).touch()
+    (cache / "unsloth_compiled_module_gemma3.py").write_text("x = 1\n")
+    cache_cleanup.clear_unsloth_compiled_cache()
+    assert not (cache / "unsloth_compiled_module_gemma3.py").exists()
+
+
+def test_a_user_python_file_is_never_executor_scratch(tmp_path, monkeypatch):
+    """The executor's own file no longer lives in the sandbox, so no filename
+    is reserved and studio_exec_results.py is just a file."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+    from routes import inference
+
+    tools._workdirs.clear()
+    session = "__LOCALID_userpy1"
+    result = tools._python_exec(
+        "open('studio_exec_results.py','w').write('x = 1\\n')", session_id = session
+    )
+    assert "studio_exec_results.py" in result, result
+
+    workdir = Path(tools.get_sandbox_workdir(session))
+    # The executor left nothing of its own behind.
+    assert sorted(p.name for p in workdir.iterdir()) == ["studio_exec_results.py"]
+    assert inference._sandbox_listing_names(str(workdir)) == ["studio_exec_results.py"]
+    # And a delete without the opt-in will not quietly take it.
+    assert tools.remove_session_sandbox(session) is False
+    assert (workdir / "studio_exec_results.py").is_file()
+
+
+def test_a_sandbox_root_at_a_filesystem_root_still_isolates_chats(tmp_path, monkeypatch):
+    """A root already ending in a separator made every session path fail
+    containment, so every chat collapsed into _invalid together."""
+    from core.inference import tools
+
+    assert tools._contained_in_root("/srv/chat", "/") is True
+    assert tools._contained_in_root("/", "/") is False
+    assert tools._contained_in_root("/etc/passwd", str(tmp_path)) is False
+
+    root = tmp_path / "sb"
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+    tools._workdirs.clear()
+    first = Path(tools.get_sandbox_workdir("__LOCALID_alpha1"))
+    second = Path(tools.get_sandbox_workdir("__LOCALID_beta22"))
+    assert first != second
+    assert first.name != "_invalid" and second.name != "_invalid"
+
+
+def test_containment_is_not_fooled_by_a_shared_name_prefix(tmp_path):
+    """The old prefix test would also have accepted a sibling like sb-evil."""
+    from core.inference import tools
+
+    (tmp_path / "sb").mkdir()
+    (tmp_path / "sb-evil").mkdir()
+    assert tools._contained_in_root(str(tmp_path / "sb-evil"), str(tmp_path / "sb")) is False
+    assert tools._contained_in_root(str(tmp_path / "sb" / "chat"), str(tmp_path / "sb")) is True
+
+
+def test_studios_own_sandbox_bookkeeping_is_not_a_user_file(tmp_path, monkeypatch):
+    """The remap sidecar the sandbox sitecustomize writes is ours, and reporting
+    it also made a streamed result differ from a non-streamed one."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+    from routes import inference
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_remap01"))
+    (workdir / ".unsloth_sandbox_remap.json").write_text("{}")
+    (workdir / ".gitignore").write_text("*.pyc\n")
+
+    snapshot = tools._snapshot_workdir_files(str(workdir))
+    assert ".unsloth_sandbox_remap.json" not in snapshot
+    # Other dotfiles are still the user's.
+    assert ".gitignore" in snapshot
+    assert inference._sandbox_listing_names(str(workdir)) == [".gitignore"]
 
 
 if __name__ == "__main__":

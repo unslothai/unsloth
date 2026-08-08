@@ -13534,10 +13534,10 @@ def _sandbox_dir_for(session_id: str, create: bool = True) -> str:
 # from the snapshot walk rather than restated, so the card can never advertise a
 # file this route would then refuse.
 from core.inference.tools import (
+    _INTERNAL_SANDBOX_FILES,
     _MAX_SANDBOX_PATH_SEGMENTS,
     _MAX_SNAPSHOT_DIRS,
     _MAX_SNAPSHOT_FILES,
-    _is_internal_scratch,
     _servable_segment,
 )
 
@@ -13591,8 +13591,8 @@ def _sandbox_listing_names(sandbox_dir: str) -> "list[str]":
             else [d for d in sorted(dirs) if not d.startswith(".") and _servable_segment(d)]
         )
         for entry in sorted(entries):
-            # Mirrors the snapshot: internal scratch out, dotfiles in.
-            if _is_internal_scratch(entry) or not _servable_segment(entry):
+            # Mirrors the snapshot, dotfiles included.
+            if entry in _INTERNAL_SANDBOX_FILES or not _servable_segment(entry):
                 continue
             path = os.path.join(base, entry)
             try:

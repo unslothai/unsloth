@@ -7244,8 +7244,12 @@ def _contained_in_root(workdir: str, root: str) -> bool:
     cached would otherwise keep serving from wherever it now points.
     """
     try:
-        return os.path.realpath(workdir).startswith(os.path.realpath(root) + os.sep)
-    except OSError:
+        resolved, base = os.path.realpath(workdir), os.path.realpath(root)
+        # commonpath, not a prefix test: a root that is a filesystem or volume
+        # root ("/", "D:\\") already ends in a separator, and appending another
+        # made every real session path fail.
+        return resolved != base and os.path.commonpath([resolved, base]) == base
+    except (OSError, ValueError):
         return False
 
 
@@ -7364,15 +7368,6 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
         if delete_files:
             shutil.rmtree(target, ignore_errors = True)
             return not os.path.isdir(target)
-        # Scratch the executor wrote does not count as "the user has files
-        # here": a tool call that just finished can leave a studio_exec_ file
-        # behind, and rmdir would then leak the folder forever.
-        for name in os.listdir(target):
-            if _is_internal_scratch(name):
-                try:
-                    os.unlink(os.path.join(target, name))
-                except OSError:
-                    pass
         os.rmdir(target)  # raises when non-empty, which is the intent
         return True
     except OSError:
@@ -10417,15 +10412,6 @@ def _drain_process_output(
     return "".join(chunks), timed_out
 
 
-# The executor's own scratch: tempfile.mkstemp(prefix = "studio_exec_",
-# suffix = ".py"). Matched in full, since studio_exec_results.csv is the user's.
-_INTERNAL_SCRATCH_RE = re.compile(r"\Astudio_exec_[A-Za-z0-9_]+\.py\Z")
-
-
-def _is_internal_scratch(name: str) -> bool:
-    return bool(_INTERNAL_SCRATCH_RE.match(name))
-
-
 _MAX_REPORTED_FILES = 25
 # A build step or an unpacked archive can leave thousands of files; the walk is
 # bounded so a tool call cannot turn into a filesystem crawl. Counted in path
@@ -10443,6 +10429,11 @@ _SERVABLE_SEGMENT_RE = re.compile(r"\A[^/\\\x00-\x1f]{1,255}\Z")
 
 def _servable_segment(name: str) -> bool:
     return name not in (".", "..") and bool(_SERVABLE_SEGMENT_RE.match(name))
+
+
+# Studio's own bookkeeping, written by the sandbox sitecustomize. One exact
+# name we write ourselves, not a pattern reserved over names a tool may pick.
+_INTERNAL_SANDBOX_FILES = frozenset({".unsloth_sandbox_remap.json"})
 
 
 def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
@@ -10474,7 +10465,7 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
             else [d for d in dirs if not d.startswith(".") and _servable_segment(d)]
         )
         for name in names:
-            if _is_internal_scratch(name) or not _servable_segment(name):
+            if name in _INTERNAL_SANDBOX_FILES or not _servable_segment(name):
                 continue
             path = os.path.join(base, name)
             try:
@@ -10567,7 +10558,10 @@ def _python_exec(
     # Snapshot mtimes to detect new and overwritten files.
     _before = _snapshot_workdir_files(workdir)
     try:
-        fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_", dir = workdir)
+        # Outside the sandbox: keeping it in the workdir meant reserving a
+        # filename pattern, and a script writing studio_exec_results.py then
+        # lost its file to the executor's own housekeeping.
+        fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_")
         # utf-8 so non-ASCII in model-written code survives the OS default codec
         # (Windows cp1252 would otherwise raise UnicodeEncodeError).
         with os.fdopen(fd, "w", encoding = "utf-8") as f:
