@@ -70,6 +70,13 @@ function externalConflictMessage(preflight: DesktopPreflightResult) {
     return "The desktop-owned Unsloth backend is still starting. Wait a moment, then try again.";
   }
 
+  // Do not describe a backend from an unknown install as terminal-started.
+  if (preflight.reason === "ambiguous_root_external_backend_active") {
+    return preflight.port
+      ? `An Unsloth server is already running on port ${preflight.port}, and this app cannot confirm which install it belongs to. Stop that server, then reopen Unsloth.`
+      : "An Unsloth server is already running, and this app cannot confirm which install it belongs to. Stop that server, then reopen Unsloth.";
+  }
+
   if (preflight.reason?.startsWith("desktop_owned_backend_unmanageable:")) {
     return preflight.port
       ? `A desktop-owned Unsloth backend on port ${preflight.port} cannot be safely controlled by this desktop app. Stop that backend, then reopen Unsloth.`

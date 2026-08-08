@@ -24,6 +24,9 @@ logger = structlog.get_logger(__name__)
 
 # 24h TTL keeps the GitHub call off the hot path and within rate limits.
 RELEASE_CACHE_TTL_SECONDS = 24 * 60 * 60
+# Briefly memoize failed lookups so recurring status reads do not retry an
+# unreachable GitHub endpoint on every request.
+RELEASE_FAILURE_CACHE_TTL_SECONDS = 60
 
 
 def read_install_marker(
@@ -178,29 +181,50 @@ def latest_published_release(
     cache_dir: Callable[[], Path],
     fetch: Callable[[str], Optional[str]],
     save: Callable[[str, Optional[str]], None],
+    failed_at: Optional[dict[str, float]] = None,
 ) -> Optional[str]:
-    """Latest release tag for `repo`. Memo + disk-cached (24h TTL).
-    None when offline and never previously cached."""
+    """Latest release tag with optional short-lived failure caching.
+
+    Successes use the 24h memory and disk cache. Supplying ``failed_at`` also
+    caches failures for ``RELEASE_FAILURE_CACHE_TTL_SECONDS``; omitting it keeps
+    retry-on-every-call behavior.
+    """
     if not repo:
         return None
-    now = time.time()
+    # Success timestamps persist to disk and need wall time. Failure timestamps
+    # are process-local and use monotonic time so clock changes cannot extend them.
+    wall_now = time.time()
     if not force_refresh:
+        last_failure = failed_at.get(repo) if failed_at is not None else None
+        if (
+            last_failure is not None
+            and time.monotonic() - last_failure < RELEASE_FAILURE_CACHE_TTL_SECONDS
+        ):
+            cached = memo.get(repo)
+            if cached:
+                return cached[1]
+            disk = load_disk_cache(repo, cache_dir())
+            return disk[1] if disk else None
         cached = memo.get(repo)
-        if cached and now - cached[0] < RELEASE_CACHE_TTL_SECONDS:
+        if cached and wall_now - cached[0] < RELEASE_CACHE_TTL_SECONDS:
             return cached[1]
         disk = load_disk_cache(repo, cache_dir())
-        if disk and now - disk[0] < RELEASE_CACHE_TTL_SECONDS:
+        if disk and wall_now - disk[0] < RELEASE_CACHE_TTL_SECONDS:
             memo[repo] = disk
             return disk[1]
     latest = fetch(repo)
     if latest is None:
+        if failed_at is not None:
+            failed_at[repo] = time.monotonic()
         # Keep the last-good disk value rather than poison it with None.
         disk = load_disk_cache(repo, cache_dir())
         if disk:
             memo[repo] = disk
             return disk[1]
         return None
-    memo[repo] = (now, latest)
+    if failed_at is not None:
+        failed_at.pop(repo, None)
+    memo[repo] = (wall_now, latest)
     save(repo, latest)
     return latest
 

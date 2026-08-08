@@ -18,7 +18,7 @@ from pydantic import (
     model_validator,
 )
 
-from core.inference.llama_server_args import PARALLEL_MAX, PARALLEL_MIN
+from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, PARALLEL_MAX, PARALLEL_MIN
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 
 
@@ -140,6 +140,28 @@ class LoadRequest(BaseModel):
             "for non-GGUF models."
         ),
     )
+    n_batch: Optional[int] = Field(
+        None,
+        ge = BATCH_MIN,
+        le = BATCH_MAX,
+        description = (
+            "Logical prompt batch size for llama-server (--batch-size) for "
+            f"this load ({BATCH_MIN}..{BATCH_MAX}). Omit for the llama.cpp "
+            "default (2048). Ignored for non-GGUF models."
+        ),
+    )
+    n_ubatch: Optional[int] = Field(
+        None,
+        ge = BATCH_MIN,
+        le = BATCH_MAX,
+        description = (
+            "Physical prompt micro-batch size for llama-server (--ubatch-size) "
+            f"for this load ({BATCH_MIN}..{BATCH_MAX}). Omit for the llama.cpp "
+            "default (512). llama.cpp caps it at the batch size. Larger values "
+            "speed up prompt processing at the cost of compute-buffer VRAM. "
+            "Ignored for non-GGUF models."
+        ),
+    )
     tensor_parallel: bool = Field(
         False,
         description = (
@@ -172,6 +194,13 @@ class LoadRequest(BaseModel):
             "llama.cpp's --fit. Ignored unless gpu_memory_mode is 'manual'."
         ),
     )
+    cpu_fallback: bool = Field(
+        False,
+        description = (
+            "Replay a previously recovered automatic Vulkan load in its managed CPU-only "
+            "runtime. Used when restoring that model after a failed switch."
+        ),
+    )
     n_cpu_moe: int = Field(
         0,
         ge = 0,
@@ -192,6 +221,18 @@ class LoadRequest(BaseModel):
             "unless gpu_memory_mode is 'manual' with gpu_layers >= 0."
         ),
     )
+
+    @field_validator("n_batch", "n_ubatch", mode = "before")
+    @classmethod
+    def _no_booleans(cls, value: Any) -> Any:
+        # bool subclasses int and pydantic parses non-strictly, so `true` arrives as 1 and
+        # the load launches --batch-size 1, which llama-server aborts on: a 500 rather than
+        # a 422. Mirrors ModelOverrideRequest._no_booleans so /load and /settings agree.
+        # Kept off the annotation: an Annotated BeforeValidator stops the Field constraints
+        # folding into the int core schema, and they leak into OpenAPI as ge/le.
+        if isinstance(value, bool):
+            raise ValueError("Expected a number, got a boolean.")
+        return value
 
     @field_validator("tensor_split")
     @classmethod
@@ -312,6 +353,24 @@ class ValidateModelRequest(BaseModel):
             "server-wide --parallel default."
         ),
     )
+    n_batch: Optional[int] = Field(
+        None,
+        ge = BATCH_MIN,
+        le = BATCH_MAX,
+        description = (
+            "Batch size (--batch-size) intended for the follow-up load, so the "
+            "coexistence estimate sizes the compute buffer like /load."
+        ),
+    )
+    n_ubatch: Optional[int] = Field(
+        None,
+        ge = BATCH_MIN,
+        le = BATCH_MAX,
+        description = (
+            "Micro-batch size (--ubatch-size) intended for the follow-up load, "
+            "so the coexistence estimate sizes the compute buffer like /load."
+        ),
+    )
     speculative_type: Optional[str] = Field(
         None,
         description = (
@@ -338,6 +397,10 @@ class ValidateModelRequest(BaseModel):
         "native (picked / drag-drop) file's default template can be shown before it is loaded. "
         "Opt-in and, like include_context_length, a metadata-only probe that skips the training "
         "guard. Only the leased file's own embedded template is read, never sibling sidecars.",
+    )
+
+    _no_booleans = field_validator("n_batch", "n_ubatch", mode = "before")(
+        LoadRequest._no_booleans.__func__
     )
 
 
@@ -621,6 +684,14 @@ class _InferenceRuntimeFields(BaseModel):
         -1,
         description = "Manual mode: requested --gpu-layers value (-1 = Auto/--fit, or when not manual).",
     )
+    cpu_fallback_reason: Optional[Literal["vulkan_startup_crash"]] = Field(
+        None,
+        description = (
+            "Why an automatic GGUF load was downgraded to CPU. "
+            "'vulkan_startup_crash' means a managed, auto-selected Vulkan launch "
+            "hard-crashed and the same launch became healthy with GPU devices disabled."
+        ),
+    )
     n_cpu_moe: int = Field(
         0,
         description = "Manual mode: MoE expert layers pinned to CPU (--n-cpu-moe); 0 = none.",
@@ -663,6 +734,20 @@ class _InferenceRuntimeFields(BaseModel):
             "Serving slots the active llama-server actually runs (--parallel "
             "after any fit-time slot reduction). None for non-GGUF loads and "
             "for the diffusion runner, which ignores --parallel."
+        ),
+    )
+    requested_n_batch: Optional[int] = Field(
+        None,
+        description = (
+            "Batch size (--batch-size) the load was invoked with, or None when "
+            "the load left it at the llama.cpp default (or to extra args / env)."
+        ),
+    )
+    requested_n_ubatch: Optional[int] = Field(
+        None,
+        description = (
+            "Micro-batch size (--ubatch-size) the load was invoked with, or None "
+            "when the load left it at the llama.cpp default (or to extra args / env)."
         ),
     )
 

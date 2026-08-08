@@ -2279,3 +2279,129 @@ class TestResponsesStreamHealing:
         ]
         assert len(calls) == 1
         assert calls[0]["item"]["name"] == "lookup"
+
+
+def test_healed_responses_tool_call_stamps_first_token(monkeypatch):
+    # Healed output bypasses append_reply, so a text-form tool call would go untimed
+    # until the item closes near end-of-stream.
+    from core.inference.api_monitor import api_monitor
+
+    xml = TestResponsesStreamHealing._XML
+    tool = TestResponsesStreamHealing._TOOL
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch, [{"choices": [{"delta": {"content": xml}}]}]
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
+    messages = [ChatMessage(role = "user", content = "hi")]
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+    stamped: list[str] = []
+    real_mark = api_monitor.mark_first_token
+    monkeypatch.setattr(
+        api_monitor,
+        "mark_first_token",
+        lambda mid: (stamped.append(mid), real_mark(mid))[1],
+    )
+
+    async def run():
+        response = await _responses_stream(
+            payload, messages, TestResponsesStreamAdapter._Request(), monitor_id
+        )
+        return await TestResponsesStreamAdapter._collect(response)
+
+    asyncio.run(run())
+
+    assert stamped, "a healed tool call is output the client already received"
+
+
+def test_finalized_healed_tool_call_stamps_first_token(monkeypatch):
+    # A response that is only an unclosed tool block heals in finalize() after the
+    # chunk loop, so nothing before it stamped; the item closes several yields later.
+    from core.inference.api_monitor import api_monitor
+
+    unclosed = '<tool_call>{"name":"lookup","arguments":{"q":"x"}}'
+    tool = TestResponsesStreamHealing._TOOL
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch, [{"choices": [{"delta": {"content": unclosed}}]}]
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
+    messages = [ChatMessage(role = "user", content = "hi")]
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+    stamped: list[str] = []
+    real_mark = api_monitor.mark_first_token
+    monkeypatch.setattr(
+        api_monitor,
+        "mark_first_token",
+        lambda mid: (stamped.append(mid), real_mark(mid))[1],
+    )
+
+    async def run():
+        response = await _responses_stream(
+            payload, messages, TestResponsesStreamAdapter._Request(), monitor_id
+        )
+        return await TestResponsesStreamAdapter._collect(response)
+
+    lines = asyncio.run(run())
+
+    # The call really was promoted, so the stamp covers a function_call the client saw.
+    assert any("response.function_call_arguments.delta" in line for line in lines)
+    assert stamped, "a finalized healed call is output the client already received"
+
+
+def test_healed_responses_tool_call_reports_a_tool_call_stop(monkeypatch):
+    # The upstream chunk still says "stop" while this adapter emitted a function_call,
+    # so the monitor would disagree with the chat stream's synthetic finish line.
+    from core.inference.api_monitor import api_monitor
+
+    xml = TestResponsesStreamHealing._XML
+    tool = TestResponsesStreamHealing._TOOL
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch,
+        [{"choices": [{"delta": {"content": xml}, "finish_reason": "stop"}]}],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
+    messages = [ChatMessage(role = "user", content = "hi")]
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+
+    async def run():
+        response = await _responses_stream(
+            payload, messages, TestResponsesStreamAdapter._Request(), monitor_id
+        )
+        return await TestResponsesStreamAdapter._collect(response)
+
+    asyncio.run(run())
+
+    row = next(r for r in api_monitor.snapshot() if r["id"] == monitor_id)
+    assert row["stop_reason"] == "tool_calls"
+
+
+def test_unhealed_responses_stream_keeps_the_upstream_stop(monkeypatch):
+    # Nothing was promoted, so the upstream reason still describes the response.
+    from core.inference.api_monitor import api_monitor
+
+    tool = TestResponsesStreamHealing._TOOL
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch,
+        [{"choices": [{"delta": {"content": "plain text"}, "finish_reason": "stop"}]}],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
+    messages = [ChatMessage(role = "user", content = "hi")]
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+
+    async def run():
+        response = await _responses_stream(
+            payload, messages, TestResponsesStreamAdapter._Request(), monitor_id
+        )
+        return await TestResponsesStreamAdapter._collect(response)
+
+    asyncio.run(run())
+
+    row = next(r for r in api_monitor.snapshot() if r["id"] == monitor_id)
+    assert row["stop_reason"] == "stop"

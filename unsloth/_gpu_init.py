@@ -177,6 +177,7 @@ from unsloth_zoo.device_type import (
 
 # Fix other issues
 from .import_fixes import (
+    fix_transformers5_bare_annotation_configs,
     fix_xformers_performance_issue,
     fix_vllm_aimv2_issue,
     fix_vllm_lora_tokenizer_module,
@@ -208,6 +209,8 @@ from .import_fixes import (
     patch_accelerate_recursively_apply,
 )
 
+# Must run first: guards PretrainedConfig before vLLM defines its config classes.
+fix_transformers5_bare_annotation_configs()
 fix_xformers_performance_issue()
 fix_vllm_aimv2_issue()
 fix_vllm_lora_tokenizer_module()
@@ -249,6 +252,7 @@ patch_peft_weight_converter_compatibility()
 fix_peft_stale_torchao_import_error()
 patch_accelerate_recursively_apply()
 
+del fix_transformers5_bare_annotation_configs
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
 del fix_vllm_lora_tokenizer_module

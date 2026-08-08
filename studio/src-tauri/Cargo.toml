@@ -10,6 +10,8 @@ version = "2026.4.8"
 description = "Unsloth Desktop App"
 authors = ["Unsloth AI"]
 edition = "2021"
+# std::fs::File::lock, used for the desktop ownership id.
+rust-version = "1.89"
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
@@ -19,10 +21,10 @@ tauri-plugin-deep-link = "2"
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-base64 = "0.22"
+base64 = "0.23"
 hmac = "0.13"
 sha2 = "0.11"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
 log = "0.4"
 simplelog = "0.12"
@@ -44,7 +46,7 @@ time = { version = "0.3", features = ["formatting"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-signal-hook = "0.3"
+signal-hook = "0.4"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gdk = "0.18"
@@ -55,7 +57,7 @@ elevated-command = "1.1.2"
 webkit2gtk-sys = "2.0.2"
 
 [target.'cfg(windows)'.dependencies]
-winreg = "0.10"
+winreg = "0.55"
 windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
