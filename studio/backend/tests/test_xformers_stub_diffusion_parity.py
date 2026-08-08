@@ -208,6 +208,7 @@ def test_dense_quant_declines_a_stubbed_torchao(on_windows_rocm):
     from core.inference.diffusion_transformer_quant import dense_transformer_supported
 
     import torch
+
     # The fixture cleared torchao out of sys.modules, so nothing is stubbed yet.
     target = type("T", (), {"device": "cuda", "dtype": torch.bfloat16})()
     assert dense_transformer_supported(target) is True
