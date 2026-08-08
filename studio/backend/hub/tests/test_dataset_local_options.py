@@ -1389,3 +1389,80 @@ def test_snapshot_all_files_come_back_in_resolved_order(tmp_path):
     paths = [path.as_posix() for path in local_options._snapshot_all_files(snapshot)]
     assert paths == sorted(paths)
     assert ".hidden.jsonl" in paths
+
+
+def test_snapshot_options_read_a_glob_class_with_a_literal_caret(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: '[^b]rain.jsonl'\n")
+    (snapshot / "brain.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # Only ! negates a glob class, so ^ is one of the characters it matches.
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_survive_a_glob_the_engine_cannot_compile(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: '[z-a].jsonl'\n")
+    (snapshot / "a.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_treat_a_null_data_dir_as_the_root(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: null\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_all_files_report_a_truncated_walk(tmp_path, monkeypatch):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    for index in range(3):
+        (snapshot / f"train-{index}.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    monkeypatch.setattr(local_options, "_MAX_SNAPSHOT_DATA_FILES", 2)
+
+    assert local_options._snapshot_all_files(snapshot) is None
+
+
+def test_snapshot_options_read_a_data_dir_that_steps_back_inside(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: a/../b\n")
+    (snapshot / "a").mkdir()
+    (snapshot / "a" / "other.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "b").mkdir()
+    (snapshot / "b" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_reject_a_data_dir_whose_first_step_is_missing(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: a/../b\n")
+    (snapshot / "b").mkdir(parents = True)
+    (snapshot / "b" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # The loader walks the string as written, so a missing a/ empties the dataset.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_skip_an_unshowable_config_without_its_siblings(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    long_name = "n" * (local_options._MAX_OPTION_LENGTH + 1)
+    _card(snapshot, f"configs:\n- config_name: {long_name}\n  data_dir: a\n- config_name: short\n  data_dir: b\n")
+    for name in ("a", "b"):
+        (snapshot / name).mkdir(parents = True)
+        (snapshot / name / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("short", "train")}
+
+
+def test_snapshot_options_drop_a_config_recorded_with_no_splits(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n- config_name: other\n  data_dir: e\ndataset_info:\n- config_name: cfg\n  splits: []\n")
+    for name in ("d", "e"):
+        (snapshot / name).mkdir(parents = True)
+        (snapshot / name / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("other", "train")}

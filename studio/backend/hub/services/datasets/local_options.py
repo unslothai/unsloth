@@ -208,14 +208,33 @@ def _safe_data_dir(value: Any) -> Optional[str]:
         return None
     if "\\" in value or "\x00" in value:
         return None
-    # Only a real traversal component escapes; a directory merely spelled release..v2 does not.
-    if ".." in PurePosixPath(value).parts:
-        return None
+    # Only a component that walks out escapes; release..v2 is a name and a/../b is a real
+    # directory the loader reaches, as long as every step of it exists.
+    depth = 0
+    for part in PurePosixPath(value).parts:
+        depth += -1 if part == ".." else 0 if part == "." else 1
+        if depth < 0:
+            return None
     # The loader joins the string as written and globs it. ./a, a/. and a/ all still find
     # the directory; only a doubled separator at the end does not.
     if value.endswith("//"):
         return None
     return value
+
+
+def _normalized_dir(value: str) -> Optional[str]:
+    """A data_dir with its . and .. steps collapsed, or None if it walks out."""
+    parts: list[str] = []
+    for part in PurePosixPath(value).parts:
+        if part == ".":
+            continue
+        if part == "..":
+            if not parts:
+                return None
+            parts.pop()
+        else:
+            parts.append(part)
+    return "/".join(parts)
 
 
 def _valid_declared_data_files(entries: Any) -> bool:
@@ -256,8 +275,8 @@ def _collapsed_configs(payload: Any) -> Any:
     for item in payload:
         if not isinstance(item, dict) or not isinstance(item.get("config_name"), str):
             return _UNPARSABLE_METADATA
-        name = _valid_option(item["config_name"], _CONFIG_RE)
-        if name is None:
+        name = item["config_name"]
+        if _CONFIG_RE.fullmatch(name) is None:
             # datasets raises InvalidConfigName on these rather than skipping the config,
             # so nothing in the snapshot is loadable and inference must not step in.
             return _UNPARSABLE_METADATA
@@ -305,13 +324,18 @@ def _declared_configs(payload: Any) -> Any:
     if defaults > 1:
         return _UNPARSABLE_METADATA
     declared: dict[str, Optional[str]] = {}
-    for name, item in list(collapsed.items())[:_MAX_OPTIONS]:
+    for raw, item in list(collapsed.items())[:_MAX_OPTIONS]:
+        # The loader takes names the picker cannot show. Those configs are skipped, but they
+        # are still real configs, so they keep their say over the module.
+        name = _valid_option(raw, _CONFIG_RE)
+        if name is None:
+            continue
         if item.get("data_files") is not None:
             # Declared, so _add_config_options owns it.
             declared[name] = None
         else:
             # Rewriting an unusable data_dir would silently change the config's scope.
-            declared[name] = _safe_data_dir(item.get("data_dir", ""))
+            declared[name] = _safe_data_dir(item.get("data_dir") or "")
     return declared
 
 
@@ -349,6 +373,19 @@ def _add_dataset_info_options(options: set[tuple[str, str]], payload: Any) -> No
         return
     for config, info in payload.items():
         _add_info_options(options, info, fallback_config = config)
+
+
+def _emptied_configs(payload: Any) -> set[str]:
+    """Configs whose dataset_info records no splits at all. That set is authoritative, so
+    the config is dropped rather than built from whatever the patterns find."""
+    entries = payload if isinstance(payload, list) else [payload]
+    return {
+        name
+        for item in entries
+        if isinstance(item, dict) and isinstance(item.get("splits"), (list, dict))
+        and not item["splits"]
+        and (name := _config_name(item.get("config_name"))) is not None
+    }
 
 
 def _add_config_options(options: set[tuple[str, str]], payload: Any) -> None:
@@ -628,7 +665,7 @@ def _snapshot_data_files(snapshot: Path) -> Optional[list[_DataFile]]:
     return files
 
 
-def _snapshot_all_files(snapshot: Path) -> list[PurePosixPath]:
+def _snapshot_all_files(snapshot: Path) -> Optional[list[PurePosixPath]]:
     """Every file in the snapshot, hidden and __ ones included. Default inference skips
     those, but a declared pattern is allowed to name them, so resolution needs them all."""
     found: list[PurePosixPath] = []
@@ -647,7 +684,9 @@ def _snapshot_all_files(snapshot: Path) -> list[PurePosixPath]:
         dirnames[:] = [name for name in dirnames if not (base / name).is_symlink()]
         for filename in filenames:
             if len(found) >= _MAX_SNAPSHOT_DATA_FILES:
-                return found
+                # Past the cap this is a traversal-order prefix, and deciding a declaration is
+                # missing from a prefix would drop configs that are really there.
+                return None
             found.append(PurePosixPath((relative / filename).as_posix()))
     # fsspec returns each glob's matches sorted, and only the first files decide the module.
     found.sort(key = lambda path: path.as_posix())
@@ -803,8 +842,12 @@ def _declared_module(payload: Any, files: Iterable[PurePosixPath]) -> Optional[s
     return _paths_module(_declared_paths(next(iter(collapsed.values()))), files)
 
 
-def _glob_matcher(pattern: str) -> "re.Pattern[str]":
-    """One fsspec glob as a regex. ** crosses directories, * and ? never do."""
+def _glob_matcher(pattern: str) -> "Optional[re.Pattern[str]]":
+    """One fsspec glob as a regex, or None when it is not one the engine can compile.
+
+    ** crosses directories, * and ? never do. A pattern the engine refuses is one the loader
+    cannot resolve either, so the caller treats it as matching nothing.
+    """
     parts = []
     index = 0
     while index < len(pattern):
@@ -827,12 +870,20 @@ def _glob_matcher(pattern: str) -> "re.Pattern[str]":
         elif character == "[" and "]" in pattern[index + 1 :]:
             end = pattern.index("]", index + 1)
             body = pattern[index + 1 : end]
-            parts.append("[" + ("^" + body[1:] if body.startswith("!") else body) + "]")
+            if body.startswith("!"):
+                body = "^" + body[1:]
+            elif body.startswith("^"):
+                # Only ! negates a glob class, so a leading caret is a literal one.
+                body = "\\^" + body[1:]
+            parts.append("[" + body + "]")
             index = end + 1
         else:
             parts.append(re.escape(character))
             index += 1
-    return re.compile("".join(parts) + r"\Z")
+    try:
+        return re.compile("".join(parts) + r"\Z")
+    except re.error:
+        return None
 
 
 def _explicit_parts(value: str, prefix: str) -> int:
@@ -850,6 +901,8 @@ def _resolved_paths(pattern: str, files: Iterable[PurePosixPath]) -> list[PurePo
     # The filesystem normalises ./x to x before it globs, so the matcher has to as well.
     pattern = PurePosixPath(pattern.strip("/")).as_posix()
     matcher = _glob_matcher(pattern)
+    if matcher is None:
+        return []
     ignored = _IGNORED_DATA_FILENAMES - {PurePosixPath(pattern).name}
     return [
         path
@@ -961,7 +1014,14 @@ def _inferred_snapshot_options(
     options: set[tuple[str, str]] = set()
     scans = {} if scans is None else scans
     for config, data_dir in configs:
-        root = data_dir.strip("/")
+        raw = data_dir.strip("/")
+        # The loader walks the string as written, so every step of it has to be there, and
+        # the cache resolver only takes the collapsed form.
+        if raw and not (snapshot / raw).is_dir():
+            continue
+        root = _normalized_dir(raw)
+        if root is None:
+            continue
         if root not in scans:
             scans[root] = _snapshot_data_files(snapshot / root if root else snapshot)
         files = scans[root]
@@ -1043,9 +1103,13 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
         for config, data_dir in declared_configs.items()
         if data_dir is not None and not any(existing == config for existing, _split in options)
     ]
-    if declared_configs:
-        collapsed = _collapsed_configs(card_data.get("configs"))
+    # Whether the loader has configs at all, not whether the picker can show them: a card
+    # naming only an unshowable config still stops datasets inferring a default one.
+    collapsed = _collapsed_configs(card_data.get("configs"))
+    if collapsed:
         declared_files = _snapshot_all_files(snapshot)
+        if declared_files is None:
+            return set()
         unresolvable = _unresolvable_configs(collapsed, declared_files)
         if next(iter(collapsed)) in unresolvable:
             # The first config is resolved before any module is chosen, so a declaration that
@@ -1056,8 +1120,13 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
         )
         # One builder serves every config, so a config declaring another format is dead:
         # it either fails to generate or silently misreads its own files.
-        dead = unresolvable | _mismatched_configs(collapsed, required, declared_files)
+        dead = (
+            unresolvable
+            | _mismatched_configs(collapsed, required, declared_files)
+            | _emptied_configs(info)
+        )
         options = {(config, split) for config, split in options if config not in dead}
+        pending = [entry for entry in pending if entry[0] not in dead]
         if pending:
             options.update(_inferred_snapshot_options(snapshot, pending, required, scans))
     elif not options:
