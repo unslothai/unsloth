@@ -129,10 +129,44 @@ def _mtime(path: Path) -> float:
         return 0.0
 
 
+GalleryCursor = tuple[float, str]
+
+
+def _list_audio_entries(
+    limit: Optional[int] = None,
+    offset: int = 0,
+    *,
+    before: Optional[GalleryCursor] = None,
+    valid: Optional[Callable[[dict[str, Any]], bool]] = None,
+) -> list[tuple[dict[str, Any], GalleryCursor]]:
+    try:
+        paths = list(gallery_dir().glob("*.wav"))
+    except OSError:
+        return []
+    keyed_paths = [((_mtime(path), path.stem), path) for path in paths]
+    keyed_paths.sort(key = lambda item: item[0], reverse = True)
+    want = None if limit is None else offset + limit
+    entries = []
+    for cursor, path in keyed_paths:
+        if before is not None and cursor >= before:
+            continue
+        meta = _read_meta(_sidecar_path(path.stem))
+        if meta is None:
+            continue
+        record = _record(path.stem, meta)
+        if valid is not None and not valid(record):
+            continue
+        entries.append((record, cursor))
+        if want is not None and len(entries) >= want:
+            break
+    return entries[offset:] if limit is None else entries[offset : offset + limit]
+
+
 def list_audio(
     limit: Optional[int] = None,
     offset: int = 0,
     *,
+    before: Optional[GalleryCursor] = None,
     valid: Optional[Callable[[dict[str, Any]], bool]] = None,
 ) -> list[dict[str, Any]]:
     """A newest-first window of clips for infinite scroll.
@@ -141,25 +175,26 @@ def list_audio(
     window's sidecars are read. limit=None returns everything from ``offset``
     on. A file without its pair is skipped. ``valid`` filters records BEFORE
     pagination so offset, limit and has_more all count over the accepted-record
-    domain; pass the route's schema validator."""
-    try:
-        paths = list(gallery_dir().glob("*.wav"))
-    except OSError:
-        return []
-    paths.sort(key = _mtime, reverse = True)
-    want = None if limit is None else offset + limit
-    records = []
-    for path in paths:
-        meta = _read_meta(_sidecar_path(path.stem))
-        if meta is None:
-            continue
-        record = _record(path.stem, meta)
-        if valid is not None and not valid(record):
-            continue
-        records.append(record)
-        if want is not None and len(records) >= want:
-            break
-    return records[offset:] if limit is None else records[offset : offset + limit]
+    domain; pass the route's schema validator. ``before`` is an exclusive,
+    stable continuation cursor for callers that must tolerate deletions between
+    pages."""
+    return [
+        record
+        for record, _ in _list_audio_entries(
+            limit, offset, before = before, valid = valid
+        )
+    ]
+
+
+def list_audio_page(
+    limit: int,
+    offset: int = 0,
+    *,
+    before: Optional[GalleryCursor] = None,
+    valid: Optional[Callable[[dict[str, Any]], bool]] = None,
+) -> list[tuple[dict[str, Any], GalleryCursor]]:
+    """Return records with their stable pagination keys for the HTTP route."""
+    return _list_audio_entries(limit, offset, before = before, valid = valid)
 
 
 def delete(audio_id: str) -> bool:

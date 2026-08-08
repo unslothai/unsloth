@@ -1030,7 +1030,11 @@ def _scan_cached_models(
                 row_task = (
                     "automatic-speech-recognition"
                     if is_whisper_stt
-                    else _cached_row_task(repo_info, gguf = False)
+                    else (
+                        "text-to-speech"
+                        if local_metadata.get("pipeline_tag") == "text-to-speech"
+                        else _cached_row_task(repo_info, gguf = False)
+                    )
                 )
                 if is_whisper_stt:
                     local_metadata["pipeline_tag"] = "automatic-speech-recognition"

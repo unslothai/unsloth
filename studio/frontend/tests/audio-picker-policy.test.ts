@@ -294,6 +294,10 @@ test("community Audio feeds participate in both infinite-scroll paths", () => {
   assert.match(pickerSource, /communityQuerySearch\.fetchMore\(\)/);
   assert.match(pickerSource, /communityBrowse\.fetchMore\(\)/);
   assert.match(pickerSource, /recommendedHasMore/);
+  assert.match(
+    pickerSource,
+    /const unslothRequested = hasMore \? fetchMore\(\) : false;[\s\S]*const communityRequested =[\s\S]*communityQuerySearch\.fetchMore\(\)/,
+  );
 });
 
 test("macOS TTS search only offers directly runnable or curated GGUF-backed rows", () => {

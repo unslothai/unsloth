@@ -3707,12 +3707,12 @@ export function HubModelPicker({
   const searchIsLoadingMore =
     isLoadingMore || communityQuerySearch.isLoadingMore;
   const fetchSearchMore = useCallback((): boolean | undefined => {
-    if (hasMore) {
-      return fetchMore();
-    }
-    if (communityDiscoveryEnabled && communityQuerySearch.hasMore) {
-      return communityQuerySearch.fetchMore();
-    }
+    const unslothRequested = hasMore ? fetchMore() : false;
+    const communityRequested =
+      communityDiscoveryEnabled && communityQuerySearch.hasMore
+        ? communityQuerySearch.fetchMore()
+        : false;
+    if (unslothRequested || communityRequested) return true;
     return undefined;
   }, [
     hasMore,

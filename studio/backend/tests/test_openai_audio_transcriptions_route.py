@@ -28,9 +28,17 @@ def _make_client(monkeypatch, transcribe = None):
         language,
         fast,
         engine = None,
+        request = None,
     ):
         calls.append(
-            {"raw": raw, "model": model, "language": language, "fast": fast, "engine": engine}
+            {
+                "raw": raw,
+                "model": model,
+                "language": language,
+                "fast": fast,
+                "engine": engine,
+                "request": request,
+            }
         )
         if transcribe is not None:
             return await transcribe(raw)
@@ -66,6 +74,7 @@ def test_json_response_is_text_only(monkeypatch):
     assert resp.json() == {"text": "hello sloth"}
     assert calls[0]["raw"] == b"RIFFfake"
     assert calls[0]["fast"] is False
+    assert calls[0]["request"] is not None
 
 
 def test_text_response_is_plain_body(monkeypatch):

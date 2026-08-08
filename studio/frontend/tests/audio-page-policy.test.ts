@@ -271,11 +271,15 @@ test("file transcription cannot overlap a pending microphone permission", () => 
 test("gallery refresh preserves fallback selection and pagination identity", () => {
   assert.match(
     audioPageSource,
+    /const generation = \+\+galleryRefreshGeneration\.current;[\s\S]*listAudioGallery\(0, PAGE_SIZE\);[\s\S]*if \(generation !== galleryRefreshGeneration\.current\) return/,
+  );
+  assert.match(
+    audioPageSource,
     /!fallbackClipRef\.current[\s\S]*page\.audio\.length > 0/,
   );
   assert.match(
     audioPageSource,
-    /galleryCache\.nextOffset \+= page\.audio\.length;[\s\S]*new Set\(galleryCache\.clips\.map[\s\S]*filter\(\(clip\) => !known\.has\(clip\.id\)\)/,
+    /listAudioGallery\([\s\S]*galleryCache\.nextCursor[\s\S]*galleryCache\.nextCursor =[\s\S]*page\.next_before_mtime[\s\S]*new Set\(galleryCache\.clips\.map[\s\S]*filter\(\(clip\) => !known\.has\(clip\.id\)\)/,
   );
 });
 

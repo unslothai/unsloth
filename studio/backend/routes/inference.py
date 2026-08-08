@@ -9054,7 +9054,12 @@ async def openai_audio_transcriptions(
     # openai's whisper-1 placeholder means the default transcription model, not a sidecar id
     sidecar_model = None if model in (None, "", "whisper-1") else model
     result = await _transcribe_audio_result(
-        raw, sidecar_model, language, fast = False, engine = _stt_engine_for_model(sidecar_model)
+        raw,
+        sidecar_model,
+        language,
+        fast = False,
+        engine = _stt_engine_for_model(sidecar_model),
+        request = request,
     )
     if fmt == "text":
         return PlainTextResponse(content = str(result.get("text", "")))
@@ -20710,6 +20715,8 @@ async def clear_gallery_images(current_subject: str = Depends(get_current_subjec
 async def list_gallery_audio(
     limit: int = 50,
     offset: int = 0,
+    before_mtime: Optional[float] = None,
+    before_id: Optional[str] = None,
     current_subject: str = Depends(get_current_subject),
 ):
     from pydantic import ValidationError
@@ -20718,6 +20725,13 @@ async def list_gallery_audio(
 
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
+    if (before_mtime is None) != (before_id is None):
+        raise HTTPException(status_code = 400, detail = "Incomplete audio gallery cursor.")
+    before = (
+        (before_mtime, before_id)
+        if before_mtime is not None and before_id is not None
+        else None
+    )
 
     # validate inside the pager so offset, limit and has_more count over the accepted domain
     def _valid_gallery_audio(record: dict) -> bool:
@@ -20728,12 +20742,23 @@ async def list_gallery_audio(
         return True
 
     # fetch one extra to learn whether more remain, without a second scan
-    records = await asyncio.to_thread(
-        audio_gallery.list_audio, limit + 1, offset, valid = _valid_gallery_audio
+    entries = await asyncio.to_thread(
+        audio_gallery.list_audio_page,
+        limit + 1,
+        offset,
+        before = before,
+        valid = _valid_gallery_audio,
     )
-    has_more = len(records) > limit
-    audio = [AudioGalleryItem(**r) for r in records[:limit]]
-    return AudioGalleryListResponse(audio = audio, has_more = has_more)
+    has_more = len(entries) > limit
+    visible = entries[:limit]
+    audio = [AudioGalleryItem(**record) for record, _ in visible]
+    next_cursor = visible[-1][1] if has_more and visible else None
+    return AudioGalleryListResponse(
+        audio = audio,
+        has_more = has_more,
+        next_before_mtime = next_cursor[0] if next_cursor else None,
+        next_before_id = next_cursor[1] if next_cursor else None,
+    )
 
 
 @studio_router.get("/audio/gallery/{audio_id}/file")

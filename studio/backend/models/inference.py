@@ -3122,6 +3122,8 @@ class AudioGalleryListResponse(BaseModel):
 
     audio: List[AudioGalleryItem] = Field(default_factory = list)
     has_more: bool = False
+    next_before_mtime: Optional[float] = None
+    next_before_id: Optional[str] = None
 
 
 # ── Video (local text-to-video) ──

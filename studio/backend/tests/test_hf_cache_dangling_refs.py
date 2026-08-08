@@ -1664,6 +1664,39 @@ def test_task_inventory_exposes_cached_custom_whisper_as_non_chat_asr(tmp_path, 
     assert rows[0]["capabilities"]["can_chat"] is False
 
 
+def test_task_inventory_preserves_cached_community_tts_pipeline(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from hub.services.models import cache_inventory
+
+    _repo_with(
+        tmp_path,
+        snapshots = {
+            SNAPSHOT: {
+                "config.json": b'{"model_type":"llama"}',
+                "model.safetensors": b"\0" * 256,
+                "README.md": b"---\npipeline_tag: text-to-speech\nlibrary_name: transformers\n---\n",
+            }
+        },
+        refs = {"main": SNAPSHOT},
+        name = "models--community--orpheus-tts",
+    )
+    monkeypatch.setattr(inventory_scan, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = tmp_path),
+    )
+    inventory_scan.invalidate_hf_cache_scans()
+    try:
+        rows = cache_inventory._scan_cached_models()
+    finally:
+        inventory_scan.invalidate_hf_cache_scans()
+
+    assert len(rows) == 1
+    assert rows[0]["task"] == "text-to-speech"
+    assert rows[0]["pipeline_tag"] == "text-to-speech"
+
+
 def test_a_secondary_dangling_ref_still_judges_the_recovered_snapshot(tmp_path, monkeypatch):
     """refs/main resolves while refs/stale dangles, so recovery fires but the default-ref test does
     not. The pinned snapshot is short a shard with no marker, manifest or .incomplete blob, so its

@@ -72,14 +72,20 @@ export interface AudioGalleryClip {
 export interface AudioGalleryListResponse {
   audio: AudioGalleryClip[];
   has_more: boolean;
+  next_before_mtime: number | null;
+  next_before_id: string | null;
 }
 
 export async function listAudioGallery(
   offset: number,
   limit: number,
+  before?: { mtime: number; id: string } | null,
 ): Promise<AudioGalleryListResponse> {
+  const cursor = before
+    ? `&before_mtime=${encodeURIComponent(before.mtime)}&before_id=${encodeURIComponent(before.id)}`
+    : "";
   const response = await authFetch(
-    `/api/inference/audio/gallery?offset=${offset}&limit=${limit}`,
+    `/api/inference/audio/gallery?offset=${offset}&limit=${limit}${cursor}`,
   );
   return parseJson<AudioGalleryListResponse>(response);
 }

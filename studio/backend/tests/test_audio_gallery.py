@@ -86,6 +86,18 @@ def test_list_paginates_with_limit_offset():
     assert len(gallery.list_audio(offset = 4)) == 1
 
 
+def test_cursor_pagination_does_not_skip_after_earlier_clip_is_deleted():
+    records = [_save_with_mtime(prompt, float(i)) for i, prompt in enumerate("DCBA", 1)]
+    page1 = gallery.list_audio_page(limit = 3)
+    visible1 = page1[:2]
+    assert [record["prompt"] for record, _ in visible1] == ["A", "B"]
+
+    # Removing A shifts every offset, but the exclusive B cursor still starts at C.
+    assert gallery.delete(records[-1]["id"]) is True
+    page2 = gallery.list_audio(limit = 2, before = visible1[-1][1])
+    assert [record["prompt"] for record in page2] == ["C", "D"]
+
+
 def test_audio_path_rejects_unsafe_ids():
     # Traversal / bad chars / absolute paths never resolve to a path.
     assert gallery.audio_path("../../etc/passwd") is None

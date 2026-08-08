@@ -139,13 +139,13 @@ const CLIP_BLOB_BUDGET_BYTES = 64 * 1024 * 1024;
 const galleryCache: {
   clips: AudioGalleryClip[];
   hasMore: boolean;
-  nextOffset: number;
+  nextCursor: { mtime: number; id: string } | null;
   selectedId: string | null;
   srcById: BlobUrlCache;
 } = {
   clips: [],
   hasMore: false,
-  nextOffset: 0,
+  nextCursor: null,
   selectedId: null,
   srcById: new BlobUrlCache(CLIP_BLOB_BUDGET_BYTES),
 };
@@ -284,6 +284,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const fallbackClipRef = useRef(fallbackClip);
   fallbackClipRef.current = fallbackClip;
   const loadingMoreRef = useRef(false);
+  const galleryRefreshGeneration = useRef(0);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordStreamRef = useRef<MediaStream | null>(null);
   const discardRecordingRef = useRef(false);
@@ -452,11 +453,16 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   }, []);
 
   const refreshGallery = useCallback(async () => {
+    const generation = ++galleryRefreshGeneration.current;
     try {
       const page = await listAudioGallery(0, PAGE_SIZE);
+      if (generation !== galleryRefreshGeneration.current) return;
       galleryCache.clips = page.audio;
       galleryCache.hasMore = page.has_more;
-      galleryCache.nextOffset = page.audio.length;
+      galleryCache.nextCursor =
+        page.next_before_mtime !== null && page.next_before_id !== null
+          ? { mtime: page.next_before_mtime, id: page.next_before_id }
+          : null;
       setClips(page.audio);
       setHasMore(page.has_more);
       if (
@@ -484,9 +490,18 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     // same offset and append the same page, duplicating clips and React keys.
     if (loadingMoreRef.current) return;
     loadingMoreRef.current = true;
+    const refreshGeneration = galleryRefreshGeneration.current;
     try {
-      const page = await listAudioGallery(galleryCache.nextOffset, PAGE_SIZE);
-      galleryCache.nextOffset += page.audio.length;
+      const page = await listAudioGallery(
+        0,
+        PAGE_SIZE,
+        galleryCache.nextCursor,
+      );
+      if (refreshGeneration !== galleryRefreshGeneration.current) return;
+      galleryCache.nextCursor =
+        page.next_before_mtime !== null && page.next_before_id !== null
+          ? { mtime: page.next_before_mtime, id: page.next_before_id }
+          : null;
       const known = new Set(galleryCache.clips.map((clip) => clip.id));
       galleryCache.clips = [
         ...galleryCache.clips,
