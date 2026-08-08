@@ -160,6 +160,10 @@ def test_rollback_keeps_state_when_the_move_stops_partway(tmp_path: Path, shell:
 $ErrorActionPreference = "Stop"
 $StudioHome = $env:TEST_STUDIO_HOME
 function substep {{ param([string]$Text, [string]$Color) }}
+# The split-move warning goes through install.ps1's UTF-8 stdout sink. Echo it so
+# the assertions below can read it; without this the call is a command-not-found
+# terminating error that the try/catch swallows, and the warning is simply lost.
+function Write-StudioLine {{ param([string]$Message, [string]$ForegroundColor) Write-Host $Message }}
 function Move-Item {{
     param([string]$LiteralPath, [string]$Destination, [string]$ErrorAction, [switch]$Force)
     if ($env:TEST_ROLLBACK_CASE -eq "partial") {{
@@ -192,7 +196,11 @@ Write-Output ("dir=" + [string]$script:StudioVenvRollbackDir)
     assert state["dir"].startswith(os.path.join(str(tmp_path), "unsloth_studio.rollback.")), out
     assert Path(state["dir"]).is_dir(), out
     # Both halves are named, so the user is not left hunting for the moved tree.
-    assert str(existing) in out and state["dir"] in out, out
+    # Match the warning lines themselves rather than the bare paths: $existing is a
+    # prefix of the rollback dir, so "str(existing) in out" alone is satisfied by the
+    # dir= line and would stay green even with the warning missing entirely.
+    assert f"still in place: {existing}" in out, out
+    assert f"moved aside:    {state['dir']}" in out, out
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
@@ -226,6 +234,10 @@ def test_restoring_a_split_move_never_deletes_the_half_left_behind(tmp_path: Pat
     script = f"""
 $ErrorActionPreference = "Stop"
 function substep {{ param([string]$Text, [string]$Color) }}
+# The merge/restore helpers warn through install.ps1's UTF-8 stdout sink on their
+# conflict branches. This run does not take one, but leaving the sink undefined
+# means any future case that does would die on a command-not-found instead.
+function Write-StudioLine {{ param([string]$Message, [string]$ForegroundColor) Write-Host $Message }}
 {blocks}
 $script:StudioVenvRollbackActive  = $true
 $script:StudioVenvRollbackDir     = $env:TEST_BACKUP_DIR
@@ -283,6 +295,10 @@ def test_merging_a_split_move_keeps_every_sibling_at_its_own_path(tmp_path: Path
     script = f"""
 $ErrorActionPreference = "Stop"
 function substep {{ param([string]$Text, [string]$Color) }}
+# The merge/restore helpers warn through install.ps1's UTF-8 stdout sink on their
+# conflict branches. This run does not take one, but leaving the sink undefined
+# means any future case that does would die on a command-not-found instead.
+function Write-StudioLine {{ param([string]$Message, [string]$ForegroundColor) Write-Host $Message }}
 {blocks}
 $script:StudioVenvRollbackActive  = $true
 $script:StudioVenvRollbackDir     = $env:TEST_BACKUP_DIR
@@ -347,8 +363,9 @@ def test_merging_a_split_move_never_walks_through_a_link(tmp_path: Path, shell: 
     script = f"""
 $ErrorActionPreference = "Stop"
 function substep {{ param([string]$Text, [string]$Color) }}
-# Restore-StudioVenvRollback warns through install.ps1's UTF-8 stdout sink.
-function Write-StudioLine {{ param([string]$Message, [string]$ForegroundColor) }}
+# Restore-StudioVenvRollback warns through install.ps1's UTF-8 stdout sink. Echo it
+# rather than swallowing it, so a warning stays visible in the assertion message.
+function Write-StudioLine {{ param([string]$Message, [string]$ForegroundColor) Write-Host $Message }}
 {blocks}
 $script:StudioVenvRollbackActive  = $true
 $script:StudioVenvRollbackDir     = $env:TEST_BACKUP_DIR

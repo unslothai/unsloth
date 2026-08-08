@@ -359,6 +359,10 @@ if ($assertSrc -and $markSrc) {
     function Exit-SetupFailure { param($Message, $Code) throw "EXIT-SETUP" }
     function step { param($a, $b, $c) }
     function substep { param($a, $b) }
+    # The unowned-tree branch reports through setup.ps1's UTF-8 stdout sink before it
+    # exits. Unstubbed it is a command-not-found terminating error, which the catch
+    # below would score as the intended failure while never reaching Exit-SetupFailure.
+    function Write-StudioLine { param([string]$Message, [string]$ForegroundColor) Write-Host $Message }
     $StudioOwnedMarker = ".unsloth-studio-owned"
     $StudioHomeIsCustom = $true
 
@@ -432,9 +436,13 @@ if ($assertSrc -and $markSrc) {
             }
         }
         # -NonFatal rescues the denial only: someone else's folder must still stop.
+        # Pin the stop to Exit-SetupFailure rather than to "something threw": any
+        # missing helper in the guard would also throw, and would pass a bare check.
         $threw = $false
-        try { $null = Assert-StudioOwnedOrAbsent -Path $nfUnowned -Label "whisper.cpp install" -NonFatal } catch { $threw = $true }
-        Check "-NonFatal does not excuse an unowned tree" $threw
+        $thrownBy = $null
+        try { $null = Assert-StudioOwnedOrAbsent -Path $nfUnowned -Label "whisper.cpp install" -NonFatal }
+        catch { $threw = $true; $thrownBy = $_.Exception.Message }
+        Check "-NonFatal does not excuse an unowned tree" ($threw -and $thrownBy -eq "EXIT-SETUP")
     } finally {
         Set-NfDenied $false
         Remove-Item -Recurse -Force -LiteralPath $nfRoot -ErrorAction SilentlyContinue
