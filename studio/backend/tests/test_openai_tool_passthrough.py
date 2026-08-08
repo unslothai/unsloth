@@ -1984,6 +1984,44 @@ class TestDropEmptyAssistantSentinels:
         # The orphaned synthetic tool reply is still dropped.
         assert not [m for m in out if m["role"] == "tool"]
 
+    def test_sentinel_and_scrub_compose_to_llama_cpp_message_contract(self):
+        """llama.cpp throws "Expected 'content' or 'tool_calls'" unless one of those
+        KEYS is present (common_chat_msgs_parse_oaicompat checks presence, not
+        truthiness, before it reads reasoning_content). Both passes run in sequence
+        on every local dispatch, so the contract has to hold on the composition."""
+        from routes.inference import _strip_provider_synthetic_tool_history
+
+        synthetic = [{
+            "id": "call_0", "type": "function",
+            "function": {"name": "web_search", "arguments": '{"_server_tool": true}'},
+        }]
+        real = [{
+            "id": "call_1", "type": "function",
+            "function": {"name": "lookup", "arguments": '{"q": "x"}'},
+        }]
+        cases = []
+        for content in (None, "", "text"):
+            for calls in (None, synthetic, real, synthetic + real):
+                for reasoning in (None, "", "trace"):
+                    m = {"role": "assistant"}
+                    if content is not None:
+                        m["content"] = content
+                    if calls is not None:
+                        m["tool_calls"] = calls
+                    if reasoning is not None:
+                        m["reasoning_content"] = reasoning
+                    cases.append(m)
+
+        out = _strip_provider_synthetic_tool_history(
+            _drop_empty_assistant_sentinels([{"role": "user", "content": "q"}] + cases)
+        )
+        for m in out:
+            assert "content" in m or "tool_calls" in m, m
+        # A surviving reasoning-only turn always carries the padded key.
+        for m in out:
+            if m["role"] == "assistant" and m.get("reasoning_content") and not m.get("tool_calls"):
+                assert m.get("content") == "" or m.get("content"), m
+
     def test_strip_synthetic_tool_calls_still_drops_turn_without_reasoning(self):
         from routes.inference import _strip_provider_synthetic_tool_history
         msgs = [

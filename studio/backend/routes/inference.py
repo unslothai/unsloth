@@ -18697,11 +18697,11 @@ def _structured_tool_history_for_local_template(messages: list[dict]) -> list[di
 def _drop_reasoning_for_local_template(messages: list[dict]) -> list[dict]:
     """Drop ``reasoning_content`` before local (safetensors / MLX) templating.
 
-    llama-server renders a prior trace only where the template gates on
-    ``preserve_thinking``. A local template is rendered here directly and some
-    read ``reasoning_content`` unconditionally, so forwarding it would replay
-    thinking with no opt-in. Passthrough stays llama-server-only until this
-    path grows the same gate."""
+    On llama-server the trace is bounded twice: the template decides whether to
+    render it (Qwen3.x and GLM gate on the last user turn, Qwen3.6 and gemma-4
+    also on ``preserve_thinking``), and the body is swept for control markup
+    first. A local template is rendered here directly, with no ``preserve_thinking``
+    plumbed through, so passthrough stays llama-server-only until it is."""
     return [
         {k: v for k, v in msg.items() if k != "reasoning_content"}
         if "reasoning_content" in msg
