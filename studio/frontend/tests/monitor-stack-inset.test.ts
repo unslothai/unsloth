@@ -118,3 +118,50 @@ test("a monitor filling the height still leaves the stack room", () => {
   };
   assert.ok(stackBottomInset(frame, W, H) <= H - 120);
 });
+
+// The union was the trap. A tall monitor and the wide docked composer share
+// almost no area, so the rectangle around the pair covers most of the viewport;
+// reading that as one obstacle lifted the stack to the top of the screen and
+// dropped it back onto the monitor it was meant to dodge, which the chat UI
+// suite caught as the card swallowing the monitor's Close button.
+test("two obstacles are folded one at a time, not as their bounding box", () => {
+  // The monitor dragged up the column, as the chat UI suite does before it
+  // clicks Close: too high to be lifted over, so on its own it asks for
+  // nothing. The composer, docked, asks for a modest lift.
+  const monitor = { left: W - 16 - 256, top: 40, right: W - 16, bottom: 340 };
+  const composer = { left: 300, top: H - 120, right: W - 340, bottom: H - 40 };
+  const both = stackGeometry([monitor, composer], W, H);
+  const monitorOnly = stackGeometry(monitor, W, H);
+  const composerOnly = stackGeometry(composer, W, H);
+  assert.equal(
+    both.bottom,
+    Math.max(monitorOnly.bottom, composerOnly.bottom),
+    "the stack takes the largest lift either one asks for",
+  );
+  // The union's own answer, which is what went wrong.
+  const unioned = stackGeometry(
+    {
+      left: Math.min(monitor.left, composer.left),
+      top: Math.min(monitor.top, composer.top),
+      right: Math.max(monitor.right, composer.right),
+      bottom: Math.max(monitor.bottom, composer.bottom),
+    },
+    W,
+    H,
+  );
+  assert.notEqual(
+    both.bottom,
+    unioned.bottom,
+    "folding must not agree with the bounding box, or nothing was fixed",
+  );
+  assert.ok(both.bottom < unioned.bottom, "and it must lift less, not more");
+});
+
+test("an empty list behaves exactly like nothing published", () => {
+  assert.deepEqual(stackGeometry([], W, H), stackGeometry(null, W, H));
+});
+
+test("one box in a list matches passing it on its own", () => {
+  const frame = corner(300);
+  assert.deepEqual(stackGeometry([frame], W, H), stackGeometry(frame, W, H));
+});

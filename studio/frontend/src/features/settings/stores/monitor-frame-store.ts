@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Where the Live monitor currently sits, in viewport coordinates. It is
-// draggable and resizable and defaults to the bottom-right corner, which is
-// also where the overlay stack lives, so the stack needs its real box to keep
-// clear of it. Null whenever the monitor is closed.
+// What the bottom-right overlay stack has to keep clear of, in viewport
+// coordinates. The Live monitor is draggable and resizable and defaults to that
+// same corner; the chat composer docks to the bottom of the same column once a
+// thread has turns. Each publishes its box here while it is mounted.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { create } from "zustand";
 
 export type MonitorFrame = {
@@ -17,15 +17,16 @@ export type MonitorFrame = {
 };
 
 /**
- * Which panel published the current frame. Reopening the monitor during its
- * exit animation leaves two panels mounted at once, and the one on its way out
- * unmounts last: without an owner its cleanup would clear the replacement's
- * frame, and a monitor that then sits still republishes nothing.
+ * Whose box this is. Identity matters twice over: reopening the monitor during
+ * its exit animation leaves two panels mounted at once and the one on its way
+ * out unmounts last, so its cleanup must clear only its own; and the monitor
+ * and the composer are published side by side.
  */
 export type MonitorFramePublisher = object;
 
 interface MonitorFrameState {
-  /** The union of every published box: what the stack has to keep clear of. */
+  /** Every published box as one rectangle. A summary, not what the stack
+   *  dodges: `stackGeometry` folds the boxes one at a time. */
   frame: MonitorFrame | null;
   frames: ReadonlyMap<MonitorFramePublisher, MonitorFrame>;
   setFrame: (publisher: MonitorFramePublisher, frame: MonitorFrame) => void;
@@ -145,22 +146,47 @@ export function stackMaxHeight(
 
 export type StackGeometry = { bottom: number; maxHeight: number };
 
-/** Where the overlay stack sits and how tall it may be, given the monitor. */
+/**
+ * Where the overlay stack sits and how tall it may be, given everything it has
+ * to keep clear of.
+ *
+ * Folded per box, never over their union: a tall monitor and the wide docked
+ * composer share almost no area, and the rectangle around the pair covers most
+ * of the viewport. Reading that as one obstacle pinned the stack to the top of
+ * the screen and put it back over the monitor it was dodging. Each box asks for
+ * the lift it needs; the stack takes the largest, and the shortest height.
+ */
 export function stackGeometry(
-  frame: MonitorFrame | null,
+  frames: MonitorFrame | null | readonly MonitorFrame[],
   viewportWidth: number,
   viewportHeight: number,
 ): StackGeometry {
-  const bottom = stackBottomInset(frame, viewportWidth, viewportHeight);
+  const list = frames === null ? [] : Array.isArray(frames) ? frames : [frames];
+  if (list.length === 0) {
+    const bottom = stackBottomInset(null, viewportWidth, viewportHeight);
+    return {
+      bottom,
+      maxHeight: stackMaxHeight(null, viewportWidth, viewportHeight, bottom),
+    };
+  }
+  const bottom = Math.max(
+    ...list.map((f) => stackBottomInset(f, viewportWidth, viewportHeight)),
+  );
   return {
     bottom,
-    maxHeight: stackMaxHeight(frame, viewportWidth, viewportHeight, bottom),
+    maxHeight: Math.min(
+      ...list.map((f) =>
+        stackMaxHeight(f, viewportWidth, viewportHeight, bottom),
+      ),
+    ),
   };
 }
 
 /** `stackGeometry` in px, recomputed as the monitor moves or resizes. */
 export function useStackGeometry(): StackGeometry {
-  const frame = useMonitorFrameStore((state) => state.frame);
+  const frames = useMonitorFrameStore((state) => state.frames);
+  // Every published box, not their union: see stackGeometry.
+  const published = useMemo(() => [...frames.values()], [frames]);
   const [viewport, setViewport] = useState(() => ({
     width: typeof window === "undefined" ? 0 : window.innerWidth,
     height: typeof window === "undefined" ? 0 : window.innerHeight,
@@ -172,5 +198,5 @@ export function useStackGeometry(): StackGeometry {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
-  return stackGeometry(frame, viewport.width, viewport.height);
+  return stackGeometry(published, viewport.width, viewport.height);
 }
