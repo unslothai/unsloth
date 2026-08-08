@@ -981,6 +981,62 @@ def _infer_required_torchvision(torch_major, torch_minor):
     return None
 
 
+# What a torchvision built against a different torch looks like when it loads.
+_TORCHVISION_ABI_MARKERS = (
+    "torchvision::",
+    "undefined symbol",
+    "cannot open shared object file",
+    "torchvision.io.video",
+    "torchvision.io._video",
+)
+
+
+def _is_broken_torchvision_error(error) -> bool:
+    checked = set()
+    current = error
+    while current is not None and id(current) not in checked:
+        checked.add(id(current))
+        message = str(current)
+        if any(marker in message for marker in _TORCHVISION_ABI_MARKERS):
+            return True
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+    return False
+
+
+def _probe_torchvision_binary(torch_version_raw, torchvision_version_raw):
+    """Import torchvision, so a broken binary is named here and not six frames
+    deep in transformers.
+
+    The table above compares metadata, and metadata cannot see an ABI break: a
+    torchvision whose recorded version matches torch but whose compiled ops
+    were built against a different one dies in `_meta_registrations`, at
+    `register_fake("torchvision::nms")`, with `RuntimeError: operator
+    torchvision::nms does not exist`. Found by running Gemma4_(E2B)_GRPO,
+    whose T4 branch installs vllm==0.9.2 beside Colab's torch and leaves both
+    vllm and torchvision mismatched. The vLLM half is already recovered from
+    by `disable_broken_vllm`; this half reached the user as the bare operator
+    error, raised from `transformers/image_utils.py`, naming nothing.
+
+    Not an extra import in practice: transformers imports torchvision from
+    `image_utils` the moment anything touches `processing_utils`.
+    """
+    try:
+        import torchvision           # noqa: F401
+        import torchvision.ops       # noqa: F401  where the compiled nms lives
+    except Exception as error:
+        # Anything we cannot explain is left alone rather than reported as a
+        # torchvision break; the caller that really needs it will raise it.
+        if not _is_broken_torchvision_error(error):
+            return
+        raise ImportError(
+            f"Unsloth: torchvision=={torchvision_version_raw} claims to match "
+            f"torch=={torch_version_raw}, but its compiled operators do not "
+            f"load ({type(error).__name__}: {error}). Reinstall it with "
+            f"`pip install --upgrade --force-reinstall --no-cache-dir torchvision`. "
+            f"Set UNSLOTH_SKIP_TORCHVISION_CHECK=1 to skip this check."
+        ) from error
+
+
 def torchvision_compatibility_check():
     # Allow skipping via environment variable for custom environments
     if os.environ.get("UNSLOTH_SKIP_TORCHVISION_CHECK", "0").lower() in ("1", "true"):
@@ -1035,6 +1091,7 @@ def torchvision_compatibility_check():
             f"Unsloth: torch=={torch_version_raw} and "
             f"torchvision=={torchvision_version_raw} are compatible."
         )
+        _probe_torchvision_binary(torch_version_raw, torchvision_version_raw)
         return
 
     # Version mismatch detected
