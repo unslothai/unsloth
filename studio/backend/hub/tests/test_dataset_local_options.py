@@ -189,6 +189,59 @@ def test_snapshot_options_ignore_malformed_card_yaml(tmp_path):
     assert local_options._snapshot_options(snapshot) == set()
 
 
+def test_snapshot_options_suppress_inference_after_a_card_parse_failure(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "README.md").write_text("---\nconfigs: [unterminated\n---\n", encoding = "utf-8")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # datasets raises the YAML error out of DatasetCard.load, so nothing here is loadable.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_read_the_standalone_yaml_over_the_card(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / ".huggingface.yaml").write_text(
+        "configs:\n- config_name: foo\n  data_files:\n  - split: test\n    path: records.jsonl\n",
+        encoding = "utf-8",
+    )
+    (snapshot / "records.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("foo", "test")}
+
+
+def test_snapshot_options_keep_a_declared_config_name_when_inferring(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "README.md").write_text(
+        "---\nconfigs:\n- config_name: foo\n---\ncard\n", encoding = "utf-8"
+    )
+    (snapshot / "records.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # datasets still builds config foo over the inferred patterns, so default would 422.
+    assert local_options._snapshot_options(snapshot) == {("foo", "train")}
+
+
+def test_snapshot_options_do_not_infer_when_a_loader_only_file_forms_a_split(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.parquet").write_bytes(b"parquet")
+    (snapshot / "test.txt").write_text("row\n", encoding = "utf-8")
+
+    # datasets loads .txt too, so its splits infer parquet and text and none of them build.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_split_module_samples_only_the_first_files_datasets_would(tmp_path):
+    csv = [(local_options.PurePosixPath(f"train/{i:04d}.csv"), None) for i in range(200)]
+    parquet = [
+        (local_options.PurePosixPath(f"train/{i:04d}.parquet"), None) for i in range(1000, 1201)
+    ]
+
+    assert local_options._split_module(csv + parquet) == "csv"
+
+
 def test_snapshot_options_infer_undeclared_splits_from_loadable_files(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
     snapshot.mkdir(parents = True)

@@ -58,6 +58,55 @@ _IGNORED_DATA_FILENAMES = frozenset(
 _EXTENSION_MODULES = {".parquet": "parquet", ".jsonl": "json", ".json": "json", ".csv": "csv"}
 # Its tie-break when a split mixes extensions: most files, then this order.
 _EXTENSION_PRIORITY = {ext: rank for rank, ext in enumerate(reversed(list(_EXTENSION_MODULES)))}
+# Extensions datasets loads but training does not. They never become an option; they are here
+# because they still join a split and pick its module, and a snapshot whose splits disagree
+# loads nothing at all. Media collapse to one name since none of them is ever offerable.
+_LOADER_EXTENSION_MODULES = {
+    ".txt": "text",
+    ".tsv": "csv",
+    ".ndjson": "json",
+    ".arrow": "arrow",
+    ".xml": "xml",
+    ".geoparquet": "parquet",
+    ".gpq": "parquet",
+    ".tar": "webdataset",
+    ".zip": "archive",
+    ".h5": "hdf5",
+    ".hdf5": "hdf5",
+    ".pdf": "pdf",
+    **dict.fromkeys(
+        (
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".bmp",
+            ".tif",
+            ".tiff",
+            ".webp",
+            ".wav",
+            ".mp3",
+            ".flac",
+            ".ogg",
+            ".opus",
+            ".m4a",
+            ".mp4",
+            ".mkv",
+            ".mov",
+            ".avi",
+            ".webm",
+        ),
+        "media",
+    ),
+}
+# datasets infers a split's module from its first 200 files, in resolved (sorted) order.
+_MAX_MODULE_INFERENCE_FILES = 200
+# _read_card_metadata returns this when a card exists but its YAML does not parse. datasets
+# lets that error out of DatasetCard.load, so nothing in the snapshot is loadable.
+_UNPARSABLE_METADATA = object()
+_STANDALONE_YAML = ".huggingface.yaml"
+# A snapshot file, with the module datasets builds it with when training cannot use it.
+_DataFile = tuple[PurePosixPath, Optional[str]]
 _CONFIG_RE = re.compile(r"[^<>:/\\|?*\x00-\x1f\x7f]+")
 # Also datasets' own _split_re, so a sharded name it would reject never reaches the picker.
 _SPLIT_RE = HF_DATASET_SPLIT_NAME_PATTERN
@@ -97,6 +146,18 @@ def _split_names(value: Any) -> list[str]:
         for item in candidates
         if (name := _valid_option(item, _SPLIT_RE, reject_dotdot = True)) is not None
     ]
+
+
+def _declared_config_names(payload: Any) -> list[str]:
+    if not isinstance(payload, list):
+        return []
+    names = [
+        name
+        for item in payload[:_MAX_OPTIONS]
+        if isinstance(item, dict)
+        and (name := _valid_option(item.get("config_name"), _CONFIG_RE)) is not None
+    ]
+    return list(dict.fromkeys(names))
 
 
 def _config_name(value: Any, fallback: Any = None) -> Optional[str]:
@@ -254,10 +315,36 @@ def _read_card_metadata(path: Path) -> Optional[dict[str, Any]]:
         try:
             payload = safe_load("\n".join(lines[1:end]))
         except YAMLError:
-            return None
+            return _UNPARSABLE_METADATA
     except (ImportError, OSError, UnicodeError, ValueError, StopIteration):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _snapshot_card_data(snapshot: Path) -> Any:
+    """The card datasets would build: README front matter, then .huggingface.yaml over it."""
+    card: dict[str, Any] = {}
+    readme = _snapshot_metadata_file(snapshot, "README.md")
+    if readme is not None:
+        payload = _read_card_metadata(readme)
+        if payload is _UNPARSABLE_METADATA:
+            return _UNPARSABLE_METADATA
+        if isinstance(payload, dict):
+            card.update(payload)
+
+    standalone = _snapshot_metadata_file(snapshot, _STANDALONE_YAML)
+    if standalone is not None:
+        try:
+            from yaml import YAMLError, safe_load
+            try:
+                payload = safe_load(standalone.read_text(encoding = "utf-8"))
+            except YAMLError:
+                return _UNPARSABLE_METADATA
+        except (ImportError, OSError, UnicodeError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            card.update(payload)
+    return card
 
 
 def _has_snapshot_data_extension(filename: str) -> bool:
@@ -270,8 +357,22 @@ def _has_snapshot_data_extension(filename: str) -> bool:
     )
 
 
-def _snapshot_data_files(snapshot: Path) -> list[PurePosixPath]:
-    files: list[PurePosixPath] = []
+def _loader_only_module(filename: str) -> Optional[str]:
+    """The module datasets builds for a file training cannot use, or None if it is not data."""
+    for suffix in filename.split(".")[1:]:
+        module = _LOADER_EXTENSION_MODULES.get("." + suffix)
+        if module is not None:
+            return module
+    return None
+
+
+def _snapshot_data_files(snapshot: Path) -> list[tuple[PurePosixPath, Optional[str]]]:
+    """Every file datasets would resolve, paired with its module when training cannot use it.
+
+    Loader-only files are matched by name and never resolved: they can only suppress an
+    option, never become one, so a hostile entry among them costs nothing.
+    """
+    files: list[tuple[PurePosixPath, Optional[str]]] = []
     try:
         root = snapshot.resolve(strict = True)
     except (OSError, RuntimeError):
@@ -293,12 +394,15 @@ def _snapshot_data_files(snapshot: Path) -> list[PurePosixPath]:
             # datasets hides dot files and `__` directories, but not `__` filenames.
             if filename.startswith(".") or filename in _IGNORED_DATA_FILENAMES:
                 continue
-            if not _has_snapshot_data_extension(filename):
-                continue
             source_path = (relative / filename).as_posix()
-            if resolved_dataset_snapshot_file(snapshot, source_path) is None:
+            if _has_snapshot_data_extension(filename):
+                if resolved_dataset_snapshot_file(snapshot, source_path) is None:
+                    continue
+                files.append((PurePosixPath(source_path), None))
+            elif (module := _loader_only_module(filename)) is not None:
+                files.append((PurePosixPath(source_path), module))
+            else:
                 continue
-            files.append(PurePosixPath(source_path))
             if len(files) >= _MAX_SNAPSHOT_DATA_FILES:
                 return files
     return files
@@ -309,53 +413,65 @@ def _keyword_splits(parts: Iterable[str]) -> set[str]:
     return {split for split, keywords in _SPLIT_KEYWORDS.items() if tokens.intersection(keywords)}
 
 
-def _sharded_split_files(
-    files: Iterable[PurePosixPath],
-) -> Optional[dict[str, list[PurePosixPath]]]:
+def _sharded_split_files(files: Iterable[_DataFile]) -> Optional[dict[str, list[_DataFile]]]:
     """Sharded splits, or None when a name datasets rejects makes the snapshot unloadable."""
-    grouped: dict[str, list[PurePosixPath]] = {}
-    for path in files:
-        match = _SHARDED_DATA_RE.fullmatch(path.as_posix())
+    grouped: dict[str, list[_DataFile]] = {}
+    for entry in files:
+        match = _SHARDED_DATA_RE.fullmatch(entry[0].as_posix())
         if match is None:
             continue
-        raw = match.group("split")
-        split = _valid_option(raw, _SPLIT_RE, reject_dotdot = True)
+        split = _valid_option(match.group("split"), _SPLIT_RE, reject_dotdot = True)
         if split is None:
             return None
-        grouped.setdefault(split, []).append(path)
+        grouped.setdefault(split, []).append(entry)
     return grouped
 
 
 def _keyword_split_files(
-    files: Iterable[PurePosixPath], naming: Callable[[PurePosixPath], Iterable[str]]
-) -> dict[str, list[PurePosixPath]]:
-    grouped: dict[str, list[PurePosixPath]] = {}
-    for path in files:
-        for split in _keyword_splits(naming(path)):
-            grouped.setdefault(split, []).append(path)
+    files: Iterable[_DataFile], naming: Callable[[PurePosixPath], Iterable[str]]
+) -> dict[str, list[_DataFile]]:
+    grouped: dict[str, list[_DataFile]] = {}
+    for entry in files:
+        for split in _keyword_splits(naming(entry[0])):
+            grouped.setdefault(split, []).append(entry)
     return grouped
 
 
-def _split_module(files: Iterable[PurePosixPath]) -> Optional[str]:
+def _file_module(entry: _DataFile) -> tuple[Optional[str], Optional[str]]:
+    """The (counting key, module) datasets would use for one file."""
+    path, loader_module = entry
+    if loader_module is not None:
+        return loader_module, loader_module
+    for suffix in path.name.lower().split(".")[1:]:
+        extension = "." + suffix
+        if extension in _EXTENSION_MODULES:
+            return extension, _EXTENSION_MODULES[extension]
+    return None, None
+
+
+def _split_module(files: Iterable[_DataFile]) -> Optional[str]:
     counts: dict[str, int] = {}
-    for path in files:
-        for suffix in path.name.lower().split(".")[1:]:
-            extension = "." + suffix
-            if extension in _EXTENSION_MODULES:
-                counts[extension] = counts.get(extension, 0) + 1
+    modules: dict[str, str] = {}
+    for entry in sorted(files)[:_MAX_MODULE_INFERENCE_FILES]:
+        key, module = _file_module(entry)
+        if key is None:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+        modules[key] = module
     if not counts:
         return None
-    best = max(counts, key = lambda extension: (counts[extension], _EXTENSION_PRIORITY[extension]))
-    return _EXTENSION_MODULES[best]
+    return modules[max(counts, key = lambda key: (counts[key], _EXTENSION_PRIORITY.get(key, -1)))]
 
 
-def _inferred_snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
+def _inferred_snapshot_options(
+    snapshot: Path, configs: Iterable[str] = ("default",)
+) -> set[tuple[str, str]]:
     """Mirror datasets' default local-file split inference without importing it.
 
     Known gaps, all of which hide an option rather than offer a dead one: names longer
-    than _MAX_OPTION_LENGTH are dropped because the picker cannot start them, only
-    TRAINING_DATA_EXTS is considered, and external symlinks stay rejected for cache
-    safety.
+    than _MAX_OPTION_LENGTH are dropped because the picker cannot start them, splits made
+    only of files outside TRAINING_DATA_EXTS are not offered, and external symlinks stay
+    rejected for cache safety.
     """
     files = _snapshot_data_files(snapshot)
     if not files:
@@ -371,21 +487,27 @@ def _inferred_snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     if not grouped:
         grouped = {"train": files}
 
-    modules = {_split_module(paths) for paths in grouped.values()}
+    modules = {_split_module(entries) for entries in grouped.values()}
     if len(modules) > 1 or modules == {None}:
         return set()
-    return {("default", split) for split in grouped}
+    return {
+        (config, split)
+        for config in configs
+        for split, entries in grouped.items()
+        if any(loader_module is None for _path, loader_module in entries)
+    }
 
 
 def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     options: set[tuple[str, str]] = set()
 
-    readme = _snapshot_metadata_file(snapshot, "README.md")
-    if readme is not None:
-        card_data = _read_card_metadata(readme)
-        if isinstance(card_data, dict):
-            _add_config_options(options, card_data.get("configs"))
-            _add_dataset_info_options(options, card_data.get("dataset_info"))
+    card_data = _snapshot_card_data(snapshot)
+    if card_data is _UNPARSABLE_METADATA:
+        # datasets raises out of DatasetCard.load, so no option here would ever start.
+        return options
+    declared_configs = _declared_config_names(card_data.get("configs"))
+    _add_config_options(options, card_data.get("configs"))
+    _add_dataset_info_options(options, card_data.get("dataset_info"))
 
     for filename in ("dataset_infos.json", "dataset_info.json"):
         metadata = _snapshot_metadata_file(snapshot, filename)
@@ -397,7 +519,9 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
         else:
             _add_info_options(options, payload)
     if not options:
-        options.update(_inferred_snapshot_options(snapshot))
+        # A card that names configs but gives no data_files still builds those configs in
+        # datasets, over the same inferred patterns, so "default" would not be startable.
+        options.update(_inferred_snapshot_options(snapshot, declared_configs or ("default",)))
     return options
 
 
