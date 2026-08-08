@@ -380,6 +380,9 @@ export const ptBR = {
         keepKv: "Manter o contexto do chat ao descarregar por inatividade",
         keepKvDescription:
           "Salva o cache KV antes de um descarregamento por inatividade, para que chats retomados não releiam o histórico. Até 10 GB em disco.",
+        apiOnly: "Descarregar apenas modelos carregados pela API",
+        apiOnlyDescription:
+          "O descarregamento por inatividade mantém na memória o modelo que você carregou pelo Studio e libera apenas os que uma requisição da API carregou.",
       },
       previewSharing: {
         sectionTitle: "Compartilhamento de pré-visualização",

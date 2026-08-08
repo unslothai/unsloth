@@ -358,6 +358,9 @@ export const it = {
           "Mantieni il contesto della chat dopo lo scaricamento dalla memoria per inattività",
         keepKvDescription:
           "Salva la cache KV prima dello scaricamento dalla memoria per inattività, così le chat riprese non rileggono la cronologia. Fino a 10 GB su disco.",
+        apiOnly: "Scarica solo i modelli caricati dall'API",
+        apiOnlyDescription:
+          "Lo scaricamento per inattività lascia in memoria un modello caricato da te in Studio e libera solo quelli caricati da una richiesta API.",
       },
       previewSharing: {
         sectionTitle: "Condivisione delle anteprime",

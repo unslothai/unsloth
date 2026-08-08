@@ -4997,6 +4997,9 @@ async def _maybe_auto_switch_model(
                         # Advertise the repo id (not the concrete load path) as the loaded
                         # model's public id and override key for /v1/models and idle stash.
                         get_llama_cpp_backend()._openai_advertised_id = override_id
+                        # API provenance: idle auto-unload may free this one even when
+                        # scoped to API loads.
+                        get_llama_cpp_backend()._loaded_by_user_action = False
                 finally:
                     # Deregister before releasing the gate: otherwise a swap on another
                     # loop counts this finished request as queued and unloads its model.
@@ -6503,11 +6506,18 @@ async def load_model(
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
     """
     return await _tunnel_safe_json(
-        load_model_gated(request, fastapi_request, current_subject), label = "Model load"
+        load_model_gated(request, fastapi_request, current_subject, user_initiated = True),
+        label = "Model load",
     )
 
 
-async def load_model_gated(request: LoadRequest, fastapi_request: Request, current_subject: str):
+async def load_model_gated(
+    request: LoadRequest,
+    fastapi_request: Request,
+    current_subject: str,
+    *,
+    user_initiated: bool = False,
+):
     """Everything ``POST /load`` does except the tunnel-safe padding.
 
     In-process callers (preview) must await THIS, not the route: the route's slow
@@ -6529,7 +6539,7 @@ async def load_model_gated(request: LoadRequest, fastapi_request: Request, curre
         _raise_if_sidecar_swap_in_progress()
         # The active-generation gate runs inside _load_model_impl, once it knows this is a real
         # reload, and still under the lifecycle gate so the check stays atomic with the teardown.
-        return await _load_model_impl(
+        response = await _load_model_impl(
             request,
             fastapi_request,
             current_subject,
@@ -6539,6 +6549,11 @@ async def load_model_gated(request: LoadRequest, fastapi_request: Request, curre
                 cancel = cancel,
             ),
         )
+        # Record provenance only once the model is resident, and here rather than
+        # inside the impl so the already-loaded fast paths are covered too. Preview
+        # keeps the False default: only an explicit UI load pins.
+        get_llama_cpp_backend()._loaded_by_user_action = user_initiated
+        return response
 
 
 async def _load_model_impl(

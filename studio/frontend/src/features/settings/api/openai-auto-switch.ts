@@ -15,6 +15,8 @@ export type OpenAIAutoSwitchSettings = {
   autoUnloadKeepKv: boolean;
   // Fetch a GGUF named in an API request; stored independently of `enabled`, gated on it.
   autoDownloadModel: boolean;
+  // Spare models loaded from the UI on idle unload; only free API-loaded ones.
+  autoUnloadApiOnly: boolean;
 };
 
 type ApiOpenAIAutoSwitchSettings = {
@@ -29,6 +31,8 @@ type ApiOpenAIAutoSwitchSettings = {
   auto_unload_keep_kv?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   auto_download_model?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  auto_unload_api_only?: boolean;
 };
 
 let cachedSettings: OpenAIAutoSwitchSettings | null = null;
@@ -48,6 +52,7 @@ function fromApi(
     idleUnloadActive: settings.idle_unload_active ?? false,
     autoUnloadKeepKv: settings.auto_unload_keep_kv ?? true,
     autoDownloadModel: settings.auto_download_model ?? false,
+    autoUnloadApiOnly: settings.auto_unload_api_only ?? false,
   };
 }
 
@@ -125,6 +130,7 @@ export async function updateOpenAIAutoSwitchSettings(
   autoUnloadIdleSeconds?: number,
   autoUnloadKeepKv?: boolean,
   autoDownloadModel?: boolean,
+  autoUnloadApiOnly?: boolean,
 ): Promise<OpenAIAutoSwitchSettings> {
   // Read BEFORE the request: idleUnloadActive depends on the Model Memory
   // setting, so a residency write landing mid-flight makes this response stale
@@ -148,6 +154,10 @@ export async function updateOpenAIAutoSwitchSettings(
         ? {}
         : // biome-ignore lint/style/useNamingConvention: API schema
           { auto_download_model: autoDownloadModel }),
+      ...(autoUnloadApiOnly === undefined
+        ? {}
+        : // biome-ignore lint/style/useNamingConvention: API schema
+          { auto_unload_api_only: autoUnloadApiOnly }),
     }),
   });
   if (!res.ok) {

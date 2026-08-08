@@ -371,6 +371,7 @@ def _note_idle_unload_event(freed) -> None:
 async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
     """Unload the loaded GGUF once idle past the configured TTL. Inert when off."""
     from utils.openai_auto_switch_settings import (
+        get_auto_unload_api_only,
         get_auto_unload_idle_seconds,
         get_auto_unload_keep_kv,
     )
@@ -397,6 +398,13 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         _note_activity()
                         _set_last_unloaded(None)  # a model is loaded; drop stale stash
                 if backend.is_loaded and _is_idle(ttl):
+                    if get_auto_unload_api_only() and getattr(
+                        backend, "_loaded_by_user_action", False
+                    ):
+                        # Loaded from the UI, so the user wants it resident; only
+                        # models the API loaded are freed. getattr keeps a foreign
+                        # backend (tests, MLX) on the old unload-everything path.
+                        continue
                     freed = _loaded_identity(backend)
                     manifest = None
                     if get_auto_unload_keep_kv():

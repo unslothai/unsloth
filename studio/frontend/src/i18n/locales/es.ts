@@ -387,6 +387,9 @@ export const es = {
         keepKv: "Conservar el contexto del chat al liberar el modelo por inactividad",
         keepKvDescription:
           "Guarda la caché KV antes de liberar el modelo por inactividad para que los chats reanudados no vuelvan a leer el historial. Hasta 10 GB en disco.",
+        apiOnly: "Liberar solo los modelos cargados por la API",
+        apiOnlyDescription:
+          "La liberación por inactividad mantiene en memoria el modelo que cargaste desde Studio y solo libera los que cargó una solicitud a la API.",
       },
       previewSharing: {
         sectionTitle: "Compartir vista previa",

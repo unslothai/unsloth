@@ -369,6 +369,9 @@ export const en = {
         keepKv: "Keep chat context across idle unload",
         keepKvDescription:
           "Save the KV cache before an idle unload so resumed chats skip re-reading history. Up to 10 GB on disk.",
+        apiOnly: "Only unload models loaded by the API",
+        apiOnlyDescription:
+          "Idle unload leaves a model you loaded from Studio in memory, and frees only the ones an API request loaded.",
       },
       previewSharing: {
         sectionTitle: "Preview sharing",
