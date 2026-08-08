@@ -328,7 +328,8 @@ def test_exact_legacy_source_migrates_offline_without_git(monkeypatch, tmp_path)
     spec = _sealed_spec(source.SPARK_TTS_SOURCE, checkout, installed)
     legacy = tmp_path / "Spark-TTS"
     shutil.copytree(checkout, legacy, ignore = shutil.ignore_patterns(".git"))
-    shutil.rmtree(cache)
+    # The cache holds a real checkout, and Windows will not delete Git's read-only objects.
+    source._remove_owned_path(cache)
     monkeypatch.setattr(source, "SPARK_TTS_SOURCE", spec)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(utils, "hf_env_offline", lambda: True)
