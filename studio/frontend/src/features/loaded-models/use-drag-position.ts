@@ -123,7 +123,15 @@ export function useDragPosition(storageKey: string): UseDragPosition {
     top: number;
     width: number;
     height: number;
+    /** Where the last painted frame put it, committed to state on release. */
+    lastLeft: number;
+    lastTop: number;
   } | null>(null);
+  // The drag paints through the DOM rather than through state, so a frame costs
+  // no render at all. Held here so pointermove only ever records the latest
+  // offset and the frame reads it.
+  const frameRef = useRef(0);
+  const pendingRef = useRef<{ dx: number; dy: number } | null>(null);
 
   // Returning the same object when nothing changed matters: this also runs from
   // a ResizeObserver, and a fresh object every time would re-render forever.
@@ -139,15 +147,22 @@ export function useDragPosition(storageKey: string): UseDragPosition {
 
   // A window that shrank, or a panel that grew when expanded, would otherwise
   // strand it off screen with nothing able to bring it back.
+  //
+  // Deliberately not keyed on `position`: it used to be, so every frame of a
+  // drag tore the observer down and built a new one, and observing re-measures,
+  // which forced a synchronous layout each time. reclamp is a no-op until the
+  // panel has a position, so attaching on mount costs nothing.
   useEffect(() => {
-    if (!position || !panelEl) return;
+    if (!panelEl) return;
     const measure = () => {
       const box = panelEl.getBoundingClientRect();
       reclamp(box.width, box.height);
     };
     window.addEventListener("resize", measure);
     const observer =
-      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(measure);
     observer?.observe(panelEl);
     // No observer (an engine old enough to lack it) still gets the resize path,
     // plus this one measurement of whatever is on screen right now.
@@ -156,7 +171,7 @@ export function useDragPosition(storageKey: string): UseDragPosition {
       window.removeEventListener("resize", measure);
       observer?.disconnect();
     };
-  }, [position, panelEl, reclamp]);
+  }, [panelEl, reclamp]);
 
   const startDrag = useCallback((event: React.PointerEvent<HTMLElement>) => {
     const panel = panelRef.current;
@@ -177,49 +192,119 @@ export function useDragPosition(storageKey: string): UseDragPosition {
       top: box.top,
       width: box.width,
       height: box.height,
+      lastLeft: box.left,
+      lastTop: box.top,
     };
     movedRef.current = false;
     setPressing(true);
   }, []);
 
-  useEffect(() => {
-    if (!pressing) return;
-    const onMove = (event: PointerEvent) => {
+  // One paint per frame, off the offset pointermove last recorded. A trackpad
+  // reports faster than the display refreshes, so a move-per-event was work the
+  // screen never showed, and translate3d keeps it off the layout path: the card
+  // carries a wide blurred shadow that left/top repainted every single frame.
+  const applyPending = useCallback(() => {
+    const session = sessionRef.current;
+    const move = pendingRef.current;
+    const panel = panelRef.current;
+    pendingRef.current = null;
+    if (!(session && move && panel)) {
+      return;
+    }
+    const next = clampToViewport(
+      { left: session.left + move.dx, top: session.top + move.dy },
+      session.width,
+      session.height,
+      viewport(),
+    );
+    session.lastLeft = next.left;
+    session.lastTop = next.top;
+    panel.style.transform = `translate3d(${next.left - session.left}px, ${
+      next.top - session.top
+    }px, 0)`;
+  }, []);
+
+  const paint = useCallback(() => {
+    frameRef.current = 0;
+    applyPending();
+  }, [applyPending]);
+
+  // Hand the offset back to left/top, which React owns between drags. Both are
+  // written here as well as through state: the node keeps the exact spot the
+  // last frame put it in, so dropping it cannot flash at the old one.
+  const settle = useCallback(() => {
+    if (frameRef.current) {
+      cancelAnimationFrame(frameRef.current);
+      frameRef.current = 0;
+    }
+    // A frame was still owed: fold it in rather than drop it, or letting go
+    // mid-flick would land the card a few pixels behind the pointer.
+    applyPending();
+    const session = sessionRef.current;
+    const panel = panelRef.current;
+    const moved = Boolean(session && movedRef.current);
+    if (panel) {
+      if (moved && session) {
+        panel.style.left = `${session.lastLeft}px`;
+        panel.style.top = `${session.lastTop}px`;
+      }
+      panel.style.transform = "";
+    }
+    if (moved && session) {
+      setPosition({ left: session.lastLeft, top: session.lastTop });
+    }
+    sessionRef.current = null;
+    setPressing(false);
+    setDragging(false);
+  }, [applyPending]);
+
+  // The press turned into a drag. Pin the panel where it already sits, so the
+  // transform offsets from the spot the anchor had it in and the first move
+  // does not jump.
+  const beginDrag = useCallback((left: number, top: number) => {
+    movedRef.current = true;
+    setDragging(true);
+    setPosition((current) => current ?? { left, top });
+  }, []);
+
+  // Records the offset and asks for a frame; the frame does the moving.
+  const onMove = useCallback(
+    (event: PointerEvent) => {
       const session = sessionRef.current;
       if (!session || session.pointerId !== event.pointerId) return;
       // The button was released somewhere we never saw it: end the drag rather
       // than following the cursor around.
       if (event.buttons === 0) {
-        sessionRef.current = null;
-        setPressing(false);
-        setDragging(false);
+        settle();
         return;
       }
       const dx = event.clientX - session.startX;
       const dy = event.clientY - session.startY;
       if (!movedRef.current) {
         if (!passedDragThreshold(dx, dy)) return;
-        movedRef.current = true;
-        setDragging(true);
+        beginDrag(session.left, session.top);
       }
       // Text selection would otherwise start mid-drag on the pill's label.
       event.preventDefault();
-      setPosition(
-        clampToViewport(
-          { left: session.left + dx, top: session.top + dy },
-          session.width,
-          session.height,
-          viewport(),
-        ),
-      );
-    };
-    const onEnd = (event: PointerEvent) => {
+      pendingRef.current = { dx, dy };
+      if (!frameRef.current) {
+        frameRef.current = requestAnimationFrame(paint);
+      }
+    },
+    [settle, beginDrag, paint],
+  );
+
+  const onEnd = useCallback(
+    (event: PointerEvent) => {
       const session = sessionRef.current;
       if (session && session.pointerId !== event.pointerId) return;
-      sessionRef.current = null;
-      setPressing(false);
-      setDragging(false);
-    };
+      settle();
+    },
+    [settle],
+  );
+
+  useEffect(() => {
+    if (!pressing) return;
     window.addEventListener("pointermove", onMove, { passive: false });
     window.addEventListener("pointerup", onEnd);
     window.addEventListener("pointercancel", onEnd);
@@ -227,8 +312,12 @@ export function useDragPosition(storageKey: string): UseDragPosition {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onEnd);
       window.removeEventListener("pointercancel", onEnd);
+      if (frameRef.current) {
+        cancelAnimationFrame(frameRef.current);
+        frameRef.current = 0;
+      }
     };
-  }, [pressing]);
+  }, [pressing, onMove, onEnd]);
 
   // Persist the resting place only, not every frame of the drag.
   useEffect(() => {

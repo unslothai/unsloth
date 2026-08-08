@@ -40,6 +40,9 @@ interface DragSession {
   maxTop: number;
   constraintsWidth: number;
   constraintsHeight: number;
+  /** The committed left/top the drag's transform offsets from. */
+  baseLeft: number;
+  baseTop: number;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -98,6 +101,7 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const dragSessionRef = useRef<DragSession | null>(null);
+  const dragFrameRef = useRef(0);
   const hasDraggedRef = useRef(false);
   const preferredWidthRef = useRef<number | null>(null);
   const preferredHeightRef = useRef<number | null>(null);
@@ -184,13 +188,19 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
       });
 
       setLayout((current) => {
+        // Mid-drag the offset lives in a transform, and the measured box
+        // already includes it, so committing left/top here would apply it
+        // twice. finishDrag lands the position instead.
+        const held = session && current ? current : null;
+        const restLeft = held?.left ?? left;
+        const restTop = held?.top ?? top;
         const next = {
-          left,
-          top,
+          left: restLeft,
+          top: restTop,
           minWidth: preferredWidthRef.current ?? monitorBox.width,
           minHeight: preferredHeightRef.current ?? monitorBox.height,
-          maxWidth: constraintsBox.width - left,
-          maxHeight: constraintsBox.height - top,
+          maxWidth: constraintsBox.width - restLeft,
+          maxHeight: constraintsBox.height - restTop,
         };
         return current && sameLayout(current, next) ? current : next;
       });
@@ -212,12 +222,19 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
         cancelAnimationFrame(remeasureRef.current);
         remeasureRef.current = 0;
       }
+      if (dragFrameRef.current) {
+        cancelAnimationFrame(dragFrameRef.current);
+        dragFrameRef.current = 0;
+      }
     };
   }, [constraintsElement, publisher]);
 
   // ResizeObserver never fires for a position-only change, so dragging alone
   // would leave the published frame at the monitor's old corner and the overlay
-  // stack dodging where it used to be. Re-publish once each layout is committed.
+  // stack dodging where it used to be. Re-publish once each layout is committed,
+  // which after a drag is on release: the frames in between are a transform, and
+  // republishing through them would re-render every overlay in the stack for
+  // each one, which is most of what made dragging feel heavy.
   useLayoutEffect(() => {
     const monitor = monitorRef.current;
     if (!(monitor && constraintsElement)) {
@@ -273,8 +290,26 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
       maxTop: Math.max(0, constraintsBox.height - monitorBox.height),
       constraintsWidth: constraintsBox.width,
       constraintsHeight: constraintsBox.height,
+      baseLeft: left,
+      baseTop: top,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  // One paint per frame, and through a transform rather than left/top. The
+  // panel is backdrop-blurred, so every layout-driven move re-sampled what is
+  // behind it; a trackpad also reports moves faster than the display refreshes,
+  // so most of those renders were never shown.
+  function paintDrag() {
+    dragFrameRef.current = 0;
+    const session = dragSessionRef.current;
+    const monitor = monitorRef.current;
+    if (!(session && monitor)) {
+      return;
+    }
+    monitor.style.transform = `translate3d(${session.left - session.baseLeft}px, ${
+      session.top - session.baseTop
+    }px, 0)`;
   }
 
   function updateDrag(event: PointerEvent<HTMLDivElement>) {
@@ -297,6 +332,30 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
     session.startY = event.clientY;
     session.left = left;
     session.top = top;
+    if (!dragFrameRef.current) {
+      dragFrameRef.current = requestAnimationFrame(paintDrag);
+    }
+  }
+
+  function finishDrag(event: PointerEvent<HTMLDivElement>) {
+    const session = dragSessionRef.current;
+    if (session?.pointerId !== event.pointerId) {
+      return;
+    }
+    if (dragFrameRef.current) {
+      cancelAnimationFrame(dragFrameRef.current);
+      dragFrameRef.current = 0;
+    }
+    const { left, top, constraintsWidth, constraintsHeight } = session;
+    dragSessionRef.current = null;
+    // Written to the node as well as to state, in this order, so handing the
+    // offset back to left/top cannot show a frame at the spot it started from.
+    const monitor = monitorRef.current;
+    if (monitor) {
+      monitor.style.left = `${left}px`;
+      monitor.style.top = `${top}px`;
+      monitor.style.transform = "";
+    }
     setLayout((current) =>
       !current || (current.left === left && current.top === top)
         ? current
@@ -304,16 +363,10 @@ function useMonitorLayout(constraintsElement: HTMLDivElement | null) {
             ...current,
             left,
             top,
-            maxWidth: session.constraintsWidth - left,
-            maxHeight: session.constraintsHeight - top,
+            maxWidth: constraintsWidth - left,
+            maxHeight: constraintsHeight - top,
           },
     );
-  }
-
-  function finishDrag(event: PointerEvent<HTMLDivElement>) {
-    if (dragSessionRef.current?.pointerId === event.pointerId) {
-      dragSessionRef.current = null;
-    }
   }
 
   return {
