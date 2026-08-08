@@ -71,6 +71,7 @@ const STACK_GAP = 8;
 const STACK_WIDTH = 448;
 // Never lift so far that the stack itself is pushed off the top.
 const MIN_STACK_ROOM = 120;
+const STACK_BOTTOM_ZONE = MIN_STACK_ROOM + STACK_INSET + STACK_GAP;
 
 /**
  * How far above the bottom edge the overlay stack must sit to clear the Live
@@ -86,6 +87,10 @@ function inStackColumn(frame: MonitorFrame, viewportWidth: number): boolean {
   );
 }
 
+function inStackCorner(frame: MonitorFrame, viewportHeight: number): boolean {
+  return viewportHeight - frame.bottom < STACK_BOTTOM_ZONE;
+}
+
 export function stackBottomInset(
   frame: MonitorFrame | null,
   viewportWidth: number,
@@ -94,7 +99,7 @@ export function stackBottomInset(
   if (!frame) return STACK_INSET;
   // Only dodge a monitor that is actually in the stack's column and low
   // enough to be in its way; one dragged elsewhere leaves the corner free.
-  const lowEnough = frame.bottom > viewportHeight / 2;
+  const lowEnough = inStackCorner(frame, viewportHeight);
   if (!(inStackColumn(frame, viewportWidth) && lowEnough)) return STACK_INSET;
   const lifted = viewportHeight - frame.top + STACK_GAP;
   return Math.max(
@@ -121,7 +126,7 @@ export function stackMaxHeight(
 ): number {
   const ownMargin = viewportHeight - bottomInset - STACK_INSET;
   if (!frame || !inStackColumn(frame, viewportWidth)) return ownMargin;
-  if (frame.bottom > viewportHeight / 2) return ownMargin;
+  if (inStackCorner(frame, viewportHeight)) return ownMargin;
   const belowMonitor = viewportHeight - bottomInset - frame.bottom - STACK_GAP;
   return Math.max(MIN_STACK_ROOM, Math.min(ownMargin, belowMonitor));
 }

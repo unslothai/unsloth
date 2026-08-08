@@ -157,6 +157,62 @@ test("two obstacles are folded one at a time, not as their bounding box", () => 
   assert.ok(both.bottom < unioned.bottom, "and it must lift less, not more");
 });
 
+const welcomeComposer: MonitorFrame = {
+  left: 492,
+  top: 376,
+  right: 1228,
+  bottom: 488,
+};
+
+test("the centred welcome composer does not lift the stack", () => {
+  assert.equal(stackBottomInset(welcomeComposer, W, H), 16);
+});
+
+test("a centred composer just past the midline still does not lift", () => {
+  const frame: MonitorFrame = { ...welcomeComposer, top: 417, bottom: 529 };
+  assert.equal(stackBottomInset(frame, W, 1050), 16);
+});
+
+test("the centred composer caps the stack instead of lifting it", () => {
+  const geometry = stackGeometry(welcomeComposer, W, H);
+  assert.equal(geometry.bottom, 16);
+  assert.ok(
+    H - geometry.bottom - geometry.maxHeight >= welcomeComposer.bottom,
+    "the stack's top edge stays below the composer",
+  );
+  assert.ok(geometry.maxHeight < H - 32, "it must actually be capped");
+});
+
+test("the docked composer still lifts the stack", () => {
+  const docked: MonitorFrame = {
+    left: 300,
+    top: H - 141,
+    right: W - 340,
+    bottom: H - 29,
+  };
+  const inset = stackBottomInset(docked, W, H);
+  assert.ok(inset > 16, "the stack must move");
+  assert.ok(H - inset <= docked.top, "no vertical overlap remains");
+});
+
+test("no box in the column is ever overlapped, on either branch", () => {
+  for (let fromBottom = 0; fromBottom <= 400; fromBottom += 1) {
+    const frame: MonitorFrame = {
+      left: W - 272,
+      top: Math.max(0, H - fromBottom - 300),
+      right: W - 16,
+      bottom: H - fromBottom,
+    };
+    const { bottom, maxHeight } = stackGeometry(frame, W, H);
+    const stackTop = H - bottom - maxHeight;
+    const liftedClear = H - bottom <= frame.top;
+    assert.ok(
+      liftedClear || stackTop >= frame.bottom,
+      `overlap at ${fromBottom}px off the bottom`,
+    );
+  }
+});
+
 test("an empty list behaves exactly like nothing published", () => {
   assert.deepEqual(stackGeometry([], W, H), stackGeometry(null, W, H));
 });
