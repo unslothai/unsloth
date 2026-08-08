@@ -3,7 +3,9 @@
 
 /**
  * Rust asks for the closing overlay with this, from the quit thread in main.rs, once the
- * quit confirmations have passed and only the backend reap is left.
+ * quit confirmations have passed and only the backend reap is left. Windows is the only
+ * platform that asks: macOS closes to the tray, and the Linux reap never showed the freeze
+ * this covers. Nothing here is platform-aware, so an overlay is whatever Rust asks for.
  */
 export const APP_CLOSING_EVENT = "app-closing";
 

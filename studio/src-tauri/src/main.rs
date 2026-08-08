@@ -803,7 +803,8 @@ fn begin_quit() -> Option<QuitGuard> {
 }
 
 /// Asks the renderer for the closing overlay. Reaping the backend takes up to ~15s, and
-/// without this the window just sits there looking frozen for all of it.
+/// without this the window just sits there looking frozen for all of it. Windows only, see
+/// `request_quit`.
 const APP_CLOSING_EVENT: &str = "app-closing";
 
 /// Takes that overlay back down, for the quits that never reach the exit.
@@ -841,11 +842,12 @@ impl<E: Fn(&str)> Drop for ClosingOverlay<E> {
     }
 }
 
-/// The overlay's way out, offered once the reap has run well past its own timeouts. It
-/// covers the titlebar, so a teardown that wedges past them would otherwise leave a window
-/// with no controls and nothing to click. Exits without finishing the reap: on Windows the
-/// app job object takes the child tree down with the process, and everywhere else an
-/// orphaned backend beats an app that cannot be closed.
+/// The overlay's way out, offered once the reap has run well past its own timeouts. The
+/// overlay covers the titlebar, so a teardown that wedges past them would otherwise leave a
+/// window with no controls and nothing to click. Only the Windows overlay reaches this, but
+/// it stays registered everywhere rather than splitting the handler list over a `cfg`: a
+/// command nothing invokes costs nothing. Exits without finishing the reap, which the app
+/// job object makes safe on Windows by taking the child tree down with the process.
 #[tauri::command]
 fn force_quit() {
     warn!("Force quit requested, exiting without waiting for the backend reap");
@@ -855,17 +857,27 @@ fn force_quit() {
 /// Confirm, cover the window, reap. Returns whether the caller should now exit.
 ///
 /// Split out with its blocking parts injected because the order is the whole point and an
-/// `AppHandle` cannot be built in a test. The overlay goes up after the confirmations,
-/// never before: each one can put a "Keep training?" dialog on screen, and an overlay
-/// behind it would announce the opposite of what it is asking. It still lands before the
-/// reap, which is the whole of the wait.
-fn quit_sequence(confirm: impl Fn() -> bool, reap: impl FnOnce(), emit: impl Fn(&str)) -> bool {
+/// `AppHandle` cannot be built in a test. `cover` comes in the same way rather than off a
+/// `cfg!`, so both platforms stay covered by tests on whichever one is running them.
+///
+/// The overlay goes up after the confirmations, never before: each one can put a "Keep
+/// training?" dialog on screen, and an overlay behind it would announce the opposite of
+/// what it is asking. It still lands before the reap, which is the whole of the wait.
+fn quit_sequence(
+    cover: bool,
+    confirm: impl Fn() -> bool,
+    reap: impl FnOnce(),
+    emit: impl Fn(&str),
+) -> bool {
     if !confirm() {
         return false;
     }
-    let overlay = ClosingOverlay::raise(emit);
+    // `None` is the whole no-op: nothing raised, so nothing to retract on the way out.
+    let overlay = cover.then(|| ClosingOverlay::raise(emit));
     reap();
-    overlay.keep();
+    if let Some(overlay) = overlay {
+        overlay.keep();
+    }
     true
 }
 
@@ -882,9 +894,15 @@ fn request_quit(app: &tauri::AppHandle) {
         .name("request-quit".to_string())
         .spawn(move || {
             let _guard = guard;
-            // Driven from here rather than the CloseRequested arm so the tray Quit gets
-            // the same overlay.
+            // Driven from here rather than the CloseRequested arm so the tray Quit is
+            // covered on the same terms as the close button.
             let quitting = quit_sequence(
+                // Which is Windows only. macOS never reaches here from the close button,
+                // which hides to the tray, and on Linux the button already quit without
+                // an overlay: the freeze this covers was reported on Windows, where
+                // stop_backend spends its liveness, shutdown and CTRL_BREAK budgets in
+                // series.
+                cfg!(target_os = "windows"),
                 || {
                     confirm_quit_during_install(&app)
                         && confirm_quit_during_update(&app)
@@ -1416,6 +1434,7 @@ mod tests {
         let events = std::cell::RefCell::new(Vec::new());
 
         let quitting = quit_sequence(
+            true,
             || true,
             || events.borrow_mut().push("reap".to_string()),
             |event| events.borrow_mut().push(event.to_string()),
@@ -1428,10 +1447,31 @@ mod tests {
     }
 
     #[test]
+    fn a_quit_off_windows_reaps_without_asking_for_an_overlay() {
+        let events = std::cell::RefCell::new(Vec::new());
+
+        let quitting = quit_sequence(
+            false,
+            || true,
+            || events.borrow_mut().push("reap".to_string()),
+            |event| events.borrow_mut().push(event.to_string()),
+        );
+
+        assert!(quitting, "the overlay is presentation, not part of quitting");
+        assert_eq!(
+            events.into_inner(),
+            ["reap"],
+            "macOS closes to the tray and Linux quit without an overlay before this \
+             existed, so neither may see the event at all"
+        );
+    }
+
+    #[test]
     fn a_declined_quit_never_raises_the_overlay() {
         let events = std::cell::RefCell::new(Vec::new());
 
         let quitting = quit_sequence(
+            true,
             || false,
             || events.borrow_mut().push("reap".to_string()),
             |event| events.borrow_mut().push(event.to_string()),
@@ -1451,6 +1491,7 @@ mod tests {
 
         let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             quit_sequence(
+                true,
                 || true,
                 || panic!("the reap panicked"),
                 |event| events.borrow_mut().push(event.to_string()),
@@ -1462,6 +1503,27 @@ mod tests {
             events.into_inner(),
             ["app-closing", "app-closing-cancelled"],
             "a panicking reap leaves the app up, so the overlay cannot cover it"
+        );
+    }
+
+    #[test]
+    fn a_panicking_reap_off_windows_stays_silent() {
+        let events = std::cell::RefCell::new(Vec::new());
+
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            quit_sequence(
+                false,
+                || true,
+                || panic!("the reap panicked"),
+                |event| events.borrow_mut().push(event.to_string()),
+            )
+        }));
+
+        assert!(unwound.is_err());
+        assert!(
+            events.into_inner().is_empty(),
+            "nothing was raised, so the unwind has nothing to retract: a cancel here would \
+             be the guard half-armed"
         );
     }
 
