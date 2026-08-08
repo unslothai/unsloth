@@ -12,7 +12,10 @@
 #   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_SKIP_AUTOSTART=1 sh # do not prompt to launch
 #   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_PYTHON=3.12 sh      # pin Python version
 #   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_STUDIO_HOME=/abs/path sh
-# Equivalent flags: ./install.sh --no-torch --python 3.12  (or pipe them: sh -s -- --no-torch)
+#   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_LLAMA_CPP_BACKEND=cpu sh # force CPU llama.cpp (GGUF)
+# Note the env var goes AFTER the pipe, on the `sh` side: `UNSLOTH_LLAMA_CPP_BACKEND=cpu curl ... | sh`
+# sets it for curl, not the piped sh, so the installer never sees it (#7213).
+# Equivalent flags: ./install.sh --no-torch --python 3.12 --cpu  (or pipe them: sh -s -- --no-torch --cpu)
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $HOME/.unsloth/studio
 #
@@ -64,6 +67,7 @@ _NO_TORCH_FLAG=false
 _SKIP_AUTOSTART=false
 _VERBOSE=false
 _SHORTCUTS_ONLY=false
+_LLAMA_CPP_BACKEND_FLAG=""
 _next_is_package=false
 _next_is_python=false
 _next_is_llama_cpp_dir=false
@@ -93,6 +97,8 @@ for arg in "$@"; do
         --tauri) TAURI_MODE=true ;;
         --python) _next_is_python=true ;;
         --no-torch) _NO_TORCH_FLAG=true ;;
+        --cpu) _LLAMA_CPP_BACKEND_FLAG=cpu ;;
+        --vulkan) _LLAMA_CPP_BACKEND_FLAG=vulkan ;;
         --verbose|-v) _VERBOSE=true ;;
         --shortcuts-only) _SHORTCUTS_ONLY=true ;;
         --with-llama-cpp-dir) _next_is_llama_cpp_dir=true ;;
@@ -103,6 +109,15 @@ done
 case "${UNSLOTH_NO_TORCH:-}" in 1|true|TRUE|yes|YES|on|ON) _NO_TORCH_FLAG=true ;; esac
 case "${UNSLOTH_SKIP_AUTOSTART:-}" in 1|true|TRUE|yes|YES|on|ON) _SKIP_AUTOSTART=true ;; esac
 [ -z "$_USER_PYTHON" ] && [ -n "${UNSLOTH_PYTHON:-}" ] && _USER_PYTHON="$UNSLOTH_PYTHON"
+
+# llama.cpp backend override. A --cpu / --vulkan flag survives `| sh -s -- --cpu`,
+# where UNSLOTH_LLAMA_CPP_BACKEND placed before `curl` would not: that binds to curl,
+# not the piped sh, so setup.sh never sees it and installs the auto-detected build
+# (#7213). setup.sh / install_llama_prebuilt.py read UNSLOTH_LLAMA_CPP_BACKEND; an
+# explicit flag wins over an inherited env var.
+if [ -n "$_LLAMA_CPP_BACKEND_FLAG" ]; then
+    export UNSLOTH_LLAMA_CPP_BACKEND="$_LLAMA_CPP_BACKEND_FLAG"
+fi
 
 if [ "$_VERBOSE" = true ]; then
     export UNSLOTH_VERBOSE=1
@@ -2054,6 +2069,9 @@ _maybe_reroute_strixhalo_to_2404() {
     [ -n "${UNSLOTH_TORCH_INDEX_URL:-}" ] && _rr_exports="$_rr_exports; export UNSLOTH_TORCH_INDEX_URL=$(_rr_q "$UNSLOTH_TORCH_INDEX_URL")"
     [ -n "${UNSLOTH_TORCH_INDEX_FAMILY:-}" ] && _rr_exports="$_rr_exports; export UNSLOTH_TORCH_INDEX_FAMILY=$(_rr_q "$UNSLOTH_TORCH_INDEX_FAMILY")"
     [ "$_SKIP_AUTOSTART" = true ] && _rr_exports="$_rr_exports; export UNSLOTH_SKIP_AUTOSTART=1"
+    # Forward the llama.cpp backend choice (--cpu/--vulkan or the env var) so the
+    # rerouted WSL child installs the same backend rather than re-auto-detecting.
+    [ -n "${UNSLOTH_LLAMA_CPP_BACKEND:-}" ] && _rr_exports="$_rr_exports; export UNSLOTH_LLAMA_CPP_BACKEND=$(_rr_q "$UNSLOTH_LLAMA_CPP_BACKEND")"
     _rr_args=""
     [ "$PACKAGE_NAME" != "unsloth" ] && _rr_args="$_rr_args --package $(_rr_q "$PACKAGE_NAME")"
     [ -n "$_USER_PYTHON" ] && _rr_args="$_rr_args --python $(_rr_q "$_USER_PYTHON")"

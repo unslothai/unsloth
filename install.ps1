@@ -9,8 +9,9 @@
 #   $env:UNSLOTH_SKIP_AUTOSTART=1; irm https://unsloth.ai/install.ps1 | iex # do not prompt to launch
 #   $env:UNSLOTH_PYTHON='3.12'; irm https://unsloth.ai/install.ps1 | iex    # pin Python version
 #   $env:UNSLOTH_STUDIO_HOME='C:\path'; irm https://unsloth.ai/install.ps1 | iex
-#   .\install.ps1 --no-torch                                                # equivalent flag
-# Or pass flags to a scriptblock: & ([scriptblock]::Create((irm https://unsloth.ai/install.ps1))) --no-torch
+#   $env:UNSLOTH_LLAMA_CPP_BACKEND='cpu'; irm https://unsloth.ai/install.ps1 | iex # force CPU llama.cpp (GGUF)
+#   .\install.ps1 --no-torch --cpu                                          # equivalent flags
+# Or pass flags to a scriptblock: & ([scriptblock]::Create((irm https://unsloth.ai/install.ps1))) --no-torch --cpu
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $USERPROFILE\.unsloth\studio
 #
@@ -183,12 +184,15 @@ function Install-UnslothStudio {
     $SkipAutostart = $false
     $ShortcutsOnly = $false
     $WithLlamaCppDir = ""
+    $LlamaCppBackendFlag = ""
     $argList = $args
     for ($i = 0; $i -lt $argList.Count; $i++) {
         switch ($argList[$i]) {
             "--local"    { $StudioLocalInstall = $true }
             "--tauri"    { $TauriMode = $true }
             "--no-torch" { $SkipTorch = $true }
+            "--cpu"      { $LlamaCppBackendFlag = "cpu" }
+            "--vulkan"   { $LlamaCppBackendFlag = "vulkan" }
             "--verbose"  { $script:UnslothVerbose = $true }
             "-v"         { $script:UnslothVerbose = $true }
             "--shortcuts-only" { $ShortcutsOnly = $true }
@@ -214,6 +218,10 @@ function Install-UnslothStudio {
     # Env-var equivalent for web installs; an explicit flag still wins.
     if ($env:UNSLOTH_NO_TORCH -in @('1', 'true', 'yes', 'on')) { $SkipTorch = $true }
     if ($env:UNSLOTH_SKIP_AUTOSTART -in @('1', 'true', 'yes', 'on')) { $SkipAutostart = $true }
+
+    # A --cpu / --vulkan backend choice is applied around the setup.ps1 call below
+    # (with save/restore), not here: `irm | iex` runs in the caller's session, so
+    # setting $env:UNSLOTH_LLAMA_CPP_BACKEND at parse time would leak into it (#7213).
 
     # Propagate to child processes so they also respect verbose mode.
     # Process-scoped -- does not persist.
@@ -4182,6 +4190,13 @@ exit 0
     } else {
         Remove-Item Env:UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
     }
+    # Apply the --cpu / --vulkan backend choice only around the setup run, with
+    # save/restore, so `irm | iex` doesn't leave it set in the caller's session
+    # (#7213). setup.ps1 reads $env:UNSLOTH_LLAMA_CPP_BACKEND; the flag wins over
+    # an inherited value for this run.
+    $previousLlamaBackend = $env:UNSLOTH_LLAMA_CPP_BACKEND
+    $hadPreviousLlamaBackend = ($null -ne $previousLlamaBackend)
+    if ($LlamaCppBackendFlag) { $env:UNSLOTH_LLAMA_CPP_BACKEND = $LlamaCppBackendFlag }
     $studioArgs = @('studio', 'setup')
     if ($script:UnslothVerbose) { $studioArgs += '--verbose' }
     if ($WithLlamaCppDir) {
@@ -4224,6 +4239,13 @@ exit 0
         Remove-Item Env:UNSLOTH_LOCAL_LLAMA_CPP_DIR -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_SETUP_PYTHON -ErrorAction SilentlyContinue
+        if ($LlamaCppBackendFlag) {
+            if ($hadPreviousLlamaBackend) {
+                $env:UNSLOTH_LLAMA_CPP_BACKEND = $previousLlamaBackend
+            } else {
+                Remove-Item Env:UNSLOTH_LLAMA_CPP_BACKEND -ErrorAction SilentlyContinue
+            }
+        }
     }
     if ($setupExit -ne 0) {
         if (-not $TauriMode) {
