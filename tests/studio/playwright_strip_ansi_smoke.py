@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import os
+
+import signal
 import subprocess
 import sys
 import threading
@@ -27,6 +29,7 @@ SECTIONS = (
     "tool-fallback-result",
     "tool-live-output",
     "code-execution-result",
+    "reconciled-terminal-result",
 )
 ESC = "\u001b"
 
@@ -56,23 +59,55 @@ def drain_process_output(proc: subprocess.Popen[str]) -> None:
 
 
 def start_vite() -> subprocess.Popen[str]:
+    process_group = (
+        {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        if os.name == "nt"
+        else {"start_new_session": True}
+    )
     proc = subprocess.Popen(
         ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", "8000", "--strictPort"],
         cwd=FRONTEND,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        **process_group,
     )
     threading.Thread(target=drain_process_output, args=(proc,), daemon=True).start()
     return proc
 
 
 def stop_process(proc: subprocess.Popen[str]) -> None:
-    proc.terminate()
+    if proc.poll() is not None:
+        return
+
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         proc.wait(timeout=10)
 
 

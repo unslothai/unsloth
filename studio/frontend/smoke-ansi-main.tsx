@@ -8,8 +8,12 @@ import { ToolFallbackResult } from "@/components/assistant-ui/tool-fallback";
 import { ToolLiveOutputPane } from "@/components/assistant-ui/tool-live-output";
 import { CodeExecutionResultOutput } from "@/components/assistant-ui/tool-ui-code-execution";
 
+import { preferSanitizedFullToolOutput } from "@/features/chat";
+
 const ESC = "\u001b";
 const coloured = `${ESC}[32mfile.txt${ESC}[0m\n${ESC}[01;31merror${ESC}[0m`;
+
+const truncated = "file.txt\n\n... (truncated; full output available in UI)";
 
 const root = document.getElementById("root");
 if (!root) {
@@ -34,6 +38,11 @@ createRoot(root).render(
       <h1>CodeExecutionResultOutput</h1>
       <CodeExecutionResultOutput result={coloured} />
     </section>
+    <section data-smoke="reconciled-terminal-result">
+      <h1>Reconciled terminal result</h1>
+      <pre>{preferSanitizedFullToolOutput(coloured, truncated)}</pre>
+    </section>
+
 
   </>,
 );

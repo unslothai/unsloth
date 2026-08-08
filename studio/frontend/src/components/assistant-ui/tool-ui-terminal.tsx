@@ -20,7 +20,7 @@ import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import {
-  preferFullToolOutput,
+  preferSanitizedFullToolOutput,
   useToolAwaitingApproval,
   useToolOutputFor,
   useToolPaneScope,
@@ -47,7 +47,10 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
     paneScope,
     toolCallId,
   );
-  const displayOutput = preferFullToolOutput(fullOutput, output);
+  // Compare the same plain-text representation on both sides. Otherwise a raw
+  // SGR-prefixed stream cannot match its cleaned truncated result and the
+  // reconciliation helper appends a duplicate prefix.
+  const displayOutput = preferSanitizedFullToolOutput(fullOutput, output);
   // The gate only opens once the call parsed, so a pending approval means the command is
   // written even while the args status still reads as streaming.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);

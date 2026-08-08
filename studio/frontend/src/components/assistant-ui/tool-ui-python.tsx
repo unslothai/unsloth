@@ -6,7 +6,7 @@
 import { Spinner } from "@/components/ui/spinner";
 import { authFetch } from "@/features/auth";
 import {
-  preferFullToolOutput,
+  preferSanitizedFullToolOutput,
   useChatRuntimeStore,
   useToolAwaitingApproval,
   useToolOutputFor,
@@ -163,7 +163,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
     paneScope,
     toolCallId,
   );
-  const displayOutput = preferFullToolOutput(fullOutput, output);
+  const displayOutput = preferSanitizedFullToolOutput(fullOutput, output);
 
   // The gate only opens once the call parsed, so a pending approval means the script is
   // written even while the args status still reads as streaming.
