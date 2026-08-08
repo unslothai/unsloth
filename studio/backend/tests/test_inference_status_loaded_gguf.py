@@ -118,6 +118,37 @@ def test_a_local_path_load_without_a_lease_is_still_local(status_route):
     assert status.is_local_model is True
 
 
+def test_a_model_cached_behind_the_gguf_is_still_reported(status_route, monkeypatch):
+    # Loading a GGUF unloads only the ACTIVE Unsloth model, so a Transformers
+    # model cached behind it keeps its weights. Reporting only the GGUF left
+    # that memory invisible to every client, and unreleasable from the UI.
+    monkeypatch.setattr(
+        inference_route,
+        "_peek_inference_backend",
+        lambda: type("_Reg", (), {"models": {"org/Cached": {}}})(),
+    )
+    status = status_route(_StatusBackend("org/A-GGUF", native_grant_backed = False))
+    assert status.active_model == "org/A-GGUF"
+    assert status.loaded == ["org/A-GGUF", "org/Cached"]
+
+
+def test_the_gguf_is_not_listed_twice_when_the_registry_names_it(status_route, monkeypatch):
+    monkeypatch.setattr(
+        inference_route,
+        "_peek_inference_backend",
+        lambda: type("_Reg", (), {"models": {"org/A-GGUF": {}}})(),
+    )
+    status = status_route(_StatusBackend("org/A-GGUF", native_grant_backed = False))
+    assert status.loaded == ["org/A-GGUF"]
+
+
+def test_no_orchestrator_leaves_the_gguf_alone(status_route, monkeypatch):
+    # Peek returns None before anything built one; the branch must not construct it.
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: None)
+    status = status_route(_StatusBackend("org/A-GGUF", native_grant_backed = False))
+    assert status.loaded == ["org/A-GGUF"]
+
+
 def test_the_users_chat_template_override_wins_over_the_runtime_projection(status_route):
     # The field is on the shared runtime fields, so the projection carries it too.
     # It must be overridden, not passed alongside, or the call is a TypeError.
