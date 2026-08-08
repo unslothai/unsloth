@@ -1724,7 +1724,9 @@ async def get_gpu_visibility(current_subject: str = Depends(get_current_subject)
 
 @app.get("/api/system/hardware")
 def get_hardware_info(
-    include_details: bool = Query(False), current_subject: str = Depends(get_current_subject)
+    include_details: bool = Query(False),
+    include_accelerators: bool = Query(False),
+    current_subject: str = Depends(get_current_subject),
 ):
     """Return GPU name, total VRAM, and key ML package versions.
 
@@ -1764,10 +1766,13 @@ def get_hardware_info(
             for d in sorted(devices, key = lambda d: d.get("visible_ordinal", 0))
         ]
         body["llama_cpp"] = get_installed_llama_version()
+    if include_accelerators:
         # Whether the optimized kernels (xformers / flash-attn / torchao / bitsandbytes)
-        # are installed, import, and actually load. Detail-only because it costs a real
-        # import; cached per process, so only the first About open pays. Additive: no
-        # existing key changes shape, and older clients ignore it.
+        # are installed, import, and actually load. Behind its own flag rather than
+        # include_details: the detail path is also read by Export, Video and onboarding,
+        # and this one spawns an interpreter to do the imports somewhere they cannot hurt
+        # anything. Cached per process, so only the first Settings open pays. Additive:
+        # no existing key changes shape, and older clients ignore it.
         body["accelerators"] = get_accelerator_report()
     return body
 

@@ -12,6 +12,9 @@
 export interface AcceleratorBuild {
   torch: string | null;
   cuda: string | null;
+  // ROCm wheels record hip and leave cuda null; without this a ROCm xformers renders no
+  // build detail at all.
+  hip: string | null;
   python: string | null;
 }
 
@@ -52,6 +55,7 @@ function parseAcceleratorBuild(raw: unknown): AcceleratorBuild | null {
   return {
     torch: (build.torch as string) ?? null,
     cuda: (build.cuda as string) ?? null,
+    hip: (build.hip as string) ?? null,
     python: (build.python as string) ?? null,
   };
 }

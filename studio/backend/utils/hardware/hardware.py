@@ -1007,86 +1007,134 @@ def _running_torch() -> Dict[str, Optional[str]]:
         return {"torch": None, "cuda": None, "python": platform.python_version()}
 
 
-def _probe_xformers() -> Dict[str, Any]:
-    """Does xformers import, and do its C++/CUDA extensions load?
+# Longest reason we will put in a response. These are exception strings, and an unbounded
+# one lands in a settings row's description AND in its aria-label.
+_MAX_REASON_CHARS = 300
 
-    ``_register_extensions`` is the exact call xformers makes at import and the exact one
-    that fails on an ABI mismatch -- it raises OSError out of ``torch.ops.load_library``,
-    which xformers catches and downgrades to a logger warning. Calling it directly turns
-    that swallowed warning back into an answer.
+
+def _short_reason(reason: Optional[str]) -> Optional[str]:
+    if not reason:
+        return None
+    reason = " ".join(str(reason).split())
+    if len(reason) <= _MAX_REASON_CHARS:
+        return reason
+    return reason[: _MAX_REASON_CHARS - 1].rstrip() + "…"
+
+
+def _applicable_accelerator_packages() -> frozenset:
+    """Which of these packages this host could load at all.
+
+    Everything here is a CUDA kernel package. Probing one on a host it was never going to
+    run on turns an expected outcome into a red banner, which is how a warning stops being
+    read: bitsandbytes is a dependency on every platform but the stock build is CUDA-only,
+    so on a Mac, a CPU-only box, an AMD ROCm host or an Intel XPU host its import failure
+    is the design, not a broken acceleration stack.
+
+    ROCm is the subtle one -- those hosts report ``DeviceType.CUDA`` internally (there is
+    deliberately no DeviceType.ROCM), so a plain device check would wave them through.
     """
-    entry: Dict[str, Any] = {"imports": False, "runs": None, "reason": None}
-    entry["built_for"] = _xformers_built_for()
     try:
-        import xformers  # noqa: F401
-    except Exception as e:
-        entry["reason"] = f"{type(e).__name__}: {e}"
-        return entry
-    entry["imports"] = True
+        if IS_ROCM or get_device() is not DeviceType.CUDA:
+            return frozenset()
+    except Exception:
+        return frozenset()
+    return frozenset(name for name, _ in _ACCELERATOR_PACKAGES)
+
+
+_PROBE_MARKER = "__UNSLOTH_ACCELERATOR_PROBE__"
+
+
+def _run_probe_subprocess(names, timeout: int = 180) -> Optional[Dict[str, Any]]:
+    """Run accelerator_probe.py in a throwaway interpreter. None if it could not answer.
+
+    Out of process on purpose -- see that module's docstring. In short: a failed import
+    leaves half a package in sys.modules and poisons every later import of it, ``import
+    bitsandbytes`` permanently latches a CUDA context in whatever process runs it, and a
+    badly broken native wheel can abort the interpreter instead of raising. All three are
+    survivable in a child and fatal in the server.
+    """
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "accelerator_probe.py")
+    if not os.path.exists(script):
+        return None
     try:
-        from xformers._cpp_lib import _register_extensions
-
-        _register_extensions()
-        entry["runs"] = True
+        completed = subprocess.run(
+            [sys.executable, script, *names],
+            capture_output = True,
+            text = True,
+            # Native import errors quote DLL and file paths, which on Windows can carry
+            # non-ASCII; the ANSI codepage default would mangle them. errors="replace" so
+            # a stray byte degrades one character instead of losing the whole diagnosis.
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = timeout,
+            # The child imports torch; keep it off the GPUs entirely. bitsandbytes and
+            # xformers both report their load status without one, and this way the probe
+            # cannot take VRAM from a run in progress.
+            env = {**os.environ, "CUDA_VISIBLE_DEVICES": "", "UNSLOTH_ALLOW_CPU": "1"},
+        )
     except Exception as e:
-        entry["runs"] = False
-        entry["reason"] = _describe_xformers_break(entry["built_for"], e)
-    return entry
+        logger.debug(f"Accelerator probe subprocess failed: {e}")
+        return None
+    # These packages print on import, so seek to the marker instead of assuming the JSON
+    # owns stdout.
+    _, marker, payload = (completed.stdout or "").rpartition(_PROBE_MARKER)
+    if not marker:
+        logger.debug(
+            f"Accelerator probe produced no result (rc={completed.returncode}): "
+            f"{(completed.stderr or '')[-400:]}"
+        )
+        return None
+    try:
+        import json
+
+        results = json.loads(payload.strip().splitlines()[0])
+    except Exception as e:
+        logger.debug(f"Accelerator probe output was not JSON: {e}")
+        return None
+    return results if isinstance(results, dict) else None
 
 
-def _describe_xformers_break(built_for: Optional[Dict[str, Optional[str]]], error) -> str:
-    """A one-line reason a user can act on, preferring the build metadata.
+def _describe_xformers_break(
+    built_for: Optional[Dict[str, Optional[str]]], error: Optional[str]
+) -> Optional[str]:
+    """Name the mismatch when there is one, otherwise hand back the real error.
 
-    xformers' own message is three lines and prints the CUDA version as a raw integer
-    ("with CUDA 1208"), so it reads as noise. The wheel's recorded build torch/CUDA/Python
-    against the running ones is the whole diagnosis.
+    Only claims a mismatch when the recorded build and the running runtime actually
+    differ. Asserting one whenever build metadata merely exists misdiagnoses the most
+    common Windows failure that is NOT a version mismatch -- a missing VC++ runtime or
+    CUDA DLL, which surfaces as ``[WinError 126]`` with a perfectly matching wheel.
+
+    A Python difference alone is never a mismatch and is never named on its own: the
+    wheels are abi3/none-tagged and ``_C`` loads through ``torch.ops.load_library``, not
+    the CPython ABI, so 3.10-built kernels run fine on 3.13. Saying otherwise sends people
+    off to reinstall Python.
     """
     running = _running_torch()
-    if built_for and (built_for.get("torch") or built_for.get("cuda")):
-        built = built_for.get("torch") or f"CUDA {built_for.get('cuda')}"
-        built_python = built_for.get("python")
-        built_text = f"torch {built}" if built_for.get("torch") else built
-        if built_python:
-            built_text += f" / Python {built_python}"
-        running_text = f"torch {running.get('torch') or 'unknown'}"
-        if running.get("python"):
-            running_text += f" / Python {running['python']}"
-        return (
-            f"xformers was built for {built_text} but this app runs {running_text}; "
-            f"its C++/CUDA extensions cannot load, so memory-efficient attention is off"
-        )
-    return f"{type(error).__name__}: {error}"
+    built_torch = (built_for or {}).get("torch")
+    built_cuda = (built_for or {}).get("cuda")
+    running_torch = running.get("torch")
+    running_cuda = running.get("cuda")
 
+    mismatch = None
+    if built_torch and running_torch and built_torch != running_torch:
+        mismatch = (f"torch {built_torch}", f"torch {running_torch}")
+    elif built_cuda and running_cuda and built_cuda.split(".")[0] != running_cuda.split(".")[0]:
+        # Majors only: CUDA minor version compatibility means a cu126 wheel loads fine
+        # against a cu128 torch, and flagging that would be crying wolf.
+        mismatch = (f"CUDA {built_cuda}", f"CUDA {running_cuda}")
+    if mismatch is None:
+        return error
 
-def _probe_import(import_name: str) -> Dict[str, Any]:
-    """Import a package and report whether it worked. Never raises."""
-    entry: Dict[str, Any] = {"imports": False, "runs": None, "reason": None}
-    try:
-        import importlib
-
-        importlib.import_module(import_name)
-        entry["imports"] = True
-    except Exception as e:
-        # An ABI mismatch in a native wheel shows up here as an ImportError on an
-        # undefined symbol, which is the flash-attn/bitsandbytes equivalent of the
-        # xformers failure above.
-        entry["reason"] = f"{type(e).__name__}: {e}"
-    return entry
-
-
-def _probe_flash_attn() -> Dict[str, Any]:
-    """flash-attn, forced past the lazy bit: the CUDA extension lives in the interface."""
-    entry = _probe_import("flash_attn")
-    if not entry["imports"]:
-        return entry
-    try:
-        import flash_attn.flash_attn_interface  # noqa: F401
-
-        entry["runs"] = True
-    except Exception as e:
-        entry["runs"] = False
-        entry["reason"] = f"{type(e).__name__}: {e}"
-    return entry
+    built_text, running_text = mismatch
+    built_python = (built_for or {}).get("python")
+    if built_python:
+        built_text += f" / Python {built_python}"
+    if running.get("python"):
+        running_text += f" / Python {running['python']}"
+    return (
+        f"xformers was built for {built_text} but this app runs {running_text}; "
+        f"its C++/CUDA extensions cannot load, so memory-efficient attention is off"
+    )
 
 
 def get_accelerator_report(refresh: bool = False) -> Dict[str, Any]:
@@ -1109,10 +1157,9 @@ def get_accelerator_report(refresh: bool = False) -> Dict[str, Any]:
         }
 
     ``runs`` is None where the question does not apply (package absent, or no separate
-    kernel-load step). Cached for the process: the imports are slow and re-running them
-    per request would make the About tab expensive. Set UNSLOTH_SKIP_ACCELERATOR_PROBE=1
-    to report versions only, for the rare install where importing a broken native wheel
-    is worse than not knowing.
+    kernel-load step). Cached for the process: the probe spawns an interpreter and
+    re-running it per request would make the About tab expensive. Set
+    UNSLOTH_SKIP_ACCELERATOR_PROBE=1 to report versions only.
     """
     global _accelerator_report_cache
 
@@ -1129,33 +1176,33 @@ def get_accelerator_report(refresh: bool = False) -> Dict[str, Any]:
             "yes",
             "on",
         )
-        # These are CUDA/XPU kernels. On a Mac or a CPU-only host nothing loads them, and
-        # bitsandbytes fails to import there by design -- calling that a degraded
-        # acceleration stack would pin a permanent false banner to every Mac install.
-        try:
-            accelerated = get_device() in (DeviceType.CUDA, DeviceType.XPU)
-        except Exception:
-            accelerated = False
-        probe = accelerated and not disabled
-        if disabled:
-            skip_reason = "not probed"
-        elif not accelerated:
-            skip_reason = "not used on this device"
-        else:
-            skip_reason = None
+        applicable = _applicable_accelerator_packages()
         running = _running_torch()
         packages: Dict[str, Any] = {}
         degraded = []
 
+        versions: Dict[str, Optional[str]] = {}
         for import_name, dist_name in _ACCELERATOR_PACKAGES:
             try:
-                version = pkg_version(dist_name)
+                versions[import_name] = pkg_version(dist_name)
             except PackageNotFoundError:
-                version = None
+                versions[import_name] = None
             except Exception as e:
                 logger.debug(f"Failed to read {dist_name} version: {e}")
-                version = None
+                versions[import_name] = None
 
+        # One child for all of them: the interpreter start and the torch import dominate,
+        # so four separate children would cost four times as much for the same answer.
+        to_probe = [
+            name
+            for name, version in versions.items()
+            if version is not None and name in applicable
+        ]
+        results = {} if (disabled or not to_probe) else (_run_probe_subprocess(to_probe) or {})
+        probed = bool(results)
+
+        for import_name, _ in _ACCELERATOR_PACKAGES:
+            version = versions[import_name]
             entry: Dict[str, Any] = {
                 "version": version,
                 "installed": version is not None,
@@ -1164,34 +1211,35 @@ def get_accelerator_report(refresh: bool = False) -> Dict[str, Any]:
                 "reason": None,
             }
             if import_name == "xformers":
+                # Read straight off the wheel, so it is reported even when nothing is
+                # probed -- it costs one small file read and no import.
                 entry["built_for"] = _xformers_built_for()
 
-            if version is not None and probe:
-                try:
-                    if import_name == "xformers":
-                        entry.update(_probe_xformers())
-                    elif import_name == "flash_attn":
-                        entry.update(_probe_flash_attn())
-                    else:
-                        entry.update(_probe_import(import_name))
-                except Exception as e:
-                    # A report must never be the thing that 500s the endpoint.
-                    logger.debug(f"Accelerator probe for {import_name} failed: {e}")
-                    entry["reason"] = f"{type(e).__name__}: {e}"
+            result = results.get(import_name)
+            if result is not None:
+                entry["imports"] = result.get("imports") is True
+                entry["runs"] = result.get("runs") if isinstance(result.get("runs"), bool) else None
+                error = result.get("error")
+                if import_name == "xformers":
+                    error = _describe_xformers_break(entry.get("built_for"), error)
+                entry["reason"] = _short_reason(error)
+                if not entry["imports"] or entry["runs"] is False:
+                    degraded.append(import_name)
             elif version is not None:
-                entry["reason"] = skip_reason
-
-            # Installed but dead is the case worth shouting about. Installed-and-absent
-            # is normal, and unprobed is unknown, not broken.
-            if version is not None and probe and (not entry["imports"] or entry["runs"] is False):
-                degraded.append(import_name)
+                # Three different unknowns, and the UI must not read any of them as broken.
+                if disabled:
+                    entry["reason"] = "not probed"
+                elif import_name not in applicable:
+                    entry["reason"] = "not used on this device"
+                else:
+                    entry["reason"] = "could not be checked"
             packages[import_name] = entry
 
         report = {
             "python_version": platform.python_version(),
             "torch_version": running.get("torch"),
             "torch_cuda": running.get("cuda"),
-            "probed": probe,
+            "probed": probed,
             "packages": packages,
             "degraded": degraded,
         }

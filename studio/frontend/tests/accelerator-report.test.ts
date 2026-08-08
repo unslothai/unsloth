@@ -78,17 +78,44 @@ test("packages come back in a fixed order regardless of key order", () => {
   );
 });
 
-test("an unknown package is kept, at the end", () => {
+test("an unknown package is kept, and sorted after the known ones", () => {
+  // A backend that grows a package must not need a frontend release to show it, and it
+  // must not displace the ones the UI knows how to label. The single-package version of
+  // this test asserted an ordering it never exercised.
   const report = parseAcceleratorReport({
     packages: {
       somethingnew: { version: "1.0", installed: true, imports: true },
+      bitsandbytes: { version: "0.48.0", installed: true, imports: true },
+      xformers: { version: "0.0.34", installed: true, imports: true },
     },
     degraded: [],
   });
   assert.deepEqual(
     report?.packages.map((p) => p.name),
-    ["somethingnew"],
+    ["xformers", "bitsandbytes", "somethingnew"],
   );
+});
+
+test("a ROCm build reports hip, which the CUDA-only parse dropped", () => {
+  const report = parseAcceleratorReport({
+    packages: {
+      xformers: {
+        version: "0.0.33",
+        installed: true,
+        imports: true,
+        runs: false,
+        built_for: {
+          torch: null,
+          cuda: null,
+          hip: "6.4.43483",
+          python: "3.10.11",
+        },
+      },
+    },
+    degraded: ["xformers"],
+  });
+  assert.equal(report?.packages[0].builtFor?.hip, "6.4.43483");
+  assert.equal(report?.packages[0].builtFor?.cuda, null);
 });
 
 test("a missing runs is null, not false", () => {

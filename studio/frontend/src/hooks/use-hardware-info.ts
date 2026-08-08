@@ -3,22 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { useEffect, useState } from "react";
-// Pure parsing, kept out of this module so it can be unit tested without dragging in
-// react and the auth chain behind authFetch.
-import {
-    type AcceleratorReport,
-    parseAcceleratorReport,
-} from "./accelerator-report";
 
-export {
-    hasDeadAccelerator,
-    parseAcceleratorReport,
-} from "./accelerator-report";
-export type {
-    AcceleratorBuild,
-    AcceleratorPackage,
-    AcceleratorReport,
-} from "./accelerator-report";
 
 export interface GpuDevice {
     name: string | null;
@@ -47,9 +32,6 @@ export interface HardwareInfo {
     // The Python the backend runs on. Half of every "built for 3.10, running 3.13" report,
     // and previously not shown anywhere in the app.
     python: string | null;
-    // Optimized-kernel health. Detail-path only, so null against a backend that predates
-    // the field or a response fetched without include_details.
-    accelerators: AcceleratorReport | null;
     // Whether export can run here (true only on a supported accelerator), with a torch-aware
     // reason. `null` until the authoritative response lands, so callers don't briefly enable
     // export; `loaded` flips true once a real (non-error) response arrives.
@@ -78,7 +60,6 @@ const DEFAULT: HardwareInfo = {
     unsloth: null,
     llamaCpp: null,
     python: null,
-    accelerators: null,
     exportSupported: null,
     exportUnsupportedReason: null,
     exportUnsupportedMessage: null,
@@ -140,7 +121,6 @@ async function fetchOnce(): Promise<HardwareInfo> {
                 unsloth: data?.versions?.unsloth ?? null,
                 llamaCpp: data?.llama_cpp ?? null,
                 python: data?.versions?.python ?? null,
-                accelerators: parseAcceleratorReport(data?.accelerators),
                 exportSupported: data?.export_supported ?? null,
                 exportUnsupportedReason: data?.export_unsupported_reason ?? null,
                 exportUnsupportedMessage: data?.export_unsupported_message ?? null,

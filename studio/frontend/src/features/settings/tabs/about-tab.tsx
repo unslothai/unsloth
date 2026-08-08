@@ -218,7 +218,7 @@ export function AboutTab() {
         </SettingsSection>
       ) : null}
 
-      <AcceleratorSection hw={hw} />
+      <AcceleratorSection />
 
       <SettingsSection title={t("settings.about.help")}>
         <SettingsRow label={t("settings.about.documentation")}>

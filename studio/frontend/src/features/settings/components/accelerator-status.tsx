@@ -18,9 +18,10 @@
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   type AcceleratorPackage,
+  type AcceleratorReport,
   hasDeadAccelerator,
 } from "@/hooks/accelerator-report";
-import { type HardwareInfo, useHardwareInfo } from "@/hooks/use-hardware-info";
+import { useAcceleratorReport } from "@/hooks/use-accelerator-report";
 import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { Alert01Icon } from "@hugeicons/core-free-icons";
@@ -74,8 +75,13 @@ function describeBuild(pkg: AcceleratorPackage): string | null {
   const build = pkg.builtFor;
   if (!build) return null;
   const parts: string[] = [];
-  if (build.torch) parts.push(`torch ${build.torch}`);
-  else if (build.cuda) parts.push(`CUDA ${build.cuda}`);
+  if (build.torch) {
+    parts.push(`torch ${build.torch}`);
+  } else if (build.cuda) {
+    parts.push(`CUDA ${build.cuda}`);
+  } else if (build.hip) {
+    parts.push(`ROCm ${build.hip}`);
+  }
   if (build.python) parts.push(`Python ${build.python}`);
   return parts.length > 0 ? parts.join(" / ") : null;
 }
@@ -119,9 +125,9 @@ function AcceleratorRow({
   );
 }
 
-export function AcceleratorSection({ hw }: { hw: HardwareInfo }) {
+export function AcceleratorSection() {
   const t = useT();
-  const report = hw.accelerators;
+  const report: AcceleratorReport | null = useAcceleratorReport();
   // Older backends do not send this at all; render nothing rather than an empty section.
   if (!report || report.packages.length === 0) return null;
 
@@ -147,12 +153,10 @@ export function AcceleratorSection({ hw }: { hw: HardwareInfo }) {
  */
 export function AcceleratorBanner() {
   const t = useT();
-  const hw = useHardwareInfo();
-  if (!hasDeadAccelerator(hw.accelerators)) return null;
+  const report = useAcceleratorReport();
+  if (!hasDeadAccelerator(report)) return null;
 
-  const packages = (hw.accelerators?.degraded ?? [])
-    .map(packageLabel)
-    .join(", ");
+  const packages = (report?.degraded ?? []).map(packageLabel).join(", ");
   return (
     <Alert variant="destructive" className="mb-4">
       <HugeiconsIcon icon={Alert01Icon} />
