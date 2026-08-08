@@ -38,6 +38,7 @@ from core.inference.stt_sidecar import (
     SttModelIdError,
     SttModelNotDownloadedError,
     SttUnavailableError,
+    SttTranscriptionCancelledError,
     _SelectedHubFile,
     _capture_stt_hub_cache,
     _claim_stt_repository,
@@ -48,6 +49,7 @@ from core.inference.stt_sidecar import (
     _prepare_stt_cache_for_http,
     _read_revision_record,
     _TARGET_SAMPLE_RATE,
+    _terminate_process_on_cancel,
     _training_active,
     _write_revision_record,
     normalize_whisper_language,
@@ -849,6 +851,7 @@ class MtmdSttSidecar:
         model: Optional[str] = None,
         language: Optional[str] = None,
         fast: bool = False,
+        cancel_event: Optional[threading.Event] = None,
     ) -> dict:
         """Transcribe encoded audio bytes, as the other sidecars do.
 
@@ -857,6 +860,8 @@ class MtmdSttSidecar:
         """
         ensure_engine_available()
         model_id = resolve_mtmd_model_id(model)
+        if cancel_event is not None and cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         # No training guard here on purpose: load() starts the server with
         # -ngl 0 --no-mmproj-offload while a run is active, so this transcribes
         # on CPU exactly as whisper.cpp and Transformers do. Refusing after a
@@ -864,6 +869,8 @@ class MtmdSttSidecar:
         # Reject a missing model before decoding, matching the other sidecars.
         self._ensure_model_downloaded(model_id)
         decoded_audio = _decode_audio_bounded(audio)
+        if cancel_event is not None and cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         wav_bytes = _pcm_to_wav_bytes(decoded_audio)
         audio_seconds = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
         self.load(model_id)
@@ -884,11 +891,26 @@ class MtmdSttSidecar:
             # llama-server mid-request and throw the dictation away.
             self._active_requests += 1
             self._cancel_idle_unload_locked()
+            process = self._process
+        cancel_done = threading.Event()
+        if cancel_event is not None:
+            threading.Thread(
+                target = _terminate_process_on_cancel,
+                args = (process, cancel_event, cancel_done),
+                daemon = True,
+            ).start()
         try:
             # Outside the lock: a held lock would block unload, including the
             # one a training run performs, for the whole request timeout.
             text = self._post_transcribe(port, model_id, wav_bytes, audio_seconds)
+            if cancel_event is not None and cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
+        except Exception:
+            if cancel_event is not None and cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
+            raise
         finally:
+            cancel_done.set()
             with self._lock:
                 self._active_requests -= 1
                 self._schedule_idle_unload_locked()
@@ -898,6 +920,11 @@ class MtmdSttSidecar:
             "duration": audio_seconds,
             "model": model_id,
         }
+
+    def cancel_transcription(self, cancel_event: threading.Event) -> bool:
+        already_cancelled = cancel_event.is_set()
+        cancel_event.set()
+        return self.cancel_pending_load() or not already_cancelled
 
     def _post_transcribe(
         self,

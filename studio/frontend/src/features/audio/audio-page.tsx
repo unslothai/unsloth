@@ -312,6 +312,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const stagedTtsLoadDeferred = useRef(false);
   const micRequestGeneration = useRef(0);
   const micPendingGeneration = useRef<number | null>(null);
+  const transcriptionAbort = useRef<AbortController | null>(null);
 
   const stopRecordStream = useCallback(() => {
     for (const track of recordStreamRef.current?.getTracks() ?? [])
@@ -1191,6 +1192,9 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         toast.info("Wait for the transcription model to finish loading.");
         return;
       }
+      transcriptionAbort.current?.abort();
+      const controller = new AbortController();
+      transcriptionAbort.current = controller;
       setBusy("transcribing");
       setTranscribedName(name);
       try {
@@ -1198,16 +1202,22 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           model: key,
           engine,
           language: "",
+          signal: controller.signal,
         });
+        if (controller.signal.aborted || !activeRef.current) return;
         setTranscript(text);
         if (!text) toast.info("The model heard no speech in that audio.");
       } catch (error) {
+        if (controller.signal.aborted) return;
         toast.error(
           error instanceof Error ? error.message : "Transcription failed.",
         );
       } finally {
-        setBusy(null);
-        void refreshSttStatus();
+        if (transcriptionAbort.current === controller) {
+          transcriptionAbort.current = null;
+          setBusy(null);
+          if (activeRef.current) void refreshSttStatus();
+        }
       }
     },
     [selectedSttRepo, sttLoadedModel, sttLoadedEngine, refreshSttStatus],
@@ -1284,8 +1294,14 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   // page stays mounted across tab switches, so unmount alone left a hidden
   // recorder capturing until the user came back and stopped it.
   useEffect(() => {
-    if (!active) stopAndDiscardRecording();
-    return () => stopAndDiscardRecording();
+    if (!active) {
+      stopAndDiscardRecording();
+      transcriptionAbort.current?.abort();
+    }
+    return () => {
+      stopAndDiscardRecording();
+      transcriptionAbort.current?.abort();
+    };
   }, [active, stopAndDiscardRecording]);
 
   const handleTranscribeFile = useCallback(

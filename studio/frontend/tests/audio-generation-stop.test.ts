@@ -32,6 +32,25 @@ test("leaving the audio page aborts an in-flight generation", () => {
   );
 });
 
+test("leaving the audio page aborts an in-flight transcription", () => {
+  assert.match(
+    source,
+    /const transcriptionAbort = useRef<AbortController \| null>\(null\)/,
+  );
+  assert.match(
+    source,
+    /transcribeAudioBlob\(blob, \{[\s\S]*signal: controller\.signal/,
+  );
+  assert.match(
+    source,
+    /if \(!active\) \{[\s\S]*transcriptionAbort\.current\?\.abort\(\)/,
+  );
+  assert.match(
+    source,
+    /if \(controller\.signal\.aborted \|\| !activeRef\.current\) return/,
+  );
+});
+
 test("a non-abort generation failure refreshes authoritative residency", () => {
   assert.match(
     source,

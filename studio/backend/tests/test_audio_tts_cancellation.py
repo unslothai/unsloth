@@ -147,6 +147,47 @@ def test_audio_generation_timeout_scales_with_requested_tokens(monkeypatch):
     assert orchestrator_module._audio_generation_timeout(512) == 10.0
     assert orchestrator_module._audio_generation_timeout(2048) == 10.0
     assert orchestrator_module._audio_generation_timeout(8192) == 40.0
+    assert orchestrator_module._audio_generation_timeout(10**310) == 40.0
+
+
+def test_tts_route_bounds_public_token_budget():
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hello"}],
+        max_tokens = 10**310,
+    )
+
+    assert inference_route._tts_max_new_tokens(payload) == 8192
+
+
+def test_audio_worker_command_uses_the_bounded_token_budget(monkeypatch):
+    orchestrator = _bare_orchestrator()
+    monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)
+    sent = []
+    monkeypatch.setattr(orchestrator, "_send_cmd", lambda cmd: sent.append(cmd))
+
+    def direct_reader(request_id):
+        responses = queue.Queue()
+        responses.put(
+            {
+                "type": "audio_done",
+                "request_id": request_id,
+                "wav_base64": base64.b64encode(b"RIFFfake").decode("ascii"),
+                "sample_rate": 24000,
+            }
+        )
+        return (
+            lambda *, timeout: responses.get(timeout = timeout),
+            lambda **_kwargs: None,
+            lambda: None,
+        )
+
+    monkeypatch.setattr(orchestrator, "_direct_reader", direct_reader)
+
+    assert orchestrator.generate_audio_response("hello", max_new_tokens = 10**310) == (
+        b"RIFFfake",
+        24000,
+    )
+    assert sent[0]["max_new_tokens"] == 8192
 
 
 def test_audio_response_timeout_cancels_and_drains_before_releasing(monkeypatch):

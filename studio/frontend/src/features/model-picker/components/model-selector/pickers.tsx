@@ -2842,14 +2842,26 @@ export function HubModelPicker({
             // An unsloth repo must also be a full pipeline: the fall-through loads uncataloged rows as "pipeline", and from_pretrained on a single-file checkpoint repo fails. Curated single-file artifacts stay, since loadSpecFor carries their filename.
             (!task ||
               (isUnslothRepoId(c.repo_id) && !c.single_file) ||
-              (c.task === "automatic-speech-recognition" &&
+              ((c.task === "automatic-speech-recognition" ||
+                c.task === "text-to-speech") &&
                 communityAudioRowIsRunnable({
-                  isStt: true,
-                  isTts: false,
+                  isStt: c.task === "automatic-speech-recognition",
+                  isTts: c.task === "text-to-speech",
                   isGguf: false,
                   id: c.repo_id,
                   tags: c.tags,
                   libraryName: c.library_name,
+                }) &&
+                macTtsHubRowIsRunnable({
+                  isMac,
+                  isTts: c.task === "text-to-speech",
+                  isGguf: false,
+                  hasRunnableGgufSibling: Boolean(
+                    catalog &&
+                      groupForRepoId(c.repo_id, catalog)?.artifacts.some(
+                        (artifact) => artifact.format === "gguf",
+                      ),
+                  ),
                 })) ||
               (catalog
                 ? artifactForRepoId(c.repo_id, catalog) !== null
@@ -2865,6 +2877,7 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
+      isMac,
     ],
   );
   // Task-scoped loads put the whole pipeline on ONE device, so quant fit uses the device the load lands on (the lowest visible ordinal), not the multi-GPU sum or the largest card: sizing against the bigger card OOMs the smaller one. Chat keeps the sum.

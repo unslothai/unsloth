@@ -272,10 +272,14 @@ test("community ASR only offers checkpoints the Transformers Whisper sidecar can
   );
 });
 
-test("cached community Whisper survives the narrow Audio on-device trust gate", () => {
+test("cached runnable community audio survives the Audio on-device trust gate", () => {
   assert.match(
     pickerSource,
-    /c\.task === "automatic-speech-recognition"[\s\S]*communityAudioRowIsRunnable\(\{[\s\S]*isStt: true,[\s\S]*id: c\.repo_id,[\s\S]*tags: c\.tags,[\s\S]*libraryName: c\.library_name/,
+    /c\.task === "automatic-speech-recognition" \|\|[\s\S]*c\.task === "text-to-speech"[\s\S]*communityAudioRowIsRunnable\(\{[\s\S]*isStt: c\.task === "automatic-speech-recognition",[\s\S]*isTts: c\.task === "text-to-speech",[\s\S]*id: c\.repo_id,[\s\S]*tags: c\.tags,[\s\S]*libraryName: c\.library_name/,
+  );
+  assert.match(
+    pickerSource,
+    /communityAudioRowIsRunnable\(\{[\s\S]*macTtsHubRowIsRunnable\(\{[\s\S]*isMac,[\s\S]*isTts: c\.task === "text-to-speech",[\s\S]*hasRunnableGgufSibling/,
   );
 });
 

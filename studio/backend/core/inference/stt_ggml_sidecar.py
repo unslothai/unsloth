@@ -50,6 +50,7 @@ from core.inference.stt_sidecar import (
     SttModelIdError,
     SttModelNotDownloadedError,
     SttUnavailableError,
+    SttTranscriptionCancelledError,
     _capture_stt_hub_cache,
     _claim_stt_repository,
     _decode_audio_bounded,
@@ -60,6 +61,7 @@ from core.inference.stt_sidecar import (
     _prepare_stt_cache_for_http,
     _read_revision_record,
     _TARGET_SAMPLE_RATE,
+    _terminate_process_on_cancel,
     _training_active,
     _write_revision_record,
     normalize_whisper_language,
@@ -955,6 +957,7 @@ class GgmlSttSidecar:
         model: Optional[str] = None,
         language: Optional[str] = None,
         fast: bool = False,
+        cancel_event: Optional[threading.Event] = None,
     ) -> dict:
         """Transcribe encoded audio bytes via whisper-server.
 
@@ -965,6 +968,8 @@ class GgmlSttSidecar:
         ensure_engine_available()
         model_id = resolve_ggml_model_id(model)
         lang = normalize_whisper_language(language)
+        if cancel_event is not None and cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         known_languages = _known_whisper_languages()
         if lang is not None and known_languages is not None and lang not in known_languages:
             raise SttLanguageError(
@@ -974,12 +979,29 @@ class GgmlSttSidecar:
         # only to 409 (matches the Transformers sidecar's preflight).
         self._ensure_model_downloaded(model_id)
         decoded_audio = _decode_audio_bounded(audio)
+        if cancel_event is not None and cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         wav_bytes = _pcm_to_wav_bytes(decoded_audio)
         with self._lock:
+            cancel_done = threading.Event()
             try:
                 self.load(model_id)
+                process = self._process
+                if cancel_event is not None:
+                    threading.Thread(
+                        target = _terminate_process_on_cancel,
+                        args = (process, cancel_event, cancel_done),
+                        daemon = True,
+                    ).start()
                 text = self._post_inference(wav_bytes, lang, fast)
+                if cancel_event is not None and cancel_event.is_set():
+                    raise SttTranscriptionCancelledError("Transcription cancelled.")
+            except Exception:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise SttTranscriptionCancelledError("Transcription cancelled.")
+                raise
             finally:
+                cancel_done.set()
                 self._schedule_idle_unload_locked()
         duration = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
         return {
@@ -988,6 +1010,11 @@ class GgmlSttSidecar:
             "duration": duration,
             "model": model_id,
         }
+
+    def cancel_transcription(self, cancel_event: threading.Event) -> bool:
+        already_cancelled = cancel_event.is_set()
+        cancel_event.set()
+        return self.cancel_pending_load() or not already_cancelled
 
     def _post_inference(self, wav_bytes: bytes, lang: Optional[str], fast: bool) -> str:
         boundary = uuid.uuid4().hex

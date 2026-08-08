@@ -62,6 +62,7 @@ _DISPATCH_DRAIN_TIMEOUT = 5.0
 
 _AUDIO_GENERATION_TIMEOUT = 120.0
 _AUDIO_GENERATION_BASE_TOKENS = 2048
+AUDIO_GENERATION_MAX_TOKENS = 8192
 _AUDIO_CANCEL_DRAIN_TIMEOUT = 5.0
 
 # Max wait for a cancelled generation to release _gen_lock before unload_model
@@ -71,7 +72,8 @@ _UNLOAD_GEN_LOCK_TIMEOUT = 15.0
 
 def _audio_generation_timeout(max_new_tokens: int) -> float:
     """Keep the existing floor, but give longer requested audio room to finish."""
-    token_scale = max(1.0, float(max_new_tokens) / _AUDIO_GENERATION_BASE_TOKENS)
+    max_new_tokens = min(AUDIO_GENERATION_MAX_TOKENS, max(1, int(max_new_tokens)))
+    token_scale = max(1.0, max_new_tokens / _AUDIO_GENERATION_BASE_TOKENS)
     return _AUDIO_GENERATION_TIMEOUT * token_scale
 
 
@@ -2082,6 +2084,13 @@ class InferenceOrchestrator:
                 if self._unload_pending or self.active_model_name != expected_model:
                     raise RuntimeError("model is being unloaded")
 
+                # Bound public API integers before either enqueuing work or
+                # calculating the floating-point watchdog deadline.
+                max_new_tokens = min(
+                    AUDIO_GENERATION_MAX_TOKENS,
+                    max(1, int(max_new_tokens)),
+                )
+                generation_timeout = _audio_generation_timeout(max_new_tokens)
                 request_id = str(uuid.uuid4())
 
                 cmd = {
@@ -2107,7 +2116,6 @@ class InferenceOrchestrator:
                         self._claim_worker(cancel_event)
                         self._send_cmd(cmd)
 
-                    generation_timeout = _audio_generation_timeout(max_new_tokens)
                     deadline = time.monotonic() + generation_timeout
                     cancel_signalled = False
                     worker_started = False

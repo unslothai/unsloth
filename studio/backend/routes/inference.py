@@ -48,7 +48,11 @@ from utils.api_errors import openai_error_body, anthropic_error_body, error_body
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
 from hub.dependencies import get_hf_token
 from core.inference.audio_errors import AudioBackendUnsupportedError
-from core.inference.orchestrator import GenStreamError, GenStreamErrorRaised
+from core.inference.orchestrator import (
+    AUDIO_GENERATION_MAX_TOKENS,
+    GenStreamError,
+    GenStreamErrorRaised,
+)
 from core.inference.llama_admission import (
     LlamaAdmissionCancelled,
     LlamaAdmissionConfig,
@@ -357,6 +361,14 @@ def _effective_max_tokens(payload):
         payload.max_completion_tokens
         if payload.max_completion_tokens is not None
         else payload.max_tokens
+    )
+
+
+def _tts_max_new_tokens(payload) -> int:
+    """Bound TTS work consistently across llama.cpp and subprocess backends."""
+    return min(
+        AUDIO_GENERATION_MAX_TOKENS,
+        max(1, int(_effective_max_tokens(payload) or 2048)),
     )
 
 
@@ -2757,6 +2769,16 @@ async def _await_disconnect_then_cancel(request, cancel_event) -> None:
         while not await request.is_disconnected():
             await asyncio.sleep(0.1)
         cancel_event.set()
+    except asyncio.CancelledError:
+        return
+
+
+async def _await_stt_disconnect_then_cancel(request, sidecar, cancel_event) -> None:
+    """Cancel this sidecar request, including a model load still starting."""
+    try:
+        while not await request.is_disconnected():
+            await asyncio.sleep(0.1)
+        await asyncio.to_thread(sidecar.cancel_transcription, cancel_event)
     except asyncio.CancelledError:
         return
 
@@ -8814,7 +8836,7 @@ async def _generate_tts_wav(
             top_p = payload.top_p,
             top_k = payload.top_k,
             min_p = payload.min_p,
-            max_new_tokens = _effective_max_tokens(payload) or 2048,
+            max_new_tokens = _tts_max_new_tokens(payload),
             repetition_penalty = payload.repetition_penalty,
             cancel_event = _audio_cancel,
         )
@@ -8835,7 +8857,7 @@ async def _generate_tts_wav(
             top_p = payload.top_p,
             top_k = payload.top_k,
             min_p = payload.min_p,
-            max_new_tokens = _effective_max_tokens(payload) or 2048,
+            max_new_tokens = _tts_max_new_tokens(payload),
             repetition_penalty = payload.repetition_penalty,
             use_adapter = payload.use_adapter,
             cancel_event = _audio_cancel,
@@ -9387,6 +9409,7 @@ async def _transcribe_audio_result(
     language: Optional[str],
     fast: bool,
     engine: Optional[str] = None,
+    request: Optional[Request] = None,
 ) -> dict:
     """STT for already-decoded bytes, sidecar errors mapped to HTTP statuses.
     Returns the sidecar's result dict so callers own the response shape."""
@@ -9400,6 +9423,7 @@ async def _transcribe_audio_result(
         SttModelIdError,
         SttModelNotDownloadedError,
         SttUnavailableError,
+        SttTranscriptionCancelledError,
     )
 
     if not raw:
@@ -9408,14 +9432,32 @@ async def _transcribe_audio_result(
         raise HTTPException(status_code = 413, detail = "Audio is too large.")
 
     sidecar = _stt_sidecar_for(_resolve_serving_stt_engine(engine))
-    try:
-        result = await asyncio.to_thread(
-            sidecar.transcribe,
-            raw,
-            model,
-            language,
-            fast,
+    cancel_event = threading.Event() if request is not None else None
+    disconnect_watcher = (
+        asyncio.create_task(
+            _await_stt_disconnect_then_cancel(request, sidecar, cancel_event)
         )
+        if request is not None and cancel_event is not None
+        else None
+    )
+    try:
+        if cancel_event is None:
+            result = await asyncio.to_thread(sidecar.transcribe, raw, model, language, fast)
+        else:
+            result = await asyncio.to_thread(
+                sidecar.transcribe,
+                raw,
+                model,
+                language,
+                fast,
+                cancel_event,
+            )
+    except asyncio.CancelledError:
+        if cancel_event is not None:
+            sidecar.cancel_transcription(cancel_event)
+        raise
+    except SttTranscriptionCancelledError as e:
+        raise HTTPException(status_code = 499, detail = str(e))
     except SttUnavailableError as e:
         raise HTTPException(status_code = 501, detail = str(e))
     except SttLoadCancelledError as e:
@@ -9439,6 +9481,9 @@ async def _transcribe_audio_result(
     except Exception as e:
         logger.error(f"Transcription error: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+    finally:
+        if disconnect_watcher is not None:
+            await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
     return result
 
 
@@ -9482,7 +9527,11 @@ async def transcribe_audio_raw(
         if size > _MAX_AUDIO_RAW_BYTES:
             raise HTTPException(status_code = 413, detail = "Audio is too large.")
         chunks.append(chunk)
-    return await _transcribe_audio_bytes(b"".join(chunks), model, language, fast, engine)
+    return JSONResponse(
+        content = await _transcribe_audio_result(
+            b"".join(chunks), model, language, fast, engine, request
+        )
+    )
 
 
 # =====================================================================
