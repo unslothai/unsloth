@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
@@ -217,12 +218,16 @@ export async function getGenerateProgress(): Promise<DiffusionGenerateProgress> 
 }
 
 export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<DiffusionStatus> {
-  return parseJson(
-    await authFetch("/api/inference/images/load", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
+  // Announced so the loaded models indicator shows the load for as long as the
+  // toast does, rather than up to one 5s poll later.
+  return withModelLoadNotice("image", body.model_path, async () =>
+    parseJson(
+      await authFetch("/api/inference/images/load", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    ),
   );
 }
 

@@ -65,7 +65,7 @@ import { useStagedDownload } from "@/features/hub/download-manager";
 import { cn } from "@/lib/utils";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
 import { toast } from "@/lib/toast";
-import { subscribeModelEjected } from "@/lib/model-eject-events";
+import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 
 import {
   type GalleryVideo,

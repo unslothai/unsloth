@@ -3,10 +3,13 @@
 
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { ejectLoadedModel, readLoadedModels } from "./loaded-models-api";
 import {
   type LoadedModelEntry,
+  type LoadedModelSource,
   shortModelLabel,
+  withPendingLoads,
 } from "./loaded-models-sources";
 
 // Free next to chat's own status poll, still current on a tab switch.
@@ -27,7 +30,12 @@ export function useLoadedModels(enabled: boolean): UseLoadedModels {
   const [polled, setEntries] = useState<LoadedModelEntry[]>([]);
   // Reported empty rather than cleared: clearing would be a setState in an
   // effect, and the last read is right again the moment the pref returns.
-  const entries = enabled ? polled : NO_ENTRIES;
+  // Loads announced by the API call itself, so a row appears with the toast
+  // rather than up to one poll later.
+  const [pending, setPending] = useState<Map<LoadedModelSource, string | null>>(
+    () => new Map(),
+  );
+  const entries = enabled ? withPendingLoads(polled, pending) : NO_ENTRIES;
   const [ejecting, setEjecting] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
   );
@@ -79,6 +87,21 @@ export function useLoadedModels(enabled: boolean): UseLoadedModels {
   useEffect(() => {
     refreshRef.current = refresh;
   }, [refresh]);
+
+  // The load call announces itself, so the row and the toast appear together
+  // and a finished load is re-read at once instead of on the next tick.
+  useEffect(() => {
+    if (!enabled) return;
+    return subscribeModelLifecycle(({ runtime, loading, model }) => {
+      setPending((prev) => {
+        const next = new Map(prev);
+        if (loading) next.set(runtime, model);
+        else next.delete(runtime);
+        return next;
+      });
+      if (!loading) refresh();
+    });
+  }, [enabled, refresh]);
 
   useEffect(() => {
     if (!enabled) return;

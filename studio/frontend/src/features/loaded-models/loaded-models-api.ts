@@ -21,7 +21,7 @@ import {
   unloadDiffusionModel,
 } from "@/features/images/api";
 import { getVideoStatus, unloadVideoModel } from "@/features/video/api";
-import { notifyModelEjected } from "@/lib/model-eject-events";
+import { notifyModelEjected } from "@/lib/model-lifecycle-events";
 import { ejectChatModel } from "./eject-chat-model";
 import {
   type LoadedModelEntry,

@@ -32,12 +32,17 @@ export type LoadedModelEntry = {
   sttEngine?: SttEngine;
   /** Cached by the chat runtime but not active, so no status flags describe it. */
   inactive?: boolean;
+  /** Still loading: shown with a spinner and no eject, since there is nothing
+   *  resident to release yet. Matches the load toast rather than trailing it. */
+  loading?: boolean;
 };
 
 /** The per-engine half of /api/inference/audio/stt/status. */
 export type SttEngineStatus = {
   loaded_model?: string | null;
   device?: string | null;
+  /** The sidecar is starting: reported per engine by /audio/stt/status. */
+  loading?: boolean;
 };
 
 export type SttStatusResponse = SttEngineStatus & {
@@ -145,6 +150,19 @@ export function describeInferenceStatus(
       ),
     });
   }
+  // Reported by /status for the whole load, so a load started in another tab or
+  // before this page opened still shows, not only one driven from here.
+  for (const name of status.loading ?? []) {
+    if (entries.some((entry) => entry.name === name)) continue;
+    entries.push({
+      id: `chat:${name}`,
+      kind: "text",
+      source: "chat",
+      name,
+      detail: "Loading",
+      loading: true,
+    });
+  }
   // Only the Transformers backend caches past the active model, but it is memory
   // nothing else surfaces or releases.
   for (const name of status.loaded ?? []) {
@@ -242,6 +260,18 @@ export function describeSttStatus(
   const entries: LoadedModelEntry[] = [];
   for (const engine of engines) {
     const block = sttEngineStatus(status, engine);
+    if (block?.loading && !block.loaded_model) {
+      entries.push({
+        id: `stt:${engine}`,
+        kind: "stt",
+        source: "stt",
+        name: STT_ENGINE_LABELS[engine],
+        detail: "Loading",
+        sttEngine: engine,
+        loading: true,
+      });
+      continue;
+    }
     if (!block?.loaded_model) continue;
     entries.push({
       id: `stt:${engine}`,
@@ -288,3 +318,38 @@ export function mergeLoadedModels(
   }
   return merged;
 }
+
+/**
+ * Fold the loads announced by `withModelLoadNotice` into the polled rows.
+ *
+ * The poll is 5s, so a load that has only just started shows nothing while its
+ * toast already says "loading". These rows come from the load call itself, and
+ * a status row for the same runtime replaces them the moment one arrives: the
+ * backend's answer always wins over the optimistic one.
+ */
+export function withPendingLoads(
+  rows: LoadedModelEntry[],
+  pending: Map<LoadedModelSource, string | null>,
+): LoadedModelEntry[] {
+  if (pending.size === 0) return rows;
+  const extra: LoadedModelEntry[] = [];
+  for (const [source, model] of pending) {
+    if (rows.some((row) => row.source === source)) continue;
+    extra.push({
+      id: `${source}:pending`,
+      kind: PENDING_KINDS[source],
+      source,
+      name: model ?? "Loading model",
+      detail: "Loading",
+      loading: true,
+    });
+  }
+  return extra.length > 0 ? [...rows, ...extra] : rows;
+}
+
+const PENDING_KINDS: Record<LoadedModelSource, LoadedModelKind> = {
+  chat: "text",
+  image: "image",
+  video: "video",
+  stt: "stt",
+};

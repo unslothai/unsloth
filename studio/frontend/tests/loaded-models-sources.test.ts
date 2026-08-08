@@ -15,6 +15,7 @@ import {
   describeVideoStatus,
   loadedModelTarget,
   mergeLoadedModels,
+  withPendingLoads,
   shortModelLabel,
   verifyResident,
 } from "../src/features/loaded-models/loaded-models-sources.ts";
@@ -361,4 +362,65 @@ test("a local load shows its model folder rather than leading directories", () =
   );
   // Windows path, trailing separator: still the last two segments.
   assert.equal(shortModelLabel("C:\\models\\hub\\gemma\\"), "hub/gemma");
+});
+
+// The load toast appears at once, the poll is 5s behind it. /status reports a
+// load for its whole duration, so the row can match the toast.
+test("a chat model still loading gets its own row", () => {
+  const rows = describeInferenceStatus(
+    inferenceStatus({ loading: ["unsloth/Qwen3.5-9B-GGUF"] }),
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].loading, true);
+  assert.equal(rows[0].detail, "Loading");
+});
+
+test("a model that finished loading is not listed twice", () => {
+  const rows = describeInferenceStatus(
+    inferenceStatus({
+      active_model: "unsloth/Qwen3.5-9B-GGUF",
+      is_gguf: true,
+      loading: ["unsloth/Qwen3.5-9B-GGUF"],
+    }),
+  );
+  assert.equal(rows.length, 1);
+  assert.notEqual(rows[0].loading, true);
+});
+
+test("a dictation sidecar that is starting shows as loading", () => {
+  const [row] = describeSttStatus({ mtmd: { loading: true } });
+  assert.equal(row.loading, true);
+  assert.equal(row.sttEngine, "mtmd");
+});
+
+test("an announced load shows before any status confirms it", () => {
+  const rows = withPendingLoads(
+    [],
+    new Map([["image", "unsloth/Z-Image-Turbo-GGUF"]]),
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, "image");
+  assert.equal(rows[0].loading, true);
+  assert.equal(rows[0].name, "unsloth/Z-Image-Turbo-GGUF");
+});
+
+// The backend's answer wins: otherwise a finished load shows twice for the
+// moment between the status arriving and the settle event.
+test("a status row for that runtime replaces the announced one", () => {
+  const loaded = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/Z-Image-Turbo-GGUF",
+    family: "z-image",
+  } as never);
+  const rows = withPendingLoads(
+    loaded,
+    new Map([["image", "unsloth/Z-Image-Turbo-GGUF"]]),
+  );
+  assert.equal(rows.length, 1);
+  assert.notEqual(rows[0].loading, true);
+});
+
+test("nothing announced leaves the polled rows untouched", () => {
+  const rows: LoadedModelEntry[] = [];
+  assert.equal(withPendingLoads(rows, new Map()), rows);
 });

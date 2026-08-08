@@ -125,30 +125,38 @@ function LoadedModelRow({
           </span>
         </TooltipContent>
       </Tooltip>
-      <Tooltip>
-        <TooltipTrigger asChild={true}>
-          <button
-            type="button"
-            aria-label={`Eject ${label}`}
-            disabled={ejecting}
-            onClick={onEject}
-            className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/[0.07] hover:text-foreground disabled:pointer-events-none disabled:opacity-60"
-          >
-            {ejecting ? (
-              <Spinner className="size-3.5" label="Ejecting" />
-            ) : (
-              <HugeiconsIcon
-                icon={Cancel01Icon}
-                strokeWidth={2}
-                className="size-3.5"
-              />
-            )}
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="left" sideOffset={6}>
-          Eject to free memory
-        </TooltipContent>
-      </Tooltip>
+      {entry.loading ? (
+        // Nothing resident to release yet, so the eject slot holds the spinner
+        // the toast is showing at the same moment.
+        <span className="flex size-6 shrink-0 items-center justify-center">
+          <Spinner className="size-3.5" label="Loading" />
+        </span>
+      ) : (
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <button
+              type="button"
+              aria-label={`Eject ${label}`}
+              disabled={ejecting}
+              onClick={onEject}
+              className="flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/[0.07] hover:text-foreground disabled:pointer-events-none disabled:opacity-60"
+            >
+              {ejecting ? (
+                <Spinner className="size-3.5" label="Ejecting" />
+              ) : (
+                <HugeiconsIcon
+                  icon={Cancel01Icon}
+                  strokeWidth={2}
+                  className="size-3.5"
+                />
+              )}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="left" sideOffset={6}>
+            Eject to free memory
+          </TooltipContent>
+        </Tooltip>
+      )}
     </div>
   );
 }
