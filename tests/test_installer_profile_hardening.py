@@ -939,6 +939,53 @@ def test_the_callers_edition_wins_where_the_two_profiles_disagree(monkeypatch):
     assert json.loads(merged) == {"invoke-webrequest:proxy": "http://five.corp:8080"}
 
 
+def test_two_spellings_of_one_key_are_one_key(monkeypatch):
+    """$PSDefaultParameterValues is case-insensitive; a Python dict is not.
+
+    With both spellings carried across, the prelude replayed them in order and the
+    lower-priority host's value landed last -- the exact reverse of earlier-host-wins, and on
+    a stricter host the case-colliding JSON is rejected outright."""
+    from unsloth_cli.commands import studio as studio_cmd
+
+    class _Result:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    answers = {
+        "pwsh.exe": '{"Invoke-WebRequest:Proxy": "http://seven.corp:8080"}',
+        "powershell.exe": '{"invoke-webrequest:proxy": "http://five.corp:8080"}',
+    }
+    monkeypatch.setattr(
+        studio_cmd.subprocess, "run", lambda argv, **kw: _Result(answers[argv[0]])
+    )
+    merged = json.loads(studio_cmd._probe_profile_proxy_defaults(["pwsh.exe", "powershell.exe"]))
+
+    assert merged == {"Invoke-WebRequest:Proxy": "http://seven.corp:8080"}
+
+
+def test_one_profile_that_prints_both_spellings_is_folded_too(monkeypatch):
+    # Same collision inside a single host's answer: the first spelling wins and the second
+    # never reaches the child.
+    from unsloth_cli.commands import studio as studio_cmd
+
+    class _Result:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    payload = (
+        '{"Invoke-WebRequest:Proxy": "http://first.corp:8080",'
+        ' "invoke-webrequest:PROXY": "http://second.corp:8080",'
+        ' "Invoke-RestMethod:Proxy": "http://rest.corp:8080"}'
+    )
+    monkeypatch.setattr(studio_cmd.subprocess, "run", lambda argv, **kw: _Result(payload))
+    merged = json.loads(studio_cmd._probe_profile_proxy_defaults(["pwsh.exe"]))
+
+    assert merged == {
+        "Invoke-WebRequest:Proxy": "http://first.corp:8080",
+        "Invoke-RestMethod:Proxy": "http://rest.corp:8080",
+    }
+
+
 def test_the_probe_host_order_follows_the_console_the_user_typed_into(monkeypatch):
     from unsloth_cli.commands import studio as studio_cmd
 
@@ -979,3 +1026,23 @@ def test_the_parity_workflow_runs_when_the_studio_command_changes():
     assert workflow.count("unsloth_cli/commands/studio.py") == 2, (
         "both the pull_request and push path filters need the module"
     )
+
+
+def test_the_parity_job_installs_what_this_suite_imports():
+    """Three tests here import unsloth_cli.commands.studio, which pulls typer -> pyyaml ->
+    pydantic -> click. The job installed pip and pytest only, so on a clean setup-python it
+    died with ModuleNotFoundError before a single test ran, on both matrix legs."""
+    workflow = (
+        Path(__file__).resolve().parents[1]
+        / ".github"
+        / "workflows"
+        / "cross-platform-parity-ci.yml"
+    ).read_text(encoding = "utf-8")
+    install = [
+        line for line in workflow.splitlines() if "pip install" in line and "pytest" in line
+    ]
+    assert install, "the parity job's install step was not found"
+    for package in ("typer", "pyyaml", "pydantic", "click"):
+        assert all(package in line for line in install), (
+            f"the parity job does not install {package}, which this suite's imports need"
+        )

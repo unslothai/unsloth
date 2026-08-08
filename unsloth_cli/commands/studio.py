@@ -2878,6 +2878,12 @@ def _probe_profile_proxy_defaults(powershell: str | list[str]) -> Optional[str]:
     the child proceeds exactly as it does today."""
     hosts = [powershell] if isinstance(powershell, str) else list(powershell)
     merged: dict = {}
+    # $PSDefaultParameterValues keys are case-INSENSITIVE, so "Invoke-WebRequest:Proxy" and
+    # "invoke-webrequest:proxy" are one entry to PowerShell and two to a Python dict. Carrying
+    # both across meant the prelude replayed them in order and the lower-priority host's
+    # spelling landed last, quietly reversing the earlier-host-wins rule this merge exists for.
+    # Folded here; the first spelling seen is the one handed on.
+    claimed: dict = {}
     for host in hosts:
         try:
             probe = subprocess.run(
@@ -2902,7 +2908,13 @@ def _probe_profile_proxy_defaults(powershell: str | list[str]) -> Optional[str]:
         if not isinstance(parsed, dict) or not parsed:
             continue
         for key, value in parsed.items():
-            merged.setdefault(key, value)
+            if not isinstance(key, str):
+                continue
+            folded = key.casefold()
+            if folded in claimed:
+                continue
+            claimed[folded] = key
+            merged[key] = value
     if not merged:
         return None
     return json.dumps(merged)
