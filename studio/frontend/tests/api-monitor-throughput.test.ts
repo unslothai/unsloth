@@ -39,8 +39,6 @@ test("throughput rates the decode window, not the queue wait", () => {
 });
 
 test("a reply with no decode window is left out of the rate", () => {
-  // The first chunk's token count and reasoning tokens both inflate a guessed rate, so
-  // a request the engine did not time is skipped.
   const stats = computeStats([
     queuedEntry({ ttft_ms: null, decode_ms: null }),
   ]);

@@ -836,9 +836,8 @@ class TestResponsesNonStreamingAdapter:
 
     @staticmethod
     def _run_in_process_completion(monkeypatch, monitor, timings):
-        """Drive the wrapper over an in-process chat completion, which suppresses its own
-        monitor row and answers with a ``ChatCompletion``: no ``timings`` field, so the
-        engine timings have no way to ride out on the body."""
+        """Drive the wrapper over an in-process chat completion: its own monitor row is
+        suppressed and a ``ChatCompletion`` has no ``timings`` field to carry them out."""
         import routes.inference as inf_mod
         from models.inference import (
             ChatCompletion,
@@ -890,8 +889,7 @@ class TestResponsesNonStreamingAdapter:
         wrapper read decode_ms off the body, which a ChatCompletion cannot carry."""
         from models.inference import ChatCompletion
 
-        # The premise, asserted rather than assumed: pydantic drops an undeclared field,
-        # so a body lookup alone can never find these.
+        # Asserted, not assumed: pydantic drops undeclared fields, so a body lookup finds nothing.
         assert "timings" not in json.loads(
             ChatCompletion(choices = [], timings = {"predicted_ms": 1000.0}).model_dump_json()
         )
@@ -911,8 +909,7 @@ class TestResponsesNonStreamingAdapter:
         assert entry["completion_tokens"] / (entry["decode_ms"] / 1000) == 50.0
 
     def test_a_relayed_decode_span_does_not_outlive_its_request(self, monkeypatch):
-        """The relay is scoped to one inner call: a request with no timings must not
-        inherit the previous one's span."""
+        """The relay is scoped to one inner call, so a timing-less request inherits nothing."""
         monitor = ApiMonitor(max_entries = 3)
         self._run_in_process_completion(
             monkeypatch,

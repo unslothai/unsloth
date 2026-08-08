@@ -103,8 +103,7 @@ class ApiMonitorEntry:
     first_decode_monotonic: Optional[float] = None
     prompt_ms: Optional[float] = None
     tok_per_sec: Optional[float] = None
-    # timings.predicted_ms. Only ever set from engine timings, so its presence is what
-    # makes a row safe to rate.
+    # timings.predicted_ms; set only from engine timings, so its presence marks a rateable row.
     decode_ms: Optional[float] = None
     stop_reason: Optional[str] = None
     # Every finish reason seen so far. An n > 1 stream reports each choice in its own
@@ -177,9 +176,8 @@ class ApiMonitorEntry:
             "progress": self.progress,
             "ttft_ms": ttft_ms,
             "tok_per_sec": round(tok_per_sec, 2) if tok_per_sec is not None else None,
-            # The engine's decode span, never the streamed window: the first chunk's token
-            # count is unknowable and reasoning tokens land before it, so both inflate a
-            # rate. Absent rather than guessed, so the tile can skip what it cannot trust.
+            # The engine's decode span, not the streamed window: an unknowable first-chunk token
+            # count and reasoning tokens both inflate a streamed rate. Absent rather than guessed.
             "decode_ms": int(self.decode_ms) if self.decode_ms is not None else None,
             "stop_reason": self.stop_reason,
         }

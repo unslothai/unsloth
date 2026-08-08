@@ -84,9 +84,8 @@ export function computeStats(entries: ApiMonitorEntry[]): MonitorStats {
       maxDurationMs =
         maxDurationMs == null ? duration : Math.max(maxDurationMs, duration);
       const generated = completionTokens(entry);
-      // Rate the decode window, not the whole request: duration_ms carries queue wait
-      // and prefill, which read a 50 tok/s model as 5. A request the engine did not
-      // time is skipped rather than folded in at the whole-request rate.
+      // Rate the decode window: duration_ms carries queue wait and prefill,
+      // which read a 50 tok/s model as 5. Untimed requests are skipped.
       const decodeMs = entry.decode_ms;
       if (decodeMs != null && decodeMs > 0 && generated != null && generated > 0) {
         generatedTokens += generated;
