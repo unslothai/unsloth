@@ -30,6 +30,7 @@ import core.inference.video_gallery as gallery_module
 from auth.authentication import get_current_subject
 from core.inference.video_families import (
     _FAMILIES,
+    MAX_VIDEO_NUM_FRAMES,
     VIDEO_NOT_LOADED_MSG,
     detect_video_family,
     format_video_resolution_presets,
@@ -85,6 +86,33 @@ def test_off_lattice_frame_count_is_rejected_with_the_straddling_counts():
     # On-lattice neighbours of the same request are fine.
     validate_video_request_shape(LTX2, num_frames = 97)
     validate_video_request_shape(LTX2, num_frames = 105)
+
+
+def test_the_refusal_never_suggests_a_count_past_the_request_ceiling():
+    """Near the top of the range the upper straddling point falls outside the request
+    model's own `le`, so naming it sends the user into a second, differently-shaped 422.
+    On LTX-2's step-8 lattice the whole band 1018-1024 is affected (1017 + 8 = 1025)."""
+    with pytest.raises(ValueError) as excinfo:
+        validate_video_request_shape(LTX2, num_frames = 1024)
+    message = str(excinfo.value)
+    assert "1017" in message
+    assert "1025" not in message
+    assert "the nearest supported count is" in message
+    # The ceiling itself is on no family's lattice, but the point below it is loadable.
+    validate_video_request_shape(LTX2, num_frames = 1017)
+    # Away from the ceiling both points are still named.
+    with pytest.raises(ValueError) as excinfo:
+        validate_video_request_shape(LTX2, num_frames = 100)
+    assert "the nearest supported counts are" in str(excinfo.value)
+
+
+def test_the_request_ceiling_and_the_gate_share_one_constant():
+    """A drifted pair would silently reintroduce the dead-end suggestion above."""
+    from models.inference import VideoGenerateRequest
+
+    field = VideoGenerateRequest.model_fields["num_frames"]
+    ceiling = next(m.le for m in field.metadata if hasattr(m, "le"))
+    assert ceiling == MAX_VIDEO_NUM_FRAMES
 
 
 def test_wan_lattice_is_step_4_not_step_8():

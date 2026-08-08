@@ -21,6 +21,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+# The request model's ceiling on num_frames, declared HERE so the shape gate and the bound cannot
+# drift: the gate's refusal names the lattice point above the request, and suggesting one the
+# request model would itself reject is a dead end. VideoGenerateRequest imports this for its `le`.
+MAX_VIDEO_NUM_FRAMES = 1024
+
 # Runtime->route contract: routes match these EXACTLY for a 409 instead of a 500.
 VIDEO_NOT_LOADED_MSG = "No video model is loaded."
 VIDEO_CANCELLED_MSG = "Video generation was cancelled."
@@ -299,7 +304,11 @@ def validate_video_request_shape(
     # No declared presets: no table to judge a SIZE against, so leave that to the snap (unusual/custom
     # families). The frame check below still runs either way -- frame_step is always declared.
     if presets and (width is not None or height is not None):
-        # Resolve a half-specified request against the default preset first, exactly as generate() does, then judge the pair.
+        # Resolve a half-specified request against the default preset first, as generate() does, then judge the pair.
+        # Keyed on None, where generate() keys on falsiness: a 0 is judged as 0 here rather than
+        # replaced by the default. The route cannot deliver one (the request model bounds it at 32),
+        # and refusing an explicit 0 beats silently rendering something else, so the two agree on
+        # every value that can actually arrive.
         want_w = presets[0][0] if width is None else int(width)
         want_h = presets[0][1] if height is None else int(height)
         if (want_w, want_h) not in presets:
@@ -313,10 +322,19 @@ def validate_video_request_shape(
         if count < 1 or (count - 1) % step != 0:
             # The two lattice points straddling the request say more than a prefix of the lattice would, and stay short.
             below = snap_num_frames(fam, count)
+            above = below + step
+            # ...but only name the upper one if the request model would accept it. Near the ceiling
+            # (1018-1024 on an 8-step family) it lands past `le`, and advising a count that answers
+            # with a second, differently-shaped 422 is worse than naming one that works.
+            nearest = (
+                f"the nearest supported counts are {below} and {above}"
+                if above <= MAX_VIDEO_NUM_FRAMES
+                else f"the nearest supported count is {below}"
+            )
             raise ValueError(
                 f"{count} is not a supported frame count for {fam.name}. Its VAE compresses time by "
-                f"{step}, so a frame count must be k * {step} + 1; the nearest supported counts are "
-                f"{below} and {below + step} (the default is {fam.default_num_frames})."
+                f"{step}, so a frame count must be k * {step} + 1; {nearest} "
+                f"(the default is {fam.default_num_frames})."
             )
 
 

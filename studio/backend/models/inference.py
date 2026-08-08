@@ -19,6 +19,7 @@ from pydantic import (
 )
 
 from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, PARALLEL_MAX, PARALLEL_MIN
+from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 
 
@@ -3199,7 +3200,7 @@ class VideoGenerateRequest(BaseModel):
     num_frames: Optional[int] = Field(
         None,
         ge = 1,
-        le = 1024,
+        le = MAX_VIDEO_NUM_FRAMES,
         description = "Number of frames; must lie on the family's temporal lattice (k * frame_step + 1)",
     )
     fps: Optional[int] = Field(
