@@ -45,6 +45,80 @@ def estimate_h3_diffusers_host_ram_gb(available_vram_gb: float) -> float:
     return 85.0 if available_vram_gb >= 132.0 else 150.0
 
 
+# torch.autocast casts the weight and bias of these module types to the autocast dtype on
+# entry. Norms sit on autocast's float32 promote list and bare parameters are read directly,
+# so both must keep their source precision.
+_AUTOCAST_WEIGHT_MODULE_NAMES = ("Linear", "Conv1d", "Conv2d", "Conv3d")
+
+
+def _module_bytes(module: Any) -> int:
+    seen: set[int] = set()
+    total = 0
+    for tensor in list(module.parameters()) + list(module.buffers()):
+        if id(tensor) in seen:
+            continue
+        seen.add(id(tensor))
+        total += tensor.numel() * tensor.element_size()
+    return total
+
+
+def trim_h3_video_vae(vae: Any, *, workflow: str) -> dict[str, int]:
+    """Drop what the H3 video VAE cannot use and pre-cast what autocast casts anyway.
+
+    Two thirds of an H3 render's peak is not activations. Measured at 640x384 across 124
+    frames, a 20.25 GB int8 denoiser peaks at 36.96 GB, and the gap is almost all weights:
+    the video VAE alone is 10.42 GB because diffusers pins it to float32, and a further
+    4.91 GB is autocast's own float16 copy of those weights.
+
+    ``MiniMaxH3VideoDecodeStep`` wraps ``vae.decode`` in ``torch.autocast(float16)``. Autocast
+    casts every Linear and Conv weight it meets and caches the copy for the lifetime of the
+    region, so the float32 original and its float16 twin are both resident through the whole
+    decode. Storing those weights as float16 up front makes the cast a no-op and removes both:
+    ``x.to(float16).to(float16)`` is ``x.to(float16)``, so the arithmetic is unchanged rather
+    than merely close. The audio VAE decode is NOT under autocast, so it is left alone.
+
+    The encoder half goes only for a workflow that never encodes. ``t2va`` starts from noise,
+    so ``vae.encoder`` and ``vae.quant_conv`` are dead weight; a future image-conditioned
+    workflow needs them, hence the explicit check rather than an unconditional drop.
+
+    Returns a byte report for the caller to log. Never raises: a diffusers release that
+    renames these attributes should cost the saving, not the render.
+    """
+    import torch
+
+    # Every lookup below is a getattr with a default, so a None vae and a vae whose
+    # attributes moved both fall through to a zero report without a separate guard.
+    report = {"encoder_freed": 0, "decoder_freed": 0}
+
+    if workflow == "t2va":
+        for name in ("encoder", "quant_conv"):
+            module = getattr(vae, name, None)
+            if module is None:
+                continue
+            report["encoder_freed"] += _module_bytes(module)
+            setattr(vae, name, None)
+
+    for holder in ("decoder", "post_quant_conv"):
+        module = getattr(vae, holder, None)
+        if module is None:
+            continue
+        before = _module_bytes(module)
+        for sub in module.modules():
+            if type(sub).__name__ not in _AUTOCAST_WEIGHT_MODULE_NAMES:
+                continue
+            for name, param in list(sub.named_parameters(recurse = False)):
+                if param.dtype is not torch.float32:
+                    continue
+                setattr(
+                    sub,
+                    name,
+                    torch.nn.Parameter(param.data.to(torch.float16), requires_grad = False),
+                )
+        report["decoder_freed"] += before - _module_bytes(module)
+
+    return report
+
+
 def is_h3_native(family: Any, kind: str) -> bool:
     return getattr(family, "name", None) == "minimax-h3" and kind == "gguf"
 

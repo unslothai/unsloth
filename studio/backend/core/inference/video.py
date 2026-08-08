@@ -1916,6 +1916,23 @@ class VideoBackend:
             load_kwargs["token"] = hf_token
         pipe = diffusers.ModularPipeline.from_pretrained(_base_local_dir or repo_id, **load_kwargs)
         pipe.load_components(dtype = dtype)
+        # The video VAE loads at float32 and the decode runs under float16 autocast, so both
+        # copies are resident for the whole decode. Pre-casting removes the pair without
+        # changing a single output value, and t2va never uses the encoder half at all.
+        from .video_minimax_h3 import trim_h3_video_vae
+
+        try:
+            trimmed = trim_h3_video_vae(getattr(pipe, "vae", None), workflow = fam.modular_workflow)
+        except Exception as exc:  # noqa: BLE001 -- a saving is not worth failing a load over
+            logger.warning("video.h3_vae_trim failed, keeping the full VAE: %s", exc)
+        else:
+            if trimmed["encoder_freed"] or trimmed["decoder_freed"]:
+                logger.info(
+                    "video.h3_vae_trim: freed %.2f GB (encoder %.2f, decoder pre-cast %.2f)",
+                    (trimmed["encoder_freed"] + trimmed["decoder_freed"]) / 1_000_000_000,
+                    trimmed["encoder_freed"] / 1_000_000_000,
+                    trimmed["decoder_freed"] / 1_000_000_000,
+                )
         offload_policy = "none"
         if device != "cpu":
             manager.enable_auto_cpu_offload(

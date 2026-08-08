@@ -2747,3 +2747,101 @@ def test_attention_trim_skipped_for_static_shape_and_off_tiers(fake_runtime, mon
         assert status["loaded"] is True, mode
         assert calls == [], mode
         assert "hunyuan_attn_trim" not in status["speed_optims"], mode
+
+
+def _fake_h3_vae():
+    """A stand-in with the shapes that matter: an encoder half, a decoder with both
+    autocast-eligible and float32-only parameters, and a post_quant_conv."""
+    import torch
+
+    class _VAE(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.encoder = torch.nn.Sequential(torch.nn.Conv3d(4, 8, 1))
+            self.quant_conv = torch.nn.Conv3d(8, 8, 1)
+            self.decoder = torch.nn.Module()
+            self.decoder.proj = torch.nn.Linear(8, 16)
+            self.decoder.conv = torch.nn.Conv3d(16, 4, 1)
+            self.decoder.norm = torch.nn.LayerNorm(16)
+            # Read directly rather than through an autocast-eligible op.
+            self.decoder.register_parameter(
+                "scale1", torch.nn.Parameter(torch.ones(16, dtype = torch.float32))
+            )
+            self.post_quant_conv = torch.nn.Conv3d(4, 4, 1)
+
+    return _VAE().to(torch.float32)
+
+
+def test_h3_vae_trim_drops_the_encoder_only_for_a_workflow_that_never_encodes():
+    import torch
+
+    from core.inference.video_minimax_h3 import trim_h3_video_vae
+
+    vae = _fake_h3_vae()
+    report = trim_h3_video_vae(vae, workflow = "t2va")
+    assert vae.encoder is None and vae.quant_conv is None
+    assert report["encoder_freed"] > 0
+
+    # An image-conditioned workflow encodes, so the same call must keep that half.
+    other = _fake_h3_vae()
+    other_report = trim_h3_video_vae(other, workflow = "ref2va")
+    assert other.encoder is not None and other.quant_conv is not None
+    assert other_report["encoder_freed"] == 0
+    # The decoder pre-cast is workflow-independent and still happens.
+    assert other_report["decoder_freed"] > 0
+    assert other.decoder.proj.weight.dtype is torch.float16
+
+
+def test_h3_vae_trim_precasts_only_what_autocast_would_cast():
+    import torch
+
+    from core.inference.video_minimax_h3 import trim_h3_video_vae
+
+    vae = _fake_h3_vae()
+    trim_h3_video_vae(vae, workflow = "t2va")
+
+    # Linear and Conv weights and biases are what torch.autocast casts on entry.
+    assert vae.decoder.proj.weight.dtype is torch.float16
+    assert vae.decoder.proj.bias.dtype is torch.float16
+    assert vae.decoder.conv.weight.dtype is torch.float16
+    assert vae.post_quant_conv.weight.dtype is torch.float16
+    # A norm gain is on autocast's float32 promote list and a bare parameter is read
+    # directly, so halving either would change the arithmetic rather than preserve it.
+    assert vae.decoder.norm.weight.dtype is torch.float32
+    assert vae.decoder.scale1.dtype is torch.float32
+
+
+def test_h3_vae_trim_leaves_the_decode_arithmetic_bit_identical():
+    # The whole justification for pre-casting is that autocast performs exactly this cast
+    # anyway, so x.to(f16).to(f16) == x.to(f16). Check the claim on a real matmul rather
+    # than trusting the reasoning.
+    import torch
+
+    from core.inference.video_minimax_h3 import trim_h3_video_vae
+
+    torch.manual_seed(0)
+    reference = _fake_h3_vae()
+    trimmed = _fake_h3_vae()
+    trimmed.load_state_dict(reference.state_dict())
+    trim_h3_video_vae(trimmed, workflow = "t2va")
+
+    x = torch.randn(3, 8, dtype = torch.float16)
+    # What autocast does with the float32 original, against the pre-cast weight.
+    autocast_style = torch.nn.functional.linear(
+        x,
+        reference.decoder.proj.weight.to(torch.float16),
+        reference.decoder.proj.bias.to(torch.float16),
+    )
+    precast = trimmed.decoder.proj(x)
+    assert torch.equal(autocast_style, precast)
+
+
+def test_h3_vae_trim_survives_a_renamed_attribute():
+    # A diffusers release that moves these attributes should cost the saving, not the render.
+    import torch
+
+    from core.inference.video_minimax_h3 import trim_h3_video_vae
+
+    assert trim_h3_video_vae(None, workflow = "t2va") == {"encoder_freed": 0, "decoder_freed": 0}
+    bare = torch.nn.Module()
+    assert trim_h3_video_vae(bare, workflow = "t2va")["decoder_freed"] == 0
