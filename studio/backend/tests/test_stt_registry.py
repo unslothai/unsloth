@@ -29,7 +29,11 @@ class _Sidecar:
     def is_loading(self):
         return self._loading
 
-    def load(self, model, request_cancel_event = None):
+    def load(
+        self,
+        model,
+        request_cancel_event = None,
+    ):
         self.loaded_with = model
         self.load_cancel_event = request_cancel_event
 

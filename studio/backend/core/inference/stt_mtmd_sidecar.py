@@ -754,9 +754,7 @@ class MtmdSttSidecar:
             # so a training start would otherwise see False and wait out the startup in
             # unload() instead of cancelling this load.
             cancel_event = (
-                request_cancel_event
-                if request_cancel_event is not None
-                else threading.Event()
+                request_cancel_event if request_cancel_event is not None else threading.Event()
             )
             self._load_cancel_event = cancel_event
             self._load_owner_cancel_event = request_cancel_event

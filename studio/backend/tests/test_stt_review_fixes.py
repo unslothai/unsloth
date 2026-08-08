@@ -57,7 +57,6 @@ def test_curated_gguf_dictation_repos_are_hidden():
 
 def test_stt_load_has_no_engine_wide_cancel_endpoint():
     import routes.inference as inference_route
-
     assert not hasattr(inference_route, "stt_load_cancel")
     assert all(route.path != "/audio/stt/load/cancel" for route in inference_route.router.routes)
 

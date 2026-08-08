@@ -891,9 +891,7 @@ class GgmlSttSidecar:
                 port,
             )
             cancel_event = (
-                request_cancel_event
-                if request_cancel_event is not None
-                else threading.Event()
+                request_cancel_event if request_cancel_event is not None else threading.Event()
             )
             with self._load_state_lock:
                 self._load_cancel_event = cancel_event

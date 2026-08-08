@@ -70,7 +70,11 @@ def test_ggml_load_inherits_disconnect_before_registration(monkeypatch):
     )
     monkeypatch.setattr(sidecar, "_reserve_free_port", lambda: (_Reservation(), 12345))
     monkeypatch.setattr(ggml_module, "_whisper_install_marker", lambda _binary: None)
-    monkeypatch.setattr(ggml_module.subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("cancelled load spawned whisper-server"))
+    monkeypatch.setattr(
+        ggml_module.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("cancelled load spawned whisper-server"),
+    )
 
     with pytest.raises(SttLoadCancelledError):
         sidecar.load("tiny", owner)
