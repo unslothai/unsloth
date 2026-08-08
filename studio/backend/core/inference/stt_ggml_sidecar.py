@@ -548,6 +548,8 @@ class _GgmlDownloadState:
                     # cancel() landed between start() and the spawn.
                     process.terminate()
                 self._process = process
+            # reap_download(), not communicate(): only it drops the adopted PID,
+            # which could otherwise be reused and then signalled by terminate_all.
             stderr = reap_download(process)
             with self._lock:
                 if self._process is process:
