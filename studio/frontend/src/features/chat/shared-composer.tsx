@@ -32,11 +32,16 @@ import {
 } from "@/features/chat/adapters/studio-dictation-adapter";
 import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
-import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
+import {
+  AUDIO_ACCEPT,
+  fileToBase64,
+  getAudioSizeError,
+} from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
+import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
 import { confirmStopRunningChatsIfNeeded } from "./utils/confirm-stop-running-chats";
 import { requestLocalPromptQueueStop } from "./utils/prompt-queue-boundary";
@@ -73,6 +78,7 @@ import {
   exportConversationShareGPT,
   exportConversationRawJsonl,
   exportConversationCsv,
+  exportConversationMarkdown,
 } from "./prompt-storage/prompt-storage-dialog";
 import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
@@ -898,11 +904,17 @@ export function SharedComposer({
       if (!files?.length) return;
       const next: PendingImage[] = [];
       let droppedImageForUnavailable = false;
+      let audioSizeError: string | null = null;
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (!file) continue;
         // Handle audio files
-        if (file.type.match(/^audio\//i) && file.size <= MAX_AUDIO_SIZE) {
+        if (file.type.match(/^audio\//i)) {
+          const sizeError = getAudioSizeError(file.size);
+          if (sizeError) {
+            audioSizeError ??= sizeError;
+            continue;
+          }
           fileToBase64(file).then((base64) => {
             setPendingAudio({ name: file.name, base64, contentType: file.type });
             setPendingAudioStore(base64, file.name);
@@ -921,6 +933,9 @@ export function SharedComposer({
       if (droppedImageForUnavailable && attachUnavailableReason) {
         toast.error(attachUnavailableReason);
       }
+      if (audioSizeError) {
+        toast.error(audioSizeError);
+      }
       setPendingImages((prev) => [...prev, ...next]);
     },
     [setPendingAudioStore, attachUnavailableReason],
@@ -931,9 +946,10 @@ export function SharedComposer({
       pasteClipboardFiles(
         event,
         async (files) => {
+          // Let addFiles report audio size errors.
           const supported = files.some(
             (file) =>
-              (file.type.match(/^audio\//i) && file.size <= MAX_AUDIO_SIZE) ||
+              file.type.match(/^audio\//i) ||
               (file.type.match(/^image\/(jpeg|png|webp|gif)$/i) &&
                 file.size <= MAX_IMAGE_SIZE),
           );
@@ -1805,6 +1821,10 @@ export function SharedComposer({
             { label: "Raw JSONL", fn: exportConversationRawJsonl },
             { label: "CSV", fn: exportConversationCsv },
             { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
+            {
+              label: CONVERSATION_MARKDOWN_LABEL,
+              fn: exportConversationMarkdown,
+            },
           ].map(({ label, fn }) => (
             <DropdownMenuItem
               key={label}

@@ -107,7 +107,13 @@ def test_chat_autoload_toast_is_persistent_and_dismissible():
     assert "onDismiss:" in auto_load
     # Terminal success uses a fresh finite toast after manual progress dismissal.
     assert "showAutoLoadSuccess" in auto_load
-    assert "description: undefined" in auto_load
+    # No description on the ordinary path. It stopped being the literal
+    # `description: undefined` when the CPU-fallback branch was added, so pin the
+    # branch and its undefined arm rather than one spelling of the old constant.
+    success_toast = auto_load.split("const showAutoLoadSuccess", 1)[1]
+    success_toast = success_toast.split("};", 1)[0]
+    assert "description: cpuFallbackReason" in success_toast
+    assert ": undefined," in success_toast
     assert "icon: undefined" in auto_load
     assert "duration: 5000" in auto_load
     assert "duration: 30000" not in auto_load
@@ -1870,7 +1876,8 @@ def test_backfill_compares_server_keys_by_normalized_identity():
 
 def test_monitor_stats_exclude_model_lifecycle_rows():
     """A load, unload or download is recorded as a monitor entry but is not an HTTP call."""
-    src = " ".join(_read("features/api-monitor/use-api-monitor.ts").split())
+    # computeStats lives in stats.ts so it runs under `node --test`; the hook re-exports it.
+    src = " ".join(_read("features/api-monitor/stats.ts").split())
     assert 'if (entry.kind === "lifecycle") { continue; }' in src
     # "Requests" is a request count too, so it cannot stay entries.length.
     assert "total: requests," in src

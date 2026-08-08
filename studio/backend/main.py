@@ -8,6 +8,7 @@ Main FastAPI application for Unsloth UI Backend
 import os
 import sys
 import threading
+import time
 from pathlib import Path as _Path
 import asyncio
 from dataclasses import asdict
@@ -1293,6 +1294,98 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str]]]:
     return None
 
 
+# How long a self-heal that has not started yet may keep holding a verdict back once the
+# warm that schedules it is over. start_mlx_autorepair_if_needed() runs in
+# _post_warm_background_work, immediately after join_background_warm(), so the handoff is
+# the gap this covers; the warm itself is covered by _torch_warm_in_progress(), which is
+# minutes on a cold Mac and cannot be replaced by any fixed number.
+_MLX_PRESTART_GRACE_AFTER_WARM_S = 30.0
+# Absolute backstop, measured from the first hold. _torch_warm_in_progress() goes false when
+# the warm thread dies for any reason, but a warm parked forever inside an import never
+# does, and "the scheduler is still coming" would then be a permanent answer: Train and
+# Video would spin for the whole session instead of settling into the greyed state a broken
+# MLX stack has genuinely earned. Well above the warm's own worst case, since firing this on
+# a healthy boot would reintroduce the bug the hold exists to fix.
+_MLX_PRESTART_CEILING_S = 900.0
+
+_MLX_PRESTART_LOCK = threading.Lock()
+# (detection generation, first hold, first tick the warm was seen STOPPED, None while it
+# runs). Keyed by generation because detection is not once-per-process: a re-detect that
+# republishes mlx_unavailable is a new verdict and gets its own window rather than
+# inheriting a spent one. Guarded rather than atomic only because the three move together.
+#
+# The third field is when the warm was first seen stopped, not when it was last seen
+# running, because nothing guarantees a health request lands near the end of the warm. The
+# final stages are C-extension imports that hold the GIL for seconds at a time, so requests
+# queue behind them and the next one served can be the first in a minute. Measuring the
+# grace from the last observed poll would then start it in the past and expire it before
+# the handoff it exists to cover, publishing the mlx_unavailable verdict the frontend
+# stores as final -- the exact bug this hold prevents.
+_mlx_prestart_hold: Optional[tuple[int, float, Optional[float]]] = None
+
+# Indirected so tests can drive the windows without sleeping through them.
+_mlx_prestart_clock = time.monotonic
+
+
+def _mlx_prestart_hold_ok(generation: int) -> bool:
+    """True while a self-heal that has not started yet may still hold a verdict back."""
+    global _mlx_prestart_hold
+    now = _mlx_prestart_clock()
+    warming = _torch_warm_in_progress()
+    with _MLX_PRESTART_LOCK:
+        held = _mlx_prestart_hold
+        if held is None or held[0] != generation:
+            _mlx_prestart_hold = (generation, now, None if warming else now)
+            return True
+        _, first, stopped_seen = held
+        if now - first >= _MLX_PRESTART_CEILING_S:
+            return False
+        if warming:
+            # Still (or again) running, so the handoff has not happened yet and any earlier
+            # stopped reading was a lull, not the end.
+            _mlx_prestart_hold = (generation, first, None)
+            return True
+        if stopped_seen is None:
+            # First time this pass has seen it stopped: the grace starts here, whenever the
+            # warm actually ended, so a gap in polling cannot spend it before it opens.
+            stopped_seen = now
+            _mlx_prestart_hold = (generation, first, stopped_seen)
+        return now - stopped_seen < _MLX_PRESTART_GRACE_AFTER_WARM_S
+
+
+def _superseded_by_mlx_repair(snapshot: Optional[tuple[bool, Optional[str]]]) -> bool:
+    """True when the MLX self-heal is about to replace this settled verdict.
+
+    Scoped to /api/health rather than folded into ``_hardware_snapshot()``: the launcher's
+    watchdog reads /api/liveness and holds its startup grace open while hardware_detecting
+    is set, so a 15-minute reinstall must not stretch that grace. Only the UI reads
+    chat_only, and only the UI has a row to grey out on it.
+
+    Bounded, never open-ended. A live worker holds the verdict for as long as its install
+    takes, capped by mlx_repair._WORKER_BUDGET_S: the repair's own subprocess timeout plus
+    an allowance for the post-install imports that verify it, which are not themselves
+    timed, so a worker parked in one cannot hold the verdict for the rest of the process.
+    A repair that has not started yet is only a promise, and this is where that promise
+    expires: the scheduler runs after the warm, so the hold lasts while the warm does and
+    a short handoff beyond it, under an absolute ceiling for the warm that never ends.
+    Past that the verdict settles exactly as it did before any of this existed.
+    """
+    if snapshot is None:
+        return False
+    if not _hw_module.verdict_pending_mlx_repair(snapshot[0], snapshot[1]):
+        return False
+    try:
+        from utils.mlx_repair import mlx_repair_started
+
+        # Read after the predicate, so a repair that claims the latch between the two calls
+        # resolves the safe way: still held, and now on the worker rather than on a clock.
+        if mlx_repair_started():
+            return True
+    except Exception as exc:
+        logger.debug("MLX repair start check failed, holding on the pre-start window: %s", exc)
+    return _mlx_prestart_hold_ok(_hw_module.DETECTION_GENERATION)
+
+
 def _torch_warm_in_progress() -> bool:
     """True while the coordinated warm thread is still working through its stages.
 
@@ -1367,6 +1460,12 @@ async def health_check(request: Request):
     await _await_hardware_detection(_HEALTH_DETECT_BUDGET_S)
     # Snapshot, not a bare global read: a forced re-detect can start at any moment.
     snapshot = _hardware_snapshot()
+    # A chat-only verdict the MLX self-heal is about to overturn is not an answer yet. Hold
+    # it back and keep replying provisionally, or the Mac gets Train and Video greyed out
+    # under a tooltip the reinstall makes wrong minutes later.
+    mlx_repairing = _superseded_by_mlx_repair(snapshot)
+    if mlx_repairing:
+        snapshot = None
     base = {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
@@ -1391,7 +1490,9 @@ async def health_check(request: Request):
     if snapshot is None:
         # chat_only above is the pre-detection default, not a measurement; clients should re-read.
         base["hardware_detecting"] = True
-        if os.environ.get(DISABLE_ENV_VAR) == "1":
+        # Not for a held-back verdict: the repair settles it on its own, and "deferred" means
+        # nothing ever will, which env.ts answers by storing the conservative chat_only.
+        if os.environ.get(DISABLE_ENV_VAR) == "1" and not mlx_repairing:
             # Nothing is detecting until a hardware-dependent operation runs; say so instead of making clients poll.
             base["hardware_detection_deferred"] = True
     auth = request.headers.get("authorization", "")
@@ -1413,6 +1514,9 @@ async def health_check(request: Request):
 
     # Re-read: the bearer check awaits, so a forced re-detect can land in between.
     snapshot = _hardware_snapshot()
+    if _superseded_by_mlx_repair(snapshot):
+        mlx_repairing = True
+        snapshot = None
 
     platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
     device_type = platform_map.get(sys.platform, sys.platform)
@@ -1443,6 +1547,10 @@ async def health_check(request: Request):
         # client reading this as measured would store reason null and stop the sidebar's recovery
         # poll. Mark provisional and omit device_type: env.ts treats it as authoritative.
         authed["hardware_detecting"] = True
+        if mlx_repairing:
+            # base was built before the repair was noticed, so drop a marker that now
+            # contradicts it: the repair will settle this verdict, deferred means nothing will.
+            authed.pop("hardware_detection_deferred", None)
     return authed
 
 

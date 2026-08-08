@@ -400,6 +400,9 @@ export const en = {
         showLlamaUpdates: "llama.cpp update notifications",
         showLlamaUpdatesDescription:
           "Notify when a newer llama.cpp build is available to run new models. Turn off if you only train.",
+        showLoadedModels: "Loaded models indicator",
+        showLoadedModelsDescription:
+          "Show a small card in the bottom-right corner listing every model currently in memory (chat, speech, image, video), with a button to eject each one.",
       },
       startup: {
         sectionTitle: "Startup",
