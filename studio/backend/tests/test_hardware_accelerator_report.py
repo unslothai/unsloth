@@ -56,7 +56,11 @@ def fake_probe(monkeypatch):
     calls = {"n": 0, "names": None}
 
     def install(results):
-        def run(names, timeout = 180, status = None):
+        def run(
+            names,
+            timeout = 180,
+            status = None,
+        ):
             calls["n"] += 1
             calls["names"] = list(names)
             return results
@@ -322,9 +326,7 @@ def test_a_probe_that_cannot_answer_is_unknown_not_broken(monkeypatch, on_accele
     # The child timed out, crashed, or printed nothing. That says nothing about the
     # packages, so it must not light the banner.
     monkeypatch.setattr(hw, "pkg_version", lambda name: "1.2.3")
-    monkeypatch.setattr(
-        hw, "_run_probe_subprocess", lambda names, timeout = 180, status = None: None
-    )
+    monkeypatch.setattr(hw, "_run_probe_subprocess", lambda names, timeout = 180, status = None: None)
 
     report = hw.get_accelerator_report(refresh = True)
     assert report["probed"] is False
@@ -461,7 +463,11 @@ def test_a_child_that_dies_is_isolated_rather_than_erasing_the_report(monkeypatc
     monkeypatch.setattr(hw, "pkg_version", lambda name: "1.2.3")
     seen = []
 
-    def run(names, timeout = 180, status = None):
+    def run(
+        names,
+        timeout = 180,
+        status = None,
+    ):
         seen.append(list(names))
         if "bitsandbytes" in names:
             # The batch, and bitsandbytes' own child, both die without answering.
@@ -492,7 +498,11 @@ def test_a_probe_that_never_ran_is_still_unknown(monkeypatch, on_accelerator):
     monkeypatch.setattr(hw, "pkg_version", lambda name: "1.2.3")
     calls = {"n": 0}
 
-    def run(names, timeout = 180, status = None):
+    def run(
+        names,
+        timeout = 180,
+        status = None,
+    ):
         calls["n"] += 1
         return None  # no status["died"]: the child never got to run
 

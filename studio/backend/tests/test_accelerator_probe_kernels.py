@@ -35,7 +35,12 @@ def _no_real_capability(monkeypatch):
     monkeypatch.setattr(probe, "_device_compute_capability", lambda: None)
 
 
-def _op(*, minimum = None, maximum = None, operator = object()):
+def _op(
+    *,
+    minimum = None,
+    maximum = None,
+    operator = object(),
+):
     op = types.SimpleNamespace(OPERATOR = operator)
     if minimum is not None:
         op.CUDA_MINIMUM_COMPUTE_CAPABILITY = minimum
@@ -112,7 +117,6 @@ def test_a_failed_library_load_still_wins(monkeypatch):
 def test_the_capability_is_parsed_from_the_override(monkeypatch):
     # Reload past the autouse stub: this one is about the real reader.
     import importlib
-
     fresh = importlib.reload(probe)
     try:
         monkeypatch.setenv("UNSLOTH_PROBE_DEVICE_CC", "12.0")

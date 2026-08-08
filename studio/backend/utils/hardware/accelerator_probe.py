@@ -208,7 +208,6 @@ def probe_bitsandbytes() -> Dict[str, Any]:
         return entry
     try:
         import bitsandbytes
-
         ready.check_native_kernels(bitsandbytes, _device_type())
         entry["runs"] = True
     except BaseException as exc:

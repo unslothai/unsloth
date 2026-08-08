@@ -1056,7 +1056,9 @@ _PROBE_MARKER = "__UNSLOTH_ACCELERATOR_PROBE__"
 
 
 def _run_probe_subprocess(
-    names, timeout: int = 180, status: Optional[Dict[str, Any]] = None
+    names,
+    timeout: int = 180,
+    status: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Run accelerator_probe.py in a throwaway interpreter. None if it could not answer.
 
