@@ -352,13 +352,15 @@ def test_a_group_outliving_its_leader_is_still_reaped(tmp_path, monkeypatch):
 
         record = tmp_path / "900000.json"
         record.write_text(
-            json.dumps({
-                "owner_pid": 900000,
-                "owner_identity": None,
-                "children": [
-                    {"pid": leader.pid, "identity": "gone", "pgid": leader.pid},
-                ],
-            }),
+            json.dumps(
+                {
+                    "owner_pid": 900000,
+                    "owner_identity": None,
+                    "children": [
+                        {"pid": leader.pid, "identity": "gone", "pgid": leader.pid},
+                    ],
+                }
+            ),
             encoding = "utf-8",
         )
         pl._reap_one_record(record, timeout = 5.0)
