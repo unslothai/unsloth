@@ -18,6 +18,7 @@ import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
+import { SparkleIcon } from "@/lib/sparkle-icon";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
@@ -25,7 +26,7 @@ import {
   Image01Icon,
   Message01Icon,
   Mic01Icon,
-  SparklesIcon,
+  RemoveCircleIcon,
   Video01Icon,
   VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
@@ -52,7 +53,7 @@ import { useLoadedModels } from "./use-loaded-models";
 // default: a card you have to open first answers nothing.
 const COLLAPSED_KEY = LOADED_MODELS_PREFERENCE_KEYS.collapsed;
 
-const KIND_ICONS: Record<LoadedModelKind, typeof SparklesIcon> = {
+const KIND_ICONS: Record<LoadedModelKind, typeof SparkleIcon> = {
   text: Message01Icon,
   tts: VolumeHighIcon,
   image: Image01Icon,
@@ -147,9 +148,12 @@ function LoadedModelRow({
               {ejecting ? (
                 <Spinner className="size-3.5" label="Ejecting" />
               ) : (
+                // Eject, not dismiss: this releases the weights, which the
+                // header's X does not. Same glyph the model picker's own eject
+                // shortcut uses, so the action reads the same in both places.
                 <HugeiconsIcon
-                  icon={Cancel01Icon}
-                  strokeWidth={2}
+                  icon={RemoveCircleIcon}
+                  strokeWidth={1.75}
                   className="size-3.5"
                 />
               )}
@@ -245,7 +249,7 @@ export function LoadedModelsIndicator({
               className="menu-soft-surface pointer-events-auto flex h-9 cursor-grab touch-none items-center gap-1.5 rounded-full pl-2.5 pr-3 font-heading text-muted-foreground transition-colors hover:text-foreground active:cursor-grabbing"
             >
               <HugeiconsIcon
-                icon={SparklesIcon}
+                icon={SparkleIcon}
                 strokeWidth={1.75}
                 className="size-[15px]"
               />
@@ -262,7 +266,7 @@ export function LoadedModelsIndicator({
         <div className="menu-soft-surface pointer-events-auto flex min-h-0 w-[268px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[20px] p-1.5 font-heading">
           <div className="flex items-center gap-1.5 px-1.5 pb-1 pt-0.5">
             <HugeiconsIcon
-              icon={SparklesIcon}
+              icon={SparkleIcon}
               strokeWidth={1.75}
               className="size-[15px] shrink-0 text-muted-foreground"
             />

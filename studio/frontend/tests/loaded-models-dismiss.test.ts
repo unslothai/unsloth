@@ -104,9 +104,9 @@ test("the card carries a close button, and a load brings it back", () => {
   );
 });
 
-// Requested by name: hugeicons.com/icon/sparkle, which the free set exports as
-// SparklesIcon.
-test("the card is badged with the sparkle, not the brain", () => {
+// Requested by name: hugeicons.com/icon/sparkle. Singular, so NOT the free
+// set's SparklesIcon (two stars) nor lib/sparkles-icon, which is a shield.
+test("the card is badged with the single sparkle, not the brain", () => {
   const indicator = readFileSync(
     new URL(
       "../src/features/loaded-models/loaded-models-indicator.tsx",
@@ -114,6 +114,30 @@ test("the card is badged with the sparkle, not the brain", () => {
     ),
     "utf8",
   );
-  assert.match(indicator, /icon=\{SparklesIcon\}/);
-  assert.doesNotMatch(indicator, /AiBrain01Icon/);
+  assert.match(indicator, /icon=\{SparkleIcon\}/);
+  assert.match(indicator, /from "@\/lib\/sparkle-icon"/);
+  assert.doesNotMatch(indicator, /AiBrain01Icon|SparklesIcon/);
+});
+
+// Releasing the weights is not the same act as closing the card, so it must not
+// wear the same X.
+test("a row ejects with the eject glyph, the header closes with an X", () => {
+  const indicator = readFileSync(
+    new URL(
+      "../src/features/loaded-models/loaded-models-indicator.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const row = indicator.slice(
+    indicator.indexOf("function LoadedModelRow"),
+    indicator.indexOf("export function LoadedModelsIndicator"),
+  );
+  assert.match(row, /icon=\{RemoveCircleIcon\}/);
+  assert.doesNotMatch(row, /icon=\{Cancel01Icon\}/);
+  // The close button keeps the X, as the Live monitor's does.
+  const header = indicator.slice(
+    indicator.indexOf('aria-label="Close loaded models"'),
+  );
+  assert.match(header, /icon=\{Cancel01Icon\}/);
 });
