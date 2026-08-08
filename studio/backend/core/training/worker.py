@@ -1535,11 +1535,8 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
     return gcn_arch, is_unified
 
 
-# Absolute OS/host-side reserve on a unified pool. A flat percentage scales the
-# reserve with the pool, so the old 0.80 withheld ~25 GiB on a 128 GiB Strix Halo
-# (#7878). 16 GiB covers the desktop plus this process's own host-side use
-# (dataset workers, checkpoint writes) at any pool size, and keeps the cap under
-# the 0.90 that #5301 recorded as OS-starving on a 128 GiB pool.
+# 16 GiB rather than a percentage: a flat 20% withholds ~25 GiB on a 128 GiB Strix Halo,
+# and 0.90 on that pool was measured as OS-starving, so the reserve stays clear of it.
 _UNIFIED_OS_RESERVE_BYTES = 16 * 1024**3
 _UNIFIED_MAX_RESERVE_FRACTION = 0.20
 _DISCRETE_MEM_FRACTION = 0.90

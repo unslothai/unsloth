@@ -263,7 +263,7 @@ class TestMemFractionSelection:
 
 
 class TestUnifiedLinuxReserve:
-    """Linux unified pools reserve a bounded amount, not a flat 20% (#7878).
+    """Linux unified pools reserve a bounded amount, not a flat 20%.
 
     A flat 0.80 withheld ~25 GiB on a 128 GiB Strix Halo. The reserve is
     min(20% of total, 16 GiB), so the 20% arm still wins below the 80 GiB
@@ -272,7 +272,7 @@ class TestUnifiedLinuxReserve:
     @pytest.mark.parametrize("pool_gib", [8, 16, 32, 64, 80])
     def test_at_or_below_crossover_is_unchanged(self, pool_gib: int) -> None:
         # 20% * total <= 16 GiB here, so the percentage arm wins and the cap
-        # is bit-identical to the pre-#7878 flat 0.80.
+        # is bit-identical to the historical flat 0.80.
         assert _rocm_memory_fraction(pool_gib * GIB, True, "linux") == pytest.approx(0.80)
 
     def test_large_pool_reserves_the_constant_not_a_percentage(self) -> None:
@@ -282,7 +282,7 @@ class TestUnifiedLinuxReserve:
         assert fraction == pytest.approx(0.875)
 
     def test_never_reaches_the_090_recorded_as_starving(self) -> None:
-        # #5301 recorded 0.90 on a 128 GiB pool as OS-starving; a 16 GiB
+        # 0.90 on a 128 GiB pool was measured as OS-starving; a 16 GiB
         # reserve stays under it for every pool a shipping APU can have.
         for pool_gib in (96, 128, 156):
             assert _rocm_memory_fraction(pool_gib * GIB, True, "linux") < 0.90
