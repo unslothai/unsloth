@@ -108,7 +108,28 @@ export function trackStoredChatThreadRecord(
 export async function awaitStoredChatThreadRecord(
   threadId: string,
 ): Promise<void> {
-  await pendingThreadRecordByThreadId.get(threadId);
+  // A creator registered while this was waiting replaces the entry, so drain until it stops
+  // changing. Reporting only the last outcome keeps "nothing wrote the row" the failure case.
+  let tracked = pendingThreadRecordByThreadId.get(threadId);
+  let failure: unknown;
+  let failed = false;
+  while (tracked) {
+    try {
+      await tracked;
+      failed = false;
+    } catch (error) {
+      failure = error;
+      failed = true;
+    }
+    const next = pendingThreadRecordByThreadId.get(threadId);
+    if (next === undefined || next === tracked) {
+      break;
+    }
+    tracked = next;
+  }
+  if (failed) {
+    throw failure;
+  }
 }
 
 interface ExportedChat {
@@ -312,15 +333,15 @@ async function backfillLegacyThreadFields(
       legacyThread.anthropicCodeExecContainerId;
   }
   if (Object.keys(patch).length === 0) return backendThread;
-  // A restored container binding changes what a listing should report, same as a new row.
-  legacyChatImportGeneration += 1;
   try {
-    return (
-      (await updateChatThread(backendThread.id, patch)) ?? {
-        ...backendThread,
-        ...patch,
-      }
-    );
+    const updated = (await updateChatThread(backendThread.id, patch)) ?? {
+      ...backendThread,
+      ...patch,
+    };
+    // Bump only once the patch has committed: a listing that read the row mid-flight still needs
+    // to see the generation move so it re-reads.
+    legacyChatImportGeneration += 1;
+    return updated;
   } catch {
     return backendThread;
   }
