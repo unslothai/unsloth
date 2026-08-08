@@ -140,9 +140,20 @@ def is_gguf_filename(filename: str) -> bool:
     return filename.lower().endswith(".gguf")
 
 
+# Every repo that bundles H3's denoisers together with its companion models. The Unsloth mirror
+# carries the Qwen3-VL text-encoder quants beside the denoisers, so it needs the same filtering as
+# the community repack it replaced; listing only one of them would let the encoder GGUFs be
+# aggregated as if they were selectable transformer quants.
+_H3_BUNDLE_REPOS = frozenset({"leejet/minimax-h3-gguf", "unsloth/minimax-h3-gguf"})
+
+
+def is_h3_bundle_repo(repo_id: str) -> bool:
+    return repo_id.strip().lower() in _H3_BUNDLE_REPOS
+
+
 def _is_selectable_repo_gguf(repo_id: str, filename: str) -> bool:
     """Hide auxiliary GGUFs from repos that bundle several model roles."""
-    if repo_id.strip().lower() == "leejet/minimax-h3-gguf":
+    if is_h3_bundle_repo(repo_id):
         name = Path(filename).name.lower()
         return name.startswith("minimax_h3_fl2va") and name.endswith(".gguf")
     return True
@@ -645,10 +656,15 @@ def list_local_gguf_variants(
     quant_totals: dict[str, int] = {}
     quant_first_file: dict[str, str] = {}
     has_vision = False
-    h3_bundle = "models--leejet--minimax-h3-gguf" in root.as_posix().lower()
+    # Match the cache dir of ANY H3 bundle repo, not just one of them: the same aggregation runs
+    # over whichever mirror the user actually downloaded.
+    root_key = root.as_posix().lower()
+    h3_bundle_repo = next(
+        (r for r in _H3_BUNDLE_REPOS if f"models--{r.replace('/', '--')}" in root_key), None
+    )
 
     for file in sorted(iter_gguf_files(root, recursive = True)):
-        if h3_bundle and not _is_selectable_repo_gguf("leejet/MiniMax-H3-GGUF", file.name):
+        if h3_bundle_repo and not _is_selectable_repo_gguf(h3_bundle_repo, file.name):
             continue
         if is_mmproj_filename(file.name):
             # A projector llama.cpp cannot open is not vision support.

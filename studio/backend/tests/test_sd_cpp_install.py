@@ -513,6 +513,65 @@ def test_install_falls_back_to_upstream_when_mirror_missing(tmp_path, monkeypatc
     assert "source leejet/stable-diffusion.cpp" in captured.out
 
 
+def test_the_shipped_pin_is_mirror_only(tmp_path, monkeypatch):
+    """The default pin carries the H3 patch set, which only the mirror can build.
+
+    If this ever goes back to a plain upstream tag (because upstream released the fixes and
+    patches/ was emptied), the two tests below stop describing the shipped default, so fail here
+    loudly rather than letting them quietly assert nothing."""
+    assert sdmod.is_mirror_only_tag(DEFAULT_TAG)
+    assert not sdmod.is_mirror_only_tag("master-813-bfbef5b")
+    assert not sdmod.is_mirror_only_tag("")
+    assert not sdmod.is_mirror_only_tag(None)
+
+
+def test_a_mirror_only_pin_is_never_requested_upstream(tmp_path, monkeypatch):
+    """Upstream cannot have a -u<id> tag by construction, so asking is a guaranteed 404.
+
+    The mirror must NOT serve here: when it does, the very first attempt succeeds and the upstream
+    attempts are never reached, so the assertion would hold no matter what the ordering says."""
+    zb = _zip_with_sd_cli()
+    _stub_two_repos(
+        monkeypatch,
+        mirror_serves = False,
+        upstream_serves = True,
+        zip_bytes = zb,
+        digest = "sha256:" + hashlib.sha256(zb).hexdigest(),
+    )
+    asked = []
+    real = sdmod._fetch_release
+    monkeypatch.setattr(
+        sdmod,
+        "_fetch_release",
+        lambda tag = None, **kw: (asked.append((kw.get("repo"), tag)), real(tag, **kw))[1],
+    )
+    install(install_dir = tmp_path)
+    # It still had to reach upstream to find anything at all, just never for the mirror-only pin.
+    assert (sdmod.UPSTREAM_FALLBACK_REPO, None) in asked
+    assert (sdmod.UPSTREAM_FALLBACK_REPO, DEFAULT_TAG) not in asked
+
+
+def test_falling_back_off_a_mirror_only_pin_warns_about_h3(tmp_path, monkeypatch, capsys):
+    """The generic fallback line is not enough here.
+
+    Every other model still works on an unpatched upstream build, so falling back beats having no
+    native engine at all. H3 does not: it aborts on the default cfg-scale and on --vae-on-cpu, and
+    a blanket --type silently renders a broken video rather than failing. A user who sees only
+    "falling back to leejet" has no way to connect that to the H3 output they get."""
+    zb = _zip_with_sd_cli()
+    _stub_two_repos(
+        monkeypatch,
+        mirror_serves = False,
+        upstream_serves = True,
+        zip_bytes = zb,
+        digest = "sha256:" + hashlib.sha256(zb).hexdigest(),
+    )
+    install(install_dir = tmp_path)
+    err = capsys.readouterr().err
+    assert "falling back to leejet/stable-diffusion.cpp" in err
+    assert "lacks the MiniMax-H3 fixes" in err
+
+
 def test_install_errors_when_neither_source_serves(tmp_path, monkeypatch):
     _stub_two_repos(
         monkeypatch, mirror_serves = False, upstream_serves = False, zip_bytes = b"", digest = ""

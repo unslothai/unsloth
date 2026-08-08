@@ -107,14 +107,39 @@ class TestExtractQuantToken:
         assert labels == {"Q4_K_M", "Q8_0"}
 
 
-def test_minimax_h3_variant_filter_keeps_only_fl2va_transformers():
+@pytest.mark.parametrize(
+    "repo", ["leejet/MiniMax-H3-GGUF", "unsloth/MiniMax-H3-GGUF", "UNSLOTH/minimax-h3-gguf"]
+)
+def test_minimax_h3_variant_filter_keeps_only_fl2va_transformers(repo):
+    """Both H3 bundle repos need the filter, and the match is case-insensitive.
+
+    The Unsloth mirror is the one the family and catalog now advertise, and it carries the
+    Qwen3-VL encoder quants beside the denoisers, so leaving it off the list would aggregate a
+    12 GB text encoder as if it were a selectable transformer quant."""
     selectable = gguf._is_selectable_repo_gguf
-    repo = "leejet/MiniMax-H3-GGUF"
     assert selectable(repo, "minimax_h3_fl2va-Q4_K_M.gguf")
     assert selectable(repo, "minimax_h3_fl2va_pruned-Q4_K_M.gguf")
     assert selectable(repo, "minimax_h3_fl2va-Q2_K_M.gguf")
+    assert selectable(repo, "minimax_h3_fl2va_pruned-UD-Q2_K_XL.gguf")
     assert not selectable(repo, "minimax_h3_ref2va-Q4_K_M.gguf")
     assert not selectable(repo, "qwen3vl_32b_minimax_h3-Q4_K_M.gguf")
+    assert not selectable(repo, "qwen3vl_32b_minimax_h3-Q2_K_M.gguf")
+
+
+def test_the_h3_native_repo_is_a_recognised_bundle_repo():
+    """The repo the native loader downloads from must be one the filter knows about.
+
+    These are set in different files, so a future repo move that updates only the loader would
+    silently reintroduce the encoder-as-transformer aggregation this filter exists to prevent."""
+    import sys
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[2]
+    if str(backend) not in sys.path:
+        sys.path.insert(0, str(backend))
+    from core.inference.video_minimax_h3 import H3_GGUF_REPO
+
+    assert gguf.is_h3_bundle_repo(H3_GGUF_REPO)
 
 
 def test_big_endian_detection_ignores_model_name_be_token():

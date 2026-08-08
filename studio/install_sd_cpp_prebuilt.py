@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import stat
 import sys
@@ -58,6 +59,9 @@ DEFAULT_TAG = "master-813-bfbef5b-u0665242"
 # Back-compat alias (some callers/tests import REPO).
 REPO = DEFAULT_REPO
 
+# ``master-<n>-<sha>-u<id>``: the mirror's marker for "upstream tree plus our patches/".
+_MIRROR_ONLY_TAG_RE = re.compile(r"^master-\d+-[0-9a-f]+-u[0-9a-f]+$")
+
 
 def _repo() -> str:
     return (os.environ.get("UNSLOTH_SD_CPP_REPO") or DEFAULT_REPO).strip() or DEFAULT_REPO
@@ -67,6 +71,14 @@ def _pinned_tag() -> Optional[str]:
     """The release tag to install: env override, else the pinned default; '' = latest."""
     val = os.environ.get("UNSLOTH_SD_CPP_TAG", DEFAULT_TAG).strip()
     return val or None
+
+
+def is_mirror_only_tag(tag: Optional[str]) -> bool:
+    """True for a ``<upstream tag>-u<id>`` tag, which only the Unsloth mirror can serve.
+
+    The mirror publishes such a tag when it builds the upstream tree plus the patch set in its
+    ``patches/`` directory, so by construction upstream has no release under that name."""
+    return bool(tag) and bool(_MIRROR_ONLY_TAG_RE.match(tag))
 
 
 # accelerator -> the token that must appear in a Linux/Windows asset name.
@@ -351,12 +363,15 @@ def _resolve_with_fallback(
     allow_upstream = (
         not repo_pinned and primary == DEFAULT_REPO and DEFAULT_REPO != UPSTREAM_FALLBACK_REPO
     )
+    mirror_only = is_mirror_only_tag(tag)
 
     # (repo, tag_to_fetch, allow_latest): with a pin, try the exact pin on every repo first, then each repo's latest.
     attempts: list[tuple[str, Optional[str], bool]] = []
     if tag:
         attempts.append((primary, tag, False))
-        if allow_upstream:
+        # A mirror-only tag cannot exist upstream by construction, so asking for it there is a
+        # guaranteed 404 and a wasted round trip.
+        if allow_upstream and not mirror_only:
             attempts.append((UPSTREAM_FALLBACK_REPO, tag, False))
         attempts.append((primary, None, True))
         if allow_upstream:
@@ -378,6 +393,19 @@ def _resolve_with_fallback(
                     file = sys.stderr,
                     flush = True,
                 )
+                # A mirror-only pin means the shipped default carries fixes that upstream has
+                # not released. Falling back is still better than no native engine at all for
+                # every other model, but the H3 failures are SILENT (it renders, just wrongly),
+                # so this has to be said out loud rather than left to the generic line above.
+                if mirror_only:
+                    print(
+                        f"warning: {repo} has no {tag}; this build lacks the MiniMax-H3 fixes, "
+                        "so H3 will abort on the default cfg-scale and on --vae-on-cpu, and a "
+                        "blanket --type will quantize its 1-D norms into a broken render. Other "
+                        "models are unaffected.",
+                        file = sys.stderr,
+                        flush = True,
+                    )
             return repo, release, chosen
     return primary, None, None
 
