@@ -1956,8 +1956,11 @@ def test_download_plan_is_empty_when_the_whole_video_pick_is_cached(monkeypatch)
 def test_download_plan_restages_a_video_file_shadowed_in_the_live_cache(monkeypatch):
     # The live cache holds a stale copy under the right name and the import-time cache the good
     # one. reuse_other_cache_root switches roots only when the live lookup resolves nothing, so
-    # the stale entry shadows the good copy: accepting "cached in either root" drops the file
-    # from the plan and the load then reads the stale file or refetches it inline.
+    # the stale entry shadows the good copy: accepting "cached in either root" drops the file from
+    # the plan and the load then reads the stale file or refetches it inline.
+    #
+    # Every OTHER file here lives wholly in the import-time root, so the split branch cannot stage
+    # anything on its own: only recognising the shadow makes this repo straddle the two roots.
     _plan_api(
         monkeypatch,
         {
@@ -1969,8 +1972,6 @@ def test_download_plan_restages_a_video_file_shadowed_in_the_live_cache(monkeypa
 
     shadowed = "vae/ltx-2.3-22b-distilled_video_vae.safetensors"
 
-    live_root = "live"
-
     def _cached(
         repo_id,
         filename,
@@ -1978,16 +1979,13 @@ def test_download_plan_restages_a_video_file_shadowed_in_the_live_cache(monkeypa
         expected_size = None,
         roots = None,
     ):
-        """A cache where only ``shadowed`` differs between the roots. ``roots = None`` means
-        either root, which is exactly the verdict that must no longer be trusted here."""
-        if filename != shadowed:
-            return True
-        if roots is None or roots == (None,):
-            return True  # the good copy lives in the other root
-        return expected_size is None  # present in the live root, but the wrong size
+        if roots != ("live",):
+            return True  # every file has a good copy in the import-time root
+        # The live root holds exactly one file, under the right name and with the wrong bytes.
+        return filename == shadowed and expected_size is None
 
     monkeypatch.setattr(DiffusionBackend, "_hub_file_is_cached", staticmethod(_cached))
-    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: live_root)
+    monkeypatch.setattr("core.inference.video.hub_cache_dir", lambda: "live")
 
     plan = VideoBackend().download_plan(
         "unsloth/LTX-2.3-GGUF",
@@ -1996,7 +1994,82 @@ def test_download_plan_restages_a_video_file_shadowed_in_the_live_cache(monkeypa
     )
 
     staged = {f for e in plan["entries"] for f in e["files"]}
-    assert staged == {shadowed}, "only the shadowed file is unresolvable, and it must be staged"
+    assert shadowed in staged, "a shadowed file must be restaged, not trusted"
+    # The shadowed file has to land in the live root, so the rest of that repo now straddles both
+    # and comes with it. The base repo is wholly in the other root and stays untouched.
+    assert staged == {s.rfilename for s in _LTX23_REPO_SIBLINGS} - {
+        "vae/ltx-2.3-22b-dev_video_vae.safetensors"
+    }
+
+
+def test_download_plan_restages_a_video_base_split_across_cache_roots(monkeypatch):
+    # Every file resolves in ONE of the two roots, so a per-file check finds nothing to do. But a
+    # base straddling both roots cannot be handed to from_pretrained as a snapshot:
+    # _predownload_base returns nothing and the assembly is pinned to hub_cache_dir(), so the
+    # other-root subset is refetched inline, or the load fails offline.
+    _plan_api(
+        monkeypatch,
+        {
+            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
+            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
+        },
+    )
+    from core.inference.diffusion import DiffusionBackend
+
+    live_root = "live"
+    elsewhere = {
+        "vae/ltx-2.3-22b-distilled_video_vae.safetensors",
+        "vae/ltx-2.3-22b-distilled_audio_vae.safetensors",
+    }
+
+    def _cached(repo_id, filename, revision = None, expected_size = None, roots = None):
+        """Half the repo in the live root, half in the other one, nothing missing."""
+        if roots == (live_root,):
+            return filename not in elsewhere
+        return True
+
+    monkeypatch.setattr(DiffusionBackend, "_hub_file_is_cached", staticmethod(_cached))
+    monkeypatch.setattr("core.inference.video.hub_cache_dir", lambda: live_root)
+
+    plan = VideoBackend().download_plan(
+        "unsloth/LTX-2.3-GGUF",
+        gguf_filename = "ltx-2.3-22b-distilled.gguf",
+        family_override = "ltx-2",
+    )
+
+    staged = {f for e in plan["entries"] for f in e["files"]}
+    assert staged == elsewhere, "the other-root subset has to be staged into the active root"
+
+
+def test_download_plan_keeps_a_video_base_that_lives_wholly_in_the_other_root(monkeypatch):
+    # Not a split: reuse_other_cache_root resolves the whole repo from the other root, so staging
+    # any of it would re-download a model that is entirely on disk.
+    _plan_api(
+        monkeypatch,
+        {
+            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
+            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
+        },
+    )
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_cached",
+        staticmethod(
+            lambda repo_id, filename, revision = None, expected_size = None, roots = None: roots
+            != ("live",)
+        ),
+    )
+    monkeypatch.setattr("core.inference.video.hub_cache_dir", lambda: "live")
+
+    plan = VideoBackend().download_plan(
+        "unsloth/LTX-2.3-GGUF",
+        gguf_filename = "ltx-2.3-22b-distilled.gguf",
+        family_override = "ltx-2",
+    )
+
+    assert plan["entries"] == [] and plan["required_bytes"] > 0
 
 
 def test_download_plan_narrows_an_ltx23_pick_and_stages_its_extras(monkeypatch):
@@ -2447,7 +2520,7 @@ def test_every_video_fetch_resolves_both_cache_roots():
     # video_ltx2.py and shipped without the opt-in while the plan already skipped its files.
     root = Path(__file__).resolve().parents[1] / "core/inference"
     for name in ("video.py", "video_ltx2.py"):
-        src = (root / name).read_text()
+        src = (root / name).read_text(encoding = "utf-8")
         # The bare `from ... import name` has no trailing paren, so this counts call sites only.
         calls = src.count("hf_hub_download_with_xet_fallback(")
         if calls == 0:

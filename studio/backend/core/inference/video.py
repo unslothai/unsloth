@@ -832,6 +832,10 @@ class VideoBackend:
         total = 0
         checkpoint_bytes = 0
         planned: dict[str, set[str]] = {}
+        # Where the loader would resolve each file (live root / other root / nowhere), and the
+        # entry labels, both keyed by repo so the staging decision can be made once per repo.
+        located: dict[str, dict[str, tuple[Optional[str], int]]] = {}
+        labels: dict[str, dict[str, Any]] = {}
 
         def add(
             repo: str,
@@ -840,45 +844,51 @@ class VideoBackend:
             revision: Optional[str] = None,
             checkpoint: bool = False,
         ) -> int:
-            """Count every required file, but stage only the ones the loader cannot already
-            resolve. The page now plans EVERY hub pick, so an unfiltered entry would re-stage
-            a model that is fully on disk. Returns the full size, cached or not. Loadable, not
-            merely cached: a stale live copy shadows a good one in the other root, so the load
-            would refetch inline a file that a both-roots probe had seen and skipped.
+            """Count every required file and record, per root, where the loader would find it.
+            Which of them to stage is decided per REPO once every add is in (see below), not here:
+            the 2.3 path adds one repo across several calls, and a call that happens to hold only
+            other-root files cannot see that the repo straddles both. Returns the full size.
 
             ``checkpoint`` marks the entry holding the SELECTED model so the panel can label it
             without re-deriving the answer from the repo id, which the plan itself may have
             rewritten. Same envelope key the image planners emit, so one page-side map serves both."""
             from core.inference.diffusion import DiffusionBackend
 
+            def _where(name: str, size: int) -> Optional[str]:
+                live = hub_cache_dir()
+                if DiffusionBackend._hub_file_is_cached(
+                    repo, name, revision, size, roots = (live,)
+                ):
+                    return "live"
+                if not DiffusionBackend._hub_file_is_cached(
+                    repo, name, revision, size, roots = (None,)
+                ):
+                    return None
+                # A stale live copy under the right name shadows the good one, because
+                # reuse_other_cache_root switches roots only when the live lookup finds NOTHING.
+                # Presence alone is what that switch tests, so ask without the size.
+                if DiffusionBackend._hub_file_is_cached(
+                    repo, name, revision, None, roots = (live,)
+                ):
+                    return None
+                return "other"
+
             seen = planned.setdefault(repo, set())
+            where = located.setdefault(repo, {})
+            label = labels.setdefault(repo, {"gguf": None, "checkpoint": False})
+            if gguf:
+                label["gguf"] = gguf
+            # Only ever raised, never cleared: a repo holding both the checkpoint and companion
+            # files (a 2.3 pick whose extras live in the checkpoint repo) is keyed once, so a later
+            # companion add would otherwise unflag what the checkpoint add marked.
+            label["checkpoint"] = label["checkpoint"] or checkpoint
             required = 0
             for name, size in files:
                 if name in seen:
                     continue
                 seen.add(name)
                 required += int(size)
-                if DiffusionBackend._hub_file_is_loadable(repo, name, revision, int(size)):
-                    continue
-                entry = entries.setdefault(
-                    repo,
-                    {
-                        "repo_id": repo,
-                        "files": [],
-                        "bytes": 0,
-                        "gguf_filename": None,
-                        "checkpoint": False,
-                    },
-                )
-                entry["files"].append(name)
-                entry["bytes"] += int(size)
-            if gguf and repo in entries:
-                entries[repo]["gguf_filename"] = gguf
-            # Only ever raised, never cleared: a repo that holds both the checkpoint and companion
-            # files (a 2.3 pick whose extras live in the checkpoint repo) is keyed once, so a later
-            # companion add would otherwise unflag the entry the earlier checkpoint add marked.
-            if checkpoint and repo in entries:
-                entries[repo]["checkpoint"] = True
+                where[name] = (_where(name, int(size)), int(size))
             return required
 
         try:
@@ -940,6 +950,30 @@ class VideoBackend:
         except Exception as exc:  # noqa: BLE001 -- an unavailable plan falls back to the inline pull
             logger.warning("video.download_plan_failed: %s", exc)
             return {"entries": [], "total_bytes": 0, "required_bytes": 0, "checkpoint_bytes": 0}
+        for repo, where in located.items():
+            # Files STRADDLING the two roots cannot be handed to from_pretrained as one snapshot:
+            # _predownload_base returns no directory in that state and the assembly is pinned to
+            # hub_cache_dir(), so the other-root subset is invisible to it and gets re-pulled
+            # inline, past this plan's progress, cancel and disk preflight, failing offline after a
+            # plan that reported nothing left to do. A repo living wholly in the other root is fine,
+            # which is what reuse_other_cache_root is for. A file missing everywhere downloads INTO
+            # the live root, so it counts as live: dropping it would read a mixed repo as unsplit
+            # and stage only the missing part, manufacturing the very split this avoids.
+            split = {w or "live" for w, _size in where.values()} == {"live", "other"}
+            staged = [
+                (name, size)
+                for name, (w, size) in where.items()
+                if w is None or (split and w != "live")
+            ]
+            if not staged:
+                continue
+            entries[repo] = {
+                "repo_id": repo,
+                "files": [name for name, _size in staged],
+                "bytes": sum(size for _name, size in staged),
+                "gguf_filename": labels[repo]["gguf"],
+                "checkpoint": labels[repo]["checkpoint"],
+            }
         return {
             "entries": list(entries.values()),
             # Remaining vs the full footprint: cache state changes what is left to fetch, never
