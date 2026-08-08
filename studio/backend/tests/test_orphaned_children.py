@@ -930,14 +930,26 @@ def test_a_worker_record_is_revisited_after_its_owner_dies(tmp_path, monkeypatch
     monkeypatch.setattr(pl, "_posix_terminate", terminate)
 
     # Sorted lexicographically, so the worker's record is read first.
-    (directory / "9000.json").write_text(json.dumps({
-        "owner_pid": 9000, "owner_identity": "same",
-        "children": [{"pid": 9001, "identity": "same"}],
-    }), encoding = "utf-8")
-    (directory / "9999.json").write_text(json.dumps({
-        "owner_pid": 9999, "owner_identity": "a-backend-that-crashed",
-        "children": [{"pid": 9000, "identity": "same"}],
-    }), encoding = "utf-8")
+    (directory / "9000.json").write_text(
+        json.dumps(
+            {
+                "owner_pid": 9000,
+                "owner_identity": "same",
+                "children": [{"pid": 9001, "identity": "same"}],
+            }
+        ),
+        encoding = "utf-8",
+    )
+    (directory / "9999.json").write_text(
+        json.dumps(
+            {
+                "owner_pid": 9999,
+                "owner_identity": "a-backend-that-crashed",
+                "children": [{"pid": 9000, "identity": "same"}],
+            }
+        ),
+        encoding = "utf-8",
+    )
 
     killed = pl.reap_recorded_children(timeout = 1.0)
     assert sorted(killed) == [9000, 9001], killed
@@ -968,9 +980,7 @@ def test_a_failed_taskkill_falls_through_to_the_leader(monkeypatch):
 
     from utils import process_lifetime as pl
 
-    monkeypatch.setattr(
-        pl.os, "kill", lambda pid, sig: fallbacks.append(pid)
-    )
+    monkeypatch.setattr(pl.os, "kill", lambda pid, sig: fallbacks.append(pid))
     fallbacks = []
 
     class _Result:
