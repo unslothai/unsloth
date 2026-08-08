@@ -4955,7 +4955,7 @@ def test_connect_vibe_warns_when_project_vibe_config_exists(fake_studio, tmp_pat
     # session ends up pointed at the wrong model/provider.
     project_dir = tmp_path / "project"
     (project_dir / ".vibe").mkdir(parents = True)
-    (project_dir / ".vibe" / "config.toml").write_text("active_model = \"user-project-model\"\n")
+    (project_dir / ".vibe" / "config.toml").write_text('active_model = "user-project-model"\n')
     monkeypatch.chdir(project_dir)
     result = CliRunner().invoke(start.start_app, ["vibe", "--no-launch"])
     assert result.exit_code == 0, result.output
