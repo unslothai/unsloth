@@ -58,7 +58,9 @@ _DTYPE_UNITS = {
     "timestamp": frozenset({"s", "ms", "us", "ns"}),
     "duration": frozenset({"s", "ms", "us", "ns"}),
 }
-_DECIMAL_RE = re.compile(r"decimal(?:128|256)\([0-9]+, ?[0-9]+\)")
+_DECIMAL_RE = re.compile(r"decimal(128|256)\(([0-9]+), ?([0-9]+)\)")
+# Arrow's own precision ceilings.
+_DECIMAL_PRECISION = {"128": 38, "256": 76}
 # Compared with the underscores stripped, since a card may spell these in snake case.
 _FEATURE_TYPE_NAMES = frozenset(
     "value classlabel translation translationvariablelanguages largelist list array2d "
@@ -266,15 +268,27 @@ def _known_dtype(dtype: str) -> bool:
     """A dtype datasets can turn into a Value, or one of its feature classes by name."""
     if dtype in _VALUE_DTYPES or dtype.replace("_", "").lower() in _FEATURE_TYPE_NAMES:
         return True
-    if _DECIMAL_RE.fullmatch(dtype):
-        return True
+    decimal = _DECIMAL_RE.fullmatch(dtype)
+    if decimal is not None:
+        precision, scale = int(decimal.group(2)), int(decimal.group(3))
+        return 0 < precision <= _DECIMAL_PRECISION[decimal.group(1)] and 0 <= scale <= precision
     parameterised = re.fullmatch(r"([a-z0-9_]+)\[([^\]]*)\]", dtype)
     if parameterised is None:
         return False
     units = _DTYPE_UNITS.get(parameterised.group(1))
-    # A timestamp may carry a timezone after its unit.
-    unit = parameterised.group(2).split(",")[0].strip()
-    return units is not None and unit in units
+    if units is None:
+        return False
+    # A timestamp may carry a timezone after its unit, and nothing else.
+    parameters = [part.strip() for part in parameterised.group(2).split(",")]
+    if parameters[0] not in units:
+        return False
+    if len(parameters) == 1:
+        return True
+    return (
+        len(parameters) == 2
+        and parameters[1].startswith("tz=")
+        and len(parameters[1]) > len("tz=")
+    )
 
 
 def _valid_feature_node(node: Any) -> bool:
@@ -830,19 +844,21 @@ def _snapshot_all_files(snapshot: Path) -> Optional[tuple[list[PurePosixPath], s
         except (OSError, RuntimeError, ValueError):
             dirnames[:] = []
             continue
-        if real in base.parents:
-            # A link back up its own branch. Two links to one directory are both real names
-            # for it, so only a cycle is pruned here, not a second alias.
-            dirnames[:] = []
-            continue
         if relative.parts:
             directories.add(relative.as_posix())
+        if real in base.parents:
+            # A link back up its own branch. Two links to one directory are both real names
+            # for it, so only a cycle is pruned here, not a second alias, and the alias is
+            # still a directory a declaration may step through.
+            dirnames[:] = []
+            continue
         dirnames[:] = [
             name for name in dirnames if not (base / name).is_symlink() or inside(base / name)
         ]
         for filename in filenames:
-            if (base / filename).is_symlink() and not (base / filename).exists():
-                # A dangling link is not a file to fsspec, so it is not one here either.
+            if (base / filename).is_symlink() and not inside(base / filename):
+                # Dangling, or pointing out of the cache. Either way it is not a file we
+                # would let training read.
                 continue
             if len(found) >= _MAX_SNAPSHOT_DATA_FILES:
                 # Past the cap this is a traversal-order prefix, and deciding a declaration is
@@ -981,7 +997,7 @@ def _declared_paths(item: dict[str, Any]) -> list[str]:
 def _paths_module(item: dict[str, Any], files: _DeclaredFiles) -> Optional[str]:
     """The module a config's declaration votes for, counting the files it resolves to the
     way datasets does rather than counting the pattern strings."""
-    root = _config_root(item)
+    root = _config_root(item, files)
     if root is None:
         return None
     named = [
@@ -1144,11 +1160,35 @@ class _DeclaredFiles:
         return [path for path in self.paths if matcher.match(path.as_posix()) and keep(path)]
 
 
-def _config_root(item: dict[str, Any]) -> Optional[str]:
+def _config_root(item: dict[str, Any], files: "_DeclaredFiles") -> Optional[str]:
     """The directory a config's declared patterns are resolved under, or None when it is one
-    we will not follow. Falling back to the root would validate a different file."""
+    we will not follow. Falling back to the root would validate a different file, and the
+    loader walks the string as written, so every step of it has to be there."""
     safe = _safe_data_dir(item.get("data_dir") or "")
-    return None if safe is None else _normalized_dir(safe)
+    return None if safe is None else files.collapse(safe.strip("/"))
+
+
+def _missing_literal_configs(
+    collapsed: dict[str, dict[str, Any]], snapshot: Path
+) -> set[str]:
+    """Configs naming a literal file the cache does not hold, checked without a walk.
+
+    Used when the snapshot is too large to index: a literal needs one lookup, not a scan,
+    so a declaration can still be judged when inference has been given up.
+    """
+    dead = set()
+    for name, item in collapsed.items():
+        root = _safe_data_dir(item.get("data_dir") or "")
+        if root is None:
+            dead.add(name)
+            continue
+        for pattern in _declared_paths(item):
+            if any(character in pattern for character in "*?["):
+                continue
+            joined = f"{root}/{pattern}" if root else pattern
+            if resolved_dataset_snapshot_file(snapshot, joined.strip("/")) is None:
+                dead.add(name)
+    return dead
 
 
 def _unresolvable_configs(collapsed: dict[str, dict[str, Any]], files: _DeclaredFiles) -> set[str]:
@@ -1156,7 +1196,7 @@ def _unresolvable_configs(collapsed: dict[str, dict[str, Any]], files: _Declared
     that is missing raises on its own; a whole group matching nothing raises either way."""
     dead = set()
     for name, item in collapsed.items():
-        if _config_root(item) is None:
+        if _config_root(item, files) is None:
             dead.add(name)
             continue
         if "version" in item and (
@@ -1167,7 +1207,7 @@ def _unresolvable_configs(collapsed: dict[str, dict[str, Any]], files: _Declared
         entries = item.get("data_files")
         if entries is not None and not entries:
             dead.add(name)
-        root = _config_root(item) or ""
+        root = _config_root(item, files) or ""
         for group in _declared_path_groups(item):
             matched = False
             for pattern in group:
@@ -1199,7 +1239,7 @@ def _mismatched_configs(
     dead however it is selected."""
     mismatched = set()
     for name, item in collapsed.items():
-        root = _config_root(item)
+        root = _config_root(item, files)
         if root is None:
             continue
         resolved = [
@@ -1378,9 +1418,10 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     if collapsed:
         scanned = _snapshot_all_files(snapshot)
         if scanned is None:
-            # Too large to index. Explicit declarations stand on their own, so keep them and
-            # simply do not infer anything further.
-            return options
+            # Too large to index. Explicit declarations stand on their own, but a literal one
+            # still has to be there, and that is a lookup rather than a scan.
+            missing = _missing_literal_configs(collapsed, snapshot)
+            return {(config, split) for config, split in options if config not in missing}
         declared_files = _DeclaredFiles(*scanned)
         unresolvable = _unresolvable_configs(collapsed, declared_files)
         if next(iter(collapsed)) in unresolvable:
