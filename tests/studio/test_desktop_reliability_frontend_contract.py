@@ -287,7 +287,9 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
 
     # media-src, not just connect-src: the signed link is played by an element.
     tauri_config = (REPO / "studio/src-tauri/tauri.conf.json").read_text(encoding = "utf-8")
-    assert "media-src 'self' data: blob: https: http://localhost:* http://127.0.0.1:*" in tauri_config
+    assert (
+        "media-src 'self' data: blob: https: http://localhost:* http://127.0.0.1:*" in tauri_config
+    )
 
 
 def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
