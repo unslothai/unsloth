@@ -175,8 +175,7 @@ def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
     ``constants.HF_HUB_CACHE``. A dev holding FLUX.1-dev otherwise watches its files leave a
     download plan AND the mirror swap decline. Pinned at the ROOT, not by stubbing a probe: that
     reaches only one of the four cache reads, and ``_upstream_is_cached`` walks the tree itself.
-    Tests that own the cache setting replace the whole dict, so they still win.
-    """
+    Tests that own the cache setting replace the whole dict, so they still win."""
     from utils import hf_cache_settings
 
     monkeypatch.setitem(hf_cache_settings._EXPLICIT_CACHE_ENV, "HF_HUB_CACHE", _empty_hf_hub_cache)

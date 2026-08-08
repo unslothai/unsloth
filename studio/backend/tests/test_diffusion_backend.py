@@ -5425,8 +5425,7 @@ def test_a_superseding_load_fences_queued_generations_too(fake_runtime, tmp_path
 
 
 def test_download_plan_skips_files_already_in_the_cache(monkeypatch):
-    # A model fully on disk must plan nothing: entries are what the Downloads panel lists, so
-    # staging a cached repo reads as re-downloading a model the user already has.
+    # Entries are what the Downloads panel lists, so a model fully on disk must plan nothing.
     _fake_hf_api(
         monkeypatch,
         {
@@ -5512,7 +5511,6 @@ def _seed_cache_file(
     target.parent.mkdir(parents = True, exist_ok = True)
     if dangling:
         # A snapshot entry is a symlink into blobs/; a pruned blob leaves the link but no bytes.
-        # Windows without developer mode cannot make one, and hub writes plain files there too.
         try:
             _os.symlink(repo / "blobs" / "gone", target)
         except (OSError, NotImplementedError):
@@ -5536,9 +5534,9 @@ def _two_cache_roots(monkeypatch, tmp_path):
 
 
 def test_files_already_cached_needs_a_revision_to_drop_anything(monkeypatch, tmp_path):
-    """No commit, no verdict. try_to_load_from_cache would otherwise resolve the cache's OWN
-    refs/main, which a republished repo leaves on the superseded commit: the stale blob reads as
-    cached, the file leaves the plan, and the loader pulls the new one outside the panel."""
+    """No commit, no verdict: try_to_load_from_cache would otherwise resolve the cache's OWN
+    refs/main, stale on a republished repo, and the loader would pull the new blob outside the
+    panel."""
     live, _other = _two_cache_roots(monkeypatch, tmp_path)
     sha = "a" * 40
     _seed_cache_file(live, "unsloth/FLUX.1-dev-GGUF", "flux1-dev-Q4_K_M.gguf", sha)
@@ -5583,9 +5581,8 @@ def test_files_already_cached_skips_unusable_hits(monkeypatch, tmp_path):
 
 
 def test_files_already_cached_takes_the_whole_set_from_the_fallback_root(monkeypatch, tmp_path):
-    """The other root still counts, as a WHOLE: every diffusion fetch passes
-    reuse_other_cache_root, so a repo left behind by a cache-folder change really does satisfy the
-    load -- _prefetch_files resolves every file there and hands from_pretrained that snapshot."""
+    """The other root still counts, as a WHOLE: every diffusion fetch passes reuse_other_cache_root,
+    so _prefetch_files resolves every file there and hands from_pretrained that snapshot."""
     _live, other = _two_cache_roots(monkeypatch, tmp_path)
     sha = "c" * 40
     repo = "black-forest-labs/FLUX.1-dev"
@@ -5597,11 +5594,10 @@ def test_files_already_cached_takes_the_whole_set_from_the_fallback_root(monkeyp
 
 
 def test_files_already_cached_refuses_a_set_split_over_two_roots(monkeypatch, tmp_path):
-    """Never a per-file union. Neither root holds a complete snapshot, so _prefetch_files finds
-    the files under two roots, returns None instead of a snapshot dir, and from_pretrained falls
-    back to the hub id pinned to hub_cache_dir() -- which cannot see the fallback root. Calling
-    this repo cached drops it from the plan and the loader then refetches the other root's share
-    inline, outside the Downloads panel's progress and its disk preflight."""
+    """Never a per-file union. Neither root holds a complete snapshot, so _prefetch_files returns
+    None instead of a snapshot dir and from_pretrained falls back to the hub id pinned to
+    hub_cache_dir(), which cannot see the fallback root: calling this repo cached would refetch
+    that root's share inline, outside the Downloads panel's progress and its disk preflight."""
     live, other = _two_cache_roots(monkeypatch, tmp_path)
     sha = "c" * 40
     repo = "black-forest-labs/FLUX.1-dev"
@@ -5617,9 +5613,8 @@ def test_files_already_cached_refuses_a_set_split_over_two_roots(monkeypatch, tm
 
 
 def test_download_plan_stages_a_repo_split_across_two_cache_roots(monkeypatch, tmp_path):
-    """End to end: a base repo whose files sit half in the live root and half in the import-time
-    one must keep its row. Dropping it tells the panel there is nothing to fetch and the load then
-    pulls the fallback root's files itself."""
+    """End to end: a base repo half in the live root and half in the import-time one keeps its row.
+    Dropping it tells the panel there is nothing to fetch and the load pulls the rest itself."""
     live, other = _two_cache_roots(monkeypatch, tmp_path)
     base_sha = "9" * 40
     base = "black-forest-labs/FLUX.1-dev"
@@ -5715,8 +5710,8 @@ def test_files_already_cached_survives_an_unreadable_root(monkeypatch, tmp_path)
 
 
 def test_download_plan_stages_a_half_cached_repo_whole(monkeypatch):
-    """A repo is dropped only when ALL of it is cached. A shrinking file list would 409 a second
-    pick sharing this base, since every diffusion entry rides the one "@diffusion" scope slot and
+    """Dropped only when ALL of it is cached: a shrinking file list would 409 a second pick sharing
+    this base, since every diffusion entry rides the one "@diffusion" scope slot and
     download_registry refuses a claim whose scoped_files differ from the live job's."""
     _fake_hf_api(
         monkeypatch,
@@ -5751,8 +5746,7 @@ def test_download_plan_stages_a_half_cached_repo_whole(monkeypatch):
     )
 
     by_repo = {e["repo_id"]: e for e in plan["entries"]}
-    # Staged from the ungated mirror, as every other plan test here: nothing is cached, so
-    # prefer_ungated_mirror swaps the gated vendor id for the one the fetch will really name.
+    # Nothing is cached, so prefer_ungated_mirror swaps the gated vendor id for the mirror.
     assert set(by_repo) == {"unsloth/FLUX.1-dev-GGUF", "unsloth/FLUX.1-dev"}
     base = by_repo["unsloth/FLUX.1-dev"]
     # The whole scoped list, not just the missing VAE: the cached file is still staged.
@@ -5841,9 +5835,9 @@ def _fake_hf_api_with_shas(monkeypatch, repos):
 
 
 def test_download_plan_pins_each_probe_to_the_commit_it_just_read(monkeypatch):
-    """The sha every model_info reported must reach that repo's own probe, and the MIRROR must be
-    probed at ITS commit: a mirror is a separate repo with its own history, so the vendor's sha
-    would never hit and a cached mirror would re-stage in full."""
+    """Each probe gets the sha its own model_info reported, the MIRROR at ITS commit: a mirror is a
+    separate repo with its own history, so the vendor's sha would never hit and a cached mirror
+    would re-stage in full."""
     gguf_sha, vendor_sha, mirror_sha = "f" * 40, "d" * 40, "e" * 40
     _fake_hf_api_with_shas(
         monkeypatch,

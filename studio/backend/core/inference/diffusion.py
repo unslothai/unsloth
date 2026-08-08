@@ -147,9 +147,9 @@ _MODEL_KINDS = frozenset({"gguf", "single_file", "pipeline"})
 
 
 def _record_sha(shas_out: Optional[dict[str, str]], repo_id: str, info: Any) -> None:
-    """Note the commit ``info`` describes, so a cache probe can be pinned to it.
+    """Note the commit ``info`` describes so a cache probe can pin to it.
 
-    Best-effort: a listing with no ``sha`` just means the plan cannot pin, and stages as before."""
+    No ``sha`` just means the plan cannot pin, and stages as before."""
     if shas_out is None:
         return
     sha = getattr(info, "sha", None)
@@ -1481,9 +1481,9 @@ class DiffusionBackend:
 
         ``sizes_out``, when given, is filled with per-repo byte totals so the download
         plan can size one job per repo off this same single pair of Hub lookups.
-        ``file_sizes_out`` is the per (repo, filename) breakdown, so the plan can drop
-        files already cached and still size what is left. ``shas_out`` is each repo's CURRENT
-        commit, so a cache hit only excuses a file sitting in the revision this lookup described.
+        ``file_sizes_out`` is the per (repo, filename) breakdown, so the plan can drop cached
+        files and size the rest. ``shas_out`` is each repo's CURRENT commit, so a cache hit
+        counts only in that revision.
 
         For a ``pipeline`` load the whole repo IS the pipeline (``base_repo`` is the
         repo itself), so the transformer/ subfolder is INCLUDED -- unlike the GGUF /
@@ -1580,29 +1580,25 @@ class DiffusionBackend:
     ) -> set[str]:
         """Of ``files``, the names ONE root serves whole at ``revision``: all of them, or none.
 
-        Both roots are searched -- Studio pins its live setting, ``cache_dir = None`` falls back
-        to huggingface_hub's constant -- but hits are never UNIONED across them. A set split
-        between the roots is complete in neither: ``_prefetch_files`` hands back a snapshot only
-        when every file came from the SAME root, else None, and ``from_pretrained`` is then pinned
-        to ``hub_cache_dir()`` (the ``cache_dir`` in every ``pipe_kwargs`` below) and cannot see
-        the other root. Dropping such a repo moves its refetch inline, outside the panel's
-        progress and disk preflight. Fallback-holds-all still drops: the prefetch returns that
-        snapshot and the load reads it off disk, and a lone GGUF resolves through the same reuse.
+        Both roots are searched -- Studio's live setting, and ``cache_dir = None`` for
+        huggingface_hub's constant -- but hits are never UNIONED. A set split between the roots is
+        complete in neither: ``_prefetch_files`` hands back a snapshot only when every file came
+        from the SAME root, else None, and ``from_pretrained`` is then pinned to ``hub_cache_dir()``
+        and cannot see the other root, so dropping the repo moves its refetch inline, outside the
+        panel's progress and disk preflight. One root holding all of it still drops.
 
-        ``revision`` is REQUIRED to drop anything. Defaulted, ``try_to_load_from_cache`` reads the
-        cache's OWN ``refs/main``, which a republished repo leaves on the superseded commit: the
-        stale blob would leave the plan and the loader would pull the new one inline, outside the
-        panel's progress and disk preflight. No commit is no verdict, so nothing is skipped.
+        ``revision`` is REQUIRED to drop anything: defaulted, ``try_to_load_from_cache`` reads the
+        cache's OWN ``refs/main``, which a republished repo leaves on the superseded commit, so the
+        stale blob would leave the plan and the loader would pull the new one inline.
 
-        Only a str is a cached path; a miss is None and a known-absent file is a sentinel. Never
-        raises: an unreadable cache means "stage it"."""
+        Only a str is a cached path. Never raises: an unreadable cache means "stage it"."""
         if not revision or not files:
             return set()
         try:
             from huggingface_hub import try_to_load_from_cache
 
-            # Once, and inside the try: hub_cache_dir is a SQLite read plus Path.home(), which
-            # raises with no home. Per file and outside, it was the one way this could 500.
+            # Once, inside the try: hub_cache_dir is a SQLite read plus Path.home(), which raises
+            # with no home -- per file and outside, it was the one way this could 500.
             roots = (hub_cache_dir(), None)
         except Exception:  # noqa: BLE001 — no hub package / unreadable settings: stage everything
             return set()
@@ -1624,8 +1620,8 @@ class DiffusionBackend:
         live = _hits(live_root)
         if live == wanted:
             return wanted
-        # A partial live hit IS the split: the prefetch takes those here and the rest from the
-        # fallback, so it returns no snapshot and the pinned load refetches the fallback's share.
+        # A partial live hit IS the split: no single-root snapshot, so the pinned load refetches
+        # the fallback's share.
         if live:
             return set()
         return wanted if _hits(fallback_root) == wanted else set()
@@ -1634,8 +1630,8 @@ class DiffusionBackend:
     def _current_sha(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
         """``repo_id``'s current commit, or None when the Hub does not say.
 
-        Only for the MIRROR: a mirror is a separate repo with its own history, so the vendor sha
-        ``_estimate_download_bytes`` recorded would never hit. One call, only when a swap fired."""
+        Only for the MIRROR: it is a separate repo with its own history, so the vendor sha
+        ``_estimate_download_bytes`` recorded would never hit."""
         try:
             from huggingface_hub import HfApi
             return getattr(HfApi().model_info(repo_id, token = hf_token), "sha", None) or None
@@ -1678,8 +1674,7 @@ class DiffusionBackend:
         sizes: dict[str, int] = {}
         file_sizes: dict[tuple[str, str], int] = {}
         shas: dict[str, str] = {}
-        # The estimate's total is discarded (it counts every file the pick needs, not what is
-        # left to fetch); base_files and the out-params are what this call is for.
+        # Total discarded: it counts every file the pick needs, not what is left to fetch.
         _estimate_total, base_files = self._estimate_download_bytes(
             repo_id,
             gguf_filename,
@@ -1712,21 +1707,17 @@ class DiffusionBackend:
         ) -> None:
             """Queue the files the cache is missing at ``revision``.
 
-            A pick whose files are all on disk yields no entry, so the caller loads
-            straight from cache instead of staging a download that fetches nothing.
-            Entries are what the Downloads panel lists, so a cached repo listed here
-            reads as a re-download of a model the user already has. No revision drops nothing,
-            so an unpinnable repo stages in full as it always did.
+            Entries are what the Downloads panel lists, so an all-cached pick yields none rather
+            than reading as a re-download of a model the user already has. No revision drops
+            nothing, so an unpinnable repo stages in full as it always did.
 
-            All or nothing per repo, never a subset. Every diffusion entry for a repo rides the
-            one "@diffusion" scope slot, and download_registry refuses a claim whose scoped_files
-            differ from the live job's: a shrinking list would 409 a second pick sharing this base
-            where it used to adopt the running job. Staging a cached file costs nothing anyway,
-            since hf_hub_download returns the pointer without a transfer.
+            All or nothing per repo, never a subset: every diffusion entry for a repo rides the one
+            "@diffusion" scope slot, and download_registry refuses a claim whose scoped_files differ
+            from the live job's, so a shrinking list would 409 a second pick sharing this base where
+            it used to adopt the running job. Staging a cached file costs nothing anyway, since
+            hf_hub_download returns the pointer without a transfer.
 
-            "Cached" is per ROOT, never a union across the two: a set split between the live and
-            fallback roots is complete in neither, so dropping it would move the refetch inline.
-            See ``_files_already_cached``."""
+            "Cached" is per ROOT, never a union across the two; see ``_files_already_cached``."""
             cached = self._files_already_cached(repo, files, revision)
             if files and cached.issuperset(files):
                 return
@@ -1741,15 +1732,15 @@ class DiffusionBackend:
 
         for repo, files in te_files.values():
             # No revision: te_prequant_hub_files reports names and sizes only, so a pre-cast
-            # checkpoint stages whole rather than drop off a stale refs/main. Surfacing its
-            # info.sha would close this, and is worth doing: these replace tens of GB.
+            # checkpoint stages whole, not off a stale refs/main. Worth surfacing its info.sha:
+            # these replace tens of GB.
             _stage(repo, [n for n, _s in files], dict(files), None)
         if gguf_filename and not Path(repo_id).expanduser().exists():
             _stage(
                 repo_id,
                 [gguf_filename],
-                # file_sizes, not sizes: a base repo equal to the checkpoint repo overwrites
-                # sizes[repo_id] with the base total, mis-sizing this row.
+                # file_sizes, not sizes: a base repo equal to this one overwrote sizes[repo_id]
+                # with the base total, mis-sizing this row.
                 {gguf_filename: int(file_sizes.get((repo_id, gguf_filename), 0))},
                 gguf_filename,
                 shas.get(repo_id),
@@ -1769,8 +1760,7 @@ class DiffusionBackend:
                 None,
                 base_rev,
             )
-        # Derived, never decremented: a separately carried total can only drift from the rows
-        # the panel shows. Empty entries therefore mean exactly zero.
+        # Derived, never decremented: a carried total can only drift from the rows the panel shows.
         return {
             "entries": entries,
             "total_bytes": int(sum(e["bytes"] for e in entries)),
