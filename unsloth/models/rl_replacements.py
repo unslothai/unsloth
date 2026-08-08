@@ -1872,16 +1872,28 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     ),
                                     use_cache = False,
                                 ).logits
-                                _pk_sel = chunked_hidden_states_selective_log_softmax(
-                                    _pk_hidden[0, :-1, :][_pk_ctgt].unsqueeze(0),
-                                    lm_head,
-                                    _pk_flat[0, 1:][_pk_ctgt].unsqueeze(0),
-                                    _pk_chunks,
-                                    logit_scale_multiply,
-                                    logit_scale_divide,
-                                    logit_softcapping,
-                                    temperature,
-                                )[0]
+                                _pk_out = _pk_hidden[0, :-1, :][_pk_ctgt].unsqueeze(0)
+                                _pk_ids = _pk_flat[0, 1:][_pk_ctgt].unsqueeze(0)
+                                # Guard: check if model returned hidden states or logits
+                                if _pk_out.shape[-1] == lm_head.shape[1]:
+                                    _pk_sel = chunked_hidden_states_selective_log_softmax(
+                                        _pk_out,
+                                        lm_head,
+                                        _pk_ids,
+                                        _pk_chunks,
+                                        logit_scale_multiply,
+                                        logit_scale_divide,
+                                        logit_softcapping,
+                                        temperature,
+                                    )[0]
+                                else:
+                                    # Model returned logits directly - scaling/softcapping already applied by model forward
+                                    _pk_sel = chunked_selective_log_softmax(
+                                        _pk_out,
+                                        _pk_ids,
+                                        temperature,
+                                        _pk_chunks,
+                                    )[0]
                         # GPT-OSS offload race guard (matches the padded loop)
                         device_synchronize()
                         # scatter each logprob back to its (row, col) so [:, -_pk_W:] matches padded
@@ -1927,16 +1939,27 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                             position_ids = _pk_rpos,
                                             use_cache = False,
                                         ).logits
-                                        _pk_rsel = chunked_hidden_states_selective_log_softmax(
-                                            _pk_rh[:, :-1, :],
-                                            lm_head,
-                                            _pk_real[:, 1:],
-                                            1,
-                                            logit_scale_multiply,
-                                            logit_scale_divide,
-                                            logit_softcapping,
-                                            temperature,
-                                        )[0]
+                                        _pk_rout = _pk_rh[:, :-1, :]
+                                        # Guard: check if model returned hidden states or logits
+                                        if _pk_rout.shape[-1] == lm_head.shape[1]:
+                                            _pk_rsel = chunked_hidden_states_selective_log_softmax(
+                                                _pk_rout,
+                                                lm_head,
+                                                _pk_real[:, 1:],
+                                                1,
+                                                logit_scale_multiply,
+                                                logit_scale_divide,
+                                                logit_softcapping,
+                                                temperature,
+                                            )[0]
+                                        else:
+                                            # Model returned logits directly - scaling/softcapping already applied by model forward
+                                            _pk_rsel = chunked_selective_log_softmax(
+                                                _pk_rout,
+                                                _pk_real[:, 1:],
+                                                temperature,
+                                                1,
+                                            )[0]
                                         _pk_rcols = _pk_rmask.nonzero(as_tuple = False).squeeze(1)[
                                             1:
                                         ] - (_pk_L - _pk_W)
@@ -2107,16 +2130,26 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 :, -(logits_to_keep + max_left_pad + 1) :, :
                             ]
                             logits_chunk = logits_chunk[:, :-1, :]
-                            logprobs_chunk = chunked_hidden_states_selective_log_softmax(
-                                logits_chunk,
-                                lm_head,
-                                completion_input_ids_chunk,
-                                chunks = input_ids_chunk.shape[0] * multiplier,
-                                logit_scale_multiply = logit_scale_multiply,
-                                logit_scale_divide = logit_scale_divide,
-                                logit_softcapping = logit_softcapping,
-                                temperature = temperature,
-                            )
+                            # Guard: check if model returned hidden states or logits
+                            if logits_chunk.shape[-1] == lm_head.shape[1]:
+                                logprobs_chunk = chunked_hidden_states_selective_log_softmax(
+                                    logits_chunk,
+                                    lm_head,
+                                    completion_input_ids_chunk,
+                                    chunks = input_ids_chunk.shape[0] * multiplier,
+                                    logit_scale_multiply = logit_scale_multiply,
+                                    logit_scale_divide = logit_scale_divide,
+                                    logit_softcapping = logit_softcapping,
+                                    temperature = temperature,
+                                )
+                            else:
+                                # Model returned logits directly - scaling/softcapping already applied by model forward
+                                logprobs_chunk = chunked_selective_log_softmax(
+                                    logits_chunk,
+                                    completion_input_ids_chunk,
+                                    temperature,
+                                    input_ids_chunk.shape[0] * multiplier,
+                                )
                         else:
                             # Essentially, for VLMs we do not go via the optimized path in models/,
                             # so we don't encounter the Flash Attn left-padding issue.
