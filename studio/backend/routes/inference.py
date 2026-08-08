@@ -8984,12 +8984,12 @@ async def _proxy_to_external_provider(
     _external_tool_choice_disabled = (
         isinstance(payload.tool_choice, str) and payload.tool_choice.strip().lower() == "none"
     )
+    _external_studio_capable = studio_tool_execution and not (
+        _is_native_gemini_base(provider_type, base_url)
+        and ("-image" in model.lower() or "nano-banana" in model.lower())
+    )
     _external_studio_tool_intent = (
-        studio_tool_execution
-        and not (
-            _is_native_gemini_base(provider_type, base_url)
-            and ("-image" in model.lower() or "nano-banana" in model.lower())
-        )
+        _external_studio_capable
         and not _external_tool_choice_disabled
         and (_external_tools_on or _external_mcp_allowed)
     )
@@ -9010,6 +9010,15 @@ async def _proxy_to_external_provider(
         and isinstance(tool.get("function"), dict)
         and isinstance(tool["function"].get("name"), str)
     }
+    if _external_studio_capable and payload.enabled_tools:
+        _external_studio_tool_names.update(
+            tool["function"]["name"]
+            for tool in await _select_request_tools(
+                payload,
+                tools_on = True,
+                mcp_allowed = False,
+            )
+        )
     _external_provider_enabled_tools = [
         name for name in (payload.enabled_tools or []) if name not in _external_studio_tool_names
     ]
@@ -9102,7 +9111,7 @@ async def _proxy_to_external_provider(
             top_k = _top_k_explicit,
             enable_thinking = payload.enable_thinking,
             reasoning_effort = payload.reasoning_effort,
-            enabled_tools = payload.enabled_tools,
+            enabled_tools = _external_provider_enabled_tools,
             enable_prompt_caching = payload.enable_prompt_caching,
             openai_code_exec_container_id = payload.openai_code_exec_container_id,
             anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,

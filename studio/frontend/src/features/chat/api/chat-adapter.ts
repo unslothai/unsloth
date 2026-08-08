@@ -3598,7 +3598,11 @@ export function createOpenAIStreamAdapter(
             // container_auto. Anthropic uses anthropicCodeExecContainerId.
             let openaiCodeExecContainerId: string | null = null;
             let anthropicCodeExecContainerId: string | null = null;
-            if (codeExecEnabledForThisTurn && resolvedThreadId) {
+            if (
+              codeExecEnabledForThisTurn &&
+              !externalUsesStudioTools &&
+              resolvedThreadId
+            ) {
               try {
                 const thread = await getStoredChatThread(resolvedThreadId);
                 openaiCodeExecContainerId =
