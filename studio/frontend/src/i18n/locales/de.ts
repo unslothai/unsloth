@@ -418,6 +418,9 @@ export const de = {
         showLlamaUpdates: "llama.cpp-Update-Benachrichtigungen",
         showLlamaUpdatesDescription:
           "Benachrichtigt, wenn ein neuerer llama.cpp-Build verfügbar ist, um neue Modelle auszuführen. Deaktivieren Sie dies, wenn Sie nur trainieren.",
+        showLoadedModels: "Anzeige geladener Modelle",
+        showLoadedModelsDescription:
+          "Zeigt unten rechts eine kleine Karte mit allen derzeit im Speicher befindlichen Modellen (Chat, Sprache, Bild, Video) und einer Schaltfläche, um jedes einzeln zu entladen.",
       },
       gettingStarted: "Erste Schritte",
       startOnboarding: "Einrichtung starten",

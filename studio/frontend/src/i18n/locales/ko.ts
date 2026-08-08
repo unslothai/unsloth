@@ -398,6 +398,9 @@ export const ko = {
         showLlamaUpdates: "llama.cpp 업데이트 알림",
         showLlamaUpdatesDescription:
           "새 모델을 실행할 수 있는 최신 llama.cpp 빌드가 있으면 알립니다. 학습만 사용한다면 끄세요.",
+        showLoadedModels: "로드된 모델 표시기",
+        showLoadedModelsDescription:
+          "현재 메모리에 있는 모든 모델(채팅, 음성, 이미지, 비디오)을 오른쪽 아래 작은 카드에 표시하고, 각각을 해제하는 버튼을 제공합니다.",
       },
       gettingStarted: "시작하기",
       startOnboarding: "온보딩 시작",

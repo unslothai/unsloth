@@ -21,6 +21,9 @@ export type EjectChatModelDeps = {
   unload: (modelPath: string) => Promise<void>;
   /** modelIdsMatch, injected so this module stays free of path aliases. */
   matches: (left: string, right: string) => boolean;
+  /** True for a row the backend kept past the active model. Such a row is not
+   *  resident by definition, so it is the one case worth naming directly. */
+  cachedRow?: boolean;
 };
 
 export type EjectChatModelResult = {
@@ -28,6 +31,10 @@ export type EjectChatModelResult = {
   unloadedAliases: string[];
   /** The target if it survived the run, else null. */
   stillResident: string | null;
+  /** What the runtime holds instead, when the target was already gone and
+   *  nothing was unloaded. Null when the target was found, or when the runtime
+   *  holds nothing at all. */
+  replacedBy: string | null;
 };
 
 /**
@@ -43,9 +50,13 @@ export async function ejectChatModel(
   target: string,
   deps: EjectChatModelDeps,
 ): Promise<EjectChatModelResult> {
+  // What the scoped read last saw, so a run that unloaded nothing can say
+  // whether the runtime was idle or had already moved on to something else.
+  const seen: { resident: ResidentChatModel | null } = { resident: null };
   const { unloadedAliases, stillResident } = await unloadResident({
     readResident: async () => {
       const resident = await deps.readResident();
+      seen.resident = resident;
       if (!resident) return null;
       const namesTarget = resident.aliases.some((alias) =>
         deps.matches(target, alias),
@@ -55,10 +66,20 @@ export async function ejectChatModel(
     unload: deps.unload,
   });
   if (unloadedAliases.length > 0) {
-    return { unloadedAliases, stillResident };
+    return { unloadedAliases, stillResident, replacedBy: null };
   }
-  // Never active during this eject: a cached row, or a switch beat the click.
-  // Name it directly, since the Transformers backend can still hold it.
-  await deps.unload(target);
-  return { unloadedAliases: [target], stillResident: null };
+  if (deps.cachedRow) {
+    // A cached row is never the active model, so the scoped read can never
+    // match it. Name it directly: the Transformers backend can still hold it.
+    await deps.unload(target);
+    return { unloadedAliases: [target], stillResident: null, replacedBy: null };
+  }
+  // Nothing was unloaded. Either the model is already free, or a load replaced
+  // it before the click -- and /unload naming a replaced model is a documented
+  // 200 no-op, so firing it anyway would report an eject that never happened.
+  return {
+    unloadedAliases: [],
+    stillResident: null,
+    replacedBy: seen.resident?.checkpoint ?? null,
+  };
 }

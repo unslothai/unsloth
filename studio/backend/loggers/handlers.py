@@ -49,6 +49,12 @@ _QUIET_POLL_PATHS = {
     "/api/auth/status",
     "/api/inference/status",
     "/api/inference/monitor",
+    # The loaded-models indicator polls all four runtimes every 5s for as long
+    # as the app is open, and on the desktop every line is mirrored into
+    # tauri.log. /api/inference/status is already above; these are its siblings.
+    "/api/inference/images/status",
+    "/api/inference/video/status",
+    "/api/inference/audio/stt/status",
     # List polls the tabs refetch on a timer and on every tab switch.
     "/api/train/runs",
     "/api/models/checkpoints",

@@ -80,6 +80,23 @@ async function settled<T>(
   }
 }
 
+/**
+ * The same bound for the eject path, but the failure is raised rather than
+ * swallowed. Without it a runtime that accepts the connection and never answers
+ * leaves the eject pending forever, so the row keeps its spinner and stays
+ * disabled until the page is reloaded.
+ */
+async function bounded<T>(
+  read: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const timeout = disposableTimeoutSignal(READ_TIMEOUT_MS);
+  try {
+    return await read(timeout.signal);
+  } finally {
+    timeout.dispose();
+  }
+}
+
 /** Everything resident right now, across all four runtimes. */
 export async function readLoadedModels(): Promise<LoadedModelEntry[]> {
   const [inference, diffusion, video, stt] = await Promise.all([
@@ -97,27 +114,33 @@ export async function readLoadedModels(): Promise<LoadedModelEntry[]> {
 }
 
 /** Release the model this row names, and only that one. See eject-chat-model.ts. */
-async function ejectChatRow(entry: LoadedModelEntry): Promise<string | null> {
-  const { unloadedAliases, stillResident } = await ejectChatModel(entry.name, {
-    readResident: async () => {
-      const status = await getInferenceStatus();
-      const checkpoint = resolveInferenceCheckpointId(status);
-      if (!checkpoint) return null;
-      // Both spellings: status reports the load path, the store the repo id.
-      return {
-        checkpoint,
-        aliases: [checkpoint, status.active_model].filter(
-          (alias): alias is string => alias != null,
-        ),
-      };
+async function ejectChatRow(entry: LoadedModelEntry): Promise<EjectOutcome> {
+  const { unloadedAliases, stillResident, replacedBy } = await ejectChatModel(
+    entry.name,
+    {
+      readResident: async () => {
+        const status = await bounded(getInferenceStatus);
+        const checkpoint = resolveInferenceCheckpointId(status);
+        if (!checkpoint) return null;
+        // Both spellings: status reports the load path, the store the repo id.
+        return {
+          checkpoint,
+          aliases: [checkpoint, status.active_model].filter(
+            (alias): alias is string => alias != null,
+          ),
+        };
+      },
+      unload: (modelPath) => unloadModel({ model_path: modelPath }),
+      matches: modelIdsMatch,
+      cachedRow: entry.inactive === true,
     },
-    unload: (modelPath) => unloadModel({ model_path: modelPath }),
-    matches: modelIdsMatch,
-  });
+  );
+  if (stillResident) return { status: "stillResident", model: stillResident };
+  if (replacedBy) return { status: "replaced", resident: replacedBy };
   // Only when the row's model is really gone. A reload during the run leaves it
   // resident and still usable, so emptying the picker would be wrong.
-  if (stillResident === null) clearChatSelectionFor(unloadedAliases);
-  return stillResident;
+  clearChatSelectionFor(unloadedAliases);
+  return { status: "ejected" };
 }
 
 /** Clear the picker only when it names something this eject released: chat can
@@ -171,15 +194,10 @@ export async function ejectLoadedModel(
   entry: LoadedModelEntry,
 ): Promise<EjectOutcome> {
   switch (entry.source) {
-    case "chat": {
-      // /unload matches on the model id, so this one needs no pre-check.
-      const stillResident = await ejectChatRow(entry);
-      return stillResident
-        ? { status: "stillResident", model: stillResident }
-        : { status: "ejected" };
-    }
+    case "chat":
+      return ejectChatRow(entry);
     case "image": {
-      const before = await getDiffusionStatus();
+      const before = await bounded(getDiffusionStatus);
       return ejectRuntimeRow(
         entry,
         before.loaded ? before.repo_id : null,
@@ -192,7 +210,7 @@ export async function ejectLoadedModel(
       );
     }
     case "video": {
-      const before = await getVideoStatus();
+      const before = await bounded(getVideoStatus);
       return ejectRuntimeRow(
         entry,
         before.loaded ? before.repo_id : null,
@@ -208,7 +226,7 @@ export async function ejectLoadedModel(
       if (!engine) throw new Error("This row names no dictation engine.");
       // Dictation loads on demand and releases when idle, so the engine's
       // resident model can change with no user action at all.
-      const before = await readSttStatus();
+      const before = await bounded(readSttStatus);
       // Unreadable status: say so rather than unload blind or claim success.
       if (!before) {
         throw new Error(
@@ -226,7 +244,13 @@ export async function ejectLoadedModel(
             { method: "POST" },
           );
           if (!response.ok) throw new Error(await readErrorDetail(response));
-          return null;
+          // The unload response body is a fixed {loaded_model: null}, and the
+          // backend silently serves `gguf` from the transformers engine when
+          // whisper-server is absent, so a 200 is not evidence this engine let
+          // go. Re-read and report what it actually holds.
+          const after = await bounded(readSttStatus);
+          if (!after) return null;
+          return sttEngineStatus(after, engine)?.loaded_model ?? null;
         },
       );
     }

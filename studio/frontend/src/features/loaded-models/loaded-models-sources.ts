@@ -121,8 +121,13 @@ export function describeInferenceStatus(
   const active = status.active_model;
   if (active) {
     const audioType = status.audio_type ?? null;
-    const isTts = Boolean(status.is_audio) && audioType !== "whisper";
-    const isStt = Boolean(status.is_audio) && audioType === "whisper";
+    // The backend's own is_audio_input_type(): whisper (ASR) and audio_vlm
+    // (Gemma 3n) take audio in, the other four give audio out. Getting this
+    // wrong labels a model that listens as one that speaks, which is the
+    // confusion this card exists to remove.
+    const isAudioInput = audioType === "whisper" || audioType === "audio_vlm";
+    const isTts = Boolean(status.is_audio) && !isAudioInput;
+    const isStt = Boolean(status.is_audio) && isAudioInput;
     const runtime = status.is_gguf
       ? "GGUF"
       : status.is_mlx

@@ -28,6 +28,7 @@ on:
       # the test must still trigger UI CI.
       - 'tests/studio/**'
       - '.github/scripts/run-studio-permission-browser.sh'
+      - '.github/scripts/run-studio-indicator-browser.sh'
       - '.github/workflows/studio-ui-smoke.yml'
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
@@ -210,6 +211,18 @@ jobs:
           bash .github/scripts/run-studio-permission-browser.sh 18893 firefox
           bash .github/scripts/run-studio-permission-browser.sh 18893 webkit
           bash .github/scripts/run-studio-permission-browser.sh 18893 chromium chrome
+
+      # The indicator restores an absolute viewport position from localStorage,
+      # so it needs a real layout and a real ResizeObserver to test at all --
+      # a stored position from a wider screen once left the card off screen with
+      # its own drag handle and collapse button unreachable. The four /status
+      # reads are stubbed, so this needs no model and no GPU, which also lets it
+      # replay the AMD / Apple / CPU-only payload shapes this runner never sees.
+      - name: Cross-browser loaded-models indicator
+        run: |
+          bash .github/scripts/run-studio-indicator-browser.sh 18899 chromium
+          bash .github/scripts/run-studio-indicator-browser.sh 18899 firefox
+          bash .github/scripts/run-studio-indicator-browser.sh 18899 webkit
 
       # The chat UI test ends by clicking the Shutdown menuitem, which
       # leaves the server dead. The extra UI test (Compare / Recipes /

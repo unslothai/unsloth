@@ -34,6 +34,12 @@ export function useLoadedModels(enabled: boolean): UseLoadedModels {
   // One read at a time, and none applied after unmount.
   const inFlightRef = useRef(false);
   const mountedRef = useRef(true);
+  // Bumped whenever an eject changes the list. A read issued before that lands
+  // after it and would otherwise put the ejected row straight back.
+  const generationRef = useRef(0);
+  // A refresh asked for while one was in flight, so the trailing refresh after
+  // an eject is not swallowed by the very read it needs to supersede.
+  const pendingRef = useRef(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -42,20 +48,37 @@ export function useLoadedModels(enabled: boolean): UseLoadedModels {
     };
   }, []);
 
+  const refreshRef = useRef<() => void>(() => {});
   const refresh = useCallback(() => {
-    if (!enabled || inFlightRef.current) return;
+    if (!enabled) return;
+    if (inFlightRef.current) {
+      // Remember the ask instead of dropping it: the refresh an eject queues
+      // collides with the poll it has to correct more often than not.
+      pendingRef.current = true;
+      return;
+    }
     inFlightRef.current = true;
+    const generation = generationRef.current;
     void readLoadedModels()
       .then((next) => {
-        if (mountedRef.current) setEntries(next);
+        if (mountedRef.current && generation === generationRef.current) {
+          setEntries(next);
+        }
       })
       .catch(() => {
         // Every source fails soft; nothing left to report.
       })
       .finally(() => {
         inFlightRef.current = false;
+        if (pendingRef.current) {
+          pendingRef.current = false;
+          refreshRef.current();
+        }
       });
   }, [enabled]);
+  useEffect(() => {
+    refreshRef.current = refresh;
+  }, [refresh]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -96,7 +119,9 @@ export function useLoadedModels(enabled: boolean): UseLoadedModels {
         } else {
           toast.success(`Ejected ${label}`);
           // Drop the row now, rather than offering to eject it again until the
-          // next poll.
+          // next poll. Any read already in flight predates this and would put
+          // the row back, so retire it.
+          generationRef.current += 1;
           if (mountedRef.current) {
             setEntries((prev) => prev.filter((row) => row.id !== entry.id));
           }

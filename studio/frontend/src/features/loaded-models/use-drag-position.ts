@@ -81,7 +81,9 @@ function store(key: string, position: DragPosition | null): void {
 export type UseDragPosition = {
   /** null until the user moves it, so the default anchor still applies. */
   position: DragPosition | null;
-  panelRef: React.RefObject<HTMLDivElement | null>;
+  /** Callback ref, not a RefObject: the reclamp effect has to re-run when the
+   *  node appears, and a RefObject mutation does not re-render. */
+  panelRef: (node: HTMLDivElement | null) => void;
   startDrag: (event: React.PointerEvent<HTMLElement>) => void;
   dragging: boolean;
   /** True once, for the click that ends a drag, so a handle can also be a
@@ -91,14 +93,28 @@ export type UseDragPosition = {
 };
 
 export function useDragPosition(storageKey: string): UseDragPosition {
-  const [position, setPosition] = useState<DragPosition | null>(() =>
-    typeof window === "undefined" ? null : readStored(storageKey),
-  );
+  const [position, setPosition] = useState<DragPosition | null>(() => {
+    if (typeof window === "undefined") return null;
+    const stored = readStored(storageKey);
+    // Clamp on read as well as on resize. The observer below cannot fire until
+    // after the first paint, so a position saved on a wider screen would flash
+    // off screen once; zero width/height keeps at least the top-left corner in
+    // view, and the first measurement refines it.
+    return stored ? clampToViewport(stored, 0, 0, viewport()) : null;
+  });
   // Held from pointerdown to pointerup; dragging only once past the threshold.
   const [pressing, setPressing] = useState(false);
   const [dragging, setDragging] = useState(false);
   const movedRef = useRef(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
+  // Mirrored into state because the reclamp effect must re-subscribe when the
+  // node mounts: the card renders nothing until the first poll returns a row,
+  // so the effect's first run sees a null ref.
+  const [panelEl, setPanelEl] = useState<HTMLDivElement | null>(null);
+  const attachPanel = useCallback((node: HTMLDivElement | null) => {
+    panelRef.current = node;
+    setPanelEl(node);
+  }, []);
   const sessionRef = useRef<{
     pointerId: number;
     startX: number;
@@ -124,24 +140,34 @@ export function useDragPosition(storageKey: string): UseDragPosition {
   // A window that shrank, or a panel that grew when expanded, would otherwise
   // strand it off screen with nothing able to bring it back.
   useEffect(() => {
-    if (!position) return;
-    const panel = panelRef.current;
+    if (!position || !panelEl) return;
     const measure = () => {
-      const box = panel?.getBoundingClientRect();
-      if (box) reclamp(box.width, box.height);
+      const box = panelEl.getBoundingClientRect();
+      reclamp(box.width, box.height);
     };
     window.addEventListener("resize", measure);
-    const observer = panel ? new ResizeObserver(measure) : null;
-    if (panel && observer) observer.observe(panel);
+    const observer =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(panelEl);
+    // No observer (an engine old enough to lack it) still gets the resize path,
+    // plus this one measurement of whatever is on screen right now.
+    if (!observer) measure();
     return () => {
       window.removeEventListener("resize", measure);
       observer?.disconnect();
     };
-  }, [position, reclamp]);
+  }, [position, panelEl, reclamp]);
 
   const startDrag = useCallback((event: React.PointerEvent<HTMLElement>) => {
     const panel = panelRef.current;
     if (event.button !== 0 || !panel) return;
+    // Without capture a pointerup over another window is never delivered, so
+    // the card would keep tracking the cursor. Same as the Live monitor's drag.
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Capture is best effort; the window listeners below still drive the drag.
+    }
     const box = panel.getBoundingClientRect();
     sessionRef.current = {
       pointerId: event.pointerId,
@@ -161,6 +187,14 @@ export function useDragPosition(storageKey: string): UseDragPosition {
     const onMove = (event: PointerEvent) => {
       const session = sessionRef.current;
       if (!session || session.pointerId !== event.pointerId) return;
+      // The button was released somewhere we never saw it: end the drag rather
+      // than following the cursor around.
+      if (event.buttons === 0) {
+        sessionRef.current = null;
+        setPressing(false);
+        setDragging(false);
+        return;
+      }
       const dx = event.clientX - session.startX;
       const dy = event.clientY - session.startY;
       if (!movedRef.current) {
@@ -208,5 +242,5 @@ export function useDragPosition(storageKey: string): UseDragPosition {
     return moved;
   }, []);
 
-  return { position, panelRef, startDrag, dragging, justDragged };
+  return { position, panelRef: attachPanel, startDrag, dragging, justDragged };
 }

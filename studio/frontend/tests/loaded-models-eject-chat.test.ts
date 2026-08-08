@@ -18,7 +18,10 @@ function resident(checkpoint: string): ResidentChatModel {
 
 /** A backend whose resident model follows `timeline`, one entry per status read.
  *  An entry after the first is what an API auto-switch left there. */
-function backend(timeline: (ResidentChatModel | null)[]) {
+function backend(
+  timeline: (ResidentChatModel | null)[],
+  cachedRow = false,
+) {
   const unloaded: string[] = [];
   let read = 0;
   return {
@@ -29,6 +32,7 @@ function backend(timeline: (ResidentChatModel | null)[]) {
         unloaded.push(modelPath);
       },
       matches: modelIdsMatch,
+      cachedRow,
     },
   };
 }
@@ -50,9 +54,28 @@ test("a model that replaced the row's before the click is left alone", async () 
     !unloaded.includes("unsloth/Llama-3.2-3B"),
     "the model nobody clicked must survive",
   );
-  // Still named directly, since the Transformers backend can cache it.
-  assert.deepEqual(unloaded, ["unsloth/Qwen3-4B"]);
+  // Nothing at all is unloaded. /unload naming a model the backend does not
+  // hold answers 200 "unloaded", so firing it would report an eject that never
+  // happened and clear the picker off the back of it.
+  assert.deepEqual(unloaded, []);
+  assert.deepEqual(result.unloadedAliases, []);
   assert.equal(result.stillResident, null);
+  assert.equal(
+    result.replacedBy,
+    "unsloth/Llama-3.2-3B",
+    "the caller needs the replacement's name to say what took its place",
+  );
+});
+
+test("an idle runtime reports the row already gone, not a fresh eject", async () => {
+  const { unloaded, deps } = backend([null]);
+  const result = await ejectChatModel("unsloth/Qwen3-4B", deps);
+  assert.deepEqual(unloaded, [], "nothing is resident, so nothing to unload");
+  assert.deepEqual(result.unloadedAliases, []);
+  assert.equal(result.stillResident, null);
+  // Null rather than a name: the runtime holds nothing, so there is no
+  // replacement to name and the row is simply stale.
+  assert.equal(result.replacedBy, null);
 });
 
 test("a switch landing mid-eject is not chased", async () => {
@@ -76,11 +99,24 @@ test("a target that survives its own unload is reported still resident", async (
   assert.ok(result.unloadedAliases.length > 0);
 });
 
+// A row the backend kept past the active model is never what a status read
+// reports, so it is the one case that has to be named directly.
 test("a cached row with nothing resident is still unloaded by name", async () => {
-  const { unloaded, deps } = backend([null]);
+  const { unloaded, deps } = backend([null], true);
   const result = await ejectChatModel("unsloth/Qwen3-4B", deps);
   assert.deepEqual(unloaded, ["unsloth/Qwen3-4B"]);
   assert.deepEqual(result.unloadedAliases, ["unsloth/Qwen3-4B"]);
+  assert.equal(result.replacedBy, null);
+});
+
+test("a cached row is unloaded even while another model is active", async () => {
+  const { unloaded, deps } = backend([resident("unsloth/Llama-3.2-3B")], true);
+  await ejectChatModel("unsloth/Qwen3-4B", deps);
+  assert.deepEqual(
+    unloaded,
+    ["unsloth/Qwen3-4B"],
+    "the cached copy goes, the active model stays",
+  );
 });
 
 test("the load path and the advertised repo id are the same row", async () => {
