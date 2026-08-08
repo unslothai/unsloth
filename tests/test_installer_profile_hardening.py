@@ -27,6 +27,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 STUDIO_COMMAND = REPO_ROOT / "unsloth_cli" / "commands" / "studio.py"
 
+
+def _framed(record: str, *, banner: str = "") -> str:
+    """What the probe child really prints: the framed record, plus whatever the profile said."""
+    from unsloth_cli.commands import studio as studio_cmd
+
+    return (
+        f"{banner}{studio_cmd._PROXY_PROBE_BEGIN}\n{record}\n{studio_cmd._PROXY_PROBE_END}\n"
+    )
+
 requires_pwsh = pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
 
 
@@ -856,9 +865,13 @@ def test_the_probe_reads_a_hostile_profile_without_carrying_anything_else(tmp_pa
     off, a lowercase key and a [uri] value. The probe has to survive all of it and return only
     the proxy entries."""
     src = STUDIO_COMMAND.read_text(encoding = "utf-8")
-    start = _locate(src, "_PS_PROXY_PROBE = (", "the probe script")
+    # From the markers, not just the script: the record is framed, and the frame is part of
+    # what has to survive a profile that prints.
+    start = _locate(src, "_PROXY_PROBE_BEGIN = ", "the probe framing")
     namespace: dict = {}
-    exec(src[start : src.index(")\n", start) + 1], namespace)  # noqa: S102 - our own source
+    exec(  # noqa: S102 - our own source
+        src[start : src.index("\n)\n", start) + 3], namespace
+    )
 
     home = tmp_path / "config"
     (home / "powershell").mkdir(parents = True)
@@ -882,13 +895,73 @@ def test_the_probe_reads_a_hostile_profile_without_carrying_anything_else(tmp_pa
         check = False,
         env = {**os.environ, "XDG_CONFIG_HOME": str(home), "HOME": str(tmp_path)},
     )
-    payload = result.stdout.strip()
-    if "proxy.corp" not in payload:
-        pytest.skip(f"pwsh did not load the planted profile (got {payload!r})")
+    from unsloth_cli.commands import studio as studio_cmd
+
+    if "proxy.corp" not in (result.stdout or ""):
+        pytest.skip(f"pwsh did not load the planted profile (got {result.stdout!r})")
+    payload = studio_cmd._framed_probe_record(result.stdout)
+    assert payload, "the probe must emit a framed record"
     assert "WindowStyle" not in payload, "the probe carried a non-proxy default across"
     import json as _json
 
     assert isinstance(_json.loads(payload), dict), "the probe must emit parseable JSON"
+
+
+def test_a_profile_that_prints_a_banner_does_not_cost_the_proxy(monkeypatch):
+    """The profile has already run by the time the record is printed, and it is free to say
+    anything: a MOTD, a "loading modules" line, a corporate banner. With the record bare, that
+    output arrived first, the whole parse threw, and the answer was dropped -- so the very
+    locked-down host that needed the proxy handed the -NoProfile child nothing and every
+    download failed."""
+    from unsloth_cli.commands import studio as studio_cmd
+
+    class _Result:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    noisy = _framed(
+        '{"invoke-webrequest:proxy": "http://proxy.corp:8080"}',
+        banner = "Loading personal and system profiles took 812ms.\nWelcome to Contoso.\n",
+    )
+    monkeypatch.setattr(studio_cmd.subprocess, "run", lambda argv, **kw: _Result(noisy))
+
+    merged = studio_cmd._probe_profile_proxy_defaults(["pwsh.exe"])
+    assert json.loads(merged) == {"invoke-webrequest:proxy": "http://proxy.corp:8080"}
+
+
+def test_a_profile_that_prints_nothing_useful_is_still_no_answer(monkeypatch):
+    from unsloth_cli.commands import studio as studio_cmd
+
+    class _Result:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    monkeypatch.setattr(
+        studio_cmd.subprocess, "run", lambda argv, **kw: _Result("just a banner\n")
+    )
+    assert studio_cmd._probe_profile_proxy_defaults(["pwsh.exe"]) is None
+
+
+def test_the_probe_signature_evaluates_on_the_oldest_supported_python():
+    """No `from __future__ import annotations` here, so an unquoted `str | list[str]` is
+    evaluated at def time -- a TypeError on 3.9 that takes the whole CLI import with it."""
+    import ast
+
+    tree = ast.parse(STUDIO_COMMAND.read_text(encoding = "utf-8"))
+    assert not any(
+        isinstance(node, ast.ImportFrom) and node.module == "__future__"
+        for node in ast.walk(tree)
+    ), "this test's premise changed: the module now postpones annotations"
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for arg in [*node.args.args, *node.args.kwonlyargs]:
+            annotation = arg.annotation
+            if annotation is None:
+                continue
+            assert not isinstance(annotation, ast.BinOp), (
+                f"{node.name}({arg.arg}) uses an unquoted PEP 604 union, which raises on 3.9"
+            )
 
 
 def test_the_probe_asks_both_powershell_editions(monkeypatch):
@@ -908,8 +981,8 @@ def test_the_probe_asks_both_powershell_editions(monkeypatch):
             self.stdout = stdout
 
     answers = {
-        "pwsh.exe": '{"invoke-webrequest:proxy": "http://seven.corp:8080"}',
-        "powershell.exe": '{"invoke-restmethod:proxy": "http://five.corp:8080"}',
+        "pwsh.exe": _framed('{"invoke-webrequest:proxy": "http://seven.corp:8080"}'),
+        "powershell.exe": _framed('{"invoke-restmethod:proxy": "http://five.corp:8080"}'),
     }
 
     def _run(argv, **kwargs):
@@ -934,8 +1007,8 @@ def test_the_callers_edition_wins_where_the_two_profiles_disagree(monkeypatch):
             self.stdout = stdout
 
     answers = {
-        "pwsh.exe": '{"invoke-webrequest:proxy": "http://seven.corp:8080"}',
-        "powershell.exe": '{"invoke-webrequest:proxy": "http://five.corp:8080"}',
+        "pwsh.exe": _framed('{"invoke-webrequest:proxy": "http://seven.corp:8080"}'),
+        "powershell.exe": _framed('{"invoke-webrequest:proxy": "http://five.corp:8080"}'),
     }
     monkeypatch.setattr(studio_cmd.subprocess, "run", lambda argv, **kw: _Result(answers[argv[0]]))
     merged = studio_cmd._probe_profile_proxy_defaults(["powershell.exe", "pwsh.exe"])
@@ -955,8 +1028,8 @@ def test_two_spellings_of_one_key_are_one_key(monkeypatch):
             self.stdout = stdout
 
     answers = {
-        "pwsh.exe": '{"Invoke-WebRequest:Proxy": "http://seven.corp:8080"}',
-        "powershell.exe": '{"invoke-webrequest:proxy": "http://five.corp:8080"}',
+        "pwsh.exe": _framed('{"Invoke-WebRequest:Proxy": "http://seven.corp:8080"}'),
+        "powershell.exe": _framed('{"invoke-webrequest:proxy": "http://five.corp:8080"}'),
     }
     monkeypatch.setattr(studio_cmd.subprocess, "run", lambda argv, **kw: _Result(answers[argv[0]]))
     merged = json.loads(studio_cmd._probe_profile_proxy_defaults(["pwsh.exe", "powershell.exe"]))
@@ -978,7 +1051,9 @@ def test_one_profile_that_prints_both_spellings_is_folded_too(monkeypatch):
         ' "invoke-webrequest:PROXY": "http://second.corp:8080",'
         ' "Invoke-RestMethod:Proxy": "http://rest.corp:8080"}'
     )
-    monkeypatch.setattr(studio_cmd.subprocess, "run", lambda argv, **kw: _Result(payload))
+    monkeypatch.setattr(
+        studio_cmd.subprocess, "run", lambda argv, **kw: _Result(_framed(payload))
+    )
     merged = json.loads(studio_cmd._probe_profile_proxy_defaults(["pwsh.exe"]))
 
     assert merged == {

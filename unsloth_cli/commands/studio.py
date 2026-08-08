@@ -2830,6 +2830,10 @@ def _wait_for_windows_setup_process(process) -> int:
 # given back the one thing it needs from it. Mirrors install.ps1's filter exactly: proxy-shaped
 # keys only, matched case-insensitively, and only values that survive JSON (a PSCredential does
 # not, and the environment is the wrong place for one).
+# Unlikely in a banner, and fixed so both sides agree.
+_PROXY_PROBE_BEGIN = "<<UNSLOTH_PROXY_DEFAULTS>>"
+_PROXY_PROBE_END = "<</UNSLOTH_PROXY_DEFAULTS>>"
+
 _PS_PROXY_PROBE = (
     "$ErrorActionPreference = 'SilentlyContinue'; "
     "$PSModuleAutoLoadingPreference = 'All'; "
@@ -2840,8 +2844,27 @@ _PS_PROXY_PROBE = (
     "$v = $PSDefaultParameterValues[$k]; "
     "if ($v -is [uri]) { $out[$k] = $v.AbsoluteUri } "
     "elseif ($v -is [string] -or $v -is [bool]) { $out[$k] = $v } } }; "
-    "if ($out.Count -gt 0) { $out | ConvertTo-Json -Compress }"
+    # FRAMED, not bare: the profile has already run by this point and is free to print a
+    # banner, a MOTD or a "loading modules" line. With the record bare, that output arrived
+    # ahead of the JSON, the parse threw, and the whole answer was discarded -- so on exactly
+    # the locked-down host that needed the proxy, the -NoProfile child got none and every
+    # download failed. The markers let the record be cut out of whatever else was said.
+    f"if ($out.Count -gt 0) {{ "
+    f"Write-Output '{_PROXY_PROBE_BEGIN}'; $out | ConvertTo-Json -Compress; "
+    f"Write-Output '{_PROXY_PROBE_END}' }}"
 )
+
+
+def _framed_probe_record(stdout: str) -> Optional[str]:
+    """The JSON between the markers, or None. Tolerates anything the profile printed."""
+    start = stdout.find(_PROXY_PROBE_BEGIN)
+    if start < 0:
+        return None
+    start += len(_PROXY_PROBE_BEGIN)
+    end = stdout.find(_PROXY_PROBE_END, start)
+    if end < 0:
+        return None
+    return stdout[start:end].strip() or None
 
 
 def _profile_probe_hosts() -> list[str]:
@@ -2863,7 +2886,11 @@ def _profile_probe_hosts() -> list[str]:
     return [host for host in hosts if shutil.which(host)]
 
 
-def _probe_profile_proxy_defaults(powershell: str | list[str]) -> Optional[str]:
+# Quoted: this module has no `from __future__ import annotations`, and on the Python 3.9 the
+# project still supports, evaluating `str | list[str]` at def time raises TypeError -- which
+# would take the whole CLI import down with it. The other unions here are quoted for the same
+# reason.
+def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str]:
     """The caller's profile proxy defaults as JSON, or None.
 
     install.ps1 hands these over in the environment, but a standalone `unsloth studio update`
@@ -2902,12 +2929,12 @@ def _probe_profile_proxy_defaults(powershell: str | list[str]) -> Optional[str]:
             )
         except (OSError, subprocess.SubprocessError):
             continue
-        payload = (probe.stdout or "").strip()
+        payload = _framed_probe_record(probe.stdout or "")
         if not payload:
             continue
         try:
-            # Validated rather than trusted: a profile that prints a banner would otherwise have
-            # us hand the child a string ConvertFrom-Json throws on.
+            # Validated rather than trusted: the framing finds the record, this confirms it is
+            # one, so nothing hands the child a string ConvertFrom-Json throws on.
             parsed = json.loads(payload)
         except ValueError:
             continue
