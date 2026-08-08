@@ -29,6 +29,7 @@ Best-effort: an unavailable backend falls back to the diffusers default. torch/d
 
 from __future__ import annotations
 
+import re
 import threading
 from typing import Any, Optional
 
@@ -178,6 +179,23 @@ _INSTALL_ATTEMPTED: set[str] = set()
 _MATCHED_WHEEL_BACKENDS = frozenset({"xformers"})
 _XFORMERS_WHEEL_TARGET: Optional[tuple[Optional[str], Optional[str]]] = None
 _XFORMERS_WHEEL_LOCK = threading.Lock()
+
+
+# Scheme-qualified URLs only; nothing else in these messages can carry a credential.
+_URL_IN_TEXT = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s'\"<>]+")
+
+
+def _redacted_for_log(text: str) -> str:
+    """Every URL in ``text``, stripped of userinfo / query / fragment.
+
+    Takes free text, not just a URL, because pip echoes the URL it was handed back in its
+    stderr -- redacting only the name in the log line would leave the secret in the body.
+    """
+    try:
+        from utils.wheel_utils import redact_url_credentials
+    except Exception:  # noqa: BLE001 -- redaction must never be the thing that breaks a log
+        return text
+    return _URL_IN_TEXT.sub(lambda m: redact_url_credentials(m.group(0)), text)
 
 
 def _xformers_wheel_target() -> tuple[Optional[str], Optional[str]]:
@@ -363,6 +381,10 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Opt
                 )
             return refusal
         package = wheel_url
+    # What pip gets and what the log gets are not the same string. UNSLOTH_PYTORCH_MIRROR may
+    # carry userinfo or a token for a private index, and it is baked into the wheel URL, so
+    # logging the URL verbatim writes that secret into the backend log.
+    display = _redacted_for_log(package)
     # Attempt each install once per process, else the in-lock apply re-runs it under _generate_lock and blocks unload/cancel.
     if package in _INSTALL_ATTEMPTED:
         return None
@@ -372,7 +394,7 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Opt
 
     if logger is not None:
         logger.info(
-            "diffusion.attention: installing %s for backend=%s (wheel-only)", package, backend
+            "diffusion.attention: installing %s for backend=%s (wheel-only)", display, backend
         )
     try:
         subprocess.run(
@@ -402,14 +424,16 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Opt
                     stderr = stderr.decode("utf-8", errors = "replace")
                 logger.warning(
                     "diffusion.attention: could not install %s; pip failed with: %s",
-                    package,
-                    stderr.strip() or str(exc),
+                    display,
+                    # pip echoes the URL it was given, so redact the body too rather than
+                    # only the name in front of it.
+                    _redacted_for_log(stderr.strip()) or str(exc),
                 )
             else:
                 logger.warning(
                     "diffusion.attention: could not install %s (%s); falling back to default",
-                    package,
-                    exc,
+                    display,
+                    _redacted_for_log(str(exc)),
                 )
     return None
 

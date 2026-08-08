@@ -4263,7 +4263,12 @@ exit 0
                 # honoured, as it is everywhere else in this script.
                 $_xfIndexUrl = $null
                 $_xfWheelUrl = $null
-                if ($TorchIndexPinned -and $TorchIndexUrl) {
+                # A FULL-URL override only. UNSLOTH_TORCH_INDEX_FAMILY also sets
+                # $TorchIndexPinned, and routing that through the index reintroduced the very
+                # hole above: cu126 / cu128 / cu130 share a version string, so a machine-level
+                # UV_INDEX could satisfy the pin with the wrong family. A family pin names a
+                # leaf we can build a direct URL from, so it takes the URL path.
+                if ($TorchIndexUrl -and -not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) {
                     $_xfIndexUrl = $TorchIndexUrl
                 } else {
                     $_xfBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }

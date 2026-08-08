@@ -143,10 +143,13 @@ def test_installer_installs_xformers_from_the_torch_index():
     assert "--default-index $_xfIndexUrl" in block
     assert "xformers==$_xfVersion" in block
     assert "UNSLOTH_SKIP_XFORMERS" in block
-    # An explicit index pin is authoritative and is reused WHOLE. Its leaf is not required
+    # A full-URL index pin is authoritative and is reused WHOLE. Its leaf is not required
     # to name the CUDA family: a documented full-URL override can be an authenticated
     # mirror, and rebuilding a download.pytorch.org URL over it strands an air-gapped host.
-    assert "if ($TorchIndexPinned -and $TorchIndexUrl)" in block
+    assert (
+        "if ($TorchIndexUrl -and -not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL))"
+        in block
+    )
     assert "Get-TorchIndexLeafName" not in block
     # Unpinned, install the direct wheel URL: --default-index does not make an index
     # exclusive, and cu126/cu128/cu130 share a version string, so a machine with UV_INDEX
@@ -160,6 +163,23 @@ def test_installer_installs_xformers_from_the_torch_index():
     # resident torch: the stable-ABI wheel records the floor release it was compiled
     # against, so the old comparison force-reinstalled a correct 0.0.35 on every run.
     assert "Get-XformersExpectedTorchBuild -Version $_xfVersion" in block
+
+
+def test_a_family_pin_still_gets_the_direct_wheel_url():
+    """UNSLOTH_TORCH_INDEX_FAMILY sets $TorchIndexPinned too, so keying the index branch off
+    that flag sent a plain `cu130` pin down --default-index -- and uv's --index / UV_INDEX
+    are used "in addition to" the default one, so a machine-level UV_INDEX carrying the same
+    xFormers version could satisfy the pin from the wrong CUDA family, which is the failure
+    this step exists to prevent. A family pin names a leaf, so a direct URL can be built for
+    it; only a full-URL override (possibly an authenticated mirror we cannot rebuild) has to
+    go through the index."""
+    block = _extract(
+        r"    # ── Pin xFormers to the wheel built for the torch.*?^    \}\n", _source()
+    )
+    condition = re.search(r"if \(\$TorchIndexUrl[^\n]*\) \{\n\s+\$_xfIndexUrl = ", block)
+    assert condition is not None, "the index branch must be gated on the full-URL override"
+    assert "UNSLOTH_TORCH_INDEX_URL" in condition.group(0)
+    assert "$TorchIndexPinned" not in condition.group(0)
 
 
 def test_installer_never_installs_an_unpinned_xformers():

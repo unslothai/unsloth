@@ -412,6 +412,30 @@ def xformers_wheel_url(env: dict[str, str] | None) -> str | None:
     )
 
 
+def redact_url_credentials(url: str) -> str:
+    """A URL safe to log: no userinfo, no query, no fragment.
+
+    UNSLOTH_PYTORCH_MIRROR is allowed to be a private index, and people put credentials in
+    it -- ``https://user:token@mirror/whl`` or ``...?token=``. The wheel URL built from it
+    is handed to pip AND printed, so without this the secret lands in the backend log the
+    first time Studio installs (or fails to install) xFormers. Same rule as the installer's
+    Remove-IndexUrlCredentials, so both sides redact identically.
+    """
+    separator = url.find("://")
+    if separator < 0:
+        return url
+    scheme, rest = url[:separator], url[separator + 3 :]
+    cut = min([i for i in (rest.find("?"), rest.find("#")) if i >= 0], default = -1)
+    if cut >= 0:
+        rest = rest[:cut]
+    slash = rest.find("/")
+    authority, path = (rest[:slash], rest[slash:]) if slash >= 0 else (rest, "")
+    at = authority.rfind("@")
+    if at >= 0:
+        authority = authority[at + 1 :]
+    return f"{scheme}://{authority}{path}"
+
+
 def flash_attn_package_version(torch_mm: str) -> str | None:
     if torch_mm == "2.10":
         # Newest flash-attn release still carrying the full torch2.10 asset

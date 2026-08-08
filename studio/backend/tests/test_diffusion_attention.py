@@ -370,6 +370,65 @@ def test_xformers_installs_the_cuda_matched_wheel_not_the_package_name(monkeypat
     assert "xformers" not in [arg for arg in run.calls[0] if arg != _XFORMERS_WHEEL]
 
 
+_CREDENTIALED_WHEEL = (
+    "https://svc:s3cr3t@mirror.internal/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl"
+)
+_REDACTED_WHEEL = (
+    "https://mirror.internal/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl"
+)
+
+
+class _CapturingLogger:
+    def __init__(self):
+        self.lines: list[str] = []
+
+    def info(self, msg, *args):
+        self.lines.append(msg % args if args else msg)
+
+    def warning(self, msg, *args):
+        self.lines.append(msg % args if args else msg)
+
+
+def test_a_private_mirrors_credentials_never_reach_the_log(monkeypatch):
+    """UNSLOTH_PYTORCH_MIRROR is allowed to be an authenticated index, and the wheel URL is
+    built from it -- so logging the URL as the package name wrote the token into the backend
+    log on every install. pip is still handed the real URL; only the log is redacted, and
+    pip's own stderr echoes the URL back, so that is redacted too."""
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
+    import importlib.util
+    import subprocess as sp
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    _stub_xformers_wheel(monkeypatch, url = _CREDENTIALED_WHEEL)
+
+    def _boom(cmd, **kwargs):
+        raise sp.CalledProcessError(
+            returncode = 1,
+            cmd = cmd,
+            stderr = f"ERROR: Could not install {_CREDENTIALED_WHEEL} (404)".encode(),
+        )
+
+    _stub_subprocess(monkeypatch, _boom)
+    logger = _CapturingLogger()
+
+    att._ensure_attention_backend_installed("xformers", logger)
+
+    assert logger.lines
+    for line in logger.lines:
+        assert "s3cr3t" not in line
+        assert _REDACTED_WHEEL in line
+
+
+def test_a_query_string_token_is_stripped_too():
+    # Tokens live in the query as often as in the userinfo, and the free-text form has to
+    # find URLs inside a sentence, which is where pip puts them.
+    redacted = att._redacted_for_log(
+        "ERROR: HTTP 403 for https://mirror.internal/whl/cu130/x.whl?token=abc123 -- retry"
+    )
+    assert "abc123" not in redacted
+    assert "https://mirror.internal/whl/cu130/x.whl" in redacted
+
+
 def test_xformers_install_refused_when_no_matching_wheel_exists(monkeypatch):
     """No matched wheel must mean NO install. Falling back to an unpinned resolve is the
     bug; the caller stays on torch SDPA and gets the reason back."""
