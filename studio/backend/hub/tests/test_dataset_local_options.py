@@ -1101,7 +1101,10 @@ def test_snapshot_options_ignore_folder_metadata_for_a_non_folder_module(tmp_pat
 
 def test_snapshot_options_reject_a_declared_data_files_shape_the_loader_refuses(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: a\n  data_files:\n  - path: a/train.jsonl\n- config_name: b\n  data_dir: b\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: a\n  data_files:\n  - path: a/train.jsonl\n- config_name: b\n  data_dir: b\n",
+    )
     for name in ("a", "b"):
         (snapshot / name).mkdir()
         (snapshot / name / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
@@ -1111,7 +1114,10 @@ def test_snapshot_options_reject_a_declared_data_files_shape_the_loader_refuses(
 
 def test_snapshot_options_take_the_module_from_the_collapsed_first_config(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: foo\n  data_files: foo/train.csv\n- config_name: foo\n  data_files: foo/train.jsonl\n- config_name: bar\n  data_dir: bar\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: foo\n  data_files: foo/train.csv\n- config_name: foo\n  data_files: foo/train.jsonl\n- config_name: bar\n  data_dir: bar\n",
+    )
     (snapshot / "foo").mkdir()
     (snapshot / "foo" / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
     (snapshot / "foo" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
@@ -1123,7 +1129,10 @@ def test_snapshot_options_take_the_module_from_the_collapsed_first_config(tmp_pa
 
 def test_snapshot_options_do_not_let_a_later_config_pick_the_module(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: a\n  data_dir: a\n- config_name: b\n  data_files: b/train.csv\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: a\n  data_dir: a\n- config_name: b\n  data_files: b/train.csv\n",
+    )
     (snapshot / "a").mkdir()
     (snapshot / "a" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
     (snapshot / "b").mkdir()

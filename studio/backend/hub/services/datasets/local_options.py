@@ -708,7 +708,11 @@ def _declared_paths(item: dict[str, Any]) -> list[str]:
 
 
 def _paths_module(paths: Iterable[str]) -> Optional[str]:
-    named = [(candidate, _file_module(candidate.name)) for path in paths if (candidate := PurePosixPath(path))]
+    named = [
+        (candidate, _file_module(candidate.name))
+        for path in paths
+        if (candidate := PurePosixPath(path))
+    ]
     if not named:
         return None
     # An extensionless glob names no module, and the loader would settle one by resolving it,
