@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Ownership of a diffusion page's model pick across an await: resolving one is a listing request that can take seconds, and
-// neither page sets `busy` for it. No app deps, so both pages share a copy and the ordering is testable.
+// Ownership of a diffusion page's model pick across an await: resolving is a slow listing request and neither page sets
+// `busy` for it. No app deps, so both pages share this and the ordering is testable.
 
 /** Which pick owns the page. A claim invalidates every token handed out before it, so the newest pick wins. */
 export interface PickGuard {
   claim(): number;
-  /** Leave the page unowned, without ending the pick: a page switch, an unmount. */
+  /** Leave the page unowned without ending the pick: a page switch, an unmount. */
   release(): void;
   /** End the pick outright: an eject or a deploy, which the staged download must not undo. */
   cancel(): void;
@@ -41,7 +41,7 @@ export function createPickGuard(): PickGuard {
 
 /** The page's own halves of a repo-level GGUF pick. Only `isCurrent` is about staleness. */
 export interface GgufRepoPickHandlers {
-  /** The listing, resolved to the one .gguf this pick means, or null when the repo cannot name it. */
+  /** The one .gguf this pick means, or null when the repo cannot name it. */
   resolve(): Promise<string | null>;
   isCurrent(): boolean;
   /** Nothing to load: several quants on disk, a stale label, or an unreadable listing. */
@@ -53,13 +53,12 @@ export interface GgufRepoPickHandlers {
   load(filename: string): Promise<boolean>;
 }
 
-/** Resolve a repo-level GGUF pick and load it, doing nothing at all once the pick no longer owns the page. */
+/** Resolve a repo-level GGUF pick and load it; does nothing once the pick no longer owns the page. */
 export async function runGgufRepoPick(
   handlers: GgufRepoPickHandlers,
 ): Promise<boolean> {
   const filename = await handlers.resolve();
-  // Silent, not just load-free: a toast would blame a model the user has moved on from, and the label and defaults now
-  // belong to the pick that replaced this one.
+  // Silent, not just load-free: a toast would blame a model the user has moved on from.
   if (!handlers.isCurrent()) return false;
   if (!filename) {
     handlers.onAmbiguous();

@@ -21,7 +21,7 @@ function deferred<T>() {
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
-/** Records every side effect a pick is allowed to have, so a stale one can be asserted to have had none. */
+/** Every side effect a pick may have, so a stale one can be asserted to have had none. */
 function recorder(
   overrides: Partial<Omit<GgufRepoPickHandlers, "load">> & {
     /** What `load` reports back: false is "the load never started". */
@@ -93,11 +93,11 @@ test("a superseded pick does not prompt either", async () => {
 });
 
 test("a stale failure does not revert the newer selection's label", async () => {
-  // quantRevert is a single slot, so a late rollback would restore this pick's old label over the one that replaced it.
+  // quantRevert is one slot, so a late rollback would restore this pick's old label over the one that replaced it.
   let current = true;
   const { handlers, log } = recorder({
     isCurrent: () => current,
-    // The next pick takes the page while this one's load is in flight, and this load then reports it never started.
+    // The next pick takes the page while this load is in flight, and the load then reports it never started.
     starts: () => {
       current = false;
       return false;

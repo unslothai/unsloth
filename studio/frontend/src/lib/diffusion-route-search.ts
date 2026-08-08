@@ -15,9 +15,8 @@ export interface DiffusionRouteSearch {
 const trimmed = (value: string | null | undefined): string | null =>
   typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 
-/** The search params for a diffusion pick routed out of the chat picker. A pinned row carries only a label, so forwarding the
- *  filename alone left the page a bare repo id: curated repos still resolved through the catalog, every other on-device GGUF
- *  repo read as a pipeline. The label rides its own param because `quant` is consumed as a filename. */
+/** Search params for a diffusion pick routed out of the chat picker. The label rides its own param because `quant` is
+ *  consumed as a filename; forwarding the filename alone left a pinned row as a bare repo id that read as a pipeline. */
 export function diffusionRouteSearch(
   model: string,
   meta: { ggufFilename?: string | null; ggufVariant?: string | null },
@@ -36,8 +35,8 @@ export function routedGgufFilename(
   return quant && isGgufName(quant) ? quant : null;
 }
 
-/** The quant label a routed pick carries. `quant` is used verbatim as a filename, so a value there that is not one is a
- *  label (a hand-built link, or a producer that predates the split) and joins ggufQuant to be resolved rather than posted. */
+/** The quant label a routed pick carries. A non-filename in `quant` (hand-built link, older producer) is a label too, so it
+ *  joins ggufQuant to be resolved rather than posted verbatim. */
 export function routedGgufLabel(
   search: Pick<DiffusionRouteSearch, "quant" | "ggufQuant">,
 ): string | null {

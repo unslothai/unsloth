@@ -2652,8 +2652,8 @@ export function HubModelPicker({
         if (page) {
           void navigateToPage({
             to: `/${page}`,
-            // `quant` is used verbatim as the gguf filename, so a label like "Q4_K_M" cannot go there. A pinned row has only
-            // the label, so it rides ggufQuant; dropping it made every non-curated GGUF repo arrive as a bare repo id.
+            // `quant` is used verbatim as the gguf filename, so a label like "Q4_K_M" rides ggufQuant instead; dropping it
+            // made every non-curated GGUF repo arrive as a bare repo id.
             search: diffusionRouteSearch(id, meta),
           });
           return;
@@ -3464,9 +3464,8 @@ export function HubModelPicker({
                 isLora: false,
                 ggufVariant: entry.quant,
                 isDownloaded: true,
-                // The row loads one quant, so it is a GGUF pick like the expander's. Without this the diffusion pages read
-                // the label-only meta as a curated repo and asked for a pipeline, which a GGUF repo rejects. No filename:
-                // the pin stores a label, and the pages resolve it against the listing.
+                // The row loads one quant, so it is a GGUF pick like the expander's; without this the pages asked for a
+                // pipeline, which a GGUF repo rejects. No filename: the pin stores a label, resolved against the listing.
                 isGguf: true,
               })
             }

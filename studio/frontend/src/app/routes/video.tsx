@@ -10,8 +10,8 @@ export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/video",
   staticData: { title: "Video" },
-  // A diffusion pick from the chat picker arrives as ?model= (+ ?quant= for an exact filename, ?ggufQuant= for a label the
-  // page resolves), which the page loads and then clears.
+  // A chat-picker pick arrives as ?model= (+ ?quant= for an exact filename, ?ggufQuant= for a label the page resolves),
+  // which the page loads and then clears.
   validateSearch: (
     search: Record<string, unknown>,
   ): { model?: string; quant?: string; ggufQuant?: string } => ({

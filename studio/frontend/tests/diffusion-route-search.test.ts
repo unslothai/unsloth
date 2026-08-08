@@ -34,7 +34,7 @@ test("a pinned pick routes its label, and never as the quant", () => {
 });
 
 test("a non-catalog repo keeps its label too", () => {
-  // The gap this closes: the page cannot recognise a GGUF repo it has no catalog entry for, so the label is the only evidence.
+  // The gap this closes: with no catalog entry for the repo, the label is the page's only evidence that it is GGUF.
   assert.deepEqual(
     diffusionRouteSearch("QuantStack/SomeDiffusion-GGUF", {
       ggufVariant: "Q6_K",
@@ -79,7 +79,7 @@ test("an arrival naming a real file loads it, label or no label", () => {
 });
 
 test("a label left in the filename slot is resolved, not posted", () => {
-  // A hand-built link, or a producer that predates the split: posting "Q4_K_S" as a filename is a certain error.
+  // A hand-built link, or a producer predating the split: posting "Q4_K_S" as a filename is a certain error.
   assert.equal(routedGgufLabel({ quant: "Q4_K_S" }), "Q4_K_S");
   assert.equal(routedGgufFilename({ quant: "Q4_K_S" }), null);
 });
