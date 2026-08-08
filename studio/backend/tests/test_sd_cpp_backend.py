@@ -269,6 +269,28 @@ def test_download_plan_skips_assets_already_in_the_cache(monkeypatch):
     assert plan["checkpoint_bytes"] == 4_000
 
 
+def test_download_plan_restages_a_native_asset_a_stale_live_copy_shadows(monkeypatch):
+    # _fetch_assets passes reuse_other_cache_root, but that only switches roots when the LIVE
+    # lookup finds nothing. A stale same-named copy in the live root therefore shadows the good
+    # copy in the other root, so crediting the other root would stage nothing for an asset the
+    # load cannot actually read.
+    from core.inference.diffusion import DiffusionBackend
+
+    shadowed = "split_files/vae/ae.safetensors"
+
+    def probe(repo_id, filename, revision = None, expected_size = None, roots = None, **kwargs):
+        asks_live = roots is not None and roots != (None,)
+        if filename == shadowed:
+            # Live root: present (no size asked) but wrong bytes. Other root: correct.
+            return expected_size is None if asks_live else True
+        return True
+
+    monkeypatch.setattr(DiffusionBackend, "_hub_file_is_cached", staticmethod(probe))
+
+    assert not DiffusionBackend._hub_file_is_loadable("r", shadowed, None, 300)
+    assert DiffusionBackend._hub_file_is_loadable("r", "other.safetensors", None, 300)
+
+
 def test_download_plan_restages_a_native_asset_that_changed_size(monkeypatch):
     # A same-named republish is what the cache probe cannot see from the ref alone. The plan
     # already knows the declared size, so pass it: otherwise the stale copy reads as complete and

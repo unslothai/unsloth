@@ -387,6 +387,8 @@ jobs:
             logs/playwright_extra
             logs/playwright_fontscale
             logs/playwright_image_footprint
+            logs/playwright_image_cancel_retry
+            logs/playwright_image_cancel_retry_cold
             logs/playwright_modelcfg
             logs/playwright_ime
             logs/studio-permissions-*.log

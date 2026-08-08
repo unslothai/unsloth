@@ -1135,7 +1135,9 @@ def test_every_diffusion_planner_filters_the_cache_before_staging():
         src = (root / name).read_text(encoding = "utf-8")
         plan = re.search(r"def download_plan\(.*?\n    (?=@|def )", src, re.S)
         assert plan, f"{name}: download_plan not found"
-        assert "_hub_file_is_cached" in plan.group(
+        # Either probe: `_hub_file_is_loadable` is the stricter one, adding the stale-live-copy
+        # check on top, and a planner may reasonably use it instead.
+        assert "_hub_file_is_cached" in plan.group(0) or "_hub_file_is_loadable" in plan.group(
             0
         ), f"{name}: download_plan stages files without checking the cache"
 
@@ -1348,6 +1350,34 @@ def test_every_pick_route_invalidates_the_staged_intent():
         assert (
             pick.index("beginPick();") < first_branch
         ), f"{rel}: the invalidation runs after a branch that can already have returned"
+
+
+def test_a_rejected_pick_hands_the_resident_state_back():
+    """`beginPick` retires the staged pick before the new row is validated, so a pick that is then
+    REJECTED (a bare repo with no quant, a non-unsloth pipeline) loads nothing and has nothing left
+    to restore it: the selector would show the abandoned pick's quant and recipe indefinitely.
+
+    Every rejecting early return therefore hands the carried rollback back."""
+    for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
+        src = _read(rel)
+        helper = re.search(r"const abandonPick = useCallback\(\(\) => \{(.*?)\}, \[", src, re.S)
+        assert helper, f"{rel}: no rejected-pick restore helper"
+        body = helper.group(1)
+        assert "revertPick(quantRevert.current)" in body, f"{rel}: the label is not handed back"
+        assert "quantRevert.current = null" in body, f"{rel}: the entry is never consumed"
+
+        select = re.search(
+            r"const handleModelSelect = useCallback\(\n(.*?)\n    \[busy", src, re.S
+        )
+        assert select, f"{rel}: handleModelSelect not found"
+        pick = select.group(1)
+        # Each toast.error that ends the pick must restore before returning.
+        rejects = re.findall(r"toast\.error\([^;]*\);\n(\s*)([^\n]*)\n", pick)
+        assert rejects, f"{rel}: no rejecting early return found; this guard has gone stale"
+        for _indent, following in rejects:
+            assert "abandonPick();" in following, (
+                f"{rel}: a rejected pick returns without restoring the state it superseded"
+            )
 
 
 def test_a_new_pick_drops_the_previous_staged_intent():

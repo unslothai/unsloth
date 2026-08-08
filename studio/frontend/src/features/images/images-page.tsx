@@ -2049,6 +2049,16 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // its pick, and the direct-local branches call handleLoad rather than loadOrStage, so clearing
   // only inside loadOrStage left the old job's onReady free to load the abandoned model over the
   // one just chosen. Bumping the sequence here also invalidates any plan still in flight.
+  // A pick that is rejected after beginPick() has already retired the staged pick it replaced, so
+  // nothing will load and nothing else will restore the label. Hand the resident state back here or
+  // the selector keeps showing the abandoned pick's quant and recipe for good.
+  const abandonPick = useCallback(() => {
+    if (quantRevert.current) {
+      revertPick(quantRevert.current);
+      quantRevert.current = null;
+    }
+  }, [revertPick]);
+
   const beginPick = useCallback(() => {
     pickSeq.current += 1;
     pendingStagedLoad.current = null;
@@ -2117,6 +2127,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         if (!filename.toLowerCase().endsWith(".gguf")) {
           // A repo pick that reached here has no filename to load, and a quant label cannot be mapped back to one.
           toast.error("Pick a quantization for this model to load it");
+          abandonPick();
           return;
         }
         // A direct pick carries no curated variant label; surface the filename so the selector stops advertising the old quant.
@@ -2159,6 +2170,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // Otherwise treat it as a full diffusers repo. The backend gates loads to unsloth/* repos or on-device paths.
       if (meta.source !== "local" && !id.toLowerCase().startsWith("unsloth/")) {
         toast.error("Only unsloth or on-device image models can be loaded here");
+        abandonPick();
         return;
       }
       // Optimistically clear the quant label, revert it if the load never starts.
@@ -2175,7 +2187,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         }
       });
     },
-    [busy, handleLoad, loadOrStage, quant, steps, guidance, revertPick, beginPick],
+    [busy, handleLoad, loadOrStage, quant, steps, guidance, revertPick, beginPick, abandonPick],
   );
 
   // Deploy a freshly-trained adapter from the Train tab: switch to Create, load the base, and queue the adapter for the LoRA discovery effect.

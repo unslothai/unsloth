@@ -1846,6 +1846,26 @@ class DiffusionBackend:
         }
 
     @staticmethod
+    def _hub_file_is_loadable(
+        repo_id: str,
+        filename: str,
+        revision: Optional[str] = None,
+        expected_size: Optional[int] = None,
+    ) -> bool:
+        """Whether the LOAD will actually resolve a good copy, which is stricter than being cached
+        somewhere. ``reuse_other_cache_root`` only switches roots when the live lookup finds
+        nothing, so a stale live copy under the right name shadows a good one in the other root:
+        the load reads the stale file, or refetches it inline, after a plan that saw the good copy
+        and staged nothing. Presence in the live root is asked separately from validity, because
+        presence alone is what that switch tests."""
+        live = hub_cache_dir()
+        if DiffusionBackend._hub_file_is_cached(repo_id, filename, revision, expected_size, roots = (live,)):
+            return True
+        if not DiffusionBackend._hub_file_is_cached(repo_id, filename, revision, expected_size, roots = (None,)):
+            return False
+        return not DiffusionBackend._hub_file_is_cached(repo_id, filename, revision, None, roots = (live,))
+
+    @staticmethod
     def _hub_file_is_cached(
         repo_id: str,
         filename: str,

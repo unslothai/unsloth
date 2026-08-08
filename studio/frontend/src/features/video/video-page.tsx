@@ -1348,6 +1348,16 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // its pick, and the direct-local branches call handleLoad rather than loadOrStage, so clearing
   // only inside loadOrStage left the old job's onReady free to load the abandoned model over the
   // one just chosen. Bumping the sequence here also invalidates any plan still in flight.
+  // A pick that is rejected after beginPick() has already retired the staged pick it replaced, so
+  // nothing will load and nothing else will restore the label. Hand the resident state back here or
+  // the selector keeps showing the abandoned pick's quant and recipe for good.
+  const abandonPick = useCallback(() => {
+    if (quantRevert.current) {
+      revertPick(quantRevert.current);
+      quantRevert.current = null;
+    }
+  }, [revertPick]);
+
   const beginPick = useCallback(() => {
     pickSeq.current += 1;
     pendingStagedLoad.current = null;
@@ -1417,6 +1427,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         if (!filename.toLowerCase().endsWith(".gguf")) {
           // No filename to load, and a quant label can't be mapped back to one.
           toast.error("Pick a quantization for this model to load it");
+          abandonPick();
           return;
         }
         const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
@@ -1456,6 +1467,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       // Otherwise treat it as a full diffusers repo. The backend gates loads to unsloth/* repos, the family bases, or on-device paths.
       if (meta.source !== "local" && !id.toLowerCase().startsWith("unsloth/")) {
         toast.error("Only unsloth or on-device video models can be loaded here");
+        abandonPick();
         return;
       }
       // Its own rollback, like every other branch: leaving the previous pick's entry live lets an
@@ -1473,7 +1485,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         }
       });
     },
-    [busy, handleLoad, loadOrStage, quant, steps, guidance, revertPick, beginPick],
+    [busy, handleLoad, loadOrStage, quant, steps, guidance, revertPick, beginPick, abandonPick],
   );
 
   const handleUnload = useCallback(async () => {

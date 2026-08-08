@@ -740,10 +740,12 @@ class SdCppDiffusionBackend:
             # fails offline. required_bytes keeps the UNFILTERED sum -- it is the disk footprint.
             # Sized, so a republished asset under the same name is a miss rather than a silent
             # inline fetch during the load. Without it the probe trusts the local ref alone.
+            # Loadable, not merely cached: a stale live-root copy shadows a good one in the other
+            # root, because the fetch only switches roots when the live lookup finds nothing.
             missing = [
                 n
                 for n in names
-                if not DiffusionBackend._hub_file_is_cached(repo, n, None, sizes.get((repo, n)))
+                if not DiffusionBackend._hub_file_is_loadable(repo, n, None, sizes.get((repo, n)))
             ]
             if not missing:
                 continue
