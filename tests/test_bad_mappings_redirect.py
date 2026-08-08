@@ -52,7 +52,6 @@ def test_bad_mappings_redirect_every_listed_name():
         assert get_model_name(name, load_in_4bit = True) == expected, name
 
 
-
 def test_bad_mapping_redirects_keep_canonical_repo_case():
     get_model_name, _ = _load_get_model_name()
     expected = {
