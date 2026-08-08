@@ -982,7 +982,7 @@ _studio_owned_adoptable() {
 # we cannot search every probe reports absent, so our own install reads as someone else's.
 _studio_dir_unsearchable() {
     [ -d "$1" ] || return 1
-    ( cd "$1" ) 2>/dev/null && return 1
+    ( cd -- "$1" ) 2>/dev/null && return 1
     return 0
 }
 
@@ -991,7 +991,7 @@ _studio_dir_unsearchable() {
 _studio_dir_unreadable() {
     [ -d "$1" ] || return 1
     _studio_dir_unsearchable "$1" && return 0
-    ls -A "$1" >/dev/null 2>&1 && return 1
+    ls -A -- "$1" >/dev/null 2>&1 && return 1
     return 0
 }
 
@@ -1023,8 +1023,22 @@ _path_access_denied() {
 # is the blocker. Returns without reporting when the path is simply absent.
 _report_denied_ancestor() {
     _rda_probe="$1"
+    _rda_hops=0
     while [ ! -e "$_rda_probe" ] && [ "$_rda_probe" != "/" ] && [ "$_rda_probe" != "." ]; do
-        _rda_probe="$(dirname "$_rda_probe")"
+        # A symlink we cannot follow is the deepest component we can name, so keep
+        # walking through its target: that is where the denied ancestor lives.
+        # The hop cap keeps a symlink cycle from looping forever.
+        if [ -L "$_rda_probe" ] && [ "$_rda_hops" -lt 40 ]; then
+            _rda_hops=$((_rda_hops + 1))
+            _rda_target="$(readlink -- "$_rda_probe")" || break
+            case "$_rda_target" in
+                /*) _rda_probe="$_rda_target" ;;
+                *) _rda_probe="$(dirname -- "$_rda_probe")/$_rda_target" ;;
+            esac
+            continue
+        fi
+        # -- so a path starting with "-" is an operand, not a dirname option.
+        _rda_probe="$(dirname -- "$_rda_probe")"
     done
     if _studio_dir_unsearchable "$_rda_probe"; then
         _path_access_denied "$_rda_probe" "$2" owner-unverified

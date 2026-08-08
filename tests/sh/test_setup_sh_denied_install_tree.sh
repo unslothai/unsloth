@@ -29,7 +29,7 @@ assert_contains "defines the unsearchable-directory probe" \
 # cd needs +x, exactly what the marker probes need; ls needs +r, which is neither
 # sufficient nor necessary. Pin the cd form.
 assert_contains "the probe tests search (cd), not read (ls)" \
-    "$SETUP_SH" '( cd "$1" ) 2>/dev/null && return 1'
+    "$SETUP_SH" '( cd -- "$1" ) 2>/dev/null && return 1'
 assert_contains "defines the denial reporter" \
     "$SETUP_SH" "_path_access_denied() {"
 assert_contains "the ownership guard checks readability before blaming ownership" \
@@ -280,6 +280,62 @@ case "$out" in
     *NOT_REPORTED*) ok "a genuinely missing path is not reported as denied" ;;
     *) bad "a genuinely missing path is not reported as denied (got: $out)" ;;
 esac
+
+# Run the reporter over $2 from directory $1, with errexit on like the real script.
+rda() {
+    ( cd "$1" && bash -c 'set -e
+        . "$1"
+        C_ERR= C_WARN= C_DIM= C_OK= C_RST=
+        step() { printf "STEP|%s|%s\n" "$1" "$2"; }; substep() { :; }
+        setup_fail() { printf "FAIL|%s\n" "$2"; exit "$1"; }
+        _report_denied_ancestor "$2" "UNSLOTH_LOCAL_LLAMA_CPP_DIR"
+        echo "NOT_REPORTED"' _ "$WORK/helpers.sh" "$2" 2>&1 )
+}
+
+# A symlink pointing under a denied ancestor is unstattable the whole way down,
+# so a lexical walk alone would call the real build missing.
+SYM="$WORK/sym"; mkdir -p "$SYM/shared/denied/build/llama.cpp" "$SYM/tmp"
+ln -s "$SYM/shared/denied/build" "$SYM/tmp/local"
+chmod 000 "$SYM/shared/denied"
+if [ -d "$SYM/tmp/local/llama.cpp" ]; then
+    echo "  SKIP: this host cannot make an ancestor unsearchable (running as root?)"
+else
+    ok "the symlink target is really unreachable (negative control)"
+    out=$(rda "$WORK" "$SYM/tmp/local/llama.cpp")
+    case "$out" in
+        *"$SYM/shared/denied"*) ok "a symlinked build names the denied target ancestor" ;;
+        *) bad "a symlinked build names the denied target ancestor (got: $out)" ;;
+    esac
+fi
+chmod 755 "$SYM/shared/denied"
+
+# A dangling symlink is genuinely missing, so it must not be reported as denied.
+ln -s "$SYM/gone" "$SYM/tmp/dangle"
+case "$(rda "$WORK" "$SYM/tmp/dangle/llama.cpp")" in
+    *NOT_REPORTED*) ok "a dangling symlink is not reported as denied" ;;
+    *) bad "a dangling symlink is not reported as denied" ;;
+esac
+
+# A symlink cycle must terminate on the hop cap instead of looping forever.
+ln -s "$SYM/tmp/a" "$SYM/tmp/b"; ln -s "$SYM/tmp/b" "$SYM/tmp/a"
+case "$(rda "$WORK" "$SYM/tmp/a/llama.cpp")" in
+    *NOT_REPORTED*) ok "a symlink cycle terminates without reporting" ;;
+    *) bad "a symlink cycle terminates without reporting" ;;
+esac
+
+# A relative path starting with "-" must reach the reporter, not be eaten by
+# dirname as an option and abort the whole run on errexit.
+DASH="$WORK/dash"; mkdir -p "$DASH"
+( cd "$DASH" && mkdir -p -- "-denied/llama.cpp" && chmod 000 -- "-denied" )
+if [ -d "$DASH/-denied/llama.cpp" ]; then
+    echo "  SKIP: this host cannot make an ancestor unsearchable (running as root?)"
+else
+    case "$(rda "$DASH" "-denied/llama.cpp")" in
+        *"cannot be read: permission denied"*) ok "a leading-dash path reports instead of aborting" ;;
+        *) bad "a leading-dash path reports instead of aborting" ;;
+    esac
+fi
+chmod 755 -- "$DASH/-denied"
 
 echo ""
 echo "=== Results ==="
