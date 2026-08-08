@@ -76,6 +76,10 @@ import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { resolveDiffusionGgufFilename } from "@/lib/diffusion-gguf-filename";
 import { createPickGuard, runGgufRepoPick } from "@/lib/diffusion-gguf-pick";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
+import {
+  routedGgufFilename,
+  routedGgufLabel,
+} from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
 
 import {
@@ -1994,24 +1998,28 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       handledRouteModel.current = null;
       return;
     }
-    const routedGgufQuant = routeSearch.ggufQuant?.trim() || null;
-    const key = `${wanted}|${routeSearch.quant ?? ""}|${routedGgufQuant ?? ""}`;
+    // `quant` is a filename, used verbatim; a label there (a hand-built link, an older producer) is resolved instead.
+    // The two fields, not the object: `routeSearch` is rebuilt every render, and naming it here would put it in the deps.
+    const routed = { quant: routeSearch.quant, ggufQuant: routeSearch.ggufQuant };
+    const routedFilename = routedGgufFilename(routed);
+    const routedLabel = routedGgufLabel(routed);
+    const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
     void navigateSelf({ to: "/images", search: {}, replace: true });
     // A label means a GGUF repo whatever the catalog says, and a label is not loadable, so resolve it rather than routing it
     // through the classifier's filename slot.
-    if (routedGgufQuant) {
+    if (routedLabel) {
       // Deferred, not inline: resolution is a request, and the load it fires owns the state a direct pick sets.
       void Promise.resolve().then(() =>
-        loadGgufRepoPick(wanted, routedGgufQuant, false),
+        loadGgufRepoPick(wanted, routedLabel, false),
       );
       return;
     }
     // Same catalog lookup a direct pick makes: the chat picker can only forward a GGUF filename.
     const pick = diffusionRoutePick(
       wanted,
-      routeSearch.quant,
+      routedFilename ?? undefined,
       loadSpecFor(wanted, IMAGE_CATALOG),
     );
     // A curated GGUF artifact resolves to kind "gguf" with no filename: the catalog lists the repo, not its files.

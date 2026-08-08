@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isGgufName } from "./gguf-filename-pick.ts";
+
 /** What the chat picker puts in the URL when a diffusion pick routes to /images or /video. */
 export interface DiffusionRouteSearch {
   model: string;
@@ -24,4 +26,22 @@ export function diffusionRouteSearch(
   if (filename) return { model, quant: filename };
   const label = trimmed(meta.ggufVariant);
   return label ? { model, ggufQuant: label } : { model };
+}
+
+/** The exact .gguf a routed pick names, if it names one. */
+export function routedGgufFilename(
+  search: Pick<DiffusionRouteSearch, "quant">,
+): string | null {
+  const quant = trimmed(search.quant);
+  return quant && isGgufName(quant) ? quant : null;
+}
+
+/** The quant label a routed pick carries. `quant` is used verbatim as a filename, so a value there that is not one is a
+ *  label (a hand-built link, or a producer that predates the split) and joins ggufQuant to be resolved rather than posted. */
+export function routedGgufLabel(
+  search: Pick<DiffusionRouteSearch, "quant" | "ggufQuant">,
+): string | null {
+  const quant = trimmed(search.quant);
+  if (quant && isGgufName(quant)) return null;
+  return trimmed(search.ggufQuant) ?? quant;
 }

@@ -7,6 +7,8 @@ import test from "node:test";
 import {
   type DiffusionRouteSearch,
   diffusionRouteSearch,
+  routedGgufFilename,
+  routedGgufLabel,
 } from "../src/lib/diffusion-route-search.ts";
 
 const REPO = "unsloth/Z-Image-Turbo-GGUF";
@@ -64,4 +66,40 @@ test("blank metadata is dropped rather than routed", () => {
     diffusionRouteSearch(REPO, { ggufFilename: null, ggufVariant: " Q8_0 " }),
     { model: REPO, ggufQuant: "Q8_0" },
   );
+});
+
+test("an arrival naming a real file loads it, label or no label", () => {
+  const search = { model: "m", quant: "a-Q8_0.gguf", ggufQuant: "Q4_K_S" };
+  assert.equal(routedGgufFilename(search), "a-Q8_0.gguf");
+  assert.equal(
+    routedGgufLabel(search),
+    null,
+    "the exact filename wins and needs no listing",
+  );
+});
+
+test("a label left in the filename slot is resolved, not posted", () => {
+  // A hand-built link, or a producer that predates the split: posting "Q4_K_S" as a filename is a certain error.
+  assert.equal(routedGgufLabel({ quant: "Q4_K_S" }), "Q4_K_S");
+  assert.equal(routedGgufFilename({ quant: "Q4_K_S" }), null);
+});
+
+test("an arrival with only the label slot resolves it", () => {
+  assert.equal(routedGgufLabel({ ggufQuant: "Q6_K" }), "Q6_K");
+  assert.equal(
+    routedGgufFilename({}),
+    null,
+    "and nothing lands in the filename slot",
+  );
+});
+
+test("an arrival with neither leaves the old path alone", () => {
+  assert.equal(routedGgufLabel({}), null);
+  assert.equal(routedGgufFilename({}), null);
+  assert.equal(routedGgufLabel({ quant: "  ", ggufQuant: "" }), null);
+});
+
+test("case and whitespace do not change which slot a value belongs to", () => {
+  assert.equal(routedGgufFilename({ quant: " A-Q8_0.GGUF " }), "A-Q8_0.GGUF");
+  assert.equal(routedGgufLabel({ ggufQuant: " Q4_K_S " }), "Q4_K_S");
 });
