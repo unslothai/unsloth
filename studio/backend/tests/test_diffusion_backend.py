@@ -5558,6 +5558,46 @@ def test_download_plan_counts_the_hosted_prequant_in_the_required_footprint(monk
     assert plan["required_bytes"] == plan["total_bytes"] + 6 * GB
 
 
+def test_download_plan_omits_the_prequant_under_a_definite_offload_policy(monkeypatch):
+    # The fast path needs a plan with no offload, or a quant-sized replan that came back with
+    # none. Balanced and low_vram offload BY MODE, which no replan can clear, so the load keeps
+    # the GGUF and never fetches the hosted checkpoint. Counting it overstates the footprint by
+    # the whole denoiser even though an explicit quant was requested.
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/Z-Image-GGUF": [_FakeSibling("Z-Image-Turbo-Q4_K_M.gguf", 4 * GB)],
+            "Tongyi-MAI/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
+            "unsloth/Z-Image-Turbo-FP8": [_FakeSibling("Z-Image-Turbo-FP8.pt", 6 * GB)],
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo", lambda *a, **k: "Tongyi-MAI/Z-Image-Turbo"
+    )
+    _stub_hosted_prequant(monkeypatch, cached = True)
+
+    for kwargs in (
+        {"memory_mode": "balanced"},
+        {"memory_mode": "low_vram"},
+        {"cpu_offload": True},
+    ):
+        plan = DiffusionBackend().download_plan(
+            "unsloth/Z-Image-GGUF",
+            gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf",
+            transformer_quant = "fp8",
+            **kwargs,
+        )
+        assert plan["required_bytes"] == plan["total_bytes"], kwargs
+
+    # A resident-capable pick still pays for it, so the gate cannot just zero everything.
+    resident = DiffusionBackend().download_plan(
+        "unsloth/Z-Image-GGUF",
+        gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf",
+        transformer_quant = "fp8",
+    )
+    assert resident["required_bytes"] == resident["total_bytes"] + 6 * GB
+
+
 def test_download_plan_omits_the_prequant_for_an_auto_pick_at_speed_off(monkeypatch):
     # load_pipeline forces an AUTO quant to "off" under Speed="off", which normalizes to None and
     # skips the fast path, so nothing is fetched and the footprint must not claim it.

@@ -1484,6 +1484,15 @@ class DiffusionBackend:
             # A LoRA bake forces the DENSE path, so no prequant is fetched.
             if _has_active_lora(kwargs.get("loras")):
                 return 0
+            # A definite-offload policy keeps the GGUF: the fast path needs either a plan with no
+            # offload or a quant-sized replan that came back with none, and balanced/low_vram
+            # offload BY MODE, so no replan can clear it. Same gate _dense_quant_prefetch_needed
+            # applies, for the same reason.
+            mm = normalize_memory_mode(kwargs.get("memory_mode"))
+            if mm in (MEMORY_MODE_BALANCED, MEMORY_MODE_LOW_VRAM):
+                return 0
+            if mm is None and kwargs.get("cpu_offload"):
+                return 0
             target = self._resolve_device_target(fam)
             # An auto quant DECLINES an uncached hosted checkpoint and runs the GGUF as-is, so
             # those bytes never land. Only a cached one, or an explicit request, counts.
