@@ -440,9 +440,9 @@ def test_the_inconclusive_branch_can_actually_read_the_logging_flag():
     """
     from unsloth.models import _utils
 
-    assert "UNSLOTH_ENABLE_LOGGING" not in getattr(_utils, "__all__", ()), (
-        "if the flag is exported, this explicit import can go -- but not before"
-    )
-    assert hasattr(ad, "UNSLOTH_ENABLE_LOGGING"), (
-        "the inconclusive branch reads this name at import time"
-    )
+    assert "UNSLOTH_ENABLE_LOGGING" not in getattr(
+        _utils, "__all__", ()
+    ), "if the flag is exported, this explicit import can go -- but not before"
+    assert hasattr(
+        ad, "UNSLOTH_ENABLE_LOGGING"
+    ), "the inconclusive branch reads this name at import time"
