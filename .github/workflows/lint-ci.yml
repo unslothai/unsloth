@@ -158,6 +158,17 @@ jobs:
           python scripts/verify_import_hoist.py \
             --before "$MERGE_BASE" --after "$HEAD_SHA" "${CHANGED[@]}"
 
+      - name: No silent llama-server parallel-slot downgrades
+        # #7717 clamped --parallel to 1 whenever MTP resolved, costing
+        # batched API callers 4x throughput behind a single log line.
+        # The slot count is a user setting: launch fewer only for a real
+        # capability or VRAM limit, marked '# allow-slot-clamp: <reason>'.
+        # Self-test first so a regression in the rule fails before we
+        # trust it on the tree. Stdlib-only, sub-second. Hard gate.
+        run: |
+          python scripts/lint_no_parallel_clamp.py --self-test
+          python scripts/lint_no_parallel_clamp.py
+
       - name: No leftover debugger / pdb / breakpoint calls
         # Catches the "I'll just stick a breakpoint() here" mistake
         # before it ships. AST-based so commented-out debugger

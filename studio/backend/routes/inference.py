@@ -6115,24 +6115,16 @@ def _guard_chat_load_against_training(
     )
 
     # Size with the count that will actually launch, or a load that fits gets a
-    # 409: diffusion never receives --parallel, load_model clamps to 1 on an
-    # llama-server without --kv-unified, and it clamps MTP to 1 as well. An
-    # unclassified GGUF keeps the ask.
+    # 409: diffusion never receives --parallel, and load_model clamps to 1 on an
+    # llama-server without --kv-unified. An unclassified GGUF keeps the ask.
     if is_gguf and n_parallel > 1:
         if diffusion_kind is True:
-            n_parallel = 1
-        # MTP is deliberately NOT clamped here even though the launch clamps it to one
-        # slot. _estimate_gguf_required_gb counts the drafter file and the main KV, but
-        # not the draft KV, the duplicated target context MLA keeps, or the draft compute
-        # reserve, all of which load_model does budget. Sizing for one slot would drop
-        # the slot KV without replacing it with those, and a guard that under-sizes
-        # evicts the training run it exists to protect: the spare slots stand in for
-        # what is not modelled.
+            n_parallel = 1  # allow-slot-clamp: diffusion never receives --parallel
         else:
             try:
                 caps = LlamaCppBackend.probe_server_capabilities()
                 if caps.get("found") and not caps.get("supports_kv_unified"):
-                    n_parallel = 1
+                    n_parallel = 1  # allow-slot-clamp: mirrors the load_model clamp
             except Exception as e:
                 logger.warning("Could not probe llama-server slots for chat-load guard: %s", e)
 
