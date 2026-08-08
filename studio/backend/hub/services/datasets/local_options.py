@@ -37,11 +37,16 @@ _MAX_OPTION_LENGTH = 128
 # Only names are read during the scan, so this can sit well above any real snapshot. Past it
 # the scan is truncated and cannot be compared with the loader, so nothing is offered.
 _MAX_SNAPSHOT_DATA_FILES = 200_000
-_COMPRESSION_EXTENSIONS = ("", ".gz", ".bz2", ".xz", ".zst", ".zip")
+# Only what fsspec can actually decompress in a Studio install. zstd and lz4 are named by
+# datasets but need optional codecs we do not ship, so they raise "Compression type not
+# supported" and offering them would put a dead split in the picker.
+_COMPRESSION_EXTENSIONS = ("", ".gz", ".gzip", ".bz2", ".xz", ".lzma", ".zip")
+# Ordered, because datasets resolves a split's keyword patterns in this order and samples
+# the first files it gets back.
 _SPLIT_KEYWORDS = {
-    "train": frozenset({"train", "training"}),
-    "validation": frozenset({"validation", "valid", "dev", "val"}),
-    "test": frozenset({"test", "testing", "eval", "evaluation"}),
+    "train": ("train", "training"),
+    "validation": ("validation", "valid", "dev", "val"),
+    "test": ("test", "testing", "eval", "evaluation"),
 }
 _SHARDED_DATA_RE = re.compile(r"^data/(?P<split>[^/]+)-[0-9]{5}-of-[0-9]{5}[^/]*\.[^/]+$")
 # datasets drops these by basename (FILES_TO_IGNORE) before it infers anything, so a
@@ -151,31 +156,42 @@ def _split_names(value: Any) -> list[str]:
     ]
 
 
-def _declared_configs(payload: Any) -> Any:
-    """Declared config -> data_dir, or _UNPARSABLE_METADATA when datasets would refuse the card.
+def _safe_data_dir(value: Any) -> Optional[str]:
+    """A data_dir we can scan, or None. An absolute one resolves off the snapshot entirely."""
+    if not isinstance(value, str):
+        return None
+    if value.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", value):
+        return None
+    if "\\" in value or ".." in value:
+        return None
+    return value
 
-    datasets keys its metadata configs by name, so a repeated name is last-wins, and it infers
-    each config under its own data_dir.
+
+def _declared_configs(payload: Any) -> Any:
+    """Declared config -> data_dir for configs datasets would infer, or _UNPARSABLE_METADATA.
+
+    datasets keys its metadata configs by name, so a repeated name is last-wins, it infers
+    each config under its own data_dir, and it treats an empty configs list as no configs.
+    Only a config with no data_files field at all is inferred; an empty one resolves to
+    nothing and raises.
     """
-    if payload is None:
+    if payload is None or payload == []:
         return {}
     if not isinstance(payload, list):
         return _UNPARSABLE_METADATA
-    declared: dict[str, str] = {}
+    declared: dict[str, Optional[str]] = {}
     for item in payload[:_MAX_OPTIONS]:
         if not isinstance(item, dict) or not isinstance(item.get("config_name"), str):
             return _UNPARSABLE_METADATA
         name = _valid_option(item.get("config_name"), _CONFIG_RE)
         if name is None:
             continue
-        data_dir = item.get("data_dir")
-        if data_dir is None:
-            declared[name] = ""
-        elif isinstance(data_dir, str) and "\\" not in data_dir and ".." not in data_dir:
-            declared[name] = data_dir
+        if "data_files" in item:
+            # Declared, so _add_config_options owns it; an empty one simply finds nothing.
+            declared[name] = None
         else:
-            # Rewriting the scope would silently widen it, so drop the config instead.
-            declared.pop(name, None)
+            # Rewriting an unusable data_dir would silently change the config's scope.
+            declared[name] = _safe_data_dir(item.get("data_dir", ""))
     return declared
 
 
@@ -337,7 +353,8 @@ def _read_card_metadata(path: Path) -> Optional[dict[str, Any]]:
             return _UNPARSABLE_METADATA
     except (ImportError, OSError, UnicodeError, ValueError, StopIteration):
         return None
-    return payload if isinstance(payload, dict) else None
+    # DatasetCard.load insists the metadata block is a mapping and raises when it is not.
+    return payload if isinstance(payload, dict) else _UNPARSABLE_METADATA
 
 
 def _snapshot_card_data(snapshot: Path) -> Any:
@@ -385,13 +402,18 @@ def _extension_module(extension: str) -> Optional[str]:
     return module if module in _CASE_INSENSITIVE_MODULES else None
 
 
+def _file_modules(filename: str) -> set:
+    """Every builder this name maps to. datasets weighs all suffixes, not just the first."""
+    return {
+        module
+        for suffix in filename.split(".")[1:]
+        if (module := _extension_module("." + suffix)) is not None
+    }
+
+
 def _file_module(filename: str) -> Optional[str]:
-    """The builder datasets would reach for, or None when the file is not data to it."""
-    for suffix in filename.split(".")[1:]:
-        module = _extension_module("." + suffix)
-        if module is not None:
-            return module
-    return None
+    """Whether datasets sees data here at all; _split_module decides which builder wins."""
+    return next(iter(_file_modules(filename)), None)
 
 
 def _snapshot_data_files(snapshot: Path) -> Optional[list[_DataFile]]:
@@ -429,15 +451,20 @@ def _snapshot_data_files(snapshot: Path) -> Optional[list[_DataFile]]:
     return files
 
 
-def _keyword_splits(parts: Iterable[str]) -> dict[str, int]:
-    """Splits named by these path parts, and how many of the split's keyword patterns hit.
+def _keyword_splits(parts: Iterable[str]) -> dict[str, tuple[int, int]]:
+    """Splits named by these path parts, each with (first keyword matched, how many matched).
 
-    datasets resolves every keyword pattern separately and concatenates, so a name carrying
-    two synonyms of one split contributes that file twice to its extension count.
+    datasets resolves every keyword pattern separately and concatenates, so the keyword that
+    hits first decides where the file lands in the split, and a name carrying two synonyms of
+    one split contributes that file twice to its extension count.
     """
     tokens = {token for part in parts for token in re.split(r"[-._ 0-9]+", part) if token}
-    matched = {split: len(tokens & keywords) for split, keywords in _SPLIT_KEYWORDS.items()}
-    return {split: hits for split, hits in matched.items() if hits}
+    matched = {}
+    for split, keywords in _SPLIT_KEYWORDS.items():
+        hits = [index for index, keyword in enumerate(keywords) if keyword in tokens]
+        if hits:
+            matched[split] = (hits[0], len(hits))
+    return matched
 
 
 def _sharded_split_files(files: Iterable[_DataFile]) -> Optional[dict[str, list[_DataFile]]]:
@@ -451,23 +478,26 @@ def _sharded_split_files(files: Iterable[_DataFile]) -> Optional[dict[str, list[
         if split is None:
             return None
         grouped.setdefault(split, []).append(entry)
-    return grouped
+    return {split: sorted(entries) for split, entries in grouped.items()}
 
 
 def _keyword_split_files(
     files: Iterable[_DataFile], naming: Callable[[PurePosixPath], Iterable[str]]
 ) -> dict[str, list[_DataFile]]:
-    grouped: dict[str, list[_DataFile]] = {}
+    ordered: dict[str, list[tuple[int, PurePosixPath, _DataFile]]] = {}
     for entry in files:
-        for split, hits in _keyword_splits(naming(entry[0])).items():
-            grouped.setdefault(split, []).extend([entry] * hits)
-    return grouped
+        for split, (first, hits) in _keyword_splits(naming(entry[0])).items():
+            ordered.setdefault(split, []).extend([(first, entry[0], entry)] * hits)
+    return {
+        split: [entry for _first, _path, entry in sorted(rows, key = lambda row: row[:2])]
+        for split, rows in ordered.items()
+    }
 
 
 def _split_module(files: Iterable[_DataFile]) -> Optional[str]:
     """The one module datasets would build this split with, counting and ranking as it does."""
     counts: dict[tuple[bool, str], int] = {}
-    for path, module in sorted(files)[:_MAX_MODULE_INFERENCE_FILES]:
+    for path, module in list(files)[:_MAX_MODULE_INFERENCE_FILES]:
         if module is None:
             continue
         is_metadata = path.name in _METADATA_FILENAMES
@@ -496,8 +526,8 @@ def _offerable_split(entries: Iterable[_DataFile], snapshot: Path, root: str, mo
     """A split is offerable when it holds trainable data and every file the builder would
     read stays inside the cache. One safe file is not enough: datasets loads them all."""
     trainable = False
-    for path, file_module in entries:
-        if file_module != module:
+    for path, _file_module in entries:
+        if module not in _file_modules(path.name):
             continue
         if resolved_dataset_snapshot_file(snapshot, root + path.as_posix()) is None:
             return False
@@ -505,8 +535,40 @@ def _offerable_split(entries: Iterable[_DataFile], snapshot: Path, root: str, mo
     return trainable
 
 
+def _declared_module(payload: Any) -> Optional[str]:
+    """The builder datasets picks for the whole dataset from the first config's data_files.
+
+    It infers one module before it builds any config, so a config it has to infer patterns
+    for is still built with the module the declared ones produced.
+    """
+    if not isinstance(payload, list):
+        return None
+    for item in payload:
+        if not isinstance(item, dict) or "data_files" not in item:
+            continue
+        entries = item["data_files"]
+        if isinstance(entries, str):
+            paths = [entries]
+        elif isinstance(entries, dict):
+            paths = [value for value in entries.values() if isinstance(value, str)]
+        elif isinstance(entries, list):
+            paths = [entry.get("path") if isinstance(entry, dict) else entry for entry in entries]
+        else:
+            continue
+        named = [
+            (candidate, _file_module(candidate.name))
+            for path in paths
+            if isinstance(path, str) and (candidate := PurePosixPath(path))
+        ]
+        if named:
+            return _split_module(named)
+    return None
+
+
 def _inferred_snapshot_options(
-    snapshot: Path, configs: Iterable[tuple[str, str]] = (("default", ""),)
+    snapshot: Path,
+    configs: Iterable[tuple[str, str]] = (("default", ""),),
+    required_module: Optional[str] = None,
 ) -> set[tuple[str, str]]:
     """Mirror datasets' default local-file split inference without importing it.
 
@@ -516,9 +578,13 @@ def _inferred_snapshot_options(
     than read out of the archive, and external symlinks stay rejected for cache safety.
     """
     options: set[tuple[str, str]] = set()
+    scans: dict[str, Optional[list]] = {}
     for config, data_dir in configs:
         root = data_dir.strip("/")
-        files = _snapshot_data_files(snapshot / root if root else snapshot)
+        if root not in scans:
+            # Cards may name thousands of configs; one scan per directory serves them all.
+            scans[root] = _snapshot_data_files(snapshot / root if root else snapshot)
+        files = scans[root]
         if not files:
             continue
 
@@ -538,6 +604,10 @@ def _inferred_snapshot_options(
         if len(modules) != 1 or modules & {None, _INDETERMINATE_MODULE}:
             continue
         module = modules.pop()
+        if required_module is not None and module != required_module:
+            # One module is chosen for the whole dataset, so this config would be built with
+            # a builder that cannot read its files.
+            continue
         prefix = root + "/" if root else ""
         options.update(
             (config, split)
@@ -566,6 +636,9 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
         if metadata is None:
             continue
         payload = _safe_json_file(metadata, snapshot, allow_snapshot_symlink = True)
+        if payload is None:
+            # datasets opens this file whenever it exists and lets the decode error out.
+            return set()
         if filename == "dataset_infos.json":
             _add_dataset_info_options(options, payload)
         else:
@@ -575,11 +648,16 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     pending = [
         (config, data_dir)
         for config, data_dir in declared_configs.items()
-        if not any(existing == config for existing, _split in options)
+        if data_dir is not None and not any(existing == config for existing, _split in options)
     ]
-    if declared_configs and pending:
-        options.update(_inferred_snapshot_options(snapshot, pending))
-    elif not options and not isinstance(card_data.get("configs"), list):
+    if declared_configs:
+        if pending:
+            options.update(
+                _inferred_snapshot_options(
+                    snapshot, pending, _declared_module(card_data.get("configs"))
+                )
+            )
+    elif not options:
         options.update(_inferred_snapshot_options(snapshot))
     return options
 

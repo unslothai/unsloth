@@ -223,6 +223,138 @@ def test_snapshot_options_keep_a_declared_config_name_when_inferring(tmp_path):
     assert local_options._snapshot_options(snapshot) == {("foo", "train")}
 
 
+def _card(snapshot, body: str) -> None:
+    snapshot.mkdir(parents = True, exist_ok = True)
+    (snapshot / "README.md").write_text(f"---\n{body}---\n", encoding = "utf-8")
+
+
+def test_snapshot_options_share_one_module_across_configs(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    (snapshot / "a").mkdir(parents = True)
+    (snapshot / "b").mkdir(parents = True)
+    _card(
+        snapshot,
+        "configs:\n- config_name: a\n  data_files: a/train.jsonl\n"
+        "- config_name: b\n  data_dir: b\n",
+    )
+    (snapshot / "a" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "b" / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
+
+    # datasets settles on one module before it builds any config, so b is read as json.
+    assert local_options._snapshot_options(snapshot) == {("a", "train")}
+
+
+def test_snapshot_options_do_not_infer_for_an_explicitly_empty_data_files(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: foo\n  data_files: []\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # Declared and empty resolves to nothing, which is not the same as never declared.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_treat_an_empty_configs_list_as_undeclared(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs: []\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_drop_a_config_whose_data_dir_is_absolute(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    (snapshot / "data").mkdir(parents = True)
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: /data\n")
+    (snapshot / "data" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # datasets joins that onto the base path, where the absolute part wins and leaves the
+    # snapshot entirely, so scanning snapshot/data would advertise something else's split.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_offer_a_compound_suffix_file(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "records.txt.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # .jsonl beats .txt in the tie-break, and membership has to agree with that.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+@pytest.mark.parametrize(
+    ("suffix", "expected"),
+    [
+        (".gz", {("default", "train")}),
+        (".gzip", {("default", "train")}),
+        (".bz2", {("default", "train")}),
+        (".xz", {("default", "train")}),
+        (".lzma", {("default", "train")}),
+        # datasets names these but the codecs are not shipped, so they raise on read.
+        (".zst", set()),
+        (".zstd", set()),
+        (".lz4", set()),
+    ],
+)
+def test_snapshot_options_accept_only_decompressible_suffixes(tmp_path, suffix, expected):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / f"records.jsonl{suffix}").write_bytes(b"compressed")
+
+    assert local_options._snapshot_options(snapshot) == expected
+
+
+def test_snapshot_options_reject_non_mapping_card_metadata(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "README.md").write_text("---\nmetadata\n---\n", encoding = "utf-8")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # DatasetCard.load requires a mapping and raises on anything else.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_an_unreadable_dataset_infos(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "dataset_infos.json").write_text("{oops", encoding = "utf-8")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # datasets opens the file whenever it exists and lets the decode error escape.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_scan_each_data_dir_once(tmp_path, monkeypatch):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    _card(snapshot, "configs:\n" + "".join(f"- config_name: c{index}\n" for index in range(50)))
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    scans = []
+    original = local_options._snapshot_data_files
+    monkeypatch.setattr(
+        local_options,
+        "_snapshot_data_files",
+        lambda path: (scans.append(path), original(path))[1],
+    )
+
+    assert len(local_options._snapshot_options(snapshot)) == 50
+    # A card may name thousands of configs; they all share the one root here.
+    assert len(scans) == 1
+
+
+def test_keyword_split_files_follow_the_loaders_keyword_order(tmp_path):
+    files = [
+        (local_options.PurePosixPath("dev/a.csv"), "csv"),
+        (local_options.PurePosixPath("validation/a.jsonl"), "json"),
+    ]
+
+    # validation resolves before dev, so its files come first in the sampled window.
+    grouped = local_options._keyword_split_files(files, lambda path: path.parent.parts)
+    assert [str(path) for path, _module in grouped["validation"]] == [
+        "validation/a.jsonl",
+        "dev/a.csv",
+    ]
+
+
 def test_snapshot_options_reject_a_card_datasets_cannot_build_configs_from(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
     snapshot.mkdir(parents = True)
