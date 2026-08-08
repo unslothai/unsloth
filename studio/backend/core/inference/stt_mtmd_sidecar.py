@@ -316,8 +316,13 @@ class _MtmdDownloadState:
                 "cancelled": self._cancelled,
                 "bytes_total": self._total_bytes if downloading else None,
             }
-            captured = (model_id, self._hub_cache, self._selected_files,
-                        self._revision, self._total_bytes)
+            captured = (
+                model_id,
+                self._hub_cache,
+                self._selected_files,
+                self._revision,
+                self._total_bytes,
+            )
         # Outside the lock: _downloaded_bytes() stats the cache, and a cancel must not queue.
         snapshot["bytes_done"] = self._downloaded_bytes(*captured) if downloading else None
         return snapshot

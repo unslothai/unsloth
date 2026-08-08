@@ -653,8 +653,13 @@ class _SnapshotDownloadState:
                 "cancelled": self._cancelled,
                 "bytes_total": self._total_bytes if show_progress else None,
             }
-            captured = (self._repo, self._revision, self._hub_cache,
-                        self._selected_files, self._total_bytes)
+            captured = (
+                self._repo,
+                self._revision,
+                self._hub_cache,
+                self._selected_files,
+                self._total_bytes,
+            )
         # Outside the lock: _downloaded_bytes() stats the cache, and a cancel must not queue.
         snapshot["bytes_done"] = self._downloaded_bytes(*captured) if show_progress else None
         return snapshot

@@ -416,8 +416,13 @@ class _GgmlDownloadState:
                 "cancelled": self._cancelled,
                 "bytes_total": self._total_bytes if downloading else None,
             }
-            captured = (self._model_id, self._etag, self._total_bytes,
-                        self._hub_cache, self._revision)
+            captured = (
+                self._model_id,
+                self._etag,
+                self._total_bytes,
+                self._hub_cache,
+                self._revision,
+            )
         # Outside the lock: _downloaded_bytes() stats the cache, and a cancel must not queue.
         snapshot["bytes_done"] = self._downloaded_bytes(*captured) if downloading else None
         return snapshot

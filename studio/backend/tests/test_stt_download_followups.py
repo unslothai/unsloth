@@ -213,7 +213,11 @@ def test_status_never_stats_the_cache_under_the_download_lock(state_factory, mod
             lambda s: setattr(s, "_repo", "org/next") or setattr(s, "_selected_files", ()),
         ),
         (ggml_mod._GgmlDownloadState, "tiny", lambda s: setattr(s, "_etag", None)),
-        (mtmd_mod._MtmdDownloadState, "qwen3-asr-0.6b", lambda s: setattr(s, "_selected_files", ())),
+        (
+            mtmd_mod._MtmdDownloadState,
+            "qwen3-asr-0.6b",
+            lambda s: setattr(s, "_selected_files", ()),
+        ),
     ],
 )
 def test_progress_cannot_mix_a_new_runs_bytes_with_the_old_runs_total(
