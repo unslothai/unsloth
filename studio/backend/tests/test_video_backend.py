@@ -2078,6 +2078,52 @@ def test_download_plan_keeps_a_video_base_that_lives_wholly_in_the_other_root(mo
     assert plan["entries"] == [] and plan["required_bytes"] > 0
 
 
+def test_a_companion_only_entry_is_not_labelled_the_checkpoint(monkeypatch):
+    # The 2.3 checkpoint and its extras share one repo. With the GGUF already cached and the
+    # extras missing, the entry carries companion files only, so labelling it the model file
+    # misdescribes what the panel is downloading.
+    _plan_api(
+        monkeypatch,
+        {
+            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
+            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
+        },
+    )
+    _plan_cache(monkeypatch, lambda name: name.endswith(".gguf"))
+
+    plan = VideoBackend().download_plan(
+        "unsloth/LTX-2.3-GGUF",
+        gguf_filename = "ltx-2.3-22b-distilled.gguf",
+        family_override = "ltx-2",
+    )
+
+    entry = next(e for e in plan["entries"] if e["repo_id"] == "unsloth/LTX-2.3-GGUF")
+    assert "ltx-2.3-22b-distilled.gguf" not in entry["files"]
+    assert entry["checkpoint"] is False, "companion files only, so not the model file"
+
+
+def test_the_checkpoint_entry_is_labelled_when_its_file_is_staged(monkeypatch):
+    # The other half of the same rule: nothing cached, so the GGUF itself is in the entry.
+    _plan_api(
+        monkeypatch,
+        {
+            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
+            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
+        },
+    )
+    _plan_cache(monkeypatch, lambda name: False)
+
+    plan = VideoBackend().download_plan(
+        "unsloth/LTX-2.3-GGUF",
+        gguf_filename = "ltx-2.3-22b-distilled.gguf",
+        family_override = "ltx-2",
+    )
+
+    entry = next(e for e in plan["entries"] if e["repo_id"] == "unsloth/LTX-2.3-GGUF")
+    assert "ltx-2.3-22b-distilled.gguf" in entry["files"]
+    assert entry["checkpoint"] is True
+
+
 def test_download_plan_narrows_an_ltx23_pick_and_stages_its_extras(monkeypatch):
     # A 2.3 checkpoint brings its own VAEs, vocoder and connectors, so staging the 2.0 base copies downloads gigabytes the
     # pipeline never opens -- and the companions it DOES read were missing from the plan, so they were pulled inline.

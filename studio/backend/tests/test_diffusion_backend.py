@@ -5286,6 +5286,25 @@ def test_a_cached_file_survives_an_unrelated_commit_to_its_repo(tmp_path, monkey
     assert DiffusionBackend._hub_file_is_cached(repo, name, "b" * 40, 0)
 
 
+@pytest.mark.parametrize("symlink", [True, False], ids = ["posix_links", "windows_copies"])
+def test_a_damaged_file_is_restaged_even_under_the_pinned_revision(tmp_path, monkeypatch, symlink):
+    # Naming the right commit is not proof the bytes are right. A truncated or half-copied file
+    # can sit at that path, and the copy layout has no symlink keeping the blob out of it, so the
+    # pinned probe has to corroborate with the declared size exactly as the main-ref probe does.
+    # Otherwise the plan omits the file and the load consumes the damaged entry.
+    repo, name = "black-forest-labs/FLUX.1-dev", "text_encoder/model.safetensors"
+    _write_hub_cache(tmp_path, repo, name, "a" * 40, 1024, symlink = symlink)
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path))
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "unused"))
+
+    assert not DiffusionBackend._hub_file_is_cached(
+        repo, name, "a" * 40, 4096
+    ), "the pinned commit is right but the bytes are not, so it must be restaged"
+    assert DiffusionBackend._hub_file_is_cached(repo, name, "a" * 40, 1024)
+    # Still no size to compare against: an intact-looking hit is trusted, as before.
+    assert DiffusionBackend._hub_file_is_cached(repo, name, "a" * 40, 0)
+
+
 def test_download_plan_probes_the_cache_at_the_revision_it_sized(monkeypatch):
     # An unpinned probe answers from the LOCAL main ref, so a republished companion reads as
     # present and the loader fetches it inline, outside the download manager.

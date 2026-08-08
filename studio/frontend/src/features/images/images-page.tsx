@@ -1863,6 +1863,27 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // Set when a staged download finished while this page was hidden: both diffusion pages stay mounted and a load evicts
   // whatever holds the GPU. The pick is not dropped; it fires when this page comes back.
   const stagedLoadDeferred = useRef(false);
+  // Both deferred paths run the load minutes after the pick was reported started, so both need
+  // the same rollback: onReady when the page is active, and the effect below when the download
+  // finished off-tab. The deferred load can still be REFUSED, by a training run or another load
+  // claiming the slot while the download ran. Staging started no load, so nothing polls and the
+  // poll's own rollback never runs; without this the selector keeps advertising a quant that was
+  // never loaded. `owned` is read BEFORE the call, so a newer pick's label is left alone.
+  const runStagedLoad = useCallback(
+    (pending: NonNullable<typeof pendingStagedLoad.current>) => {
+      const owned = stagedQuantRevert.current;
+      void handleLoadRef.current(pending.repoId, pending.opts, pending.advanced).then((started) => {
+        if (started) return;
+        if (quantRevert.current && quantRevert.current === owned) {
+          revertPick(quantRevert.current);
+          quantRevert.current = null;
+        }
+        if (stagedQuantRevert.current === owned) stagedQuantRevert.current = null;
+      });
+    },
+    [revertPick],
+  );
+
   const { stage } = useStagedDownload({
     scopeId: "diffusion",
     onReady: () => {
@@ -1872,7 +1893,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       }
       const pending = pendingStagedLoad.current;
       pendingStagedLoad.current = null;
-      if (pending) void handleLoadRef.current(pending.repoId, pending.opts, pending.advanced);
+      if (pending) runStagedLoad(pending);
     },
     onCancelled: () => {
       // The selected model is only an intent until every dependency is ready. A cancelled
@@ -1896,8 +1917,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     stagedLoadDeferred.current = false;
     const pending = pendingStagedLoad.current;
     pendingStagedLoad.current = null;
-    if (pending) void handleLoadRef.current(pending.repoId, pending.opts, pending.advanced);
-  }, [active]);
+    if (pending) runStagedLoad(pending);
+  }, [active, runStagedLoad]);
 
   // Ask for a cache-aware plan for every Hub pick. The picker only knows whether the selected
   // checkpoint is cached; image models can still need a separate text encoder/VAE repository.

@@ -1911,10 +1911,11 @@ class DiffusionBackend:
         downloaded, and treating that as missing would re-stage the whole footprint and can fail
         a disk preflight for space nobody needs.
 
-        So a pinned miss falls back to the local ``main`` ref and corroborates with the size the
-        same lookup declared: identical size means the file did not change, a different one means
-        it was republished and must be fetched through the manager rather than inline mid-load. A
-        republish that keeps the byte count exactly is indistinguishable here and reads as cached.
+        So a pinned miss falls back to the local ``main`` ref. Either way the hit is corroborated
+        with the size the same lookup declared: identical size means the file did not change, a
+        different one means it was republished, or damaged, and must be fetched through the manager
+        rather than inline mid-load. A republish that keeps the byte count exactly is
+        indistinguishable here and reads as cached.
 
         A string alone is not enough on Windows, where a broken snapshot link can survive a
         cancelled download, so the target must still be a real file.
@@ -1930,13 +1931,21 @@ class DiffusionBackend:
                     if isinstance(hit, str) and Path(hit).is_file():
                         yield hit
 
-            if revision is not None and any(hits(revision)):
-                return True
-            for hit in hits(None):
+            def sound(hit: str) -> bool:
+                """A hit is only proof if it also has the declared bytes. Naming the right commit
+                is not enough: a truncated or half-copied file can sit at that path (Windows has
+                no symlink to keep the blob out of it), and trusting the ref alone hands the load
+                a damaged cache entry it fails on, instead of restaging it through the manager."""
                 if not expected_size or expected_size <= 0:
                     return True  # nothing declared to check against; trust the ref
-                if Path(hit).stat().st_size == expected_size:
-                    return True
+                try:
+                    return Path(hit).stat().st_size == expected_size
+                except OSError:
+                    return False
+
+            if revision is not None and any(sound(hit) for hit in hits(revision)):
+                return True
+            return any(sound(hit) for hit in hits(None))
         except Exception:  # noqa: BLE001 -- an unreadable cache is a miss, never a plan failure
             pass
         return False

@@ -1164,12 +1164,12 @@ def test_a_hidden_diffusion_page_does_not_load_when_its_download_lands():
         # Deferred, not dropped: something has to fire the held pick when the page returns.
         assert "stagedLoadDeferred" in ready.group(0), f"{rel}: the pick is discarded"
         flush = re.search(
-            r"if \(!active \|\| !stagedLoadDeferred\.current\) return;.*?\n  \}, \[active\]\);",
+            r"if \(!active \|\| !stagedLoadDeferred\.current\) return;.*?\n  \}, \[active,? ?\w*\]\);",
             src,
             re.S,
         )
         assert flush, f"{rel}: nothing flushes the deferred load when the page is shown"
-        assert "handleLoadRef.current(" in flush.group(0), f"{rel}: deferred load never runs"
+        assert "runStagedLoad(pending);" in flush.group(0), f"{rel}: deferred load never runs"
 
 
 def test_a_staged_download_that_ends_rolls_back_the_optimistic_quant():
@@ -3350,6 +3350,33 @@ def test_the_footprint_asks_the_listing_whether_the_checkpoint_is_on_disk():
     effect = effect.split("const variantOptionKeys = useMemo(", 1)[0]
     assert "const checkpoint = checkpointIsLocal" in effect
     assert "const checkpoint = isLocalPath" not in effect
+
+
+def test_a_refused_load_after_staging_rolls_the_pick_back():
+    """Staging reports the pick STARTED as soon as the download is queued, so the caller's own
+    `if (!started) revert` has already been skipped. The load only runs minutes later and can
+    still be refused: a training run or another load can claim the backend while the download
+    is going. Nothing polls for a staged pick, so the poll's rollback never runs either, and the
+    selector would keep advertising a quant that was never loaded.
+
+    BOTH deferred paths have to roll back. onReady hands off to the `active` effect when the
+    page is off-tab, so leaving the tab during the download otherwise walks straight back into
+    the same bug."""
+    for page in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
+        src = _read(page)
+        helper = src.split("const runStagedLoad = useCallback(", 1)[1].split("[revertPick],", 1)[0]
+        # Fire-and-forget is precisely the defect: the boolean has to be observed.
+        assert ".then((started) => {" in helper, page
+        assert "if (started) return;" in helper, page
+        # Same identity guard onCancelled uses: a newer pick owns the label from the moment it
+        # is made, so a stale completion must not revert it.
+        assert "const owned = stagedQuantRevert.current;" in helper, page
+        assert "quantRevert.current === owned" in helper, page
+        assert "revertPick(quantRevert.current);" in helper, page
+        # One implementation, reached from both deferred paths, so neither can drift.
+        assert src.count("if (pending) runStagedLoad(pending);") == 2, page
+        # Exactly one direct call left, the one inside the helper itself.
+        assert src.count("void handleLoadRef.current(pending.") == 1, page
 
 
 def test_each_quant_row_reads_its_own_dependency_key():

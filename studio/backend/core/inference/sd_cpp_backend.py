@@ -721,7 +721,15 @@ class SdCppDiffusionBackend:
         # and an anonymous user would 401 at staging, never reaching the swap. Same per-repo file
         # list on both sides, so both take the same decision.
         fetch_repo = _fetch_repo_map(specs, hf_token)
-        by_repo = {fetch_repo[repo]: names for repo, names in by_repo.items()}
+        # MERGED, not reassigned: two upstream repos can share one fetch repo (the FLUX.2 VAE and
+        # the dev encoders both come from Comfy-Org/flux2-dev once that repack is cached), and a
+        # plain comprehension would drop whichever landed first, leaving its files out of both the
+        # staged entry and the footprint.
+        merged: dict[str, list[str]] = {}
+        for repo, names in by_repo.items():
+            into = merged.setdefault(fetch_repo[repo], [])
+            into.extend(n for n in names if n not in into)
+        by_repo = merged
         fetch_repo_id = fetch_repo.get(repo_id, repo_id)
         # AFTER the swap: preflighting the upstream id would refuse the very picks the ungated
         # mirror exists to rescue.

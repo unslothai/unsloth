@@ -1200,6 +1200,27 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   handleLoadRef.current = handleLoad;
   // A download finishing while this page is hidden must not evict the model the visible page loaded. The pick is held, not dropped.
   const stagedLoadDeferred = useRef(false);
+  // Both deferred paths run the load minutes after the pick was reported started, so both need
+  // the same rollback: onReady when the page is active, and the effect below when the download
+  // finished off-tab. The deferred load can still be REFUSED, by a training run or another load
+  // claiming the slot while the download ran. Staging started no load, so nothing polls and the
+  // poll's own rollback never runs; without this the selector keeps advertising a quant that was
+  // never loaded. `owned` is read BEFORE the call, so a newer pick's label is left alone.
+  const runStagedLoad = useCallback(
+    (pending: NonNullable<typeof pendingStagedLoad.current>) => {
+      const owned = stagedQuantRevert.current;
+      void handleLoadRef.current(pending.repoId, pending.opts).then((started) => {
+        if (started) return;
+        if (quantRevert.current && quantRevert.current === owned) {
+          revertPick(quantRevert.current);
+          quantRevert.current = null;
+        }
+        if (stagedQuantRevert.current === owned) stagedQuantRevert.current = null;
+      });
+    },
+    [revertPick],
+  );
+
   const { stage } = useStagedDownload({
     scopeId: "diffusion",
     onReady: () => {
@@ -1209,7 +1230,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       }
       const pending = pendingStagedLoad.current;
       pendingStagedLoad.current = null;
-      if (pending) void handleLoadRef.current(pending.repoId, pending.opts);
+      if (pending) runStagedLoad(pending);
     },
     onCancelled: () => {
       // Same rule as the images page: a plan that ends without every dependency on disk must not
@@ -1233,8 +1254,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     stagedLoadDeferred.current = false;
     const pending = pendingStagedLoad.current;
     pendingStagedLoad.current = null;
-    if (pending) void handleLoadRef.current(pending.repoId, pending.opts);
-  }, [active]);
+    if (pending) runStagedLoad(pending);
+  }, [active, runStagedLoad]);
 
   // Stage a not-yet-downloaded hub pick, else load it directly.
   const loadOrStage = useCallback(

@@ -963,12 +963,18 @@ class VideoBackend:
             ]
             if not staged:
                 continue
+            names = [name for name, _size in staged]
+            gguf = labels[repo]["gguf"]
             entries[repo] = {
                 "repo_id": repo,
-                "files": [name for name, _size in staged],
+                "files": names,
                 "bytes": sum(size for _name, size in staged),
-                "gguf_filename": labels[repo]["gguf"],
-                "checkpoint": labels[repo]["checkpoint"],
+                "gguf_filename": gguf,
+                # The flag describes the ENTRY, not the pick: a 2.3 repo holding both the cached
+                # checkpoint and its missing extras stages companion files only, and labelling that
+                # "Model file" misdescribes what is downloading. A pipeline pick has no single file,
+                # so the repo itself is the model and anything staged from it is part of it.
+                "checkpoint": labels[repo]["checkpoint"] and (gguf is None or gguf in names),
             }
         return {
             "entries": list(entries.values()),

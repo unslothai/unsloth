@@ -407,6 +407,58 @@ def test_download_plan_stages_exactly_what_sd_cli_opens(monkeypatch):
     assert len([e for e in plan["entries"] if e["repo_id"] == "unsloth/Z-Image-Turbo-ComfyUI"]) == 1
 
 
+def test_download_plan_merges_asset_repos_that_share_one_fetch_repo(monkeypatch):
+    # Two upstream repos can resolve to ONE fetch repo: on an install that already holds the
+    # Comfy-Org/flux2-dev repack, both unsloth/FLUX.2-VAE and unsloth/FLUX.2-dev-ComfyUI are
+    # served from it. Keying the swapped map by fetch repo therefore drops whichever landed
+    # first, taking its files out of the staged entry AND out of the footprint.
+    import core.inference.sd_cpp_backend as S
+
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    specs = [
+        ("unsloth/FLUX.2-dev-GGUF", "flux2-dev-Q4_K_M.gguf", "transformer"),
+        ("unsloth/FLUX.2-VAE", "vae/ae.safetensors", "vae"),
+        ("unsloth/FLUX.2-dev-ComfyUI", "text_encoders/mistral.safetensors", "text_encoder"),
+    ]
+    monkeypatch.setattr(SdCppDiffusionBackend, "_asset_specs", lambda *a, **k: specs)
+    monkeypatch.setattr(
+        S,
+        "_fetch_repo_map",
+        lambda assets, token: {
+            "unsloth/FLUX.2-dev-GGUF": "unsloth/FLUX.2-dev-GGUF",
+            "unsloth/FLUX.2-VAE": "Comfy-Org/flux2-dev",
+            "unsloth/FLUX.2-dev-ComfyUI": "Comfy-Org/flux2-dev",
+        },
+    )
+    monkeypatch.setattr(SdCppDiffusionBackend, "_preflight_companion_repos", lambda *a, **k: None)
+    sizes = {
+        ("unsloth/FLUX.2-dev-GGUF", "flux2-dev-Q4_K_M.gguf"): 4_000,
+        ("Comfy-Org/flux2-dev", "vae/ae.safetensors"): 300,
+        ("Comfy-Org/flux2-dev", "text_encoders/mistral.safetensors"): 8_000,
+    }
+    monkeypatch.setattr(
+        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: sizes)
+    )
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_loadable",
+        staticmethod(lambda *a, **k: False),
+    )
+
+    plan = b.download_plan(
+        "unsloth/FLUX.2-dev-GGUF", gguf_filename = "flux2-dev-Q4_K_M.gguf", model_kind = "gguf"
+    )
+
+    shared = next(e for e in plan["entries"] if e["repo_id"] == "Comfy-Org/flux2-dev")
+    assert sorted(shared["files"]) == [
+        "text_encoders/mistral.safetensors",
+        "vae/ae.safetensors",
+    ], "neither collapsed repo's files may be dropped"
+    assert plan["required_bytes"] == 12_300
+
+
 def test_download_plan_skips_a_local_transformer_but_still_stages_the_assets(monkeypatch, tmp_path):
     # A local GGUF folder is already on disk; its VAE + encoder still have to come from the Hub.
     b = SdCppDiffusionBackend(engine = _FakeEngine())
