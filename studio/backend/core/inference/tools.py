@@ -7113,8 +7113,9 @@ _workdirs: dict[str, str] = {}
 _active_sessions: "dict[str, int]" = {}
 # Deletions that arrived while a call was in flight. The thread is already gone
 # from history by then, so nothing would ever ask for this folder again. Keyed
-# like the above, so the exact id to remove is carried alongside.
-_pending_removals: "dict[str, tuple[str, bool]]" = {}
+# like the above, holding every exact id that folded onto that key: on a
+# case-sensitive filesystem those are separate directories and both must go.
+_pending_removals: "dict[str, dict[str, bool]]" = {}
 _active_sessions_lock = threading.Lock()
 
 
@@ -7139,8 +7140,8 @@ def _session_in_flight(session_id: "str | None"):
         with _active_sessions_lock:
             if _active_sessions.get(key, 0) <= 1:
                 _active_sessions.pop(key, None)
-                if key in _pending_removals:
-                    _remove_session_sandbox_locked(*_pending_removals.pop(key))
+                for pending_id, pending_files in _pending_removals.pop(key, {}).items():
+                    _remove_session_sandbox_locked(pending_id, pending_files)
             else:
                 _active_sessions[key] -= 1
 
@@ -7353,8 +7354,12 @@ def _get_workdir(session_id: str | None = None) -> str:
             workdir = _sandbox_fallback(sandbox_root_path, "_invalid")
         else:
             workdir = _sandbox_fallback(sandbox_root_path, "_default")
+        # Marked only when we made it: at a shared root an id can name a
+        # directory that was already there, and the marker is what later allows
+        # a delete to remove it whole.
+        created = not os.path.isdir(workdir)
         os.makedirs(workdir, exist_ok = True)
-        if not project_workdir:
+        if created and not project_workdir:
             _mark_sandbox(workdir)
         # Only a root we just created: the override can name a shared
         # directory, and locking that down would cut off everything else.
@@ -7418,7 +7423,11 @@ def _detached_tombstones(root: str) -> "list[str]":
     out = []
     for name in names:
         candidate = os.path.join(root, name)
-        if os.path.isdir(candidate) and not os.path.islink(candidate):
+        if not os.path.isdir(candidate) or os.path.islink(candidate):
+            continue
+        # The rename carries the marker with it, so a shared root's own
+        # backup.deleting-deadbeef is still not ours to remove.
+        if _sandbox_is_ours(candidate):
             out.append(candidate)
     return out
 
@@ -7482,8 +7491,8 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
         if _active_sessions.get(key, 0) > 0:
             # Queued rather than dropped: the chat is already gone from history,
             # so no later delete or clear would ever name this session again.
-            queued = _pending_removals.get(key)
-            _pending_removals[key] = (session_id, delete_files or bool(queued and queued[1]))
+            queued = _pending_removals.setdefault(key, {})
+            queued[session_id] = delete_files or queued.get(session_id, False)
             return False
         return _remove_session_sandbox_locked(session_id, delete_files)
 

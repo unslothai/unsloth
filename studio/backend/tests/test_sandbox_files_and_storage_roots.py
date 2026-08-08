@@ -794,15 +794,17 @@ def test_generated_modules_identify_a_cache_without_a_marker(tmp_path, monkeypat
     """An install that predates the marker is still cleaned, file by file."""
     cache = tmp_path / "old_cache"
     cache.mkdir()
-    (cache / "unsloth_compiled_module_gemma3.py").write_text("x = 1\n")
-    (cache / "UnslothSFTTrainer.py").write_text("trainer\n")
+    (cache / "unsloth_compiled_module_gemma3.py").write_text("x = 1\n", encoding = "utf-8")
+    # Their own file, and Unsloth*Trainer.py is a name a user's subclass can
+    # carry: without the marker there is nothing to say we wrote it.
+    (cache / "UnslothCustomTrainer.py").write_text("class X: pass\n", encoding = "utf-8")
     monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(cache))
 
     from utils import cache_cleanup
 
     cache_cleanup.clear_unsloth_compiled_cache()
     assert not (cache / "unsloth_compiled_module_gemma3.py").exists()
-    assert not (cache / "UnslothSFTTrainer.py").exists()
+    assert (cache / "UnslothCustomTrainer.py").is_file()
 
 
 def test_studio_writes_the_marker_when_it_creates_the_location(tmp_path, monkeypatch):
@@ -1628,6 +1630,7 @@ def test_a_delete_interrupted_by_a_restart_is_finished_later(tmp_path, monkeypat
     # What a previous run left behind when it was killed mid-delete.
     stranded = root / f"__LOCALID_gone999{tools._DETACHED_SUFFIX}abc12345"
     stranded.mkdir()
+    (stranded / tools._SANDBOX_MARKER).touch()
     (stranded / "leftover.bin").write_bytes(b"x")
 
     (workdir / "data.bin").write_bytes(b"y")
@@ -1654,6 +1657,7 @@ def test_a_startup_sweep_finishes_an_interrupted_delete(tmp_path, monkeypatch):
     root.mkdir(parents = True, exist_ok = True)
     stranded = root / f"__LOCALID_gone111{tools._DETACHED_SUFFIX}deadbeef"
     stranded.mkdir()
+    (stranded / tools._SANDBOX_MARKER).touch()
     (stranded / "leftover.bin").write_bytes(b"x")
 
     tools._detached_swept = False
@@ -1722,13 +1726,19 @@ def test_only_our_own_tombstones_are_swept(tmp_path, monkeypatch):
     theirs = root / "report.deleting-backup"
     theirs.mkdir()
     (theirs / "notes.txt").write_text("keep me", encoding = "utf-8")
-    ours = root / "__LOCALID_x.deleting-0a1b2c3d"
-    ours.mkdir()
     monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
 
     import time
 
     from core.inference import tools
+
+    ours = root / "__LOCALID_x.deleting-0a1b2c3d"
+    ours.mkdir()
+    (ours / tools._SANDBOX_MARKER).touch()
+    # Named like one of ours, but nothing says we made it.
+    lookalike = root / "archive.deleting-0a1b2c3d"
+    lookalike.mkdir()
+    (lookalike / "photos.zip").write_text("theirs", encoding = "utf-8")
 
     tools._detached_swept = False
     tools.sweep_detached_sandboxes()
@@ -1738,6 +1748,7 @@ def test_only_our_own_tombstones_are_swept(tmp_path, monkeypatch):
         time.sleep(0.05)
     assert not ours.exists(), "our own tombstone was left behind"
     assert (theirs / "notes.txt").read_text(encoding = "utf-8") == "keep me"
+    assert (lookalike / "photos.zip").is_file(), "an unowned lookalike was deleted"
 
 
 def test_a_shared_roots_own_folder_is_never_deleted(tmp_path, monkeypatch):
@@ -1798,6 +1809,55 @@ def test_two_ids_differing_only_in_case_share_the_busy_check(tmp_path, monkeypat
         assert workdir.is_dir(), "removed under a running tool"
     # And the queued delete names the id that was asked for, not the folded key.
     assert not workdir.exists()
+    assert tools._pending_removals == {}
+
+
+def test_an_existing_folder_in_a_shared_root_is_never_claimed(tmp_path, monkeypatch):
+    """A chat id can name something already in there, and running a tool in it
+    must not make it ours to delete."""
+    root = tmp_path / "shared"
+    root.mkdir()
+    theirs = root / "taxes"
+    theirs.mkdir()
+    (theirs / "2026.pdf").write_text("money", encoding = "utf-8")
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir("taxes"))
+    assert workdir == theirs
+    assert not (theirs / tools._SANDBOX_MARKER).exists(), "claimed a folder we did not create"
+    assert tools.remove_session_sandbox("taxes", delete_files = True) is False
+    assert (theirs / "2026.pdf").is_file()
+
+
+def test_both_case_variants_are_removed_when_their_calls_end(tmp_path, monkeypatch):
+    """They fold onto one key, and on a case-sensitive filesystem they are two
+    directories, so neither may be dropped."""
+    import time
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._pending_removals.clear()
+    lower = Path(tools.get_sandbox_workdir("casepair"))
+    upper = Path(tools.get_sandbox_workdir("CasePair"))
+    if lower == upper:
+        pytest.skip("case-insensitive filesystem: one directory, nothing to strand")
+    (lower / "a.csv").write_text("a\n", encoding = "utf-8")
+    (upper / "b.csv").write_text("b\n", encoding = "utf-8")
+
+    with tools._session_in_flight("casepair"), tools._session_in_flight("CasePair"):
+        assert tools.remove_session_sandbox("casepair", delete_files = True) is False
+        assert tools.remove_session_sandbox("CasePair", delete_files = True) is False
+    for _ in range(50):
+        if not lower.exists() and not upper.exists():
+            break
+        time.sleep(0.05)
+    assert not lower.exists() and not upper.exists()
     assert tools._pending_removals == {}
 
 

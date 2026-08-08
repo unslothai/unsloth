@@ -75,6 +75,10 @@ CACHE_MARKER = ".unsloth_compiled_cache"
 import re as _re
 
 _GENERATED_NAME_RE = _re.compile(r"\A(unsloth_compiled_module_.+|Unsloth.+Trainer)\.py\Z")
+# What may be deleted from a directory we do not own. Narrower on purpose:
+# Unsloth*Trainer.py is a convention a user's own subclass can match, and there
+# the marker is the only thing that would say we wrote it.
+_OWNED_DELETE_RE = _re.compile(r"\Aunsloth_compiled_module_.+\.py\Z")
 
 
 def _is_dedicated_cache(path: Path) -> bool:
@@ -176,7 +180,7 @@ def clear_unsloth_compiled_cache(preserve_patterns: Optional[List[str]] = None) 
             # they are the only thing here that may be removed.
             logger.info(f"Cleaning generated modules from shared directory: {cache_dir}")
             for item in cache_dir.iterdir():
-                if not item.is_file() or not _GENERATED_NAME_RE.match(item.name):
+                if not item.is_file() or not _OWNED_DELETE_RE.match(item.name):
                     continue
                 if preserve_patterns and any(item.match(p) for p in preserve_patterns):
                     continue
