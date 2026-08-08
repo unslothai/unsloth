@@ -7112,14 +7112,25 @@ _workdirs: dict[str, str] = {}
 # a process whose cwd has been removed fails every relative write with ENOENT.
 _active_sessions: "dict[str, int]" = {}
 # Deletions that arrived while a call was in flight. The thread is already gone
-# from history by then, so nothing would ever ask for this folder again.
-_pending_removals: "dict[str, bool]" = {}
+# from history by then, so nothing would ever ask for this folder again. Keyed
+# like the above, so the exact id to remove is carried alongside.
+_pending_removals: "dict[str, tuple[str, bool]]" = {}
 _active_sessions_lock = threading.Lock()
+
+
+def _session_key(session_id: "str | None") -> str:
+    """Lifecycle key for a session id.
+
+    Case-folded: two ids differing only in case are one directory on Windows and
+    on a default macOS volume, and keying them apart let a delete land while the
+    other chat was running a tool in there.
+    """
+    return (session_id or "_default").casefold()
 
 
 @contextlib.contextmanager
 def _session_in_flight(session_id: "str | None"):
-    key = session_id or "_default"
+    key = _session_key(session_id)
     with _active_sessions_lock:
         _active_sessions[key] = _active_sessions.get(key, 0) + 1
     try:
@@ -7129,7 +7140,7 @@ def _session_in_flight(session_id: "str | None"):
             if _active_sessions.get(key, 0) <= 1:
                 _active_sessions.pop(key, None)
                 if key in _pending_removals:
-                    _remove_session_sandbox_locked(key, _pending_removals.pop(key))
+                    _remove_session_sandbox_locked(*_pending_removals.pop(key))
             else:
                 _active_sessions[key] -= 1
 
@@ -7175,6 +7186,27 @@ def _get_project_workdir(session_id: str) -> str | None:
     if sandbox_real != root_real and not sandbox_real.startswith(root_real + os.sep):
         return None
     return sandbox_real
+
+
+# Dropped in every session directory we create. The root can be an existing
+# shared folder the user pointed us at, and a chat id can name something already
+# in there; this is the only evidence the directory is ours to delete.
+_SANDBOX_MARKER = ".unsloth_sandbox"
+
+
+def _mark_sandbox(workdir: str) -> None:
+    try:
+        with open(os.path.join(workdir, _SANDBOX_MARKER), "a", encoding = "utf-8"):
+            pass
+    except OSError:
+        pass
+
+
+def _sandbox_is_ours(target: str) -> bool:
+    """Ours by construction at our own root, otherwise only with the marker."""
+    if not (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip():
+        return True
+    return os.path.isfile(os.path.join(target, _SANDBOX_MARKER))
 
 
 def _legacy_sandbox_root() -> str:
@@ -7322,6 +7354,8 @@ def _get_workdir(session_id: str | None = None) -> str:
         else:
             workdir = _sandbox_fallback(sandbox_root_path, "_default")
         os.makedirs(workdir, exist_ok = True)
+        if not project_workdir:
+            _mark_sandbox(workdir)
         # Only a root we just created: the override can name a shared
         # directory, and locking that down would cut off everything else.
         if not root_existed or not (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip():
@@ -7371,6 +7405,22 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
 
 
 _DETACHED_SUFFIX = ".deleting-"
+# The exact name the rename below produces. A substring test would have matched
+# a user's own report.deleting-backup in a shared root.
+_DETACHED_RE = re.compile(r"\A.+\.deleting-[0-9a-f]{8}\Z")
+
+
+def _detached_tombstones(root: str) -> "list[str]":
+    try:
+        names = [n for n in os.listdir(root) if _DETACHED_RE.match(n)]
+    except OSError:
+        return []
+    out = []
+    for name in names:
+        candidate = os.path.join(root, name)
+        if os.path.isdir(candidate) and not os.path.islink(candidate):
+            out.append(candidate)
+    return out
 
 
 _detached_swept = False
@@ -7390,14 +7440,8 @@ def sweep_detached_sandboxes(root: "str | None" = None) -> None:
     target = root or sandbox_root()
 
     def _run() -> None:
-        try:
-            names = [n for n in os.listdir(target) if _DETACHED_SUFFIX in n]
-        except OSError:
-            return
-        for name in names:
-            candidate = os.path.join(target, name)
-            if os.path.isdir(candidate) and not os.path.islink(candidate):
-                shutil.rmtree(candidate, ignore_errors = True)
+        for candidate in _detached_tombstones(target):
+            shutil.rmtree(candidate, ignore_errors = True)
 
     threading.Thread(target = _run, name = "sandbox-sweep", daemon = True).start()
 
@@ -7409,14 +7453,8 @@ def _delete_detached(path: str, root: str) -> None:
     reach, which is the accumulating folder this whole change is about.
     """
     shutil.rmtree(path, ignore_errors = True)
-    try:
-        stale = [n for n in os.listdir(root) if _DETACHED_SUFFIX in n]
-    except OSError:
-        return
-    for name in stale:
-        candidate = os.path.join(root, name)
-        if os.path.isdir(candidate) and not os.path.islink(candidate):
-            shutil.rmtree(candidate, ignore_errors = True)
+    for candidate in _detached_tombstones(root):
+        shutil.rmtree(candidate, ignore_errors = True)
 
 
 def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
@@ -7439,11 +7477,13 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
     _migrate_legacy_sandbox(sandbox_root())
     # Held across the decision AND the unlink: otherwise a tool can start in
     # between and run in a directory this call then removes.
+    key = _session_key(session_id)
     with _active_sessions_lock:
-        if _active_sessions.get(session_id, 0) > 0:
+        if _active_sessions.get(key, 0) > 0:
             # Queued rather than dropped: the chat is already gone from history,
             # so no later delete or clear would ever name this session again.
-            _pending_removals[session_id] = delete_files or _pending_removals.get(session_id, False)
+            queued = _pending_removals.get(key)
+            _pending_removals[key] = (session_id, delete_files or bool(queued and queued[1]))
             return False
         return _remove_session_sandbox_locked(session_id, delete_files)
 
@@ -7461,6 +7501,8 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
             return False
     target = os.path.realpath(entry)
     if os.path.dirname(target) != root or not os.path.isdir(target):  # contained
+        return False
+    if not _sandbox_is_ours(target):
         return False
     _workdirs.pop(session_id, None)
     try:
@@ -7481,6 +7523,9 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
                 daemon = True,
             ).start()
             return True
+        marker = os.path.join(target, _SANDBOX_MARKER)
+        if os.path.isfile(marker) and os.listdir(target) == [_SANDBOX_MARKER]:
+            os.unlink(marker)  # our own file, so the folder still counts as empty
         os.rmdir(target)  # raises when non-empty, which is the intent
         return True
     except OSError:
@@ -10549,7 +10594,7 @@ def _servable_segment(name: str) -> bool:
 
 # Studio's own bookkeeping, written by the sandbox sitecustomize. One exact
 # name we write ourselves, not a pattern reserved over names a tool may pick.
-_INTERNAL_SANDBOX_FILES = frozenset({".unsloth_sandbox_remap.json"})
+_INTERNAL_SANDBOX_FILES = frozenset({".unsloth_sandbox_remap.json", _SANDBOX_MARKER})
 
 
 def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":

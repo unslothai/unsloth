@@ -11,6 +11,7 @@ behind. Verified on Windows, macOS and Linux.
 
 import json
 import os
+import shutil
 import sys
 import platform
 from pathlib import Path
@@ -669,7 +670,7 @@ def test_the_executor_leaves_nothing_in_the_sandbox(tmp_path, monkeypatch):
     tools._workdirs.clear()
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_scratch"))
     tools._python_exec("print('hi')", session_id = "__LOCALID_scratch")
-    assert list(workdir.iterdir()) == []
+    assert [p.name for p in workdir.iterdir()] == [tools._SANDBOX_MARKER]
 
     assert tools.remove_session_sandbox("__LOCALID_scratch") is True
     assert not workdir.exists()
@@ -832,7 +833,7 @@ def test_a_cached_sandbox_path_is_re_checked(tmp_path, monkeypatch):
     assert workdir.is_dir()
 
     # Swap it, leaving the resolver's cache pointing at the same string.
-    workdir.rmdir()
+    shutil.rmtree(workdir)
     workdir.symlink_to(outside)
 
     resolved = Path(tools.resolve_sandbox_workdir("__LOCALID_swapped"))
@@ -1138,7 +1139,9 @@ def test_a_user_python_file_is_never_executor_scratch(tmp_path, monkeypatch):
 
     workdir = Path(tools.get_sandbox_workdir(session))
     # The executor left nothing of its own behind.
-    assert sorted(p.name for p in workdir.iterdir()) == ["studio_exec_results.py"]
+    assert sorted(
+        p.name for p in workdir.iterdir() if p.name not in tools._INTERNAL_SANDBOX_FILES
+    ) == ["studio_exec_results.py"]
     assert inference._sandbox_listing_names(str(workdir)) == ["studio_exec_results.py"]
     # And a delete without the opt-in will not quietly take it.
     assert tools.remove_session_sandbox(session) is False
@@ -1227,7 +1230,9 @@ def test_the_scratch_script_is_never_reported_as_a_file(tmp_path, monkeypatch):
     assert "studio_exec_results.py" in files
     workdir = Path(tools.get_sandbox_workdir(session))
     # Only the user's file is left; the executor cleaned up after itself.
-    assert sorted(p.name for p in workdir.iterdir()) == ["studio_exec_results.py"]
+    assert sorted(
+        p.name for p in workdir.iterdir() if p.name not in tools._INTERNAL_SANDBOX_FILES
+    ) == ["studio_exec_results.py"]
     assert json.loads(files) == [{"name": "studio_exec_results.py", "size": 5}]
 
 
@@ -1707,6 +1712,93 @@ def test_a_foreign_tool_result_keeps_its_own_fields():
     ).read_text(encoding = "utf-8")
     predicate = adapter.split("export function isSandboxToolResult(", 1)[1].split("\n}", 1)[0]
     assert "Array.isArray(v.images)" in predicate, predicate
+
+
+def test_only_our_own_tombstones_are_swept(tmp_path, monkeypatch):
+    """The root can be a folder the user already keeps things in, and a name
+    merely containing the suffix is not one of ours."""
+    root = tmp_path / "shared"
+    root.mkdir()
+    theirs = root / "report.deleting-backup"
+    theirs.mkdir()
+    (theirs / "notes.txt").write_text("keep me", encoding = "utf-8")
+    ours = root / "__LOCALID_x.deleting-0a1b2c3d"
+    ours.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    import time
+
+    from core.inference import tools
+
+    tools._detached_swept = False
+    tools.sweep_detached_sandboxes()
+    for _ in range(50):
+        if not ours.exists():
+            break
+        time.sleep(0.05)
+    assert not ours.exists(), "our own tombstone was left behind"
+    assert (theirs / "notes.txt").read_text(encoding = "utf-8") == "keep me"
+
+
+def test_a_shared_roots_own_folder_is_never_deleted(tmp_path, monkeypatch):
+    """An id can name something already in a shared root, and that folder was
+    not created by us."""
+    root = tmp_path / "shared"
+    root.mkdir()
+    theirs = root / "invoices"
+    theirs.mkdir()
+    (theirs / "2026.pdf").write_text("money", encoding = "utf-8")
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    assert tools.remove_session_sandbox("invoices", delete_files = True) is False
+    assert (theirs / "2026.pdf").is_file()
+
+    # Empty ones are not ours to reclaim either.
+    (root / "empty").mkdir()
+    assert tools.remove_session_sandbox("empty") is False
+    assert (root / "empty").is_dir()
+
+
+def test_a_sandbox_we_created_in_a_shared_root_is_still_removable(tmp_path, monkeypatch):
+    root = tmp_path / "shared"
+    root.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_mine11"))
+    assert (workdir / tools._SANDBOX_MARKER).is_file()
+    # Nothing but our marker in it, so it counts as empty.
+    assert tools.remove_session_sandbox("__LOCALID_mine11") is True
+    assert not workdir.exists()
+
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_mine22"))
+    (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
+    assert tools.remove_session_sandbox("__LOCALID_mine22", delete_files = True) is True
+
+
+def test_two_ids_differing_only_in_case_share_the_busy_check(tmp_path, monkeypatch):
+    """They are one directory on Windows and on a default macOS volume, so a
+    delete of one must not land while the other is running a tool in it."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._pending_removals.clear()
+    workdir = Path(tools.get_sandbox_workdir("ChatCase"))
+    (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
+
+    with tools._session_in_flight("chatcase"):
+        assert tools.remove_session_sandbox("ChatCase", delete_files = True) is False
+        assert workdir.is_dir(), "removed under a running tool"
+    # And the queued delete names the id that was asked for, not the folded key.
+    assert not workdir.exists()
+    assert tools._pending_removals == {}
 
 
 if __name__ == "__main__":

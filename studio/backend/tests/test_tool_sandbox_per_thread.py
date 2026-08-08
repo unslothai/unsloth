@@ -55,11 +55,14 @@ def test_the_same_conversation_keeps_its_directory(workdir):
 
 
 def test_a_directory_is_private_to_its_conversation(workdir):
+    from core.inference import tools
+
     a = workdir("thread-alpha")
     b = workdir("thread-beta")
     with open(os.path.join(a, "secret.txt"), "w", encoding = "utf-8") as f:
         f.write("alpha")
-    assert os.listdir(b) == []
+    # Our own ownership marker aside, nothing of alpha's is visible here.
+    assert os.listdir(b) == [tools._SANDBOX_MARKER]
 
 
 def test_project_chats_deliberately_share_one_workspace(workdir, monkeypatch):
