@@ -1927,6 +1927,21 @@ _CPU_PLACEMENT_PRESENCE_FLAGS = (_MOE_OFFLOAD_FLAGS - _CPU_MOE_COUNT_FLAGS) | fr
 )
 _CPU_PLACEMENT_FLAGS = _MOE_OFFLOAD_FLAGS | frozenset({"-ot", "--override-tensor"})
 _THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
+
+
+def _strip_flag_pairs(args: Iterable[str], flags: frozenset[str]) -> list[str]:
+    """Drop each ``flag value`` pair naming one of ``flags``."""
+    out: list[str] = []
+    skip = False
+    for arg in args:
+        if skip:
+            skip = False
+            continue
+        if str(arg) in flags:
+            skip = True
+            continue
+        out.append(str(arg))
+    return out
 # common_params defaults in the bundled llama.cpp runtime.
 _DEFAULT_LLAMA_N_BATCH = 2048
 _DEFAULT_LLAMA_N_UBATCH = 512
@@ -8917,7 +8932,12 @@ class LlamaCppBackend:
 
     @classmethod
     def _cpu_isolated_replay(
-        cls, cmd: Iterable[str], env: dict[str, str], server_caps: Mapping[str, object]
+        cls,
+        cmd: Iterable[str],
+        env: dict[str, str],
+        server_caps: Mapping[str, object],
+        *,
+        drop_full_offload_threads: bool = False,
     ) -> Optional[list[str]]:
         """Build a replay that cannot initialize or schedule on a GPU.
 
@@ -8934,6 +8954,15 @@ class LlamaCppBackend:
             return None
 
         replay = cls._strip_cpu_fallback_main_placement(original)
+        if drop_full_offload_threads:
+            # The Windows full-offload tuning pins 2 threads and PASSIVE OpenMP
+            # because the GPU was doing the work. This replay is that premise
+            # falsified, so a recovered CPU session would decode on 2 cores.
+            # Only ever the values Unsloth injected: the caller reports a user
+            # --threads / -t override, and the env vars were setdefault'd.
+            replay = _strip_flag_pairs(replay, _THREAD_OVERRIDE_FLAGS)
+            for name in ("OMP_NUM_THREADS", "OMP_WAIT_POLICY"):
+                env.pop(name, None)
         replay.extend(["--gpu-layers", "0", "--fit", "off", "--device", "none"])
         if has_mmproj:
             replay.append("--no-mmproj-offload")
@@ -8950,12 +8979,16 @@ class LlamaCppBackend:
         cmd: Iterable[str],
         env: dict[str, str],
         server_caps: Mapping[str, object],
+        *,
+        drop_full_offload_threads: bool = False,
     ) -> Optional[tuple[list[str], Optional[str]]]:
         # The staged runtime only removes GPU backends; replaying a non-Vulkan
         # install would report a Vulkan crash that never happened.
         if not self._is_vulkan_backend(binary):
             return None
-        replay = self._cpu_isolated_replay(cmd, env, server_caps)
+        replay = self._cpu_isolated_replay(
+            cmd, env, server_caps, drop_full_offload_threads = drop_full_offload_threads
+        )
         if replay is None:
             return None
         cpu_binary = self._cpu_isolated_binary(binary)
@@ -11053,6 +11086,13 @@ class LlamaCppBackend:
                 )
                 threads_overridden = _extra_args_set_any_flag(extra_args, _THREAD_OVERRIDE_FLAGS)
                 full_offload_tuning_active = fully_gpu_offloaded and not offload_overridden
+                # The CPU replay must undo whatever this launch pins for a GPU
+                # that will not be there; a user's own --threads still wins.
+                _drop_full_offload_threads = (
+                    sys.platform == "win32"
+                    and full_offload_tuning_active
+                    and not threads_overridden
+                )
 
                 # Thread count: an unset --threads makes llama.cpp pick physical
                 # cores (common_cpu_get_num_math), but an explicit --threads -1
@@ -12007,7 +12047,11 @@ class LlamaCppBackend:
                         return False
                     fallback_has_mmproj = self._launch_has_mmproj(failed_cmd, env)
                     prepared = self._prepare_cpu_fallback_launch(
-                        binary, failed_cmd, env, server_caps
+                        binary,
+                        failed_cmd,
+                        env,
+                        server_caps,
+                        drop_full_offload_threads = _drop_full_offload_threads,
                     )
                     if prepared is None:
                         return False
@@ -12100,7 +12144,13 @@ class LlamaCppBackend:
                     if self._auto_vulkan_cpu_fallback_eligible(
                         binary, intent, extra_args, env, allow_manual_cpu = True
                     ):
-                        prepared = self._prepare_cpu_fallback_launch(binary, cmd, env, server_caps)
+                        prepared = self._prepare_cpu_fallback_launch(
+                            binary,
+                            cmd,
+                            env,
+                            server_caps,
+                            drop_full_offload_threads = _drop_full_offload_threads,
+                        )
                         if prepared is None:
                             _raise_terminal_load_failure(
                                 "The prior Vulkan CPU fallback could not be reconstructed; run "

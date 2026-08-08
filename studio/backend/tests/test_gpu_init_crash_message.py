@@ -177,7 +177,7 @@ def _run_cpu_fallback_load(
             backend._cancel_event.set()
         return returncodes[len(launches) - 1] is None
 
-    def _prepare_cpu_fallback(_binary, failed_cmd, _env, _server_caps):
+    def _prepare_cpu_fallback(_binary, failed_cmd, _env, _server_caps, **_kwargs):
         fallback_sources.append(list(failed_cmd))
         # A callable decides per command, for builds that can only replay some.
         available = (
@@ -550,7 +550,7 @@ class TestCpuIsolatedReplay:
         monkeypatch.setattr(
             backend,
             "_cpu_isolated_replay",
-            lambda _cmd, _env, _caps: ["original", "--device", "none"],
+            lambda _cmd, _env, _caps, **_kwargs: ["original", "--device", "none"],
         )
         monkeypatch.setattr(backend, "_cpu_isolated_binary", lambda _binary: "/staged/server")
         monkeypatch.setattr(
@@ -675,6 +675,32 @@ class TestCpuIsolatedReplay:
         assert loaded is True
         assert fallback_sources == []
         assert backend._cpu_fallback_reason is None
+
+    def test_the_windows_full_offload_thread_cap_is_undone(self, monkeypatch, tmp_path):
+        """Two threads and PASSIVE OpenMP are tuned for a GPU doing the work, so
+        a CPU replay that kept them would decode on two cores."""
+        env = {"OMP_NUM_THREADS": "2", "OMP_WAIT_POLICY": "PASSIVE", "KEEP": "1"}
+        cmd = ["llama-server", "-m", "m.gguf", "--threads", "2", "--jinja"]
+
+        replay = LlamaCppBackend._cpu_isolated_replay(
+            cmd, env, {"found": True}, drop_full_offload_threads = True
+        )
+
+        assert "--threads" not in replay
+        assert "--jinja" in replay
+        assert "OMP_NUM_THREADS" not in env
+        assert "OMP_WAIT_POLICY" not in env
+        assert env["KEEP"] == "1"
+
+    def test_a_user_thread_choice_survives_the_cpu_replay(self, monkeypatch, tmp_path):
+        """The caller only reports the cap as ours when the user set no override."""
+        env = {"OMP_NUM_THREADS": "8"}
+        cmd = ["llama-server", "-m", "m.gguf", "--threads", "8"]
+
+        replay = LlamaCppBackend._cpu_isolated_replay(cmd, env, {"found": True})
+
+        assert replay[replay.index("--threads") + 1] == "8"
+        assert env["OMP_NUM_THREADS"] == "8"
 
     def test_non_vulkan_managed_runtime_is_never_staged(self, monkeypatch, tmp_path):
         binary = _managed_runtime(monkeypatch, tmp_path)
