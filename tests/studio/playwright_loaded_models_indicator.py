@@ -210,14 +210,26 @@ def install_routes(context, state: Runtime) -> None:
 
 
 def rows(page) -> list[str]:
-    labels = page.locator(EJECT)
-    return [labels.nth(i).get_attribute("aria-label") or "" for i in range(labels.count())]
+    # One round trip, deliberately. Reading count() and then indexing nth(i)
+    # races the very thing the eject checks watch for: the row disappears
+    # between the two calls, and nth(1) then blocks for the whole locator
+    # timeout. evaluate_all snapshots the list in a single evaluation.
+    return page.locator(EJECT).evaluate_all(
+        "els => els.map((el) => el.getAttribute('aria-label') || '')"
+    )
 
 
 def card_text(page) -> str:
-    if page.locator(CARD).count() == 0:
+    # Bounded and absence-tolerant rather than count()-then-read, which has the
+    # same race as rows() when the card is mid-change.
+    try:
+        return (
+            page.locator(CARD)
+            .locator("xpath=ancestor::div[3]")
+            .first.inner_text(timeout = 5000)
+        )
+    except Exception:
         return ""
-    return page.locator(CARD).locator("xpath=ancestor::div[3]").first.inner_text()
 
 
 def boot(
