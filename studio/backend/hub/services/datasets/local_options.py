@@ -41,10 +41,7 @@ _SPLIT_KEYWORDS = {
     "validation": frozenset({"validation", "valid", "dev", "val"}),
     "test": frozenset({"test", "testing", "eval", "evaluation"}),
 }
-_SHARDED_DATA_RE = re.compile(
-    r"^data/(?P<split>[^/]+)-[0-9]{5}-of-[0-9]{5}[^/]*\.[^/]+$",
-    re.IGNORECASE,
-)
+_SHARDED_DATA_RE = re.compile(r"^data/(?P<split>[^/]+)-[0-9]{5}-of-[0-9]{5}[^/]*\.[^/]+$")
 # datasets drops these by basename (FILES_TO_IGNORE) before it infers anything, so a
 # metadata-only cache is empty rather than a bogus train split.
 _IGNORED_DATA_FILENAMES = frozenset(
@@ -264,9 +261,10 @@ def _read_card_metadata(path: Path) -> Optional[dict[str, Any]]:
 
 
 def _has_snapshot_data_extension(filename: str) -> bool:
-    lowered = filename.lower()
+    # Case-sensitive on every platform: datasets globs through fsspec, whose matcher is a
+    # plain regex with no normcase, so a .JSONL file is unsupported even on Windows.
     return any(
-        lowered.endswith(extension + compression)
+        filename.endswith(extension + compression)
         for extension in TRAINING_DATA_EXTS
         for compression in _COMPRESSION_EXTENSIONS
     )
@@ -292,7 +290,8 @@ def _snapshot_data_files(snapshot: Path) -> list[PurePosixPath]:
             if not name.startswith((".", "__")) and not (base / name).is_symlink()
         ]
         for filename in filenames:
-            if filename.startswith((".", "__")) or filename in _IGNORED_DATA_FILENAMES:
+            # datasets hides dot files and `__` directories, but not `__` filenames.
+            if filename.startswith(".") or filename in _IGNORED_DATA_FILENAMES:
                 continue
             if not _has_snapshot_data_extension(filename):
                 continue
@@ -306,7 +305,7 @@ def _snapshot_data_files(snapshot: Path) -> list[PurePosixPath]:
 
 
 def _keyword_splits(parts: Iterable[str]) -> set[str]:
-    tokens = {token for part in parts for token in re.split(r"[-._ 0-9]+", part.lower()) if token}
+    tokens = {token for part in parts for token in re.split(r"[-._ 0-9]+", part) if token}
     return {split for split, keywords in _SPLIT_KEYWORDS.items() if tokens.intersection(keywords)}
 
 
@@ -353,11 +352,10 @@ def _split_module(files: Iterable[PurePosixPath]) -> Optional[str]:
 def _inferred_snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     """Mirror datasets' default local-file split inference without importing it.
 
-    Known gaps: `__` files are skipped though datasets only skips `__` directories, only
+    Known gaps, all of which hide an option rather than offer a dead one: names longer
+    than _MAX_OPTION_LENGTH are dropped because the picker cannot start them, only
     TRAINING_DATA_EXTS is considered, and external symlinks stay rejected for cache
-    safety, all of which hide an option rather than offer a dead one. Keyword matching is
-    case-insensitive, which can name a split datasets would call train on a
-    case-sensitive filesystem.
+    safety.
     """
     files = _snapshot_data_files(snapshot)
     if not files:

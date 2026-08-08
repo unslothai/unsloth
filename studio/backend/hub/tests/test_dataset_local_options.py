@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 
 import pytest
 
@@ -257,6 +258,62 @@ def test_snapshot_options_do_not_infer_sharded_names_datasets_rejects(tmp_path, 
 
     # datasets raises on the bad name before any split loads, so offer nothing at all.
     assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_infer_from_blob_backed_symlinks(tmp_path):
+    # The real cache shape on Linux and macOS: snapshot entries link into ../../blobs.
+    # Windows and HF_HUB_DISABLE_SYMLINKS write plain files, which the tests above cover.
+    repo = tmp_path / "datasets--org--data"
+    snapshot = repo / "snapshots" / "commit"
+    blobs = repo / "blobs"
+    snapshot.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    for index, name in enumerate(("train.jsonl", "val.jsonl", "test.jsonl")):
+        blob = blobs / f"blob{index}"
+        blob.write_text('{"text":"row"}\n', encoding = "utf-8")
+        (snapshot / name).symlink_to(os.path.relpath(blob, snapshot))
+
+    assert local_options._snapshot_options(snapshot) == {
+        ("default", "train"),
+        ("default", "validation"),
+        ("default", "test"),
+    }
+
+
+def test_snapshot_options_infer_sharded_unicode_split(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    data = snapshot / "data"
+    data.mkdir(parents = True)
+    (data / "café-00000-of-00001.parquet").write_bytes(b"parquet")
+
+    assert local_options._snapshot_options(snapshot) == {("default", "café")}
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected"),
+    [
+        ("val.jsonl", {("default", "validation")}),
+        # datasets globs through fsspec, a plain regex with no normcase, so an uppercase
+        # keyword is not a keyword and an uppercase extension is not supported data.
+        ("VAL.jsonl", {("default", "train")}),
+        ("train.JSONL", set()),
+    ],
+)
+def test_snapshot_options_infer_case_sensitively(tmp_path, filename, expected):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / filename).write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == expected
+
+
+def test_snapshot_options_infer_from_dunder_file_but_not_dunder_directory(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    (snapshot / "__pycache__").mkdir(parents = True)
+    (snapshot / "__pycache__" / "test.jsonl").write_text("{}\n", encoding = "utf-8")
+    (snapshot / "__val.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("default", "validation")}
 
 
 def test_snapshot_options_infer_sharded_custom_split(tmp_path):
