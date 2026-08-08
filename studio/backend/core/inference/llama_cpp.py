@@ -2959,6 +2959,7 @@ def _backfill_usage_from_timings(usage, timings):
 # system RAM, so hold back the same margin rather than inventing a larger one.
 _IGPU_HOST_RESERVE_MIB = 1024
 
+
 def _apply_igpu_host_reserve_mib(free_mib: int, is_igpu: bool) -> int:
     """Reserve host headroom on an integrated (shared-memory) Vulkan GPU.
 

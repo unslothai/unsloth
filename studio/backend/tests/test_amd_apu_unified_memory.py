@@ -305,9 +305,9 @@ class TestRadeonWheelsWithoutAnArchName:
         ("props", "expected"),
         [
             ({"gcnArchName": "gfx1151"}, True),
-            ({"gcn_arch_name": "gfx1150"}, True),          # variant spelling
+            ({"gcn_arch_name": "gfx1150"}, True),  # variant spelling
             ({"name": "AMD Radeon 8060S Graphics"}, True),  # Strix Halo by name
-            ({"name": "AMD Radeon 860M"}, True),            # Krackan by name
+            ({"name": "AMD Radeon 860M"}, True),  # Krackan by name
             ({"is_integrated": True, "name": "AMD Radeon Graphics"}, True),
             ({"gcnArchName": "gfx1100"}, False),
             ({"name": "AMD Radeon RX 7900 XTX"}, False),
