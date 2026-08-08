@@ -214,27 +214,16 @@ async def generate_video(
     from core.inference.video_families import (
         VIDEO_GENERATION_BUSY_MSG,
         VIDEO_NOT_LOADED_MSG,
-        validate_video_request_shape,
+        VideoShapeError,
     )
 
     backend = get_video_backend()
     # The request bounds on VideoGenerateRequest are a coarse outer guard; the real rule is the LOADED
-    # family's (its presets and frame lattice), so enforce it here instead of letting the backend snap
-    # silently to a shape the checkpoint was never trained for. Unloaded falls through untouched, so
-    # begin_generate still owns the not-loaded 409; a family with no declared presets keeps the old SIZE
-    # snapping, though its frame lattice is still enforced (frame_step is declared either way).
-    fam = await asyncio.to_thread(backend.loaded_family)
-    if fam is not None:
-        try:
-            validate_video_request_shape(
-                fam,
-                width = request.width,
-                height = request.height,
-                num_frames = request.num_frames,
-            )
-        except ValueError as exc:
-            # 422: the body parses and is in range, but the requested shape is not one this model can render.
-            raise HTTPException(status_code = 422, detail = str(exc))
+    # family's (its presets and frame lattice), and begin_generate applies it under the same lock that
+    # reserves the state the job will run against, so a load committing concurrently cannot leave the
+    # shape judged against one family and denoised by another. Unloaded still falls through to the
+    # not-loaded 409; a family with no declared presets keeps the old SIZE snapping, though its frame
+    # lattice is enforced either way (frame_step is declared regardless).
     try:
         await asyncio.to_thread(
             backend.begin_generate,
@@ -249,6 +238,10 @@ async def generate_video(
             guidance_2 = request.guidance_2,
             seed = request.seed,
         )
+    except VideoShapeError as exc:
+        # 422 before the 400 below, and it must stay first: VideoShapeError IS a ValueError. The body
+        # parses and is in range, but the shape is not one this model can render.
+        raise HTTPException(status_code = 422, detail = str(exc))
     except ValueError as exc:
         # Bad client input -- a 400 with the reason, not a generic 500.
         raise HTTPException(status_code = 400, detail = str(exc))

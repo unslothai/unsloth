@@ -18,6 +18,7 @@ exercised where it actually lives (the route, before the worker starts).
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import replace
 
@@ -26,6 +27,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import core.inference.video as video_module
+import core.inference.video_families as video_families_module
 import core.inference.video_gallery as gallery_module
 from auth.authentication import get_current_subject
 from core.inference.video_families import (
@@ -42,6 +44,8 @@ from routes.video import router as video_router
 
 # LTX-2 is the reference family for the single-family cases: 4 presets and frame_step 8.
 LTX2 = detect_video_family("Lightricks/LTX-2")
+# Wan is the contrast family: 704x1216 is an LTX-2 preset and is not one of Wan's.
+WAN_TI2V_5B = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
 
 
 # ── the validator itself ──────────────────────────────────────────────────────
@@ -342,3 +346,51 @@ def test_the_coarse_pydantic_bounds_still_reject_out_of_range_sizes(client, back
     backend.load_as(LTX2)
     for body in (_payload(width = 16), _payload(height = 4096), _payload(num_frames = 0)):
         assert client.post("/api/inference/video/generate", json = body).status_code == 422
+
+
+# ── the check has to be atomic with the state it judges ───────────────────────
+
+
+def test_the_shape_is_judged_under_the_lock_that_reserves_the_state(backend, monkeypatch):
+    """A load commits its new ``_state`` under the same lock ``begin_generate`` takes. Reading
+    the family separately, before that lock, leaves a window where a size is accepted for the
+    family being replaced and then denoised by the new one -- or a size the new family supports
+    is rejected. Proven directly: while the validator runs, the lock is unavailable to anyone
+    else, so no load can be committing.
+    """
+    backend.load_as(LTX2)
+    held: list[bool] = []
+    real = video_families_module.validate_video_request_shape
+
+    def _spy(*args, **kwargs):
+        # Another thread, because a Lock says nothing about which thread owns it and this call
+        # runs on the one that took it.
+        probe: list[bool] = []
+        watcher = threading.Thread(target = lambda: probe.append(backend._lock.acquire(False)))
+        watcher.start()
+        watcher.join(5)
+        if probe and probe[0]:
+            backend._lock.release()
+        held.append(not (probe and probe[0]))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(video_module, "validate_video_request_shape", _spy)
+    backend.begin_generate(prompt = "a cat", width = 768, height = 512)
+
+    assert held == [True], "the shape was judged outside the lock that owns the state"
+
+
+def test_a_family_swap_cannot_slip_between_the_check_and_the_job(backend):
+    """The consequence, end to end rather than by construction. 704x1216 is a real LTX-2 preset
+    and is not one of Wan's, so whichever family is resident when the lock is taken decides the
+    outcome -- and the job that runs afterwards is the one that was judged."""
+    backend.load_as(LTX2)
+    backend.begin_generate(prompt = "a cat", width = 704, height = 1216)  # accepted for LTX-2
+    backend.cancel_generate()
+    # The worker clears the slot asynchronously and this test is about the check, not the job.
+    backend._generate_job_active = False
+
+    backend.load_as(WAN_TI2V_5B)
+    with pytest.raises(ValueError):
+        backend.begin_generate(prompt = "a cat", width = 704, height = 1216)
+    assert not backend._generate_job_active, "a refused shape must not reserve the job slot"

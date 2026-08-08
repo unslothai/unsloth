@@ -275,6 +275,13 @@ def format_video_resolution_presets(fam: VideoFamily) -> str:
     return ", ".join(f"{w}x{h}" for w, h in fam.resolution_presets)
 
 
+class VideoShapeError(ValueError):
+    """A shape this family cannot render. A ValueError subclass so the existing
+    ``except ValueError`` callers keep catching it, and a distinct type so the generate
+    route can answer 422 (the body is in range, the shape is not supported) without
+    widening the 400 it gives every other bad-input ValueError."""
+
+
 def validate_video_request_shape(
     fam: VideoFamily,
     width: Optional[int] = None,
@@ -312,7 +319,7 @@ def validate_video_request_shape(
         want_w = presets[0][0] if width is None else int(width)
         want_h = presets[0][1] if height is None else int(height)
         if (want_w, want_h) not in presets:
-            raise ValueError(
+            raise VideoShapeError(
                 f"{want_w}x{want_h} is not a supported resolution for {fam.name}. "
                 f"Supported resolutions: {format_video_resolution_presets(fam)}."
             )
@@ -331,7 +338,7 @@ def validate_video_request_shape(
                 if above <= MAX_VIDEO_NUM_FRAMES
                 else f"the nearest supported count is {below}"
             )
-            raise ValueError(
+            raise VideoShapeError(
                 f"{count} is not a supported frame count for {fam.name}. Its VAE compresses time by "
                 f"{step}, so a frame count must be k * {step} + 1; {nearest} "
                 f"(the default is {fam.default_num_frames})."

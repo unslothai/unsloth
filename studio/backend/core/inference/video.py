@@ -95,6 +95,7 @@ from .video_families import (
     snap_num_frames,
     snap_video_size,
     supported_video_family_names,
+    validate_video_request_shape,
 )
 from utils.hardware import clear_gpu_cache
 
@@ -1661,6 +1662,16 @@ class VideoBackend:
                 raise RuntimeError(VIDEO_NOT_LOADED_MSG)
             if self._generate_job_active:
                 raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
+            # Under the SAME lock that reserves the state this job will run against. A load
+            # commits its new state here too, so judging the shape from a separate earlier read
+            # could accept a size for the family being replaced and then denoise it with the new
+            # one, or reject a size the new family supports. getattr, so a state carrying no
+            # family degrades to the old snapping rather than raising.
+            fam = getattr(self._state, "family", None)
+            if fam is not None:
+                validate_video_request_shape(
+                    fam, width = width, height = height, num_frames = num_frames
+                )
             self._generate_job_active = True
             # Register BEFORE the worker starts so a cancel/unload in the spawn window still stops the run.
             self._active_generate_cancel = cancel
