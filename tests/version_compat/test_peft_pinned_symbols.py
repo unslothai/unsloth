@@ -337,3 +337,21 @@ def test_peft_version_parseable(tag: str):
     assert (
         has_literal or has_subimport or has_metadata
     ), f"{tag}: peft.__version__ not exported via any known mechanism"
+
+
+# 11. peft.tuners.lora.variants.MiCALinearVariant
+
+
+@pytest.mark.parametrize("tag", PEFT_TAGS)
+def test_peft_mica_variant_and_init(tag: str):
+    variants_src = fetch_text("huggingface/peft", tag, "src/peft/tuners/lora/variants.py")
+    if variants_src is None or not has_def(variants_src, "MiCALinearVariant", "class"):
+        pytest.skip(f"{tag}: MiCA not present in this PEFT version")
+
+    layer_src = fetch_text("huggingface/peft", tag, "src/peft/tuners/lora/layer.py")
+    assert layer_src is not None, f"{tag}: layer.py missing"
+    assert has_def(layer_src, "mica_init", "func"), (
+        f"{tag}: MiCALinearVariant present but LoraLayer.mica_init missing — "
+        f'unsloth\'s `init_lora_weights="mica"` gate imports the class but PEFT '
+        f"needs the init hook to actually initialize the adapter"
+    )
