@@ -397,6 +397,15 @@ export interface DiffusionTrainingStartRequest {
   cache_variants?: number;
   // Allow TF32 matmuls on Ampere+ for a throughput win at negligible quality cost.
   enable_tf32?: boolean;
+  // Write a resumable checkpoint every N optimizer steps. 0 (the default) writes none; a
+  // stop-and-save always writes one, so Resume stays available either way.
+  save_steps?: number;
+  save_total_limit?: number;
+  // Continue a previous run: its output_dir, or one explicit checkpoint-<N> directory inside it.
+  // train_steps then means the TARGET TOTAL, so a checkpoint at 11 with train_steps 500 runs 12..500.
+  resume_from_checkpoint?: string | null;
+  // The run being continued. Recorded in the history for lineage only.
+  resumed_from_job_id?: string | null;
   // Forwarded to the pipeline's from_pretrained for a gated/private base repo (e.g. FLUX).
   hf_token?: string | null;
 }
@@ -437,6 +446,12 @@ export interface DiffusionTrainingStatus {
   // Live throughput + peak VRAM (from the trainer's progress events).
   samples_per_second?: number | null;
   peak_memory_gb?: number | null;
+  // The newest resume checkpoint this job wrote, the step it holds, why one could not be written,
+  // and the step a resumed job picked up from. Absent on an older backend.
+  checkpoint_path?: string | null;
+  checkpoint_step?: number | null;
+  resume_blocked_reason?: string | null;
+  resumed_from_step?: number | null;
   // Bounded step/loss/lr history for the live charts.
   metric_history?: DiffusionMetricHistory | null;
 }
@@ -480,6 +495,18 @@ export interface DiffusionTrainingRunSummary {
   instance_prompt?: string | null;
   started_at?: number | null;
   ended_at?: number | null;
+  // The run's adapter directory, which is what a Resume replays as resume_from_checkpoint.
+  output_dir?: string | null;
+  // Whether the run can be continued, re-derived from the checkpoints on disk on every read, with
+  // the step the newest bundle holds. When false, resume_blocked_reason says why (tooltip text).
+  can_resume?: boolean;
+  checkpoint_step?: number | null;
+  // The exact bundle a resume would continue; sent back as resume_from_checkpoint.
+  checkpoint_path?: string | null;
+  resume_blocked_reason?: string | null;
+  // Lineage: the run this one continued, and the step it picked up from.
+  resumed_from_job_id?: string | null;
+  resumed_from_step?: number | null;
 }
 
 export interface DiffusionTrainingRunDetail extends DiffusionTrainingRunSummary {

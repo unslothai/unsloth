@@ -96,6 +96,88 @@ def _runs_dir() -> Path:
     return d
 
 
+def _resume_fields(
+    output_dir: Optional[str],
+    *,
+    status: Optional[str] = None,
+    started_at: Optional[float] = None,
+    ended_at: Optional[float] = None,
+    total_steps: Optional[int] = None,
+    write_error: Optional[str] = None,
+    source_checkpoint: Optional[str] = None,
+) -> dict[str, Any]:
+    """``can_resume`` / ``checkpoint_step`` / ``resume_blocked_reason`` for a run, read from
+    the checkpoints that are actually on disk.
+
+    Derived, not trusted: a persisted record is a snapshot of the moment the run ended, but
+    the user can delete the output folder afterwards. ``started_at`` fences off bundles an
+    EARLIER run of the same adapter name left in the same folder, and ``ended_at`` fences off
+    the ones a LATER run put there after this one finished -- without the upper bound a
+    finished run offers, and resumes, its successor's training state. ``write_error`` is the run's
+    own report that a checkpoint write failed; that is sticky and blocks resume (mirroring the
+    MLX trainer's ``resume_blocked``), because whatever older state is on disk predates the
+    adapter that was published, so continuing from it would silently lose steps. Never raises."""
+    try:
+        from core.training.diffusion_checkpoint import describe_resume_state
+        state = describe_resume_state(
+            output_dir,
+            status = status,
+            started_at = started_at,
+            ended_at = ended_at,
+            total_steps = total_steps,
+            source_checkpoint = source_checkpoint,
+        )
+    except Exception:  # noqa: BLE001 -- history must never break on a checkpoint scan
+        state = {}
+    if write_error:
+        return {
+            "can_resume": False,
+            "checkpoint_step": state.get("checkpoint_step"),
+            "checkpoint_path": None,
+            "resume_blocked_reason": write_error,
+        }
+    can_resume = bool(state.get("can_resume"))
+    return {
+        "can_resume": can_resume,
+        "checkpoint_step": state.get("checkpoint_step"),
+        # The EXACT bundle this run would continue, so the client resumes the one it was shown
+        # rather than "whatever is newest in that folder" (which, in a folder two runs share,
+        # can be a different run's).
+        "checkpoint_path": state.get("checkpoint_path") if can_resume else None,
+        "resume_blocked_reason": state.get("resume_blocked_reason"),
+    }
+
+
+def _refresh_resume_state(rec: dict) -> dict:
+    """Re-derive a persisted record's resume fields from the checkpoints on disk, in place.
+
+    Also backfills ``output_dir`` from the stored config for a record written before that field
+    existed: the UI replays that path as ``resume_from_checkpoint``, so reporting ``can_resume``
+    without it would enable an action the client then refuses on its own."""
+    config = rec.get("config")
+    output_dir = rec.get("output_dir") or (
+        config.get("output_dir") if isinstance(config, dict) else None
+    )
+    if output_dir and not rec.get("output_dir"):
+        rec["output_dir"] = str(output_dir)
+    rec.update(
+        _resume_fields(
+            output_dir,
+            status = rec.get("status"),
+            started_at = rec.get("started_at"),
+            ended_at = rec.get("ended_at"),
+            total_steps = rec.get("total_steps"),
+            write_error = rec.get("checkpoint_write_error"),
+            # What this run itself resumed from, so a resumed run that died before its first
+            # save can still offer the bundle it was validated against.
+            source_checkpoint = (
+                config.get("resume_from_checkpoint") if isinstance(config, dict) else None
+            ),
+        )
+    )
+    return rec
+
+
 def list_diffusion_runs(limit: int = 20) -> list[dict]:
     """Summaries of persisted diffusion runs, newest first. The heavy per-run payload
     (metric logs, config) stays in the file; fetch it via ``get_diffusion_run``."""
@@ -114,6 +196,8 @@ def list_diffusion_runs(limit: int = 20) -> list[dict]:
             continue
         if not (isinstance(rec.get("job_id"), str) and isinstance(rec.get("status"), str)):
             continue
+        # Resume state comes from the checkpoints on disk NOW, before the config is dropped.
+        _refresh_resume_state(rec)
         rec.pop("metric_history", None)
         rec.pop("config", None)
         out.append(rec)
@@ -127,9 +211,10 @@ def get_diffusion_run(job_id: str) -> Optional[dict]:
         return None
     p = _runs_dir() / f"{job_id}.json"
     try:
-        return json.loads(p.read_text(encoding = "utf-8"))
+        rec = json.loads(p.read_text(encoding = "utf-8"))
     except Exception:  # noqa: BLE001 -- missing/corrupt record
         return None
+    return _refresh_resume_state(rec) if isinstance(rec, dict) else rec
 
 
 def _idle_state() -> dict[str, Any]:
@@ -155,6 +240,13 @@ def _idle_state() -> dict[str, Any]:
         "base_model": None,
         "samples_per_second": None,
         "peak_memory_gb": None,
+        # Resume state for this job: where its newest checkpoint-<N> bundle is, the step it holds,
+        # why one could not be written (surfaced as the Resume action's disabled tooltip), and the
+        # step a resumed run picked up from.
+        "checkpoint_path": None,
+        "checkpoint_step": None,
+        "resume_blocked_reason": None,
+        "resumed_from_step": None,
         "started_at": None,
         "updated_at": None,
         # Bounded, paired history arrays for the live loss chart (see _append_metric).
@@ -497,6 +589,21 @@ class DiffusionTrainingService:
                 "ema_path": s.get("ema_path"),
                 "catalog_path": s.get("catalog_path"),
                 "saved": bool(s.get("lora_path")),
+                # Resume lineage + state. output_dir is what a Resume replays, so it is recorded on
+                # the run rather than only inside the config. can_resume / checkpoint_step are a
+                # snapshot taken now and RE-DERIVED from disk on read, so deleting the checkpoints
+                # later takes the action away instead of leaving a button that 400s.
+                "output_dir": str(adapter) if adapter else None,
+                "resumed_from_job_id": cfg.get("resumed_from_job_id") or None,
+                "resumed_from_step": s.get("resumed_from_step"),
+                "checkpoint_write_error": s.get("resume_blocked_reason") or None,
+                **_resume_fields(
+                    str(adapter) if adapter else None,
+                    status = s.get("status"),
+                    started_at = s.get("started_at"),
+                    total_steps = s.get("total_steps") or 0,
+                    write_error = s.get("resume_blocked_reason"),
+                ),
                 "config": cfg,
                 "metric_history": {
                     "steps": s.get("metric_steps") or [],
@@ -547,6 +654,27 @@ class DiffusionTrainingService:
             elif etype == "warning":
                 # Non-fatal trainer notes; keep training state, surface the text.
                 s["message"] = str(ev.get("message", "warning"))
+            elif etype == "resumed":
+                # The trainer restored a checkpoint and is continuing from it. Recorded so the run
+                # history shows lineage instead of an unexplained run that starts mid-way. This is
+                # the step resumed FROM, not a checkpoint this run wrote, so it does not touch
+                # checkpoint_step (which tracks this run's own newest bundle).
+                s.update(
+                    resumed_from_step = ev.get("step"),
+                    message = f"Resuming from step {ev.get('step')}...",
+                )
+            elif etype == "checkpoint_saved":
+                # Folded as each bundle lands, not only at the end, so a run that later crashes is
+                # still reported as resumable. A good write also clears an earlier write's failure.
+                s.update(
+                    checkpoint_path = ev.get("checkpoint_path"),
+                    checkpoint_step = ev.get("step"),
+                    resume_blocked_reason = None,
+                )
+            elif etype == "checkpoint_failed":
+                # Sticky: whatever older bundle is on disk predates the work this run did, so
+                # resuming from it would silently lose steps. Mirrors the MLX resume_blocked flag.
+                s["resume_blocked_reason"] = str(ev.get("message", "checkpoint write failed"))
             elif etype == "progress":
                 # Null any non-finite float so the JSON stays strict-parseable; a missing key keeps the last value.
                 loss = _finite_or_none(ev["loss"]) if "loss" in ev else s["loss"]
@@ -605,6 +733,16 @@ class DiffusionTrainingService:
                     s["family"] = ev.get("family")
                 if ev.get("base_model") is not None:
                     s["base_model"] = ev.get("base_model")
+                # Checkpoint state is folded from the per-save events above; only the lineage is
+                # (re)confirmed here, for a pump that missed the earlier ``resumed`` event.
+                if ev.get("resumed_from_step") is not None:
+                    s["resumed_from_step"] = ev.get("resumed_from_step")
+                if ev.get("discarded"):
+                    # Cancelled with "stop without saving": the user threw this run away, so its
+                    # own periodic checkpoints must not keep offering to continue it.
+                    s["resume_blocked_reason"] = (
+                        "This run was stopped without saving, so it was discarded."
+                    )
             elif etype == "error":
                 # Reset in_model_load too: an error during model loading has no model_load_completed.
                 s.update(

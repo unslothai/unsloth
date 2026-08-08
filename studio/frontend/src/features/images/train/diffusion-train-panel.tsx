@@ -62,6 +62,10 @@ import {
   runExampleImport,
   shortExampleLabel,
 } from "./example-dataset-cards";
+import {
+  buildDiffusionResumePayload,
+  resumeActionLabel,
+} from "./resume-diffusion-run";
 
 // The families the Train tab can train, in popularity order; a fallback for an older backend whose /info reports none.
 type FamilyPreset = {
@@ -364,6 +368,9 @@ export function DiffusionTrainPanel({
   const [batchSize, setBatchSize] = useState(1);
   const [gradAccum, setGradAccum] = useState(1);
   const [seed, setSeed] = useState(42);
+  // Periodic resume points. 0 (off) keeps the default behaviour: only a stop-and-save writes one,
+  // so nothing is spent on disk unless the user asks to survive a crash.
+  const [saveSteps, setSaveSteps] = useState(0);
   // LR schedule. Warmup only applies to the non-constant schedules; plain "constant" ignores it.
   const [lrScheduler, setLrScheduler] = useState<
     "constant" | "constant_with_warmup" | "cosine" | "linear"
@@ -404,6 +411,8 @@ export function DiffusionTrainPanel({
   const [stopDialogOpen, setStopDialogOpen] = useState(false);
   // Set when the user confirms a stop. Clamped to the running state at read time so a fresh run never inherits it.
   const [stopRequestedLocal, setStopRequestedLocal] = useState(false);
+  // The run whose Resume request is in flight, so its button alone shows the pending label.
+  const [resumingJobId, setResumingJobId] = useState<string | null>(null);
 
   const refreshInfo = useCallback(async (): Promise<DiffusionTrainingInfo | null> => {
     try {
@@ -575,6 +584,14 @@ export function DiffusionTrainPanel({
 
   // The pending-stop flag only matters while a run is active; clamping at read time means a fresh run never inherits a stale "Stopping...".
   const stopRequested = running && stopRequestedLocal;
+
+  // The just-finished run's persisted record, which is where can_resume lives (the live status has
+  // no way to know whether the checkpoint survived on disk). It appears a beat after the terminal
+  // status, via the delayed refetch below, so the Resume action enables itself once it lands.
+  const liveRunSummary = useMemo(
+    () => prevRuns.find((r) => r.job_id === status?.job_id) ?? null,
+    [prevRuns, status?.job_id],
+  );
 
   // Whether there is a run to show live: running, or ANY terminal run the user has not dismissed. Dismissing must cover every
   // terminal status, or "Train another" after a stop would trap the run view with no way back to the settings.
@@ -768,6 +785,7 @@ export function DiffusionTrainPanel({
         lr_scheduler: lrScheduler,
         lr_warmup_steps: lrScheduler === "constant" ? 0 : lrWarmupSteps,
         lora_rank: rank,
+        save_steps: Math.max(0, Math.floor(saveSteps)),
         mixed_precision: precision,
         // DiT families quantise the base weights; sdxl uses mixed_precision above and ignores this. Only send compile where supported.
         base_precision: isDiT ? basePrecision : undefined,
@@ -797,6 +815,7 @@ export function DiffusionTrainPanel({
     batchSize,
     gradAccum,
     seed,
+    saveSteps,
     gradCheckpoint,
     lrScheduler,
     lrWarmupSteps,
@@ -808,6 +827,41 @@ export function DiffusionTrainPanel({
     compileTransformer,
     poll,
   ]);
+
+  // Continue a stopped run from its newest checkpoint. The stored config is replayed verbatim
+  // (same hyperparameters, same output folder, same TARGET step count), with the run's output
+  // directory as resume_from_checkpoint -- the same approach as the LLM tab's resumeTrainingRun.
+  // The detail is re-fetched on click so `can_resume` reflects the checkpoints on disk right now,
+  // not whatever the list was showing when it was last polled.
+  const onResume = useCallback(
+    async (jobId: string) => {
+      setResumingJobId(jobId);
+      try {
+        const detail = await getDiffusionTrainingRun(jobId);
+        const payload = buildDiffusionResumePayload(detail, {
+          hfToken: hfApiToken(getHfToken()) || undefined,
+        });
+        await startDiffusionTraining(payload);
+        // Only after the start is ACCEPTED: a refusal (identity mismatch, a job already running)
+        // must leave the history detail the user was reading exactly as it was.
+        setStopRequestedLocal(false);
+        notifiedComplete.current = false;
+        setViewRun(null);
+        setDismissedJobId(null);
+        toast.success(
+          detail.checkpoint_step != null
+            ? `Resuming from step ${detail.checkpoint_step}`
+            : "Resuming training",
+        );
+        void poll();
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Failed to resume training");
+      } finally {
+        setResumingJobId(null);
+      }
+    },
+    [poll],
+  );
 
   // Confirm-then-stop, mirroring the LLM Train tab. `save` writes the current adapter before halting; false discards it.
   const onStop = useCallback(
@@ -972,6 +1026,10 @@ export function DiffusionTrainPanel({
         {numberField("Seed", seed, setSeed, 42, {
           min: 0,
           hint: "Fixes the run's randomness, so the same settings and images reproduce the same LoRA.",
+        })}
+        {numberField("Checkpoint every", saveSteps, setSaveSteps, 0, {
+          min: 0,
+          hint: "Saves a resume point every this many steps, so a crash or a shutdown can be picked up where it left off. 0 turns it off; stopping and saving always leaves one either way.",
         })}
       </div>
 
@@ -1465,8 +1523,12 @@ export function DiffusionTrainPanel({
                   ? ` - ${new Date(viewRun.ended_at * 1000).toLocaleString()}`
                   : ""}
               </p>
-              {viewRun.saved && viewRun.catalog_path && (
-                <div>
+              {/* Deploy and Resume sit together: a stopped run's two next steps are "use what I
+                  have" and "carry on training it". Resume stays visible but disabled when the
+                  backend says it cannot, with the reason as the tooltip, so the absence of a
+                  checkpoint is explained rather than silently hiding the action. */}
+              <div className="flex flex-wrap items-center gap-2">
+                {viewRun.saved && viewRun.catalog_path && (
                   <Button
                     type="button"
                     size="sm"
@@ -1481,8 +1543,27 @@ export function DiffusionTrainPanel({
                   >
                     Deploy to Create
                   </Button>
-                </div>
-              )}
+                )}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void onResume(viewRun.job_id)}
+                  disabled={
+                    !viewRun.can_resume || running || resumingJobId === viewRun.job_id
+                  }
+                  title={
+                    viewRun.can_resume
+                      ? undefined
+                      : viewRun.resume_blocked_reason ||
+                        "This run has no checkpoint to continue from."
+                  }
+                >
+                  {resumingJobId === viewRun.job_id
+                    ? "Resuming..."
+                    : resumeActionLabel(viewRun)}
+                </Button>
+              </div>
             </div>
             <DiffusionCharts
               lossHistory={viewLossHistory}
@@ -1615,20 +1696,36 @@ export function DiffusionTrainPanel({
                   {stopRequested ? "Stopping..." : "Stop training"}
                 </Button>
               )}
-              {/* Terminal runs WITHOUT an adapter card (error, or a discarded stop) still need a way back to the settings. */}
+              {/* Terminal runs WITHOUT an adapter card (error, or a discarded stop) still need a way back to the settings.
+                  They can also be the most worth resuming: a crash mid-run leaves no adapter but may well have left a
+                  periodic checkpoint, so offer Resume here too when the backend says there is one. */}
               {!running &&
                 status &&
                 terminalStatuses.includes(status.status) &&
                 !completed &&
                 !stoppedWithAdapter && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="w-full"
-                    onClick={() => setDismissedJobId(status.job_id)}
-                  >
-                    Back to settings
-                  </Button>
+                  <div className="flex flex-wrap gap-2">
+                    {liveRunSummary?.can_resume && status.job_id && (
+                      <Button
+                        type="button"
+                        className="flex-1"
+                        onClick={() => void onResume(status.job_id as string)}
+                        disabled={resumingJobId === status.job_id}
+                      >
+                        {resumingJobId === status.job_id
+                          ? "Resuming..."
+                          : resumeActionLabel(liveRunSummary)}
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="flex-1"
+                      onClick={() => setDismissedJobId(status.job_id)}
+                    >
+                      Back to settings
+                    </Button>
+                  </div>
                 )}
             </div>
 
@@ -1649,10 +1746,39 @@ export function DiffusionTrainPanel({
                     <span className="mt-1 block break-all">EMA adapter: {status.ema_path}</span>
                   )}
                 </p>
-                <div className="mt-1 flex gap-2">
+                <div className="mt-1 flex flex-wrap gap-2">
                   <Button type="button" size="sm" onClick={onDeployClick}>
                     Deploy to Create
                   </Button>
+                  {/* Only a run stopped short can be continued; a completed one is already at its
+                      target. Disabled until the run record lands (and enabled only if its
+                      checkpoint really is on disk), with the backend's reason as the tooltip. */}
+                  {!completed && status?.job_id && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void onResume(status.job_id as string)}
+                      disabled={
+                        !liveRunSummary?.can_resume ||
+                        running ||
+                        resumingJobId === status.job_id
+                      }
+                      title={
+                        liveRunSummary?.can_resume
+                          ? undefined
+                          : liveRunSummary?.resume_blocked_reason ||
+                            status.resume_blocked_reason ||
+                            "Saving this run's checkpoint..."
+                      }
+                    >
+                      {resumingJobId === status.job_id
+                        ? "Resuming..."
+                        : resumeActionLabel(
+                            liveRunSummary ?? { checkpoint_step: status.checkpoint_step },
+                          )}
+                    </Button>
+                  )}
                   <Button
                     type="button"
                     size="sm"
