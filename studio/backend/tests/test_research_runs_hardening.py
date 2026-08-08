@@ -18,9 +18,13 @@ from core.research_runs import (
     ResearchSupervisor,
     RunCancelled,
     _citation_title,
+    _completion_hit_context_wall,
     _escape_link_destination,
+    _estimate_prompt_tokens,
+    _resolve_max_tokens,
     _sanitize_public_query,
     _shield_untrusted,
+    _synthesis_length_limit_error,
     _validate_report_document_sources,
     _validate_report_sources,
 )
@@ -228,6 +232,48 @@ def test_prompt_budget_counts_the_whole_prompt(monkeypatch):
     assert research_runs._trimmable_budget(total, 0, 1_000) == 1_000
     assert research_runs._trimmable_budget(total, total - 10, 1_000) == 10
     assert research_runs._trimmable_budget(total, total + 5_000, 1_000) == 0
+
+
+def test_resolve_max_tokens_clamps_to_loaded_context(monkeypatch):
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda: 12_288)
+    messages = [{"role": "user", "content": "x" * 33_000}]
+    prompt_tokens = _estimate_prompt_tokens(messages)
+    resolved = _resolve_max_tokens(16_384, {}, messages)
+    assert resolved == 12_288 - prompt_tokens
+    assert resolved < 16_384
+
+
+def test_completion_hit_context_wall_matches_live_probe():
+    usage = {
+        "prompt_tokens": 11_032,
+        "completion_tokens": 1_256,
+        "total_tokens": 12_288,
+    }
+    assert _completion_hit_context_wall(
+        usage,
+        requested_max_tokens = 16_384,
+        context_length = 12_288,
+    )
+    assert not _completion_hit_context_wall(
+        {
+            "prompt_tokens": 1_000,
+            "completion_tokens": 16_384,
+            "total_tokens": 17_384,
+        },
+        requested_max_tokens = 16_384,
+        context_length = 32_768,
+    )
+
+
+def test_synthesis_length_limit_error_names_context_window():
+    usage = {
+        "prompt_tokens": 11_032,
+        "completion_tokens": 1_256,
+        "total_tokens": 12_288,
+    }
+    message = _synthesis_length_limit_error(usage, requested_max_tokens = 16_384)
+    assert "context window" in message.lower()
+    assert "Increase Context Length" in message
 
 
 def test_every_research_prompt_path_is_budgeted():
@@ -687,10 +733,10 @@ def test_stream_completion_retries_after_the_model_is_loaded_again(monkeypatch):
         return None
 
     supervisor = _make_supervisor(_check_active)
-    report, reasoning, finish_reason = asyncio.run(
+    report, reasoning, finish_reason, usage = asyncio.run(
         supervisor._stream_completion(_waiting_run(30.0), [{"role": "user"}], report_progress = False)
     )
-    assert (report, reasoning, finish_reason) == ("report", "", "stop")
+    assert (report, reasoning, finish_reason, usage) == ("report", "", "stop", None)
     assert len(sent) == 2
 
 
@@ -738,7 +784,7 @@ def test_stream_completion_retries_a_transport_error_before_any_bytes_stream(mon
         [httpx.ConnectError(_TRANSPORT_BLIP), _response(200, body = _stream_body())],
     )
     supervisor = _make_supervisor(_noop_check_active)
-    assert _run_stream(supervisor) == ("report", "", "stop")
+    assert _run_stream(supervisor) == ("report", "", "stop", None)
     assert len(sent) == 2
     assert delays == [1]
 
@@ -750,7 +796,7 @@ def test_stream_completion_retries_a_transient_server_error(monkeypatch):
         [_response(503, body = "overloaded"), _response(200, body = _stream_body())],
     )
     supervisor = _make_supervisor(_noop_check_active)
-    assert _run_stream(supervisor) == ("report", "", "stop")
+    assert _run_stream(supervisor) == ("report", "", "stop", None)
     assert len(sent) == 2
     assert delays == [1]
 
@@ -885,6 +931,496 @@ def test_stream_completion_times_out_when_output_stalls(monkeypatch):
         _run_stream(supervisor, timeout_seconds = 1.0)
 
 
+def test_stream_completion_times_out_when_output_never_starts(monkeypatch):
+    """#7964: headers arrive, then the backend goes silent. Silence is the fault signal."""
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.05)
+
+    class _SilentStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            await asyncio.sleep(30)
+            yield "data: [DONE]"
+
+    _install_fake_client(monkeypatch, [_SilentStream()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        _run_stream(supervisor, timeout_seconds = 1.0)
+
+
+def test_admission_keepalives_do_not_spend_the_first_output_budget(monkeypatch):
+    """A run queued behind another generation must still be served, not failed.
+
+    The admission queue has no default timeout and marks the wait with its own SSE
+    comment, so a queued Deep Research run outlives any fixed first-output budget
+    through no fault of the model.
+    """
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.05)
+
+    class _QueuedThenServedStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            # Ten periods, each under the budget but far over it in total; none may end the run.
+            for _ in range(10):
+                await asyncio.sleep(0.02)
+                yield ": admission-wait"
+            yield 'data: {"choices":[{"delta":{"content":"report"}}]}'
+            yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+    _install_fake_client(monkeypatch, [_QueuedThenServedStream()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    assert _run_stream(supervisor, timeout_seconds = 5.0) == ("report", "", "stop", None)
+
+
+def _comment_only_stream(comment: str):
+    class _CommentOnly:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            while True:
+                await asyncio.sleep(0.01)
+                yield comment
+
+    return _CommentOnly()
+
+
+def test_plain_keepalives_mean_a_silent_backend_and_spend_the_budget(monkeypatch):
+    """A backend that only ever sends keepalives is stalled, whatever the phase.
+
+    routes/inference.py sends the plain comment while llama-server is silent, both
+    before its headers and mid-generation, so it must not defer the budget.
+    """
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.05)
+    _install_fake_client(monkeypatch, [_comment_only_stream(": keep-alive")])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    started = time.monotonic()
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        _run_stream(supervisor, timeout_seconds = 30.0)
+    assert time.monotonic() - started < 5.0, "must end on the budget, not the wall clock"
+
+
+def test_the_queue_wait_is_not_charged_to_the_model_budget(monkeypatch):
+    """The tail of a queue wait must not eat into the model's own budget.
+
+    Markers are interval-spaced, so anchoring the deadline to the last one charges up to
+    a full interval of queueing against the model. The wait is suspended instead, and the
+    budget starts when the queue says the slot is ours.
+    """
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.3)
+
+    class _QueuedThenAdmitted:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            # One marker, then a queue wait far longer than the budget between markers.
+            yield ": admission-wait"
+            await asyncio.sleep(1.0)
+            yield ": admission-done"
+            yield 'data: {"choices":[{"delta":{"content":"report"}}]}'
+            yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+    _install_fake_client(monkeypatch, [_QueuedThenAdmitted()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    assert _run_stream(supervisor, timeout_seconds = 10.0) == ("report", "", "stop", None)
+
+
+def test_the_budget_starts_when_admission_ends(monkeypatch):
+    """Once the slot is granted, a silent model is on its own budget again."""
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.1)
+
+    class _AdmittedThenSilent:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            yield ": admission-wait"
+            yield ": admission-done"
+            await asyncio.sleep(30)
+            yield "data: [DONE]"
+
+    _install_fake_client(monkeypatch, [_AdmittedThenSilent()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    started = time.monotonic()
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        _run_stream(supervisor, timeout_seconds = 30.0)
+    assert time.monotonic() - started < 5.0, "the budget must run from admission end"
+
+
+def test_endless_admission_waits_still_end_at_the_wall_clock(monkeypatch):
+    """Deferring on the admission marker must not make a stream unbounded."""
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.05)
+    _install_fake_client(monkeypatch, [_comment_only_stream(": admission-wait")])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    with pytest.raises(research_runs.ModelWallClockTimeout):
+        _run_stream(supervisor, timeout_seconds = 0.4)
+
+
+def test_a_task_outliving_cleanup_has_its_outcome_absorbed(monkeypatch):
+    """A task that ignores the cleanup bound must not later log an unretrieved exception."""
+    monkeypatch.setattr(research_runs, "_STREAM_CLEANUP_TIMEOUT_SECONDS", 0.05)
+    supervisor = _make_supervisor(_noop_check_active)
+
+    absorbed = []
+    real_absorb = research_runs.ResearchSupervisor._absorb_late_task
+
+    def _spy(run_id, what, task):
+        absorbed.append(what)
+        return real_absorb(run_id, what, task)
+
+    monkeypatch.setattr(research_runs.ResearchSupervisor, "_absorb_late_task", staticmethod(_spy))
+
+    async def _drive():
+        gate = asyncio.get_running_loop().create_future()
+
+        async def _stubborn():
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                pass  # declines cancellation, then keeps running on its own terms
+            await gate
+            raise RuntimeError("late failure")
+
+        task = asyncio.create_task(_stubborn())
+        await asyncio.sleep(0)
+        await supervisor._discard_task("run-1", task, "stream_iterator")
+        assert not task.done(), "the bound must have expired with the task still running"
+
+        gate.set_result(None)
+        await asyncio.sleep(0.05)
+        assert task.done()
+        # Retrieved by the callback; asyncio only warns for exceptions never retrieved.
+        assert absorbed == ["stream_iterator"], f"outcome was not absorbed: {absorbed}"
+        assert isinstance(task.exception(), RuntimeError)
+
+    asyncio.run(_drive())
+
+
+def test_first_output_budget_is_configurable_and_clamped(monkeypatch):
+    """The budget is a run budget, not a constant, and never outlives its own wall clock."""
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.05)
+
+    def _budget(budgets):
+        model_timeout = float(budgets["modelTimeoutSeconds"])
+        return min(
+            float(
+                budgets.get(
+                    "firstOutputTimeoutSeconds",
+                    research_runs._MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS,
+                )
+            ),
+            model_timeout,
+        )
+
+    # A run created before this budget existed keeps the shipped default.
+    assert _budget({"modelTimeoutSeconds": 900}) == 0.05
+    # An explicit budget is honoured.
+    assert _budget({"modelTimeoutSeconds": 900, "firstOutputTimeoutSeconds": 600}) == 600.0
+    # And can never exceed the run's own wall clock.
+    assert _budget({"modelTimeoutSeconds": 30, "firstOutputTimeoutSeconds": 600}) == 30.0
+
+
+def test_a_configured_first_output_budget_reaches_the_stream(monkeypatch):
+    """The value in the run config, not the module constant, is what bounds the wait."""
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 30.0)
+    _install_fake_client(monkeypatch, [_comment_only_stream(": keep-alive")])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    run = _waiting_run(30.0)
+    run["config"]["budgets"]["firstOutputTimeoutSeconds"] = 0.05
+
+    started = time.monotonic()
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        asyncio.run(supervisor._stream_completion(run, [{"role": "user"}], report_progress = False))
+    assert time.monotonic() - started < 5.0, "the configured budget must win over the constant"
+
+
+def test_stall_keepalives_after_the_first_frame_do_not_renew_the_budget(monkeypatch):
+    """A wedged local GGUF model must still time out.
+
+    routes/inference.py sends the role frame once generation starts and then a
+    ": keep-alive" every 15 s while next(gen) stays silent. A role-only delta is not
+    semantic output, so those comments must not keep renewing the first-output budget.
+    """
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.2)
+
+    class _RoleThenWedged:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            yield 'data: {"choices":[{"delta":{"role":"assistant"}}]}'
+            while True:
+                await asyncio.sleep(0.01)
+                yield ": keep-alive"
+
+    _install_fake_client(monkeypatch, [_RoleThenWedged()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    started = time.monotonic()
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        _run_stream(supervisor, timeout_seconds = 30.0)
+    assert time.monotonic() - started < 5.0, "must end on the budget, not the wall clock"
+
+
+def test_outer_cancellation_still_hands_off_the_child_task(monkeypatch):
+    """Shutdown or the wall clock must not strand the child with nobody reading it.
+
+    _discard_task re-raises an outer cancellation, but the child outlives the frame
+    either way, so its outcome still has to be claimed before the caller leaves.
+    """
+    monkeypatch.setattr(research_runs, "_STREAM_CLEANUP_TIMEOUT_SECONDS", 30.0)
+    absorbed = []
+    real_absorb = research_runs.ResearchSupervisor._absorb_late_task
+
+    def _spy(run_id, what, task):
+        absorbed.append(what)
+        return real_absorb(run_id, what, task)
+
+    monkeypatch.setattr(research_runs.ResearchSupervisor, "_absorb_late_task", staticmethod(_spy))
+    supervisor = _make_supervisor(_noop_check_active)
+
+    async def _drive():
+        gate = asyncio.get_running_loop().create_future()
+
+        async def _stubborn():
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                pass  # declines the first cancellation
+            await gate
+            raise RuntimeError("late failure")
+
+        child = asyncio.create_task(_stubborn())
+        await asyncio.sleep(0)
+        cleanup = asyncio.create_task(supervisor._discard_task("run-1", child, "stream_iterator"))
+        await asyncio.sleep(0.05)
+        # Cancel the cleanup itself, standing in for the wall clock or a shutdown.
+        cleanup.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cleanup
+
+        gate.set_result(None)
+        await asyncio.sleep(0.05)
+        assert child.done()
+        assert absorbed == ["stream_iterator"], f"child was stranded: {absorbed}"
+        assert isinstance(child.exception(), RuntimeError)
+
+    asyncio.run(_drive())
+
+
+def test_a_cancelled_send_is_only_discarded_once(monkeypatch):
+    """The pre-header send needs the same single-cleanup guarantee as the iterator.
+
+    A send that declines cancellation past the bound would otherwise be waited on again
+    by the enclosing finally, doubling how long a user cancellation takes.
+    """
+    monkeypatch.setattr(research_runs, "_STREAM_CLEANUP_TIMEOUT_SECONDS", 0.2)
+    discards = []
+    real_discard = research_runs.ResearchSupervisor._discard_task
+
+    async def _counting_discard(self, run_id, task, what):
+        discards.append(what)
+        return await real_discard(self, run_id, task, what)
+
+    monkeypatch.setattr(research_runs.ResearchSupervisor, "_discard_task", _counting_discard)
+
+    supervisor = _make_supervisor(_noop_check_active)
+    run = _waiting_run(30.0)
+
+    class _StubbornClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        def build_request(self, *args, **kwargs):
+            return SimpleNamespace(headers = {})
+
+        async def send(
+            self,
+            request,
+            stream = False,
+        ):
+            supervisor._cancel_event(run["id"]).set()
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                await asyncio.sleep(10)  # declines cancellation past the bound
+
+    monkeypatch.setattr(research_runs.httpx, "AsyncClient", lambda **kwargs: _StubbornClient())
+
+    async def _cancelled(run_id):
+        if supervisor._cancel_event(run_id).is_set():
+            raise research_runs.RunCancelled()
+
+    supervisor._check_active = _cancelled
+
+    started = time.monotonic()
+    with pytest.raises(research_runs.RunCancelled):
+        asyncio.run(supervisor._stream_completion(run, [{"role": "user"}], report_progress = False))
+    elapsed = time.monotonic() - started
+    assert [w for w in discards if w == "send"] == ["send"], f"discards: {discards}"
+    assert elapsed < 1.0, f"cancellation took {elapsed:.2f}s, more than one cleanup bound"
+
+
+def test_a_cancelled_stream_iterator_is_only_discarded_once(monkeypatch):
+    """Cancellation must stay inside one cleanup bound, not two.
+
+    An iterator that outlasts _STREAM_CLEANUP_TIMEOUT_SECONDS leaves the task pending,
+    and cleaning it up a second time in the finally would double the advertised wait.
+    """
+    monkeypatch.setattr(research_runs, "_STREAM_CLEANUP_TIMEOUT_SECONDS", 0.2)
+    discards = []
+    real_discard = research_runs.ResearchSupervisor._discard_task
+
+    async def _counting_discard(self, run_id, task, what):
+        discards.append(what)
+        return await real_discard(self, run_id, task, what)
+
+    monkeypatch.setattr(research_runs.ResearchSupervisor, "_discard_task", _counting_discard)
+
+    supervisor = _make_supervisor(_noop_check_active)
+    run = _waiting_run(30.0)
+
+    class _UncancellableStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            # Cancel once the stream loop owns the task, not the send phase.
+            supervisor._cancel_event(run["id"]).set()
+            while True:
+                try:
+                    await asyncio.sleep(30)
+                except asyncio.CancelledError:
+                    # Swallows cancellation: exactly what the cleanup bound exists for.
+                    await asyncio.sleep(30)
+                yield ": keep-alive"
+
+    _install_fake_client(monkeypatch, [_UncancellableStream()])
+
+    async def _cancelled(run_id):
+        if supervisor._cancel_event(run_id).is_set():
+            raise research_runs.RunCancelled()
+
+    supervisor._check_active = _cancelled
+
+    started = time.monotonic()
+    with pytest.raises(research_runs.RunCancelled):
+        asyncio.run(supervisor._stream_completion(run, [{"role": "user"}], report_progress = False))
+    elapsed = time.monotonic() - started
+    iterator_discards = [w for w in discards if w == "stream_iterator"]
+    assert len(iterator_discards) == 1, f"discarded {len(iterator_discards)} times: {discards}"
+    assert elapsed < 1.0, f"cancellation took {elapsed:.2f}s, more than one cleanup bound"
+
+
+def test_stream_completion_first_output_timeout_survives_iterator_cleanup(monkeypatch):
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.01)
+
+    class _BrokenSilentStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            try:
+                await asyncio.Event().wait()
+                yield ""
+            except asyncio.CancelledError as exc:
+                raise httpx.ReadError("cleanup failed") from exc
+
+    _install_fake_client(monkeypatch, [_BrokenSilentStream()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        _run_stream(supervisor, timeout_seconds = 1.0)
+
+
+@pytest.mark.parametrize("body", ("data: [DONE]\n\n", ""))
+def test_stream_completion_rejects_zero_output_terminal_stream(monkeypatch, body):
+    _install_fake_client(monkeypatch, [_response(200, body = body)])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        _run_stream(supervisor, timeout_seconds = 1.0)
+
+
+def test_stream_cancellation_wins_at_first_output_deadline():
+    async def _cancelled(run_id: str) -> None:
+        raise RunCancelled()
+
+    async def run():
+        supervisor = _make_supervisor(_cancelled)
+        supervisor._cancel_event("run-1").set()
+        response = _response(200, body = "")
+
+        def expired_deadline() -> float:
+            raise research_runs.ModelFirstOutputTimeout()
+
+        iterator = supervisor._iter_stream_lines(
+            "run-1",
+            response,
+            expired_deadline,
+        )
+        await anext(iterator)
+
+    with pytest.raises(RunCancelled):
+        asyncio.run(run())
+
+
 def test_stream_cleanup_error_does_not_replace_output_stall(monkeypatch):
     monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.05)
 
@@ -935,10 +1471,12 @@ def test_stream_completion_semantic_output_resets_the_idle_timeout(monkeypatch):
     _install_fake_client(monkeypatch, [_ProgressStream()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "thinking", "stop")
+    assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "thinking", "stop", None)
 
 
-def test_stream_completion_does_not_apply_idle_timeout_during_prefill(monkeypatch):
+def test_stream_completion_allows_output_before_first_output_timeout(monkeypatch):
+    # Clear of the 0.10 s prefill: a 15.625 ms tick would stretch it to 0.15625 s.
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 1.0)
     monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.03)
 
     class _SlowPrefillStream:
@@ -961,7 +1499,82 @@ def test_stream_completion_does_not_apply_idle_timeout_during_prefill(monkeypatc
     _install_fake_client(monkeypatch, [_SlowPrefillStream()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "", "stop")
+    assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "", "stop", None)
+
+
+def test_first_output_deadline_disarms_once_output_starts(monkeypatch):
+    """The budget bounds the wait for the FIRST token, never total generation time."""
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.15)
+    monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 5.0)
+
+    class _LongGenerationStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            await asyncio.sleep(0.05)
+            yield 'data: {"choices":[{"delta":{"content":"start"}}]}'
+            for index in range(12):
+                await asyncio.sleep(0.05)
+                yield 'data: {"choices":[{"delta":{"content":" w%d"}}]}' % index
+            yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+    _install_fake_client(monkeypatch, [_LongGenerationStream()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    report, _reasoning, finish_reason, _usage = _run_stream(supervisor, timeout_seconds = 30.0)
+    assert finish_reason == "stop"
+    assert report.startswith("start w0 w1")
+    assert report.endswith("w11")
+
+
+def test_reasoning_only_prefix_disarms_the_first_output_deadline(monkeypatch):
+    """A thinking model may reason for longer than the budget before any content."""
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.15)
+    monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 5.0)
+    # Reasoning deltas flush to storage whatever report_progress says.
+    monkeypatch.setattr(research_runs.db, "append_worker_event", lambda *args, **kwargs: 1)
+
+    class _LongThinkStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            await asyncio.sleep(0.05)
+            for index in range(10):
+                yield 'data: {"choices":[{"delta":{"reasoning_content":"t%d "}}]}' % index
+                await asyncio.sleep(0.05)
+            yield 'data: {"choices":[{"delta":{"content":"answer"}}]}'
+            yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+    _install_fake_client(monkeypatch, [_LongThinkStream()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    report, reasoning, _finish, _usage = _run_stream(supervisor, timeout_seconds = 30.0)
+    assert report == "answer"
+    assert reasoning.startswith("t0 ")
+
+
+def test_shipped_stream_deadline_constants_are_pinned():
+    """Every other test monkeypatches these, so nothing else would notice a change."""
+    assert research_runs._MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS == 120.0
+    assert research_runs._MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS == 120.0
+    assert (
+        research_runs._MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
+        >= research_runs._MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS
+    )
 
 
 def test_stream_completion_counts_whitespace_tokens_as_output(monkeypatch):
@@ -987,7 +1600,7 @@ def test_stream_completion_counts_whitespace_tokens_as_output(monkeypatch):
     _install_fake_client(monkeypatch, [_WhitespaceStream()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    assert _run_stream(supervisor, timeout_seconds = 1.0) == (" \n\treport", "", "stop")
+    assert _run_stream(supervisor, timeout_seconds = 1.0) == (" \n\treport", "", "stop", None)
 
 
 def test_stream_completion_stops_at_done_even_if_socket_stays_open(monkeypatch):
@@ -1014,13 +1627,17 @@ def test_stream_completion_stops_at_done_even_if_socket_stays_open(monkeypatch):
     _install_fake_client(monkeypatch, [_OpenSocketAfterDone()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "", "stop")
+    assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "", "stop", None)
     assert state == {"iteratorClosed": True, "responseClosed": True}
 
 
 @pytest.mark.parametrize(
     ("exc", "message"),
     (
+        (
+            research_runs.ModelFirstOutputTimeout("first"),
+            "Local model never started producing output",
+        ),
         (
             research_runs.ModelOutputIdleTimeout("idle"),
             "Local model stopped producing output before completion",

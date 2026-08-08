@@ -275,6 +275,21 @@ def test_loopback_default_not_inherited_by_later_public_bind(monkeypatch):
     assert mcp_client.stdio_mcp_enabled() is False
 
 
+def test_remote_access_suspends_only_automatic_stdio_default(monkeypatch):
+    _disable(monkeypatch)
+    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
+    assert mcp_client.stdio_mcp_enabled() is True
+    host_policy.set_remote_connector_active(True)
+    assert mcp_client.stdio_mcp_enabled() is False
+    host_policy.set_remote_connector_active(False)
+    assert mcp_client.stdio_mcp_enabled() is True
+
+    host_policy._reset_loopback_default_state()
+    monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
+    host_policy.set_remote_connector_active(True)
+    assert mcp_client.stdio_mcp_enabled() is True
+
+
 @pytest.mark.parametrize("second_host", ["127.0.0.1", "0.0.0.0"])
 def test_force_disable_after_auto_default_in_same_process(monkeypatch, second_host):
     # Reuse: a loopback launch auto-enables, then the operator sets =0 before a

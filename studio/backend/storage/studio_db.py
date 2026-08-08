@@ -205,8 +205,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE training_runs ADD COLUMN resume_blocked INTEGER NOT NULL DEFAULT 0"
         )
-    # Nullable, so rows written before this stay NULL and fall back to the
-    # output_dir heuristic in the stats aggregation.
+    # Nullable, so older rows stay NULL and fall back to the output_dir heuristic.
     if "resumed_from_run_id" not in existing_cols:
         conn.execute("ALTER TABLE training_runs ADD COLUMN resumed_from_run_id TEXT")
     conn.execute(
@@ -227,8 +226,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON training_metrics(run_id)")
-    # Windows: COLLATE NOCASE so C:\Models and c:\models dedup. Elsewhere keep
-    # case-sensitive BINARY so /Models and /models stay distinct.
+    # Windows: COLLATE NOCASE so C:\Models and c:\models dedup; elsewhere BINARY keeps them distinct.
     collation = "COLLATE NOCASE" if platform.system() == "Windows" else ""
     conn.execute(
         f"""
@@ -295,8 +293,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN forked_from_message_id TEXT")
     if "updated_at" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN updated_at INTEGER")
-        # Floor at created_at: forked threads copy older ancestor messages,
-        # so the fork's creation time must win over the branch message times.
+        # Floor at created_at: forked threads copy older ancestor messages, so the fork's creation time wins.
         conn.execute(
             """
             UPDATE chat_threads SET updated_at = MAX(
@@ -350,9 +347,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             row[2] for row in conn.execute("PRAGMA foreign_key_list(chat_attachment_tombstones)")
         }
         if "thread_id" not in tombstone_columns or "chat_threads" not in tombstone_fk_targets:
-            # The first implementation cascaded through chat_messages, which
-            # erased deletion knowledge during pruneMissing. Rebuild once,
-            # retaining every tombstone whose owning thread still exists.
+            # The first implementation cascaded through chat_messages, which erased deletion knowledge
+            # during pruneMissing. Rebuild once, retaining every tombstone whose thread still exists.
             conn.execute("SAVEPOINT migrate_chat_attachment_tombstones")
             try:
                 conn.execute(
@@ -499,9 +495,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    # Import ledger inside studio.db (vs. a localStorage boolean) so a db wipe
-    # re-triggers the legacy Dexie import instead of silently hiding threads.
-    # Keyed by legacy thread id; Dexie is read-only so per-thread suffices.
+    # Import ledger inside studio.db (vs a localStorage boolean) so a db wipe re-triggers the
+    # legacy Dexie import instead of silently hiding threads. Keyed by legacy thread id.
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_legacy_imports (
@@ -592,9 +587,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         if int(row[5] or 0) > 0
     ]
     if claim_pk != ["thread_id"]:
-        # Rebuild the claims table (legacy owner_subject+thread_id PK -> thread_id PK) atomically.
-        # Without an explicit transaction the RENAME/CREATE/INSERT/DROP run in autocommit, so an
-        # interruption after CREATE orphaned the rows in _legacy and never re-triggered.
+        # Rebuild the claims table (legacy owner_subject+thread_id PK -> thread_id PK) atomically: in
+        # autocommit an interruption after CREATE orphaned the rows in _legacy and never re-triggered.
         conn.commit()
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -1003,6 +997,7 @@ def finish_run(
     error_message: Optional[str] = None,
     clear_output_dir: bool = False,
     resume_blocked: bool = False,
+    config_json: Optional[str] = None,
 ) -> None:
     conn = get_connection()
     try:
@@ -1011,6 +1006,7 @@ def finish_run(
             UPDATE training_runs
             SET status = ?, ended_at = ?, final_step = ?, final_loss = ?,
                 duration_seconds = ?, loss_sparkline = ?,
+                config_json = COALESCE(?, config_json),
                 output_dir = CASE
                     WHEN resume_blocked = 1 OR ? = 1 THEN NULL
                     WHEN ? IS NOT NULL THEN ?
@@ -1028,6 +1024,7 @@ def finish_run(
                 final_loss,
                 duration_seconds,
                 loss_sparkline,
+                config_json,
                 int(clear_output_dir),
                 output_dir,
                 output_dir,
@@ -1105,6 +1102,22 @@ def update_run_output_dir(id: str, output_dir: Optional[str]) -> None:
             (output_dir, id),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def update_run_config_json(id: str, config_json: str) -> bool:
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            UPDATE training_runs SET config_json = ?
+            WHERE id = ? AND status = 'running'
+            """,
+            (config_json, id),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
     finally:
         conn.close()
 
@@ -1320,9 +1333,8 @@ def delete_run(id: str) -> None:
             (id,),
         ).fetchone()
         if source is not None:
-            # Keep an explicit resume chain connected when its middle row is
-            # removed. The surviving tail still carries the source's cumulative
-            # counters, so profile totals must be able to trace it.
+            # Keep an explicit resume chain connected when its middle row is removed: the surviving tail
+            # still carries the source's cumulative counters, so profile totals must trace it.
             conn.execute(
                 """
                 UPDATE training_runs
@@ -1336,6 +1348,18 @@ def delete_run(id: str) -> None:
     except Exception:
         conn.rollback()
         raise
+    finally:
+        conn.close()
+
+
+def list_other_run_output_dirs(exclude_id: str) -> list[str]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT output_dir FROM training_runs WHERE output_dir IS NOT NULL AND id != ?",
+            (exclude_id,),
+        ).fetchall()
+        return [str(row[0]) for row in rows]
     finally:
         conn.close()
 
@@ -1387,17 +1411,15 @@ def add_scan_folder(path: str) -> dict:
         raise ValueError("Path must be a directory, not a file")
     if not os.access(normalized, os.R_OK | os.X_OK):
         raise ValueError("Path is not readable")
-    # Reject a local filesystem root ("/", or a bare Windows drive root "C:\\"):
-    # registering one seeds the browse allowlist with a root above denied system
-    # dirs. A UNC share root (\\server\share) has none under it and was
-    # registerable before this guard, so it stays allowed. Mirrors scan_folders.py.
+    # Reject a local filesystem root ("/", or a bare "C:\\"): registering one seeds the browse
+    # allowlist above denied system dirs. A UNC share root has none under it, so it stays
+    # allowed (it was registerable before this guard). Mirrors scan_folders.py.
     if is_local_filesystem_root(normalized):
         raise ValueError("The filesystem root cannot be registered")
     if _contains_sensitive_path_component(normalized):
         raise ValueError("Credential or configuration directories are not allowed")
 
-    # Windows: normcase for the denylist check but store original casing
-    # so consumers see the native drive-letter casing (e.g. C:\Models).
+    # Windows: normcase for the denylist check but store original casing (e.g. C:\Models).
     is_win = platform.system() == "Windows"
     check = os.path.normcase(normalized) if is_win else normalized
     for prefix in _denied_path_prefixes():
@@ -1561,7 +1583,28 @@ def upsert_chat_thread(thread: dict) -> dict:
         conn.close()
 
 
-def update_chat_thread(id: str, patch: dict) -> Optional[dict]:
+class ChatThreadPreconditionFailed(Exception):
+    """The thread changed between the caller reading it and writing it."""
+
+
+# Same order the title migration picks its opening message in.
+_OPENING_USER_MESSAGE = """(
+    SELECT id FROM chat_messages
+    WHERE thread_id = ? AND role = 'user'
+    ORDER BY created_at ASC, id ASC LIMIT 1
+) IS ?"""
+
+
+def update_chat_thread(
+    id: str,
+    patch: dict,
+    expected_title: Optional[str] = None,
+    expected_opening_message_id: Optional[str] = None,
+) -> Optional[dict]:
+    """Patch a thread. With expected_title, the write only lands while the row
+    still holds that title, so a concurrent rename wins instead of being lost.
+    expected_opening_message_id guards a title derived from that message: if it
+    is gone, the write is rejected rather than expanding deleted text."""
     allowed = {
         "title": ("title", patch.get("title")),
         "modelType": ("model_type", patch.get("modelType")),
@@ -1599,13 +1642,28 @@ def update_chat_thread(id: str, patch: dict) -> Optional[dict]:
 
     conn = get_connection()
     try:
-        conn.execute(
-            f"UPDATE chat_threads SET {', '.join(assignments)} WHERE id = ?",
-            (*values, id),
+        # Guards ride in the WHERE clause, so check and write are one statement.
+        where = ["id = ?"]
+        guard: list = [id]
+        if expected_title is not None:
+            where.append("title = ?")
+            guard.append(expected_title)
+        if expected_opening_message_id is not None:
+            where.append(_OPENING_USER_MESSAGE)
+            guard += [id, expected_opening_message_id]
+        guarded = expected_title is not None or expected_opening_message_id is not None
+        cursor = conn.execute(
+            f"UPDATE chat_threads SET {', '.join(assignments)} WHERE {' AND '.join(where)}",
+            (*values, *guard),
         )
+        applied = cursor.rowcount
         conn.commit()
         row = conn.execute("SELECT * FROM chat_threads WHERE id = ?", (id,)).fetchone()
-        return _chat_thread_from_row(row) if row is not None else None
+        if row is None:
+            return None
+        if guarded and applied == 0:
+            raise ChatThreadPreconditionFailed(id)
+        return _chat_thread_from_row(row)
     finally:
         conn.close()
 
@@ -1666,8 +1724,7 @@ def _reparent_surviving_forks(conn: sqlite3.Connection, deleted_ids: set[str]) -
             seen.add(source_id)
             parent_id = sources.get(source_id)
             if parent_id is None:
-                # Preserve the deleted root id. Sibling forks use the same
-                # dangling id to elect one surviving copy of shared history.
+                # Preserve the deleted root id: sibling forks use it to elect one surviving copy of shared history.
                 break
             source_id = parent_id
         conn.execute(
@@ -1999,8 +2056,8 @@ def _research_message_would_change(conn: sqlite3.Connection, thread_id: str, mes
         return json.dumps(value, sort_keys = True) if value is not None else None
 
     # created_at is compared too: without it a client could re-upsert a protected message with an
-    # unchanged body but a different timestamp and silently reorder the server-managed research
-    # prompt/response pair. Absent createdAt defaults to the stored value (a no-op re-sync).
+    # unchanged body but a different timestamp and silently reorder the research prompt/response
+    # pair. Absent createdAt defaults to the stored value (a no-op re-sync).
     return (
         canon(message.get("content", [])) != canon(json.loads(row["content_json"] or "[]"))
         or canon(message.get("metadata"))
@@ -2127,8 +2184,7 @@ def _chat_attachment_metadata_text(value, fallback: Optional[str] = None) -> Opt
         return value or fallback
     if isinstance(value, (bool, int, float)):
         return str(value)
-    # Objects and arrays are not useful display metadata and sqlite3 rejects
-    # binding them directly.
+    # Objects and arrays are not useful display metadata and sqlite3 rejects binding them.
     return fallback
 
 
@@ -3198,10 +3254,7 @@ def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
         conn.close()
 
 
-# ---------------------------------------------------------------------------
-# Legacy Dexie import ledger
-# ---------------------------------------------------------------------------
-# See the schema comment in _ensure_schema() for the recovery rationale.
+# --- Legacy Dexie import ledger (recovery rationale in _ensure_schema's schema comment) ---
 
 
 def list_chat_legacy_imports() -> list[str]:
