@@ -571,9 +571,9 @@ def test_a_checkpoint_swapped_in_place_is_read_again(monkeypatch, tmp_path):
     # 4B-for-9B swap looks like.
     target.write_bytes(_gguf_header(4096, tmp_path, siblings = 9))
 
-    assert diffusion_compat.flux2_inner_dim_for_pick(str(local), KLEIN_4B_FILE) == 4096, (
-        "the memo answered for the file that used to be at this path"
-    )
+    assert (
+        diffusion_compat.flux2_inner_dim_for_pick(str(local), KLEIN_4B_FILE) == 4096
+    ), "the memo answered for the file that used to be at this path"
 
 
 def test_a_bad_token_does_not_poison_the_good_one_that_replaces_it(monkeypatch, tmp_path):
@@ -584,7 +584,13 @@ def test_a_bad_token_does_not_poison_the_good_one_that_replaces_it(monkeypatch, 
     requests: list[tuple[str, str]] = []
 
     class _GatedSession:
-        def get(self, url, headers = None, timeout = None, stream = False):
+        def get(
+            self,
+            url,
+            headers = None,
+            timeout = None,
+            stream = False,
+        ):
             token = (headers or {}).get("authorization", "")
             requests.append((url, token))
             if "good" not in token:
@@ -596,7 +602,9 @@ def test_a_bad_token_does_not_poison_the_good_one_that_replaces_it(monkeypatch, 
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
     diffusion_compat._reset_inner_dim_cache()
 
-    assert diffusion_compat.flux2_inner_dim_for_pick(KLEIN_4B_GGUF, KLEIN_4B_FILE, "expired") is None
+    assert (
+        diffusion_compat.flux2_inner_dim_for_pick(KLEIN_4B_GGUF, KLEIN_4B_FILE, "expired") is None
+    )
     assert diffusion_compat.flux2_inner_dim_for_pick(KLEIN_4B_GGUF, KLEIN_4B_FILE, "good") == 4096
     # ...and each token still memoises on its own: the second good probe costs nothing.
     before = len(requests)
