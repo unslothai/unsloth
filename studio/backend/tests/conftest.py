@@ -167,6 +167,32 @@ def _no_background_model_scan(monkeypatch):
     monkeypatch.setattr(local_model_resolver, "_scan", (time.monotonic(), {}))
 
 
+@pytest.fixture(scope = "session")
+def _empty_hf_hub_cache(tmp_path_factory):
+    """One empty hub-cache root for the whole session; per-test mktemp is quadratic."""
+    return str(tmp_path_factory.mktemp("hf_hub_cache_empty"))
+
+
+@pytest.fixture(autouse = True)
+def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
+    """Point BOTH hub-cache roots at an empty dir, so the suite is host independent.
+
+    Studio pins its live setting out of this env snapshot; huggingface_hub falls back to
+    ``constants.HF_HUB_CACHE``. A dev holding FLUX.1-dev otherwise watches its files leave a
+    download plan AND the mirror swap decline. Pinned at the ROOT, not by stubbing a probe: that
+    reaches only one of the four cache reads, and ``_upstream_is_cached`` walks the tree itself.
+    Tests that own the cache setting replace the whole dict, so they still win."""
+    from utils import hf_cache_settings
+
+    monkeypatch.setitem(hf_cache_settings._EXPLICIT_CACHE_ENV, "HF_HUB_CACHE", _empty_hf_hub_cache)
+    monkeypatch.setenv("HF_HUB_CACHE", _empty_hf_hub_cache)
+    try:
+        from huggingface_hub import constants
+    except Exception:  # optional deps absent on some CI legs
+        return
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", _empty_hf_hub_cache)
+
+
 @pytest.fixture(autouse = True)
 def _assume_bare_metal(monkeypatch):
     """Pin the virtualised-Metal detector off so the suite is host independent.

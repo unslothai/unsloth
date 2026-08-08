@@ -402,7 +402,8 @@ def test_image_video_load_progress_heartbeats(logs, monkeypatch):
 
 
 def test_unrelated_image_routes_still_log(logs, monkeypatch):
-    # Only the timer-polled paths are quieted, not the event-driven reads.
+    # Quieting only collapses repeats: the first hit on any path always logs,
+    # including the status reads the loaded-models indicator now polls.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     for path in (
         "/api/inference/images/status",
@@ -415,6 +416,30 @@ def test_unrelated_image_routes_still_log(logs, monkeypatch):
         "/api/inference/images/info",
         "/api/inference/video/status",
     ]
+
+
+def test_indicator_status_polls_collapse_to_a_heartbeat(logs, monkeypatch):
+    # The loaded-models indicator reads all four runtimes every 5s for as long
+    # as the app is open, and on the desktop every line is mirrored into
+    # tauri.log. /api/inference/status was already quiet; its three siblings
+    # arrived with the indicator and have to be quiet for the same reason.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
+
+    mw = LoggingMiddleware(_status_app(200))
+    polled = (
+        "/api/inference/status",
+        "/api/inference/images/status",
+        "/api/inference/video/status",
+        "/api/inference/audio/stt/status",
+    )
+    for _ in range(4):
+        for path in polled:
+            _run(mw(_http_scope(path), _noop_receive, _drop))
+
+    paths = _paths_logged(logs)
+    for path in polled:
+        assert paths.count(path) == 1, f"{path} logged {paths.count(path)} times"
 
 
 def test_verbose_restores_the_dropped_success_polls(logs, monkeypatch):

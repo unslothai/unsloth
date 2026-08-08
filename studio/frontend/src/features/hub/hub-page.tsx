@@ -382,8 +382,15 @@ export function ModelsPage() {
   const { selectModel, loadingModel, loadProgress, ejectModel } =
     useChatModelRuntime();
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const residentCheckpoint = useChatRuntimeStore((s) => s.residentCheckpoint);
+  // Resident, not merely picked. An image or video load evicts the chat model
+  // and leaves the pick alone, so the cards kept saying "Loaded" for weights the
+  // backend had already released. `undefined` is "no status read yet", which
+  // stays as it was rather than flashing "On device" on every launch.
   const activeCheckpoint =
-    checkpoint && !isExternalModelId(checkpoint) ? checkpoint : null;
+    checkpoint && !isExternalModelId(checkpoint) && residentCheckpoint !== null
+      ? checkpoint
+      : null;
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const activeGgufContextLength = useChatRuntimeStore(
     (s) => s.ggufContextLength,

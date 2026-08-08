@@ -72,6 +72,7 @@ function Run-Case {
 `$NvccCompatibleFake = '$nvccCompatibleFake'
 function substep { param(`$m, `$c) Write-Host "  `$m" }
 function step    { param(`$l, `$v, `$c) Write-Host "[`$l] `$v" }
+function Write-StudioLine { param([string]`$Message, [string]`$ForegroundColor) Write-Host `$Message }
 function Add-ToUserPath { param(`$Directory, `$Position) `$true }
 function Refresh-Environment { }
 function Get-CudaComputeCapability { '120' }
