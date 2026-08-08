@@ -52,7 +52,6 @@ class ToolCallDecision:
 
     @property
     def emit_visible_events(self) -> bool:
-        """Whether this call produces a visible tool card."""
         return self.should_execute
 
     @property
@@ -62,7 +61,6 @@ class ToolCallDecision:
         return self.action
 
     def tool_start_payload(self) -> dict[str, Any]:
-        """Build a tool_start payload."""
         return {
             "tool_name": self.tool_name,
             "tool_call_id": self.tool_call_id,
@@ -71,11 +69,9 @@ class ToolCallDecision:
         }
 
     def tool_start_event(self) -> dict[str, Any]:
-        """Build a tool_start event."""
         return {"type": "tool_start", **self.tool_start_payload()}
 
     def as_assistant_tool_call(self) -> dict[str, Any]:
-        """Build a normalized OpenAI-style tool call."""
         tool_call: dict[str, Any] = {
             "type": "function",
             "function": {
@@ -103,7 +99,6 @@ class ToolCallCompletion:
     executed: bool = False
 
     def tool_end_payload(self) -> dict[str, Any]:
-        """Build a tool_end payload."""
         return {
             "tool_name": self.decision.tool_name,
             "tool_call_id": self.decision.tool_call_id,
@@ -112,11 +107,9 @@ class ToolCallCompletion:
         }
 
     def tool_end_event(self) -> dict[str, Any]:
-        """Build a tool_end event."""
         return {"type": "tool_end", **self.tool_end_payload()}
 
     def tool_message(self) -> dict[str, Any]:
-        """Build an OpenAI-compatible tool message."""
         if not self.executed:
             raise ValueError("No-op completions are internal nudges, not tool messages")
         return self.model_message()
@@ -223,7 +216,6 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
 
 
 def awaiting_approval_status(tool_name: str) -> str:
-    """Status text for a pending approval."""
     if tool_name == "python":
         return "Waiting for approval: Python"
     if tool_name == "terminal":
