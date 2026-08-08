@@ -24,6 +24,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import contextlib
 import threading
 import time
 import urllib.parse
@@ -7106,6 +7107,30 @@ def _get_shell_cmd(command: str) -> list[str]:
 # Per-session working directories so each chat thread gets its own sandbox.
 # Falls back to ~/studio_sandbox/_default for callers without a session_id.
 _workdirs: dict[str, str] = {}
+# Sessions with a tool call in flight. Deleting a chat unlinks its workdir, and
+# a process whose cwd has been removed fails every relative write with ENOENT.
+_active_sessions: "dict[str, int]" = {}
+_active_sessions_lock = threading.Lock()
+
+
+@contextlib.contextmanager
+def _session_in_flight(session_id: "str | None"):
+    key = session_id or "_default"
+    with _active_sessions_lock:
+        _active_sessions[key] = _active_sessions.get(key, 0) + 1
+    try:
+        yield
+    finally:
+        with _active_sessions_lock:
+            if _active_sessions.get(key, 0) <= 1:
+                _active_sessions.pop(key, None)
+            else:
+                _active_sessions[key] -= 1
+
+
+def _session_is_busy(session_id: str) -> bool:
+    with _active_sessions_lock:
+        return _active_sessions.get(session_id, 0) > 0
 
 
 # Non-matching session_ids collapse to ``_invalid`` to block cross-session escapes.
@@ -7345,6 +7370,10 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
     if not session_id or not _usable_session_id(session_id):
         return False
     if session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return False
+    if _session_is_busy(session_id):
+        # A running tool still has this as its cwd. Leaving the folder is the
+        # recoverable outcome; the next delete or clear picks it up.
         return False
     # Deleting a chat can be the first thing that happens after an upgrade, and
     # the folder to remove may still be at the legacy root.
@@ -7814,24 +7843,28 @@ def execute_tool(
             cancel_event = cancel_event,
             website_policy = website_policy,
         )
+    # Both run with the session's sandbox as cwd, so a chat deleted mid-call
+    # must not unlink it from under them.
     if name == "python":
-        return _python_exec(
-            arguments.get("code", ""),
-            cancel_event,
-            effective_timeout,
-            session_id,
-            disable_sandbox = disable_sandbox,
-            output_callback = output_callback,
-        )
+        with _session_in_flight(session_id):
+            return _python_exec(
+                arguments.get("code", ""),
+                cancel_event,
+                effective_timeout,
+                session_id,
+                disable_sandbox = disable_sandbox,
+                output_callback = output_callback,
+            )
     if name == "terminal":
-        return _bash_exec(
-            arguments.get("command", ""),
-            cancel_event,
-            effective_timeout,
-            session_id,
-            disable_sandbox = disable_sandbox,
-            output_callback = output_callback,
-        )
+        with _session_in_flight(session_id):
+            return _bash_exec(
+                arguments.get("command", ""),
+                cancel_event,
+                effective_timeout,
+                session_id,
+                disable_sandbox = disable_sandbox,
+                output_callback = output_callback,
+            )
     return f"Unknown tool: {name}"
 
 

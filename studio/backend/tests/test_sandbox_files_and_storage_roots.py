@@ -1285,5 +1285,87 @@ def test_a_marked_cwd_cache_is_still_registered(tmp_path, monkeypatch):
         sys.path[:] = before
 
 
+def test_a_chat_deleted_mid_call_keeps_its_sandbox(tmp_path, monkeypatch):
+    """The running tool has this directory as its cwd, and a process whose cwd
+    was unlinked fails every relative write with ENOENT."""
+    import threading
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_busy111"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    started, may_finish = threading.Event(), threading.Event()
+    removed = {}
+
+    def run_tool():
+        with tools._session_in_flight(session):
+            started.set()
+            may_finish.wait(timeout = 10)
+
+    worker = threading.Thread(target = run_tool)
+    worker.start()
+    try:
+        assert started.wait(timeout = 10)
+        removed["during"] = tools.remove_session_sandbox(session)
+        assert removed["during"] is False, "the sandbox went out from under a running tool"
+        assert workdir.is_dir()
+    finally:
+        may_finish.set()
+        worker.join(timeout = 10)
+
+    # And once nothing is using it, the empty folder goes as before.
+    assert tools.remove_session_sandbox(session) is True
+    assert not workdir.exists()
+
+
+def test_the_executor_marks_its_session_busy():
+    """The guard has to sit on the dispatch both executors go through."""
+    import inspect
+
+    from core.inference import tools
+
+    source = inspect.getsource(tools.execute_tool)
+    for call in ("_python_exec(", "_bash_exec("):
+        before = source.split(call)[0]
+        assert "_session_in_flight" in before.rsplit("if name ==", 1)[-1], call
+
+
+def test_a_pre_existing_compile_directory_is_never_marked_as_ours(tmp_path, monkeypatch):
+    """mkdir(exist_ok=True) does not mean we created it, and the marker is
+    permission to rmtree."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
+
+    from utils import cache_cleanup
+    from utils.paths import storage_roots
+
+    # Where Studio would pin it, already there and holding someone else's files.
+    pinned = Path(storage_roots.cache_root()).parent / "compiled_cache"
+    pinned.mkdir(parents = True)
+    (pinned / "someones_notes.txt").write_text("keep me")
+
+    storage_roots.setup_cache_env()
+    assert Path(os.environ["UNSLOTH_COMPILE_LOCATION"]) == pinned
+    assert not (pinned / cache_cleanup.CACHE_MARKER).exists(), "claimed a directory it found"
+
+    cache_cleanup.clear_unsloth_compiled_cache()
+    assert (pinned / "someones_notes.txt").read_text() == "keep me"
+
+
+def test_a_directory_studio_creates_is_marked(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "fresh"))
+    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
+
+    from utils import cache_cleanup
+    from utils.paths import storage_roots
+
+    storage_roots.setup_cache_env()
+    pinned = Path(os.environ["UNSLOTH_COMPILE_LOCATION"])
+    assert (pinned / cache_cleanup.CACHE_MARKER).is_file()
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

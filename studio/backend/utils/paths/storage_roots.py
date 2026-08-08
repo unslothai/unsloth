@@ -301,10 +301,16 @@ def _setup_cache_env() -> None:
             # Best-effort: a non-writable custom HF_HOME must not crash startup;
             # HF surfaces a clear error at download time instead.
             try:
-                Path(value).mkdir(parents = True, exist_ok = True)
-                if key == "UNSLOTH_COMPILE_LOCATION":
+                created = True
+                try:
+                    Path(value).mkdir(parents = True, exist_ok = False)
+                except FileExistsError:
+                    created = False
+                if key == "UNSLOTH_COMPILE_LOCATION" and created:
                     # Marks the directory as ours, so the cleanup can delete from
-                    # it without inferring that from its contents.
+                    # it without inferring that from its contents. Only when this
+                    # call made it: a directory that was already there holds
+                    # someone else's files, and the marker licenses an rmtree.
                     from utils.cache_cleanup import CACHE_MARKER
                     (Path(value) / CACHE_MARKER).touch(exist_ok = True)
             except (OSError, ImportError):
