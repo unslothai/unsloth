@@ -168,6 +168,8 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
       - run: python -m pip install -U pip pytest
+      # -rs: these files are full of platform-gated cases, and a case that
+      # silently stopped running on the row it exists for still reports green.
       - name: Cross-platform parity tests
         env:
           UNSLOTH_NO_TORCH: '1'
@@ -179,7 +181,7 @@ jobs:
           tests/test_installer_skip_autostart.py
           tests/test_installer_system32_guard.py
           tests/test_installer_interactive_prompts.py
-          -q
+          -q -rs
       - name: PowerShell rollback lifecycle tests
         if: runner.os == 'Windows'
         shell: pwsh
