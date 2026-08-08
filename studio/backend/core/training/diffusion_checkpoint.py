@@ -101,6 +101,14 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("snr_gamma", "min-SNR gamma"),
     ("lr_scheduler", "learning-rate schedule"),
     ("lr_warmup_steps", "learning-rate warmup"),
+    # The input stream. Both trainers build the latent cache and the crop/flip variant plan
+    # from these BEFORE restore_resume_state puts the RNG back, so changing one continues the
+    # old optimizer and sampler against a different sequence of images.
+    ("seed", "random seed"),
+    ("cache_latents", "latent caching"),
+    ("cache_variants", "cached crop variants"),
+    ("center_crop", "centre cropping"),
+    ("random_flip", "random flipping"),
     ("precision", "mixed precision"),
     ("base_precision", "base precision"),
 )
@@ -120,6 +128,11 @@ _OPTIONAL_IDENTITY_FIELDS = frozenset(
         "snr_gamma",
         "lr_scheduler",
         "lr_warmup_steps",
+        "seed",
+        "cache_latents",
+        "cache_variants",
+        "center_crop",
+        "random_flip",
     }
 )
 # What source_revision() returns when it cannot resolve a revision offline.
@@ -171,9 +184,19 @@ class CheckpointIdentity:
     # were recorded reads unknown, not mismatched.
     flow_shift: Optional[str] = None
     weighting_scheme: Optional[str] = None
-    snr_gamma: Optional[float] = None
+    # Text, not a float: None is the documented way to DISABLE min-SNR, so a float field could
+    # not tell "trained with it off" from "written before the field existed" -- and the optional
+    # rule would skip the comparison for both. "off" is the disabled value; None is absence.
+    snr_gamma: Optional[str] = None
     lr_scheduler: Optional[str] = None
     lr_warmup_steps: Optional[int] = None
+    seed: Optional[int] = None
+    # Booleans as text ("on"/"off") for the same reason snr_gamma is: False is a real value and
+    # None has to stay reserved for a manifest that predates the field.
+    cache_latents: Optional[str] = None
+    cache_variants: Optional[int] = None
+    center_crop: Optional[str] = None
+    random_flip: Optional[str] = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -196,6 +219,11 @@ class CheckpointIdentity:
             "snr_gamma": self.snr_gamma,
             "lr_scheduler": self.lr_scheduler,
             "lr_warmup_steps": self.lr_warmup_steps,
+            "seed": self.seed,
+            "cache_latents": self.cache_latents,
+            "cache_variants": self.cache_variants,
+            "center_crop": self.center_crop,
+            "random_flip": self.random_flip,
             "precision": self.precision,
             "base_precision": self.base_precision,
             # Recorded for the UI / debugging only; a resolution change is a different training
@@ -223,9 +251,14 @@ class CheckpointIdentity:
                 cfg_dropout = _optional_float(data.get("cfg_dropout")),
                 flow_shift = _optional_str(data.get("flow_shift")),
                 weighting_scheme = _optional_str(data.get("weighting_scheme")),
-                snr_gamma = _optional_float(data.get("snr_gamma")),
+                snr_gamma = _optional_str(data.get("snr_gamma")),
                 lr_scheduler = _optional_str(data.get("lr_scheduler")),
                 lr_warmup_steps = _optional_int(data.get("lr_warmup_steps")),
+                seed = _optional_int(data.get("seed")),
+                cache_latents = _optional_str(data.get("cache_latents")),
+                cache_variants = _optional_int(data.get("cache_variants")),
+                center_crop = _optional_str(data.get("center_crop")),
+                random_flip = _optional_str(data.get("random_flip")),
                 precision = str(data.get("precision") or ""),
                 base_precision = str(data.get("base_precision") or ""),
                 resolution = int(data.get("resolution") or 0),
@@ -287,6 +320,20 @@ def _optional_float(value: Any) -> Optional[float]:
         return round(float(value), 6)
     except (TypeError, ValueError):
         return None
+
+
+def _snr_gamma_key(value: Any) -> str:
+    """min-SNR as a comparable token. None DISABLES the weighting, so it gets its own value
+    rather than the unknown the optional-field rule skips."""
+    number = _optional_float(value)
+    return "off" if number is None else f"{number}"
+
+
+def _flag_key(value: Any) -> Optional[str]:
+    """A boolean as a comparable token, so False is a value and None stays "not recorded"."""
+    if value is None:
+        return None
+    return "on" if bool(value) else "off"
 
 
 def _optional_int(value: Any) -> Optional[int]:
@@ -431,9 +478,14 @@ def identity_for_config(
         # it resolves to are different runs, and comparing them as floats would lose that.
         flow_shift = str(getattr(cfg, "flow_shift", None)),
         weighting_scheme = str(getattr(cfg, "weighting_scheme", "") or "none"),
-        snr_gamma = _optional_float(getattr(cfg, "snr_gamma", None)),
+        snr_gamma = _snr_gamma_key(getattr(cfg, "snr_gamma", None)),
         lr_scheduler = str(getattr(cfg, "lr_scheduler", "") or "constant"),
         lr_warmup_steps = int(getattr(cfg, "lr_warmup_steps", 0) or 0),
+        seed = int(getattr(cfg, "seed", 0) or 0),
+        cache_latents = _flag_key(getattr(cfg, "cache_latents", None)),
+        cache_variants = int(getattr(cfg, "cache_variants", 0) or 0),
+        center_crop = _flag_key(getattr(cfg, "center_crop", None)),
+        random_flip = _flag_key(getattr(cfg, "random_flip", None)),
         # The EFFECTIVE precision, not the request: a pre-Ampere card resolves bf16 to fp16, and
         # recording the request let an fp16 bundle resume in bf16 on a newer card -- restored
         # moments continuing under different frozen-base numerics, reported as a clean resume.
@@ -988,16 +1040,30 @@ def snapshot_checkpoints(output_dir: str | os.PathLike[str]) -> list[tuple[Path,
 
 
 def retire_own_checkpoints(
-    output_dir: str | os.PathLike[str], preexisting: "Iterable[Any]"
+    output_dir: str | os.PathLike[str],
+    preexisting: "Iterable[Any]",
+    *,
+    resumed_here: bool = True,
 ) -> None:
-    """Drop THIS run's periodic bundles once it has finished successfully.
+    """Drop the bundles a finished run leaves behind.
 
     Same selection as ``clear_own_checkpoints`` and a different reason: nothing here is being
     discarded, the run simply has no continuation left. Without it the newest bundle in the
     directory is the last periodic save (the final iteration writes none), and a later resume
     -- which cannot see that the run completed -- rolls the whole training state back to it.
+
+    ``resumed_here`` False means a FRESH run in this directory, and then the bundles that were
+    already here go too. A fresh run that never wrote one of its own (the default
+    ``save_steps=0``) never reaches the ``discard_existing`` clear inside the writer, so it
+    published its adapter beside a previous run's checkpoints -- which a later resume by output
+    directory would continue instead. The adapter those belonged to has just been overwritten,
+    so they are not resumable state, only a trap.
     """
-    clear_own_checkpoints(output_dir, preexisting)
+    if resumed_here:
+        clear_own_checkpoints(output_dir, preexisting)
+        return
+    for stale in list_checkpoints(output_dir):
+        shutil.rmtree(stale, ignore_errors = True)
 
 
 def clear_own_checkpoints(output_dir: str | os.PathLike[str], preexisting: "Iterable[Any]") -> None:

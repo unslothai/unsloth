@@ -72,7 +72,6 @@ from core.training.diffusion_train_common import (  # noqa: F401
 from core.training.diffusion_checkpoint import (
     clear_own_checkpoints,
     retire_own_checkpoints,
-    list_checkpoints,
     resumed_into_this_dir,
     snapshot_checkpoints,
     identity_for_config,
@@ -713,7 +712,9 @@ def run_diffusion_lora_training(
                 # cannot see the run status, so a later resume with a raised target rolled the
                 # model, optimizer, scheduler, sampler and RNG back and retrained 401-500.
                 # Only this run's own bundles go; an earlier run's stay resumable.
-                retire_own_checkpoints(out_dir, preexisting_checkpoints)
+                retire_own_checkpoints(
+                    out_dir, preexisting_checkpoints, resumed_here = resumed_here
+                )
         else:
             # Discarded: the user asked to throw this run away. Before periodic checkpoints
             # existed a discard left nothing behind, because the output directory was only

@@ -64,7 +64,6 @@ from core.training.diffusion_train_common import (
 from core.training.diffusion_checkpoint import (
     clear_own_checkpoints,
     retire_own_checkpoints,
-    list_checkpoints,
     resumed_into_this_dir,
     snapshot_checkpoints,
     identity_for_config,
@@ -1994,7 +1993,9 @@ def _train_dit(
             # Same as the LoRA trainer: a completed run has nothing to resume, and the final
             # iteration writes no bundle, so save_steps leaves the run's own checkpoint-400
             # behind for a later resume to roll back to. An earlier run's bundles stay.
-            retire_own_checkpoints(out_dir, preexisting_checkpoints)
+            retire_own_checkpoints(
+                out_dir, preexisting_checkpoints, resumed_here = resumed_here
+            )
     else:
         # Discarded: the user asked to throw this run away. Before periodic checkpoints
         # existed a discard left nothing behind, because the output directory was only ever
@@ -2031,9 +2032,16 @@ def _train_dit(
 def _make_optimizer(params, lr):
     """8-bit AdamW (bitsandbytes) when available -- half the optimizer state, no accuracy
     regression for LoRA -- else torch AdamW, fused on CUDA (with a fallback when this
-    build/device lacks the fused kernel)."""
+    build/device lacks the fused kernel).
+
+    UNSLOTH_DIFFUSION_FP32_OPTIM forces plain (non-fused) AdamW, as it does for SDXL: the
+    accuracy guard wants the reference optimizer, and a host where the override means one
+    thing for one trainer and nothing for the other cannot answer "can this checkpoint be
+    resumed here" before the run starts."""
     import torch
 
+    if os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM", "") in ("1", "true"):
+        return torch.optim.AdamW(params, lr = lr)
     try:
         import bitsandbytes as bnb
         return bnb.optim.AdamW8bit(params, lr = lr)

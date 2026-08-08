@@ -1832,6 +1832,72 @@ def test_the_identity_covers_the_trajectory_knobs(run_dir):
     )
 
 
+def test_disabling_min_snr_is_a_mismatch_not_an_unknown(run_dir):
+    """None is the documented way to DISABLE min-SNR, so a float field could not tell
+    "trained with it off" from "written before the field existed", and the optional rule
+    skipped the comparison for both -- letting a run continue under a different objective."""
+    on = _Run(run_dir, snr_gamma = 5.0)
+    off = _Run(run_dir, snr_gamma = None)
+    reason = dc.identity_for_config(on.cfg).mismatch_reason(dc.identity_for_config(off.cfg))
+    assert reason is not None and "min-SNR gamma" in reason
+    assert dc.identity_for_config(off.cfg).snr_gamma == "off"
+    # Only a manifest that never recorded the field is unknown.
+    older = dc.CheckpointIdentity.from_dict(
+        {**dc.identity_for_config(on.cfg).as_dict(), "snr_gamma": None}
+    )
+    assert older is not None
+    assert older.mismatch_reason(dc.identity_for_config(off.cfg)) is None
+
+
+def test_the_identity_covers_the_input_stream(run_dir):
+    """Both trainers build the latent cache and the crop/flip variant plan from these BEFORE
+    restore_resume_state puts the RNG back, so changing one continues the old optimizer and
+    sampler against a different sequence of images."""
+    import dataclasses
+
+    base = _Run(run_dir)
+    for field, value, label in (
+        # seed goes through dataclasses.replace: _Run takes its own seed argument for
+        # torch.manual_seed and does not forward it to the config.
+        ("seed", 1234, "random seed"),
+        ("cache_latents", False, "latent caching"),
+        ("cache_variants", 8, "cached crop variants"),
+        ("center_crop", True, "centre cropping"),
+        ("random_flip", False, "random flipping"),
+    ):
+        changed_cfg = dataclasses.replace(base.cfg, **{field: value})
+        reason = dc.identity_for_config(base.cfg).mismatch_reason(
+            dc.identity_for_config(changed_cfg)
+        )
+        assert reason is not None and label in reason, field
+        older = dc.CheckpointIdentity.from_dict(
+            {**dc.identity_for_config(base.cfg).as_dict(), field: None}
+        )
+        assert older is not None
+        assert older.mismatch_reason(dc.identity_for_config(changed_cfg)) is None, field
+    # False is a VALUE, not an unknown: the flags are recorded as on/off for exactly that.
+    flipped = dataclasses.replace(base.cfg, random_flip = False)
+    assert dc.identity_for_config(flipped).random_flip == "off"
+
+
+def test_both_trainers_honour_the_fp32_optimizer_override(run_dir):
+    """The preflight refuses 8-bit moments when the override is set, which is only sound if
+    every trainer actually obeys it -- otherwise DiT checkpoints written on this host become
+    unresumable on the same host."""
+    trainers = Path(dc.__file__).parent
+    for name in ("diffusion_lora_trainer.py", "diffusion_dit_trainer.py"):
+        source = (trainers / name).read_text(encoding = "utf-8")
+        marker = source.find("def _make_optimizer") 
+        if marker < 0:
+            marker = source.find("def _make_lora_optimizer")
+        assert marker > 0, name
+        body = source[marker : marker + 1200]
+        # The env READ, not a mention of it in prose.
+        read = 'os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM"'
+        assert read in body, name
+        assert body.index(read) < body.index("AdamW8bit"), name
+
+
 def test_a_completed_run_does_not_leave_its_periodic_bundles_behind(run_dir):
     """The last iteration deliberately writes no bundle, so with save_steps on the newest
     thing left is the run's own checkpoint-400 of a run that finished at 500. The preflight
@@ -1845,10 +1911,17 @@ def test_a_completed_run_does_not_leave_its_periodic_bundles_behind(run_dir):
     mine, error = run.save(7)
     assert error is None and mine is not None
 
-    dc.retire_own_checkpoints(run_dir, preexisting)
+    dc.retire_own_checkpoints(run_dir, preexisting, resumed_here = True)
 
     assert not Path(mine).exists(), "the completed run's own bundle must go"
-    assert Path(kept).exists(), "an earlier run's bundle stays resumable"
+    assert Path(kept).exists(), "a resumed run leaves its source directory's bundle alone"
+
+    # A FRESH run in a reused directory takes the earlier bundles with it: the adapter they
+    # belonged to has just been overwritten, and with the default save_steps=0 the run never
+    # writes one of its own, so nothing else ever clears them and a later resume by output
+    # directory continues the previous run's optimizer and RNG into the reused folder.
+    dc.retire_own_checkpoints(run_dir, [], resumed_here = False)
+    assert dc.list_checkpoints(run_dir) == []
 
     # And both trainers actually call it on the success path. Running either end to end needs a
     # GPU and a multi-GB base, so the call site is checked in the source: the helper being
@@ -1856,8 +1929,11 @@ def test_a_completed_run_does_not_leave_its_periodic_bundles_behind(run_dir):
     trainers = Path(dc.__file__).parent
     for name in ("diffusion_lora_trainer.py", "diffusion_dit_trainer.py"):
         source = (trainers / name).read_text(encoding = "utf-8")
-        marker = source.find("retire_own_checkpoints(out_dir, preexisting_checkpoints)")
+        marker = source.find("retire_own_checkpoints(")
         assert marker > 0, name
+        # With the resumption flag, or a fresh run in a reused directory keeps the previous
+        # run's bundles and a later resume by output directory continues them.
+        assert "resumed_here = resumed_here" in source[marker : marker + 200], name
         guard = source.rfind("if not stopped:", 0, marker)
         assert (
             guard > 0 and marker - guard < 700
