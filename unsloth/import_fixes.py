@@ -1004,8 +1004,9 @@ def _is_broken_torchvision_error(error) -> bool:
         message = str(current)
         if any(marker in message for marker in _TORCHVISION_ABI_MARKERS):
             return True
-        if (any(m in message for m in _LOADER_FAILURE_MARKERS)
-                and any(m in message for m in _TORCH_LIBRARY_MARKERS)):
+        if any(m in message for m in _LOADER_FAILURE_MARKERS) and any(
+            m in message for m in _TORCH_LIBRARY_MARKERS
+        ):
             return True
         current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
     return False
