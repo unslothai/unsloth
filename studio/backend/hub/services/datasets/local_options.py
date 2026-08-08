@@ -232,7 +232,11 @@ def _valid_declared_data_files(entries: Any) -> bool:
             return False
         if not isinstance(item["split"], str) or _SPLIT_RE.fullmatch(item["split"]) is None:
             return False
-        if not isinstance(item.get("path"), (str, list)):
+        path = item.get("path")
+        if not isinstance(path, (str, list)):
+            return False
+        if isinstance(path, list) and not all(isinstance(value, str) for value in path):
+            # Every element is resolved, so one that is not a path raises there.
             return False
         declared_splits.append(item["split"])
     # sanitize_patterns refuses a split named twice, while the module is still being chosen.
@@ -645,6 +649,8 @@ def _snapshot_all_files(snapshot: Path) -> list[PurePosixPath]:
             if len(found) >= _MAX_SNAPSHOT_DATA_FILES:
                 return found
             found.append(PurePosixPath((relative / filename).as_posix()))
+    # fsspec returns each glob's matches sorted, and only the first files decide the module.
+    found.sort(key = lambda path: path.as_posix())
     return found
 
 
@@ -744,19 +750,32 @@ def _offerable_split(
     return trainable
 
 
-def _declared_paths(item: dict[str, Any]) -> list[str]:
-    """The globs a config declares, flattened. A declared path is one glob or a list."""
+def _declared_path_groups(item: dict[str, Any]) -> list[list[str]]:
+    """The globs a config declares, grouped the way sanitize_patterns groups them by split.
+
+    Each group is resolved on its own, so a group that comes back empty is what raises.
+    """
     entries = item.get("data_files")
     if isinstance(entries, str):
-        values: list[Any] = [entries]
-    elif isinstance(entries, list):
-        values = []
-        for entry in entries:
-            value = entry.get("path") if isinstance(entry, dict) else entry
-            values.extend(value if isinstance(value, list) else [value])
-    else:
+        return [[entries]]
+    if not isinstance(entries, list):
         return []
-    return [value for value in values if isinstance(value, str)]
+    groups: list[list[Any]] = []
+    plain: list[Any] = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            value = entry.get("path")
+            groups.append(list(value) if isinstance(value, list) else [value])
+        else:
+            plain.append(entry)
+    if plain:
+        groups.append(plain)
+    return [[value for value in group if isinstance(value, str)] for group in groups]
+
+
+def _declared_paths(item: dict[str, Any]) -> list[str]:
+    """Every glob a config declares, flattened. One module is voted on across all of them."""
+    return [path for group in _declared_path_groups(item) for path in group]
 
 
 def _paths_module(patterns: Iterable[str], files: Iterable[PurePosixPath]) -> Optional[str]:
@@ -791,9 +810,17 @@ def _glob_matcher(pattern: str) -> "re.Pattern[str]":
     while index < len(pattern):
         character = pattern[index]
         if character == "*":
-            double = pattern[index + 1 : index + 2] == "*"
-            parts.append(".*" if double else "[^/]*")
-            index += 2 if double else 1
+            if pattern[index + 1 : index + 2] == "*":
+                # A leading **/ stands for any number of directories, including none.
+                if pattern[index + 2 : index + 3] == "/":
+                    parts.append("(?:.*/)?")
+                    index += 3
+                else:
+                    parts.append(".*")
+                    index += 2
+            else:
+                parts.append("[^/]*")
+                index += 1
         elif character == "?":
             parts.append("[^/]")
             index += 1
@@ -820,7 +847,9 @@ def _resolved_paths(pattern: str, files: Iterable[PurePosixPath]) -> list[PurePo
     The loader keeps a hidden or __ path only when the pattern names as many such parts as
     the path has, and it drops anything without a suffix it recognises.
     """
-    matcher = _glob_matcher(pattern.strip("/"))
+    # The filesystem normalises ./x to x before it globs, so the matcher has to as well.
+    pattern = PurePosixPath(pattern.strip("/")).as_posix()
+    matcher = _glob_matcher(pattern)
     ignored = _IGNORED_DATA_FILENAMES - {PurePosixPath(pattern).name}
     return [
         path
@@ -836,15 +865,21 @@ def _resolved_paths(pattern: str, files: Iterable[PurePosixPath]) -> list[PurePo
 def _unresolvable_configs(
     collapsed: dict[str, dict[str, Any]], files: Iterable[PurePosixPath]
 ) -> set[str]:
-    """Configs with a declared pattern the snapshot cannot satisfy. The loader resolves every
-    one of them and raises on any that matches nothing."""
+    """Configs the loader cannot resolve. It lets a wildcard match nothing, so only a literal
+    that is missing raises on its own; a whole group matching nothing raises either way."""
     files = list(files)
-    return {
-        name
-        for name, item in collapsed.items()
-        for pattern in _declared_paths(item)
-        if not _resolved_paths(pattern, files)
-    }
+    dead = set()
+    for name, item in collapsed.items():
+        for group in _declared_path_groups(item):
+            matched = False
+            for pattern in group:
+                if _resolved_paths(pattern, files):
+                    matched = True
+                elif not any(character in pattern for character in "*?["):
+                    dead.add(name)
+            if group and not matched:
+                dead.add(name)
+    return dead
 
 
 def _readable_by(path: PurePosixPath, module: str) -> bool:

@@ -1327,3 +1327,60 @@ def test_snapshot_options_reject_a_card_with_a_non_string_key(tmp_path):
     (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
     assert local_options._snapshot_options(snapshot) == set()
+
+
+@pytest.mark.parametrize("path", ["train.jsonl", "sub/train.jsonl"])
+def test_snapshot_options_match_a_recursive_glob_at_any_depth(tmp_path, path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: '**/train.jsonl'\n")
+    target = snapshot / path
+    target.parent.mkdir(parents = True, exist_ok = True)
+    target.write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # fsspec lets **/ stand for no directory at all.
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_read_a_declared_path_that_starts_with_a_dot(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: ./train.jsonl\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_reject_a_declared_path_list_holding_a_non_string(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files:\n  - split: train\n    path:\n    - a.jsonl\n    - 123\n")
+    (snapshot / "a.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_keep_a_config_whose_wildcard_alternative_misses(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: a\n  data_files:\n  - a.jsonl\n  - 'missing-*.jsonl'\n")
+    (snapshot / "a.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    # The loader swallows FileNotFoundError for a pattern with magic in it.
+    assert local_options._snapshot_options(snapshot) == {("a", "train")}
+
+
+def test_snapshot_options_reject_a_config_whose_literal_alternative_misses(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: a\n  data_files:\n  - a.jsonl\n  - nope.jsonl\n")
+    (snapshot / "a.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_all_files_come_back_in_resolved_order(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    (snapshot / "z").mkdir(parents = True)
+    (snapshot / "a").mkdir()
+    for name in ("z/b.csv", "a/y.jsonl", ".hidden.jsonl"):
+        (snapshot / name).write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    paths = [path.as_posix() for path in local_options._snapshot_all_files(snapshot)]
+    assert paths == sorted(paths)
+    assert ".hidden.jsonl" in paths
