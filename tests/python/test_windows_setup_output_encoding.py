@@ -573,7 +573,11 @@ def _console_less_probe(path: Path) -> str:
     """Assemble a probe out of the script's own preamble, helpers and banner."""
     source = path.read_text(encoding = "utf-8")
     masked = _mask_literals(source)
-    parts = ["$ErrorActionPreference = 'Stop'", _FREE_CONSOLE, "", _slice_preamble(source), ""]
+    # Sliced too: it is what turns the Write-Host throw into a dead script
+    # rather than a skipped line, so restating it would be assuming the result.
+    eap = _slice_optional(source, r'(?m)^[ \t]*\$ErrorActionPreference = "Stop"')
+    assert eap, f"{path.name} no longer stops on error before the banner"
+    parts = [eap, _FREE_CONSOLE, "", _slice_preamble(source), ""]
     redirect_probe = _slice_optional(
         source,
         r"(?m)^[ \t]*\$script:StudioStdoutRedirected = \$false\n"
