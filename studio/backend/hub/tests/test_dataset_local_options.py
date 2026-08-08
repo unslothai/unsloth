@@ -1662,7 +1662,10 @@ def test_snapshot_options_keep_a_sibling_of_a_later_empty_data_files(tmp_path):
 
 def test_snapshot_options_accept_a_feature_class_with_parameters(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype:\n      image:\n        mode: RGB\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype:\n      image:\n        mode: RGB\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -1671,7 +1674,10 @@ def test_snapshot_options_accept_a_feature_class_with_parameters(tmp_path):
 
 def test_snapshot_options_reject_a_numeric_dtype(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype: 123\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype: 123\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -1745,7 +1751,10 @@ def test_snapshot_options_leave_a_wildcard_data_dir_matching_several(tmp_path):
 
 def test_snapshot_options_let_a_later_dataset_info_entry_win(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\ndataset_info:\n- config_name: cfg\n  splits: []\n- config_name: cfg\n  splits:\n  - name: train\n    num_examples: 2\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\ndataset_info:\n- config_name: cfg\n  splits: []\n- config_name: cfg\n  splits:\n  - name: train\n    num_examples: 2\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 

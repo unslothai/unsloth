@@ -293,7 +293,9 @@ def _valid_features(features: Any) -> bool:
     if not isinstance(features, list):
         return False
     return all(
-        isinstance(field, dict) and isinstance(field.get("name"), str) and _valid_feature_node(field)
+        isinstance(field, dict)
+        and isinstance(field.get("name"), str)
+        and _valid_feature_node(field)
         for field in features
     )
 
@@ -1004,9 +1006,7 @@ class _DeclaredFiles:
         self.paths = paths
         self.index = {path.as_posix(): path for path in paths}
         self.directories = {
-            "/".join(path.parts[:depth])
-            for path in paths
-            for depth in range(1, len(path.parts))
+            "/".join(path.parts[:depth]) for path in paths for depth in range(1, len(path.parts))
         }
         self.budget = _MAX_RESOLUTION_WORK
         self.exhausted = False
@@ -1027,7 +1027,11 @@ class _DeclaredFiles:
             parts.pop()
         return "/".join(parts)
 
-    def resolve(self, pattern: str, root: str = "") -> list[PurePosixPath]:
+    def resolve(
+        self,
+        pattern: str,
+        root: str = "",
+    ) -> list[PurePosixPath]:
         """What a declared pattern resolves to, under its config's data_dir.
 
         The loader keeps a hidden or __ path only when the pattern names as many such parts
