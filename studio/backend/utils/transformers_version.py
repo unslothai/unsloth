@@ -2095,6 +2095,11 @@ def _sidecar_scan_impl(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
                 or (parts and parts[0] in ("bin", "Scripts"))
             ):
                 continue
+            target = root / rel
+            key = os.path.normcase(str(target))
+            # Count every real claim before filtering, or a dropped row's file is
+            # measured against a retained row's RECORD.
+            owners[key] = owners.get(key, 0) + 1
             # Top-level dirs several wheels write into, so one uninstall deletes
             # another's files. Unreliable ownership is a property of the path, so
             # this covers what we ship too; see _shared_non_runtime in _studio_deps.
@@ -2110,9 +2115,6 @@ def _sidecar_scan_impl(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
                     recorded = int(row[2])
                 except ValueError:
                     recorded = None
-            target = root / rel
-            key = os.path.normcase(str(target))
-            owners[key] = owners.get(key, 0) + 1
             entries.append((name, rel, recorded, target, key))
 
     found: list[str] = []
