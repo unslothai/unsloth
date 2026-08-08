@@ -1,3 +1,18 @@
+# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """Tests for unsloth.xformers_compat -- the offline torch <-> xformers ABI check behind
 the NVIDIA P0-1 report ("xFormers was built for PyTorch 2.10.0+cu128 and Python 3.10.11
 while the app runs cu130 and Python 3.13.2, disabling its CUDA extensions").
@@ -217,13 +232,54 @@ def test_the_nvidia_p0_is_detected():
 
 
 def test_torch_release_mismatch_is_detected():
+    # Below the stable-ABI floor a torch-release difference really is a mismatch.
     reason = xc.describe_xformers_mismatch(
-        torch_version = "2.11.0+cu128",
-        xformers_version = "0.0.35",
-        build_metadata = _cpp_lib(torch = "2.10.0+cu128"),
+        torch_version = "2.9.1+cu128",
+        xformers_version = "0.0.33.post1",
+        build_metadata = _cpp_lib(torch = "2.9.0+cu128"),
     )
     assert reason is not None
-    assert "2.10.0+cu128" in reason and "2.11.0+cu128" in reason
+    assert "2.9.0+cu128" in reason and "2.9.1+cu128" in reason
+
+
+def test_a_stable_abi_build_on_a_later_torch_is_not_a_mismatch():
+    # xFormers moved to the PyTorch stable API/ABI in 0.0.34, and its release notes say
+    # 2.10+ binary builds are compatible with any later version. Calling that a mismatch
+    # blames a working wheel for an unrelated failure (a missing VC++ runtime, say) and
+    # sends the user hunting for a release that does not exist.
+    assert (
+        xc.describe_xformers_mismatch(
+            torch_version = "2.12.1+cu128",
+            torch_cuda = "12.8",
+            xformers_version = "0.0.35",
+            build_metadata = _cpp_lib(torch = "2.10.0+cu128"),
+        )
+        is None
+    )
+
+
+def test_the_stable_abi_guarantee_only_runs_forwards():
+    # A 2.11-built wheel on torch 2.10 is not covered by anything: the guarantee is about
+    # LATER versions.
+    reason = xc.describe_xformers_mismatch(
+        torch_version = "2.10.0+cu128",
+        torch_cuda = "12.8",
+        xformers_version = "0.0.35",
+        build_metadata = _cpp_lib(torch = "2.11.0+cu128"),
+    )
+    assert reason is not None and "2.11.0+cu128" in reason
+
+
+def test_a_stable_abi_build_still_reports_a_cuda_major_mismatch():
+    # The ABI guarantee says nothing about CUDA: a cu128 wheel beside a cu130 runtime is
+    # the NVIDIA case, and it must still be named.
+    reason = xc.describe_xformers_mismatch(
+        torch_version = "2.12.1+cu130",
+        torch_cuda = "13.0",
+        xformers_version = "0.0.35",
+        build_metadata = _cpp_lib(torch = "2.10.0+cu128", cuda = 1208),
+    )
+    assert reason is not None and "CUDA 13" in reason
 
 
 def test_matching_build_reports_nothing():

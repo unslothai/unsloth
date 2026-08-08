@@ -2263,6 +2263,27 @@ def _announce_xformers_breakage(
         print(str(error))
 
 
+def _xformers_torch_index_url():
+    """The download.pytorch.org index serving wheels for the resident CUDA build, or None.
+
+    ``torch.version.cuda`` ('13.0') is the authority for the family, not the local tag,
+    which a source or nightly build may not carry. None on a CPU / ROCm / XPU torch, where
+    there is no CUDA-matched xformers index to point at.
+    """
+    try:
+        cuda = getattr(getattr(torch, "version", None), "cuda", None)
+        if not cuda:
+            return None
+        major, _, minor = str(cuda).partition(".")
+        family = f"cu{int(major)}{int(minor or 0)}"
+    except Exception:
+        return None
+    import os
+
+    base = os.environ.get("UNSLOTH_PYTORCH_MIRROR") or "https://download.pytorch.org/whl"
+    return f"{base.rstrip('/')}/{family}"
+
+
 def _xformers_fix_hint():
     """How to repair the install, pinned when we know the matching release.
 
@@ -2274,9 +2295,16 @@ def _xformers_fix_hint():
     except Exception:
         matching = None
     if matching is not None:
+        # WHERE from, not just which version. cu126 / cu128 / cu130 publish the same
+        # xformers version string, and PyPI carries only the CUDA-12.8 flavour -- so a
+        # bare version pin on the reported case (torch cu130 beside a cu128-built 0.0.34)
+        # force-reinstalls the very wheel that is already broken and changes nothing.
+        # Naming the matching CUDA index is what actually repairs it.
+        index = _xformers_torch_index_url()
+        index_flag = f" --index-url {index}" if index else ""
         return (
             "To fix, install the xformers build that matches your torch:\n"
-            f'\npip install --no-deps --force-reinstall "xformers=={matching}"\n'
+            f'\npip install --no-deps --force-reinstall{index_flag} "xformers=={matching}"\n'
             "\nRun `python -m xformers.info` to see xformers' own report."
         )
     return (

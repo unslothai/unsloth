@@ -1,3 +1,18 @@
+# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """Regression test for unslothai/unsloth#4631: xformers must not be blanket-disabled
 on sm_120 GPUs where its kernel actually runs (a ~57% attention-memory saving over the
 SDPA packed-mask fallback). The gate probes the real op instead of guessing by the
@@ -73,14 +88,17 @@ def test_probe_shapes_are_valid_on_working_gpu():
 
 
 @pytest.mark.parametrize(
-    "supports_bf16, expected_dtype",
-    [(True, torch.bfloat16), (False, torch.float16)],
+    "capability, expected_dtype",
+    [((8, 0), torch.bfloat16), ((7, 5), torch.float16)],
 )
-def test_probe_dtype_follows_bf16_support(monkeypatch, supports_bf16, expected_dtype):
+def test_probe_dtype_follows_the_probed_device(monkeypatch, capability, expected_dtype):
     # Pre-Ampere GPUs (sm < 80: Turing/Volta, e.g. T4/V100) run xformers fine in
     # float16 but have no bfloat16 attention kernel, so a hardcoded bf16 probe would
     # raise there, get swallowed to False, and misreport a working xformers as broken.
-    # The probe must pick its dtype from SUPPORTS_BFLOAT16 (no Turing GPU needed here).
+    #
+    # Read off THE DEVICE BEING PROBED, not the module-level SUPPORTS_BFLOAT16, which
+    # describes device 0. On a mixed box where 0 is Ampere-or-newer and LOCAL_RANK selects
+    # a Turing card, the global says bf16 and this rank writes off a healthy install.
     captured = {}
 
     def fake_zeros(
@@ -91,7 +109,9 @@ def test_probe_dtype_follows_bf16_support(monkeypatch, supports_bf16, expected_d
         captured["dtype"] = dtype
         raise RuntimeError("stop after capturing the probe dtype")
 
-    monkeypatch.setattr(ad, "SUPPORTS_BFLOAT16", supports_bf16)
+    # The opposite of the device's own answer, so a dtype taken from here fails the test.
+    monkeypatch.setattr(ad, "SUPPORTS_BFLOAT16", capability[0] < 8)
+    monkeypatch.setattr(ad.torch.cuda, "get_device_capability", lambda index = None: capability)
     monkeypatch.setattr(ad.torch, "zeros", fake_zeros)
     ad._xformers_runs_on_device()  # RuntimeError is swallowed; only the dtype matters
     assert captured["dtype"] is expected_dtype

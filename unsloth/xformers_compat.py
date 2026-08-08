@@ -70,6 +70,7 @@ __all__ = [
     "xformers_build_metadata",
     "xformers_build_summary",
     "describe_xformers_mismatch",
+    "stable_abi_covers",
 ]
 
 
@@ -151,6 +152,37 @@ def normalize_release(version: Any) -> Optional[str]:
     if match is None:
         return None
     return match.group(1)
+
+
+# xFormers moved to the PyTorch stable API/ABI in 0.0.34: the v0.0.34 release notes state
+# that "binary builds targeting PyTorch 2.10+ will be compatible with any later version".
+# So a build recorded against 2.10 running on 2.11 or 2.12 is the DESIGN, not a mismatch.
+_STABLE_ABI_TORCH_FLOOR = (2, 10)
+
+
+def _release_tuple(release: Optional[str]) -> Optional[tuple]:
+    if not release:
+        return None
+    try:
+        return tuple(int(part) for part in release.split("."))
+    except ValueError:
+        return None
+
+
+def stable_abi_covers(built_release: Optional[str], running_release: Optional[str]) -> bool:
+    """Whether a wheel built for ``built_release`` is expected to run on ``running_release``.
+
+    True only in the direction the guarantee actually runs: a 2.10-built wheel on 2.11 is
+    fine, a 2.11-built wheel on 2.10 is not. Below the floor there is no stable ABI, so a
+    difference there is still a mismatch. Saying otherwise turns an unrelated failure (a
+    missing VC++ runtime, say) into a confident wrong diagnosis, and tells the user to go
+    hunting for a release that does not exist.
+    """
+    built = _release_tuple(built_release)
+    running = _release_tuple(running_release)
+    if built is None or running is None:
+        return False
+    return built[:2] >= _STABLE_ABI_TORCH_FLOOR and running >= built
 
 
 def normalize_release_with_post(version: Any) -> Optional[str]:
@@ -364,7 +396,11 @@ def describe_xformers_mismatch(
     built_release = normalize_release(built_torch)
     running = _running_detail(torch_version, python_version)
 
-    if built_release is not None and built_release != running_release:
+    if (
+        built_release is not None
+        and built_release != running_release
+        and not stable_abi_covers(built_release, running_release)
+    ):
         return (
             f"xformers was built for {_built_detail(summary)} but you are running "
             f"{running}; its C++/CUDA extensions cannot load, so memory-efficient "

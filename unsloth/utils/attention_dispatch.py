@@ -96,7 +96,16 @@ def _xformers_runs_on_device() -> bool:
     try:
         # Pre-Ampere GPUs (sm < 80: Turing/Volta) have no bfloat16 attention kernel
         # but run xformers fine in float16, so pick the dtype the device supports.
-        dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
+        #
+        # Read off the device being PROBED, not the module-level SUPPORTS_BFLOAT16, which
+        # describes device 0. On a mixed box where 0 is Ampere-or-newer and this rank owns
+        # a Turing card, the global says bf16, the kernel rejects it, and a healthy
+        # xformers is recorded as broken for the whole process.
+        dtype = (
+            torch.bfloat16
+            if torch.cuda.get_device_capability(_PROBE_DEVICE_INDEX)[0] >= 8
+            else torch.float16
+        )
         device = f"cuda:{_PROBE_DEVICE_INDEX}"
         # Under the device context, not just device= on the tensor. BlockDiagonalCausalMask
         # builds its seqstart tensors on the CURRENT device, and at import time that is

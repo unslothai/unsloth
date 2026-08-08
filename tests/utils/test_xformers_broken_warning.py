@@ -1,3 +1,18 @@
+# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """A broken xformers must be LOUD on the default path (NVIDIA P0-1).
 
 Before this, ``unsloth/models/_utils.py`` silenced the xformers logger to ERROR right
@@ -21,6 +36,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import types
 from pathlib import Path
 
 import pytest
@@ -241,3 +257,37 @@ def test_a_healthy_install_says_nothing(repo_root):
         pytest.skip("this host's xformers is genuinely broken, so a warning is correct")
     assert "Xformers is installed but" not in output
     assert "REASON: None" in output
+
+
+def test_the_fix_hint_names_the_index_not_just_the_version(monkeypatch):
+    # The reported case is a CUDA-family mismatch: torch 2.10.0+cu130 beside an xformers
+    # 0.0.34 built for cu128. All three families publish the SAME version string and PyPI
+    # carries only the cu128 flavour, so `pip install --force-reinstall xformers==0.0.34`
+    # reinstalls the identical broken wheel. The index is the part that repairs it.
+    from unsloth.models import _utils
+
+    monkeypatch.setattr(_utils, "xformers_for_torch", lambda version: "0.0.34")
+    monkeypatch.setattr(_utils.torch, "version", types.SimpleNamespace(cuda = "13.0"))
+    hint = _utils._xformers_fix_hint()
+    assert "--index-url https://download.pytorch.org/whl/cu130" in hint
+    assert '"xformers==0.0.34"' in hint
+
+
+def test_the_fix_hint_honours_a_configured_mirror(monkeypatch):
+    from unsloth.models import _utils
+
+    monkeypatch.setattr(_utils, "xformers_for_torch", lambda version: "0.0.34")
+    monkeypatch.setattr(_utils.torch, "version", types.SimpleNamespace(cuda = "12.8"))
+    monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://mirror.example/whl/")
+    assert "--index-url https://mirror.example/whl/cu128" in _utils._xformers_fix_hint()
+
+
+def test_the_fix_hint_names_no_index_without_a_cuda_torch(monkeypatch):
+    # ROCm / XPU / CPU: there is no CUDA-matched xformers index to point at, and inventing
+    # one would send the user to a 404.
+    from unsloth.models import _utils
+
+    monkeypatch.setattr(_utils, "xformers_for_torch", lambda version: "0.0.34")
+    monkeypatch.setattr(_utils.torch, "version", types.SimpleNamespace(cuda = None))
+    hint = _utils._xformers_fix_hint()
+    assert "--index-url" not in hint and '"xformers==0.0.34"' in hint

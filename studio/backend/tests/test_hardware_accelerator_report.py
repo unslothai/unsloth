@@ -56,7 +56,7 @@ def fake_probe(monkeypatch):
     calls = {"n": 0, "names": None}
 
     def install(results):
-        def run(names, timeout = 180):
+        def run(names, timeout = 180, status = None):
             calls["n"] += 1
             calls["names"] = list(names)
             return results
@@ -322,7 +322,9 @@ def test_a_probe_that_cannot_answer_is_unknown_not_broken(monkeypatch, on_accele
     # The child timed out, crashed, or printed nothing. That says nothing about the
     # packages, so it must not light the banner.
     monkeypatch.setattr(hw, "pkg_version", lambda name: "1.2.3")
-    monkeypatch.setattr(hw, "_run_probe_subprocess", lambda names, timeout = 180: None)
+    monkeypatch.setattr(
+        hw, "_run_probe_subprocess", lambda names, timeout = 180, status = None: None
+    )
 
     report = hw.get_accelerator_report(refresh = True)
     assert report["probed"] is False
@@ -390,9 +392,6 @@ def test_hardware_endpoint_gates_the_report_behind_its_own_flag():
     [
         (lambda: hw.DeviceType.MLX, False, "Apple Silicon"),
         (lambda: hw.DeviceType.CPU, False, "CPU-only"),
-        # ROCm is the subtle one: those hosts report DeviceType.CUDA internally (there is
-        # deliberately no DeviceType.ROCM), so a plain device check waves them through.
-        (lambda: hw.DeviceType.CUDA, True, "AMD ROCm"),
         (lambda: hw.DeviceType.XPU, False, "Intel XPU"),
     ],
 )
@@ -416,6 +415,27 @@ def test_a_host_these_kernels_cannot_run_on_is_never_degraded(monkeypatch, devic
     assert report["packages"]["bitsandbytes"]["reason"] == "not used on this device"
 
 
+def test_a_rocm_host_probes_only_what_it_can_actually_load(monkeypatch, fake_probe):
+    """ROCm is the subtle one: those hosts report DeviceType.CUDA internally (there is
+    deliberately no DeviceType.ROCM), so a plain device check waves them through -- but
+    they are not empty either. Unsloth imports and enables flash-attn under
+    DEVICE_TYPE == "hip", so a broken ROCm FlashAttention is something training will
+    actually reach, and calling it "not used on this device" hides the one banner that
+    explains the crash. The other three ship CUDA-only builds, where an import failure is
+    the design."""
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    monkeypatch.setattr(hw, "pkg_version", lambda name: "1.2.3")
+    calls = fake_probe({"flash_attn": {"imports": False, "runs": None, "error": "OSError: boom"}})
+
+    report = hw.get_accelerator_report(refresh = True)
+    assert calls["names"] == ["flash_attn"]
+    assert report["degraded"] == ["flash_attn"]
+    assert report["packages"]["bitsandbytes"]["reason"] == "not used on this device"
+    assert report["packages"]["xformers"]["reason"] == "not used on this device"
+    assert report["packages"]["torchao"]["reason"] == "not used on this device"
+
+
 def test_a_cpu_host_is_distinguishable_from_an_opted_out_one(monkeypatch):
     # Two different unknowns: "these kernels do not apply here" and "you told us not to
     # look". Collapsing them would make the About tab lie about one of them.
@@ -431,3 +451,98 @@ def test_a_cpu_host_is_distinguishable_from_an_opted_out_one(monkeypatch):
 
     assert opted_out["packages"]["torchao"]["reason"] == "not probed"
     assert no_gpu["packages"]["torchao"]["reason"] == "not used on this device"
+
+
+def test_a_child_that_dies_is_isolated_rather_than_erasing_the_report(monkeypatch, on_accelerator):
+    # A native wheel that ABORTS the interpreter instead of raising is a failure mode this
+    # probe is specifically built around -- and in the batch child it used to take the
+    # whole answer down with it: every package read "could not be checked", degraded came
+    # back empty, and Settings showed nothing at all for the one install that cannot load.
+    monkeypatch.setattr(hw, "pkg_version", lambda name: "1.2.3")
+    seen = []
+
+    def run(names, timeout = 180, status = None):
+        seen.append(list(names))
+        if "bitsandbytes" in names:
+            # The batch, and bitsandbytes' own child, both die without answering.
+            if status is not None:
+                status["died"] = True
+            return None
+        return {name: {"imports": True, "runs": True, "error": None} for name in names}
+
+    monkeypatch.setattr(hw, "_run_probe_subprocess", run)
+
+    report = hw.get_accelerator_report(refresh = True)
+    assert report["probed"] is True
+    # The survivors keep their real answers...
+    assert report["packages"]["xformers"]["imports"] is True
+    assert report["packages"]["torchao"]["runs"] is True
+    # ...and the one that kills its own child is reported broken, not unknown.
+    assert report["degraded"] == ["bitsandbytes"]
+    assert report["packages"]["bitsandbytes"]["runs"] is False
+    assert "exited without answering" in report["packages"]["bitsandbytes"]["reason"]
+    # One batch attempt, then one child per package. No retry storm.
+    assert seen[0] == ["xformers", "flash_attn", "torchao", "bitsandbytes"]
+    assert seen[1:] == [["xformers"], ["flash_attn"], ["torchao"], ["bitsandbytes"]]
+
+
+def test_a_probe_that_never_ran_is_still_unknown(monkeypatch, on_accelerator):
+    # The other half of the same fence: a timeout or a missing script says nothing about
+    # any package, and re-probing one at a time would only repeat it.
+    monkeypatch.setattr(hw, "pkg_version", lambda name: "1.2.3")
+    calls = {"n": 0}
+
+    def run(names, timeout = 180, status = None):
+        calls["n"] += 1
+        return None  # no status["died"]: the child never got to run
+
+    monkeypatch.setattr(hw, "_run_probe_subprocess", run)
+
+    report = hw.get_accelerator_report(refresh = True)
+    assert calls["n"] == 1
+    assert report["probed"] is False and report["degraded"] == []
+    assert report["packages"]["torchao"]["reason"] == "could not be checked"
+
+
+def test_a_stable_abi_wheel_on_a_later_torch_is_not_called_a_mismatch(monkeypatch):
+    # xFormers 0.0.34+ targets the PyTorch stable ABI, so a 2.10-built wheel on 2.12 is
+    # the design. Diagnosing a torch mismatch there discards the REAL error (here a
+    # missing DLL, the most common Windows failure that is not a version problem) and
+    # blames a working pair.
+    monkeypatch.setattr(
+        hw,
+        "_running_torch",
+        lambda: {"torch": "2.12.1+cu128", "cuda": "12.8", "python": "3.13.2"},
+    )
+    error = "OSError: [WinError 126] The specified module could not be found"
+    reason = hw._describe_xformers_break(
+        {"torch": "2.10.0+cu128", "cuda": "12.8", "hip": None, "python": "3.10.11"}, error
+    )
+    assert reason == error
+
+
+def test_a_compatible_local_tag_is_not_a_torch_mismatch(monkeypatch):
+    # Same release, different CUDA MINOR: cu126 loads against cu128 fine, and the raw
+    # string compare claimed a torch mismatch before the CUDA-major check could speak.
+    monkeypatch.setattr(
+        hw,
+        "_running_torch",
+        lambda: {"torch": "2.10.0+cu128", "cuda": "12.8", "python": "3.13.2"},
+    )
+    error = "OSError: [WinError 126] The specified module could not be found"
+    reason = hw._describe_xformers_break(
+        {"torch": "2.10.0+cu126", "cuda": "12.6", "hip": None, "python": "3.10.11"}, error
+    )
+    assert reason == error
+
+
+def test_the_stable_abi_guarantee_does_not_cover_going_backwards(monkeypatch):
+    monkeypatch.setattr(
+        hw,
+        "_running_torch",
+        lambda: {"torch": "2.10.0+cu128", "cuda": "12.8", "python": "3.13.2"},
+    )
+    reason = hw._describe_xformers_break(
+        {"torch": "2.12.0+cu128", "cuda": "12.8", "hip": None, "python": "3.10.11"}, None
+    )
+    assert reason is not None and "2.12.0+cu128" in reason

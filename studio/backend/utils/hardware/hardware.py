@@ -927,6 +927,11 @@ _ACCELERATOR_PACKAGES = (
     ("bitsandbytes", "bitsandbytes"),
 )
 
+# What a ROCm host could actually load. flash-attn ships ROCm wheels and Unsloth enables it
+# under DEVICE_TYPE == "hip"; the other three are CUDA-only builds there, so probing them
+# would turn an expected import failure into a red banner.
+_ROCM_ACCELERATOR_PACKAGES = frozenset({"flash_attn"})
+
 # Importing native extension packages is the only honest way to know they load, but it is
 # slow and, on a badly broken install, not risk-free. Computed at most once per process
 # and skippable outright.
@@ -1030,10 +1035,18 @@ def _applicable_accelerator_packages() -> frozenset:
 
     ROCm is the subtle one -- those hosts report ``DeviceType.CUDA`` internally (there is
     deliberately no DeviceType.ROCM), so a plain device check would wave them through.
+    They are not empty, though: Unsloth imports and enables flash-attn under
+    ``DEVICE_TYPE == "hip"`` (``unsloth/models/_utils.py``), so a broken ROCm
+    FlashAttention install is something training will actually try to use, and reporting
+    it as "not used on this device" suppresses the one banner that would explain the
+    crash. The stock bitsandbytes / xformers / torchao builds are CUDA-only, so those
+    stay out.
     """
     try:
-        if IS_ROCM or get_device() is not DeviceType.CUDA:
+        if get_device() is not DeviceType.CUDA:
             return frozenset()
+        if IS_ROCM:
+            return _ROCM_ACCELERATOR_PACKAGES
     except Exception:
         return frozenset()
     return frozenset(name for name, _ in _ACCELERATOR_PACKAGES)
@@ -1042,8 +1055,17 @@ def _applicable_accelerator_packages() -> frozenset:
 _PROBE_MARKER = "__UNSLOTH_ACCELERATOR_PROBE__"
 
 
-def _run_probe_subprocess(names, timeout: int = 180) -> Optional[Dict[str, Any]]:
+def _run_probe_subprocess(
+    names, timeout: int = 180, status: Optional[Dict[str, Any]] = None
+) -> Optional[Dict[str, Any]]:
     """Run accelerator_probe.py in a throwaway interpreter. None if it could not answer.
+
+    ``status`` is an optional dict the caller passes in to learn WHY a None came back:
+    ``status["died"]`` is True when a child ran and exited without printing its marker,
+    and absent when the probe never got to run (no script, launch error, timeout). The
+    two need different answers -- one package that kills the interpreter is a diagnosis,
+    a probe that could not start is an unknown -- and they are indistinguishable from the
+    return value alone.
 
     Out of process on purpose -- see that module's docstring. In short: a failed import
     leaves half a package in sys.modules and poisons every later import of it, ``import
@@ -1072,7 +1094,14 @@ def _run_probe_subprocess(names, timeout: int = 180) -> Optional[Dict[str, Any]]
             # code page -- which is precisely where the DLL paths this probe exists to
             # report carry non-ASCII.
             env = utf8_child_env(
-                {**os.environ, "CUDA_VISIBLE_DEVICES": "", "UNSLOTH_ALLOW_CPU": "1"}
+                {
+                    **os.environ,
+                    "CUDA_VISIBLE_DEVICES": "",
+                    "UNSLOTH_ALLOW_CPU": "1",
+                    # Which ctypes symbol set bitsandbytes is checked against; only "xpu"
+                    # differs, and the child cannot work it out with the GPUs hidden.
+                    "UNSLOTH_PROBE_DEVICE_TYPE": _probe_device_type(),
+                }
             ),
         )
     except Exception as e:
@@ -1086,6 +1115,10 @@ def _run_probe_subprocess(names, timeout: int = 180) -> Optional[Dict[str, Any]]
             f"Accelerator probe produced no result (rc={completed.returncode}): "
             f"{(completed.stderr or '')[-400:]}"
         )
+        # It ran and did not answer: on a native wheel that aborts the interpreter this is
+        # the only trace the failure leaves.
+        if status is not None:
+            status["died"] = True
         return None
     try:
         import json
@@ -1094,6 +1127,80 @@ def _run_probe_subprocess(names, timeout: int = 180) -> Optional[Dict[str, Any]]
         logger.debug(f"Accelerator probe output was not JSON: {e}")
         return None
     return results if isinstance(results, dict) else None
+
+
+# The torch release xFormers moved to the PyTorch stable API/ABI at. Its v0.0.34 notes
+# state that "binary builds targeting PyTorch 2.10+ will be compatible with any later
+# version", so a 2.10-built wheel on 2.11 is the design. Mirrors _STABLE_ABI_TORCH_FLOOR
+# in unsloth/xformers_compat.py, which makes the same call for the training-side message.
+_STABLE_ABI_TORCH_FLOOR = (2, 10)
+
+
+def _torch_release(version: Optional[str]) -> Optional[tuple]:
+    """'2.10.0+cu130' -> (2, 10, 0). None when there is no numeric release to read."""
+    if not version:
+        return None
+    match = re.match(r"^(\d+(?:\.\d+)*)", str(version).strip().split("+", 1)[0])
+    if match is None:
+        return None
+    try:
+        return tuple(int(part) for part in match.group(1).split("."))
+    except ValueError:
+        return None
+
+
+def _stable_abi_covers(built: Optional[tuple], running: Optional[tuple]) -> bool:
+    """Whether a wheel built for ``built`` is expected to load on ``running``.
+
+    One-directional: 2.10-built on 2.11 is covered, 2.11-built on 2.10 is not, and below
+    the floor there is no guarantee to lean on.
+    """
+    if built is None or running is None:
+        return False
+    return built[:2] >= _STABLE_ABI_TORCH_FLOOR and running >= built
+
+
+def _probe_device_type() -> str:
+    try:
+        return "xpu" if get_device() is DeviceType.XPU else "cuda"
+    except Exception:
+        return "cuda"
+
+
+def _probe_packages(names) -> Dict[str, Any]:
+    """Probe ``names``, isolating a package that KILLS the child rather than raising.
+
+    One child for all of them is the fast path and the usual one. But aborting the
+    interpreter (pybind11 answers a duplicate type registration with ``std::terminate``)
+    is a failure mode this probe is specifically built to survive, and in the batch child
+    it takes the whole answer down with it: every installed package then reported "could
+    not be checked", ``degraded`` came back empty, and Settings showed no warning at all
+    for the one install that genuinely cannot load. So on a dead batch, re-probe one at a
+    time -- the survivors get their real answer, and the package whose own child dies is
+    reported as broken, which is what it is.
+    """
+    status: Dict[str, Any] = {}
+    results = _run_probe_subprocess(list(names), status = status)
+    if results is not None:
+        return results
+    if not status.get("died"):
+        # The probe never ran (no script, launch error, timeout). That says nothing about
+        # any package, and retrying per package would only repeat it.
+        return {}
+    if len(names) == 1:
+        # Its own child already died: that IS the diagnosis, not an unknown.
+        return {
+            names[0]: {
+                "imports": False,
+                "runs": False,
+                "error": "the probe process exited without answering (the import aborted "
+                "the interpreter)",
+            }
+        }
+    isolated: Dict[str, Any] = {}
+    for name in names:
+        isolated.update(_probe_packages([name]))
+    return isolated
 
 
 def _describe_xformers_break(
@@ -1118,12 +1225,36 @@ def _describe_xformers_break(
     running_cuda = running.get("cuda")
 
     mismatch = None
-    if built_torch and running_torch and built_torch != running_torch:
+    # Compare RELEASES, and only when the stable-ABI guarantee does not already cover the
+    # pair. Two things went wrong with the raw string compare: "2.10.0+cu126" vs
+    # "2.10.0+cu128" is the same release with a compatible local tag, and it claimed a
+    # torch mismatch before the CUDA-major check below could give the accurate answer;
+    # and a 2.10-built stable-ABI wheel on torch 2.11 is exactly what upstream says will
+    # work. In both cases a real, actionable error (a missing VC++ runtime, say) was
+    # thrown away and replaced with a confident wrong diagnosis.
+    built_release = _torch_release(built_torch)
+    running_release = _torch_release(running_torch)
+    if (
+        built_release
+        and running_release
+        and built_release != running_release
+        and not _stable_abi_covers(built_release, running_release)
+    ):
         mismatch = (f"torch {built_torch}", f"torch {running_torch}")
     elif built_cuda and running_cuda and built_cuda.split(".")[0] != running_cuda.split(".")[0]:
         # Majors only: CUDA minor version compatibility means a cu126 wheel loads fine
         # against a cu128 torch, and flagging that would be crying wolf.
-        mismatch = (f"CUDA {built_cuda}", f"CUDA {running_cuda}")
+        #
+        # Both torch builds are named alongside the CUDA versions. This is now the branch
+        # that reports the NVIDIA case (a cu128-built wheel beside a cu130 torch, same
+        # torch release on both sides), and "CUDA 12.8 vs CUDA 13.0" alone leaves the
+        # reader guessing which of their two torch installs is which.
+        mismatch = (
+            f"torch {built_torch} (CUDA {built_cuda})" if built_torch else f"CUDA {built_cuda}",
+            f"torch {running_torch} (CUDA {running_cuda})"
+            if running_torch
+            else f"CUDA {running_cuda}",
+        )
     if mismatch is None:
         return error
 
@@ -1198,7 +1329,7 @@ def get_accelerator_report(refresh: bool = False) -> Dict[str, Any]:
         to_probe = [
             name for name, version in versions.items() if version is not None and name in applicable
         ]
-        results = {} if (disabled or not to_probe) else (_run_probe_subprocess(to_probe) or {})
+        results = {} if (disabled or not to_probe) else _probe_packages(to_probe)
         probed = bool(results)
 
         for import_name, _ in _ACCELERATOR_PACKAGES:
