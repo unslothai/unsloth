@@ -1136,13 +1136,26 @@ def _remove_pid_file():
         pass
 
 
-def _install_windows_console_handler(handler) -> bool:
+# Windows terminates the process ~5s after a close event, so leave a margin.
+_CONSOLE_SHUTDOWN_BUDGET = 4.5
+
+
+def _run_console_shutdown(shutdown) -> None:
+    try:
+        shutdown()
+    except Exception as error:
+        logger.warning("Console-close cleanup failed: %s", error)
+
+
+def _install_windows_console_handler(shutdown) -> bool:
     """Run the graceful shutdown when the console window is closed.
 
     Closing the window raises CTRL_CLOSE_EVENT, which Python never turns into a
     signal, so neither a signal handler nor atexit runs and cleanup is skipped.
-    Windows allows a few seconds here, enough to stop the sidecars that would
-    otherwise keep holding the install. No-op off Windows.
+    ``shutdown`` takes no arguments and must not touch signal.signal: Windows
+    runs this on a thread it creates for the event, and Windows kills the
+    process about five seconds later, so the work is bounded to fit. No-op off
+    Windows.
     """
     if sys.platform != "win32":
         return False
@@ -1154,12 +1167,15 @@ def _install_windows_console_handler(handler) -> bool:
         CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT = 2, 5, 6
         HANDLER = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
 
+        import threading
+
         def _on_console_event(event: int) -> bool:
             if event in (CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT):
-                try:
-                    handler(signal.SIGTERM, None)
-                except Exception:
-                    pass
+                worker = threading.Thread(
+                    target = _run_console_shutdown, args = (shutdown,), daemon = True
+                )
+                worker.start()
+                worker.join(timeout = _CONSOLE_SHUTDOWN_BUDGET)
                 return True
             # Ctrl+C / Ctrl+Break already arrive as Python signals; pass them
             # on rather than shutting down twice.
@@ -2549,7 +2565,14 @@ if __name__ == "__main__":
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, _signal_handler)
 
-    _install_windows_console_handler(_signal_handler)
+    # NOT _signal_handler: Windows runs this on a thread it creates, and
+    # signal.signal() off the main thread raises, which would leave the window
+    # close doing no cleanup at all.
+    def _console_shutdown():
+        _graceful_shutdown(_server)
+        _shutdown_event.set()
+
+    _install_windows_console_handler(_console_shutdown)
 
     # Keep running until shutdown signal. Event.wait() without a timeout blocks at
     # the C level on Linux, preventing SIGINT delivery; a short timeout in a loop

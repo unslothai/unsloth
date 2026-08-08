@@ -156,13 +156,14 @@ def test_macos_style_orphans_are_recorded_and_reaped(tmp_path, monkeypatch):
     """The on-disk child record is the only reaper macOS has after a crash."""
     from utils import process_lifetime as pl
 
-    record = tmp_path / "child_processes.json"
-    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(record))
+    records = tmp_path / "children"
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(records))
     pl._tracked_pids.clear()
 
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
     try:
         pl.adopt_pid(child.pid)
+        record = records / f"{os.getpid()}.json"
         assert record.is_file(), "the child was not recorded"
 
         # Pretend a previous Studio wrote this and died. The identity is what
@@ -204,12 +205,36 @@ def test_liveness_probe_does_not_kill_what_it_probes():
     assert pl._pid_alive(dead.pid) is False
 
 
+def test_a_second_studio_does_not_erase_the_first_record(tmp_path, monkeypatch):
+    """Two Studios can share a home; one record per owner keeps both tracked."""
+    from utils import process_lifetime as pl
+
+    records = tmp_path / "children"
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(records))
+    pl._tracked_pids.clear()
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        pl.adopt_pid(child.pid)
+        # A sibling Studio's record, written under its own pid.
+        import json
+
+        other = records / "424242.json"
+        other.write_text(json.dumps({
+            "owner_pid": 424242, "owner_identity": "a-studio-that-is-gone", "children": [],
+        }))
+        pl.adopt_pid(child.pid)  # rewrites ours only
+        assert other.is_file(), "a sibling's record was erased"
+        assert (records / f"{os.getpid()}.json").is_file()
+    finally:
+        _kill(child.pid)
+
+
 def test_a_live_owner_is_never_reaped(tmp_path, monkeypatch):
     """Two Studios at once must not kill each other's children."""
     from utils import process_lifetime as pl
 
-    record = tmp_path / "child_processes.json"
-    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(record))
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(tmp_path / "children"))
     pl._tracked_pids.clear()
 
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])

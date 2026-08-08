@@ -7,18 +7,13 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 #[cfg(windows)]
 use std::sync::OnceLock;
 #[cfg(windows)]
-use windows_sys::Win32::Foundation::CloseHandle;
-#[cfg(windows)]
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicProcessIdList,
-    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
-    JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    QueryInformationJobObject, SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 #[cfg(windows)]
-use windows_sys::Win32::System::Threading::{
-    GetCurrentProcess, GetCurrentProcessId, OpenProcess, TerminateProcess, PROCESS_TERMINATE,
-};
+use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 #[cfg(windows)]
 static APP_JOB: OnceLock<Option<OwnedHandle>> = OnceLock::new();
@@ -100,89 +95,18 @@ unsafe fn set_kill_on_close(job: &OwnedHandle, enabled: bool) -> std::io::Result
     Ok(())
 }
 
-/// Every process currently assigned to the job, excluding this one.
-#[cfg(windows)]
-unsafe fn job_process_ids(job: &OwnedHandle) -> std::io::Result<Vec<u32>> {
-    // Variable-length list; a generous fixed buffer, and ERROR_MORE_DATA below
-    // still fills what fits.
-    const CAPACITY: usize = 512;
-    #[repr(C)]
-    struct ProcessIdList {
-        header: JOBOBJECT_BASIC_PROCESS_ID_LIST,
-        rest: [usize; CAPACITY],
-    }
-
-    let mut buffer: ProcessIdList = std::mem::zeroed();
-    if QueryInformationJobObject(
-        job.as_raw_handle(),
-        JobObjectBasicProcessIdList,
-        &mut buffer as *mut _ as *mut _,
-        size_of::<ProcessIdList>() as u32,
-        std::ptr::null_mut(),
-    ) == 0
-    {
-        let error = std::io::Error::last_os_error();
-        if buffer.header.NumberOfProcessIdsInList == 0 {
-            return Err(error);
-        }
-    }
-
-    let own = GetCurrentProcessId();
-    let count = buffer.header.NumberOfProcessIdsInList as usize;
-    let first = buffer.header.ProcessIdList[0];
-    let ids = std::iter::once(first)
-        .chain(buffer.rest.iter().copied())
-        .take(count.min(CAPACITY + 1))
-        .map(|id| id as u32)
-        .filter(|id| *id != 0 && *id != own)
-        .collect();
-    Ok(ids)
-}
-
-/// Terminate every other process in the app job, returning how many.
-///
-/// Runs just before `suspend_for_update_installer`: once kill-on-close is
-/// cleared nothing reaps the job, so whatever the cooperative stop missed would
-/// outlive the app and hold the venv open against the installer.
-#[cfg(windows)]
-pub fn drain_job_children() -> std::io::Result<usize> {
-    let Some(job) = APP_JOB.get().and_then(Option::as_ref) else {
-        return Ok(0);
-    };
-
-    let ids = unsafe { job_process_ids(job) }?;
-    let mut terminated = 0;
-    for id in ids {
-        unsafe {
-            let handle = OpenProcess(PROCESS_TERMINATE, 0, id);
-            if handle.is_null() {
-                continue; // gone, or not ours to kill
-            }
-            if TerminateProcess(handle, 1) != 0 {
-                terminated += 1;
-            }
-            CloseHandle(handle);
-        }
-    }
-    if terminated > 0 {
-        warn!("Terminated {terminated} leftover child process(es) before suspending job cleanup");
-    }
-    Ok(terminated)
-}
-
 /// Keep the updater-launched installer alive after Tauri exits this process.
 ///
 /// Called from the updater's pre-exit hook, just before the installer launches.
-/// Drains the job first: clearing kill-on-close removes the last backstop, and a
-/// child that outlives the app keeps `%STUDIO_HOME%\unsloth_studio` open, which
-/// is what makes the next `unsloth studio update` refuse to run.
+/// `cleanup_child_processes` has already reaped the backend tree by then, which
+/// is what has to be gone: a child that outlives the app keeps
+/// `%STUDIO_HOME%\unsloth_studio` open and the next update refuses to run.
 #[cfg(windows)]
 pub fn suspend_for_update_installer() -> std::io::Result<()> {
     let Some(job) = APP_JOB.get().and_then(Option::as_ref) else {
         return Ok(());
     };
 
-    drain_job_children()?;
     unsafe { set_kill_on_close(job, false) }?;
     info!("Windows job cleanup suspended for updater installer launch");
     Ok(())
