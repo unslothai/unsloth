@@ -699,7 +699,7 @@ class VideoBackend:
 
         from .sd_cpp_args import SdCppModelFiles, offload_flags
         from .diffusion_engine_router import _install_accelerator_for
-        from .sd_cpp_backend import _install_allowed, ensure_sd_cpp_binary
+        from .sd_cpp_backend import _install_allowed, ensure_h3_sd_cpp_binary
         from .sd_cpp_engine import SdCppEngine
         from .video_minimax_h3 import (
             H3_AUDIO_VAE,
@@ -759,7 +759,10 @@ class VideoBackend:
 
         target = resolve_diffusion_device_target()
         allow_install = _install_allowed()
-        binary = ensure_sd_cpp_binary(
+        # The H3-gated ensure, not the plain one: a build that predates H3 runs fine and so clears
+        # the version() gate below, then aborts on the first generation, i.e. after the whole
+        # bundle has downloaded.
+        binary = ensure_h3_sd_cpp_binary(
             allow_install = allow_install,
             accelerator = _install_accelerator_for(target.backend),
         )
@@ -768,7 +771,7 @@ class VideoBackend:
             # Upstream currently publishes no Linux CUDA archive. Keep the picker
             # functional with the CPU prebuilt when the user has not supplied a
             # locally compiled CUDA binary through the normal sd.cpp discovery path.
-            binary = ensure_sd_cpp_binary(allow_install = allow_install, accelerator = "cpu")
+            binary = ensure_h3_sd_cpp_binary(allow_install = allow_install, accelerator = "cpu")
             native_device = "cpu"
         engine = SdCppEngine(binary)
         if not binary or engine.version() is None:

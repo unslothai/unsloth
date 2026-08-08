@@ -2225,6 +2225,77 @@ def test_h3_native_accelerator_load_keeps_the_video_gpu_claim(monkeypatch, tmp_p
     assert gpu_arbiter.current_owner() == gpu_arbiter.VIDEO
 
 
+def test_h3_native_load_refuses_a_binary_that_predates_h3(monkeypatch, tmp_path):
+    """ensure_sd_cpp_binary probes runnability only, so an sd.cpp build older than H3 support is
+    handed back and clears the version() gate: the load reported ready and the first generation
+    failed, i.e. AFTER the multi-tens-of-GB bundle had downloaded. Gate on the capability."""
+    from core.inference import video as video_mod
+    from core.inference import sd_cpp_backend, sd_cpp_engine
+
+    class _Api:
+        def __init__(self, **_kwargs):
+            pass
+
+        def model_info(self, *_args, **_kwargs):
+            return _PlanInfo([])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr(
+        video_mod,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "cpu", device = "cpu", dtype = None),
+    )
+    monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "ensure_sd_cpp_binary",
+        lambda *, allow_install, accelerator: "/usr/local/bin/sd-cli",
+    )
+    # The user's own build: not ours to delete, so the load must fail rather than reinstall.
+    monkeypatch.setattr(sd_cpp_backend, "is_managed_binary", lambda _b: False)
+    # A pre-H3 --help. vid_gen and --audio-vae are both in it (they predate H3, they came with
+    # LTX-2), which is why the H3-only options are what the gate looks for.
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "_sd_cpp_probe_output",
+        lambda *_args: (
+            "  -M, --mode                    run mode, one of [img_gen, vid_gen, upscale]\n"
+            "  --audio-vae <string>          path to standalone LTX audio vae model\n"
+        ),
+    )
+
+    class _Engine:
+        def __init__(self, binary):
+            self.binary = binary
+
+        def version(self):
+            # The old build runs perfectly well, which is exactly why this gate cannot catch it.
+            return "stub-version"
+
+    monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
+
+    def _download(_repo, wanted, *_args, **_kwargs):
+        path = tmp_path / Path(wanted).name
+        path.write_bytes(b"x")
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+
+    backend = VideoBackend()
+    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+    with pytest.raises(RuntimeError, match = "predates MiniMax-H3"):
+        backend._run_load_h3_native(
+            fam = fam,
+            token = None,
+            cancel_event = threading.Event(),
+            repo_id = "leejet/MiniMax-H3-GGUF",
+            gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        )
+
+    assert backend._state is None
+
+
 def test_h3_native_generation_dispatch_does_not_import_torch(monkeypatch):
     from core.inference.video import _VideoLoadState
 

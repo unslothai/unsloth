@@ -635,6 +635,64 @@ def test_ensure_binary_install_disabled_returns_none(monkeypatch):
     assert ensure_sd_cpp_binary(allow_install = False) is None
 
 
+# A --help extract shaped like the real one: the mode list and --audio-vae are old enough to be in
+# a pre-H3 build too (they came with LTX-2), so only the H3-only --ref-video separates the two.
+_PRE_H3_HELP = (
+    "  -M, --mode                    run mode, one of [img_gen, vid_gen, upscale, convert]\n"
+    "  --audio-vae <string>          path to standalone LTX audio vae model\n"
+)
+_H3_HELP = _PRE_H3_HELP + (
+    "  --ref-video                   MiniMax-H3 Ref2VA reference video frame directory at 24 fps\n"
+)
+
+
+def test_h3_binary_gate_replaces_a_stale_managed_install(monkeypatch, tmp_path):
+    # An upgraded Studio still carrying an older managed sd-cli got that binary handed straight
+    # back: only runnability was probed, so the H3 load reported ready on a build with no H3
+    # support and the first generation failed, after the whole bundle had already downloaded.
+    stale = tmp_path / "stale" / "sd-cli"
+    fresh = tmp_path / "fresh" / "sd-cli"
+    for p in (stale, fresh):
+        p.parent.mkdir()
+        p.write_text("binary")
+    found = [str(stale), str(fresh)]
+
+    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: found.pop(0))
+    monkeypatch.setattr(bk, "is_managed_binary", lambda _b: True)
+    monkeypatch.setattr(
+        bk,
+        "_sd_cpp_probe_output",
+        lambda binary, *_args: _H3_HELP if binary == str(fresh) else _PRE_H3_HELP,
+    )
+
+    assert bk.ensure_h3_sd_cpp_binary() == str(fresh)
+    # A copy we own is dropped, which is what lets the installer put the pinned prebuilt back.
+    assert not stale.exists()
+
+
+def test_h3_binary_gate_refuses_but_keeps_a_user_supplied_build(monkeypatch, tmp_path):
+    # Same ownership split as _usable_or_discard_managed: the user's own build is not ours to
+    # delete (install() then refuses the still non-empty unmarked directory, leaving no binary at
+    # all), so the load fails with a message naming the binary instead.
+    own = tmp_path / "sd-cli"
+    own.write_text("binary")
+    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: str(own))
+    monkeypatch.setattr(bk, "is_managed_binary", lambda _b: False)
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_args: _PRE_H3_HELP)
+
+    with pytest.raises(RuntimeError, match = "predates MiniMax-H3"):
+        bk.ensure_h3_sd_cpp_binary()
+    assert own.exists()
+
+
+def test_h3_binary_gate_keeps_a_binary_it_cannot_probe(monkeypatch):
+    # An unreadable --help is "cannot tell", not "no H3": the load's own version() gate already
+    # refuses a binary that will not run, and guessing here would strand a working build.
+    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: "/usr/bin/sd-cli")
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_args: None)
+    assert bk.ensure_h3_sd_cpp_binary() == "/usr/bin/sd-cli"
+
+
 def test_unload_clears_state_and_signals_cancel():
     cancel = threading.Event()
     b = _loaded_backend()
