@@ -2727,14 +2727,8 @@ extra_eos_tokens = None,
                 "{% set loop_messages = messages %}"\
             "{% endif %}"
         else:
-            # A prefix with no {SYSTEM} is static, so it belongs in every
-            # conversation, which is what the Ollama modelfile below already
-            # emits. Without this arm it only rendered when messages[0] was a
-            # system message, and that case raises anyway, so it never rendered
-            # at all. The two arms are identical literals here, so the "system
-            # part is the same" regex further down folds them into one
-            # unconditional emit and a caller-supplied system message still
-            # reaches the loop's raise_exception.
+            # Emit a static prefix on both branches so the collapse below
+            # makes it unconditional.
             partial_system += "{% else %}"\
                 "{{ " + system_expr + " }}"\
                 "{% set loop_messages = messages %}"\

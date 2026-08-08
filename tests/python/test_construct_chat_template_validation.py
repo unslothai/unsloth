@@ -203,16 +203,7 @@ def test_static_prefix_without_system_still_rejects_system_message():
 
 @pytest.mark.parametrize("default_system_message", [None, "You are helpful."])
 def test_static_prefix_without_system_renders_in_every_conversation(default_system_message):
-    """A prefix with no {SYSTEM} placeholder is static, so it belongs in every
-    rendered conversation and must match the Ollama modelfile from the same call.
-
-    With `default_system_message = None` the prefix used to be emitted only from
-    the `{% if messages[0]['role'] == 'system' %}` arm, and that arm cannot be
-    reached: a system message hits the loop's `raise_exception` (asserted just
-    above). So a plain user/assistant conversation dropped the prefix entirely
-    while `create_ollama_modelfile` still served it, and the model was finetuned
-    without the text it was later prompted with.
-    """
+    """A static prefix must render regardless of the default system message."""
     modelfile, jinja_template, _, _ = construct_chat_template(
         tokenizer = _SuccessFakeTokenizer(),
         chat_template = _NO_SYSTEM_CHAT_TEMPLATE,
@@ -221,7 +212,6 @@ def test_static_prefix_without_system_renders_in_every_conversation(default_syst
     )
     rendered = _render(jinja_template, [{"role": "user", "content": "Hi"}])
     assert rendered.startswith("PREAMBLE\n"), rendered
-    # The served template carries the same prefix, so training must too.
     assert "PREAMBLE\n" in modelfile.split("TEMPLATE ")[1]
 
 
