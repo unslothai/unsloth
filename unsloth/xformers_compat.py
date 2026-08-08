@@ -242,7 +242,6 @@ def declared_torch_pin(xformers_version: Any = None) -> Optional[str]:
     wanted = normalize_release_with_post(xformers_version)
     try:
         from importlib.metadata import requires as _requires, version as _version
-
         resident = normalize_release_with_post(_version("xformers"))
         requirements = _requires("xformers") or ()
     except Exception:
@@ -266,7 +265,6 @@ def xformers_build_metadata() -> Optional[Dict[str, Any]]:
     """
     try:
         import importlib.util
-
         spec = importlib.util.find_spec("xformers")
     except Exception:
         # find_spec raises (not returns None) on a half-removed dist, and ImportError

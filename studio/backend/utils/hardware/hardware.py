@@ -948,7 +948,6 @@ def _xformers_build_metadata() -> Optional[Dict[str, Any]]:
     """
     try:
         import importlib.util
-
         spec = importlib.util.find_spec("xformers")
     except Exception:
         return None
@@ -962,7 +961,6 @@ def _xformers_build_metadata() -> Optional[Dict[str, Any]]:
         path = os.path.join(location, "cpp_lib.json")
         try:
             import json
-
             with open(path, "r", encoding = "utf-8") as handle:
                 metadata = json.load(handle)
         except Exception:
@@ -997,7 +995,6 @@ def _running_torch() -> Dict[str, Optional[str]]:
     """{"torch", "cuda", "python"} for the interpreter answering the request."""
     try:
         import torch
-
         return {
             "torch": getattr(torch, "__version__", None),
             "cuda": getattr(torch.version, "cuda", None),
@@ -1086,7 +1083,6 @@ def _run_probe_subprocess(names, timeout: int = 180) -> Optional[Dict[str, Any]]
         return None
     try:
         import json
-
         results = json.loads(payload.strip().splitlines()[0])
     except Exception as e:
         logger.debug(f"Accelerator probe output was not JSON: {e}")
@@ -1194,9 +1190,7 @@ def get_accelerator_report(refresh: bool = False) -> Dict[str, Any]:
         # One child for all of them: the interpreter start and the torch import dominate,
         # so four separate children would cost four times as much for the same answer.
         to_probe = [
-            name
-            for name, version in versions.items()
-            if version is not None and name in applicable
+            name for name, version in versions.items() if version is not None and name in applicable
         ]
         results = {} if (disabled or not to_probe) else (_run_probe_subprocess(to_probe) or {})
         probed = bool(results)

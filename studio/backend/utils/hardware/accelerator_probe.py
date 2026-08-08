@@ -92,7 +92,6 @@ def probe_flash_attn() -> Dict[str, Any]:
         return entry
     try:
         import flash_attn.flash_attn_interface  # noqa: F401
-
         entry["runs"] = True
     except BaseException as exc:
         entry["runs"] = False

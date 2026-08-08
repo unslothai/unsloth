@@ -2199,11 +2199,11 @@ except Exception:
     _xformers_dist_version = None
 try:
     _xformers_predicted_break = describe_xformers_mismatch(
-        torch_version    = torch.__version__,
-        torch_cuda       = getattr(torch.version, "cuda", None),
+        torch_version = torch.__version__,
+        torch_cuda = getattr(torch.version, "cuda", None),
         xformers_version = _xformers_dist_version,
-        build_metadata   = XFORMERS_BUILD_METADATA,
-        python_version   = _python_version(),
+        build_metadata = XFORMERS_BUILD_METADATA,
+        python_version = _python_version(),
     )
 except Exception:
     # Diagnostics must never be the thing that stops unsloth importing.
@@ -2224,7 +2224,11 @@ if _xformers_predicted_break is None:
 _XFORMERS_BREAKAGE_ANNOUNCED = False
 
 
-def _announce_xformers_breakage(reason, error = None, build_mismatch = False):
+def _announce_xformers_breakage(
+    reason,
+    error = None,
+    build_mismatch = False,
+):
     """Print the xformers breakage once per process, on the default path.
 
     Deliberately not behind UNSLOTH_ENABLE_LOGGING: silently dropping to SDPA is how a

@@ -77,9 +77,7 @@ def _write_stub_xformers(root: Path, built_torch: str, built_cuda: int) -> None:
 
 def _import_unsloth_with(stub_root, repo_root: Path, enable_logging: str) -> str:
     """Import unsloth in a child, optionally with a stub xformers shadowing the real one."""
-    inject = (
-        [f"sys.path.insert(0, {str(stub_root)!r})"] if stub_root is not None else []
-    )
+    inject = [f"sys.path.insert(0, {str(stub_root)!r})"] if stub_root is not None else []
     # Only meaningful with the stub: without one this asks the host for a version it may
     # legitimately not have.
     dist_probe = (
@@ -154,9 +152,7 @@ def _mismatched_build():
     """
     running_major = int((torch.version.cuda or "12").split(".", 1)[0])
     built_cuda = 1300 if running_major != 13 else 1208
-    built_torch = (
-        f"{torch.__version__.split('+')[0]}+cu{built_cuda // 100}{built_cuda % 100:d}"
-    )
+    built_torch = f"{torch.__version__.split('+')[0]}+cu{built_cuda // 100}{built_cuda % 100:d}"
     return built_torch, built_cuda
 
 

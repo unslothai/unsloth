@@ -135,7 +135,12 @@ def test_format_build_cuda(raw, formatted):
 # ---------------------------------------------------------------- build metadata
 
 
-def _cpp_lib(torch = "2.10.0+cu128", cuda = 1208, python = "3.10.11", hip = None):
+def _cpp_lib(
+    torch = "2.10.0+cu128",
+    cuda = 1208,
+    python = "3.10.11",
+    hip = None,
+):
     """The real shape of an xformers wheel's cpp_lib.json (verified against 0.0.34)."""
     return {
         "version": {"cuda": cuda, "hip": hip, "torch": torch, "python": python},
@@ -293,9 +298,7 @@ def test_pin_fallback_stays_quiet_when_the_pin_matches(monkeypatch):
     monkeypatch.setattr(xc, "xformers_build_metadata", lambda: None)
     monkeypatch.setattr(xc, "declared_torch_pin", lambda version = None: "2.10.0")
     assert (
-        xc.describe_xformers_mismatch(
-            torch_version = "2.10.0+cu128", xformers_version = "0.0.34"
-        )
+        xc.describe_xformers_mismatch(torch_version = "2.10.0+cu128", xformers_version = "0.0.34")
         is None
     )
 

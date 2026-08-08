@@ -186,9 +186,7 @@ def test_probe_never_raises_even_when_xformers_is_none(monkeypatch):
         ("undefined symbol: _ZN3c105ErrorC1E", False),
     ],
 )
-def test_a_busy_or_full_gpu_does_not_count_as_a_broken_build(
-    monkeypatch, message, inconclusive
-):
+def test_a_busy_or_full_gpu_does_not_count_as_a_broken_build(monkeypatch, message, inconclusive):
     # Device 0 being full, or claimed by another rank under EXCLUSIVE_PROCESS, says
     # nothing about the wheel. Turning memory-efficient attention off for the whole
     # process on that basis is a silent 2x memory regression caused by the probe itself.
@@ -210,7 +208,11 @@ def test_the_probe_targets_this_rank_s_device(monkeypatch):
     # weakest GPU disable xformers on the good ones.
     captured = {}
 
-    def fake_zeros(*args, device = None, **kwargs):
+    def fake_zeros(
+        *args,
+        device = None,
+        **kwargs,
+    ):
         captured["device"] = device
         raise RuntimeError("stop after capturing the device")
 

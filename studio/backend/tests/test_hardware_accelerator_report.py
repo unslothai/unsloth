@@ -67,7 +67,12 @@ def fake_probe(monkeypatch):
     return install
 
 
-def _cpp_lib(torch = "2.10.0+cu128", cuda = 1208, python = "3.10.11", hip = None):
+def _cpp_lib(
+    torch = "2.10.0+cu128",
+    cuda = 1208,
+    python = "3.10.11",
+    hip = None,
+):
     """The real shape of an xformers wheel's cpp_lib.json (verified against 0.0.34)."""
     return {
         "version": {"cuda": cuda, "hip": hip, "torch": torch, "python": python},
@@ -128,7 +133,6 @@ def test_built_for_is_read_from_cpp_lib_json(tmp_path, monkeypatch):
 
 def test_built_for_is_none_without_xformers(monkeypatch):
     import importlib.util
-
     monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a, **k: None)
     assert hw._xformers_built_for() is None
 
@@ -207,7 +211,12 @@ def test_a_cuda_minor_difference_is_not_a_mismatch(monkeypatch):
 
 
 def test_report_has_the_documented_shape(on_accelerator, fake_probe):
-    fake_probe({name: {"imports": True, "runs": None, "error": None} for name, _ in hw._ACCELERATOR_PACKAGES})
+    fake_probe(
+        {
+            name: {"imports": True, "runs": None, "error": None}
+            for name, _ in hw._ACCELERATOR_PACKAGES
+        }
+    )
     report = hw.get_accelerator_report(refresh = True)
     assert report["python_version"] == __import__("platform").python_version()
     assert set(report["packages"]) == {"xformers", "flash_attn", "torchao", "bitsandbytes"}
@@ -265,7 +274,12 @@ def test_the_probe_is_one_child_for_all_packages(monkeypatch, on_accelerator, fa
     # The interpreter start and the torch import dominate, so one child per package
     # would cost four times as much for the same answer.
     monkeypatch.setattr(hw, "pkg_version", lambda name: "1.0")
-    calls = fake_probe({name: {"imports": True, "runs": None, "error": None} for name, _ in hw._ACCELERATOR_PACKAGES})
+    calls = fake_probe(
+        {
+            name: {"imports": True, "runs": None, "error": None}
+            for name, _ in hw._ACCELERATOR_PACKAGES
+        }
+    )
     hw.get_accelerator_report(refresh = True)
     assert calls["n"] == 1
 
@@ -327,7 +341,12 @@ def test_a_long_reason_is_capped_before_it_reaches_the_ui(monkeypatch, on_accele
 
 def test_report_is_cached(monkeypatch, on_accelerator, fake_probe):
     monkeypatch.setattr(hw, "pkg_version", lambda name: "1.2.3")
-    calls = fake_probe({name: {"imports": True, "runs": None, "error": None} for name, _ in hw._ACCELERATOR_PACKAGES})
+    calls = fake_probe(
+        {
+            name: {"imports": True, "runs": None, "error": None}
+            for name, _ in hw._ACCELERATOR_PACKAGES
+        }
+    )
 
     hw.get_accelerator_report(refresh = True)
     first = calls["n"]

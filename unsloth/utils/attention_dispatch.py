@@ -93,9 +93,7 @@ def _xformers_runs_on_device() -> bool:
     except Exception as error:
         XFORMERS_PROBE_REASON = f"{type(error).__name__}: {error}".strip()
         text = str(error).lower()
-        XFORMERS_PROBE_INCONCLUSIVE = any(
-            marker in text for marker in _INCONCLUSIVE_PROBE_ERRORS
-        )
+        XFORMERS_PROBE_INCONCLUSIVE = any(marker in text for marker in _INCONCLUSIVE_PROBE_ERRORS)
         return False
 
 
@@ -122,15 +120,15 @@ def _xformers_disabled_for_capability(capability, probe = _xformers_runs_on_devi
 # already initialised (_XFORMERS_FP32_UNSUPPORTED below forces the same lazy init).
 XFORMERS_DISABLED_REASON = XFORMERS_BROKEN_REASON
 if HAS_XFORMERS and torch.cuda.is_available():
-    if _xformers_disabled_for_capability(
-        torch.cuda.get_device_capability(_PROBE_DEVICE_INDEX)
-    ):
+    if _xformers_disabled_for_capability(torch.cuda.get_device_capability(_PROBE_DEVICE_INDEX)):
         if XFORMERS_PROBE_INCONCLUSIVE:
             # The GPU was busy or full, which says nothing about the build. Keep xformers
             # and let the real forward pass decide; turning it off here would be a silent
             # memory regression caused by the diagnostic.
             if UNSLOTH_ENABLE_LOGGING:
-                print(f"Unsloth: Could not probe xformers ({XFORMERS_PROBE_REASON}); keeping it on.")
+                print(
+                    f"Unsloth: Could not probe xformers ({XFORMERS_PROBE_REASON}); keeping it on."
+                )
         else:
             HAS_XFORMERS = False
             XFORMERS_DISABLED_REASON = XFORMERS_PROBE_REASON
