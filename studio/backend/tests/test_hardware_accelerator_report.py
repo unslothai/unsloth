@@ -484,7 +484,11 @@ _SMI_ROWS = (
 )
 
 
-def _fake_smi(monkeypatch, stdout = _SMI_ROWS, returncode = 0):
+def _fake_smi(
+    monkeypatch,
+    stdout = _SMI_ROWS,
+    returncode = 0,
+):
     monkeypatch.setattr(hw.shutil, "which", lambda name: "/usr/bin/nvidia-smi")
     monkeypatch.setattr(
         hw.subprocess,

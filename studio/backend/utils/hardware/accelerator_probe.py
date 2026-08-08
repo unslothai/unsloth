@@ -279,7 +279,6 @@ def _registered_ops(namespace: str):
     """
     try:
         import torch
-
         names = torch._C._dispatch_get_all_op_names()
     except BaseException:  # noqa: BLE001 — an unfamiliar torch means "cannot tell"
         return None
