@@ -59,8 +59,9 @@ except ImportError:
 # Prebuilt downloads use urllib in a fresh spawned interpreter, so they miss
 # main.py's OS-trust-store injection. This module is vendored standalone and
 # cannot import backend modules, so the gate is pasted from
-# backend/utils/native_tls.py's inline_gate_source(); the copy below must match
-# it verbatim, which test_native_tls_entrypoints.py asserts.
+# backend/utils/native_tls.py's inline_gate_source(); test_native_tls_entrypoints.py
+# asserts the copy below still parses to the same statements (the formatter
+# restyles it, so the check is on the AST, not the text).
 _flag = os.environ.get("UNSLOTH_STUDIO_NATIVE_TLS", "").strip().lower()
 if _flag in ("1", "true", "yes") or (
     _flag not in ("0", "false", "no") and sys.platform in ("darwin", "win32")

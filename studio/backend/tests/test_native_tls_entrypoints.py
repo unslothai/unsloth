@@ -76,16 +76,20 @@ def test_probe_script_activates_before_it_downloads(module, attr):
 
 
 def test_prebuilt_core_gate_matches_the_generated_source():
-    """The one copy that cannot be generated at runtime, so assert it verbatim.
+    """The one copy that cannot be generated at runtime, so assert it here.
 
     prebuilt_core.py is vendored beside the backend and imports nothing from it,
     so its gate is a paste. Drift here is silent: the installers would keep
     downloading against certifi while everything else used the OS store.
+    Compare parsed statements, not text: ruff-format rewrites the paste (quote
+    style, line wrapping) without changing what it does.
     """
     from utils.native_tls import inline_gate_source
 
     source = (_BACKEND.parent / "prebuilt_core.py").read_text(encoding = "utf-8")
-    assert inline_gate_source() in source, (
+    gate = [ast.dump(node) for node in ast.parse(inline_gate_source()).body]
+    body = [ast.dump(node) for node in ast.parse(source).body]
+    assert any(body[i : i + len(gate)] == gate for i in range(len(body) - len(gate) + 1)), (
         "prebuilt_core.py's gate has drifted from native_tls.inline_gate_source(); "
         "paste the current output of that function over it"
     )
