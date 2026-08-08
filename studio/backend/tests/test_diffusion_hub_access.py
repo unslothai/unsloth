@@ -141,21 +141,39 @@ def test_a_self_referential_chain_terminates():
 def test_an_ambient_token_counts_as_a_token(monkeypatch):
     """With token=None the Hub still uses HF_TOKEN or the cached login, so keying off Studio's
     own token alone tells an already-authenticated user to add a token they have."""
-    import huggingface_hub
+    import huggingface_hub.utils as hub_utils
 
-    monkeypatch.setattr(huggingface_hub, "get_token", lambda: "hf_ambient", raising = False)
+    monkeypatch.setattr(hub_utils, "get_token_to_send", lambda _t: "hf_ambient")
     assert _hf_token_in_play(None) is True
 
-    monkeypatch.setattr(huggingface_hub, "get_token", lambda: None, raising = False)
+    monkeypatch.setattr(hub_utils, "get_token_to_send", lambda _t: None)
     assert _hf_token_in_play(None) is False
     assert _hf_token_in_play("hf_explicit") is True
 
 
-def test_an_unreadable_ambient_token_is_not_a_token(monkeypatch):
-    import huggingface_hub
+def test_a_disabled_implicit_token_is_not_a_token(monkeypatch):
+    """HF_HUB_DISABLE_IMPLICIT_TOKEN leaves get_token() answering with the cached login while
+    build_hf_headers sends no authorization header, so the refusal was anonymous. Asking the
+    same helper the Hub asks is what keeps the two in step."""
+    from huggingface_hub import constants
+    from huggingface_hub.utils import _headers
 
-    def _raise():
+    monkeypatch.setattr(constants, "HF_HUB_DISABLE_IMPLICIT_TOKEN", True)
+    monkeypatch.setattr(_headers, "get_token", lambda: "hf_cached_login", raising = False)
+
+    # Real get_token_to_send, so this pins hub's actual policy rather than a stand-in.
+    assert _hf_token_in_play(None) is False
+    assert _hf_token_in_play("hf_explicit") is True
+
+    monkeypatch.setattr(constants, "HF_HUB_DISABLE_IMPLICIT_TOKEN", False)
+    assert _hf_token_in_play(None) is True
+
+
+def test_an_unreadable_ambient_token_is_not_a_token(monkeypatch):
+    import huggingface_hub.utils as hub_utils
+
+    def _raise(_t):
         raise OSError("token file unreadable")
 
-    monkeypatch.setattr(huggingface_hub, "get_token", _raise, raising = False)
+    monkeypatch.setattr(hub_utils, "get_token_to_send", _raise)
     assert _hf_token_in_play(None) is False

@@ -195,10 +195,13 @@ def _hf_token_in_play(hf_token: Optional[str]) -> bool:
     if hf_token:
         return True
     try:
-        from huggingface_hub import get_token
-        return bool(get_token())
-    except Exception:  # noqa: BLE001 -- no readable ambient token is the same as none
-        return False
+        # The exact call build_hf_headers makes, not get_token(): under
+        # HF_HUB_DISABLE_IMPLICIT_TOKEN a cached login still answers get_token() while the
+        # request goes out anonymous, which would name the account for an anonymous refusal.
+        from huggingface_hub.utils import get_token_to_send
+        return bool(get_token_to_send(None))
+    except Exception:  # noqa: BLE001 -- unreadable or an unknown hub layout: assume none, which
+        return False   # only costs the user the "add a token" half of the message
 
 
 def hub_access_message(exc: BaseException, *, had_token: bool) -> Optional[str]:
