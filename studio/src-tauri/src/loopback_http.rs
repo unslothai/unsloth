@@ -7,10 +7,10 @@ pub(crate) fn client(timeout: Duration) -> Result<reqwest::Client, reqwest::Erro
         .build()
 }
 
-/// A client for streaming a body down. `read_timeout` rather than `timeout`: a whole gallery
-/// clip will outlast any sane total deadline, while a per-read one bounds the headers and then
-/// each chunk, so a backend that accepts and then stops sending cannot hang the save forever.
-/// Redirects are refused so a loopback URL cannot be bounced to another host after the check.
+/// A client for streaming a body down. `read_timeout`, not `timeout`: a whole gallery clip
+/// outlasts any sane total deadline, while a per-read one bounds the headers and then each
+/// chunk, so a backend that accepts and goes quiet cannot hang the save. Redirects are refused
+/// so a loopback URL cannot be bounced off-host after the check.
 pub(crate) fn streaming_client(
     connect_timeout: Duration,
     read_timeout: Duration,

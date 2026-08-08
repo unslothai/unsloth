@@ -163,11 +163,9 @@ fn save_selected_file(
     Ok(Some(saved_file_name(&path)))
 }
 
-/// Only the local backend. Without this the webview could aim the streaming save at any
-/// host and write the reply to disk.
-///
-/// Parsed rather than sliced: in `http://127.0.0.1:8888@evil.test/clip` the loopback-looking
-/// part is userinfo, and the client would connect to `evil.test`.
+/// Only the local backend, or the webview could write any host's reply to disk. Parsed
+/// rather than sliced: in `http://127.0.0.1:8888@evil.test/clip` the loopback-looking part
+/// is userinfo and the client would connect to `evil.test`.
 fn require_loopback_url(url: &str) -> Result<(), String> {
     const REJECT: &str = "Only local http URLs can be saved.";
     let parsed = reqwest::Url::parse(url).map_err(|_| REJECT.to_string())?;
@@ -555,8 +553,7 @@ mod tests {
         assert_save_filter("voice.webm", "WebM video or audio", &["webm"]);
     }
 
-    /// A current-thread runtime: the default one starts a worker per core, and this test
-    /// binary runs in parallel with a load-sensitive profile-lock test.
+    /// A current-thread runtime: these tests need one task, not a worker per core.
     fn test_runtime() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -626,9 +623,8 @@ mod tests {
         ] {
             assert!(require_loopback_url(url).is_ok(), "should allow {url}");
         }
-        // Anything else would let the webview write an arbitrary response to disk. The
-        // userinfo forms are the ones a naive authority split accepts: everything before
-        // the '@' is credentials, so the real host is the part that looks like a path.
+        // The userinfo forms are the ones a naive authority split accepts: everything
+        // before the '@' is credentials, so the real host is what follows it.
         for url in [
             "http://evil.test/x.mp4",
             "https://127.0.0.1:8888/x.mp4",
