@@ -3604,6 +3604,40 @@ def test_gguf_progress_without_a_manifest_needs_every_expected_blob(monkeypatch,
     assert result["progress"] == 0.99  # capped, not settled
 
 
+def test_running_job_never_reads_progress_from_a_remembered_cache(monkeypatch, tmp_path):
+    """force_active means the active root and nothing else, even before it exists.
+
+    The first download into a freshly configured cache creates the root, so
+    hf_cache_root declines it and the lookup used to fall through to every
+    remembered cache. A previous cache's completed copy then read as this run's
+    progress, finalizing a job that had not written a byte.
+    """
+    previous = tmp_path / "previous"
+    complete = previous / "models--Org--Model" / "blobs"
+    complete.mkdir(parents = True)
+    (complete / "mainhash").write_bytes(b"x" * 100)
+    active = tmp_path / "active"  # not created yet
+    monkeypatch.setattr(
+        hf_cache_state,
+        "hf_cache_roots",
+        lambda: [previous],
+    )
+
+    dirs = hf_cache_state.preferred_repo_cache_dirs(
+        "model",
+        "Org/Model",
+        force_active = True,
+        active_root = active,
+    )
+
+    assert dirs == [active / "models--Org--Model"]
+    assert not dirs[0].exists()
+    # Without force_active the remembered copy is still the best reading there is.
+    assert hf_cache_state.preferred_repo_cache_dirs("model", "Org/Model") == [
+        previous / "models--Org--Model"
+    ]
+
+
 def test_hf_cache_model_file_probe_is_bounded(monkeypatch, tmp_path):
     snapshot = tmp_path / "snapshot"
     snapshot.mkdir()

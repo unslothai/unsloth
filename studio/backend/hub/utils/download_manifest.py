@@ -856,6 +856,18 @@ def verify_against_disk(manifest: Manifest, snapshot_dir: Path) -> VerifyResult:
     missing: list[str] = []
     mismatched: list[str] = []
     for expected in manifest.expected_files:
+        # Counted missing rather than skipped, so an unverifiable entry can
+        # never read as verified. A Windows-separator path lands here, and
+        # cannot be folded onto its posix spelling in expected_path_is_safe:
+        # that guard also fronts resolved_dataset_snapshot_file, which splits on
+        # PurePosixPath, where "a\b" is one component and accepting it would
+        # hand a traversal straight through on the platform that disagrees. No
+        # writer in this package produces one -- HF rfilenames are posix and
+        # expected_files_from_snapshot_dir calls as_posix -- and one that
+        # reached a payload would already have failed _manifest_from_payload's
+        # identical check, so this stays defence in depth for a Manifest built
+        # some other way. Should such a writer ever appear, normalize it in
+        # _payload_file_path, not here.
         if not expected_path_is_safe(expected.path):
             missing.append(expected.path)
             continue
