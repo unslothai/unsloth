@@ -10380,9 +10380,11 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     for base, dirs, names in os.walk(workdir):
         # depth 0 is the workdir itself, whose files are one segment.
         depth = base[len(workdir) :].count(os.sep)
-        dirs[:] = [] if depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1 else [
-            d for d in dirs if not d.startswith(".")
-        ]
+        dirs[:] = (
+            []
+            if depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1
+            else [d for d in dirs if not d.startswith(".")]
+        )
         for name in names:
             if name.startswith(".") or name.startswith(_INTERNAL_FILE_PREFIXES):
                 continue

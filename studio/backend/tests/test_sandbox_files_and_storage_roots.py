@@ -515,10 +515,18 @@ def test_a_same_timestamp_overwrite_is_still_reported(tmp_path, monkeypatch):
     assert "report.csv" in tools._created_file_sentinels(str(workdir), before)
 
 
-@pytest.mark.parametrize("payload", [
-    "[null]", "[1, 2]", '["a.csv"]', '[{"size": 3}]', '[{"name": ""}]',
-    '[{"name": 5}]', '[{"name": "a.csv", "size": "big"}]',
-])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "[null]",
+        "[1, 2]",
+        '["a.csv"]',
+        '[{"size": 3}]',
+        '[{"name": ""}]',
+        '[{"name": 5}]',
+        '[{"name": "a.csv", "size": "big"}]',
+    ],
+)
 def test_a_malformed_files_envelope_is_left_as_text(payload):
     """Only the executor's own envelope is protocol; anything else is output."""
     from core.inference.tool_loop_controller import strip_result_for_model
