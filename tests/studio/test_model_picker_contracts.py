@@ -1413,7 +1413,9 @@ def test_a_local_gguf_still_shows_its_remote_companion_footprint():
     suppressing the footprint request understated a local row by the larger half of the download.
 
     The arithmetic differs though: a local checkpoint is not part of `required_bytes` at all, so
-    nothing may be subtracted for it, where a hub pick carries its checkpoint inside that total."""
+    nothing may be subtracted for it, where a hub pick carries its checkpoint inside that total.
+    "On disk" is the listing's verdict, not the spelling of the id, so the gate is
+    `checkpointIsLocal` rather than the path prefix test alone."""
     src = _read("features/model-picker/components/model-selector/pickers.tsx")
     effect = re.search(r"setCompanionBytesByKey\(new Map\(\)\);(.*?)\n  \}, \[", src, re.S)
     assert effect, "footprint resolution effect not found"
@@ -1424,7 +1426,7 @@ def test_a_local_gguf_still_shows_its_remote_companion_footprint():
         1
     ), "a local pick skips the footprint request, hiding its remote companion set"
     assert re.search(
-        r"const checkpoint = isLocalPath\n?\s*\? 0", body
+        r"const checkpoint = checkpointIsLocal\n?\s*\? 0", body
     ), "a local checkpoint is subtracted from a total it was never part of"
 
 
@@ -3325,6 +3327,29 @@ def test_every_footprint_group_gets_its_own_resolve_call():
     assert "const next = new Map(previous);" in effect
     # Cleared per listing, so a reopened repo never shows the previous repo's totals.
     assert "setCompanionBytesByKey(new Map());" in effect
+
+
+def test_the_footprint_asks_the_listing_whether_the_checkpoint_is_on_disk():
+    """Whether the checkpoint sits inside `required_bytes` is a question about the
+    disk, and the prefix regex cannot answer it: the backend resolves identifiers
+    existence-first, so a marker-less relative directory like "models/my-image-model"
+    is a local model with no path marker to match. Gating the subtraction on the
+    regex alone subtracted a checkpoint the plan had never counted, driving the
+    figure to zero and hiding a multi-GB companion set behind the checkpoint size.
+    The listing already reports the backend's own verdict as `resolved_locally`."""
+    src = _read("features/model-picker/components/model-selector/pickers.tsx")
+    # Surfaced by the normalizer, so no caller re-implements the field name.
+    assert "resolved_locally?: unknown;" in src
+    assert "resolvedLocally: res?.resolved_locally === true," in src
+    assert "setResolvedLocally(normalized.resolvedLocally);" in src
+    # Reset per listing: the previous row's locality must not decide this row's total.
+    assert "setResolvedLocally(false);" in src
+    assert "const checkpointIsLocal = isLocalPath || resolvedLocally;" in src
+    # The subtraction reads the combined verdict, never the regex on its own.
+    effect = src.split("const [companionBytesByKey, setCompanionBytesByKey]", 1)[1]
+    effect = effect.split("const variantOptionKeys = useMemo(", 1)[0]
+    assert "const checkpoint = checkpointIsLocal" in effect
+    assert "const checkpoint = isLocalPath" not in effect
 
 
 def test_each_quant_row_reads_its_own_dependency_key():

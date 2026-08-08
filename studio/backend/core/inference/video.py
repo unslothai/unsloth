@@ -842,7 +842,9 @@ class VideoBackend:
         ) -> int:
             """Count every required file, but stage only the ones the loader cannot already
             resolve. The page now plans EVERY hub pick, so an unfiltered entry would re-stage
-            a model that is fully on disk. Returns the full size, cached or not.
+            a model that is fully on disk. Returns the full size, cached or not. Loadable, not
+            merely cached: a stale live copy shadows a good one in the other root, so the load
+            would refetch inline a file that a both-roots probe had seen and skipped.
 
             ``checkpoint`` marks the entry holding the SELECTED model so the panel can label it
             without re-deriving the answer from the repo id, which the plan itself may have
@@ -856,7 +858,7 @@ class VideoBackend:
                     continue
                 seen.add(name)
                 required += int(size)
-                if DiffusionBackend._hub_file_is_cached(repo, name, revision, int(size)):
+                if DiffusionBackend._hub_file_is_loadable(repo, name, revision, int(size)):
                     continue
                 entry = entries.setdefault(
                     repo,

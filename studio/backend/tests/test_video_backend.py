@@ -1953,6 +1953,46 @@ def test_download_plan_is_empty_when_the_whole_video_pick_is_cached(monkeypatch)
     assert plan["required_bytes"] > 0
 
 
+def test_download_plan_restages_a_video_file_shadowed_in_the_live_cache(monkeypatch):
+    # The live cache holds a stale copy under the right name and the import-time cache the good
+    # one. reuse_other_cache_root switches roots only when the live lookup resolves nothing, so
+    # the stale entry shadows the good copy: accepting "cached in either root" drops the file
+    # from the plan and the load then reads the stale file or refetches it inline.
+    _plan_api(
+        monkeypatch,
+        {
+            "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
+            "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
+        },
+    )
+    from core.inference.diffusion import DiffusionBackend
+
+    shadowed = "vae/ltx-2.3-22b-distilled_video_vae.safetensors"
+
+    live_root = "live"
+
+    def _cached(repo_id, filename, revision = None, expected_size = None, roots = None):
+        """A cache where only ``shadowed`` differs between the roots. ``roots = None`` means
+        either root, which is exactly the verdict that must no longer be trusted here."""
+        if filename != shadowed:
+            return True
+        if roots is None or roots == (None,):
+            return True                     # the good copy lives in the other root
+        return expected_size is None        # present in the live root, but the wrong size
+
+    monkeypatch.setattr(DiffusionBackend, "_hub_file_is_cached", staticmethod(_cached))
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: live_root)
+
+    plan = VideoBackend().download_plan(
+        "unsloth/LTX-2.3-GGUF",
+        gguf_filename = "ltx-2.3-22b-distilled.gguf",
+        family_override = "ltx-2",
+    )
+
+    staged = {f for e in plan["entries"] for f in e["files"]}
+    assert staged == {shadowed}, "only the shadowed file is unresolvable, and it must be staged"
+
+
 def test_download_plan_narrows_an_ltx23_pick_and_stages_its_extras(monkeypatch):
     # A 2.3 checkpoint brings its own VAEs, vocoder and connectors, so staging the 2.0 base copies downloads gigabytes the
     # pipeline never opens -- and the companions it DOES read were missing from the plan, so they were pulled inline.

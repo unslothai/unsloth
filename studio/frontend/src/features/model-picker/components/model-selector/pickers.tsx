@@ -984,6 +984,7 @@ function normalizeGgufVariantsResponse(
         default_variant?: unknown;
         has_vision?: unknown;
         context_length?: unknown;
+        resolved_locally?: unknown;
       }
     | null
     | undefined,
@@ -992,6 +993,7 @@ function normalizeGgufVariantsResponse(
   defaultVariant: string | null;
   hasVision: boolean;
   contextLength: number | null;
+  resolvedLocally: boolean;
 } {
   const contextLength = res?.context_length;
   return {
@@ -1009,6 +1011,10 @@ function normalizeGgufVariantsResponse(
       contextLength >= 0
         ? contextLength
         : null,
+    // The backend's own verdict, which resolves existence-first: a marker-less relative name
+    // that exists on disk is a local model even though no path prefix says so. A server that
+    // predates the field omits it, leaving the prefix test to answer alone as before.
+    resolvedLocally: res?.resolved_locally === true,
   };
 }
 
@@ -1229,6 +1235,9 @@ function GgufVariantExpander({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  // Whether the LISTING resolved this identifier off disk. Not derivable from loadId/cachePath,
+  // which a downloaded hub model also carries.
+  const [resolvedLocally, setResolvedLocally] = useState(false);
   const localSource = loadId || cachePath || null;
 
   useEffect(() => {
@@ -1240,6 +1249,9 @@ function GgufVariantExpander({
       if (canceled) return;
       setLoading(true);
       setError(null);
+      // Belongs to the identifier being listed: carrying it over would apply the previous
+      // row's locality to this one's footprint arithmetic.
+      setResolvedLocally(false);
     });
 
     // The row's own directory, so disk contents count against that cache, not the active one. No
@@ -1256,6 +1268,7 @@ function GgufVariantExpander({
         setHasVision(normalized.hasVision);
         onHasVision?.(normalized.hasVision);
         setNativeContext(normalized.contextLength);
+        setResolvedLocally(normalized.resolvedLocally);
       })
       .catch((err) => {
         if (canceled) return;
@@ -1275,6 +1288,10 @@ function GgufVariantExpander({
   const isLocalPath = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(
     repoId,
   );
+  // The prefix test cannot see a marker-less relative directory like "models/my-image-model",
+  // which the backend loads off disk. Whether the checkpoint is on disk decides the footprint
+  // arithmetic, so that question is asked of the listing, not of the spelling.
+  const checkpointIsLocal = isLocalPath || resolvedLocally;
 
   const handleVariantClick = useCallback(
     // ``filename`` is required, not decorative: the diffusion pages load a quant with {kind: "gguf", filename} and gate that branch on meta.ggufFilename, so a quant label alone made every Images/Video GGUF pick a dead click.
@@ -1445,11 +1462,12 @@ function GgufVariantExpander({
       })
         .then((footprint) => {
           if (cancelled || !footprint) return;
-          // A local checkpoint is not part of required_bytes at all, so nothing may be
-          // subtracted for it: the whole figure IS the remote companion set. Only a hub pick
-          // carries its checkpoint inside the total, and expectedBytes stands in when the
-          // planner could not size it.
-          const checkpoint = isLocalPath
+          // A checkpoint already on disk is not part of required_bytes at all, so nothing may
+          // be subtracted for it: the whole figure IS the remote companion set. Subtracting
+          // anyway drove the total to zero and hid a multi-GB companion set behind the
+          // checkpoint size. Only a hub pick carries its checkpoint inside the total, and
+          // expectedBytes stands in when the planner could not size it.
+          const checkpoint = checkpointIsLocal
             ? 0
             : footprint.checkpointBytes > 0
               ? footprint.checkpointBytes
@@ -1475,6 +1493,7 @@ function GgufVariantExpander({
       cancelled = true;
     };
   }, [
+    checkpointIsLocal,
     footprintVariants,
     isLocalPath,
     repoId,
