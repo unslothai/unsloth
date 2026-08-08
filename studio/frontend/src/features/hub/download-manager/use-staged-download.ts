@@ -17,6 +17,8 @@ export interface StagedDownloadEntry {
   bytes: number;
   /** Set when this entry is a single-file GGUF checkpoint. Informational: it is fetched as a scoped job like every other entry. */
   ggufFilename?: string | null;
+  /** True for the entry whose repo is the one the user picked; the rest of the plan is companion repos it needs. The stager is the only place that knows this, so it travels with the job for surfaces that label the two differently. */
+  checkpoint?: boolean;
 }
 
 function entryKey(entry: StagedDownloadEntry): string {
@@ -111,6 +113,7 @@ export function useStagedDownload({
         expectedBytes: current.bytes,
         scopeId,
         files: current.files,
+        checkpoint: current.checkpoint,
       });
       if (!active) return;
       if (outcome === "started") return;

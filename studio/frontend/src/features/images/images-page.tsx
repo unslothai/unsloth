@@ -1954,6 +1954,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               files: e.files,
               bytes: e.bytes,
               ggufFilename: e.gguf_filename,
+              // The plan's entry for the repo the user picked is the checkpoint; the others are the
+              // companion repos it needs. Only here is that known, so tag it now: filenames cannot
+              // tell them apart once a checkpoint ships as .safetensors like its companions do.
+              checkpoint: e.repo_id === repoId,
             })),
           );
           return true;

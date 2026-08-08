@@ -1302,6 +1302,42 @@ def test_staged_downloads_use_one_actionable_download_surface():
     assert '"Model file" : "Required assets"' in panel
 
 
+def test_staged_plans_label_the_checkpoint_without_guessing_from_the_extension():
+    """The panel's "Model file" vs "Required assets" suffix must come from the plan, not
+    from a filename. A checkpoint is not always a GGUF (the curated LTX single-file
+    artifact is one ~90GB .safetensors) and companion repos carry .safetensors too, so an
+    extension test mislabelled the model itself as "Required assets". The staging page is
+    the only place that knows: the plan entry whose repo is the one the user picked."""
+    for page in ("images/images-page.tsx", "video/video-page.tsx"):
+        src = _read(f"features/{page}")
+        entries = re.search(r"plan\.entries\.map\(\(e\) => \(\{.*?\}\)\)", src, re.S)
+        assert entries, f"{page} does not map the plan entries into staged downloads"
+        assert "checkpoint: e.repo_id === repoId" in entries.group(0), (
+            f"{page} does not mark the picked repo's entry as the checkpoint"
+        )
+
+    staged = _read("features/hub/download-manager/use-staged-download.ts")
+    assert "checkpoint?: boolean;" in staged
+    start = re.search(r"downloadManager\.requestStart\(\{.*?\}\);", staged, re.S)
+    assert start, "requestStart call not found"
+    assert "checkpoint: current.checkpoint," in start.group(0)
+
+    # Carried onto the job and back out of persisted state, or a restart loses the label.
+    poll = _read("features/hub/download-manager/poll-loop.ts")
+    assert "checkpoint: req.checkpoint" in poll
+    state = _read("features/hub/download-manager/download-manager-state.ts")
+    assert 'typeof value.checkpoint === "boolean"' in state
+    assert "{ checkpoint: job.checkpoint }" in state
+
+    panel = _read("features/hub/download-manager/download-manager-panel.tsx")
+    suffix = re.search(r"function variantSuffix\(.*?\n\}", panel, re.S)
+    assert suffix, "variantSuffix not found"
+    body = suffix.group(0)
+    assert "job.checkpoint ??" in body, "the label ignores the flag the plan carried"
+    # The .gguf guess may only survive as the fallback for jobs persisted before the flag.
+    assert body.index("job.checkpoint ??") < body.index(".gguf")
+
+
 def test_local_model_sections_respect_the_task_filter():
     """LM Studio / ./models / custom-folder rows must honour the picker's task filter.
     The backend tags every local model with a task for exactly this; without the gate the
