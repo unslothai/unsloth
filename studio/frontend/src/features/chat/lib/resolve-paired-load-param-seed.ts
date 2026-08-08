@@ -25,6 +25,8 @@ export function resolvePairedLoadParamSeed<T>(options: {
   /** No load of this tab's own is in flight (``!modelLoading``). */
   seedLoadParams: boolean;
   equals?: (a: T | null, b: T | null) => boolean;
+  /** Store default for the control while ``loaded`` is still null. */
+  pristineControl?: T | null;
 }): PairedLoadParamSeed<T> {
   const {
     incoming,
@@ -32,14 +34,26 @@ export function resolvePairedLoadParamSeed<T>(options: {
     hydratingExistingModel,
     seedLoadParams,
     equals = (a, b) => a === b,
+    pristineControl,
   } = options;
-  if (incoming === undefined || !seedLoadParams) {
+  if (!seedLoadParams) {
+    return {};
+  }
+  if (incoming === undefined) {
+    if (hydratingExistingModel) {
+      return { control: null, loaded: null };
+    }
     return {};
   }
   // A null loaded baseline means this tab has not hydrated the resident server yet.
   // Non-null store defaults (tensorParallel=false, persisted speculativeType) are not
-  // user edits and must adopt the status echo together with the baseline.
-  const unseeded = previous.loaded === null;
+  // user edits and must adopt the status echo together with the baseline. Nullable
+  // controls with a staged non-null value while loaded is null are real edits.
+  const unseeded =
+    previous.loaded === null &&
+    (previous.control === null ||
+      (pristineControl !== undefined &&
+        equals(previous.control, pristineControl)));
   if (hydratingExistingModel || unseeded) {
     return { control: incoming, loaded: incoming };
   }

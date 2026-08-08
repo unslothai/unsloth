@@ -35,10 +35,12 @@ async function settledEarly(promise: Promise<void>): Promise<boolean> {
 async function commitStatusSnapshot(
   refresh: StatusRefresh,
   write: () => void,
+  options: { aborted?: () => boolean } = {},
 ): Promise<void> {
   if (!refresh.isCurrent()) {
     await refresh.superseded();
     if (refresh.shouldSkipAfterSupersession()) return;
+    if (options.aborted?.()) return;
   }
   write();
   refresh.markApplied();
@@ -118,5 +120,35 @@ test("a failed newer refresh still lets an older status snapshot commit", async 
   firstRead.resolve();
   await firstSettled;
   assert.equal(store, "first");
+  await secondSettled;
+});
+
+test("abort during supersession wait prevents a stale snapshot commit", async () => {
+  resetInferenceStatusRefreshSeqForTests();
+  let store = "stale";
+  let aborted = false;
+  const first = beginInferenceStatusRefresh();
+  const firstRead = deferred<void>();
+  const firstSettled = first.register(
+    firstRead.promise.then(() =>
+      commitStatusSnapshot(
+        first,
+        () => {
+          store = "first";
+        },
+        { aborted: () => aborted },
+      ),
+    ),
+  );
+
+  const second = beginInferenceStatusRefresh();
+  const secondSettled = second.register(
+    Promise.reject(new Error("listLoras failed")).catch(() => undefined),
+  );
+
+  aborted = true;
+  firstRead.resolve();
+  await firstSettled;
+  assert.equal(store, "stale");
   await secondSettled;
 });

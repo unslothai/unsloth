@@ -44,6 +44,7 @@ function seed<T>(
   options: {
     hydratingExistingModel?: boolean;
     seedLoadParams?: boolean;
+    pristineControl?: T | null;
   } = {},
 ): PairedLoadParamSeed<T> {
   return resolvePairedLoadParamSeed({
@@ -51,6 +52,7 @@ function seed<T>(
     previous,
     hydratingExistingModel: options.hydratingExistingModel ?? false,
     seedLoadParams: options.seedLoadParams ?? true,
+    pristineControl: options.pristineControl,
   });
 }
 
@@ -98,15 +100,30 @@ test("an omitted speculative_type leaves the pair alone on older backends", () =
   assert.deepEqual(seed(undefined, paired("ngram", "auto")), {});
 });
 
+test("an omitted echo on model change clears a stale pair", () => {
+  assert.deepEqual(
+    seed(undefined, paired("mtp", "mtp"), { hydratingExistingModel: true }),
+    { control: null, loaded: null },
+  );
+});
+
 test("default controls hydrate with the resident server before a loaded baseline exists", () => {
-  assert.deepEqual(seed(true, paired(false, null)), {
+  assert.deepEqual(seed(true, paired(false, null), { pristineControl: false }), {
     control: true,
     loaded: true,
   });
-  assert.deepEqual(seed("mtp", paired("auto", null)), {
-    control: "mtp",
-    loaded: "mtp",
-  });
+  assert.deepEqual(
+    seed("mtp", paired("auto", null), { pristineControl: "auto" }),
+    {
+      control: "mtp",
+      loaded: "mtp",
+    },
+  );
+});
+
+test("a staged draft-token edit survives while loaded baseline is null", () => {
+  assert.deepEqual(seed(null, paired(8, null)), {});
+  assert.deepEqual(seed(4, paired(8, null)), { loaded: 4 });
 });
 
 test("tensor parallel and KV dtype follow the same dirty-control rule", () => {

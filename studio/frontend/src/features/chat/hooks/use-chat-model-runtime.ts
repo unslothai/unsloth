@@ -312,6 +312,7 @@ async function syncInferenceStatusToStore(options?: {
     if (!refresh.isCurrent()) {
       await refresh.superseded();
       if (refresh.shouldSkipAfterSupersession()) return;
+      if (signal?.aborted) return;
     }
 
     setModels(listRes.models.map(toChatModelSummary));
