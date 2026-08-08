@@ -1560,7 +1560,10 @@ def test_snapshot_options_reject_a_mapping_data_files(tmp_path):
 
 def test_snapshot_options_resolve_declared_paths_under_the_config_data_dir(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: first\n  data_files: root.jsonl\n- config_name: cfg\n  data_dir: a\n  data_files: train.jsonl\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: first\n  data_files: root.jsonl\n- config_name: cfg\n  data_dir: a\n  data_files: train.jsonl\n",
+    )
     (snapshot / "root.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
     (snapshot / "a").mkdir()
     (snapshot / "a" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
@@ -1571,7 +1574,10 @@ def test_snapshot_options_resolve_declared_paths_under_the_config_data_dir(tmp_p
 @pytest.mark.parametrize("dtype", ["translation_variable_languages", "class_label"])
 def test_snapshot_options_accept_a_snake_case_feature_class(tmp_path, dtype):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype: {dtype}\n")
+    _card(
+        snapshot,
+        f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype: {dtype}\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -1580,7 +1586,10 @@ def test_snapshot_options_accept_a_snake_case_feature_class(tmp_path, dtype):
 
 def test_snapshot_options_reject_a_nested_dtype_the_loader_cannot_build(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype:\n      list: nope\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype:\n      list: nope\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -1589,7 +1598,10 @@ def test_snapshot_options_reject_a_nested_dtype_the_loader_cannot_build(tmp_path
 
 def test_snapshot_options_accept_a_nested_dtype_the_loader_builds(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype:\n      list: string\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype:\n      list: string\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
@@ -1638,7 +1650,10 @@ def test_snapshot_options_keep_a_config_with_a_version_the_loader_parses(tmp_pat
 
 def test_snapshot_options_keep_a_sibling_of_a_later_empty_data_files(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: first\n  data_files: root.jsonl\n- config_name: bad\n  data_files: []\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: first\n  data_files: root.jsonl\n- config_name: bad\n  data_files: []\n",
+    )
     (snapshot / "root.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
     # Only the first config's declaration is resolved while the builder is picked.

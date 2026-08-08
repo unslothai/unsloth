@@ -964,7 +964,11 @@ class _DeclaredFiles:
         self.budget = _MAX_RESOLUTION_WORK
         self.exhausted = False
 
-    def resolve(self, pattern: str, root: str = "") -> list[PurePosixPath]:
+    def resolve(
+        self,
+        pattern: str,
+        root: str = "",
+    ) -> list[PurePosixPath]:
         """What a declared pattern resolves to, under its config's data_dir.
 
         The loader keeps a hidden or __ path only when the pattern names as many such parts
@@ -1006,9 +1010,7 @@ def _config_root(item: dict[str, Any]) -> str:
     return _normalized_dir(_safe_data_dir(item.get("data_dir") or "") or "") or ""
 
 
-def _unresolvable_configs(
-    collapsed: dict[str, dict[str, Any]], files: _DeclaredFiles
-) -> set[str]:
+def _unresolvable_configs(collapsed: dict[str, dict[str, Any]], files: _DeclaredFiles) -> set[str]:
     """Configs the loader cannot build. It lets a wildcard match nothing, so only a literal
     that is missing raises on its own; a whole group matching nothing raises either way."""
     dead = set()
