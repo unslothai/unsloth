@@ -2281,25 +2281,6 @@ def _resolve_mlx_max_grad_norm(value):
     return value
 
 
-def _completion_masking_notifier(send):
-    """Route completion-masking notices by level.
-
-    A masking miss changes the training objective for the whole run -- the model trains on
-    prompts as well as responses -- so it belongs in the sticky warning list, the same
-    channel the eval-split fallback already uses. Flattening every level to a status
-    message leaves that failure as a line that scrolls past, and the run then finishes
-    looking like an ordinary success.
-    """
-
-    def notify(level, message):
-        if level == "warning":
-            send("warning", message = message)
-        else:
-            send("status", status_message = message)
-
-    return notify
-
-
 def _run_mlx_training(event_queue, stop_queue, config):
     """Self-contained MLX training path for Apple Silicon.
 
@@ -2863,16 +2844,20 @@ def _run_mlx_training(event_queue, stop_queue, config):
             trainer,
             model_name,
             train_on_responses_only,
-            notify = _completion_masking_notifier(_send),
+            notify = lambda level, message: _send("status", status_message = message),
             dataset_template = "alpaca" if dataset_final_format == "alpaca" else None,
         )
         if not masking_applied:
-            # Mirrors the CUDA path, which drops train_on_responses_enabled here so the run
-            # reports what it actually did rather than what was asked for.
-            logger.warning(
-                "Train on completions was requested for %s but no markers applied; "
-                "training on full sequences (prompts included)",
-                model_name,
+            # A miss changes the training objective for the whole run, so it belongs in the
+            # sticky warning list the eval-split fallback already uses, not a status line
+            # that scrolls past. Recovered detection failures stay status: masking applied.
+            _send(
+                "warning",
+                message = (
+                    f"'Train on completions' could not be applied for {model_name}: no "
+                    f"instruction/response markers were found. Training will run on full "
+                    f"sequences (prompts included)."
+                ),
             )
 
     # ── 8. Setup wandb / tensorboard ──

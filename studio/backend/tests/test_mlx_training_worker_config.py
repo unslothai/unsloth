@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import ast
 import importlib.util
+import inspect
 import sys
+import textwrap
 import types
 from pathlib import Path
 
@@ -15,6 +18,7 @@ def _load_worker_module():
         "utils",
         "utils.child_stdio",
         "utils.hardware",
+        "utils.hf_dataset_options",
         "utils.training_runs",
         "utils.wheel_utils",
     )
@@ -38,6 +42,10 @@ def _load_worker_module():
         hardware = types.ModuleType("utils.hardware")
         hardware.apply_gpu_ids = lambda *_args, **_kwargs: None
         sys.modules["utils.hardware"] = hardware
+
+        hf_dataset_options = types.ModuleType("utils.hf_dataset_options")
+        hf_dataset_options.hf_dataset_split_instruction_names = lambda *_args, **_kwargs: ()
+        sys.modules["utils.hf_dataset_options"] = hf_dataset_options
 
         training_runs = types.ModuleType("utils.training_runs")
         training_runs.build_default_output_dir_name = lambda *_args, **_kwargs: "training-run"
@@ -77,7 +85,6 @@ _mlx_vlm_resized_image_layout = _worker._mlx_vlm_resized_image_layout
 _copy_mlx_vlm_image_processor = _worker._copy_mlx_vlm_image_processor
 _resize_mlx_vlm_image = _worker._resize_mlx_vlm_image
 _adapt_for_mlx_vlm = _worker._adapt_for_mlx_vlm
-_completion_masking_notifier = _worker._completion_masking_notifier
 
 
 def test_mlx_studio_optimizer_aliases_are_explicit():
@@ -291,33 +298,56 @@ def test_activate_transformers_version_or_warn_silent_on_success(monkeypatch):
     assert warnings_logged == [], "should not warn when activation succeeds"
 
 
-def test_completion_masking_warning_reaches_the_warning_channel():
+def _masking_call_and_guard():
+    """The apply_completion_masking call in _run_mlx_training, plus the `if not applied` guard."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training)))
+    calls = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "apply_completion_masking"
+    ]
+    assert len(calls) == 1, "expected exactly one masking call in the MLX path"
+    guards = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.If) and ast.unparse(n.test) == "not masking_applied"
+    ]
+    assert len(guards) == 1, "masking result must be checked exactly once"
+    return calls[0], guards[0]
+
+
+def test_alpaca_datasets_still_get_explicit_markers():
+    """Alpaca text carries no chat markers, so the template must be passed explicitly."""
+    call, _ = _masking_call_and_guard()
+    passed = {kw.arg: ast.unparse(kw.value) for kw in call.keywords}
+
+    assert passed["dataset_template"] == "'alpaca' if dataset_final_format == 'alpaca' else None"
+
+
+def test_completion_masking_miss_reaches_the_warning_channel():
     """A masking miss must be a sticky warning, not a status line that scrolls past.
 
-    apply_completion_masking reports a double miss at level "warning" and then returns
-    applied=False, so the run continues training on full sequences. Flattening the level
-    to a status message leaves no durable record that the training objective changed.
+    apply_completion_masking returns applied=False on a double miss and the run then trains
+    on full sequences. The warning channel is the one the eval-split fallback already uses;
+    a status message is overwritten by the next update, leaving no record.
     """
-    sent = []
-    notify = _completion_masking_notifier(
-        lambda event_type, **kwargs: sent.append((event_type, kwargs))
-    )
+    _, guard = _masking_call_and_guard()
+    sends = [
+        n for n in ast.walk(guard)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_send"
+    ]
 
-    notify("info", "Train on responses only configured via chat template auto-detection")
-    notify("warning", "'Train on completions' could not be applied: no markers.")
-
-    assert sent[0][0] == "status"
-    assert sent[0][1]["status_message"].startswith("Train on responses only configured")
-    assert sent[1][0] == "warning"
-    assert sent[1][1]["message"].startswith("'Train on completions' could not be applied")
+    assert len(sends) == 1, "a miss should emit exactly one event"
+    assert ast.unparse(sends[0].args[0]) == "'warning'"
+    # _send only mirrors status_message onto message for status events, so the warning
+    # payload has to use message or the parent pump drops it.
+    assert [kw.arg for kw in sends[0].keywords] == ["message"]
 
 
-def test_completion_masking_notifier_routes_only_warnings_to_warning():
-    """Anything that is not a warning stays a status update."""
-    sent = []
-    notify = _completion_masking_notifier(lambda event_type, **kwargs: sent.append(event_type))
+def test_recovered_detection_failure_stays_a_status_update():
+    """Auto-detection can fail at level "warning" and still mask via the template table.
 
-    for level in ("info", "debug", "", None):
-        notify(level, "progress")
+    That run got what it asked for, so it must not be left with a sticky warning.
+    """
+    call, _ = _masking_call_and_guard()
+    notify = next(kw.value for kw in call.keywords if kw.arg == "notify")
 
-    assert set(sent) == {"status"}
+    assert ast.unparse(notify.body) == "_send('status', status_message=message)"
