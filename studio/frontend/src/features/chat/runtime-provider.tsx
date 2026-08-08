@@ -85,8 +85,10 @@ import {
   setActiveBranchReader,
 } from "./utils/refresh-context-usage";
 import {
+  awaitStoredChatThreadRecord,
   deleteStoredChatThreads,
   ensureStoredChatThread,
+  getStoredChatMessage,
   getStoredChatThread,
   isExpectedBackgroundChatStorageError,
   listStoredChatMessages,
@@ -94,6 +96,7 @@ import {
   markThreadIncognito,
   saveStoredChatMessage,
   saveStoredChatThread,
+  trackStoredChatThreadRecord,
   updateStoredChatThread,
 } from "./utils/chat-history-storage";
 import {
@@ -665,9 +668,8 @@ export async function ensureThreadRecord({
     markThreadIncognito(threadId);
     return;
   }
-  const existing = (await listStoredChatThreads({ includeArchived: true })).find(
-    (thread) => thread.id === threadId,
-  );
+  // A point lookup, not a listing: this must not scale with how many chats exist.
+  const existing = await getStoredChatThread(threadId);
   if (existing) {
     return;
   }
@@ -697,10 +699,10 @@ export async function ensureThreadRecord({
     // assistant-ui can issue overlapping first-message persistence calls. If
     // another call created the same thread while this one waited, treat init as
     // successful and let the message write continue.
-    const existingAfterRace = await listStoredChatThreads({
-      includeArchived: true,
-    }).catch(() => []);
-    if (existingAfterRace.some((thread) => thread.id === threadId)) {
+    const existingAfterRace = await getStoredChatThread(threadId).catch(
+      () => undefined,
+    );
+    if (existingAfterRace) {
       return;
     }
     throw error;
@@ -757,13 +759,16 @@ function createStudioDbAdapter(
       };
     },
 
-    async initialize(threadId: string) {
-      await ensureThreadRecord({ threadId, modelType, pairId, projectId });
+    initialize(threadId: string) {
+      // assistant-ui withholds the first message until this resolves, so the row write is tracked, not awaited.
+      trackStoredChatThreadRecord(threadId, () =>
+        ensureThreadRecord({ threadId, modelType, pairId, projectId }),
+      );
       // A run already streaming on this thread filed its handles under "__default" because
       // the id did not exist yet. Re-key them now, or the sidebar row and Stop look up an
       // id nothing is registered against.
       useChatRuntimeStore.getState().adoptDefaultThreadRun(threadId);
-      return { remoteId: threadId, externalId: undefined };
+      return Promise.resolve({ remoteId: threadId, externalId: undefined });
     },
 
     async rename(remoteId: string, newTitle: string) {
@@ -1375,6 +1380,7 @@ function useStudioRuntimeAdapters(
         );
         const write = (async () => {
           const { remoteId } = await initializeThread;
+          await awaitStoredChatThreadRecord(remoteId);
           if (isChatThreadDeleted(remoteId)) {
             await deleteStoredChatThreads([remoteId]);
             return;
@@ -1392,12 +1398,12 @@ function useStudioRuntimeAdapters(
               store.setActiveThreadId(remoteId);
             }
           }
-          const thread = await getStoredChatThread(remoteId);
+          // Point reads, issued together: the model run waits on this write.
+          const [thread, existingMessage] = await Promise.all([
+            getStoredChatThread(remoteId),
+            getStoredChatMessage(remoteId, message.id),
+          ]);
           await throwIfHistoryWasCleared(remoteId);
-          if (thread) {
-            await ensureStoredChatThread(remoteId, thread);
-            await throwIfHistoryWasCleared(remoteId);
-          }
           if (thread?.modelType === "base" && !thread.pairId) {
             const store = useChatRuntimeStore.getState();
             const visibleThreadId = aui.threads().getState().mainThreadId;
@@ -1413,11 +1419,6 @@ function useStudioRuntimeAdapters(
           const attachments =
             message.role === "user" ? cloneAttachments(message.attachments) : [];
           const custom = message.metadata?.custom;
-          const storedMessages = await listStoredChatMessages(remoteId);
-          await throwIfHistoryWasCleared(remoteId);
-          const existingMessage = storedMessages.find(
-            (storedMessage) => storedMessage.id === message.id,
-          );
           const createdAt =
             existingMessage?.createdAt ??
             message.createdAt?.getTime?.() ??

@@ -8,6 +8,10 @@ import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import {
+  ensureStoredChatThread,
+  isThreadIncognito,
+} from "@/features/chat/utils/chat-history-storage";
+import {
   useNativeAttachmentTargetKey,
   useNativeIntentStore,
 } from "@/features/native-intents";
@@ -108,7 +112,13 @@ export function ThreadDocumentsBar({
     const pending = aui
       .threadListItem()
       .initialize()
-      .then(({ remoteId }) => {
+      .then(async ({ remoteId }) => {
+        // A cached initialize() still resolves after a failed row write, so confirm the row these
+        // documents index against rather than only waiting for a write in flight.
+        const needsStoredRow = !isThreadIncognito(remoteId);
+        if (needsStoredRow && !(await ensureStoredChatThread(remoteId))) {
+          throw new Error(`Thread ${remoteId} was not persisted`);
+        }
         setMaterializedId(remoteId);
         return remoteId;
       })

@@ -1332,6 +1332,9 @@ export const Thread: FC<{
   const isComposerAttachPending = useAuiState(({ threads }) =>
     targetThreadId ? threads.mainThreadId !== targetThreadId : false,
   );
+  const runtimeThreadId = useAuiState(
+    ({ threadListItem }) => threadListItem.id,
+  );
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadId = targetThreadId ?? activeThreadId ?? null;
   const aui = useAui();
@@ -1525,7 +1528,7 @@ export const Thread: FC<{
   };
 
   return (
-    <GeneratedImageOverlayProvider key={threadId ?? "default"} threadId={threadId}>
+    <GeneratedImageOverlayProvider key={runtimeThreadId} threadId={threadId}>
       <PageDragContext.Provider value={pageDragging}>
       <ThreadPrimitive.Root
         className="aui-root aui-thread-root @container relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"

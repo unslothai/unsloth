@@ -50,7 +50,8 @@ export function markThreadIncognito(threadId: string): void {
   incognitoThreadIds.add(threadId);
 }
 
-function isThreadIncognito(threadId: string): boolean {
+/** True for a temporary-session thread, which is deliberately never persisted. */
+export function isThreadIncognito(threadId: string): boolean {
   return incognitoThreadIds.has(threadId);
 }
 
@@ -69,6 +70,74 @@ type ThreadListArgs = {
 const LEGACY_CHAT_IMPORT_KEY = "unsloth_chat_legacy_imported_to_studio_db";
 
 let legacyChatImportPromise: Promise<void> | null = null;
+
+// Bumped whenever a backend thread row is created or backfilled, so a listing can tell whether its read raced one.
+let legacyChatImportGeneration = 0;
+
+// Thread rows whose write is still in flight, keyed by thread id. The runtime starts one without
+// waiting so a new chat's first message can render, so every read-modify-write below has to.
+const pendingThreadRecordByThreadId = new Map<string, Promise<void>>();
+
+// Creators whose last write failed. assistant-ui caches a resolved initialize(), so it never asks
+// for the row again, and without this every later write to that thread would keep 404ing.
+const failedThreadRecordByThreadId = new Map<string, () => Promise<void>>();
+
+/** Register an in-flight thread row write so later writes to that thread wait for it. */
+export function trackStoredChatThreadRecord(
+  threadId: string,
+  createRecord: () => Promise<void>,
+): void {
+  const create = createRecord();
+  create.catch(() => failedThreadRecordByThreadId.set(threadId, createRecord));
+  const inFlight = pendingThreadRecordByThreadId.get(threadId);
+  // Overlapping initializations chain rather than replace: waiting on only the newest upsert lets
+  // the slower one land afterwards and overwrite the row a caller has since corrected.
+  const tracked = inFlight
+    ? Promise.allSettled([inFlight, create]).then((results) => {
+        // Only a thread nobody managed to write is a failure worth propagating.
+        if (results.every((result) => result.status === "rejected")) {
+          throw (results[0] as PromiseRejectedResult).reason;
+        }
+      })
+    : create;
+  pendingThreadRecordByThreadId.set(threadId, tracked);
+  // A chat abandoned before its first send leaves nobody to await this.
+  tracked.catch(() => undefined);
+  const forget = () => {
+    if (pendingThreadRecordByThreadId.get(threadId) === tracked) {
+      pendingThreadRecordByThreadId.delete(threadId);
+    }
+  };
+  tracked.then(forget, forget);
+}
+
+/** Resolves once the thread's row is written, or immediately when nothing is in flight. */
+export async function awaitStoredChatThreadRecord(
+  threadId: string,
+): Promise<void> {
+  // A creator registered while this was waiting replaces the entry, so drain until it stops
+  // changing. Reporting only the last outcome keeps "nothing wrote the row" the failure case.
+  let tracked = pendingThreadRecordByThreadId.get(threadId);
+  let failure: unknown;
+  let failed = false;
+  while (tracked) {
+    try {
+      await tracked;
+      failed = false;
+    } catch (error) {
+      failure = error;
+      failed = true;
+    }
+    const next = pendingThreadRecordByThreadId.get(threadId);
+    if (next === undefined || next === tracked) {
+      break;
+    }
+    tracked = next;
+  }
+  if (failed) {
+    throw failure;
+  }
+}
 
 interface ExportedChat {
   exportedAt: string;
@@ -272,12 +341,14 @@ async function backfillLegacyThreadFields(
   }
   if (Object.keys(patch).length === 0) return backendThread;
   try {
-    return (
-      (await updateChatThread(backendThread.id, patch)) ?? {
-        ...backendThread,
-        ...patch,
-      }
-    );
+    const updated = (await updateChatThread(backendThread.id, patch)) ?? {
+      ...backendThread,
+      ...patch,
+    };
+    // Bump only once the patch has committed: a listing that read the row mid-flight still needs
+    // to see the generation move so it re-reads.
+    legacyChatImportGeneration += 1;
+    return updated;
   } catch {
     return backendThread;
   }
@@ -389,6 +460,7 @@ async function importLegacyChatsIfNeeded(): Promise<void> {
       if (!backendThread) {
         await saveChatThread(thread);
         backendThreadsById.set(thread.id, thread);
+        legacyChatImportGeneration += 1;
       } else {
         backendThreadsById.set(
           thread.id,
@@ -473,6 +545,10 @@ export async function ensureStoredChatThread(
   // on every autosave (runStart/runEnd) and message append.
   if (isThreadIncognito(threadId)) return undefined;
   if (isChatThreadDeleted(threadId)) return undefined;
+  // Wait for an in-flight write without adopting its failure: rethrowing here
+  // would skip the retryFailedThreadRecord branch below for exactly the callers
+  // already waiting when the write rejected.
+  await awaitStoredChatThreadRecord(threadId).catch(() => undefined);
   const legacyThread = fallback ?? (await db.threads.get(threadId));
   let backendThread: ThreadRecord | null;
   try {
@@ -486,8 +562,65 @@ export async function ensureStoredChatThread(
   if (backendThread) {
     return backfillLegacyThreadFields(backendThread, legacyThread);
   }
-  if (!legacyThread || isChatThreadDeleted(legacyThread.id)) return undefined;
+  if (!legacyThread || isChatThreadDeleted(legacyThread.id)) {
+    return retryFailedThreadRecord(threadId);
+  }
   return importLegacyThread(legacyThread).catch(() => legacyThread);
+}
+
+// authFetch sets no timeout, so a wedged request would block a delete or a clear
+// for as long as the browser takes to give up. Bounded instead: the tombstone the
+// delete writes masks a row that lands late, and the next delete removes it.
+const THREAD_RECORD_DRAIN_TIMEOUT_MS = 5000;
+
+/** Resolve when `promise` settles, or after `ms`, whichever comes first. */
+function settleWithin(promise: Promise<unknown>, ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, Math.max(ms, 0));
+    const finish = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    promise.then(finish, finish);
+  });
+}
+
+/** Wait for a thread's row write, bounded, so a wedged request cannot stall a delete. */
+function awaitStoredChatThreadRecordBounded(threadId: string): Promise<void> {
+  return settleWithin(
+    awaitStoredChatThreadRecord(threadId),
+    THREAD_RECORD_DRAIN_TIMEOUT_MS,
+  );
+}
+
+/** Wait for every tracked row write, so a clear cannot race one that is still in flight. */
+async function drainPendingStoredChatThreadRecords(): Promise<void> {
+  const deadline = Date.now() + THREAD_RECORD_DRAIN_TIMEOUT_MS;
+  // A write that never settles must not turn "clear all chats" into a hang.
+  while (pendingThreadRecordByThreadId.size > 0 && Date.now() < deadline) {
+    await settleWithin(
+      Promise.allSettled([...pendingThreadRecordByThreadId.values()]),
+      deadline - Date.now(),
+    );
+  }
+  // Retrying one of these later would recreate a thread the clear just removed.
+  failedThreadRecordByThreadId.clear();
+}
+
+/** Re-run a row write that failed, for a thread the reads above could not find. */
+async function retryFailedThreadRecord(
+  threadId: string,
+): Promise<ThreadRecord | undefined> {
+  const createRecord = failedThreadRecordByThreadId.get(threadId);
+  if (!createRecord) return undefined;
+  failedThreadRecordByThreadId.delete(threadId);
+  trackStoredChatThreadRecord(threadId, createRecord);
+  try {
+    await awaitStoredChatThreadRecord(threadId);
+  } catch {
+    return undefined;
+  }
+  return (await getChatThread(threadId).catch(() => null)) ?? undefined;
 }
 
 export async function listStoredChatMessages(
@@ -566,6 +699,7 @@ export async function getStoredChatMessage(
 export async function listStoredChatThreads(
   args: ThreadListArgs = {},
 ): Promise<ThreadRecord[]> {
+  const importGenerationBeforeRead = legacyChatImportGeneration;
   const legacyThreads = await listLegacyThreads(args);
   let backendThreads = await listChatThreads(args).catch((error) => {
     if (legacyThreads.length > 0) {
@@ -575,7 +709,10 @@ export async function listStoredChatThreads(
   });
   if (backendThreads) {
     await importLegacyChatsIfNeeded().catch(() => undefined);
-    backendThreads = await listChatThreads(args).catch(() => backendThreads);
+    // Re-read only when the import created threads the read above could not see.
+    if (legacyChatImportGeneration !== importGenerationBeforeRead) {
+      backendThreads = await listChatThreads(args).catch(() => backendThreads);
+    }
   }
   const includeLegacyOnly =
     !backendThreads ||
@@ -739,6 +876,9 @@ export async function deleteStoredChatThreads(
   // event it would fire) when the active temporary chat is closed.
   const ids = idsToDelete.filter((id) => !isThreadIncognito(id));
   if (ids.length === 0) return;
+  // A row write already in flight would land after the delete and resurrect the
+  // thread. Bounded: a wedged request must not leave the user unable to delete.
+  await Promise.all(ids.map((id) => awaitStoredChatThreadRecordBounded(id)));
   await deleteChatThreads(ids);
   await db
     .transaction("rw", db.threads, db.messages, async () => {
@@ -761,6 +901,9 @@ export interface ClearStoredChatsResult {
 }
 
 export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
+  // Drain first: a row write still in flight would land after the clear, and the inventory below
+  // would never have seen it to tombstone it.
+  await drainPendingStoredChatThreadRecords();
   // Clear both sides independently and report each outcome so the toast
   // can distinguish full vs partial success.
   const [backendThreadsResult, legacyThreads] = await Promise.all([
