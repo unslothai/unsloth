@@ -368,10 +368,20 @@ def test_the_verify_help_does_not_promise_an_import_check():
 
 def _run_update(monkeypatch, argv, verified):
     studio = _studio()
+
+    class _NoopLauncherUpdate:
+        def __enter__(self):
+            return self
+
+        def validate_launcher(self):
+            pass
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
     monkeypatch.setattr(studio, "_ensure_studio_env_exported", lambda *a, **k: None)
+    monkeypatch.setattr(studio, "_WindowsLauncherUpdateTransaction", _NoopLauncherUpdate)
     monkeypatch.setattr(studio, "_run_setup_script", lambda *a, **k: None)
-    monkeypatch.setattr(studio, "_release_self_exe_lock_windows", lambda *a, **k: None)
-    monkeypatch.setattr(studio, "_cleanup_self_exe_lock_windows", lambda *a, **k: None)
     monkeypatch.setattr(studio, "_refresh_desktop_shortcuts", lambda *a, **k: None)
     monkeypatch.setattr(studio, "_fail_if_install_damaged", lambda: verified.append(True))
     return CliRunner().invoke(studio.studio_app, ["update", *argv])
@@ -585,3 +595,107 @@ def test_the_repair_command_quotes_the_interpreter(monkeypatch, capsys, system, 
     with pytest.raises(typer.Exit):
         studio._fail_if_install_damaged()
     assert expected in capsys.readouterr().err
+
+
+# ── runtime-irrelevant rows must not fail an update ──────────────────
+
+
+def test_a_shared_top_level_test_tree_is_not_damage(site):
+    # Reported as `einx: test/conftest.py is missing`. einx and torchao both
+    # ship it, and install_python_stack.py force-reinstalls torchao every
+    # update, so pip removes the file and the pinned torchao does not ship it.
+    # Nothing imports another project's fixtures, and no reinstall repairs it.
+    _make_dist(site, "einx", {"einx/__init__.py": b"e\n"})
+    (site / "einx-1.0.dist-info" / "RECORD").write_text(
+        "einx/__init__.py,sha256=x,2\ntest/conftest.py,sha256=x,20650\n"
+    )
+    assert _deps().damaged_installed_files() == []
+
+
+def test_an_installer_rewritten_lockfile_is_not_damage(site):
+    # Reported as `package-lock.json is 27225 bytes, expected 28473`.
+    # setup.ps1/setup.sh run `npm install` inside the installed tree, and npm
+    # dedupes hoisted entries under legacy-peer-deps, shrinking the file.
+    lock = "studio/backend/core/data_recipe/oxc-validator/package-lock.json"
+    _make_dist(
+        site,
+        "unsloth",
+        {"unsloth/__init__.py": b"u\n", lock: b"L" * 27225},
+        record_sizes = {lock: 28473},
+    )
+    assert _deps().damaged_installed_files() == []
+
+
+def test_a_deleted_installer_rewritten_file_is_still_damage(site):
+    # Only the SIZE of these drifts, because npm rewrites the lockfile in place.
+    # It never deletes it, so a missing one is real damage and must be reported.
+    lock = "studio/backend/core/data_recipe/oxc-validator/package-lock.json"
+    _make_dist(site, "unsloth", {"unsloth/__init__.py": b"u\n", lock: b"L" * 100})
+    (site / lock).unlink()
+    found = _deps().damaged_installed_files()
+    assert len(found) == 1 and "package-lock.json is missing" in found[0]
+
+
+def test_a_shared_top_level_scripts_tree_is_not_damage(site):
+    # unsloth_zoo ships a top-level scripts/, the same squatted-namespace shape
+    # as einx's test/. It has no __init__.py, so nothing imports it.
+    _make_dist(site, "upsilon", {"upsilon/__init__.py": b"u\n"})
+    (site / "upsilon-1.0.dist-info" / "RECORD").write_text(
+        "upsilon/__init__.py,sha256=x,2\nscripts/helper.py,sha256=x,99\n"
+    )
+    assert _deps().damaged_installed_files() == []
+
+
+def test_a_package_owned_tests_subdirectory_is_still_checked(site):
+    # Only the shared top-level namespace is exempt; a tests/ tree inside a
+    # package is that package's alone, so a deletion there is real.
+    _make_dist(site, "rho", {"rho/tests/helper.py": b"h\n"})
+    (site / "rho" / "tests" / "helper.py").unlink()
+    found = _deps().damaged_installed_files()
+    assert len(found) == 1 and "rho/tests/helper.py is missing" in found[0]
+
+
+def test_a_top_level_module_named_like_a_test_root_is_still_checked(site):
+    # The exemption is for a shared directory, not for a name prefix.
+    _make_dist(site, "sigma", {"tests.py": b"t\n"})
+    (site / "tests.py").unlink()
+    found = _deps().damaged_installed_files()
+    assert len(found) == 1 and "tests.py is missing" in found[0]
+
+
+def test_runtime_damage_still_fails_when_ignored_rows_are_present(site):
+    # The exemption must not blind the scan to a torn runtime module.
+    lock = "studio/backend/core/data_recipe/oxc-validator/package-lock.json"
+    _make_dist(
+        site,
+        "unsloth",
+        {"unsloth/__init__.py": b"u\n", lock: b"L" * 10},
+        record_sizes = {lock: 28473},
+    )
+    (site / "unsloth" / "__init__.py").unlink()
+    found = _deps().damaged_installed_files()
+    assert len(found) == 1 and "unsloth/__init__.py is missing" in found[0]
+
+
+def test_ignored_rows_do_not_consume_the_finding_budget(site):
+    # Filtering happens while RECORD is read, so harmless rows cannot crowd a
+    # real one off a capped list. Unfiltered, these 40 fill limit = 3.
+    files = {f"test/t{i}.py": b"x" for i in range(40)}
+    files["tau/__init__.py"] = b"t\n"
+    _make_dist(site, "tau", files)
+    for rel in files:
+        (site / rel).unlink()
+    found = _deps().damaged_installed_files(limit = 3)
+    assert len(found) == 1 and "tau/__init__.py is missing" in found[0]
+
+
+def test_our_own_top_level_trees_are_still_checked(site):
+    # A missing __init__.py does not make a directory unimportable (PEP 420),
+    # and this repo imports scripts.* itself, so the shared-namespace exemption
+    # must never apply to what Unsloth ships.
+    _make_dist(site, "unsloth_zoo", {"unsloth_zoo/__init__.py": b"z\n"})
+    (site / "unsloth_zoo-1.0.dist-info" / "RECORD").write_text(
+        "unsloth_zoo/__init__.py,sha256=x,2\nscripts/helper.py,sha256=x,99\n"
+    )
+    found = _deps().damaged_installed_files()
+    assert len(found) == 1 and "scripts/helper.py is missing" in found[0]

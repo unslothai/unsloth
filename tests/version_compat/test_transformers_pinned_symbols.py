@@ -16,7 +16,7 @@ import pytest
 from tests.version_compat._fetch import fetch_text, first_match, has_def
 
 
-# 4.57.6 floor + every 5.x minor since 5.0.0 + main.
+# 4.57.6 floor + every 5.x minor since 5.0.0, up to the current PyPI latest, + main.
 TRANSFORMERS_TAGS = [
     "v4.57.6",  # anchor (must work)
     "v5.0.0",
@@ -29,6 +29,21 @@ TRANSFORMERS_TAGS = [
     "v5.6.2",
     "v5.7.0",
     "v5.8.0",
+    "v5.8.1",
+    "v5.9.0",
+    "v5.10.0",
+    "v5.10.1",
+    "v5.10.2",
+    # Upstream tagged PyPI 5.10.4 as v5.10.3 (the tag's __init__ says 5.10.4);
+    # there is no v5.10.4 tag and no 5.10.3 on PyPI, so fetch by the tag name.
+    "v5.10.3",
+    "v5.11.0",
+    "v5.12.0",
+    "v5.12.1",
+    "v5.13.0",
+    "v5.13.1",
+    "v5.14.0",
+    "v5.14.1",  # current PyPI latest
     "main",
 ]
 

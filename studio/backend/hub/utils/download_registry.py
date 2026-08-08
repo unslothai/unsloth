@@ -47,7 +47,7 @@ import time
 import weakref
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable, Iterator, Literal, Optional
+from typing import Callable, Iterator, Literal, NamedTuple, Optional, Sequence
 
 from loggers import get_logger
 
@@ -367,26 +367,32 @@ def reap_orphan_workers() -> None:
         _safe_unlink(entry)
 
 
+class _PurgeOutcome(NamedTuple):
+    """Number of selected partials removed and number that could not be removed."""
+
+    removed: int
+    failed: int
+
+
 def _purge_incomplete_blobs(
     entry: Path,
     only_hashes: Optional[frozenset[str]] = None,
     protected_hashes: Optional[frozenset[str]] = None,
-) -> int:
-    """Delete matching ``*.incomplete`` blobs beneath *entry*; return the count
-    removed. Per-file failures are swallowed.
+) -> _PurgeOutcome:
+    """Delete selected partials while preserving protected concurrent writes.
 
-    ``only_hashes`` whitelists which partials may be purged; ``None`` means
-    every partial (full-repo snapshot/dataset). ``protected_hashes`` is honoured
-    unconditionally, even when ``only_hashes`` is ``None``, so a blob a
-    concurrent same-repo peer is writing is never purged from under it."""
+    Report failed deletions so sparse partials cannot receive an HTTP marker.
+    """
     blobs_dir = entry / "blobs"
     if not blobs_dir.is_dir():
-        return 0
+        return _PurgeOutcome(0, 0)
     removed = 0
+    failed = 0
     try:
         candidates = list(blobs_dir.iterdir())
     except OSError:
-        return 0
+        # Nothing in an unreadable directory can be certified as safe.
+        return _PurgeOutcome(0, 1)
     for blob in candidates:
         try:
             if not blob.is_file():
@@ -400,11 +406,14 @@ def _purge_incomplete_blobs(
                 continue
             blob.unlink()
             removed += 1
-        except OSError:
-            # Swallow; downstream snapshot_download surfaces a precise error if
-            # it actually can't proceed.
+        except FileNotFoundError:
+            # A peer finalized or removed it after enumeration. The requested
+            # end state was reached, so this is not a failed purge.
             continue
-    return removed
+        except OSError:
+            failed += 1
+            continue
+    return _PurgeOutcome(removed, failed)
 
 
 def _iter_active_snapshot_dirs(
@@ -564,7 +573,9 @@ def prepare_cache_for_transport(
 
     Scope: ``root`` selects the cache captured by the caller. It defaults to the
     active ``HF_HUB_CACHE`` root for workers that inherit their cache through
-    the environment. Markers are written for the new mode before returning.
+    the environment. Markers are written for the new mode before returning,
+    except when an HTTP purge cannot remove every selected partial. Withholding
+    the marker keeps the surviving partial untrusted.
     """
     if mode not in VALID_TRANSPORTS:
         if mode == TRANSPORT_AUTO:
@@ -601,15 +612,24 @@ def prepare_cache_for_transport(
     has_companion = bool(companion_blob_hashes)
     total_purged = 0
     for entry in entries:
+        main_purge = _PurgeOutcome(0, 0)
+        companion_purge = _PurgeOutcome(0, 0)
         if mode == TRANSPORT_XET:
-            total_purged += _purge_incomplete_blobs(entry, only_blob_hashes, protected)
+            main_purge = _purge_incomplete_blobs(entry, only_blob_hashes, protected)
         else:
             if _read_marker(entry, variant) != mode:
-                total_purged += _purge_incomplete_blobs(entry, only_blob_hashes, protected)
+                main_purge = _purge_incomplete_blobs(entry, only_blob_hashes, protected)
             if companion_blob_hashes and _read_companion_marker(entry) != mode:
-                total_purged += _purge_incomplete_blobs(entry, companion_blob_hashes, protected)
-        _write_marker(entry, mode, variant)
-        if has_companion:
+                companion_purge = _purge_incomplete_blobs(
+                    entry,
+                    companion_blob_hashes,
+                    protected,
+                )
+        total_purged += main_purge.removed + companion_purge.removed
+        record_unconditionally = mode == TRANSPORT_XET
+        if record_unconditionally or not main_purge.failed:
+            _write_marker(entry, mode, variant)
+        if has_companion and (record_unconditionally or not companion_purge.failed):
             _write_companion_marker(entry, mode)
     return total_purged
 
@@ -678,8 +698,10 @@ def read_active_transport_marker(
     repo_type: str,
     repo_id: str,
     variant: Optional[str] = None,
+    *,
+    root: Optional[Path] = None,
 ) -> Optional[str]:
-    for entry in iter_active_repo_cache_dirs(repo_type, repo_id):
+    for entry in iter_active_repo_cache_dirs(repo_type, repo_id, root = root):
         value = _read_marker(entry, variant)
         if value is not None:
             return value
@@ -809,6 +831,8 @@ class DownloadMetadata:
     completed_baseline_bytes: int = 0
     hub_cache: Optional[str] = None
     xet_cache: Optional[str] = None
+    # Scoped jobs only: the exact files to fetch, kept so the XET -> HTTP retry respawns the same scoped download.
+    scoped_files: tuple[str, ...] = ()
 
 
 @dataclass(frozen = True)
@@ -911,6 +935,8 @@ class DownloadRegistry:
         # prior generation (which would let a stale cancel match a new run).
         self._generation_seq = 0
         self._deleting: dict[str, set[Optional[str]]] = {}
+        # Publish external cache owners under the same lock as Model Hub jobs.
+        self._repository_owners: dict[str, object] = {}
         self._lock = threading.Lock()
         _REGISTRIES.add(self)
         self._max_terminal = max_terminal
@@ -984,6 +1010,20 @@ class DownloadRegistry:
             if should_cancel and metadata is not None and marker_transport is not None:
                 metadata = replace(metadata, transport = marker_transport)
             return terminal_state, metadata
+
+    def job_transport(self, key: str) -> Optional[str]:
+        """The transport a live job is running on. None when it has no metadata."""
+        key = normalize_job_key(key)
+        with self._lock:
+            metadata = self._metadata.get(key)
+            return metadata.transport if metadata is not None else None
+
+    def job_cancel_transport(self, key: str) -> Optional[str]:
+        """A live job's cancel marker, when a fallback left one. See metadata."""
+        key = normalize_job_key(key)
+        with self._lock:
+            metadata = self._metadata.get(key)
+            return metadata.cancel_marker_transport if metadata is not None else None
 
     def update_job_transport(self, key: str, transport: str) -> None:
         key = normalize_job_key(key)
@@ -1135,12 +1175,15 @@ class DownloadRegistry:
         cancel_marker_transport: Optional[str] = None,
         hub_cache: Optional[str] = None,
         xet_cache: Optional[str] = None,
+        scoped_files: Optional[Sequence[str]] = None,
     ) -> tuple[bool, str]:
         key = normalize_job_key(key)
         repo = _repo_of_key(key)
         requested_hashes = blob_hashes or frozenset()
         requested_progress_hashes = progress_blob_hashes or frozenset()
         with self._lock:
+            if repo in self._repository_owners:
+                return False, "repository_owned"
             # Run the final external admission check while the registry lock is
             # held, immediately before inspecting and publishing active state.
             # The GGUF load path establishes its marker before calling
@@ -1187,6 +1230,15 @@ class DownloadRegistry:
                 return False, conflict_state
             current = self._jobs.get(key, DownloadState("idle")).state
             if current in _ACTIVE_STATES and not replace_active:
+                # A scope slot is shared by every file set that rides it (two quants of one repo both key as "@diffusion"), so adopting
+                # the live job would let the caller wait on files it never asked for. Reject instead, under the lock.
+                live = self._metadata.get(key)
+                if (
+                    scoped_files is not None
+                    and live is not None
+                    and sorted(set(live.scoped_files)) != sorted(set(scoped_files))
+                ):
+                    return False, "scope_file_mismatch"
                 return False, current
             if generation is None:
                 self._generation_seq += 1
@@ -1210,6 +1262,7 @@ class DownloadRegistry:
                     ),
                     hub_cache = hub_cache,
                     xet_cache = xet_cache,
+                    scoped_files = tuple(scoped_files or ()),
                 )
                 if cancel_marker_transport is not None:
                     self._cancel_marker_transports[key] = cancel_marker_transport
@@ -1219,6 +1272,35 @@ class DownloadRegistry:
                 self._metadata.pop(key, None)
                 self._cancel_marker_transports.pop(key, None)
             return True, "running"
+
+    def claim_repository_owner(self, repo_id: str, owner: object) -> tuple[bool, str]:
+        """Atomically reserve all cache writes for one repository.
+
+        This covers snapshots, GGUF variants, and deletion. The opaque owner
+        prevents a stale run from releasing a newer claim.
+        """
+        repo = normalize_repo_key(repo_id)
+        with self._lock:
+            if repo in self._repository_owners:
+                return False, "repository_owned"
+            if repo in self._deleting:
+                return False, "deleting"
+            for key, job in self._jobs.items():
+                if _repo_of_key(key) != repo or job.state not in _ACTIVE_STATES:
+                    continue
+                # Retry handoffs can temporarily disappear from _repo_active.
+                return False, job.state
+            self._repository_owners[repo] = owner
+            return True, "owned"
+
+    def release_repository_owner(self, repo_id: str, owner: object) -> bool:
+        """Release *repo_id* only when *owner* still holds its reservation."""
+        repo = normalize_repo_key(repo_id)
+        with self._lock:
+            if self._repository_owners.get(repo) is not owner:
+                return False
+            self._repository_owners.pop(repo, None)
+            return True
 
     def adoptable(self, key: str) -> bool:
         """True when *key* itself has a live job a client can attach to.
@@ -1366,6 +1448,8 @@ class DownloadRegistry:
         repo_id = normalize_repo_key(repo_id)
         variant_key = (variant or "").strip().lower() or None
         with self._lock:
+            if repo_id in self._repository_owners:
+                return False
             if self._delete_blocked_by_active_locked(repo_id, variant_key):
                 return False
             self._deleting.setdefault(repo_id, set()).add(variant_key)

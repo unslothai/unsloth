@@ -107,7 +107,10 @@ export function apiStart(
       })
     : startModelDownload({
         repo_id: req.repoId,
-        gguf_variant: req.variant,
+        // A scoped job carries its scope instead of a quant; the backend derives the same "@scope" variant this surface keyed it under.
+        gguf_variant: req.scopeId ? null : req.variant,
+        scope_id: req.scopeId ?? null,
+        files: req.files,
         hf_token: hfToken,
         use_xet: useXet,
         transport_mode,
@@ -219,6 +222,8 @@ export function describeUnacceptedStart(state: DownloadStartState): string {
   switch (state) {
     case "deleting":
       return "This repository is being removed. Try again once it finishes.";
+    case "repository_owned":
+      return "A dictation model download is using this repository. Try again once it finishes.";
     case "running":
     case "cancelling":
       return "Another download for this repository is already in progress. Wait for it to finish or cancel it first.";

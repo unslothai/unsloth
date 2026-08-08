@@ -112,24 +112,32 @@ def _invoke_run(monkeypatch, args):
 
 
 @pytest.mark.parametrize(
-    "extra_flags,expected,unexpected",
+    "extra_flags,expected,unexpected,expected_intent",
     [
         # Default (no flag) forwards --no-cloudflare explicitly so a mixed-version
         # child venv (old default: --cloudflare on) can't re-enable the tunnel.
-        ([], "--no-cloudflare", "--cloudflare"),
-        (["--cloudflare"], "--cloudflare", "--no-cloudflare"),
-        (["--no-cloudflare"], "--no-cloudflare", "--cloudflare"),
+        ([], "--no-cloudflare", "--cloudflare", "unset"),
+        (["--cloudflare"], "--cloudflare", "--no-cloudflare", "enabled"),
+        (["--no-cloudflare"], "--no-cloudflare", "--cloudflare", "disabled"),
         # --secure implies the tunnel; never forward --no-cloudflare with it.
-        (["--secure"], None, "--no-cloudflare"),
+        (["--secure"], None, "--no-cloudflare", "enabled"),
     ],
 )
-def test_run_reexec_forwards_cloudflare_polarity(monkeypatch, extra_flags, expected, unexpected):
+def test_run_reexec_forwards_cloudflare_polarity(
+    monkeypatch, extra_flags, expected, unexpected, expected_intent
+):
+    studio_mod = _studio()
+    assert f'_CLOUDFLARE_INTENT_ENV = "{studio_mod._CLOUDFLARE_INTENT_ENV}"' in (
+        _REPO_ROOT / "studio/backend/run.py"
+    ).read_text(encoding = "utf-8")
+    monkeypatch.delenv(studio_mod._CLOUDFLARE_INTENT_ENV, raising = False)
     captured = _invoke_run(monkeypatch, _BASE + extra_flags)
     assert len(captured) == 1, captured
     argv = captured[0]
     if expected is not None:
         assert expected in argv, f"expected {expected} in child argv; got {argv}"
     assert unexpected not in argv, f"unexpected {unexpected} in child argv; got {argv}"
+    assert studio_mod.os.environ[studio_mod._CLOUDFLARE_INTENT_ENV] == expected_intent
 
 
 # ── re-exec forwarding: plain `unsloth studio` ───────────────────────
@@ -171,25 +179,30 @@ def _invoke_studio_default(
 
 
 @pytest.mark.parametrize(
-    "extra_flags,expected,unexpected",
+    "extra_flags,expected,unexpected,expected_intent",
     [
         # Default (no flag) forwards --no-cloudflare explicitly: _find_run_py can fall
         # back to an older studio-venv run.py (default on), so a mixed install must
         # not re-enable the tunnel.
-        ([], "--no-cloudflare", "--cloudflare"),
-        (["--cloudflare"], "--cloudflare", "--no-cloudflare"),
-        (["--no-cloudflare"], "--no-cloudflare", "--cloudflare"),
+        ([], "--no-cloudflare", "--cloudflare", "unset"),
+        (["--cloudflare"], "--cloudflare", "--no-cloudflare", "enabled"),
+        (["--no-cloudflare"], "--no-cloudflare", "--cloudflare", "disabled"),
         # --secure implies the tunnel; never forward --no-cloudflare with it.
-        (["--secure"], None, "--no-cloudflare"),
+        (["--secure"], None, "--no-cloudflare", "enabled"),
     ],
 )
-def test_studio_default_reexec_forwards_cloudflare(monkeypatch, extra_flags, expected, unexpected):
+def test_studio_default_reexec_forwards_cloudflare(
+    monkeypatch, extra_flags, expected, unexpected, expected_intent
+):
+    studio_mod = _studio()
+    monkeypatch.delenv(studio_mod._CLOUDFLARE_INTENT_ENV, raising = False)
     captured = _invoke_studio_default(monkeypatch, ["-H", "0.0.0.0"] + extra_flags)
     assert len(captured) == 1, captured
     argv = captured[0]
     if expected is not None:
         assert expected in argv, f"expected {expected}; got {argv}"
     assert unexpected not in argv, f"unexpected {unexpected}; got {argv}"
+    assert studio_mod.os.environ[studio_mod._CLOUDFLARE_INTENT_ENV] == expected_intent
 
 
 # ── in-venv path forwards cloudflare into run_server ─────────────────
