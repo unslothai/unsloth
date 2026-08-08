@@ -1977,7 +1977,11 @@ def test_h3_native_load_honors_install_switch_and_maps_xpu_to_vulkan(monkeypatch
             self.binary = binary
 
         def version(self):
-            return "master-812-ea7f0c8"
+            # Only "not None" matters here: the load path treats that as "the engine started".
+            # Deliberately not a real tag, so nobody reads this as a second pin competing with
+            # install_sd_cpp_prebuilt.DEFAULT_TAG, which is what the previous literal looked like
+            # once that pin moved on without it.
+            return "stub-version"
 
     monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
 

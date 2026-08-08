@@ -43,7 +43,17 @@ DEFAULT_REPO = "unslothai/stable-diffusion.cpp"
 # Fallback when the mirror cannot serve this host (release missing, or a host we do not build).
 UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
 # Pinned for reproducibility; UNSLOTH_SD_CPP_TAG overrides (empty tracks latest). A missing tag falls back to latest.
-DEFAULT_TAG = "master-812-ea7f0c8"
+#
+# The -u<id> suffix means the mirror built upstream master-813-bfbef5b plus the patch set in its
+# patches/ directory, and the id is the hash of that set. MiniMax-H3 needs it: an unpatched build
+# aborts on the default --cfg-scale, aborts again on --vae-on-cpu, and quantizes H3's 1-D norms
+# into an output uncorrelated with its own bf16 reference. All three fixes are open upstream
+# (leejet/stable-diffusion.cpp#1861, #1862, #1863) and the patches are deleted once they ship
+# there, at which point this pin goes back to a plain upstream tag.
+#
+# leejet has no release under this name, so the upstream fallback cannot match the pin and drops
+# to leejet's latest, which is the documented behaviour for a mirror-only tag.
+DEFAULT_TAG = "master-813-bfbef5b-u0665242"
 
 # Back-compat alias (some callers/tests import REPO).
 REPO = DEFAULT_REPO
