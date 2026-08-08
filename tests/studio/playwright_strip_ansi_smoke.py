@@ -35,7 +35,7 @@ ESC = "\u001b"
 
 
 def info(msg: str) -> None:
-    print(f"[ansi-smoke] {msg}", flush=True)
+    print(f"[ansi-smoke] {msg}", flush = True)
 
 
 def wait_for_vite(timeout_s: float = 120.0) -> None:
@@ -43,7 +43,7 @@ def wait_for_vite(timeout_s: float = 120.0) -> None:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(url, timeout=2) as response:
+            with urllib.request.urlopen(url, timeout = 2) as response:
                 if response.status == 200:
                     return
         except (urllib.error.URLError, TimeoutError):
@@ -66,13 +66,13 @@ def start_vite() -> subprocess.Popen[str]:
     )
     proc = subprocess.Popen(
         ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", "8000", "--strictPort"],
-        cwd=FRONTEND,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
+        cwd = FRONTEND,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        text = True,
         **process_group,
     )
-    threading.Thread(target=drain_process_output, args=(proc,), daemon=True).start()
+    threading.Thread(target = drain_process_output, args = (proc,), daemon = True).start()
     return proc
 
 
@@ -83,9 +83,9 @@ def stop_process(proc: subprocess.Popen[str]) -> None:
     if os.name == "nt":
         subprocess.run(
             ["taskkill", "/PID", str(proc.pid), "/T"],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            check = False,
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.DEVNULL,
         )
     else:
         try:
@@ -94,25 +94,25 @@ def stop_process(proc: subprocess.Popen[str]) -> None:
             return
 
     try:
-        proc.wait(timeout=10)
+        proc.wait(timeout = 10)
     except subprocess.TimeoutExpired:
         if os.name == "nt":
             subprocess.run(
                 ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                check = False,
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
             )
         else:
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-        proc.wait(timeout=10)
+        proc.wait(timeout = 10)
 
 
 def main() -> None:
-    ART.mkdir(parents=True, exist_ok=True)
+    ART.mkdir(parents = True, exist_ok = True)
     info(f"starting vite dev server in {FRONTEND}")
     vite = start_vite()
     try:
@@ -125,14 +125,14 @@ def main() -> None:
                 raise ValueError(f"unsupported PW_BROWSER: {browser_name}")
             browser_type = getattr(playwright, browser_name)
             launch_args = chromium_launch_args() if browser_name == "chromium" else []
-            browser = browser_type.launch(headless=True, args=launch_args)
+            browser = browser_type.launch(headless = True, args = launch_args)
             page = browser.new_page()
-            page.goto(f"{BASE}/smoke-ansi.html", wait_until="networkidle")
-            page.screenshot(path=str(ART / "smoke-ansi.png"), full_page=True)
+            page.goto(f"{BASE}/smoke-ansi.html", wait_until = "networkidle")
+            page.screenshot(path = str(ART / "smoke-ansi.png"), full_page = True)
 
             for section in SECTIONS:
                 pane = page.locator(f'section[data-smoke="{section}"] pre').first
-                expect(pane).to_be_visible(timeout=15_000)
+                expect(pane).to_be_visible(timeout = 15_000)
                 text = pane.inner_text()
                 info(f"{section} text: {text!r}")
                 assert text == "file.txt\nerror", f"{section} rendered unexpected text: {text!r}"
