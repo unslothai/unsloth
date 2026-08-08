@@ -97,6 +97,21 @@ test("usage past the window clamps to 100 percent", () => {
   assert.equal(deriveContextUsageBar({ used: 40000, total: 32768 })?.percent, 100);
 });
 
+// llama.cpp stops at the window; MLX runs straight past it, so the advice differs, and
+// which side of the limit a chat is on cannot be read from the clamped percent
+test("the limit advice follows the backend and the unclamped ratio", () => {
+  const at = { used: 40000, total: 32768 };
+  assert.equal(deriveContextUsageBar(at)?.advice, "stops-at-limit");
+  assert.equal(deriveContextUsageBar({ ...at, isMlx: true })?.advice, "mlx-past-limit");
+  assert.equal(
+    deriveContextUsageBar({ used: 30000, total: 32768, isMlx: true })?.advice,
+    "mlx-near-limit",
+  );
+  assert.equal(deriveContextUsageBar({ used: 4096, total: 32768 })?.advice, "none");
+  // no window and no count: nothing to advise against
+  assert.equal(deriveContextUsageBar({ used: 40000, total: null })?.advice, "none");
+});
+
 // external providers: usage is known, the window is not
 test("an unknown window shows a bare token count and no ratio", () => {
   const state = deriveContextUsageBar({ used: 4096, total: null });
