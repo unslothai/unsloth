@@ -59,7 +59,6 @@ from core.inference.stt_sidecar import (
     _known_whisper_languages,
     _prepare_stt_cache_for_http,
     _read_revision_record,
-    _repo_cache_dir,
     _TARGET_SAMPLE_RATE,
     _training_active,
     _write_revision_record,
