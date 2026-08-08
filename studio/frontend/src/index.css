@@ -34,19 +34,18 @@
 	   pinned New Chat / Search header. */
 	/* Top edge: when scrolled, rows dissolve as they pass under the pinned
 	   New Chat / Search header (mask — fades content to transparent).
-	   A mask covers the border box, and the scrollbar sits inside it, so the
-	   ramp dissolved the top of the thumb along with the rows. The second
-	   layer holds the rail's own column opaque; layers union by default
-	   (mask-composite: add). Nothing but the scrollbar is in that column, so it
-	   costs the fade nothing, and at rail 0 the layer is empty. */
+	   A mask covers the border box, scrollbar included, so the ramp dissolved
+	   the thumb's top too. Second layer holds the rail column opaque (layers
+	   union by default); nothing else is in that column, and at rail 0 it is
+	   empty. */
 	.sidebar-scroll-fade.is-scrolled {
 		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px),
 			linear-gradient(to left, #000 var(--sidebar-rail, 0px), transparent 0);
 		mask-image: linear-gradient(to bottom, transparent 0, #000 14px),
 			linear-gradient(to left, #000 var(--sidebar-rail, 0px), transparent 0);
 	}
-	/* The rail sits on the inline end, the left under rtl, and a gradient
-	   cannot say that. */
+	/* The rail is on the inline end, the left under rtl; a gradient cannot say
+	   that. */
 	[dir="rtl"] .sidebar-scroll-fade.is-scrolled {
 		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px),
 			linear-gradient(to right, #000 var(--sidebar-rail, 0px), transparent 0);

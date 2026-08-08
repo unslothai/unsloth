@@ -701,11 +701,10 @@ export function AppSidebar() {
   const [scrolled, setScrolled] = useState(false);
   // Bottom fade hides at the very bottom / for short lists so the last row isn't washed out.
   const [canScrollDown, setCanScrollDown] = useState(false);
-  // Rail width: 0 where scrollbars overlay (macOS default) or the list does not
-  // overflow, the platform's thin rail where they are classic (Show scroll bars:
-  // Always, Windows, Linux). Only rows inside the scroller lose it, so the rows
-  // outside pad by it to keep one edge. Written straight to the DOM, and only on
-  // a change: state here would loop (React #185).
+  // Rail width: 0 where scrollbars overlay (macOS default) or the list fits,
+  // the platform's thin rail where they are classic. Only rows inside the
+  // scroller lose it, so the rows outside pad by it to keep one edge. Written
+  // to the DOM, and only on a change: state here would loop (React #185).
   const railWidthRef = useRef<number | null>(null);
   const measureScrollRail = useCallback((el: HTMLDivElement) => {
     const rail = el.offsetWidth - el.clientWidth;
@@ -715,25 +714,25 @@ export function AppSidebar() {
   }, []);
 
   // A callback ref, not an effect: the mobile Sheet unmounts its subtree on
-  // close and the 768px breakpoint swaps it for the desktop one, so the
-  // scroller is a new node each time while an effect keyed on a stable callback
-  // never re-runs. Runs before paint, as the effect did.
+  // close and the breakpoint swaps it for the desktop one, so the scroller is a
+  // new node each time and an effect keyed on a stable callback never re-runs.
+  // Still runs before paint.
   const railObserverRef = useRef<ResizeObserver | null>(null);
   const attachScroller = useCallback(
     (el: HTMLDivElement | null) => {
       railObserverRef.current?.disconnect();
       railObserverRef.current = null;
       scrollRef.current = el;
-      // Per node: a new parent has no variable yet even when it measures the
-      // same rail, and the cache would otherwise skip the write.
+      // Per node: a new parent has no variable yet even at the same rail, and
+      // the cache would otherwise skip the write.
       railWidthRef.current = null;
       if (!el) return;
       measureScrollRail(el);
       // Watch the box, not renders: the Images disclosure and the project
       // toggles change the row count without rendering this component, and a
       // scrollbar appearing shrinks the content box by its own width. Safe
-      // where the earlier observer was not: it writes a CSS variable, never
-      // state, so there is no render to feed back (React #185).
+      // where the earlier observer was not: it writes a variable, never state,
+      // so there is no render to feed back (React #185).
       const observer = new ResizeObserver(() => measureScrollRail(el));
       observer.observe(el);
       railObserverRef.current = observer;
@@ -1004,8 +1003,7 @@ export function AppSidebar() {
   // One box for every row pill, so a hover pill has the same edges wherever it
   // lands. Rows outside the list scroller add the rail width it does not lose,
   // so both end on the same edge whether or not the scrollbar takes space.
-  // Logical sides: the rail sits on the inline end, which is the left under
-  // dir=rtl, and a physical pr- would then pad away from it.
+  // Logical sides, since the rail is on the inline end and moves under rtl.
   const rowPadding = usesDesktopTitlebar
     ? "ps-[5px] pe-[calc(var(--sidebar-rail,0px)+5px)]"
     : "ps-1.5 pe-[calc(var(--sidebar-rail,0px)+6px)]";
@@ -2487,8 +2485,8 @@ export function AppSidebar() {
       >
         {/* Fade above the profile box, shown only when there's more list below
             the fold; at the bottom (or short lists) it fades so the last row
-            shows fully (Gemini-style). It stops at the rail: the thumb ends its
-            travel in this band, and a full-width gradient washed it out. */}
+            shows fully (Gemini-style). Stops at the rail: the thumb ends its
+            travel in this band and a full-width gradient washed it out. */}
         <div
           aria-hidden="true"
           className={cn(

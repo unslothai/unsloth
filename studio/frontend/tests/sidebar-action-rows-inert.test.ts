@@ -74,11 +74,10 @@ test("footer profile sits 11px above the sidebar edge", async () => {
 });
 
 test("every sidebar row pill sits in one shared box", async () => {
-  // A recent chat's pill has to match New Chat's. The rows inside the list
-  // scroller lose the scrollbar rail's width, so the rows outside it add that
-  // same width back and both end on one edge. Both pads match, so a pill sits
-  // the same distance from the scrollbar as from the near edge. Logical sides:
-  // the rail moves to the left under dir=rtl.
+  // A recent chat's pill has to match New Chat's. The rows inside the scroller
+  // lose the rail's width, so the rows outside add it back and both end on one
+  // edge; both pads match, so a pill sits the same distance from the scrollbar
+  // as from the near edge. Logical sides, since the rail moves under rtl.
   const source = await sidebarSource();
   assert.match(
     source,
@@ -103,9 +102,8 @@ test("the sidebar list measures its scroll rail", async () => {
     source,
     /const rail = el\.offsetWidth - el\.clientWidth;[\s\S]*el\.parentElement\?\.style\.setProperty\(\s*"--sidebar-rail",\s*`\$\{rail\}px`,?\s*\)/,
   );
-  // Attached by a callback ref, not an effect. The mobile Sheet unmounts its
-  // subtree on close and the breakpoint swaps it for the desktop one, so the
-  // scroller is a new node that an effect keyed on a stable callback misses.
+  // A callback ref, not an effect: the Sheet unmounts on close and the
+  // breakpoint swaps subtrees, so the scroller is a new node each time.
   assert.match(source, /ref=\{attachScroller\}/);
   assert.match(
     source,
@@ -116,12 +114,12 @@ test("the sidebar list measures its scroll rail", async () => {
   assert.match(source, /railObserverRef\.current\?\.disconnect\(\);/);
   // Cache is per node: a new parent has no variable even at the same width.
   assert.match(source, /railWidthRef\.current = null;/);
-  // Measured on attach, or a list that overflows on arrival stays misaligned
-  // until something happens to fire a scroll.
+  // Measured on attach, or a list overflowing on arrival stays misaligned
+  // until something fires a scroll.
   assert.match(source, /if \(!el\) return;\s*measureScrollRail\(el\);/);
   // Then off the box, not off renders: the Images disclosure and the project
-  // toggles change the row count without rendering AppSidebar or firing a
-  // collapsible animation, and a scrollbar appearing shrinks the content box.
+  // toggles change the row count without rendering AppSidebar, and a scrollbar
+  // appearing shrinks the content box.
   assert.match(
     source,
     /const observer = new ResizeObserver\(\(\) => measureScrollRail\(el\)\);\s*observer\.observe\(el\);\s*railObserverRef\.current = observer;/,
