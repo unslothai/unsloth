@@ -827,3 +827,75 @@ def test_an_unmapped_or_absent_inner_dim_keeps_the_filename_rule():
             == nine_b
         )
     assert any("9B" in repo for repo, _f, _k in nine_b)
+
+
+def test_a_stalled_response_header_cannot_hold_the_picker_open(monkeypatch):
+    """requests' timeout is an INACTIVITY timeout, not a wall clock.
+
+    A peer that trickles response headers a byte at a time resets it forever, so a deadline
+    armed only once get() has returned never gets armed at all -- and this call sits on the
+    /images/load route thread and on the download-plan path, both of which promise to fail
+    open in seconds. The request itself has to be on the abandonable worker.
+    """
+    import threading
+    import types
+
+    released = threading.Event()
+
+    def _never_returns(*_args, **_kwargs):
+        # Still inside connect / the header wait: no response object exists to interrupt.
+        released.wait(30)
+        raise AssertionError("the request should have been abandoned, not awaited")
+
+    monkeypatch.setattr(diffusion_compat, "_HEADER_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(
+        "huggingface_hub.utils.get_session",
+        lambda: types.SimpleNamespace(get = _never_returns),
+    )
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+
+    out: list[bytes] = []
+    caller = threading.Thread(
+        target = lambda: out.append(
+            diffusion_compat._read_gguf_header(KLEIN_4B_GGUF, KLEIN_4B_FILE, None)
+        ),
+        daemon = True,
+    )
+    caller.start()
+    caller.join(8)
+    released.set()
+
+    assert not caller.is_alive(), "the caller waited on a request that never returned headers"
+    assert out == [b""]
+
+
+def test_the_offline_caller_still_gets_a_memoised_remote_answer(monkeypatch, tmp_path):
+    """begin_load probes with allow_network=False right after a plan-time probe answered.
+
+    Returning None there anyway sent it to the filename heuristic, which publishes the 4B
+    encoder repos for a renamed 9B checkpoint -- so the delete-cached guard did not cover the
+    companion repo the load was about to use.
+    """
+    monkeypatch.setattr(diffusion_compat, "_INNER_DIM_CACHE", {})
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+    monkeypatch.setattr(
+        diffusion_compat,
+        "_read_gguf_header",
+        lambda *a, **k: _gguf_header(4096, tmp_path),
+    )
+
+    online = diffusion_compat.flux2_inner_dim_for_pick(KLEIN_4B_GGUF, "renamed-4b.gguf")
+    assert online == 4096
+
+    # Same pick, same token, no network allowed: the memo answers.
+    monkeypatch.setattr(
+        diffusion_compat,
+        "_read_gguf_header",
+        lambda *a, **k: pytest.fail("the offline caller made a range request"),
+    )
+    assert (
+        diffusion_compat.flux2_inner_dim_for_pick(
+            KLEIN_4B_GGUF, "renamed-4b.gguf", allow_network = False
+        )
+        == 4096
+    )

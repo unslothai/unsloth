@@ -1188,8 +1188,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // steps/guidance defaults, and a rejected pick leaves the PREVIOUS pipeline resident. Reverting
   // the label alone would have the next generation run the old model at the new model's settings.
   const quantRevert = useRef<
-    { prev: string | null; prevSteps: number; prevGuidance: number } | null
+    { prev: string | null; prevSteps: number; prevGuidance: number; token: number } | null
   >(null);
+  // Which optimistic pick is current. Nothing here is gated on `busy`, so picking a second model
+  // while the first download-plan request is still in flight runs both: the older request then
+  // came back with its rejection and restored ITS steps/guidance over the newer, accepted pick,
+  // and cleared the newer pick's pending revert on the way out. A rollback belongs to the
+  // selection that armed it.
+  const selectionToken = useRef(0);
   // The Reapply target to restore if the optimistic swap fails: handleLoad overwrites lastLoad.current at load start, and a
   // load failing after that leaves the previous pipeline resident. Mirrors quantRevert.
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current } | null>(null);
@@ -1988,7 +1994,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const prevQuant = quant;
         const prevSteps = steps;
         const prevGuidance = guidance;
-        quantRevert.current = { prev: prevQuant, prevSteps, prevGuidance };
+        const token = ++selectionToken.current;
+        quantRevert.current = { prev: prevQuant, prevSteps, prevGuidance, token };
         setQuant(meta.ggufVariant);
         const dq = defaultsFor(id);
         setSteps(dq.steps);
@@ -1998,7 +2005,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           { kind: "gguf", filename: meta.ggufFilename },
           meta.isDownloaded,
         ).then((started) => {
-          if (!started) {
+          // Only if this pick is still the current one: a newer selection has already applied
+          // its own settings, and this one's rollback would overwrite them.
+          if (!started && selectionToken.current === token) {
             setQuant(prevQuant);
             setSteps(prevSteps);
             setGuidance(prevGuidance);
@@ -2023,13 +2032,16 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const prevQuant = quant;
         const prevSteps = steps;
         const prevGuidance = guidance;
-        quantRevert.current = { prev: prevQuant, prevSteps, prevGuidance };
+        const token = ++selectionToken.current;
+        quantRevert.current = { prev: prevQuant, prevSteps, prevGuidance, token };
         setQuant(filename);
         const dq2 = defaultsFor(id);
         setSteps(dq2.steps);
         setGuidance(dq2.guidance);
         void handleLoad(dir, { kind: "gguf", filename }).then((started) => {
-          if (!started) {
+          // Only if this pick is still the current one: a newer selection has already applied
+          // its own settings, and this one's rollback would overwrite them.
+          if (!started && selectionToken.current === token) {
             setQuant(prevQuant);
             setSteps(prevSteps);
             setGuidance(prevGuidance);
@@ -2048,13 +2060,16 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const prevQuant = quant;
         const prevSteps = steps;
         const prevGuidance = guidance;
-        quantRevert.current = { prev: prevQuant, prevSteps, prevGuidance };
+        const token = ++selectionToken.current;
+        quantRevert.current = { prev: prevQuant, prevSteps, prevGuidance, token };
         setQuant(filename);
         const dsf = defaultsFor(id);
         setSteps(dsf.steps);
         setGuidance(dsf.guidance);
         void handleLoad(dir, { kind: "single_file", filename }).then((started) => {
-          if (!started) {
+          // Only if this pick is still the current one: a newer selection has already applied
+          // its own settings, and this one's rollback would overwrite them.
+          if (!started && selectionToken.current === token) {
             setQuant(prevQuant);
             setSteps(prevSteps);
             setGuidance(prevGuidance);
@@ -2072,13 +2087,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       const prevQuant = quant;
       const prevSteps = steps;
       const prevGuidance = guidance;
-      quantRevert.current = { prev: prevQuant, prevSteps, prevGuidance };
+      const token = ++selectionToken.current;
+      quantRevert.current = { prev: prevQuant, prevSteps, prevGuidance, token };
       setQuant(null);
       const d = defaultsFor(id);
       setSteps(d.steps);
       setGuidance(d.guidance);
       void loadOrStage(id, { kind: "pipeline" }, meta.isDownloaded).then((started) => {
-        if (!started) {
+        // Only if this pick is still the current one; see the branches above.
+        if (!started && selectionToken.current === token) {
           setQuant(prevQuant);
           setSteps(prevSteps);
           setGuidance(prevGuidance);

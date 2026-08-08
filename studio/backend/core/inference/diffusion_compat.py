@@ -136,7 +136,12 @@ def _interrupt_read(response: Any) -> None:
     thread blocked inside ``iter_content``: ``Response.close`` drops the file object while the
     socket stays readable, so the read sits there regardless. Best effort -- and on a urllib3
     older than 2.3, which is where ``shutdown`` first appears, there is nothing here that can wake
-    it. The caller does not depend on this working; it reads on a worker it can abandon."""
+    it. The caller does not depend on this working; it reads on a worker it can abandon.
+
+    ``None`` means the worker has not got a response yet -- it is still inside connect or the
+    header wait -- so there is nothing to half-close and abandoning it is the whole bound."""
+    if response is None:
+        return
     try:
         response.raw.shutdown()
     except Exception:  # noqa: BLE001 — a deadline that cannot fire must not become a new failure
@@ -147,74 +152,78 @@ def _interrupt_read(response: Any) -> None:
 
 
 def _read_gguf_header(repo_id: str, gguf_filename: str, hf_token: Optional[str]) -> bytes:
-    """The first ``_GGUF_HEADER_BYTES`` of a Hub-hosted GGUF, or b"" when they cannot be read."""
+    """The first ``_GGUF_HEADER_BYTES`` of a Hub-hosted GGUF, or b"" when they cannot be read.
+
+    One wall-clock bound over the WHOLE operation, request included. requests' timeout is an
+    inactivity timeout: a peer (or an intermediary) that trickles response HEADERS resets it on
+    every byte, so a deadline armed only once ``get()`` has returned leaves the caller blocked
+    before the bounded body reader is ever reached -- and this runs on the /images/load route
+    thread and on the download-plan path, both of which promised to fail open in seconds.
+
+    So the request AND the drain run on a worker this call can walk away from. On timeout the
+    response, if one exists by then, is half-closed to wake the worker; either way the caller
+    returns with whatever arrived."""
     try:
         from huggingface_hub import hf_hub_url
         from huggingface_hub.utils import build_hf_headers, get_session
     except Exception:  # noqa: BLE001 — an unexpected hub layout leaves today's behaviour
         return b""
-    try:
-        headers = dict(build_hf_headers(token = hf_token))
-        headers["Range"] = f"bytes=0-{_GGUF_HEADER_BYTES - 1}"
-        with get_session().get(
-            hf_hub_url(repo_id, gguf_filename),
-            headers = headers,
-            timeout = _HEADER_TIMEOUT_SECONDS,
-            stream = True,
-        ) as response:
-            # 206 or nothing. A server (or a proxy) that ignored the Range header answers 200 with
-            # the WHOLE checkpoint, and streaming that into memory is the multi-GB download this
-            # preflight exists to prevent.
-            if response.status_code != 206:
-                return b""
-            # requests' timeout is per socket read, so a server trickling a byte at a time holds
-            # the picker open forever inside the byte cap. One deadline for the whole body -- and
-            # it has to be ARMED, not just tested between chunks: iter_content blocks inside
-            # urllib3 until a whole 64 KiB chunk has arrived, and every dribbled byte resets the
-            # socket timeout, so the test below is not reached for hours. The timer half-closes
-            # the socket instead, which makes that read return.
-            deadline = time.monotonic() + _HEADER_TIMEOUT_SECONDS
-            watchdog = threading.Timer(_HEADER_TIMEOUT_SECONDS, _interrupt_read, (response,))
-            watchdog.daemon = True
-            watchdog.start()
-            buffer = bytearray()
+    buffer = bytearray()
+    # Published by the worker as soon as it has something interruptible; read by this thread on
+    # timeout. A one-element list rather than a nonlocal, so the worker's assignment is visible.
+    holder: list[Any] = [None]
 
-            def _drain() -> None:
-                try:
-                    for chunk in response.iter_content(chunk_size = 65536):
-                        # extend, not `+=`: augmented assignment to a closed-over name would
-                        # rebind it as a local of _drain and lose every byte.
-                        buffer.extend(chunk)
-                        if len(buffer) >= _GGUF_HEADER_BYTES or time.monotonic() > deadline:
-                            break
-                # Keep what arrived rather than discarding it: the deadline firing on a merely
-                # SLOW link still leaves the tensor table (the first ~15 KiB) in hand, and the
-                # parser is truncation-safe -- swept over every prefix length of five header
-                # layouts, no cut ever produces a wrong dim, so a short prefix is answered or
-                # ignored. TRUNCATION only: a header with flipped bytes can still parse to a
-                # wrong dim (~0.6% under a 1-4 byte flip), which the loader's own full-file
-                # backstop shares. TLS makes that unlikely on this path.
-                except Exception:  # noqa: BLE001 — deadline fired, or the peer went away mid-body
-                    pass
+    def _fetch() -> None:
+        try:
+            headers = dict(build_hf_headers(token = hf_token))
+            headers["Range"] = f"bytes=0-{_GGUF_HEADER_BYTES - 1}"
+            with get_session().get(
+                hf_hub_url(repo_id, gguf_filename),
+                headers = headers,
+                timeout = _HEADER_TIMEOUT_SECONDS,
+                stream = True,
+            ) as response:
+                holder[0] = response
+                # 206 or nothing. A server (or a proxy) that ignored the Range header answers 200
+                # with the WHOLE checkpoint, and streaming that into memory is the multi-GB
+                # download this preflight exists to prevent.
+                if response.status_code != 206:
+                    return
+                deadline = time.monotonic() + _HEADER_TIMEOUT_SECONDS
+                for chunk in response.iter_content(chunk_size = 65536):
+                    # extend, not `+=`: augmented assignment to a closed-over name would rebind
+                    # it as a local of _fetch and lose every byte.
+                    buffer.extend(chunk)
+                    if len(buffer) >= _GGUF_HEADER_BYTES or time.monotonic() > deadline:
+                        break
+        # Keep what arrived rather than discarding it: the deadline firing on a merely SLOW link
+        # still leaves the tensor table (the first ~15 KiB) in hand, and the parser is
+        # truncation-safe -- swept over every prefix length of five header layouts, no cut ever
+        # produces a wrong dim, so a short prefix is answered or ignored. TRUNCATION only: a
+        # header with flipped bytes can still parse to a wrong dim (~0.6% under a 1-4 byte flip),
+        # which the loader's own full-file backstop shares. TLS makes that unlikely on this path.
+        except Exception:  # noqa: BLE001 — offline, deadline fired, or the peer went away
+            pass
 
-            # The drain runs on a worker this call can WALK AWAY FROM. The watchdog above only
-            # unblocks a parked read on urllib3 >= 2.3, where HTTPResponse.shutdown exists;
-            # below that it degrades to Response.close, which leaves the socket readable and the
-            # read parked. requirements/studio.txt floors urllib3, but an install predating that
-            # floor keeps whatever it already resolved, and this read sits on the /images/load
-            # route thread -- so the bound cannot depend on the version underneath us.
-            reader = threading.Thread(target = _drain, name = "gguf-header-read", daemon = True)
-            reader.start()
-            reader.join(_HEADER_TIMEOUT_SECONDS)
-            if reader.is_alive():
-                _interrupt_read(response)
-                reader.join(_ABANDON_GRACE_SECONDS)
-            watchdog.cancel()
-            # bytes() snapshots under the GIL, so an abandoned worker still appending cannot tear
-            # the copy; it can only lose a chunk that arrived too late to matter.
-            return bytes(buffer[:_GGUF_HEADER_BYTES])
-    except Exception:  # noqa: BLE001 — offline/transient must not block a load
-        return b""
+    # The watchdog exists as well as the join because iter_content blocks inside urllib3 until a
+    # whole 64 KiB chunk has arrived and every dribbled byte resets the socket timeout, so the
+    # worker cannot notice its own deadline. Half-closing the socket is what makes that read
+    # return -- on urllib3 >= 2.3, where HTTPResponse.shutdown exists. requirements/studio.txt
+    # floors it, but an install predating that floor keeps whatever it resolved, so the bound
+    # here cannot depend on the version underneath us: the worker is abandonable either way.
+    watchdog = threading.Timer(_HEADER_TIMEOUT_SECONDS, lambda: _interrupt_read(holder[0]))
+    watchdog.daemon = True
+    watchdog.start()
+    worker = threading.Thread(target = _fetch, name = "gguf-header-read", daemon = True)
+    worker.start()
+    worker.join(_HEADER_TIMEOUT_SECONDS)
+    if worker.is_alive():
+        _interrupt_read(holder[0])
+        worker.join(_ABANDON_GRACE_SECONDS)
+    watchdog.cancel()
+    # bytes() snapshots under the GIL, so an abandoned worker still appending cannot tear the
+    # copy; it can only lose a chunk that arrived too late to matter.
+    return bytes(buffer[:_GGUF_HEADER_BYTES])
 
 
 def flux2_inner_dim_for_pick(
@@ -242,12 +251,17 @@ def flux2_inner_dim_for_pick(
     # Resolved BEFORE the memo is consulted, because the file's identity is part of the key. Two
     # stats, against a probe that is otherwise an HTTP round trip.
     local = _local_gguf_path(repo_id, gguf_filename)
-    if local is None and not allow_network:
-        return None
     key = (repo_id, gguf_filename, _token_fingerprint(token), _file_identity(local))
+    # The memo FIRST, before the offline bail below. A plan-time probe has usually already
+    # answered for this exact pick, and returning None here anyway made the caller that cannot
+    # wait (begin_load, allow_network = False) fall back to the filename heuristic -- publishing
+    # the 4B encoder repos for a renamed 9B checkpoint, so the delete-cached guard did not cover
+    # its real companion repo until the worker re-probed.
     with _CACHE_LOCK:
         if key in _INNER_DIM_CACHE:
             return _INNER_DIM_CACHE[key]
+    if local is None and not allow_network:
+        return None
     if local is not None:
         # Same prefix parse as the remote path, so both read the file the same way: the loader's
         # backstop memory-maps the whole multi-GB checkpoint and builds a view over every tensor,
