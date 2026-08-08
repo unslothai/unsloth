@@ -20728,9 +20728,7 @@ async def list_gallery_audio(
     if (before_mtime is None) != (before_id is None):
         raise HTTPException(status_code = 400, detail = "Incomplete audio gallery cursor.")
     before = (
-        (before_mtime, before_id)
-        if before_mtime is not None and before_id is not None
-        else None
+        (before_mtime, before_id) if before_mtime is not None and before_id is not None else None
     )
 
     # validate inside the pager so offset, limit and has_more count over the accepted domain

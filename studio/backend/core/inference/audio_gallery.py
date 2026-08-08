@@ -178,12 +178,7 @@ def list_audio(
     domain; pass the route's schema validator. ``before`` is an exclusive,
     stable continuation cursor for callers that must tolerate deletions between
     pages."""
-    return [
-        record
-        for record, _ in _list_audio_entries(
-            limit, offset, before = before, valid = valid
-        )
-    ]
+    return [record for record, _ in _list_audio_entries(limit, offset, before = before, valid = valid)]
 
 
 def list_audio_page(
