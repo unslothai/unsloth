@@ -250,6 +250,8 @@ def _prefer_legacy_lowercase_cache(
     require_processor = True,
     subfolder = None,
     variant = None,
+    use_safetensors = None,
+    trust_remote_code = False,
 ):
     """Use a pre-fix lowercase cache only when offline and no canonical cache exists."""
     if (
@@ -321,6 +323,20 @@ def _prefer_legacy_lowercase_cache(
             )
         ):
             return False
+
+        if trust_remote_code:
+            auto_map = config.get("auto_map") or {}
+            references = auto_map.values() if isinstance(auto_map, dict) else ()
+            module_files = set()
+            for reference in references:
+                candidates = reference if isinstance(reference, (list, tuple)) else (reference,)
+                for candidate in candidates:
+                    if not isinstance(candidate, str) or "--" in candidate or "." not in candidate:
+                        continue
+                    module = candidate.rsplit(".", 1)[0]
+                    module_files.add(module.replace(".", "/") + ".py")
+            if any(not os.path.isfile(os.path.join(snapshot, name)) for name in module_files):
+                return False
         weights_root = os.path.abspath(
             os.path.join(snapshot, str(subfolder).strip("/\\")) if subfolder else snapshot
         )
@@ -337,12 +353,20 @@ def _prefer_legacy_lowercase_cache(
             stem, extension = filename.rsplit(".", 1)
             return f"{stem}.{variant}.{extension}"
 
+        weight_names = []
+        index_names = []
+        if use_safetensors is not False:
+            weight_names.append("model.safetensors")
+            index_names.append("model.safetensors.index.json")
+        if use_safetensors is not True:
+            weight_names.append("pytorch_model.bin")
+            index_names.append("pytorch_model.bin.index.json")
         if any(
             os.path.isfile(os.path.join(weights_root, _variant_name(filename)))
-            for filename in ("model.safetensors", "pytorch_model.bin")
+            for filename in weight_names
         ):
             return True
-        for index_name in ("model.safetensors.index.json", "pytorch_model.bin.index.json"):
+        for index_name in index_names:
             index_path = os.path.join(weights_root, _variant_name(index_name))
             try:
                 import json
@@ -405,6 +429,8 @@ def get_model_name(
     require_processor = True,
     subfolder = None,
     variant = None,
+    use_safetensors = None,
+    return_mapper_changed = False,
 ):
     assert load_in_fp8 in (True, False, "block")
     new_model_name = _resolve_with_mappers(
@@ -429,6 +455,9 @@ def get_model_name(
         # the remap above is skipped; remap the input name directly instead.
         new_model_name = BAD_MAPPINGS[model_name.lower()]
 
+    mapper_changed_name = new_model_name is not None and new_model_name != model_name
+
+
     if new_model_name is not None:
         # A caller-supplied ref only survives case-only canonicalization. Cross-repo
         # mapper and BAD_MAPPINGS redirects are loaded from their default branch.
@@ -442,6 +471,8 @@ def get_model_name(
             require_processor,
             subfolder,
             variant,
+            use_safetensors,
+            trust_remote_code,
         )
 
     if (
@@ -481,7 +512,7 @@ def get_model_name(
     if new_model_name is None:
         new_model_name = model_name
 
-    return new_model_name
+    return (new_model_name, mapper_changed_name) if return_mapper_changed else new_model_name
 
 
 def _offline_quantize_to_fp8(

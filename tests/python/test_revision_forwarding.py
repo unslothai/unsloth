@@ -277,6 +277,8 @@ def test_all_mapper_calls_receive_downstream_artifact_requirements():
             assert "subfolder" in keywords
             assert "variant" in keywords
 
+            assert "use_safetensors" in keywords
+
 
 def test_cache_artifact_requirements_are_resolved_before_mapper_calls():
     tree = _tree(LOADER)
@@ -290,19 +292,24 @@ def test_cache_artifact_requirements_are_resolved_before_mapper_calls():
         )
 
 
-def test_dynamic_fp8_survives_case_only_cache_rewrites():
+def test_dynamic_fp8_uses_mapper_metadata_not_resolved_name_spelling():
     tree = _tree(LOADER)
     for class_name in ("FastLanguageModel", "FastModel"):
         function = _function(tree, "from_pretrained", class_name)
-        comparisons = [
-            ast.unparse(node.test).replace(" ", "")
+        mapper_calls = _calls(function, "get_model_name")
+        primary = mapper_calls[0]
+        metadata_kwarg = next(
+            (keyword for keyword in primary.keywords if keyword.arg == "return_mapper_changed"),
+            None,
+        )
+        assert metadata_kwarg is not None and isinstance(metadata_kwarg.value, ast.Constant)
+        assert metadata_kwarg.value.value is True
+        fp8_guards = [
+            ast.unparse(node.test)
             for node in ast.walk(function)
-            if isinstance(node, ast.If) and "new_model_name.lower()" in ast.unparse(node.test)
+            if isinstance(node, ast.If) and "mapper_selected_name" in ast.unparse(node.test)
         ]
-        assert any(
-            "new_model_name.lower()!=old_model_name.lower()" in comparison
-            for comparison in comparisons
-        ), f"{class_name} must distinguish FP8 mirrors from case-only cache aliases"
+        assert fp8_guards, f"{class_name} must use pre-cache mapper metadata for FP8"
 
 
 def test_all_config_probes_receive_the_explicit_cache_dir():

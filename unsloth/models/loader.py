@@ -592,7 +592,7 @@ class FastLanguageModel(FastLlamaModel):
         )
         fp8_mode = None
         if not use_exact_model_name:
-            new_model_name = get_model_name(
+            new_model_name, mapper_selected_name = get_model_name(
                 model_name,
                 load_in_4bit = load_in_4bit,
                 load_in_fp8 = load_in_fp8,
@@ -605,6 +605,9 @@ class FastLanguageModel(FastLlamaModel):
                 require_processor = not text_only and cache_processor_name is None,
                 subfolder = kwargs.get("subfolder"),
                 variant = kwargs.get("variant"),
+
+                use_safetensors = kwargs.get("use_safetensors"),
+                return_mapper_changed = True,
             )
             if new_model_name is None and load_in_fp8 != False:
                 fp8_mode = _get_fp8_mode_and_check_settings(
@@ -624,7 +627,7 @@ class FastLanguageModel(FastLlamaModel):
                 model_name = new_model_name
                 # If mapper resolved to a pre-quantized FP8 model, disable
                 # on-the-fly quantization to avoid double quantization
-                if load_in_fp8 != False and new_model_name.lower() != old_model_name.lower():
+                if load_in_fp8 != False and mapper_selected_name:
                     load_in_fp8 = False
         # Only this block honours use_exact_model_name; the transforms below do not.
         mapper_moved_name = model_name != old_model_name
@@ -817,6 +820,8 @@ class FastLanguageModel(FastLlamaModel):
                     require_processor = not text_only and cache_processor_name is None,
                     subfolder = kwargs.get("subfolder"),
                     variant = kwargs.get("variant"),
+
+                    use_safetensors = kwargs.get("use_safetensors"),
                 )
             # Check if pre-quantized models are allowed
             # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
@@ -1372,7 +1377,7 @@ class FastModel(FastBaseModel):
         )
         fp8_mode = None
         if not use_exact_model_name:
-            new_model_name = get_model_name(
+            new_model_name, mapper_selected_name = get_model_name(
                 model_name,
                 load_in_4bit = load_in_4bit,
                 load_in_fp8 = load_in_fp8,
@@ -1383,6 +1388,10 @@ class FastModel(FastBaseModel):
                 require_processor = not text_only and cache_processor_name is None,
                 subfolder = kwargs.get("subfolder"),
                 variant = kwargs.get("variant"),
+
+                use_safetensors = kwargs.get("use_safetensors"),
+                trust_remote_code = trust_remote_code,
+                return_mapper_changed = True,
             )
             if new_model_name is None and load_in_fp8 != False:
                 fp8_mode = _get_fp8_mode_and_check_settings(
@@ -1402,7 +1411,7 @@ class FastModel(FastBaseModel):
                 model_name = new_model_name
                 # If mapper resolved to a pre-quantized FP8 model, disable
                 # on-the-fly quantization to avoid double quantization
-                if load_in_fp8 != False and new_model_name.lower() != old_model_name.lower():
+                if load_in_fp8 != False and mapper_selected_name:
                     load_in_fp8 = False
         # Only this block honours use_exact_model_name; the transforms below do not.
         mapper_moved_name = model_name != old_model_name
@@ -1796,6 +1805,9 @@ class FastModel(FastBaseModel):
                     require_processor = not text_only and cache_processor_name is None,
                     subfolder = kwargs.get("subfolder"),
                     variant = kwargs.get("variant"),
+
+                    use_safetensors = kwargs.get("use_safetensors"),
+                    trust_remote_code = trust_remote_code,
                 )
             # Check if pre-quantized models are allowed
             # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)

@@ -410,6 +410,54 @@ class TestGetModelName(unittest.TestCase):
             )
 
     @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_legacy_cache_honors_requested_weight_format(self):
+        canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
+        legacy = canonical.lower()
+        with tempfile.TemporaryDirectory() as cache_dir:
+            canonical_cache = os.path.join(cache_dir, "models--" + canonical.replace("/", "--"))
+            legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
+            _write_cached_model(canonical_cache, "canonical-main")
+            legacy_snapshot = _write_cached_model(legacy_cache, "legacy-main")
+            os.rename(
+                os.path.join(legacy_snapshot, "model.safetensors"),
+                os.path.join(legacy_snapshot, "pytorch_model.bin"),
+            )
+            self.assertEqual(
+                get_model_name(
+                    "unsloth/Meta-Llama-3.1-8B-Instruct",
+                    cache_dir = cache_dir,
+                    local_files_only = True,
+                    use_safetensors = False,
+                ),
+                legacy,
+            )
+
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_remote_code_cache_requires_referenced_module(self):
+        canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
+        legacy = canonical.lower()
+        with tempfile.TemporaryDirectory() as cache_dir:
+            canonical_cache = os.path.join(cache_dir, "models--" + canonical.replace("/", "--"))
+            legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
+            canonical_snapshot = _write_cached_model(canonical_cache, "canonical-main")
+            legacy_snapshot = _write_cached_model(legacy_cache, "legacy-main")
+            config = {"auto_map": {"AutoModelForCausalLM": "modeling_custom.CustomModel"}}
+            for snapshot in (canonical_snapshot, legacy_snapshot):
+                with open(os.path.join(snapshot, "config.json"), "w", encoding = "utf-8") as file:
+                    json.dump(config, file)
+            open(os.path.join(legacy_snapshot, "modeling_custom.py"), "w").close()
+            self.assertEqual(
+                get_model_name(
+                    "unsloth/Meta-Llama-3.1-8B-Instruct",
+                    cache_dir = cache_dir,
+                    local_files_only = True,
+                    trust_remote_code = True,
+                ),
+                legacy,
+            )
+
+
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
     def test_offline_legacy_cache_uses_transformers_default(self):
         canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
         legacy = canonical.lower()
