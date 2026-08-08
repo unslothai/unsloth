@@ -198,17 +198,25 @@ def enable_padding_free_metadata(model, trainer):
 
     def torch_call_with_padding_free_metadata(examples: Sequence[dict]):
         seq_lengths: list[int] = []
+        collated = examples
         if examples and isinstance(examples[0], dict):
-            for example in examples:
+            for index, example in enumerate(examples):
                 lengths = example.get("seq_lengths")
                 if lengths is None:
                     ids = example.get("input_ids")
                     if ids is None:
                         continue
                     lengths = [len(ids)]
+                    # The wrapped collator decides whether to use seq_lengths at
+                    # all from the first example and then reads it off every row,
+                    # so the derived lengths still have to reach it. Put them on a
+                    # shallow copy instead of the caller's own row.
+                    if collated is examples:
+                        collated = list(examples)
+                    collated[index] = {**example, "seq_lengths": lengths}
                 seq_lengths.extend(lengths)
 
-        batch = original_torch_call(examples)
+        batch = original_torch_call(collated)
         if seq_lengths:
             batch["packed_seq_lengths"] = torch.tensor(
                 seq_lengths,

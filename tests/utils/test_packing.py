@@ -188,6 +188,49 @@ def test_enable_padding_free_metadata_does_not_mutate_examples():
     assert torch.equal(batch["packed_seq_lengths"], torch.tensor([2, 1], dtype = torch.int32))
 
 
+def test_enable_padding_free_metadata_still_hands_derived_lengths_to_the_collator():
+    # Not writing to the caller's row must not mean the wrapped collator stops
+    # seeing the lengths. TRL's padding-free collator decides whether to use
+    # seq_lengths at all from examples[0], then reads it off every row, so a row
+    # that reaches it without the key (or with a null one) changes the
+    # position_ids it builds, or makes it sum(None).
+    collator = _PaddingFreeCollator()
+    trainer = SimpleNamespace(
+        data_collator = collator,
+        args = SimpleNamespace(remove_unused_columns = True),
+    )
+    enable_padding_free_metadata(_DummyModel(), trainer)
+
+    examples = [
+        {"input_ids": [1, 2, 3], "labels": [1, 2, 3]},
+        {"input_ids": [4, 5], "labels": [4, 5]},
+    ]
+    before = copy.deepcopy(examples)
+
+    trainer.data_collator.torch_call(examples)
+
+    assert examples == before, "collator wrapper mutated the caller's examples"
+    assert [row["seq_lengths"] for row in collator.seen] == [[3], [2]]
+    assert [row["labels"] for row in collator.seen] == [[1, 2, 3], [4, 5]]
+
+    # a row carrying the column with no value counts as missing here, so it has
+    # to be replaced rather than passed through
+    nulled = [{"input_ids": [1, 2], "seq_lengths": None}]
+    nulled_before = copy.deepcopy(nulled)
+
+    trainer.data_collator.torch_call(nulled)
+
+    assert nulled == nulled_before
+    assert [row["seq_lengths"] for row in collator.seen] == [[2]]
+
+    # nothing was derived, so the caller's own list goes straight through
+    explicit = [{"input_ids": [1, 2, 3], "seq_lengths": [2, 1]}]
+
+    trainer.data_collator.torch_call(explicit)
+
+    assert collator.seen is explicit
+
+
 def test_configure_sample_packing():
     config = SimpleNamespace()
     configure_sample_packing(config)
@@ -979,9 +1022,11 @@ class _PaddingFreeCollator:
         self.padding_free = True
         self.return_position_ids = False
         self.calls = 0
+        self.seen = None
 
     def torch_call(self, examples):
         self.calls += 1
+        self.seen = examples
         return {
             "input_ids": torch.tensor([[0]], dtype = torch.long),
             "examples_seen": self.calls,
