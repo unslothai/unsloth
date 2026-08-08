@@ -483,7 +483,8 @@ def test_rust_windows_spawns_force_utf8(rust_file: str) -> None:
 # exit 1 and 2 bytes of stdout, and the user's setup log holds a PowerShell
 # stack trace where the banner should be.
 #
-# Every line of the probe is sliced out of the script under test. Restating the
+# Everything the probe prints is sliced out of the script under test; only the
+# FreeConsole prologue and the stderr diagnostics are harness. Restating the
 # banner here would only assert that this file can print a sloth.
 
 CREATE_NO_WINDOW = 0x08000000
@@ -671,7 +672,7 @@ def test_banner_survives_a_console_less_spawn(path: Path) -> None:
 @powershell_51_only
 @pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
 def test_console_less_banner_is_valid_utf8(path: Path) -> None:
-    """Strict, then lossy: the second says how bad the first would have looked."""
+    """Lossy first: it names how bad the stream is before the strict decode."""
     code, raw, err = _run_console_less(path)
     lossy = _decode_like_install_rs(raw)
     assert REPLACEMENT not in lossy, (
