@@ -198,3 +198,20 @@ class TestTheRocmProbeReservesHostRamOnAnApu:
             rows = _probe(monkeypatch, "6.2.0", [arch])
             assert (rows[0][2] == 0) is shared
             assert LlamaCppBackend._amd_apu_wants_unified_memory([0]) is shared
+
+
+class TestTheGateStillFailsOpen:
+    """Every helper in this family answers False rather than raising: they are
+    consulted on the load path, so a bad argument must skip the optimisation,
+    not fail the load."""
+
+    @pytest.mark.parametrize(
+        "gpu_indices", [5, [[0]], "0", [None], object()]
+    )
+    def test_a_bad_gpu_indices_answers_false(self, monkeypatch, gpu_indices):
+        monkeypatch.setitem(sys.modules, "torch", _fake_torch("6.2.0", ["gfx1151"]))
+        assert LlamaCppBackend._amd_apu_wants_unified_memory(gpu_indices) is False
+
+    def test_a_good_one_still_works(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "torch", _fake_torch("6.2.0", ["gfx1151"]))
+        assert LlamaCppBackend._amd_apu_wants_unified_memory([0]) is True

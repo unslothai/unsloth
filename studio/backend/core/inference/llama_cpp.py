@@ -4806,9 +4806,14 @@ class LlamaCppBackend:
         lets llama.cpp use shared system RAM (it hurts discrete GPUs). gpu_indices
         (PHYSICAL ids) scopes the check, so a dGPU on a mixed host is not treated as
         unified-memory; None means every visible GPU."""
-        arch_by_id = LlamaCppBackend._rocm_arch_by_physical_id()
-        selected = list(gpu_indices) if gpu_indices is not None else list(arch_by_id)
-        return any(arch_by_id.get(_i) in _AMD_UNIFIED_MEMORY_ARCHS for _i in selected)
+        # Guarded like the rest of this family: a bad gpu_indices (not iterable,
+        # unhashable members) answers False rather than failing the load.
+        try:
+            arch_by_id = LlamaCppBackend._rocm_arch_by_physical_id()
+            selected = list(gpu_indices) if gpu_indices is not None else list(arch_by_id)
+            return any(arch_by_id.get(_i) in _AMD_UNIFIED_MEMORY_ARCHS for _i in selected)
+        except Exception:
+            return False
 
     # Datacenter / professional NVIDIA parts that benefit from the llama.cpp
     # FP32-accum / P2P tunings. Whole-word (\b) so short markers don't match
@@ -5111,7 +5116,14 @@ class LlamaCppBackend:
                     else ordinal
                 )
                 shared = idx in unified_ids
-                free_mib = _apply_igpu_host_reserve_mib(free_bytes // (1024 * 1024), shared)
+                raw_mib = free_bytes // (1024 * 1024)
+                free_mib = _apply_igpu_host_reserve_mib(raw_mib, shared)
+                if free_mib < raw_mib:
+                    logger.info(
+                        f"ROCm device {idx} is a unified-memory APU sharing system "
+                        f"RAM; reserving {raw_mib - free_mib}MiB host headroom "
+                        f"({raw_mib}->{free_mib}MiB usable)"
+                    )
                 gpus.append((idx, free_mib, 0 if shared else total_bytes // (1024 * 1024)))
             # Match the nvidia-smi path's docstring guarantee of sorted-by-id.
             return sorted(gpus, key = lambda g: g[0])
