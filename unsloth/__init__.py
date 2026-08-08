@@ -77,6 +77,29 @@ def _is_mlx_available():
     return is_mlx_available()
 
 
+def _unsloth_version():
+    # unsloth's own version, for the MLX path. The GPU path gets this from
+    # _gpu_init -> models._utils, but that module imports torch, which the MLX
+    # path deliberately never reaches. Read the installed distribution instead
+    # (the string `pip show unsloth` prints), falling back to the literal in
+    # models/_utils.py that pyproject.toml builds the version from, for source
+    # checkouts that were never installed. Do NOT borrow unsloth_zoo.__version__:
+    # the zoo is a separate distribution pinned with `>=` and routinely trails.
+    from importlib.metadata import PackageNotFoundError, version as _dist_version
+    try:
+        return _dist_version("unsloth")
+    except PackageNotFoundError:
+        pass
+    import re
+    _utils = os.path.join(os.path.dirname(__file__), "models", "_utils.py")
+    try:
+        with open(_utils, encoding = "utf-8") as _f:
+            _match = re.search(r'^__version__\s*=\s*"([^"]+)"', _f.read(), re.MULTILINE)
+    except OSError:
+        _match = None
+    return _match.group(1) if _match else "0.0.0+unknown"
+
+
 # Detect Apple Silicon + MLX before any torch/numpy imports
 _IS_MLX = _is_mlx_available()
 
@@ -129,7 +152,7 @@ if _IS_MLX:
     import types as _types
     import warnings as _warnings
 
-    __version__ = unsloth_zoo.__version__
+    __version__ = _unsloth_version()
     DEVICE_TYPE = "mlx"
     _MLX_TRAINER_ACCEPTS_VAR_KWARGS = False
     _MLX_TRAINER_SUPPORTED_KWARGS = frozenset()
