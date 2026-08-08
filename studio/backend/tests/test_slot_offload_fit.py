@@ -223,14 +223,28 @@ class TestMtpReserveIsRepricedPerCandidate:
 
     def test_a_slot_scaled_reserve_shrinks_with_the_candidate(self):
         # 500 MiB per slot: par3 (22000+1162+1500) over 23839, par2 (22000+604+1000) fits.
-        gi, use_fit, slots = self._fit(lambda s: int(500 * s * MIB))
+        gi, use_fit, slots = self._fit(lambda s, _ub: int(500 * s * MIB))
         assert use_fit is False and gi == [0] and slots == 2
 
     def test_holding_the_reserve_at_the_requested_count_would_reject_them_all(self):
         # The old behaviour: every candidate charged the 4-slot reserve, so even one slot
         # (22000+46+2000) looked too big and the load stayed on --fit.
-        gi, use_fit, slots = self._fit(lambda _s: int(500 * 4 * MIB))
+        gi, use_fit, slots = self._fit(lambda _s, _ub: int(500 * 4 * MIB))
         assert use_fit is True and gi is None and slots == 4
 
     def test_no_reserve_callable_matches_a_zero_reserve(self):
-        assert self._fit(None) == self._fit(lambda _s: 0)
+        assert self._fit(None) == self._fit(lambda _s, _ub: 0)
+
+    def test_the_candidate_micro_batch_reaches_the_reserve(self):
+        """Compact SWA adds one micro-batch to its window allowance, and a reduced
+        candidate lowers the batch floor, so the reserve has to see the candidate ubatch
+        and not the one the original request was sized at (PR #8172)."""
+        seen = []
+        # base 24000: no candidate fits, so every one is priced and observed.
+        self._fit(lambda s, ub: seen.append((s, ub)) or 0, base_mib = 24000)
+        assert seen, "the reserve callback was never consulted"
+        # Default ubatch_for_slots is None here, so the helper passes n_ubatch through;
+        # what matters is that the ubatch travels with the slot count rather than being
+        # dropped, so the caller can re-derive it per candidate.
+        assert all(ub == 512 for _s, ub in seen), seen
+        assert [s for s, _ub in seen] == [3, 2, 1]

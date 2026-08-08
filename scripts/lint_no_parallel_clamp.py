@@ -18,6 +18,8 @@ Flagged inside `studio/backend` (tests excluded):
 3.  the same clamp spelled as an expression -- `min(n_parallel, 1)`, or a
     conditional with a literal 1 branch.
 
+Tuple unpacking is flattened, and the route's `_n_parallel` alias counts too.
+
 Parameter defaults, class-body annotations, `self.<attr>` assignments and
 `max(1, ...)` / `getattr(..., 1)` floors are structurally distinct and pass.
 
@@ -38,7 +40,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SCAN_DIR = REPO_ROOT / "studio" / "backend"
 
-SLOT_NAMES = frozenset({"n_parallel"})
+# The route resolves the request into `_n_parallel` before handing it to the load
+# paths, so a clamp there reduces the user's slots under a different name.
+SLOT_NAMES = frozenset({"n_parallel", "_n_parallel"})
 ALLOW_MARKER = "# allow-slot-clamp:"
 SKIP_PARTS = frozenset({"tests", ".venv", "venv", "build", "dist", "node_modules", "__pycache__"})
 
@@ -70,6 +74,28 @@ def _forces_one(value: ast.AST) -> bool:
     )
 
 
+def _target_value_pairs(node: ast.AST) -> list[tuple[ast.AST, ast.AST]]:
+    """(target, value) per assignment. AnnAssign because `n_parallel: int = 1` is the
+    same clamp Python spells differently, and tuple unpacking because load_model already
+    writes `gpu_indices, use_fit, n_parallel = ..., ..., _slots`; testing only the outer
+    ast.Tuple would never see the slot target. Unpaired shapes (a call on the right, a
+    starred target) say nothing about the value, so they are skipped."""
+    if isinstance(node, ast.AnnAssign):
+        return [(node.target, node.value)] if node.value is not None else []
+    if not isinstance(node, ast.Assign):
+        return []
+    pairs: list[tuple[ast.AST, ast.AST]] = []
+    for target in node.targets:
+        if isinstance(target, (ast.Tuple, ast.List)):
+            if isinstance(node.value, (ast.Tuple, ast.List)) and len(target.elts) == len(
+                node.value.elts
+            ):
+                pairs.extend(zip(target.elts, node.value.elts))
+        else:
+            pairs.append((target, node.value))
+    return pairs
+
+
 def _findings_for_tree(
     tree: ast.AST, lines: list[str], filename: str
 ) -> list[tuple[str, int, str]]:
@@ -78,27 +104,20 @@ def _findings_for_tree(
         if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         for node in ast.walk(func):
-            # AnnAssign too: `n_parallel: int = 1` is a local clamp Python spells
-            # differently, and a rule that missed it could be walked straight past.
-            if isinstance(node, ast.Assign):
-                targets = node.targets
-            elif isinstance(node, ast.AnnAssign) and node.value is not None:
-                targets = [node.target]
-            else:
-                continue
-            if not any(_is_slot_target(t) for t in targets):
-                continue
-            if isinstance(node.value, ast.Constant) and node.value.value == 1:
-                what = "clamped to a single slot"
-            elif _restores_a_saved_count(node.value):
-                what = f"restores the pre-clamp count `{node.value.id}`"
-            elif _forces_one(node.value):
-                what = "pinned to a single slot by an expression"
-            else:
-                continue
-            if ALLOW_MARKER in lines[node.lineno - 1]:
-                continue
-            found.append((filename, node.lineno, what))
+            for target, value in _target_value_pairs(node):
+                if not _is_slot_target(target):
+                    continue
+                if isinstance(value, ast.Constant) and value.value == 1:
+                    what = "clamped to a single slot"
+                elif _restores_a_saved_count(value):
+                    what = f"restores the pre-clamp count `{value.id}`"
+                elif _forces_one(value):
+                    what = "pinned to a single slot by an expression"
+                else:
+                    continue
+                if ALLOW_MARKER in lines[node.lineno - 1]:
+                    continue
+                found.append((filename, node.lineno, what))
     return found
 
 
@@ -140,6 +159,12 @@ _SELF_TEST_CASES: tuple[tuple[str, int], ...] = (
     ("def load(n):\n    n_parallel = min(n, 1)  # allow-slot-clamp: ok\n", 0),
     ("def load(n, cap):\n    n_parallel = min(n, cap)\n", 0),
     ("def load(n, hi):\n    n_parallel = n if n < hi else hi\n", 0),
+    ("def load(gi):\n    gpu_indices, use_fit, n_parallel = gi, False, 1\n", 1),
+    ("def load(gi):\n    gi, uf, n_parallel = gi, False, 1  # allow-slot-clamp: ok\n", 0),
+    ("def load(gi, s):\n    gpu_indices, use_fit, n_parallel = gi, False, s\n", 0),
+    ("def load(f):\n    gi, use_fit, n_parallel = f()\n", 0),
+    ("def load():\n    _n_parallel = 1\n", 1),
+    ("def load(r, s):\n    _n_parallel = _resolve(r, s)\n", 0),
     ("def load(n_parallel: int = 1):\n    return n_parallel\n", 0),
     ("class A:\n    n_parallel: int = 1\n", 0),
     ("def load():\n    self._requested_n_parallel = 1\n", 0),

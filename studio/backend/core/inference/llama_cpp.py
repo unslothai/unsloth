@@ -6437,7 +6437,7 @@ class LlamaCppBackend:
         flash_attn: bool = True,
         split_extra_bytes: int = 0,
         ubatch_for_slots: Optional[Callable[[int], Optional[int]]] = None,
-        mtp_bytes_for_slots: Optional[Callable[[int], int]] = None,
+        mtp_bytes_for_slots: Optional[Callable[[int, Optional[int]], int]] = None,
     ) -> tuple[Optional[list[int]], bool, int]:
         """Largest serving-slot count in [1, n_parallel) whose fully-on-GPU footprint fits,
         so Unsloth keeps the model on GPU (-ngl -1) instead of --fit on, which offloads layers
@@ -6453,11 +6453,13 @@ class LlamaCppBackend:
         against it, so a batch below the requested slot count shrinks as the candidates
         do. Holding it at the requested count made a fitting candidate look too big and
         dropped the load to --fit offload.
-        ``mtp_bytes_for_slots`` does the same for the MTP reserve, which is NOT
-        slot-independent: compact SWA scales its window allowance by the slot count under
-        kv_unified, and an MLA target with recurrent (KDA) layers charges per slot. Holding
-        the reserve at the requested count over-charged every candidate, so a smaller one
-        that fits could be rejected and the load kept --fit."""
+        ``mtp_bytes_for_slots(slots, ubatch)`` does the same for the MTP reserve, which is
+        NOT slot-independent: compact SWA scales its window allowance by the slot count
+        under kv_unified and adds one micro-batch, and an MLA target with recurrent (KDA)
+        layers charges per slot. It takes the candidate micro-batch as well as the slot
+        count, since a reduced candidate lowers the batch floor and so the ubatch too;
+        pricing the reserve at the requested pair over-charged every candidate, so one that
+        fits could be rejected and the load kept --fit."""
         for slots in range(n_parallel - 1, 0, -1):
             _ub = ubatch_for_slots(slots) if ubatch_for_slots else n_ubatch
             cb = self._estimate_compute_buffer_bytes(
@@ -6468,7 +6470,7 @@ class LlamaCppBackend:
             total = (
                 base_footprint_bytes
                 + cb
-                + (mtp_bytes_for_slots(slots) if mtp_bytes_for_slots else 0)
+                + (mtp_bytes_for_slots(slots, _ub) if mtp_bytes_for_slots else 0)
                 + self._estimate_kv_cache_bytes(
                     effective_ctx,
                     cache_type_kv,
@@ -10225,15 +10227,19 @@ class LlamaCppBackend:
                                 )
                                 return v if v is not None else 0
 
-                    def _mtp_bytes(ctx: int, slots: Optional[int] = None) -> int:
-                        # slots overrides the closure's requested count: the reserve is
-                        # slot-scaled for compact SWA and MLA+recurrent, so the slot fit
-                        # has to re-price it per candidate rather than reuse this one.
+                    def _mtp_bytes(
+                        ctx: int, slots: Optional[int] = None, ubatch: Optional[int] = None
+                    ) -> int:
+                        # slots/ubatch override the closure's requested pair: the reserve is
+                        # slot-scaled for compact SWA and MLA+recurrent, and compact SWA also
+                        # adds a micro-batch, so the slot fit re-prices both per candidate.
                         if mtp_overhead_fn is None:
                             return 0
                         if slots is None:
                             return mtp_overhead_fn(ctx)
-                        return mtp_overhead_fn(ctx, _np = slots)
+                        return mtp_overhead_fn(
+                            ctx, _np = slots, _n_ubatch = ubatch if ubatch else _effective_ubatch
+                        )
 
                     def _kv_bytes(ctx: int) -> int:
                         return self._estimate_kv_cache_bytes(
@@ -10802,7 +10808,7 @@ class LlamaCppBackend:
                             flash_attn = planned_flash_attn,
                             split_extra_bytes = _cc_split_extra(effective_ctx),
                             ubatch_for_slots = _ubatch_for_slots,
-                            mtp_bytes_for_slots = lambda s: _mtp_bytes(effective_ctx, s),
+                            mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(effective_ctx, s, ub),
                         )
                         if not _uf_slots:
                             logger.info(
