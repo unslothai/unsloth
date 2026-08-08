@@ -277,21 +277,113 @@ def test_a_malformed_record_never_blocks_startup(tmp_path, monkeypatch, content)
     assert pl.reap_recorded_children() == []
 
 
-def test_identity_separates_two_processes_started_together(tmp_path):
-    """Linux starttime has 10ms granularity, so identity carries the command
-    name too: a recycled pid has to match both."""
+def test_identity_survives_a_child_renaming_itself():
+    """Identity is only ever compared for one pid, and comm is mutable: a worker
+    calling prctl(PR_SET_NAME) or setproctitle would otherwise read as recycled
+    and be dropped unsignalled."""
     from utils import process_lifetime as pl
 
-    first = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-    second = subprocess.Popen(["sleep", "30"]) if not IS_WINDOWS else None
+    if not pl._is_linux():
+        pytest.skip("Linux only")
+
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import ctypes, time\n"
+            "time.sleep(0.3)\n"
+            'ctypes.CDLL("libc.so.6").prctl(15, b"renamed-worker", 0, 0, 0)\n'
+            "time.sleep(30)\n",
+        ]
+    )
     try:
-        assert pl._pid_identity(first.pid) == pl._pid_identity(first.pid)
-        if second is not None:
-            assert pl._pid_identity(first.pid) != pl._pid_identity(second.pid)
+        before = pl._pid_identity(child.pid)
+        with open(f"/proc/{child.pid}/comm", encoding = "utf-8") as fh:
+            name_before = fh.read().strip()
+        time.sleep(1.0)
+        with open(f"/proc/{child.pid}/comm", encoding = "utf-8") as fh:
+            assert fh.read().strip() != name_before, "the child did not rename itself"
+        after = pl._pid_identity(child.pid)
+        assert before == after
+        assert pl._same_identity(before, after)
     finally:
-        _kill(first.pid)
-        if second is not None:
-            _kill(second.pid)
+        _kill(child.pid)
+
+
+def test_a_record_written_with_a_process_name_still_matches():
+    """Records from an earlier build carry starttime:comm."""
+    from utils import process_lifetime as pl
+
+    if not pl._is_linux():
+        pytest.skip("Linux only")
+    assert pl._same_identity("196794665:python3", "196794665") is True
+    assert pl._same_identity("196794665:python3", "196794999") is False
+
+
+def test_a_group_outliving_its_leader_is_still_reaped(tmp_path, monkeypatch):
+    """The shim can crash while the visual server holds the GPU; the record's
+    pid is then gone and the group is the only handle left."""
+    import json
+
+    from utils import process_lifetime as pl
+
+    if pl._is_windows():
+        pytest.skip("POSIX only")
+
+    marker = tmp_path / "grandchild.pid"
+    leader = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess, sys, pathlib\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+            f"pathlib.Path({str(marker)!r}).write_text(str(child.pid))\n",
+        ],
+        start_new_session = True,
+    )
+    try:
+        leader.wait(timeout = 30)
+        for _ in range(100):
+            if marker.is_file():
+                break
+            time.sleep(0.1)
+        grandchild = int(marker.read_text())
+        assert _alive(grandchild)
+
+        record = tmp_path / "900000.json"
+        record.write_text(
+            json.dumps({
+                "owner_pid": 900000,
+                "owner_identity": None,
+                "children": [
+                    {"pid": leader.pid, "identity": "gone", "pgid": leader.pid},
+                ],
+            }),
+            encoding = "utf-8",
+        )
+        pl._reap_one_record(record, timeout = 5.0)
+        time.sleep(0.5)
+        assert not _alive(grandchild), "the visual server survived its dead leader"
+    finally:
+        _kill(leader.pid)
+
+
+def test_a_child_sharing_studios_group_is_never_recorded():
+    """Recording that group would make the sweep kill Studio and every sibling."""
+    from utils import process_lifetime as pl
+
+    if pl._is_windows():
+        pytest.skip("POSIX only")
+    shared = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    own = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session = True
+    )
+    try:
+        assert pl._own_process_group(shared.pid) is None
+        assert pl._own_process_group(own.pid) == own.pid
+    finally:
+        _kill(shared.pid)
+        _kill(own.pid)
 
 
 def test_ctrl_c_is_passed_on_by_the_console_handler():
