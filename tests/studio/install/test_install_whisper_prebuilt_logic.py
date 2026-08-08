@@ -828,6 +828,40 @@ def test_llama_runtime_pairs_falls_back_to_mix_suffix(installed, required, pairs
     assert M.llama_runtime_pairs(installed, required) is pairs
 
 
+LLAMA_REPO = "unslothai/llama.cpp"
+# A publisher that is NOT the default, so a lookup that dropped installed_repo
+# and fell back to unslothai/llama.cpp builds a different URL and gets caught.
+FORK_REPO = "acme-fork/llama.cpp"
+
+
+@pytest.fixture(autouse = True)
+def _offline_published_tree_lookup(monkeypatch):
+    """Keep llama_runtime_pairs offline and its per-tag cache test-local.
+
+    A missing tree sends published_llama_ggml_tree to the llama release, so
+    without this the pairing assertions below would depend on live release
+    assets and on this machine's own llama marker. The cache is module level
+    and outlives monkeypatch, so clear it too. Tests wanting the lookup stub
+    _download_host_json_once themselves, which wins because this fixture is
+    applied first."""
+    M._PUBLISHED_GGML_TREE_CACHE.clear()
+
+    def unreachable(url):
+        raise OSError(f"offline test tried to fetch {url}")
+
+    monkeypatch.setattr(M, "_download_host_json_once", unreachable)
+    # No marker to read, so installed_llama_tree_repo() stays None unless a
+    # test points it somewhere; the lookup then needs an explicit repo.
+    monkeypatch.setattr(M.llama, "default_managed_llama_dir", lambda: Path("/nonexistent-llama"))
+    yield
+    M._PUBLISHED_GGML_TREE_CACHE.clear()
+
+
+# The autouse fixture above replaces _download_host_json_once with an offline guard, so a test
+# exercising the real wrapper has to hold a reference taken at import, before any fixture runs.
+_REAL_DOWNLOAD_HOST_JSON_ONCE = M._download_host_json_once
+
+
 # Real releases: same -mix-2c8b9c1 suffix, but genuinely different ggml trees.
 SUFFIX_SHARED_A = "b10173-mix-2c8b9c1"
 SUFFIX_SHARED_B = "b10181-mix-2c8b9c1"
@@ -842,8 +876,8 @@ TREE_B = "e96ffb0e063f66952b0c54796a74755b6041c867"
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, TREE_A, TREE_B, False),
         # Different suffixes, same ggml: ABI-identical.
         ("b10241-mix-89aa77b", "b10225-mix-345e1e3", TREE_A, TREE_A, True),
-        # A missing tree either side falls back to the suffix, so installs
-        # predating ggml_tree are not stranded.
+        # A missing tree falls back to the suffix only when the release does
+        # not publish one either; the lookup is stubbed offline above.
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, None, TREE_B, True),
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, TREE_A, None, True),
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, "", "", True),
@@ -863,6 +897,153 @@ def test_llama_runtime_pairs_prefers_ggml_tree(
         )
         is pairs
     )
+
+
+def test_llama_runtime_pairs_reads_the_published_tree_when_the_marker_has_none(monkeypatch):
+    # The case the fallback got wrong: one -mix- suffix, two ggml trees. An
+    # install predating ggml_tree has no local tree, so both come from the
+    # releases.
+    trees = {SUFFIX_SHARED_A: TREE_A, SUFFIX_SHARED_B: TREE_B}
+    fetched = []
+
+    def fake(url):
+        fetched.append(url)
+        return {"ggml_tree": trees[next(t for t in trees if t in url)]}
+
+    monkeypatch.setattr(M, "_download_host_json_once", fake)
+    assert (
+        M.llama_runtime_pairs(SUFFIX_SHARED_A, SUFFIX_SHARED_B, installed_repo = FORK_REPO) is False
+    )
+    assert len(fetched) == 2
+    # The installed tag is read from the repo that published it. FORK_REPO is
+    # not the default publisher, so a lookup ignoring installed_repo would
+    # build a unslothai/llama.cpp URL here and this would catch it.
+    assert any(f"/{FORK_REPO}/releases/download/{SUFFIX_SHARED_A}/" in url for url in fetched)
+
+
+def test_published_ggml_tree_is_fetched_once_per_tag(monkeypatch):
+    calls = []
+
+    def fake(url):
+        calls.append(url)
+        return {"ggml_tree": TREE_A}
+
+    monkeypatch.setattr(M, "_download_host_json_once", fake)
+    assert M.published_llama_ggml_tree(SUFFIX_SHARED_A) == TREE_A
+    assert M.published_llama_ggml_tree(SUFFIX_SHARED_A) == TREE_A
+    assert calls == [
+        f"https://github.com/unslothai/llama.cpp/releases/download/"
+        f"{SUFFIX_SHARED_A}/llama-prebuilt-manifest.json"
+    ]
+
+
+def test_the_manifest_probe_still_authenticates(monkeypatch):
+    """download_bytes falls back to auth_headers(url) only when headers are ABSENT, so a bare
+    User-Agent silently dropped auth. A private published repo then 404s and the caller falls
+    back to the -mix- suffix compare this probe exists to replace; an anonymous huggingface.co
+    fetch shares the per-IP limit that 429s CI fleets."""
+    seen = {}
+
+    def fake_download_bytes(
+        url,
+        timeout = None,
+        attempts = None,
+        headers = None,
+        **kwargs,
+    ):
+        seen["headers"] = headers
+        seen["attempts"] = attempts
+        return b'{"ggml_tree": "abc"}'
+
+    monkeypatch.setenv("GH_TOKEN", "gh-secret")
+    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    monkeypatch.setattr(M, "download_bytes", fake_download_bytes)
+
+    assert _REAL_DOWNLOAD_HOST_JSON_ONCE("https://github.com/o/r/releases/download/t/m.json") == {
+        "ggml_tree": "abc"
+    }
+    assert seen["headers"].get("Authorization") == "Bearer gh-secret"
+    # The single-attempt policy is the ONLY thing this wrapper overrides.
+    assert seen["attempts"] == 1
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{}, {"ggml_tree": ""}, {"ggml_tree": None}, {"ggml_tree": ["x"]}, ["not", "a", "dict"]],
+)
+def test_published_ggml_tree_ignores_a_manifest_without_a_usable_tree(monkeypatch, payload):
+    monkeypatch.setattr(M, "_download_host_json_once", lambda url: payload)
+    assert M.published_llama_ggml_tree(SUFFIX_SHARED_A) is None
+
+
+def test_published_ggml_tree_survives_an_unreachable_release(monkeypatch):
+    # Fail closed to the old comparison rather than stranding a valid install.
+    def boom(url):
+        raise OSError("network down")
+
+    monkeypatch.setattr(M, "_download_host_json_once", boom)
+    assert M.published_llama_ggml_tree(SUFFIX_SHARED_A) is None
+    assert (
+        M.llama_runtime_pairs(SUFFIX_SHARED_A, SUFFIX_SHARED_B, installed_repo = LLAMA_REPO) is True
+    )
+
+
+def test_published_tree_is_not_consulted_when_both_trees_are_known(monkeypatch):
+    def boom(url):
+        raise AssertionError(f"should not fetch {url}")
+
+    monkeypatch.setattr(M, "_download_host_json_once", boom)
+    assert (
+        M.llama_runtime_pairs(
+            SUFFIX_SHARED_A,
+            SUFFIX_SHARED_B,
+            installed_ggml_tree = TREE_A,
+            required_ggml_tree = TREE_B,
+        )
+        is False
+    )
+    assert M.llama_runtime_pairs(SUFFIX_SHARED_A, SUFFIX_SHARED_A) is True
+
+
+@pytest.mark.parametrize(
+    "marker,expected",
+    [
+        ({"published_repo": LLAMA_REPO}, LLAMA_REPO),
+        ({"published_repo": LLAMA_REPO, "binary_repo": LLAMA_REPO}, LLAMA_REPO),
+        # Binaries from another repo: the fork release's tree does not describe
+        # them, which is why the installer leaves the marker's tree unset.
+        ({"published_repo": LLAMA_REPO, "binary_repo": "ggml-org/llama.cpp"}, None),
+        ({"binary_repo": LLAMA_REPO}, None),
+        ({}, None),
+    ],
+)
+def test_installed_llama_tree_repo_follows_the_marker(monkeypatch, tmp_path, marker, expected):
+    root = tmp_path / "llama.cpp"
+    root.mkdir()
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps({"release_tag": "b1", **marker}))
+    monkeypatch.setattr(M.llama, "default_managed_llama_dir", lambda: root)
+    assert M.installed_llama_tree_repo() == expected
+
+
+def test_pairing_does_not_infer_a_tree_for_non_fork_binaries(monkeypatch):
+    # Without a repo the installed tag's tree is never fetched, so an upstream
+    # built runtime cannot be paired by a tree that does not describe it.
+    # A raising stub cannot police this: published_llama_ggml_tree() catches
+    # every exception, so the raise would be swallowed and the test would pass
+    # either way. Record the URLs instead, and give the two tags different
+    # trees so an inferred installed tree also flips the verdict.
+    trees = {SUFFIX_SHARED_A: TREE_A, SUFFIX_SHARED_B: TREE_B}
+    fetched = []
+
+    def record(url):
+        fetched.append(url)
+        return {"ggml_tree": trees[next(t for t in trees if t in url)]}
+
+    monkeypatch.setattr(M, "_download_host_json_once", record)
+    assert M.llama_runtime_pairs(SUFFIX_SHARED_A, SUFFIX_SHARED_B, installed_repo = None) is True
+    # Nothing at all is probed: the installed tag because there is no repo, and
+    # the required tag because a lone required tree cannot decide the pairing.
+    assert fetched == []
 
 
 def test_installed_llama_ggml_tree_reads_marker(tmp_path):
