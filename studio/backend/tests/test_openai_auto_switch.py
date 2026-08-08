@@ -539,7 +539,18 @@ def test_idle_loop_unloads_after_ttl_and_stashes_for_reload(monkeypatch):
 
     async def _drive():
         task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = 0.02))
-        await asyncio.sleep(0.2)
+        # Wall clock with a generous deadline, like the keep-KV test below: a fixed
+        # 0.2 s sleep is enough locally and not enough on a loaded runner, where the
+        # loop's first poll can miss the window entirely and the assertion reports an
+        # unload that never happened rather than a timing miss.
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+            if unloads:
+                break
+        # Keep polling briefly after the first unload so a loop that frees repeatedly
+        # is still caught, rather than passing because we stopped watching.
+        await asyncio.sleep(0.15)
         task.cancel()
         try:
             await task
