@@ -306,7 +306,6 @@ def _setup_cache_env() -> None:
                     # Marks the directory as ours, so the cleanup can delete from
                     # it without inferring that from its contents.
                     from utils.cache_cleanup import CACHE_MARKER
-
                     (Path(value) / CACHE_MARKER).touch(exist_ok = True)
             except (OSError, ImportError):
                 pass
